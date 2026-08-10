@@ -176,6 +176,47 @@ fn add_catalog(
     call_meta_tool(workspace, "unica.meta.add", args)
 }
 
+fn add_metadata_object(workspace: &Path, kind: &str, name: &str) -> OperationResult {
+    call_meta_tool(
+        workspace,
+        "unica.meta.add",
+        Map::from_iter([
+            ("sourceSet".to_string(), Value::String("main".to_string())),
+            ("kind".to_string(), Value::String(kind.to_string())),
+            ("name".to_string(), Value::String(name.to_string())),
+            ("dryRun".to_string(), Value::Bool(false)),
+        ]),
+    )
+}
+
+fn replace_first_string_type_with_unqualified_variant(xml: &str, replacement: &str) -> String {
+    let mut replaced = xml.replacen(
+        "<v8:Type>xs:string</v8:Type>",
+        &format!("<v8:Type>{replacement}</v8:Type>"),
+        1,
+    );
+    let variant = format!("<v8:Type>{replacement}</v8:Type>");
+    let variant_end = replaced
+        .find(&variant)
+        .map(|start| start + variant.len())
+        .expect("fixture must contain a string type");
+    let type_end = variant_end
+        + replaced[variant_end..]
+            .find("</Type>")
+            .expect("metadata Type container must be closed");
+    if let Some(relative_start) = replaced[variant_end..type_end].find("<v8:StringQualifiers>") {
+        let start = variant_end + relative_start;
+        let close = "</v8:StringQualifiers>";
+        let end = start
+            + replaced[start..]
+                .find(close)
+                .expect("string qualifier container must be closed")
+            + close.len();
+        replaced.replace_range(start..end, "");
+    }
+    replaced
+}
+
 fn call_edit(
     workspace: &Path,
     metadata_path: &str,
@@ -260,6 +301,7 @@ fn info_without_sections_is_local_only() {
     let data = result.data.expect("typed metadata info data");
     assert_eq!(data["metadataPath"], "Catalog.Inspectable");
     assert_eq!(data["kind"], "Catalog");
+    assert_eq!(data["details"], serde_json::json!({}));
     assert_eq!(data["name"], "Inspectable");
     assert_eq!(data["synonym"], "Inspectable synonym");
     assert_eq!(data["support"], "supported");
@@ -293,6 +335,17 @@ fn info_without_sections_is_local_only() {
         "commands",
     ] {
         assert!(data["collections"][collection].is_array(), "{collection}");
+    }
+    for inapplicable in [
+        "recalculations",
+        "accountingFlags",
+        "extDimensionAccountingFlags",
+        "addressingAttributes",
+    ] {
+        assert!(
+            data["collections"].get(inapplicable).is_none(),
+            "{inapplicable} must be omitted for Catalog"
+        );
     }
     // `meta.info` no longer consults a code index at all, so there is no
     // section left that could be absent for provider reasons.
@@ -401,6 +454,194 @@ fn info_observes_inline_command_without_a_standalone_descriptor() {
         .data
         .expect("typed metadata info after command removal");
     assert_eq!(data["collections"]["commands"], serde_json::json!([]));
+}
+
+#[test]
+fn info_returns_the_constant_value_type_in_kind_specific_details() {
+    let workspace = create_info_workspace("constant-details-type");
+    let added = add_metadata_object(workspace.path(), "Constant", "MainCurrency");
+    assert!(added.ok, "{:?}", added.errors);
+
+    let result = call_info_path(workspace.path(), "Constant.MainCurrency", []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    assert_eq!(
+        result.data.as_ref().unwrap()["details"]["type"],
+        serde_json::json!({
+            "variants": [{
+                "kind": "string",
+                "length": 10,
+                "allowedLength": "variable"
+            }],
+            "mutationCapability": "editable"
+        })
+    );
+}
+
+#[test]
+fn info_does_not_silently_drop_an_unknown_compound_root_property() {
+    let workspace = create_info_workspace("unknown-compound-property");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<Comment/>",
+                    "<Comment/><UnexpectedCompound><Value>evidence</Value></UnexpectedCompound>",
+                    1,
+                )
+                .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(
+        !result.ok,
+        "unknown compound data must not disappear: {result:?}"
+    );
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_does_not_silently_drop_an_unknown_scalar_root_property() {
+    let workspace = create_info_workspace("unknown-scalar-property");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<Comment/>",
+                    "<Comment/><UnexpectedScalar>evidence</UnexpectedScalar>",
+                    1,
+                )
+                .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(
+        !result.ok,
+        "unknown scalar data must not disappear: {result:?}"
+    );
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_reports_every_unknown_root_node_instead_of_only_the_first() {
+    let workspace = create_info_workspace("two-unknown-root-nodes");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<Comment/>",
+                    "<Comment/><UnexpectedOne/><UnexpectedTwo/>",
+                    1,
+                )
+                .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok, "unknown semantic nodes must fail closed");
+    let diagnostics = result
+        .diagnostics
+        .as_ref()
+        .and_then(Value::as_array)
+        .expect("typed diagnostics");
+    let fields = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["field"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        fields.contains("properties.UnexpectedOne"),
+        "{diagnostics:?}"
+    );
+    assert!(
+        fields.contains("properties.UnexpectedTwo"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn info_rejects_a_duplicate_root_child_objects_container() {
+    let workspace = create_info_workspace("duplicate-root-child-objects");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            let text = std::str::from_utf8(bytes).unwrap();
+            let patched = if let Some(index) = text.rfind("</ChildObjects>") {
+                let mut patched = text.to_string();
+                patched.insert_str(index + "</ChildObjects>".len(), "<ChildObjects/>");
+                patched
+            } else if let Some(index) = text.rfind("<ChildObjects/>") {
+                let mut patched = text.to_string();
+                patched.insert_str(index + "<ChildObjects/>".len(), "<ChildObjects/>");
+                patched
+            } else {
+                text.replacen("</Catalog>", "<ChildObjects/><ChildObjects/></Catalog>", 1)
+            };
+            assert_ne!(
+                patched, text,
+                "descriptor has no duplicate-container anchor"
+            );
+            patched.into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok, "duplicate root container must fail closed");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_foreign_namespace_root_child_objects_container() {
+    let workspace = create_info_workspace("foreign-root-child-objects");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<ChildObjects>",
+                    "<foreign:ChildObjects xmlns:foreign=\"urn:foreign\">",
+                    1,
+                )
+                .replacen("</ChildObjects>", "</foreign:ChildObjects>", 1)
+                .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok, "foreign root container must fail closed");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_never_publishes_a_foreign_synonym_decoy_in_partial_data() {
+    let workspace = create_info_workspace("foreign-synonym-decoy");
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen(
+                    "<Synonym>",
+                    "<foreign:Synonym xmlns:foreign=\"urn:foreign\">poison</foreign:Synonym><Synonym>",
+                    1,
+                )
+                .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok);
+    let data = result.data.as_ref().expect("safe partial data");
+    assert_ne!(data["synonym"], "poison");
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
 }
 
 #[test]
@@ -1148,11 +1389,7 @@ fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
     let workspace = create_info_workspace("unknown-platform-type");
     let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
     let xml = std::fs::read_to_string(&descriptor).unwrap();
-    let unknown = xml.replacen(
-        "<v8:Type>xs:string</v8:Type>",
-        "<v8:Type>v8:FutureOpaque</v8:Type>",
-        1,
-    );
+    let unknown = replace_first_string_type_with_unqualified_variant(&xml, "v8:FutureOpaque");
     assert_ne!(unknown, xml, "fixture must contain a typed attribute");
     std::fs::write(&descriptor, unknown).unwrap();
 
@@ -1202,11 +1439,7 @@ fn info_reads_uuid_as_an_editable_observed_type() {
     let workspace = create_info_workspace("uuid-observation");
     let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
     let xml = std::fs::read_to_string(&descriptor).unwrap();
-    let uuid = xml.replacen(
-        "<v8:Type>xs:string</v8:Type>",
-        "<v8:Type>v8:UUID</v8:Type>",
-        1,
-    );
+    let uuid = replace_first_string_type_with_unqualified_variant(&xml, "v8:UUID");
     assert_ne!(uuid, xml, "fixture must contain a typed attribute");
     std::fs::write(&descriptor, uuid).unwrap();
 
@@ -2274,26 +2507,26 @@ fn add_enum_with_presentations(
     }
 
     // ListPresentation is not a settable property of the typed surface, so the
-    // descriptor carries it the way the platform writes it: right after Comment.
+    // descriptor carries it by replacing the platform emitter's empty value.
     if let Some(list_presentation) = list_presentation {
         let descriptor = workspace.join(format!("src/Enums/{name}.xml"));
         let text = std::fs::read_to_string(&descriptor).unwrap();
-        let patched = text.replace(
-            "<Comment/>",
-            &format!(
-                concat!(
-                    "<Comment/>\n",
-                    "\t\t\t<ListPresentation>\n",
-                    "\t\t\t\t<v8:item>\n",
-                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
-                    "\t\t\t\t\t<v8:content>{}</v8:content>\n",
-                    "\t\t\t\t</v8:item>\n",
-                    "\t\t\t</ListPresentation>"
-                ),
-                list_presentation
+        let value = format!(
+            concat!(
+                "<ListPresentation>\n",
+                "\t\t\t\t<v8:item>\n",
+                "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                "\t\t\t\t\t<v8:content>{}</v8:content>\n",
+                "\t\t\t\t</v8:item>\n",
+                "\t\t\t</ListPresentation>"
             ),
+            list_presentation
         );
-        assert_ne!(patched, text, "{name}: no Comment anchor in the descriptor");
+        let patched = text.replacen("<ListPresentation/>", &value, 1);
+        assert_ne!(
+            patched, text,
+            "{name}: no ListPresentation anchor in the descriptor"
+        );
         std::fs::write(&descriptor, patched).unwrap();
     }
 

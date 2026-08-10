@@ -2624,7 +2624,7 @@ mod tests {
     use crate::domain::events::{DomainEvent, DomainEventKind};
     use crate::domain::metadata::{
         metadata_fill_value_is_allowed, metadata_relation_specs, MetaCollectionsData,
-        MetaDiagnosticCode, MetaEditOperation, MetaElementScope, MetaMutationData,
+        MetaDiagnosticCode, MetaEditOperation, MetaElementScope, MetaInfoDetails, MetaMutationData,
         MetaRelationTargetPolicy, MetaSupportStatus, MetaValidationData, MetaValidationStatus,
         MetadataKind,
     };
@@ -2926,6 +2926,10 @@ mod tests {
             tabular_sections: Vec::new(),
             dimensions: Vec::new(),
             resources: Vec::new(),
+            recalculations: None,
+            accounting_flags: None,
+            ext_dimension_accounting_flags: None,
+            addressing_attributes: None,
             enum_values: Vec::new(),
             columns: Vec::new(),
             forms: Vec::new(),
@@ -3004,10 +3008,12 @@ mod tests {
                     local: MetaLocalInfo {
                         metadata_path: subject.target.clone(),
                         kind: MetadataKind::Document,
+                        details: MetaInfoDetails::empty(MetadataKind::Document),
                         name: "Order".to_string(),
                         synonym: Some("Order".to_string()),
                         support: MetaSupportStatus::Supported,
                         properties: Vec::new(),
+                        declarations: crate::domain::metadata::MetaInfoDeclarations::default(),
                         predefined_code_type: None,
                         relations: empty_relations(),
                         collections: empty_collections(),
@@ -3189,10 +3195,12 @@ mod tests {
                 local: MetaLocalInfo {
                     metadata_path: subject.target.clone(),
                     kind: MetadataKind::Document,
+                    details: MetaInfoDetails::empty(MetadataKind::Document),
                     name: "Order".to_string(),
                     synonym: Some("Order".to_string()),
                     support: MetaSupportStatus::Supported,
                     properties: Vec::new(),
+                    declarations: crate::domain::metadata::MetaInfoDeclarations::default(),
                     predefined_code_type: None,
                     relations: empty_relations(),
                     collections: empty_collections(),

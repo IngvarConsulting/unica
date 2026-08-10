@@ -1,0 +1,8 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">
+  <Task>
+    <Properties><Name>Approval</Name><Addressing>InformationRegister.Performers</Addressing><DataLockFields><xr:Field>Task.Approval.Attribute.Subject</xr:Field></DataLockFields></Properties>
+    <ChildObjects>
+      <AddressingAttribute><Properties><Name>Performer</Name><Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>50</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type><AddressingDimension>InformationRegister.Performers.Dimension.Performer</AddressingDimension></Properties></AddressingAttribute>
+    </ChildObjects>
+  </Task>
+</MetaDataObject>

@@ -2429,79 +2429,10 @@ fn render_type(
     lines.join(eol)
 }
 
-fn parse_item_type(source: &str, node: Node<'_, '_>) -> Result<MetadataType, String> {
-    let node_range = node.range();
-    let mut fragment = source[node_range.clone()].to_string();
-    let opening_end = opening_tag_end(&fragment)?;
-    let opening = &fragment[..opening_end];
-    let declarations = node
-        .namespaces()
-        .filter_map(|namespace| {
-            let prefix = namespace.name()?;
-            (!opening.contains(&format!("xmlns:{prefix}=")))
-                .then(|| format!(" xmlns:{prefix}=\"{}\"", escape_xml(namespace.uri())))
-        })
-        .collect::<String>();
-    fragment.insert_str(opening_end, &declarations);
-
-    let declaration_length = declarations.len();
-    let mut edits = Vec::new();
-    for value_node in node.children().filter(|candidate| {
-        candidate.is_element()
-            && candidate.tag_name().namespace() == Some(V8_NS)
-            && matches!(candidate.tag_name().name(), "Type" | "TypeSet")
-    }) {
-        let text_nodes = value_node
-            .children()
-            .filter(|child| child.is_text())
-            .collect::<Vec<_>>();
-        if text_nodes.is_empty() {
-            continue;
-        }
-        let text_value = direct_text_content(value_node);
-        let raw = text_value.trim();
-        let (prefix, local) = raw.split_once(':').ok_or_else(|| {
-            "predefined Type value must be a namespace-qualified QName".to_string()
-        })?;
-        if local.contains(':') || prefix.is_empty() || local.is_empty() {
-            return Err("predefined Type value is not a valid QName".to_string());
-        }
-        let namespace = value_node
-            .lookup_namespace_uri(Some(prefix))
-            .ok_or_else(|| format!("predefined Type prefix `{prefix}` is not declared"))?;
-        let canonical_prefix = match namespace {
-            CFG_NS => "cfg",
-            XS_NS => "xs",
-            V8_NS => "v8",
-            _ => {
-                return Err(format!(
-                    "predefined Type QName namespace `{namespace}` is unsupported"
-                ))
-            }
-        };
-        for (index, text_node) in text_nodes.into_iter().enumerate() {
-            let range = text_node.range();
-            let mut start = range.start - node_range.start;
-            let mut end = range.end - node_range.start;
-            if start >= opening_end {
-                start += declaration_length;
-                end += declaration_length;
-            }
-            edits.push((
-                start..end,
-                if index == 0 {
-                    format!("{canonical_prefix}:{local}")
-                } else {
-                    String::new()
-                },
-            ));
-        }
-    }
-    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
-    for (range, replacement) in edits {
-        fragment.replace_range(range, &replacement);
-    }
-    super::edit::parse_typed_metadata_type(&fragment).map_err(|diagnostic| diagnostic.message)
+fn parse_item_type(_source: &str, node: Node<'_, '_>) -> Result<MetadataType, String> {
+    let observed = super::info_projection::parse_observed_predefined_type_node(node)
+        .map_err(|diagnostic| diagnostic.message)?;
+    MetadataType::try_from(observed).map_err(|diagnostic| diagnostic.message)
 }
 
 fn fragment_root_name(

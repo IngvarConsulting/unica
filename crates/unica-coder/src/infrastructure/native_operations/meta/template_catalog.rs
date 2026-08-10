@@ -1,5 +1,6 @@
 use super::super::common::escape_xml;
 use super::super::common::is_1c_identifier;
+use super::format_contract::meta_8_3_27_kind_declares_child_objects;
 use super::publisher::fresh_metadata_uuid;
 use super::xml_model::{
     emit_meta_mltext, emit_metadata_xml_type_contents, emit_metadata_xml_value_type,
@@ -650,25 +651,6 @@ fn emit_meta_catalog_xml(
     Ok((format!("{}\n", lines.join("\n")), obj_uuid))
 }
 
-/// Whether 8.3.27 declares a `ChildObjects` collection for the kind.
-///
-/// The platform refuses the import outright when a childless kind carries the
-/// element: `document format error: unexpected read property. Current property:
-/// ChildObjects, expected property: <Kind>`. The set below is measured against a
-/// real 8.3.27 dump, where the split is total — every kind either always carries
-/// the element or never does — and confirmed by the exact platform gate.
-fn kind_declares_child_objects(kind: crate::domain::metadata::MetadataKind) -> bool {
-    use crate::domain::metadata::MetadataKind;
-    !matches!(
-        kind,
-        MetadataKind::CommonModule
-            | MetadataKind::Constant
-            | MetadataKind::DefinedType
-            | MetadataKind::EventSubscription
-            | MetadataKind::ScheduledJob
-    )
-}
-
 pub(super) fn minimal_metadata_xml(
     kind: crate::domain::metadata::MetadataKind,
     obj_name: &str,
@@ -787,7 +769,7 @@ pub(super) fn minimal_metadata_xml(
     lines.push("\t\t</Properties>".to_string());
     // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
     // придумывает ресурсы, измерения и значения свойств за него (ADR-0030).
-    if kind_declares_child_objects(kind) {
+    if meta_8_3_27_kind_declares_child_objects(kind) {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));

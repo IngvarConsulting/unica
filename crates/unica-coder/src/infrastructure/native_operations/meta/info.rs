@@ -7,9 +7,9 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode,
-    MetaElementData, MetaEventSource, MetaPropertyData, MetaPropertyValue, MetaRelationTargetData,
-    MetaRelationsData, MetaSupportStatus, MetadataKind, ObservedMetadataType,
-    METADATA_PROPERTY_SPECS,
+    MetaDiagnosticSeverity, MetaElementData, MetaEventSource, MetaInfoPropertyData,
+    MetaInfoPropertyValue, MetaInfoPropertyValueKind, MetaRelationTargetData, MetaRelationsData,
+    MetaSupportStatus, MetadataKind, META_INFO_PROPERTY_PROFILE,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -167,9 +167,9 @@ fn emit_subsystem_evidence_processing_phase(phase: SubsystemEvidenceProcessingPh
 use super::super::common::object_support_state;
 use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
-    meta_event_subscription_source_node, meta_info_child, meta_info_child_text, meta_info_children,
-    meta_info_inner_text, meta_info_ml_text, meta_info_normalize_cfg_prefix,
-    parse_defined_type_event_sources, parse_meta_event_subscription_source,
+    meta_event_subscription_source_node, meta_info_child_text, meta_info_inner_text,
+    meta_info_ml_text, meta_info_normalize_cfg_prefix, parse_defined_type_event_sources,
+    parse_meta_event_subscription_source,
 };
 
 /// Parse the descriptor image already acquired by the logical resolver. The
@@ -237,11 +237,60 @@ pub(crate) fn read_typed_meta_info(
         address: target.clone(),
         uuid: identity.object_uuid,
     };
-    let properties = meta_info_child(object, "Properties");
-    let child_objects = meta_info_child(object, "ChildObjects");
-    let name = properties
-        .and_then(|node| meta_info_child_text(node, "Name"))
-        .unwrap_or_default();
+    let property_containers = object
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    let [properties] = property_containers.as_slice() else {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor must contain exactly one direct Properties container",
+        )
+        .with_metadata_path(target.clone())
+        .with_field("properties")
+        .into());
+    };
+    if properties.tag_name().namespace() != Some(super::info_projection::MD_CLASSES_NAMESPACE) {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor Properties container has the wrong namespace",
+        )
+        .with_metadata_path(target.clone())
+        .with_field("properties")
+        .into());
+    }
+    let child_object_containers = object
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
+        .collect::<Vec<_>>();
+    if child_object_containers.len() > 1
+        || child_object_containers.iter().any(|node| {
+            node.tag_name().namespace() != Some(super::info_projection::MD_CLASSES_NAMESPACE)
+        })
+    {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor contains a duplicate or foreign ChildObjects container",
+        )
+        .with_metadata_path(target.clone())
+        .with_field("collections")
+        .into());
+    }
+    let properties = Some(*properties);
+    let child_objects = child_object_containers.first().copied();
+    let name_nodes = super::info_projection::direct_children_with_namespace(
+        *properties.as_ref().expect("proved Properties"),
+        super::info_projection::MD_CLASSES_NAMESPACE,
+        "Name",
+    );
+    let name = match name_nodes.as_slice() {
+        [node]
+            if node.attributes().len() == 0 && !node.children().any(|child| child.is_element()) =>
+        {
+            super::info_projection::direct_text_content(*node)
+        }
+        _ => String::new(),
+    };
     if name.is_empty() {
         return Err(MetaDiagnostic::error(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -250,100 +299,155 @@ pub(crate) fn read_typed_meta_info(
         .with_metadata_path(target.clone())
         .into());
     }
-    let synonym = properties
-        .and_then(|node| meta_info_child(node, "Synonym"))
-        .map(meta_info_ml_text)
-        .filter(|value| !value.is_empty());
+    let synonym = properties.and_then(|properties| {
+        let nodes = super::info_projection::direct_children_with_namespace(
+            properties,
+            super::info_projection::MD_CLASSES_NAMESPACE,
+            "Synonym",
+        );
+        let [node] = nodes.as_slice() else {
+            return None;
+        };
+        super::info_projection::meta_info_property_value_is_valid(
+            *node,
+            MetaInfoPropertyValueKind::LegacyLocalizedString,
+        )
+        .then(|| meta_info_ml_text(*node))
+        .filter(|value| !value.is_empty())
+    });
 
     let mut diagnostics = Vec::new();
+    for error in super::info_projection::meta_info_profile_errors(kind, properties, child_objects) {
+        diagnostics.push(
+            MetaDiagnostic::error(error.code, error.message)
+                .with_metadata_path(target.clone())
+                .with_field(error.field),
+        );
+    }
+    let details = super::info_projection::project_meta_info_details(
+        kind,
+        properties,
+        child_objects,
+        target,
+        &mut diagnostics,
+    );
+    let declarations = super::info_projection::project_meta_info_declarations(
+        kind,
+        properties,
+        target,
+        &mut diagnostics,
+    );
+    let collection_route = |tag, nested_attributes, field| {
+        TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
+    };
     let mut local = MetaLocalInfo {
         metadata_path: target.clone(),
         kind,
+        details,
         name,
         synonym,
         support: typed_support_status(&resolved.descriptor_path),
         properties: typed_properties(properties, kind),
+        declarations,
         predefined_code_type: predefined_code_type_for_info(properties, kind),
-        relations: typed_relations(&doc, properties, target, &mut diagnostics),
+        relations: typed_relations(&doc, properties, kind, target, &mut diagnostics),
         collections: MetaCollectionsData {
-            attributes: typed_elements_with_diagnostics(
+            attributes: typed_root_collection(
                 xml,
                 child_objects,
-                "Attribute",
-                false,
-                "collections.attributes",
+                collection_route("Attribute", false, "collections.attributes"),
                 target,
                 &mut diagnostics,
             ),
-            tabular_sections: typed_elements_with_diagnostics(
+            tabular_sections: typed_root_collection(
                 xml,
                 child_objects,
-                "TabularSection",
-                true,
-                "collections.tabularSections",
+                collection_route("TabularSection", true, "collections.tabularSections"),
                 target,
                 &mut diagnostics,
             ),
-            dimensions: typed_elements_with_diagnostics(
+            dimensions: typed_root_collection(
                 xml,
                 child_objects,
-                "Dimension",
-                false,
-                "collections.dimensions",
+                collection_route("Dimension", false, "collections.dimensions"),
                 target,
                 &mut diagnostics,
             ),
-            resources: typed_elements_with_diagnostics(
+            resources: typed_root_collection(
                 xml,
                 child_objects,
-                "Resource",
-                false,
-                "collections.resources",
+                collection_route("Resource", false, "collections.resources"),
                 target,
                 &mut diagnostics,
             ),
-            enum_values: typed_elements_with_diagnostics(
+            recalculations: typed_optional_root_collection(
                 xml,
                 child_objects,
-                "EnumValue",
-                false,
-                "collections.enumValues",
+                collection_route("Recalculation", false, "collections.recalculations"),
                 target,
                 &mut diagnostics,
             ),
-            columns: typed_elements_with_diagnostics(
+            accounting_flags: typed_optional_root_collection(
                 xml,
                 child_objects,
-                "Column",
-                false,
-                "collections.columns",
+                collection_route("AccountingFlag", false, "collections.accountingFlags"),
                 target,
                 &mut diagnostics,
             ),
-            forms: typed_elements_with_diagnostics(
+            ext_dimension_accounting_flags: typed_optional_root_collection(
                 xml,
                 child_objects,
-                "Form",
-                false,
-                "collections.forms",
+                collection_route(
+                    "ExtDimensionAccountingFlag",
+                    false,
+                    "collections.extDimensionAccountingFlags",
+                ),
                 target,
                 &mut diagnostics,
             ),
-            templates: typed_elements_with_diagnostics(
+            addressing_attributes: typed_optional_root_collection(
                 xml,
                 child_objects,
-                "Template",
-                false,
-                "collections.templates",
+                collection_route(
+                    "AddressingAttribute",
+                    false,
+                    "collections.addressingAttributes",
+                ),
                 target,
                 &mut diagnostics,
             ),
-            commands: typed_elements_with_diagnostics(
+            enum_values: typed_root_collection(
                 xml,
                 child_objects,
-                "Command",
-                false,
-                "collections.commands",
+                collection_route("EnumValue", false, "collections.enumValues"),
+                target,
+                &mut diagnostics,
+            ),
+            columns: typed_root_collection(
+                xml,
+                child_objects,
+                collection_route("Column", false, "collections.columns"),
+                target,
+                &mut diagnostics,
+            ),
+            forms: typed_root_collection(
+                xml,
+                child_objects,
+                collection_route("Form", false, "collections.forms"),
+                target,
+                &mut diagnostics,
+            ),
+            templates: typed_root_collection(
+                xml,
+                child_objects,
+                collection_route("Template", false, "collections.templates"),
+                target,
+                &mut diagnostics,
+            ),
+            commands: typed_root_collection(
+                xml,
+                child_objects,
+                collection_route("Command", false, "collections.commands"),
                 target,
                 &mut diagnostics,
             ),
@@ -500,19 +604,29 @@ pub(super) fn predefined_code_type_for_info(
     kind: MetadataKind,
 ) -> Option<String> {
     match kind {
-        MetadataKind::Catalog | MetadataKind::ChartOfCalculationTypes => Some(
-            properties
-                .and_then(|node| meta_info_child(node, "CodeType"))
-                .map(|node| {
-                    node.children()
-                        .filter(|child| child.is_text())
-                        .filter_map(|child| child.text())
-                        .collect::<String>()
-                })
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "String".to_string()),
-        ),
+        MetadataKind::Catalog | MetadataKind::ChartOfCalculationTypes => {
+            let code_type = properties.and_then(|properties| {
+                let nodes = super::info_projection::direct_children_with_namespace(
+                    properties,
+                    super::info_projection::MD_CLASSES_NAMESPACE,
+                    "CodeType",
+                );
+                let [node] = nodes.as_slice() else {
+                    return None;
+                };
+                (node.attributes().len() == 0 && !node.children().any(|child| child.is_element()))
+                    .then(|| {
+                        node.children()
+                            .filter(roxmltree::Node::is_text)
+                            .filter_map(|child| child.text())
+                            .collect::<String>()
+                            .trim()
+                            .to_string()
+                    })
+                    .filter(|value| !value.is_empty())
+            });
+            Some(code_type.unwrap_or_else(|| "String".to_string()))
+        }
         MetadataKind::ChartOfAccounts | MetadataKind::ChartOfCharacteristicTypes => {
             Some("String".to_string())
         }
@@ -785,7 +899,8 @@ fn typed_registered_language_images(
                 && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
                 && node.tag_name().name() == "Language"
         })
-        .filter_map(|node| node.text().map(str::trim).filter(|name| !name.is_empty()))
+        .map(super::info_projection::direct_text_content)
+        .filter_map(|name| (!name.trim().is_empty()).then_some(name))
         .filter(|name| metadata_identifier_is_valid(name))
         .filter_map(|name| {
             let metadata_path = MetadataAddress::parse(
@@ -821,34 +936,61 @@ fn typed_support_status(path: &Path) -> MetaSupportStatus {
 pub(super) fn typed_properties(
     properties: Option<roxmltree::Node<'_, '_>>,
     kind: MetadataKind,
-) -> Vec<MetaPropertyData> {
+) -> Vec<MetaInfoPropertyData> {
     let Some(properties) = properties else {
         return Vec::new();
     };
-    METADATA_PROPERTY_SPECS
-        .iter()
-        .filter(|spec| spec.allowed_kinds.contains(&kind))
-        .filter_map(|spec| {
-            let node = meta_info_child(properties, spec.xml_name)?;
+    let mut counts = std::collections::HashMap::new();
+    for node in properties.children().filter(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(super::info_projection::MD_CLASSES_NAMESPACE)
+    }) {
+        *counts.entry(node.tag_name().name()).or_insert(0usize) += 1;
+    }
+    properties
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .filter(|node| {
+            node.tag_name().namespace() == Some(super::info_projection::MD_CLASSES_NAMESPACE)
+        })
+        .filter_map(|node| {
+            if counts.get(node.tag_name().name()) != Some(&1) {
+                return None;
+            }
+            let spec = META_INFO_PROPERTY_PROFILE.resolve(kind, node.tag_name().name())?;
+            if !super::info_projection::meta_info_property_value_is_valid(node, spec.value_kind) {
+                return None;
+            }
             let value = match spec.value_kind {
-                crate::domain::metadata::MetaPropertyValueKind::String => {
-                    let value = if spec.key == crate::domain::metadata::MetaPropertyKey::Synonym {
-                        meta_info_ml_text(node)
-                    } else {
-                        node.text().unwrap_or_default().to_string()
-                    };
-                    MetaPropertyValue::String(value)
+                MetaInfoPropertyValueKind::String => {
+                    let value = super::info_projection::direct_text_content(node);
+                    MetaInfoPropertyValue::String(value)
                 }
-                crate::domain::metadata::MetaPropertyValueKind::Boolean => match node.text()? {
-                    "true" => MetaPropertyValue::Boolean(true),
-                    "false" => MetaPropertyValue::Boolean(false),
-                    _ => return None,
-                },
-                crate::domain::metadata::MetaPropertyValueKind::UnsignedInteger => {
-                    MetaPropertyValue::UnsignedInteger(node.text()?.parse().ok()?)
+                MetaInfoPropertyValueKind::LegacyLocalizedString => {
+                    MetaInfoPropertyValue::String(meta_info_ml_text(node))
                 }
+                MetaInfoPropertyValueKind::LocalizedString => MetaInfoPropertyValue::Structured(
+                    super::info_projection::parsed_localized_meta_info_property_value(node),
+                ),
+                MetaInfoPropertyValueKind::Boolean => {
+                    match super::info_projection::direct_text_content(node).as_str() {
+                        "true" => MetaInfoPropertyValue::Boolean(true),
+                        "false" => MetaInfoPropertyValue::Boolean(false),
+                        _ => return None,
+                    }
+                }
+                MetaInfoPropertyValueKind::UnsignedInteger => {
+                    MetaInfoPropertyValue::UnsignedInteger(
+                        super::info_projection::direct_text_content(node)
+                            .parse()
+                            .ok()?,
+                    )
+                }
+                MetaInfoPropertyValueKind::TypedValue => MetaInfoPropertyValue::Structured(
+                    super::info_projection::parsed_typed_meta_info_property_value(node)?,
+                ),
             };
-            Some(MetaPropertyData {
+            Some(MetaInfoPropertyData {
                 key: spec.key,
                 value,
             })
@@ -859,50 +1001,164 @@ pub(super) fn typed_properties(
 pub(super) fn typed_relations(
     document: &Document<'_>,
     properties: Option<roxmltree::Node<'_, '_>>,
+    owner_kind: MetadataKind,
     target: &MetadataAddress,
     diagnostics: &mut Vec<MetaDiagnostic>,
 ) -> MetaRelationsData {
-    let (owners, register_records, based_on, input_by_string) = {
+    let (owners, register_records, based_on, input_by_string, data_lock_fields) = {
         let mut read = |tag: &str, public_name: &str, kind: &str| {
-            let Some(container) = properties.and_then(|node| meta_info_child(node, tag)) else {
-                return Vec::new();
+            if !super::info_projection::meta_info_relation_is_applicable(owner_kind, tag) {
+                return None;
+            }
+            let Some(properties) = properties else {
+                return Some(None);
             };
-            container
+            let containers = super::info_projection::direct_children_with_namespace(
+                properties,
+                super::info_projection::MD_CLASSES_NAMESPACE,
+                tag,
+            );
+            let [container] = containers.as_slice() else {
+                if containers.len() > 1 {
+                    diagnostics.push(
+                        MetaDiagnostic::error(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            "metadata relation container occurs more than once",
+                        )
+                        .with_metadata_path(target.clone())
+                        .with_field(format!("relations.{public_name}")),
+                    );
+                }
+                return Some(None);
+            };
+            if container.attributes().len() != 0
+                || container
+                    .children()
+                    .filter(roxmltree::Node::is_text)
+                    .any(|node| node.text().is_some_and(|text| !text.trim().is_empty()))
+            {
+                diagnostics.push(
+                    MetaDiagnostic::error(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "metadata relation container is malformed",
+                    )
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("relations.{public_name}")),
+                );
+                return Some(None);
+            }
+            let mut values = Vec::new();
+            let mut complete = true;
+            for (index, node) in container
                 .children()
                 .filter(|node| node.is_element())
                 .enumerate()
-                .filter_map(|(index, node)| {
-                    let raw = meta_info_inner_text(node);
-                    let normalized = meta_info_normalize_cfg_prefix(raw.trim());
-                    let normalized = normalized.strip_prefix("cfg:").unwrap_or(&normalized);
-                    let valid = if kind == "field" {
-                        crate::domain::metadata::MetadataFieldPath::parse(normalized).is_ok()
-                    } else {
-                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
-                    };
-                    if !valid {
+            {
+                let expected_tag = if kind == "field" { "Field" } else { "Item" };
+                let base_field = format!("relations.{public_name}[{index}]");
+                if node.tag_name().namespace() != Some(super::info_projection::READABLE_NAMESPACE)
+                    || node.tag_name().name() != expected_tag
+                    || node.children().any(|child| child.is_element())
+                {
+                    diagnostics.push(
+                        MetaDiagnostic::error(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "metadata relation entry has an unexpected structure",
+                        )
+                        .with_metadata_path(target.clone())
+                        .with_field(base_field),
+                    );
+                    complete = false;
+                    continue;
+                }
+                if kind == "object" {
+                    let xsi_type = node
+                        .attributes()
+                        .find(|attribute| {
+                            attribute.namespace()
+                                == Some("http://www.w3.org/2001/XMLSchema-instance")
+                                && attribute.name() == "type"
+                        })
+                        .map(|attribute| attribute.value());
+                    if node.attributes().len() != 1
+                        || !xsi_type.is_some_and(|value| {
+                            super::info_projection::qname_resolves_to(
+                                node,
+                                value,
+                                super::info_projection::READABLE_NAMESPACE,
+                                "MDObjectRef",
+                            )
+                        })
+                    {
                         diagnostics.push(
                             MetaDiagnostic::error(
                                 MetaDiagnosticCode::ValidationFailed,
-                                "metadata relation target is malformed",
+                                "metadata object relation has the wrong xsi:type",
                             )
                             .with_metadata_path(target.clone())
-                            .with_field(format!("relations.{public_name}[{index}]")),
+                            .with_field(base_field),
                         );
-                        return None;
+                        complete = false;
+                        continue;
                     }
-                    Some(MetaRelationTargetData {
-                        kind: kind.to_string(),
-                        value: normalized.to_string(),
-                    })
-                })
-                .collect()
+                } else if node.attributes().len() != 0 {
+                    diagnostics.push(
+                        MetaDiagnostic::error(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "metadata field relation has unexpected attributes",
+                        )
+                        .with_metadata_path(target.clone())
+                        .with_field(base_field),
+                    );
+                    complete = false;
+                    continue;
+                }
+                let raw = meta_info_inner_text(node);
+                let normalized = meta_info_normalize_cfg_prefix(raw.trim());
+                let normalized = normalized.strip_prefix("cfg:").unwrap_or(&normalized);
+                let valid = if kind == "field" {
+                    crate::domain::metadata::MetadataFieldPath::parse(normalized).is_ok()
+                } else {
+                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
+                };
+                if !valid {
+                    diagnostics.push(
+                        MetaDiagnostic::error(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "metadata relation target is malformed",
+                        )
+                        .with_metadata_path(target.clone())
+                        .with_field(base_field),
+                    );
+                    complete = false;
+                    continue;
+                }
+                values.push(MetaRelationTargetData {
+                    kind: kind.to_string(),
+                    value: normalized.to_string(),
+                });
+            }
+            Some(complete.then_some(values))
         };
+        let owners = read("Owners", "owners", "object")
+            .flatten()
+            .unwrap_or_default();
+        let register_records = read("RegisterRecords", "registerRecords", "object")
+            .flatten()
+            .unwrap_or_default();
+        let based_on = read("BasedOn", "basedOn", "object")
+            .flatten()
+            .unwrap_or_default();
+        let input_by_string = read("InputByString", "inputByString", "field")
+            .flatten()
+            .unwrap_or_default();
+        let data_lock_fields = read("DataLockFields", "dataLockFields", "field");
         (
-            read("Owners", "owners", "object"),
-            read("RegisterRecords", "registerRecords", "object"),
-            read("BasedOn", "basedOn", "object"),
-            read("InputByString", "inputByString", "field"),
+            owners,
+            register_records,
+            based_on,
+            input_by_string,
+            data_lock_fields,
         )
     };
     let source = match meta_event_subscription_source_node(document)
@@ -924,7 +1180,106 @@ pub(super) fn typed_relations(
         register_records,
         based_on,
         input_by_string,
+        data_lock_fields,
         source,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TypedRootCollectionRoute<'a> {
+    owner_kind: MetadataKind,
+    tag: &'a str,
+    nested_attributes: bool,
+    field: &'a str,
+}
+
+impl<'a> TypedRootCollectionRoute<'a> {
+    pub(super) const fn new(
+        owner_kind: MetadataKind,
+        tag: &'a str,
+        nested_attributes: bool,
+        field: &'a str,
+    ) -> Self {
+        Self {
+            owner_kind,
+            tag,
+            nested_attributes,
+            field,
+        }
+    }
+}
+
+pub(super) fn typed_root_collection(
+    xml: &str,
+    parent: Option<roxmltree::Node<'_, '_>>,
+    route: TypedRootCollectionRoute<'_>,
+    target: &MetadataAddress,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) -> Vec<MetaElementData> {
+    if !super::info_projection::meta_info_collection_is_applicable(route.owner_kind, route.tag) {
+        return Vec::new();
+    }
+    typed_elements_with_diagnostics(
+        xml,
+        parent,
+        route.tag,
+        route.nested_attributes,
+        route.field,
+        target,
+        diagnostics,
+    )
+}
+
+pub(super) fn typed_optional_root_collection(
+    xml: &str,
+    parent: Option<roxmltree::Node<'_, '_>>,
+    route: TypedRootCollectionRoute<'_>,
+    target: &MetadataAddress,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) -> Option<Option<Vec<MetaElementData>>> {
+    if !super::info_projection::meta_info_collection_is_applicable(route.owner_kind, route.tag) {
+        return None;
+    }
+    let Some(parent) = parent else {
+        return Some(None);
+    };
+    let expected = super::info_projection::direct_children_with_namespace(
+        parent,
+        super::info_projection::MD_CLASSES_NAMESPACE,
+        route.tag,
+    )
+    .len();
+    let errors_before = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
+        .count();
+    let values = typed_elements_with_diagnostics(
+        xml,
+        Some(parent),
+        route.tag,
+        route.nested_attributes,
+        route.field,
+        target,
+        diagnostics,
+    );
+    let errors_after = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
+        .count();
+    if values.len() != expected && errors_after == errors_before {
+        diagnostics.push(
+            MetaDiagnostic::error(
+                MetaDiagnosticCode::ValidationFailed,
+                "metadata child collection contains an element without a proved identity",
+            )
+            .with_metadata_path(target.clone())
+            .with_field(route.field),
+        );
+    }
+    if errors_after != errors_before || values.len() != expected {
+        Some(None)
+    } else {
+        Some(Some(values))
     }
 }
 
@@ -940,20 +1295,24 @@ pub(super) fn typed_elements_with_diagnostics(
     let Some(parent) = parent else {
         return Vec::new();
     };
-    meta_info_children(parent, tag)
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, node)| {
-            typed_element(
-                xml,
-                node,
-                nested_attributes,
-                &format!("{field}[{index}]"),
-                target,
-                diagnostics,
-            )
-        })
-        .collect()
+    super::info_projection::direct_children_with_namespace(
+        parent,
+        super::info_projection::MD_CLASSES_NAMESPACE,
+        tag,
+    )
+    .into_iter()
+    .enumerate()
+    .filter_map(|(index, node)| {
+        typed_element(
+            xml,
+            node,
+            nested_attributes,
+            &format!("{field}[{index}]"),
+            target,
+            diagnostics,
+        )
+    })
+    .collect()
 }
 
 fn typed_element(
@@ -964,9 +1323,24 @@ fn typed_element(
     target: &MetadataAddress,
     diagnostics: &mut Vec<MetaDiagnostic>,
 ) -> Option<MetaElementData> {
-    let Some(properties) = meta_info_child(node, "Properties") else {
+    let properties_readback =
+        match super::info_projection::project_optional_collection_item_properties(node, field) {
+            Ok(properties) => properties,
+            Err(error) => {
+                diagnostics.push(
+                    MetaDiagnostic::error(error.code, error.message)
+                        .with_metadata_path(target.clone())
+                        .with_field(error.field),
+                );
+                return None;
+            }
+        };
+    let Some(properties) = super::info_projection::direct_md_child(node, "Properties") else {
         let name = meta_info_inner_text(node).trim().to_string();
-        let simple_reference = matches!(node.tag_name().name(), "Form" | "Template" | "Command");
+        let simple_reference = matches!(
+            node.tag_name().name(),
+            "Form" | "Template" | "Command" | "Recalculation"
+        );
         if simple_reference && name.is_empty() {
             return None;
         }
@@ -978,23 +1352,27 @@ fn typed_element(
             r#type: None,
             required: None,
             fill_value: None,
+            addressing_dimension: None,
+            properties: properties_readback,
             attributes: Vec::new(),
         });
     };
-    let raw_name = meta_info_child_text(properties, "Name").unwrap_or_default();
+    let raw_name =
+        super::info_projection::direct_md_child_text(properties, "Name").unwrap_or_default();
     let mut incomplete = raw_name.trim().is_empty();
     let name = if incomplete { String::new() } else { raw_name };
-    let synonym = meta_info_child(properties, "Synonym")
+    let synonym = super::info_projection::direct_md_child(properties, "Synonym")
         .map(meta_info_ml_text)
         .filter(|value| !value.is_empty());
-    let comment = meta_info_child_text(properties, "Comment").filter(|value| !value.is_empty());
-    let properties_text = &xml[properties.range()];
-    let r#type = if meta_info_child(properties, "Type").is_some() {
-        match super::edit::parse_typed_metadata_type(properties_text) {
-            Ok(value) => Some(ObservedMetadataType::editable(value)),
+    let comment = super::info_projection::direct_md_child_text(properties, "Comment")
+        .filter(|value| !value.is_empty());
+    let r#type = if super::info_projection::direct_md_child(properties, "Type").is_some() {
+        match super::info_projection::parse_observed_metadata_type_node(properties) {
+            Ok(value) => Some(value),
             Err(diagnostic) => {
                 incomplete = true;
-                let unmodelled = typed_unmodelled_platform_type(properties);
+                let unmodelled =
+                    super::info_projection::observed_type_is_strict_but_unmodelled(properties);
                 let typed = if unmodelled {
                     MetaDiagnostic::warning(
                         MetaDiagnosticCode::ValidationFailed,
@@ -1014,8 +1392,8 @@ fn typed_element(
     } else {
         None
     };
-    let fill_value = if meta_info_child(properties, "FillValue").is_some() {
-        match super::edit::parse_typed_fill_value(properties_text) {
+    let fill_value = if super::info_projection::direct_md_child(properties, "FillValue").is_some() {
+        match super::edit::parse_typed_fill_value_node(properties) {
             Ok(value) => value,
             Err(diagnostic) => {
                 incomplete = true;
@@ -1030,27 +1408,49 @@ fn typed_element(
     } else {
         None
     };
-    let required = match meta_info_child_text(properties, "FillChecking").as_deref() {
-        Some("ShowError") => Some(true),
-        Some("DontCheck") => Some(false),
-        None => None,
-        Some(_) => {
-            incomplete = true;
-            diagnostics.push(
-                MetaDiagnostic::error(
-                    MetaDiagnosticCode::ValidationFailed,
-                    "metadata required flag is malformed",
-                )
-                .with_metadata_path(target.clone())
-                .with_field(format!("{field}.required")),
-            );
-            None
+    let required =
+        match super::info_projection::direct_md_child_text(properties, "FillChecking").as_deref() {
+            Some("ShowError") => Some(true),
+            Some("DontCheck") => Some(false),
+            None => None,
+            Some(_) => {
+                incomplete = true;
+                diagnostics.push(
+                    MetaDiagnostic::error(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "metadata required flag is malformed",
+                    )
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("{field}.required")),
+                );
+                None
+            }
+        };
+    let addressing_dimension = if node.tag_name().name() == "AddressingAttribute" {
+        match super::info_projection::direct_md_child_text(properties, "AddressingDimension")
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(value) if addressing_dimension_is_valid(value.trim()) => Some(value),
+            _ => {
+                incomplete = true;
+                diagnostics.push(
+                    MetaDiagnostic::error(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "addressing attribute dimension is missing or malformed",
+                    )
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("{field}.addressingDimension")),
+                );
+                None
+            }
         }
+    } else {
+        None
     };
     let attributes = if nested_attributes {
         typed_elements_with_diagnostics(
             xml,
-            meta_info_child(node, "ChildObjects"),
+            super::info_projection::direct_md_child(node, "ChildObjects"),
             "Attribute",
             false,
             &format!("{field}.attributes"),
@@ -1068,77 +1468,19 @@ fn typed_element(
         r#type,
         required,
         fill_value,
+        addressing_dimension,
+        properties: properties_readback,
         attributes,
     })
 }
 
-fn typed_unmodelled_platform_type(properties: roxmltree::Node<'_, '_>) -> bool {
-    const DATA_CORE: &str = "http://v8.1c.ru/8.1/data/core";
-    const XML_SCHEMA: &str = "http://www.w3.org/2001/XMLSchema";
-    const CURRENT_CONFIG: &str = "http://v8.1c.ru/8.1/data/enterprise/current-config";
-
-    let Some(container) = meta_info_child(properties, "Type") else {
-        return false;
-    };
-    let nodes = container
-        .children()
-        .filter(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some(DATA_CORE)
-                && matches!(node.tag_name().name(), "Type" | "TypeSet")
-        })
-        .collect::<Vec<_>>();
-    if nodes.is_empty() {
-        return false;
-    }
-
-    let mut saw_unmodelled = false;
-    for node in nodes {
-        let Some(raw) = node.text().map(str::trim) else {
-            return false;
-        };
-        let Some((prefix, local)) = platform_qname_parts(raw) else {
-            return false;
-        };
-        let Some(namespace) = node.lookup_namespace_uri(Some(prefix)) else {
-            return false;
-        };
-        if !matches!(namespace, DATA_CORE | XML_SCHEMA | CURRENT_CONFIG) {
-            return false;
-        }
-        let modelled = match (node.tag_name().name(), namespace, local) {
-            ("Type", XML_SCHEMA, "string" | "decimal" | "boolean" | "dateTime" | "binary") => true,
-            ("Type", DATA_CORE, "ValueStorage" | "UUID") => true,
-            ("Type", CURRENT_CONFIG, value) => value
-                .split_once('.')
-                .is_some_and(|(generated, name)| generated.ends_with("Ref") && !name.is_empty()),
-            ("TypeSet", CURRENT_CONFIG, value) => value
-                .strip_prefix("DefinedType.")
-                .is_some_and(|name| !name.is_empty()),
-            _ => false,
-        };
-        saw_unmodelled |= !modelled;
-    }
-    saw_unmodelled
-}
-
-fn platform_qname_parts(raw: &str) -> Option<(&str, &str)> {
-    let (prefix, local) = raw.split_once(':')?;
-    if local.contains(':') || !xml_name_part(prefix) || !xml_name_part(local) {
-        return None;
-    }
-    Some((prefix, local))
-}
-
-fn xml_name_part(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first == '_' || first.is_alphabetic())
-        && chars.all(|character| {
-            character == '_' || character == '-' || character == '.' || character.is_alphanumeric()
-        })
+fn addressing_dimension_is_valid(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
+    parts.len() == 4
+        && parts[0] == "InformationRegister"
+        && parts[2] == "Dimension"
+        && metadata_identifier_is_valid(parts[1])
+        && metadata_identifier_is_valid(parts[3])
 }
 
 #[cfg(test)]

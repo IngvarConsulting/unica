@@ -1490,6 +1490,7 @@ XML-элемент: `<Report>`. Категория InternalInfo: только Ob
     <DefaultSettingsForm>CommonForm.ФормаНастроекОтчета</DefaultSettingsForm>
     <AuxiliarySettingsForm/>
     <DefaultVariantForm>CommonForm.ФормаВариантаОтчета</DefaultVariantForm>
+    <AuxiliaryVariantForm/>
     <VariantsStorage/>
     <SettingsStorage/>
     <IncludeHelpInContents>false</IncludeHelpInContents>
@@ -1521,7 +1522,7 @@ XML-элемент: `<DataProcessor>`. Категория InternalInfo: толь
 **Дочерние объекты:** `<Attribute>`, `<TabularSection>`, `<Form>`, `<Template>`, `<Command>`.
 
 **Различия Отчёт vs Обработка:**
-- Отчёт имеет `MainDataCompositionSchema`, `DefaultSettingsForm`, `DefaultVariantForm`, `VariantsStorage`, `SettingsStorage`
+- Отчёт имеет `MainDataCompositionSchema`, `DefaultSettingsForm`, `AuxiliarySettingsForm`, `DefaultVariantForm`, `AuxiliaryVariantForm`, `VariantsStorage`, `SettingsStorage`
 - Обработка не имеет этих свойств
 
 ---

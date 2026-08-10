@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:svc="urn:example:service">
+  <WebService uuid="66666666-6666-4666-8666-666666666666">
+    <Properties>
+      <Name>Exchange</Name><Namespace>urn:example:service</Namespace>
+      <XDTOPackages>
+        <xr:Item><xr:Presentation/><xr:CheckState>0</xr:CheckState><xr:Value xsi:type="xr:MDObjectRef">XDTOPackage.Exchange</xr:Value></xr:Item>
+        <xr:Item><xr:Presentation/><xr:CheckState>0</xr:CheckState><xr:Value xsi:type="xs:string">http://v8.1c.ru/8.1/data/core</xr:Value></xr:Item>
+      </XDTOPackages>
+    </Properties>
+    <ChildObjects>
+      <Operation uuid="66666666-6666-4666-8666-666666666667">
+        <Properties><Name>Send</Name><XDTOReturningValueType>xs:boolean</XDTOReturningValueType><Nillable>false</Nillable><Transactioned>true</Transactioned><ProcedureName>SendData</ProcedureName></Properties>
+        <ChildObjects>
+          <Parameter uuid="66666666-6666-4666-8666-666666666668">
+            <Properties><Name>Payload</Name><XDTOValueType>svc:Payload</XDTOValueType><Nillable>true</Nillable><TransferDirection>In</TransferDirection></Properties>
+          </Parameter>
+        </ChildObjects>
+      </Operation>
+    </ChildObjects>
+  </WebService>
+</MetaDataObject>

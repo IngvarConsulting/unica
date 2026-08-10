@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <CalculationRegister uuid="44444444-4444-4444-8444-444444444444">
+    <Properties>
+      <Name>Payroll</Name>
+      <Schedule>InformationRegister.WorkSchedules</Schedule>
+      <ScheduleValue>InformationRegister.WorkSchedules.Resource.DayValue</ScheduleValue>
+      <ScheduleDate>InformationRegister.WorkSchedules.Dimension.Date</ScheduleDate>
+    </Properties>
+    <ChildObjects>
+      <Dimension><Properties><Name>Employee</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Dimension>
+      <Resource><Properties><Name>Amount</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Resource>
+      <Recalculation uuid="99999999-9999-4999-8999-999999999999">
+        <Properties>
+          <Name>Main</Name>
+        </Properties>
+      </Recalculation>
+    </ChildObjects>
+  </CalculationRegister>
+</MetaDataObject>

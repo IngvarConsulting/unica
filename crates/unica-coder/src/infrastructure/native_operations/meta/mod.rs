@@ -75,6 +75,7 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
 mod edit;
 mod format_contract;
 mod info;
+mod info_projection;
 mod integrity_check;
 mod predefined;
 mod publisher;
@@ -112,6 +113,8 @@ pub(crate) use xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
 };
 
+#[cfg(test)]
+mod info_projection_tests;
 #[cfg(test)]
 mod info_tests;
 #[cfg(test)]

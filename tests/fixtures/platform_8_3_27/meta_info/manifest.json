@@ -1,0 +1,51 @@
+{
+  "profile": "platform-8.3.27-format-2.20",
+  "mainFixtureSource": "canonical typed meta.add template; each platformCase is an exact 8.3.27/2.20 checkpoint in format_8_3_27_xml_corpus",
+  "propertyRouteMatrix": {
+    "CommonModule": ["Client"],
+    "Report": ["AuxiliaryVariantForm"]
+  },
+  "collectionRouteMatrix": {
+    "Catalog": ["Attribute", "TabularSection", "Form", "Template", "Command"],
+    "Document": ["Attribute", "TabularSection", "Form", "Template", "Command"],
+    "Enum": ["Form", "Template", "Command", "EnumValue"],
+    "InformationRegister": ["Attribute", "Form", "Template", "Command", "Dimension", "Resource"],
+    "AccumulationRegister": ["Attribute", "Form", "Template", "Command", "Dimension", "Resource"],
+    "AccountingRegister": ["Attribute", "Form", "Template", "Command", "Dimension", "Resource"],
+    "CalculationRegister": ["Attribute", "Form", "Template", "Command", "Dimension", "Resource", "Recalculation"],
+    "ChartOfAccounts": ["Attribute", "TabularSection", "Form", "Template", "Command", "AccountingFlag", "ExtDimensionAccountingFlag"],
+    "ChartOfCharacteristicTypes": ["Attribute", "TabularSection", "Form", "Template", "Command"],
+    "ChartOfCalculationTypes": ["Attribute", "TabularSection", "Form", "Template", "Command"],
+    "BusinessProcess": ["Attribute", "TabularSection", "Form", "Template", "Command"],
+    "Task": ["Attribute", "TabularSection", "Form", "Template", "Command", "AddressingAttribute"],
+    "ExchangePlan": ["Attribute", "TabularSection", "Form", "Template", "Command"],
+    "DocumentJournal": ["Form", "Template", "Command", "Column"],
+    "Report": ["Attribute", "TabularSection", "Form", "Template", "Command"],
+    "DataProcessor": ["Attribute", "TabularSection", "Form", "Template", "Command"]
+  },
+  "kinds": [
+    {"kind": "Catalog", "mainFixture": "canonical-template", "platformCase": "meta-compile-catalog", "edgeFixtures": ["edge/catalog-child-kinds.xml"]},
+    {"kind": "Document", "mainFixture": "canonical-template", "platformCase": "meta-compile-document"},
+    {"kind": "Enum", "mainFixture": "canonical-template", "platformCase": "meta-compile-enum", "edgeFixtures": ["edge/enum-child-kinds.xml"]},
+    {"kind": "Constant", "mainFixture": "canonical-template", "platformCase": "meta-compile-constant", "edgeFixtures": ["edge/constant-type.xml"]},
+    {"kind": "InformationRegister", "mainFixture": "canonical-template", "platformCase": "meta-compile-information-register"},
+    {"kind": "AccumulationRegister", "mainFixture": "canonical-template", "platformCase": "meta-compile-accumulation-register"},
+    {"kind": "AccountingRegister", "mainFixture": "canonical-template", "platformCase": "meta-compile-accounting-register"},
+    {"kind": "CalculationRegister", "mainFixture": "canonical-template", "platformCase": "meta-compile-calculation-register", "edgeFixtures": ["edge/calculation-register.xml"]},
+    {"kind": "ChartOfAccounts", "mainFixture": "canonical-template", "platformCase": "meta-compile-chart-of-accounts", "edgeFixtures": ["edge/chart-of-accounts-child-kinds.xml"]},
+    {"kind": "ChartOfCharacteristicTypes", "mainFixture": "canonical-template", "platformCase": "meta-compile-chart-of-characteristic-types"},
+    {"kind": "ChartOfCalculationTypes", "mainFixture": "canonical-template", "platformCase": "meta-compile-chart-of-calculation-types"},
+    {"kind": "BusinessProcess", "mainFixture": "canonical-template", "platformCase": "meta-compile-business-process"},
+    {"kind": "Task", "mainFixture": "canonical-template", "platformCase": "meta-compile-task", "edgeFixtures": ["edge/task-addressing.xml"]},
+    {"kind": "ExchangePlan", "mainFixture": "canonical-template", "platformCase": "meta-compile-exchange-plan"},
+    {"kind": "DocumentJournal", "mainFixture": "canonical-template", "platformCase": "meta-compile-document-journal", "edgeFixtures": ["edge/document-journal-child-kinds.xml"]},
+    {"kind": "Report", "mainFixture": "canonical-template", "platformCase": "meta-compile-report"},
+    {"kind": "DataProcessor", "mainFixture": "canonical-template", "platformCase": "meta-compile-data-processor"},
+    {"kind": "CommonModule", "mainFixture": "canonical-template", "platformCase": "meta-compile-common-module"},
+    {"kind": "ScheduledJob", "mainFixture": "canonical-template", "platformCase": "meta-compile-scheduled-job", "edgeFixtures": ["edge/scheduled-job.xml"]},
+    {"kind": "EventSubscription", "mainFixture": "canonical-template", "platformCase": "meta-compile-event-subscription"},
+    {"kind": "HTTPService", "mainFixture": "canonical-template", "platformCase": "meta-compile-http-service", "edgeFixtures": ["edge/http-service.xml"]},
+    {"kind": "WebService", "mainFixture": "canonical-template", "platformCase": "meta-compile-web-service", "edgeFixtures": ["edge/web-service.xml"]},
+    {"kind": "DefinedType", "mainFixture": "canonical-template", "platformCase": "meta-compile-defined-type", "edgeFixtures": ["edge/defined-type.xml"]}
+  ]
+}

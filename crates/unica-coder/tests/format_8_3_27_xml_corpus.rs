@@ -5532,6 +5532,43 @@ fn dcs_edit_corpus_covers_order_sensitive_mutations() {
 }
 
 #[test]
+fn meta_info_manifest_platform_cases_are_exact_executable_meta_add_branches() {
+    #[derive(Deserialize)]
+    struct MetaInfoManifest {
+        kinds: Vec<MetaInfoManifestKind>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct MetaInfoManifestKind {
+        kind: String,
+        platform_case: String,
+    }
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/platform_8_3_27/meta_info/manifest.json");
+    let manifest: MetaInfoManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(manifest.kinds.len(), 23);
+
+    for entry in manifest.kinds {
+        let executable = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == entry.platform_case)
+            .unwrap_or_else(|| panic!("missing executable case {}", entry.platform_case));
+        assert_eq!(
+            executable.tool, "unica.meta.add",
+            "{} points at the wrong tool",
+            entry.kind
+        );
+        assert_eq!(
+            executable.branch, entry.kind,
+            "{} points at a different metadata branch",
+            entry.platform_case
+        );
+    }
+}
+
+#[test]
 fn cfe_patch_method_corpus_covers_every_supported_module_layout_family() {
     let entry = MUTATOR_REGISTRY
         .iter()

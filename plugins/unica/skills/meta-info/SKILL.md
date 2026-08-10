@@ -65,6 +65,46 @@ allowed-tools:
 UTF-8-ресурс и не разбирается как XML; её `DOCTYPE`, HTML-сущности и исходные
 байты не нормализуются.
 
+`data.kind` всегда связан с обязательным `data.details`: это закрытый вариант
+для каждого из 23 видов метаданных, а не необязательный универсальный словарь.
+Полнотой этой пары владеют ADR-0047 и `INV-MCP-META-INFO-COVERAGE`.
+Для видов без дополнительных фактов `details` равен `{}`. Constant и
+DefinedType возвращают в нём наблюдаемый `type`, включая доказанно
+редактируемый `UUID`;
+ScheduledJob — логический адрес общего модуля и имя метода;
+CalculationRegister — тройку `schedule`; HTTPService — `urlTemplates` с
+методами; WebService — `xdtoPackages`, операции, параметры и XDTO QName в форме
+`{namespace, localName}`. Возможность прочитать иной тип или свойство не
+означает, что `unica.meta.add/edit` разрешит его записать.
+
+Дополнительные владельцы не сваливаются в общий словарь:
+`ChartOfCharacteristicTypes.details.type` хранит тип значения,
+`ChartOfCalculationTypes.details.baseCalculationTypes` — логические адреса
+базовых видов расчёта, `DocumentJournal.details.registeredDocuments` — адреса
+зарегистрированных документов. Корневые декларации сериализуются отдельно как
+`standardAttributes`, `standardTabularSections` и `characteristics`; их
+прикладные свойства имеют закрытые значения `text`, `boolean`, `localizedString`,
+`typed`, `nil` или `empty`. `localizedString.values` сохраняет пары
+`{language, content}`. Только ранее опубликованный `properties.Synonym` остаётся
+плоской строкой ради wire-совместимости; новые локализованные свойства языки не
+теряют.
+
+Для применимой вложенной коллекции доказанно пустое значение равно `[]`.
+Доказанно отсутствующее применимое значение равно `null` без ошибки.
+Недоказанное или повреждённое значение равно `null` и сопровождается диагностикой
+с путём публичного поля, например `details.urlTemplates[0].methods[0].handler`;
+частичный массив за полный не выдаётся.
+
+Новые коллекции `recalculations`, `accountingFlags`,
+`extDimensionAccountingFlags` и `addressingAttributes` находятся в
+`data.collections`. Неприменимая к виду коллекция отсутствует; применимая без
+контейнера равна `null`; полностью прочитанный пустой контейнер равен `[]`.
+Элементы accounting/addressing дополнительно сохраняют известные стандартные
+свойства в `properties`; неизвестный или повреждённый вложенный узел обнуляет
+всю коллекцию с диагностикой, но неизвестный корректный QName оставляет один
+`incomplete`-элемент и warning. `relations.dataLockFields` использует ту же
+all-or-none семантику и возвращает типизированные field-цели.
+
 У `EventSubscription` поле `data.relations.source` содержит массив того же
 закрытого размеченного объединения, которое принимают `unica.meta.add` и
 `unica.meta.edit`: `object`, `manager`, `recordSet` и `definedType` возвращаются с

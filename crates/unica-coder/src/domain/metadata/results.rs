@@ -1,6 +1,7 @@
 use super::{
-    MetaDiagnostic, MetaEventSource, MetaFillValue, MetaPredefinedAccountType, MetaPropertyKey,
-    MetaPropertyValue, MetadataKind, MetadataType, MetadataTypeVariant,
+    MetaDiagnostic, MetaEventSource, MetaFillValue, MetaInfoDeclarations, MetaInfoDetails,
+    MetaInfoPropertyValue, MetaObservedProperty, MetaPredefinedAccountType, MetadataType,
+    ObservedMetadataType,
 };
 use crate::domain::source_target::MetadataAddress;
 use crate::domain::subsystem::SubsystemAddress;
@@ -90,9 +91,9 @@ pub(crate) struct MetaPredefinedExtDimensionTypeData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct MetaPropertyData {
-    pub(crate) key: MetaPropertyKey,
-    pub(crate) value: MetaPropertyValue,
+pub(crate) struct MetaInfoPropertyData {
+    pub(crate) key: String,
+    pub(crate) value: MetaInfoPropertyValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -103,22 +104,6 @@ pub(crate) enum MetadataMutationCapability {
     // variant whose writer evidence is not yet available (ADR-0042).
     #[allow(dead_code)]
     ReadOnly,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ObservedMetadataType {
-    pub(crate) variants: Vec<MetadataTypeVariant>,
-    pub(crate) mutation_capability: MetadataMutationCapability,
-}
-
-impl ObservedMetadataType {
-    pub(crate) fn editable(value: MetadataType) -> Self {
-        Self {
-            variants: value.variants,
-            mutation_capability: MetadataMutationCapability::Editable,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -137,6 +122,10 @@ pub(crate) struct MetaElementData {
     pub(crate) required: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) fill_value: Option<MetaFillValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) addressing_dimension: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) properties: Vec<MetaObservedProperty>,
     pub(crate) attributes: Vec<MetaElementData>,
 }
 
@@ -151,6 +140,14 @@ pub(crate) struct MetaCollectionsData {
     pub(crate) tabular_sections: Vec<MetaElementData>,
     pub(crate) dimensions: Vec<MetaElementData>,
     pub(crate) resources: Vec<MetaElementData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recalculations: Option<Option<Vec<MetaElementData>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) accounting_flags: Option<Option<Vec<MetaElementData>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ext_dimension_accounting_flags: Option<Option<Vec<MetaElementData>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) addressing_attributes: Option<Option<Vec<MetaElementData>>>,
     pub(crate) enum_values: Vec<MetaElementData>,
     pub(crate) columns: Vec<MetaElementData>,
     pub(crate) forms: Vec<MetaElementData>,
@@ -172,6 +169,8 @@ pub(crate) struct MetaRelationsData {
     pub(crate) register_records: Vec<MetaRelationTargetData>,
     pub(crate) based_on: Vec<MetaRelationTargetData>,
     pub(crate) input_by_string: Vec<MetaRelationTargetData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) data_lock_fields: Option<Option<Vec<MetaRelationTargetData>>>,
     pub(crate) source: Vec<MetaEventSource>,
 }
 
@@ -187,12 +186,15 @@ pub(crate) enum MetaSupportStatus {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaInfoData {
     pub(crate) metadata_path: MetadataAddress,
-    pub(crate) kind: MetadataKind,
+    #[serde(flatten)]
+    pub(crate) details: MetaInfoDetails,
     pub(crate) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) synonym: Option<String>,
     pub(crate) support: MetaSupportStatus,
-    pub(crate) properties: Vec<MetaPropertyData>,
+    pub(crate) properties: Vec<MetaInfoPropertyData>,
+    #[serde(flatten)]
+    pub(crate) declarations: MetaInfoDeclarations,
     pub(crate) relations: MetaRelationsData,
     pub(crate) collections: MetaCollectionsData,
     /// Registered functional subsystems whose own `Content` contains this

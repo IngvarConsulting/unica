@@ -13,9 +13,10 @@ use crate::domain::code_intelligence::{
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
-    MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaMutationData,
-    MetaPredefinedItemsData, MetaPropertyData, MetaRelationsData, MetaSupportStatus, MetaUsageData,
-    MetaValidationData, MetaValidationStatus, MetadataKind,
+    MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaInfoDeclarations,
+    MetaInfoDetails, MetaInfoPropertyData, MetaMutationData, MetaPredefinedItemsData,
+    MetaRelationsData, MetaSupportStatus, MetaUsageData, MetaValidationData, MetaValidationStatus,
+    MetadataKind,
 };
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::source_resources::{
@@ -268,10 +269,12 @@ pub(crate) enum MetadataEvidenceAvailability {
 pub(crate) struct MetaLocalInfo {
     pub(crate) metadata_path: MetadataAddress,
     pub(crate) kind: MetadataKind,
+    pub(crate) details: MetaInfoDetails,
     pub(crate) name: String,
     pub(crate) synonym: Option<String>,
     pub(crate) support: MetaSupportStatus,
-    pub(crate) properties: Vec<MetaPropertyData>,
+    pub(crate) properties: Vec<MetaInfoPropertyData>,
+    pub(crate) declarations: MetaInfoDeclarations,
     /// Internal owner context needed to validate typed Predefined.xml values.
     /// It is deliberately not copied into the public `meta.info` result.
     pub(crate) predefined_code_type: Option<String>,
@@ -290,11 +293,12 @@ impl MetaLocalInfo {
     ) -> MetaInfoData {
         MetaInfoData {
             metadata_path: self.metadata_path,
-            kind: self.kind,
+            details: self.details,
             name: self.name,
             synonym: self.synonym,
             support: self.support,
             properties: self.properties,
+            declarations: self.declarations,
             relations: self.relations,
             collections: self.collections,
             functional_subsystems,
