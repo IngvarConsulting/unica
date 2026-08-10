@@ -197,8 +197,6 @@ impl CodeDiagnosticsDeadlines {
 pub enum OperationalConfigDiagnosticCode {
     ReadFailed,
     InvalidToml,
-    MissingField,
-    UnsupportedVersion,
     UnknownField,
     InvalidType,
     OutOfRange,
@@ -210,8 +208,6 @@ impl OperationalConfigDiagnosticCode {
         match self {
             Self::ReadFailed => "operational configuration source could not be read",
             Self::InvalidToml => "operational configuration source is not valid TOML",
-            Self::MissingField => "required operational configuration field is missing",
-            Self::UnsupportedVersion => "operational configuration version is not supported",
             Self::UnknownField => "operational configuration field is not supported",
             Self::InvalidType => "operational configuration field has an invalid type",
             Self::OutOfRange => "operational configuration deadline is outside its supported range",
