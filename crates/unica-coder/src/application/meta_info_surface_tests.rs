@@ -1,7 +1,8 @@
 use super::{OperationResult, UnicaApplication};
 use crate::composition::testing::{
-    with_registrar_processing_hook, with_subsystem_evidence_processing_hook,
-    RegistrarProcessingPhase, SubsystemEvidenceProcessingPhase,
+    with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
+    with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
+    SubsystemEvidenceProcessingPhase,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::test_support::ProcessCwdGuard;
@@ -458,6 +459,67 @@ fn info_rejects_an_invalid_root_descriptor_uuid_instead_of_matching_by_address_o
         .as_ref()
         .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_duplicate_direct_metadata_objects_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-duplicate-direct-metadata-object");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        move |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            let document = roxmltree::Document::parse(xml).unwrap();
+            let object = document
+                .root_element()
+                .children()
+                .find(roxmltree::Node::is_element)
+                .expect("metadata descriptor has one direct object");
+            let duplicate = xml[object.range()].replacen(
+                &target_uuid,
+                "11111111-2222-4333-8444-555555555555",
+                1,
+            );
+            let closing = xml
+                .rfind("</MetaDataObject>")
+                .expect("metadata descriptor root closes");
+            let mut ambiguous = xml.to_string();
+            ambiguous.insert_str(closing, &duplicate);
+            ambiguous.into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    let diagnostics = result
+        .diagnostics
+        .as_ref()
+        .and_then(Value::as_array)
+        .expect("structured diagnostics");
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "provider_unavailable"
+                && diagnostic["metadataPath"] == "Catalog.Inspectable"
+                && diagnostic["field"] == "uuid"
+        }),
+        "{diagnostics:?}"
+    );
 }
 
 #[test]

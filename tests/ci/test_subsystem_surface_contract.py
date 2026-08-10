@@ -57,6 +57,17 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
             self.assertIn(marker, skill)
         self.assertNotIn("`overview`", skill)
         self.assertNotIn("`Mode`", skill)
+        self.assertNotIn("её каталог", skill)
+        self.assertNotIn(
+            "файл или каталог подсистемы дают её\nописание и структурный контекст",
+            skill,
+        )
+        for exact_target in (
+            "каталог `Subsystems`",
+            "зарегистрированный XML",
+            "самостоятельный незарегистрированный XML",
+        ):
+            self.assertIn(exact_target, skill)
         self.assertNotIn("full or focused registered tree", application)
 
         tool_contracts = (

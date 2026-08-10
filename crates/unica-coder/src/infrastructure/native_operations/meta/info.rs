@@ -29,6 +29,38 @@ const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
+#[cfg(test)]
+type MetaInfoDescriptorImageHook = Box<dyn FnOnce(&[u8]) -> Vec<u8>>;
+
+#[cfg(test)]
+thread_local! {
+    static META_INFO_DESCRIPTOR_IMAGE_HOOK:
+        std::cell::RefCell<Option<MetaInfoDescriptorImageHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_meta_info_descriptor_image_hook<T>(
+    hook: impl FnOnce(&[u8]) -> Vec<u8> + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<MetaInfoDescriptorImageHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            META_INFO_DESCRIPTOR_IMAGE_HOOK.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+
+    let previous = META_INFO_DESCRIPTOR_IMAGE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn meta_info_descriptor_image_for_test(bytes: &[u8]) -> Option<Vec<u8>> {
+    META_INFO_DESCRIPTOR_IMAGE_HOOK.with(|slot| slot.borrow_mut().take().map(|hook| hook(bytes)))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RegistrarProcessingPhase {
     AfterIdentityParse {
@@ -142,7 +174,15 @@ pub(crate) fn read_typed_meta_info(
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
-    let text = std::str::from_utf8(&resolved.descriptor_preimage).map_err(|_| {
+    #[cfg(test)]
+    let test_descriptor_image = meta_info_descriptor_image_for_test(&resolved.descriptor_preimage);
+    #[cfg(test)]
+    let descriptor_preimage = test_descriptor_image
+        .as_deref()
+        .unwrap_or(&resolved.descriptor_preimage);
+    #[cfg(not(test))]
+    let descriptor_preimage = resolved.descriptor_preimage.as_slice();
+    let text = std::str::from_utf8(descriptor_preimage).map_err(|_| {
         MetaFailure::from(
             MetaDiagnostic::error(
                 MetaDiagnosticCode::ProviderUnavailable,
@@ -170,21 +210,27 @@ pub(crate) fn read_typed_meta_info(
         .with_metadata_path(target.clone())
         .into());
     }
-    let object = root
-        .children()
-        .find(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
-        })
-        .ok_or_else(|| {
-            MetaFailure::from(
-                MetaDiagnostic::error(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "metadata descriptor has no MDClasses object",
-                )
-                .with_metadata_path(target.clone()),
+    let mut objects = root.children().filter(|node| {
+        node.is_element() && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+    });
+    let object = objects.next().ok_or_else(|| {
+        MetaFailure::from(
+            MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor has no MDClasses object",
             )
-        })?;
+            .with_metadata_path(target.clone()),
+        )
+    })?;
+    if objects.next().is_some() {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor must contain exactly one MDClasses object",
+        )
+        .with_metadata_path(target.clone())
+        .with_field("uuid")
+        .into());
+    }
     let kind = MetadataKind::parse(object.tag_name().name()).map_err(|diagnostic| {
         MetaFailure::from(
             MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, diagnostic.message)
@@ -323,7 +369,7 @@ pub(crate) fn read_typed_meta_info(
     let mut validation_resources = vec![
         MetadataResourceImage {
             role: MetadataResourceRole::Descriptor,
-            bytes: resolved.descriptor_preimage.clone(),
+            bytes: descriptor_preimage.to_vec(),
         },
         MetadataResourceImage {
             role: MetadataResourceRole::Registration,
@@ -333,7 +379,7 @@ pub(crate) fn read_typed_meta_info(
     validation_resources.extend(typed_registered_language_images(resolved));
     let _ = super::validation::add_descriptor_references(
         &mut validation_resources,
-        &resolved.descriptor_preimage,
+        descriptor_preimage,
         Some(&resolved.source_root),
     );
     let (registrar_resources, registrar_evidence) =
