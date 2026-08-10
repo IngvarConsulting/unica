@@ -902,17 +902,57 @@ fn event_source_semantic_key(source: &MetaEventSource) -> String {
 
 fn event_source_class_wire_name(source_class: EventSourceClass) -> &'static str {
     match source_class {
+        EventSourceClass::AccountingRegisterManager => "AccountingRegisterManager",
+        EventSourceClass::AccountingRegisterRecordSet => "AccountingRegisterRecordSet",
+        EventSourceClass::AccumulationRegisterManager => "AccumulationRegisterManager",
+        EventSourceClass::AccumulationRegisterRecordSet => "AccumulationRegisterRecordSet",
+        EventSourceClass::BusinessProcessManager => "BusinessProcessManager",
+        EventSourceClass::BusinessProcessObject => "BusinessProcessObject",
+        EventSourceClass::CalculationRegisterManager => "CalculationRegisterManager",
+        EventSourceClass::CalculationRegisterRecordSet => "CalculationRegisterRecordSet",
+        EventSourceClass::CatalogManager => "CatalogManager",
         EventSourceClass::CatalogObject => "CatalogObject",
+        EventSourceClass::ChartOfAccountsManager => "ChartOfAccountsManager",
+        EventSourceClass::ChartOfAccountsObject => "ChartOfAccountsObject",
+        EventSourceClass::ChartOfCalculationTypesManager => "ChartOfCalculationTypesManager",
+        EventSourceClass::ChartOfCalculationTypesObject => "ChartOfCalculationTypesObject",
+        EventSourceClass::ChartOfCharacteristicTypesManager => "ChartOfCharacteristicTypesManager",
+        EventSourceClass::ChartOfCharacteristicTypesObject => "ChartOfCharacteristicTypesObject",
+        EventSourceClass::ConstantManager => "ConstantManager",
+        EventSourceClass::ConstantValueManager => "ConstantValueManager",
+        EventSourceClass::DataProcessorManager => "DataProcessorManager",
+        EventSourceClass::DataProcessorObject => "DataProcessorObject",
+        EventSourceClass::DocumentJournalManager => "DocumentJournalManager",
+        EventSourceClass::DocumentManager => "DocumentManager",
         EventSourceClass::DocumentObject => "DocumentObject",
+        EventSourceClass::EnumManager => "EnumManager",
+        EventSourceClass::ExchangePlanManager => "ExchangePlanManager",
+        EventSourceClass::ExchangePlanObject => "ExchangePlanObject",
+        EventSourceClass::ExternalDataSourceCubeDimensionTableManager => {
+            "ExternalDataSourceCubeDimensionTableManager"
+        }
+        EventSourceClass::ExternalDataSourceCubeManager => "ExternalDataSourceCubeManager",
+        EventSourceClass::ExternalDataSourceTableManager => "ExternalDataSourceTableManager",
+        EventSourceClass::ExternalDataSourceTableObject => "ExternalDataSourceTableObject",
+        EventSourceClass::ExternalDataSourceTableRecordSet => "ExternalDataSourceTableRecordSet",
+        EventSourceClass::FilterCriterionManager => "FilterCriterionManager",
+        EventSourceClass::InformationRegisterManager => "InformationRegisterManager",
+        EventSourceClass::InformationRegisterRecordSet => "InformationRegisterRecordSet",
+        EventSourceClass::RecalculationRecordSet => "RecalculationRecordSet",
+        EventSourceClass::ReportManager => "ReportManager",
+        EventSourceClass::ReportObject => "ReportObject",
+        EventSourceClass::SequenceRecordSet => "SequenceRecordSet",
+        EventSourceClass::SettingsStorageManager => "SettingsStorageManager",
+        EventSourceClass::TaskManager => "TaskManager",
+        EventSourceClass::TaskObject => "TaskObject",
     }
 }
 
 fn event_source_class_from_wire_name(wire_name: &str) -> Option<EventSourceClass> {
-    match wire_name {
-        "CatalogObject" => Some(EventSourceClass::CatalogObject),
-        "DocumentObject" => Some(EventSourceClass::DocumentObject),
-        _ => None,
-    }
+    EventSourceClass::ALL
+        .iter()
+        .copied()
+        .find(|source_class| event_source_class_wire_name(*source_class) == wire_name)
 }
 
 pub(super) fn canonical_meta_event_sources(sources: &[MetaEventSource]) -> Vec<MetaEventSource> {
