@@ -5071,11 +5071,12 @@ analyze_timeout_seconds = 900
     fn diagnostics_analyze_format_aliases_have_the_same_typed_result() {
         let results = [None, Some("json"), Some("jsonl")]
             .into_iter()
-            .map(|format| {
+            .enumerate()
+            .map(|(index, format)| {
                 analyze_outcome(
                     format,
                     ANALYZE_JSONL_EMPTY,
-                    &format!("diagnostics-analyze-alias-{format:?}"),
+                    &format!("diagnostics-analyze-alias-{index}"),
                 )
             })
             .collect::<Vec<_>>();

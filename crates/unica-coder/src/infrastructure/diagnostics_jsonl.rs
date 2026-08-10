@@ -673,15 +673,15 @@ mod tests {
         create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
     };
     use serde_json::{json, Map, Value};
-    use std::path::Path;
     use tempfile::TempDir;
 
+    fn parser_with_args(args: Map<String, Value>) -> DiagnosticsJsonlParser {
+        let source_root = std::env::temp_dir().join("unica-diagnostics-jsonl-tests");
+        DiagnosticsJsonlParser::new(&source_root, args).unwrap()
+    }
+
     fn parser(args: Value) -> DiagnosticsJsonlParser {
-        DiagnosticsJsonlParser::new(
-            Path::new("/workspace/src"),
-            args.as_object().cloned().unwrap_or_default(),
-        )
-        .unwrap()
+        parser_with_args(args.as_object().cloned().unwrap_or_default())
     }
 
     fn feed(parser: &mut DiagnosticsJsonlParser, lines: &[&str]) {
@@ -752,7 +752,7 @@ mod tests {
         args.insert("minSeverity".to_string(), json!("info"));
         args.insert("detail".to_string(), json!("detailed"));
         args.insert("limit".to_string(), json!(1));
-        let mut parser = DiagnosticsJsonlParser::new(Path::new("/workspace/src"), args).unwrap();
+        let mut parser = parser_with_args(args);
         let keep = diagnostic("Keep", "Information", 3);
         let drop =
             diagnostic("Drop", "Blocker", 1).replace("CommonModules/Sales", "CommonModules/Drop");
