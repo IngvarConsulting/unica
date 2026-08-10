@@ -1173,6 +1173,31 @@ fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
 }
 
 #[test]
+fn info_keeps_a_broken_qualifier_in_the_error_severity_branch() {
+    let workspace = create_info_workspace("broken-type-qualifier");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let broken = xml.replacen("<v8:Length>9</v8:Length>", "<v8:Length>abc</v8:Length>", 1);
+    assert_ne!(broken, xml, "fixture must contain string qualifiers");
+    std::fs::write(&descriptor, broken).unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok, "a malformed qualifier must remain an error");
+    let data = result.data.as_ref().expect("partial typed info");
+    assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
+    assert!(data["collections"]["attributes"][0].get("type").is_none());
+    assert!(data["validation"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| {
+            diagnostic["field"] == "collections.attributes[0].type"
+                && diagnostic["severity"] == "error"
+        }));
+}
+
+#[test]
 fn info_reads_uuid_as_an_editable_observed_type() {
     let workspace = create_info_workspace("uuid-observation");
     let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");

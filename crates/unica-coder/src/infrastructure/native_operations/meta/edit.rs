@@ -1442,8 +1442,19 @@ pub(super) fn observe_typed_child_resources(
             let Some(name) = typed_physical_owner_child_name(child_node) else {
                 continue;
             };
-            let child =
-                typed_child_logical_address(owner, object_kind, object_name, collection, &name)?;
+            let child = match typed_child_logical_address(
+                owner,
+                object_kind,
+                object_name,
+                collection,
+                &name,
+            ) {
+                Ok(child) => child,
+                Err(failure) => {
+                    observation.diagnostics.extend(failure.diagnostics);
+                    continue;
+                }
+            };
             let descriptor = match profile.descriptor {
                 TypedChildDescriptorStorage::Standalone => {
                     let path = collection_dir.join(format!("{name}.xml"));
@@ -7396,6 +7407,40 @@ mod tests {
             "Document.Order.Command.Open"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn child_observation_localizes_an_invalid_address_and_keeps_valid_siblings() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-observe-invalid-child-address-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Catalogs/Items.xml");
+        let owner = metadata_reference("Catalog.Items").metadata_path;
+        let owner_xml = object_xml("Catalog", "Items", "").replace(
+            "<ChildObjects/>",
+            r#"<ChildObjects>
+			<Form>Bad..Name</Form>
+			<Command uuid="22222222-2222-4222-8222-222222222222">
+				<Properties><Name>Refresh</Name></Properties>
+			</Command>
+		</ChildObjects>"#,
+        );
+
+        let observation =
+            observe_typed_child_resources(&descriptor_path, &owner, "Catalog", "Items", &owner_xml)
+                .unwrap();
+
+        assert!(observation.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message == "typed child logical address cannot be represented"
+        }));
+        assert!(observation.validation_resources.iter().any(|resource| {
+            matches!(
+                &resource.role,
+                MetadataResourceRole::Command { owner, name }
+                    if owner.as_str() == "Catalog.Items" && name == "Refresh"
+            )
+        }));
     }
 
     #[test]
