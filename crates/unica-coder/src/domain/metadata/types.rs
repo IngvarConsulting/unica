@@ -1,4 +1,4 @@
-use super::{MetaDiagnostic, MetaDiagnosticCode};
+use super::{EventSourceClass, MetaDiagnostic, MetaDiagnosticCode};
 use crate::domain::source_target::MetadataAddress;
 #[cfg(test)]
 use crate::domain::source_target::SourceTargetError;
@@ -119,6 +119,9 @@ pub(crate) enum MetaEventSource {
     Object {
         metadata_path: MetadataAddress,
     },
+    Manager {
+        metadata_path: MetadataAddress,
+    },
     Reference {
         metadata_path: MetadataAddress,
     },
@@ -127,6 +130,9 @@ pub(crate) enum MetaEventSource {
     },
     DefinedType {
         metadata_path: MetadataAddress,
+    },
+    Family {
+        source_class: EventSourceClass,
     },
 }
 
@@ -155,6 +161,26 @@ const META_EVENT_SOURCE_REFERENCE_KINDS: &[MetadataKind] = &[
     MetadataKind::Task,
 ];
 
+const META_EVENT_SOURCE_MANAGER_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::Enum,
+    MetadataKind::Constant,
+    MetadataKind::InformationRegister,
+    MetadataKind::AccumulationRegister,
+    MetadataKind::AccountingRegister,
+    MetadataKind::CalculationRegister,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+    MetadataKind::ExchangePlan,
+    MetadataKind::DocumentJournal,
+    MetadataKind::Report,
+    MetadataKind::DataProcessor,
+];
+
 const META_EVENT_SOURCE_RECORD_SET_KINDS: &[MetadataKind] = &[
     MetadataKind::InformationRegister,
     MetadataKind::AccumulationRegister,
@@ -167,8 +193,8 @@ pub(crate) fn metadata_event_source_object_kinds() -> &'static [MetadataKind] {
     META_EVENT_SOURCE_OBJECT_KINDS
 }
 
-pub(crate) fn metadata_event_source_reference_kinds() -> &'static [MetadataKind] {
-    META_EVENT_SOURCE_REFERENCE_KINDS
+pub(crate) fn metadata_event_source_manager_kinds() -> &'static [MetadataKind] {
+    META_EVENT_SOURCE_MANAGER_KINDS
 }
 
 pub(crate) fn metadata_event_source_record_set_kinds() -> &'static [MetadataKind] {
@@ -184,15 +210,18 @@ impl MetaEventSource {
             Self::Date { .. } => "date",
             Self::ValueStorage => "valueStorage",
             Self::Object { .. } => "object",
+            Self::Manager { .. } => "manager",
             Self::Reference { .. } => "reference",
             Self::RecordSet { .. } => "recordSet",
             Self::DefinedType { .. } => "definedType",
+            Self::Family { .. } => "family",
         }
     }
 
     pub(crate) fn metadata_path(&self) -> Option<&MetadataAddress> {
         match self {
             Self::Object { metadata_path }
+            | Self::Manager { metadata_path }
             | Self::Reference { metadata_path }
             | Self::RecordSet { metadata_path }
             | Self::DefinedType { metadata_path } => Some(metadata_path),
@@ -200,13 +229,15 @@ impl MetaEventSource {
             | Self::Number { .. }
             | Self::Boolean
             | Self::Date { .. }
-            | Self::ValueStorage => None,
+            | Self::ValueStorage
+            | Self::Family { .. } => None,
         }
     }
 
     pub(crate) const fn compatible_metadata_kinds(&self) -> Option<&'static [MetadataKind]> {
         match self {
             Self::Object { .. } => Some(META_EVENT_SOURCE_OBJECT_KINDS),
+            Self::Manager { .. } => Some(META_EVENT_SOURCE_MANAGER_KINDS),
             Self::Reference { .. } => Some(META_EVENT_SOURCE_REFERENCE_KINDS),
             Self::RecordSet { .. } => Some(META_EVENT_SOURCE_RECORD_SET_KINDS),
             Self::DefinedType { .. } => Some(META_EVENT_SOURCE_DEFINED_TYPE_KINDS),
@@ -214,7 +245,8 @@ impl MetaEventSource {
             | Self::Number { .. }
             | Self::Boolean
             | Self::Date { .. }
-            | Self::ValueStorage => None,
+            | Self::ValueStorage
+            | Self::Family { .. } => None,
         }
     }
 
@@ -222,6 +254,9 @@ impl MetaEventSource {
     /// qualifiers describe the one primitive identity and therefore do not
     /// make a second string/number/date source distinct.
     pub(crate) fn identity_key(&self) -> String {
+        if let Self::Family { source_class } = self {
+            return format!("family:{}", source_class.as_str());
+        }
         match self.metadata_path() {
             Some(path) => format!("{}:{}", self.as_str(), path.as_str().to_lowercase()),
             None => self.as_str().to_string(),
@@ -600,24 +635,27 @@ mod tests {
         let record_set =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "InformationRegister.Facts")
                 .unwrap();
+        let manager =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products").unwrap();
         assert_eq!(
-            serde_json::to_value(MetaEventSource::String {
-                length: 0,
-                allowed_length: StringLengthMode::Variable,
+            serde_json::to_value(MetaEventSource::Manager {
+                metadata_path: manager,
             })
             .unwrap(),
             serde_json::json!({
-                "kind": "string",
-                "length": 0,
-                "allowedLength": "variable",
+                "kind": "manager",
+                "metadataPath": "Catalog.Products",
             })
         );
         assert_eq!(
-            serde_json::to_value(MetaEventSource::Date {
-                fractions: MetaEventSourceDateFractions::DateTime,
+            serde_json::to_value(MetaEventSource::Family {
+                source_class: EventSourceClass::CatalogObject,
             })
             .unwrap(),
-            serde_json::json!({"kind": "date", "fractions": "dateTime"})
+            serde_json::json!({
+                "kind": "family",
+                "sourceClass": "catalogObject",
+            })
         );
         assert_eq!(
             serde_json::to_value(MetaEventSource::RecordSet {

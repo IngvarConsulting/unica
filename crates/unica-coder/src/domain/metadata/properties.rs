@@ -1,4 +1,4 @@
-use super::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
+use super::{metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -20,11 +20,13 @@ pub(crate) enum MetaPropertyKey {
     DefaultPresentation,
     DependenceOnCalculationTypes,
     Description,
+    Event,
     DistributedInfoBase,
     EnableTotalsSplitting,
     ExternalConnection,
     FoldersOnTop,
     Global,
+    Handler,
     HierarchyType,
     LevelCount,
     LimitLevelCount,
@@ -115,6 +117,7 @@ pub(crate) struct MetadataPropertySpec {
     pub(crate) value_kind: MetaPropertyValueKind,
     pub(crate) allowed_kinds: &'static [MetadataKind],
     pub(crate) enum_values: &'static [&'static str],
+    pub(crate) string_pattern: Option<&'static str>,
 }
 
 const fn property(
@@ -130,6 +133,7 @@ const fn property(
         value_kind,
         allowed_kinds,
         enum_values: &[],
+        string_pattern: None,
     }
 }
 
@@ -147,6 +151,24 @@ const fn enum_property(
         value_kind: MetaPropertyValueKind::String,
         allowed_kinds,
         enum_values,
+        string_pattern: None,
+    }
+}
+
+const fn patterned_string_property(
+    public_name: &'static str,
+    key: MetaPropertyKey,
+    allowed_kinds: &'static [MetadataKind],
+    string_pattern: &'static str,
+) -> MetadataPropertySpec {
+    MetadataPropertySpec {
+        public_name,
+        xml_name: public_name,
+        key,
+        value_kind: MetaPropertyValueKind::String,
+        allowed_kinds,
+        enum_values: &[],
+        string_pattern: Some(string_pattern),
     }
 }
 
@@ -163,6 +185,7 @@ const SCHEDULED_JOB_KINDS: &[MetadataKind] = &[MetadataKind::ScheduledJob];
 const EXCHANGE_PLAN_KINDS: &[MetadataKind] = &[MetadataKind::ExchangePlan];
 const HTTP_SERVICE_KINDS: &[MetadataKind] = &[MetadataKind::HTTPService];
 const WEB_SERVICE_KINDS: &[MetadataKind] = &[MetadataKind::WebService];
+const EVENT_SUBSCRIPTION_KINDS: &[MetadataKind] = &[MetadataKind::EventSubscription];
 const WEB_SERVICE_SESSION_KINDS: &[MetadataKind] =
     &[MetadataKind::HTTPService, MetadataKind::WebService];
 
@@ -349,6 +372,12 @@ pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyValueKind::String,
         SCHEDULED_JOB_KINDS,
     ),
+    patterned_string_property(
+        "Event",
+        MetaPropertyKey::Event,
+        EVENT_SUBSCRIPTION_KINDS,
+        "^[A-Z][A-Za-z0-9]*$",
+    ),
     property(
         "DistributedInfoBase",
         MetaPropertyKey::DistributedInfoBase,
@@ -378,6 +407,12 @@ pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::Global,
         MetaPropertyValueKind::Boolean,
         COMMON_MODULE_KINDS,
+    ),
+    patterned_string_property(
+        "Handler",
+        MetaPropertyKey::Handler,
+        EVENT_SUBSCRIPTION_KINDS,
+        r"^CommonModule\.[^.]+\.[^.]+$",
     ),
     enum_property(
         "HierarchyType",
@@ -689,6 +724,36 @@ impl MetaPropertyChanges {
                 .with_field(&field));
             }
             if let MetaPropertyValue::String(value) = &input.value {
+                match spec.key {
+                    MetaPropertyKey::Event
+                        if value.is_empty()
+                            || !value
+                                .starts_with(|character: char| character.is_ascii_uppercase())
+                            || !value
+                                .chars()
+                                .all(|character| character.is_ascii_alphanumeric()) =>
+                    {
+                        return Err(MetaDiagnostic::error(
+                            MetaDiagnosticCode::InvalidArguments,
+                            "Event must be a non-empty canonical platform event candidate",
+                        )
+                        .with_field(&field));
+                    }
+                    MetaPropertyKey::Handler => {
+                        let parts = value.split('.').collect::<Vec<_>>();
+                        if !matches!(parts.as_slice(), ["CommonModule", module, procedure]
+                            if metadata_identifier_is_valid(module)
+                                && metadata_identifier_is_valid(procedure))
+                        {
+                            return Err(MetaDiagnostic::error(
+                                MetaDiagnosticCode::InvalidArguments,
+                                "Handler must use CommonModule.<Module>.<Procedure>",
+                            )
+                            .with_field(&field));
+                        }
+                    }
+                    _ => {}
+                }
                 if !spec.enum_values.is_empty() && !spec.enum_values.contains(&value.as_str()) {
                     return Err(MetaDiagnostic::error(
                         MetaDiagnosticCode::InvalidArguments,
@@ -825,6 +890,68 @@ mod tests {
                 MetadataKind::DataProcessor,
             ],
         );
+    }
+
+    #[test]
+    fn event_subscription_properties_are_owner_specific_canonical_strings() {
+        let changes = MetaPropertyChanges::convert(
+            MetadataKind::EventSubscription,
+            vec![
+                MetaPropertyInput::new(
+                    "Event",
+                    MetaPropertyValue::String("BeforeWrite".to_string()),
+                ),
+                MetaPropertyInput::new(
+                    "Handler",
+                    MetaPropertyValue::String(
+                        "CommonModule.EventHandlers.OnBeforeWrite".to_string(),
+                    ),
+                ),
+            ],
+        )
+        .expect("the complete scalar side of a subscription is public");
+        assert_eq!(
+            changes.entries(),
+            &[
+                (
+                    MetaPropertyKey::Event,
+                    MetaPropertyValue::String("BeforeWrite".to_string()),
+                ),
+                (
+                    MetaPropertyKey::Handler,
+                    MetaPropertyValue::String(
+                        "CommonModule.EventHandlers.OnBeforeWrite".to_string(),
+                    ),
+                ),
+            ]
+        );
+
+        for (kind, name, value) in [
+            (MetadataKind::Catalog, "Event", "BeforeWrite"),
+            (
+                MetadataKind::Catalog,
+                "Handler",
+                "CommonModule.EventHandlers.OnBeforeWrite",
+            ),
+            (MetadataKind::EventSubscription, "Event", ""),
+            (
+                MetadataKind::EventSubscription,
+                "Handler",
+                "EventHandlers.OnBeforeWrite",
+            ),
+        ] {
+            assert!(
+                MetaPropertyChanges::convert(
+                    kind,
+                    vec![MetaPropertyInput::new(
+                        name,
+                        MetaPropertyValue::String(value.to_string()),
+                    )],
+                )
+                .is_err(),
+                "{kind:?}.{name} accepted invalid value {value:?}"
+            );
+        }
     }
 
     #[test]

@@ -389,6 +389,10 @@ mod tests {
         .unwrap()
     }
 
+    fn source_family(source_class: crate::domain::metadata::EventSourceClass) -> MetaEventSource {
+        MetaEventSource::Family { source_class }
+    }
+
     fn prepared_event_subscription_source_change(
         label: &str,
     ) -> (PathBuf, Box<dyn PreparedMetadataMutation>, PathBuf, Vec<u8>) {
@@ -400,7 +404,9 @@ mod tests {
                 source_set: "main".into(),
                 kind: MetadataKind::EventSubscription,
                 name: "Events".into(),
-                operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+                operations: vec![source_replace(vec![source_family(
+                    crate::domain::metadata::EventSourceClass::CatalogObject,
+                )])],
                 dry_run: false,
             }),
             &context,
@@ -418,7 +424,9 @@ mod tests {
             &MetadataRequest::Edit(MetaEditRequest {
                 source_set: "main".into(),
                 metadata_path: target,
-                operations: vec![source_replace(Vec::new())],
+                operations: vec![source_replace(vec![source_family(
+                    crate::domain::metadata::EventSourceClass::DocumentObject,
+                )])],
                 dry_run: false,
             }),
             &context,
@@ -698,7 +706,9 @@ mod tests {
             source_set: "main".into(),
             kind: MetadataKind::EventSubscription,
             name: "AllEvents".into(),
-            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            operations: vec![source_replace(vec![source_family(
+                crate::domain::metadata::EventSourceClass::CatalogObject,
+            )])],
             dry_run: false,
         });
 
@@ -720,12 +730,14 @@ mod tests {
             .iter()
             .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
             .unwrap();
-        assert!(
-            String::from_utf8_lossy(&descriptor.bytes).contains("<v8:Type>xs:boolean</v8:Type>")
-        );
+        assert!(String::from_utf8_lossy(&descriptor.bytes)
+            .contains("<v8:TypeSet>cfg:CatalogObject</v8:TypeSet>"));
         assert_eq!(
             prepared.preview().effects[1].after,
-            Some(json!([{ "kind": "boolean" }]))
+            Some(json!([{
+                "kind": "family",
+                "sourceClass": "catalogObject",
+            }]))
         );
         prepared.publish(&cancellation).unwrap();
 
@@ -740,13 +752,20 @@ mod tests {
             &cancellation,
         )
         .unwrap();
-        assert_eq!(read.local.relations.source, vec![MetaEventSource::Boolean]);
+        assert_eq!(
+            read.local.relations.source,
+            vec![source_family(
+                crate::domain::metadata::EventSourceClass::CatalogObject,
+            )]
+        );
 
         let noop = MetadataOperations::prepare_mutation(
             &MetadataRequest::Edit(MetaEditRequest {
                 source_set: "main".into(),
                 metadata_path: target,
-                operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+                operations: vec![source_replace(vec![source_family(
+                    crate::domain::metadata::EventSourceClass::CatalogObject,
+                )])],
                 dry_run: false,
             }),
             &context,
@@ -759,7 +778,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn add_reference_event_subscription(fixture: &Fixture, name: &str) -> MetadataAddress {
+    fn add_object_event_subscription(fixture: &Fixture, name: &str) -> MetadataAddress {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
@@ -767,7 +786,7 @@ mod tests {
                 source_set: "main".into(),
                 kind: MetadataKind::EventSubscription,
                 name: name.into(),
-                operations: vec![source_replace(vec![MetaEventSource::Reference {
+                operations: vec![source_replace(vec![MetaEventSource::Object {
                     metadata_path: fixture.target.clone(),
                 }])],
                 dry_run: false,
@@ -805,7 +824,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             read.local.relations.source,
-            vec![MetaEventSource::Reference {
+            vec![MetaEventSource::Object {
                 metadata_path: expected_source,
             }],
             "meta.info must retain typed partial data when dependency proof fails"
@@ -834,12 +853,12 @@ mod tests {
     #[test]
     fn meta_info_rejects_missing_event_source_dependency_but_keeps_typed_readback() {
         let fixture = Fixture::new("event-source-info-missing-dependency");
-        let subscription = add_reference_event_subscription(&fixture, "CatalogEvents");
+        let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
         let descriptor = fixture
             .root
             .join("src/EventSubscriptions/CatalogEvents.xml");
         let source = String::from_utf8(fs::read(&descriptor).unwrap()).unwrap();
-        let missing = source.replacen("cfg:CatalogRef.Editable", "cfg:CatalogRef.Missing", 1);
+        let missing = source.replacen("cfg:CatalogObject.Editable", "cfg:CatalogObject.Missing", 1);
         assert_ne!(missing, source, "fixture must rewrite the Source QName");
         fs::write(descriptor, missing).unwrap();
         let missing_target =
@@ -856,11 +875,11 @@ mod tests {
     #[test]
     fn meta_info_rejects_event_source_dependency_with_wrong_generated_type() {
         let fixture = Fixture::new("event-source-info-generated-type");
-        let subscription = add_reference_event_subscription(&fixture, "CatalogEvents");
+        let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
         let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
         let malformed = source.replacen(
-            "name=\"CatalogRef.Editable\"",
-            "name=\"CatalogRef.Shadow\"",
+            "name=\"CatalogObject.Editable\"",
+            "name=\"CatalogObject.Shadow\"",
             1,
         );
         assert_ne!(malformed, source, "fixture must corrupt GeneratedType");
@@ -899,10 +918,10 @@ mod tests {
         )
         .unwrap();
         let sources = vec![
-            MetaEventSource::Object {
+            MetaEventSource::Manager {
                 metadata_path: fixture.target.clone(),
             },
-            MetaEventSource::Reference {
+            MetaEventSource::Object {
                 metadata_path: fixture.target.clone(),
             },
         ];
@@ -1153,7 +1172,9 @@ mod tests {
         let request = MetadataRequest::Edit(MetaEditRequest {
             source_set: "main".into(),
             metadata_path: subscription,
-            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            operations: vec![source_replace(vec![source_family(
+                crate::domain::metadata::EventSourceClass::CatalogObject,
+            )])],
             dry_run: false,
         });
         let prepared =
@@ -1214,10 +1235,13 @@ mod tests {
         .publish(&cancellation)
         .unwrap();
         let mut catalog = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
-        assert_eq!(catalog.matches("name=\"CatalogRef.Editable\"").count(), 1);
+        assert_eq!(
+            catalog.matches("name=\"CatalogObject.Editable\"").count(),
+            1
+        );
         catalog = catalog.replacen(
-            "name=\"CatalogRef.Editable\"",
-            "name=\"CatalogRef.Shadow\"",
+            "name=\"CatalogObject.Editable\"",
+            "name=\"CatalogObject.Shadow\"",
             1,
         );
         fs::write(&fixture.descriptor, catalog.as_bytes()).unwrap();
@@ -1229,7 +1253,7 @@ mod tests {
         let request = MetadataRequest::Edit(MetaEditRequest {
             source_set: "main".into(),
             metadata_path: subscription,
-            operations: vec![source_replace(vec![MetaEventSource::Reference {
+            operations: vec![source_replace(vec![MetaEventSource::Object {
                 metadata_path: fixture.target.clone(),
             }])],
             dry_run: false,
@@ -1276,7 +1300,9 @@ mod tests {
         let request = MetadataRequest::Edit(MetaEditRequest {
             source_set: "main".into(),
             metadata_path: subscription,
-            operations: vec![source_replace(vec![MetaEventSource::Boolean])],
+            operations: vec![source_replace(vec![source_family(
+                crate::domain::metadata::EventSourceClass::CatalogObject,
+            )])],
             dry_run: false,
         });
         let descriptor = fixture

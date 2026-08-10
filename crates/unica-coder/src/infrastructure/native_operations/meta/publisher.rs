@@ -1106,8 +1106,8 @@ mod typed_add_publication_tests {
     use super::*;
     use crate::application::metadata::MetaAddRequest;
     use crate::domain::metadata::{
-        MetaCollection, MetaEditOperation, MetaElementInput, MetaRelation, MetadataKind,
-        MetadataReference, RelationEditMode,
+        EventSourceClass, MetaCollection, MetaEditOperation, MetaElementInput, MetaEventSource,
+        MetaRelation, MetaRelationTarget, MetadataKind, MetadataReference, RelationEditMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
@@ -1513,10 +1513,12 @@ mod typed_add_publication_tests {
             source_set: "main".to_string(),
             kind: MetadataKind::EventSubscription,
             name: "Events".to_string(),
-            operations: vec![MetaEditOperation::edit_relations(
+            operations: vec![MetaEditOperation::edit_relation_targets(
                 MetaRelation::Source,
                 RelationEditMode::Replace,
-                Vec::new(),
+                vec![MetaRelationTarget::EventSource(MetaEventSource::Family {
+                    source_class: EventSourceClass::CatalogObject,
+                })],
             )
             .unwrap()],
             dry_run: true,
@@ -1567,10 +1569,12 @@ mod typed_add_publication_tests {
                 source_set: "main".to_string(),
                 kind: MetadataKind::EventSubscription,
                 name: "Events".to_string(),
-                operations: vec![MetaEditOperation::edit_relations(
+                operations: vec![MetaEditOperation::edit_relation_targets(
                     MetaRelation::Source,
                     RelationEditMode::Replace,
-                    Vec::new(),
+                    vec![MetaRelationTarget::EventSource(MetaEventSource::Family {
+                        source_class: EventSourceClass::CatalogObject,
+                    })],
                 )
                 .unwrap()],
                 dry_run: true,

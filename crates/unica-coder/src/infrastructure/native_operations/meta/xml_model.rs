@@ -1,8 +1,9 @@
 use super::super::common::{escape_xml, multilang_text};
 use super::super::role::role_info_element;
 use crate::domain::metadata::{
-    metadata_identifier_is_valid, DateFractions, MetaEventSource, MetaEventSourceDateFractions,
-    MetaFillValue, MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
+    metadata_identifier_is_valid, DateFractions, EventSourceClass, MetaEventSource,
+    MetaEventSourceDateFractions, MetaFillValue, MetadataType, MetadataTypeVariant, NumberSign,
+    StringLengthMode,
 };
 use crate::domain::source_target::{
     xml_ncname_is_valid, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -211,6 +212,7 @@ fn strict_qualifier_values(
 #[derive(Clone, Copy)]
 enum EventSourceGeneratedKind {
     Object,
+    Manager,
     Reference,
     RecordSet,
     DefinedType,
@@ -235,6 +237,30 @@ fn event_source_generated_contract(
         "TaskObject" => ("Task", EventSourceGeneratedKind::Object),
         "ReportObject" => ("Report", EventSourceGeneratedKind::Object),
         "DataProcessorObject" => ("DataProcessor", EventSourceGeneratedKind::Object),
+        "CatalogManager" => ("Catalog", EventSourceGeneratedKind::Manager),
+        "DocumentManager" => ("Document", EventSourceGeneratedKind::Manager),
+        "EnumManager" => ("Enum", EventSourceGeneratedKind::Manager),
+        "ConstantValueManager" => ("Constant", EventSourceGeneratedKind::Manager),
+        "InformationRegisterManager" => ("InformationRegister", EventSourceGeneratedKind::Manager),
+        "AccumulationRegisterManager" => {
+            ("AccumulationRegister", EventSourceGeneratedKind::Manager)
+        }
+        "AccountingRegisterManager" => ("AccountingRegister", EventSourceGeneratedKind::Manager),
+        "CalculationRegisterManager" => ("CalculationRegister", EventSourceGeneratedKind::Manager),
+        "ChartOfAccountsManager" => ("ChartOfAccounts", EventSourceGeneratedKind::Manager),
+        "ChartOfCharacteristicTypesManager" => (
+            "ChartOfCharacteristicTypes",
+            EventSourceGeneratedKind::Manager,
+        ),
+        "ChartOfCalculationTypesManager" => {
+            ("ChartOfCalculationTypes", EventSourceGeneratedKind::Manager)
+        }
+        "BusinessProcessManager" => ("BusinessProcess", EventSourceGeneratedKind::Manager),
+        "TaskManager" => ("Task", EventSourceGeneratedKind::Manager),
+        "ExchangePlanManager" => ("ExchangePlan", EventSourceGeneratedKind::Manager),
+        "DocumentJournalManager" => ("DocumentJournal", EventSourceGeneratedKind::Manager),
+        "ReportManager" => ("Report", EventSourceGeneratedKind::Manager),
+        "DataProcessorManager" => ("DataProcessor", EventSourceGeneratedKind::Manager),
         "CatalogRef" => ("Catalog", EventSourceGeneratedKind::Reference),
         "DocumentRef" => ("Document", EventSourceGeneratedKind::Reference),
         "EnumRef" => ("Enum", EventSourceGeneratedKind::Reference),
@@ -273,6 +299,12 @@ fn parse_event_source_generated(
     wire_type: &str,
     generated: &str,
 ) -> Result<MetaEventSource, String> {
+    if tag == "TypeSet" && !generated.contains('.') {
+        let source_class = event_source_class_from_wire_name(generated).ok_or_else(|| {
+            format!("EventSubscription Source class family {wire_type} is unsupported")
+        })?;
+        return Ok(MetaEventSource::Family { source_class });
+    }
     let (prefix, name) = generated.split_once('.').ok_or_else(|| {
         format!("EventSubscription Source configuration type {wire_type} is malformed")
     })?;
@@ -302,6 +334,7 @@ fn parse_event_source_generated(
     .map_err(|_| format!("EventSubscription Source configuration type {wire_type} is malformed"))?;
     Ok(match generated_kind {
         EventSourceGeneratedKind::Object => MetaEventSource::Object { metadata_path },
+        EventSourceGeneratedKind::Manager => MetaEventSource::Manager { metadata_path },
         EventSourceGeneratedKind::Reference => MetaEventSource::Reference { metadata_path },
         EventSourceGeneratedKind::RecordSet => MetaEventSource::RecordSet { metadata_path },
         EventSourceGeneratedKind::DefinedType => MetaEventSource::DefinedType { metadata_path },
@@ -593,6 +626,7 @@ fn event_source_wire_contract(
             "ValueStorage".to_string(),
         ),
         MetaEventSource::Object { metadata_path }
+        | MetaEventSource::Manager { metadata_path }
         | MetaEventSource::Reference { metadata_path }
         | MetaEventSource::RecordSet { metadata_path } => {
             let prefix = event_source_generated_prefix(source);
@@ -611,6 +645,11 @@ fn event_source_wire_contract(
                 format!("DefinedType.{name}"),
             )
         }
+        MetaEventSource::Family { source_class } => (
+            "TypeSet",
+            EventSourceWireNamespace::CurrentConfig,
+            event_source_class_wire_name(*source_class).to_string(),
+        ),
     }
 }
 
@@ -634,7 +673,9 @@ impl EventSourceEmissionNamespaces {
         );
         let current_config = sources
             .iter()
-            .any(|source| source.metadata_path().is_some())
+            .any(|source| {
+                source.metadata_path().is_some() || matches!(source, MetaEventSource::Family { .. })
+            })
             .then(|| {
                 event_source_emission_prefix(
                     context,
@@ -741,6 +782,26 @@ pub(super) fn event_source_generated_prefix(source: &MetaEventSource) -> &'stati
             "DataProcessor" => "DataProcessorObject",
             _ => "",
         },
+        MetaEventSource::Manager { .. } => match kind {
+            "Catalog" => "CatalogManager",
+            "Document" => "DocumentManager",
+            "Enum" => "EnumManager",
+            "Constant" => "ConstantValueManager",
+            "InformationRegister" => "InformationRegisterManager",
+            "AccumulationRegister" => "AccumulationRegisterManager",
+            "AccountingRegister" => "AccountingRegisterManager",
+            "CalculationRegister" => "CalculationRegisterManager",
+            "ChartOfAccounts" => "ChartOfAccountsManager",
+            "ChartOfCharacteristicTypes" => "ChartOfCharacteristicTypesManager",
+            "ChartOfCalculationTypes" => "ChartOfCalculationTypesManager",
+            "BusinessProcess" => "BusinessProcessManager",
+            "Task" => "TaskManager",
+            "ExchangePlan" => "ExchangePlanManager",
+            "DocumentJournal" => "DocumentJournalManager",
+            "Report" => "ReportManager",
+            "DataProcessor" => "DataProcessorManager",
+            _ => "",
+        },
         MetaEventSource::Reference { .. } => match kind {
             "Catalog" => "CatalogRef",
             "Document" => "DocumentRef",
@@ -761,6 +822,7 @@ pub(super) fn event_source_generated_prefix(source: &MetaEventSource) -> &'stati
             _ => "",
         },
         MetaEventSource::DefinedType { .. } => "DefinedType",
+        MetaEventSource::Family { source_class } => event_source_class_wire_name(*source_class),
         MetaEventSource::String { .. }
         | MetaEventSource::Number { .. }
         | MetaEventSource::Boolean
@@ -772,6 +834,7 @@ pub(super) fn event_source_generated_prefix(source: &MetaEventSource) -> &'stati
 fn event_source_group_rank(source: &MetaEventSource) -> u8 {
     match source {
         MetaEventSource::Object { .. }
+        | MetaEventSource::Manager { .. }
         | MetaEventSource::Reference { .. }
         | MetaEventSource::RecordSet { .. } => 0,
         MetaEventSource::Boolean => 1,
@@ -780,6 +843,7 @@ fn event_source_group_rank(source: &MetaEventSource) -> u8 {
         MetaEventSource::Number { .. } => 4,
         MetaEventSource::ValueStorage => 5,
         MetaEventSource::DefinedType { .. } => 6,
+        MetaEventSource::Family { .. } => 6,
     }
 }
 
@@ -818,6 +882,9 @@ fn event_source_semantic_key(source: &MetaEventSource) -> String {
         MetaEventSource::Object { metadata_path } => {
             format!("object:{}", metadata_path.as_str().to_lowercase())
         }
+        MetaEventSource::Manager { metadata_path } => {
+            format!("manager:{}", metadata_path.as_str().to_lowercase())
+        }
         MetaEventSource::Reference { metadata_path } => {
             format!("reference:{}", metadata_path.as_str().to_lowercase())
         }
@@ -827,6 +894,24 @@ fn event_source_semantic_key(source: &MetaEventSource) -> String {
         MetaEventSource::DefinedType { metadata_path } => {
             format!("definedType:{}", metadata_path.as_str().to_lowercase())
         }
+        MetaEventSource::Family { source_class } => {
+            format!("family:{}", source_class.as_str())
+        }
+    }
+}
+
+fn event_source_class_wire_name(source_class: EventSourceClass) -> &'static str {
+    match source_class {
+        EventSourceClass::CatalogObject => "CatalogObject",
+        EventSourceClass::DocumentObject => "DocumentObject",
+    }
+}
+
+fn event_source_class_from_wire_name(wire_name: &str) -> Option<EventSourceClass> {
+    match wire_name {
+        "CatalogObject" => Some(EventSourceClass::CatalogObject),
+        "DocumentObject" => Some(EventSourceClass::DocumentObject),
+        _ => None,
     }
 }
 

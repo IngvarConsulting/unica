@@ -4466,6 +4466,12 @@ mod tests {
         .unwrap()
     }
 
+    fn catalog_family() -> MetaEventSource {
+        MetaEventSource::Family {
+            source_class: crate::domain::metadata::EventSourceClass::CatalogObject,
+        }
+    }
+
     fn metadata_reference(path: &str) -> MetadataReference {
         MetadataReference {
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap(),
@@ -5556,7 +5562,7 @@ mod tests {
     fn typed_event_source_replaces_only_the_exact_direct_source_and_is_semantically_idempotent() {
         let nested_decoy = "<Wrapper><Source><v8:Type>xs:boolean</v8:Type></Source></Wrapper>";
         let mut xml = event_subscription_xml(&format!("<Source/>{nested_decoy}"));
-        let operation = source_replace(vec![MetaEventSource::Boolean]);
+        let operation = source_replace(vec![catalog_family()]);
 
         let result = apply_typed_operations(&mut xml, std::slice::from_ref(&operation)).unwrap();
 
@@ -5564,9 +5570,14 @@ mod tests {
         assert_eq!(result.effects[0].before, Some(serde_json::json!([])));
         assert_eq!(
             result.effects[0].after,
-            Some(serde_json::json!([{ "kind": "boolean" }]))
+            Some(serde_json::json!([{
+                "kind": "family",
+                "sourceClass": "catalogObject",
+            }]))
         );
-        assert!(xml.contains("<Source>\n\t\t\t\t<v8:Type>xs:boolean</v8:Type>\n\t\t\t</Source>"));
+        assert!(xml.contains(
+            "<Source>\n\t\t\t\t<v8:TypeSet>cfg:CatalogObject</v8:TypeSet>\n\t\t\t</Source>"
+        ));
         assert!(xml.contains(nested_decoy));
 
         let post_image = xml.clone();
@@ -5578,7 +5589,7 @@ mod tests {
     fn typed_event_source_semantic_noop_is_order_insensitive_and_preserves_exact_bytes() {
         let source = concat!(
             "<Source>",
-            "<v8:Type>cfg:CatalogRef.Items</v8:Type>",
+            "<v8:Type>cfg:CatalogObject.Items</v8:Type>",
             "<v8:Type>cfg:DocumentObject.Sale</v8:Type>",
             "</Source>"
         );
@@ -5592,7 +5603,7 @@ mod tests {
                 )
                 .unwrap(),
             },
-            MetaEventSource::Reference {
+            MetaEventSource::Object {
                 metadata_path: MetadataAddress::parse(
                     PLATFORM_XML_8_3_27_FORMAT_2_20,
                     "Catalog.Items",
@@ -5610,29 +5621,26 @@ mod tests {
     fn typed_event_source_alias_qname_noop_is_byte_exact_and_changes_reuse_aliases() {
         let source = concat!(
             "<Source>",
-            "<d:Type>c:CatalogRef.Items</d:Type>",
-            "<d:Type>s:boolean</d:Type>",
+            "<d:Type>c:CatalogObject.Items</d:Type>",
+            "<d:TypeSet>c:CatalogObject</d:TypeSet>",
             "</Source>"
         );
         let mut xml = event_subscription_alias_xml(source);
         let before = xml.clone();
-        let reference = MetaEventSource::Reference {
+        let object = MetaEventSource::Object {
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
                 .unwrap(),
         };
 
         apply_typed_operations(
             &mut xml,
-            &[source_replace(vec![
-                reference.clone(),
-                MetaEventSource::Boolean,
-            ])],
+            &[source_replace(vec![object.clone(), catalog_family()])],
         )
         .unwrap();
         assert_eq!(xml, before);
 
-        apply_typed_operations(&mut xml, &[source_replace(vec![reference])]).unwrap();
-        assert!(xml.contains("<d:Type>c:CatalogRef.Items</d:Type>"));
+        apply_typed_operations(&mut xml, &[source_replace(vec![object])]).unwrap();
+        assert!(xml.contains("<d:Type>c:CatalogObject.Items</d:Type>"));
         assert!(!xml.contains("<v8:") && !xml.contains("cfg:") && !xml.contains("xs:"));
         roxmltree::Document::parse(&xml).unwrap();
     }
@@ -5645,7 +5653,7 @@ mod tests {
                 "",
             )
             .replace(r#" xmlns:s="http://www.w3.org/2001/XMLSchema""#, "");
-        let target = MetaEventSource::Reference {
+        let target = MetaEventSource::Object {
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
                 .unwrap(),
         };
@@ -5653,7 +5661,7 @@ mod tests {
         apply_typed_operations(&mut xml, &[source_replace(vec![target])]).unwrap();
 
         assert!(xml.contains(r#"xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config""#));
-        assert!(xml.contains("<d:Type>cfg:CatalogRef.Items</d:Type>"));
+        assert!(xml.contains("<d:Type>cfg:CatalogObject.Items</d:Type>"));
         roxmltree::Document::parse(&xml).unwrap();
     }
 
@@ -5674,7 +5682,7 @@ mod tests {
             )
             .replacen(r#" xmlns:d="http://v8.1c.ru/8.1/data/core""#, "", 1)
             .replacen(r#" xmlns:s="http://www.w3.org/2001/XMLSchema""#, "", 1);
-        let target = MetaEventSource::Reference {
+        let target = MetaEventSource::Object {
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
                 .unwrap(),
         };
@@ -5692,7 +5700,7 @@ mod tests {
         let lf = event_subscription_xml("<Source/>");
         let mut preimage = b"\xef\xbb\xbf".to_vec();
         preimage.extend_from_slice(lf.replace('\n', "\r\n").as_bytes());
-        let operation = source_replace(vec![MetaEventSource::Boolean]);
+        let operation = source_replace(vec![catalog_family()]);
         let target =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
                 .unwrap();
@@ -5751,7 +5759,7 @@ mod tests {
         let preimage = event_subscription_xml("<Source/>")
             .replace('\n', "\r")
             .into_bytes();
-        let operation = source_replace(vec![MetaEventSource::Boolean]);
+        let operation = source_replace(vec![catalog_family()]);
         let target =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
                 .unwrap();
@@ -5783,7 +5791,7 @@ mod tests {
         assert!(!changed.contains('\n'), "{changed:?}");
         assert!(
             changed
-                .contains("\t\t\t<Source>\r\t\t\t\t<v8:Type>xs:boolean</v8:Type>\r\t\t\t</Source>"),
+                .contains("\t\t\t<Source>\r\t\t\t\t<v8:TypeSet>cfg:CatalogObject</v8:TypeSet>\r\t\t\t</Source>"),
             "{changed:?}"
         );
     }
@@ -5791,7 +5799,7 @@ mod tests {
     #[test]
     fn typed_event_source_build_rejects_mixed_eol_before_source_only_serialization() {
         let mixed = event_subscription_xml("<Source/>").replacen('\n', "\r\n", 1);
-        let operation = source_replace(vec![MetaEventSource::Boolean]);
+        let operation = source_replace(vec![catalog_family()]);
         let target =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
                 .unwrap();
@@ -5835,7 +5843,7 @@ mod tests {
     #[test]
     fn typed_relation_registry_matches_template_nodes_and_guards_private_images() {
         use crate::domain::metadata::{
-            metadata_relation_spec, MetaEventSource, MetaRelationTarget, MetaRelationTargetPolicy,
+            metadata_relation_spec, MetaRelationTarget, MetaRelationTargetPolicy,
         };
 
         for kind in MetadataKind::ALL {
@@ -5882,7 +5890,7 @@ mod tests {
                         )
                     }
                     Some(MetaRelationTargetPolicy::EventSources) => {
-                        MetaRelationTarget::EventSource(MetaEventSource::Boolean)
+                        MetaRelationTarget::EventSource(catalog_family())
                     }
                     None => match relation {
                         MetaRelation::InputByString => MetaRelationTarget::Field(
@@ -5900,9 +5908,7 @@ mod tests {
                         MetaRelation::BasedOn => MetaRelationTarget::Object(metadata_reference(
                             &format!("{}.Target", kind.as_str()),
                         )),
-                        MetaRelation::Source => {
-                            MetaRelationTarget::EventSource(MetaEventSource::Boolean)
-                        }
+                        MetaRelation::Source => MetaRelationTarget::EventSource(catalog_family()),
                     },
                 };
                 let operation = MetaEditOperation::edit_relation_targets(
