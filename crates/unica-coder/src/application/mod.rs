@@ -7424,6 +7424,13 @@ mod tests {
                 "{} publishes the wrong invocation switch",
                 tool.name,
             );
+            if tool.execution.is_mutating() {
+                assert_eq!(
+                    properties["dryRun"]["default"], true,
+                    "{} publishes the wrong preview default",
+                    tool.name,
+                );
+            }
         }
     }
 

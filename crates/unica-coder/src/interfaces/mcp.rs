@@ -1300,6 +1300,49 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("unknown unica tool"));
+
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "unica.project.status",
+                    "arguments": {"cwd": "/missing/workspace", "dryRun": true}
+                }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["error"]["code"], TOOL_EXECUTION_ERROR);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not accept argument `dryRun`"));
+        client.shutdown().await;
+
+        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _| {
+            Err((
+                TOOL_EXECUTION_ERROR,
+                "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+                    .to_string(),
+            ))
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "unica.project.status", "arguments": {}}
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["error"]["code"], TOOL_EXECUTION_ERROR);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("typed_result_missing:"));
         client.shutdown().await;
     }
 

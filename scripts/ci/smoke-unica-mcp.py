@@ -233,10 +233,6 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
         "type": "string"
       },
-      "dryRun": {
-        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
-        "type": "boolean"
-      },
       "limit": {
         "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
         "maximum": 50,
@@ -271,10 +267,6 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
       "cwd": {
         "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
         "type": "string"
-      },
-      "dryRun": {
-        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
-        "type": "boolean"
       },
       "limit": {
         "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
@@ -322,10 +314,6 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
       "cwd": {
         "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
         "type": "string"
-      },
-      "dryRun": {
-        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
-        "type": "boolean"
       },
       "limit": {
         "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
@@ -431,10 +419,6 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
         "type": "string"
       },
-      "dryRun": {
-        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
-        "type": "boolean"
-      },
       "limit": {
         "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
         "maximum": 50,
@@ -497,10 +481,6 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
       "cwd": {
         "type": "string",
         "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it"
-      },
-      "dryRun": {
-        "type": "boolean",
-        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution."
       },
       "limit": {
         "type": "integer",
@@ -567,7 +547,8 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
       },
       "dryRun": {
         "type": "boolean",
-        "description": "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution."
+        "default": true,
+        "description": "Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution."
       },
       "metadataPath": {
         "type": "string",

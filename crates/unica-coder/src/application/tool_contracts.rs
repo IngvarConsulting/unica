@@ -2262,6 +2262,12 @@ fn runtime_job_required_args(action: RuntimeJobAction) -> Vec<&'static str> {
 }
 
 fn property_schema(name: &str) -> Value {
+    if name == "dryRun" {
+        return json!({
+            "type": "boolean",
+            "default": true
+        });
+    }
     if name == "waitTimeoutMs" {
         return json!({
             "type": "integer",
