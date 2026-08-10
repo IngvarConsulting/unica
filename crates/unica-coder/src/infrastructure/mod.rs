@@ -34,6 +34,7 @@ pub(crate) mod subsystem_topology;
 pub(crate) mod support_guard;
 pub(crate) mod tool_context;
 pub(crate) mod workspace;
+pub(crate) mod workspace_config;
 pub mod workspace_index;
 pub mod workspace_services;
 pub mod workspace_state;

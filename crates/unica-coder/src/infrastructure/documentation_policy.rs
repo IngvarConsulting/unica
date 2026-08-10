@@ -13,6 +13,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::infrastructure::workspace_config::{
+    parse_workspace_config_root, WorkspaceConfigRootError, WorkspaceConfigRootErrorKind,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkAccess {
     Allow,
@@ -103,18 +107,13 @@ fn network_access(value: &toml::Value) -> Result<NetworkAccess, String> {
     }
 }
 
-/// Строгий разбор одного файла. Через `toml::Value`, а не derive: файл
-/// запрета обязан отказывать на неизвестных секциях и ключах, а derive
-/// молча их отбрасывает.
+/// Строгий разбор одного файла. Общий парсер корня отвергает неизвестные
+/// соседние секции, а этот потребитель отвергает неизвестные поля сети:
+/// derive здесь молча отбросил бы оба класса ошибок.
 fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, String> {
-    let value = text
-        .parse::<toml::Value>()
-        .map_err(|error| format!("файл не разбирается: {error}"))?;
-    let table = value
-        .as_table()
-        .ok_or_else(|| "корень файла обязан быть таблицей".to_string())?;
+    let table = parse_workspace_config_root(text).map_err(root_error_message)?;
     let mut policy = DocumentationPolicy::default();
-    for (section, body) in table {
+    for (section, body) in &table {
         match section.as_str() {
             "network" => {
                 let network = body
@@ -165,17 +164,36 @@ fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, Strin
                     policy.providers.insert(id.clone(), provider);
                 }
             }
-            other => {
-                return Err(format!("неизвестная секция [{other}]"));
-            }
+            "version" | "operational" => {}
+            _ => unreachable!("shared root parser only returns known root fields"),
         }
     }
     Ok(policy)
 }
 
+fn root_error_message(error: WorkspaceConfigRootError) -> String {
+    match error.kind() {
+        WorkspaceConfigRootErrorKind::InvalidToml => "файл не разбирается".to_string(),
+        WorkspaceConfigRootErrorKind::MissingVersion => {
+            "отсутствует обязательное поле version".to_string()
+        }
+        WorkspaceConfigRootErrorKind::InvalidVersionType => {
+            "поле version обязано быть целым числом".to_string()
+        }
+        WorkspaceConfigRootErrorKind::UnsupportedVersion => {
+            "версия конфигурации не поддерживается".to_string()
+        }
+        WorkspaceConfigRootErrorKind::UnknownField => {
+            format!("неизвестная секция [{}]", error.field_path())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::operational_config::load_operational_config;
+    use std::time::Duration;
 
     const KNOWN: &[&str] = &["v8std", "kb-1ci"];
 
@@ -190,6 +208,57 @@ mod tests {
         assert_eq!(policy.network("v8std"), NetworkAccess::Allow);
         assert_eq!(policy.network("kb-1ci"), NetworkAccess::Allow);
         assert_eq!(policy.endpoint("v8std"), None);
+    }
+
+    #[test]
+    fn mixed_versioned_container_serves_network_and_operational_consumers() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "version = 1\n\n[network]\ndefault = \"deny\"\n\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
+        )
+        .expect("write mixed workspace config");
+
+        let policy = DocumentationPolicy::load(dir.path(), KNOWN)
+            .expect("network consumer must accept a valid operational sibling");
+        let operational = load_operational_config(dir.path())
+            .expect("operational consumer must accept a valid network sibling");
+
+        assert_eq!(policy.network("v8std"), NetworkAccess::Deny);
+        assert_eq!(
+            operational.code_intelligence().search_total_timeout(),
+            Duration::from_secs(90)
+        );
+    }
+
+    #[test]
+    fn documentation_policy_ignores_valid_operational_subtree() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "version = 1\n\n[network]\ndefault = \"deny\"\n\n[operational.code_diagnostics]\nanalyze_timeout_seconds = 60\n",
+        )
+        .expect("write mixed workspace config");
+
+        let policy = DocumentationPolicy::load(dir.path(), KNOWN)
+            .expect("operational sibling must not be an unknown network section");
+
+        assert_eq!(policy.network("v8std"), NetworkAccess::Deny);
+    }
+
+    #[test]
+    fn documentation_policy_rejects_unknown_root_fields_after_shared_root_validation() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "[network]\ndefault = \"deny\"\n\n[transport]\nretry = 3\n",
+        )
+        .expect("write invalid workspace config");
+
+        let error = DocumentationPolicy::load(dir.path(), KNOWN)
+            .expect_err("unknown root must remain a policy refusal");
+
+        assert!(error.contains("transport"), "unexpected error: {error}");
     }
 
     #[test]

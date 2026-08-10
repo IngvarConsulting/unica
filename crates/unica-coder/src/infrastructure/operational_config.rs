@@ -2,15 +2,15 @@ use crate::domain::operational_config::{
     OperationalConfig, OperationalConfigDiagnostic, OperationalConfigDiagnosticCode,
     OperationalConfigDiagnosticSource, OperationalConfigField, OperationalConfigLayer,
 };
+use crate::infrastructure::workspace_config::{
+    parse_workspace_config_root, WorkspaceConfigRootError, WorkspaceConfigRootErrorKind,
+};
 use std::fs;
 use std::path::Path;
 use toml::{Table, Value};
 
 const SHARED_CONFIG_FILENAME: &str = "unica.toml";
 const LOCAL_CONFIG_FILENAME: &str = "unica.local.toml";
-const SUPPORTED_VERSION: i64 = 1;
-
-const ROOT_FIELDS: &[&str] = &["version", "operational"];
 const OPERATIONAL_SECTIONS: &[&str] = &["code_intelligence", "code_diagnostics"];
 const CODE_INTELLIGENCE_FIELDS: &[&str] = &[
     "search_total_timeout_seconds",
@@ -65,12 +65,8 @@ fn parse_layer(
     contents: &str,
     source: OperationalConfigDiagnosticSource,
 ) -> Result<OperationalConfigLayer, OperationalConfigDiagnostic> {
-    let root = contents.parse::<Table>().map_err(|_parse_error| {
-        OperationalConfigDiagnostic::new(OperationalConfigDiagnosticCode::InvalidToml, source, "$")
-    })?;
-
-    validate_version(&root, source)?;
-    reject_unknown_fields(&root, ROOT_FIELDS, "", source)?;
+    let root = parse_workspace_config_root(contents)
+        .map_err(|error| root_error_diagnostic(error, source))?;
 
     let mut layer = OperationalConfigLayer::default();
     let Some(operational_value) = root.get("operational") else {
@@ -145,32 +141,24 @@ fn parse_layer(
     Ok(layer)
 }
 
-fn validate_version(
-    root: &Table,
+fn root_error_diagnostic(
+    error: WorkspaceConfigRootError,
     source: OperationalConfigDiagnosticSource,
-) -> Result<(), OperationalConfigDiagnostic> {
-    let value = root.get("version").ok_or_else(|| {
-        OperationalConfigDiagnostic::new(
-            OperationalConfigDiagnosticCode::MissingField,
-            source,
-            "version",
-        )
-    })?;
-    let version = value.as_integer().ok_or_else(|| {
-        OperationalConfigDiagnostic::new(
-            OperationalConfigDiagnosticCode::InvalidType,
-            source,
-            "version",
-        )
-    })?;
-    if version != SUPPORTED_VERSION {
-        return Err(OperationalConfigDiagnostic::new(
-            OperationalConfigDiagnosticCode::UnsupportedVersion,
-            source,
-            "version",
-        ));
-    }
-    Ok(())
+) -> OperationalConfigDiagnostic {
+    let code = match error.kind() {
+        WorkspaceConfigRootErrorKind::InvalidToml => OperationalConfigDiagnosticCode::InvalidToml,
+        WorkspaceConfigRootErrorKind::MissingVersion => {
+            OperationalConfigDiagnosticCode::MissingField
+        }
+        WorkspaceConfigRootErrorKind::InvalidVersionType => {
+            OperationalConfigDiagnosticCode::InvalidType
+        }
+        WorkspaceConfigRootErrorKind::UnsupportedVersion => {
+            OperationalConfigDiagnosticCode::UnsupportedVersion
+        }
+        WorkspaceConfigRootErrorKind::UnknownField => OperationalConfigDiagnosticCode::UnknownField,
+    };
+    OperationalConfigDiagnostic::new(code, source, error.field_path())
 }
 
 fn require_table<'a>(
@@ -274,6 +262,46 @@ mod tests {
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
             Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn network_only_layer_without_version_keeps_operational_defaults() {
+        let workspace = tempdir().expect("workspace tempdir");
+        write_config(
+            &workspace,
+            SHARED_CONFIG_FILENAME,
+            "[network]\ndefault = \"deny\"\n",
+        );
+
+        let config = load_operational_config(workspace.path())
+            .expect("network-only legacy layer must not change operational defaults");
+
+        assert_eq!(
+            config.code_intelligence().search_total_timeout(),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            config.code_diagnostics().analyze_timeout(),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn operational_consumer_rejects_unknown_root_field_after_shared_root_validation() {
+        assert_diagnostic(
+            "version = 1\nunknown_root = true\n",
+            OperationalConfigDiagnosticCode::UnknownField,
+            "unknown_root",
+        );
+    }
+
+    #[test]
+    fn operational_consumer_keeps_operational_subtree_errors_local() {
+        assert_diagnostic(
+            "version = 1\n[network]\ndefault = \"deny\"\n\n[operational.unsupported]\ntimeout = 10\n",
+            OperationalConfigDiagnosticCode::UnknownField,
+            "operational.unsupported",
         );
     }
 
