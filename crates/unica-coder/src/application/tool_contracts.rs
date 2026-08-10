@@ -2483,7 +2483,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "confirm",
-        "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
+        "Boolean acknowledgement accepted by every tool and stripped before the handler is called; it never selects preview or apply mode",
     ),
     (
         "connection",
@@ -2559,7 +2559,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "dryRun",
-        "Boolean preview switch present on every tool; when omitted it defaults to true for mutating tools, which then only report the command they would run, and to false for read-only tools, so send false explicitly only on a mutating tool and only when the user asked for execution.",
+        "Boolean preview switch for mutating tools; when omitted it defaults to true, so send false only when the user asked to apply the mutation.",
     ),
     (
         "edgeKinds",

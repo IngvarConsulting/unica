@@ -32,22 +32,6 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     );
     mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}));
     mcp.send(tool_call(
-        10,
-        "unica.code.search",
-        json!({
-            "cwd": fixture.workspace,
-            "query": "Procedure",
-            "dryRun": true
-        }),
-    ));
-    let dry_run = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
-    assert_tool_ok(&dry_run[&10], "provider-neutral search coordinator");
-    assert!(
-        fixture.service_records().is_empty(),
-        "code.search dryRun must not start workspace services"
-    );
-
-    mcp.send(tool_call(
         11,
         "unica.code.search",
         json!({

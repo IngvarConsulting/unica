@@ -1125,6 +1125,7 @@ MCP_HANDSHAKE = [
 
 class UnicaMcpScriptParityTests(unittest.TestCase):
     unica_bin: Path
+    _input_schemas: dict[str, dict[str, Any]] | None = None
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1534,7 +1535,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 rf"\s*\([^)]*\)\s+(?:Export|Экспорт)\s*$",
             )
 
-    def test_every_skill_tools_call_example_executes_as_mcp_dry_run(self) -> None:
+    def test_every_mutating_skill_tools_call_example_executes_as_preview(self) -> None:
         examples = list(iter_skill_mcp_examples())
         self.assertGreater(len(examples), 0)
 
@@ -1773,9 +1774,25 @@ source-set:
                 if example.payload["params"]["name"] == "unica.meta.info":
                     prepare_meta_info_skill_example(source_roots, arguments)
             self.assertEqual(code_patch_source_sets, {"main", "myExtension"})
+            input_schemas = self.tool_input_schemas()
+            preview_tools = {
+                name
+                for name, schema in input_schemas.items()
+                if "dryRun" in schema.get("properties", {})
+            }
+            preview_examples = [
+                example
+                for example in examples
+                if example.payload["params"]["name"] in preview_tools
+            ]
             messages = [
-                dry_run_message_for_example(example, index + 1, workspace)
-                for index, example in enumerate(examples)
+                dry_run_message_for_example(
+                    example,
+                    index + 1,
+                    workspace,
+                    preview_tools,
+                )
+                for index, example in enumerate(preview_examples)
             ]
             # No example needs a live snapshot any more: the source surface is
             # read-only and the source-access skill previews through
@@ -1790,8 +1807,8 @@ source-set:
                 snapshot_workspace_bytes(workspace),
                 workspace_before_calls,
             )
-        self.assertEqual(len(responses), len(examples))
-        for example, message in zip(examples, messages):
+        self.assertEqual(len(responses), len(preview_examples))
+        for example, message in zip(preview_examples, messages):
             with self.subTest(skill=example.skill, line=example.line):
                 response = responses[message["id"]]
                 self.assertNotIn("error", response)
@@ -1821,7 +1838,7 @@ source-set:
                         {"provider_unavailable"},
                         json.dumps(result, ensure_ascii=False, indent=2),
                     )
-                else:
+                elif tool_name in preview_tools:
                     self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
                 if tool_name == "unica.xdto.info":
                     self.assertEqual(
@@ -1833,8 +1850,11 @@ source-set:
                 elif tool_name.startswith("unica.meta."):
                     if result["ok"]:
                         self.assertIn("preview", result["summary"])
-                else:
+                elif tool_name in preview_tools:
                     self.assertIn("dry run", result["summary"])
+                else:
+                    self.assertEqual(result["changes"], [])
+                    self.assertNotIn("dry run", result["summary"].lower())
                 if example.skill == "code-patch":
                     arguments = example.payload["params"]["arguments"]
                     self.assertNotIn("path", arguments)
@@ -2122,7 +2142,10 @@ source-set:
     ) -> dict[str, Any]:
         arguments = dict(arguments)
         arguments["cwd"] = str(workspace)
-        arguments["dryRun"] = False
+        if "dryRun" in self.tool_input_schemas()[tool].get("properties", {}):
+            arguments["dryRun"] = False
+        else:
+            arguments.pop("dryRun", None)
         message = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -2138,6 +2161,29 @@ source-set:
         if "error" in response:
             raise AssertionError(json.dumps(response["error"], ensure_ascii=False, indent=2))
         return json.loads(response["result"]["content"][0]["text"])
+
+    def tool_input_schemas(self) -> dict[str, dict[str, Any]]:
+        cached = type(self)._input_schemas
+        if cached is not None:
+            return cached
+        with tempfile.TemporaryDirectory(prefix="unica-tool-schemas-") as temp:
+            responses = self.call_mcp_messages(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/list",
+                        "params": {},
+                    }
+                ],
+                Path(temp) / "cache",
+            )
+        cached = {
+            tool["name"]: tool["inputSchema"]
+            for tool in responses[1]["result"]["tools"]
+        }
+        type(self)._input_schemas = cached
+        return cached
 
     def run_mcp_messages(
         self,
@@ -2175,7 +2221,11 @@ source-set:
                     return
 
         threading.Thread(target=read_stdout, daemon=True).start()
-        deadline = time.monotonic() + 30
+        # A batch is consumed by one stdio server. Reader examples now execute
+        # their real bounded work instead of abusing writer-only dryRun, so the
+        # transport budget must cover every public five-second deadline in the
+        # batch rather than treating 32 requests as one invocation.
+        deadline = time.monotonic() + max(30, len(messages) * 5)
         def read_response() -> dict[str, Any]:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -2746,6 +2796,7 @@ def dry_run_message_for_example(
     example: SkillMcpExample,
     request_id: int,
     workspace: Path,
+    preview_tools: set[str],
 ) -> dict[str, Any]:
     message = json.loads(json.dumps(example.payload, ensure_ascii=False))
     message["id"] = request_id
@@ -2761,7 +2812,10 @@ def dry_run_message_for_example(
             arguments["dryRun"] = True
     else:
         arguments["cwd"] = str(workspace)
-        arguments["dryRun"] = True
+        if tool_name in preview_tools:
+            arguments["dryRun"] = True
+        else:
+            arguments.pop("dryRun", None)
     return message
 
 

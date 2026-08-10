@@ -9,6 +9,7 @@ use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
+use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
@@ -345,10 +346,21 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
             .and_then(|result| match result {
                 WorkspaceServiceRlmCall::Output(output) => Ok(output.result_text),
                 WorkspaceServiceRlmCall::Unready(readiness) => {
-                    Err(format!("RLM index became unavailable: {readiness:?}"))
+                    Err(rlm_search_unready_error(readiness))
                 }
             })
     }
+}
+
+fn rlm_search_unready_error(readiness: IndexReadiness) -> String {
+    let detail = match readiness {
+        IndexReadiness::Ready { .. } => "index readiness changed unexpectedly".to_string(),
+        IndexReadiness::Missing => "index is missing".to_string(),
+        IndexReadiness::Stale { status } => format!("index is stale: {}", redactor(&status)),
+        IndexReadiness::Building => "index is building".to_string(),
+        IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => redactor(&error),
+    };
+    format!("RLM index became unavailable: {detail}")
 }
 
 static WORKSPACE_RLM_SEARCH_CLIENT: WorkspaceRlmSearchClient = WorkspaceRlmSearchClient;
@@ -884,8 +896,8 @@ fn failed_section(provider: ProviderId, diagnostic: String) -> ProviderSearchSec
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_bsl_analyzer_search, parse_rlm_search, BslAnalyzerProvider, BslSearchClient,
-        GitGrepProvider, RlmProvider, RlmSearchClient,
+        parse_bsl_analyzer_search, parse_rlm_search, rlm_search_unready_error, BslAnalyzerProvider,
+        BslSearchClient, GitGrepProvider, RlmProvider, RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::cancellation::CANCELLED_PREFIX;
@@ -1899,6 +1911,16 @@ mod tests {
             section.diagnostics,
             vec!["cancelled: readiness transport stopped"]
         );
+    }
+
+    #[test]
+    fn post_execution_rlm_search_readiness_is_redacted() {
+        let error = rlm_search_unready_error(IndexReadiness::Failed(
+            "token=top-secret index generation changed".to_string(),
+        ));
+
+        assert!(error.starts_with("RLM index became unavailable:"));
+        assert!(!error.contains("top-secret"));
     }
 
     #[test]

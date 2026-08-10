@@ -37,6 +37,13 @@ pub(crate) fn create_file_link_fixture_for_test(
     classify_file_link_fixture_result(create_file_symlink_for_test(source, target))
 }
 
+pub(crate) fn create_directory_link_fixture_for_test(
+    source: impl AsRef<Path>,
+    target: impl AsRef<Path>,
+) -> io::Result<FileLinkFixtureOutcome> {
+    classify_file_link_fixture_result(create_dir_symlink_for_test(source, target))
+}
+
 pub(crate) fn file_identity_for_test(path: &Path) -> io::Result<Option<String>> {
     let file = std::fs::File::open(path)?;
     let identity = match file_identity(&file) {

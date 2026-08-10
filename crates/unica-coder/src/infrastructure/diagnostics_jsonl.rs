@@ -1,4 +1,5 @@
 use crate::infrastructure::redaction::redactor;
+use crate::infrastructure::source_roots::normalize_path_identity;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::cmp::Ordering;
@@ -616,7 +617,7 @@ fn normalize_absolute_root(path: &Path) -> Result<PathBuf, String> {
             path.display()
         ));
     }
-    normalize_lexical(path)
+    normalize_path_identity(&normalize_lexical(path)?)
 }
 
 fn normalize_reported_path(source_root: &Path, raw: &str) -> Result<String, String> {
@@ -629,7 +630,8 @@ fn normalize_reported_path(source_root: &Path, raw: &str) -> Result<String, Stri
     } else {
         normalize_lexical(&source_root.join(path))?
     };
-    let relative = candidate.strip_prefix(source_root).map_err(|_| {
+    let identity = normalize_path_identity(&candidate)?;
+    let relative = identity.strip_prefix(source_root).map_err(|_| {
         format!(
             "file.path `{raw}` escapes diagnostics source root {}",
             source_root.display()
@@ -667,8 +669,12 @@ fn normalize_lexical(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::platform::testing::{
+        create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use serde_json::{json, Map, Value};
     use std::path::Path;
+    use tempfile::TempDir;
 
     fn parser(args: Value) -> DiagnosticsJsonlParser {
         DiagnosticsJsonlParser::new(
@@ -894,5 +900,38 @@ mod tests {
         assert_eq!(error.code, "diagnostics_invalid:");
         assert!(error.message.contains("line 7"));
         assert!(!error.message.contains("sensitive contents"));
+    }
+
+    #[test]
+    fn reported_path_cannot_escape_the_source_root_through_a_symlink() {
+        let fixture = TempDir::new().unwrap();
+        let source_root = fixture.path().join("source");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            outside.join("Module.bsl"),
+            "Procedure Outside()\nEndProcedure",
+        )
+        .unwrap();
+        if create_directory_link_fixture_for_test(&outside, source_root.join("escape")).unwrap()
+            != FileLinkFixtureOutcome::Created
+        {
+            return;
+        }
+
+        let mut parser = DiagnosticsJsonlParser::new(&source_root, Map::new()).unwrap();
+        feed(
+            &mut parser,
+            &[
+                r#"{"type":"start","total_files":1,"version":"0.2.62"}"#,
+                r#"{"type":"file","path":"escape/Module.bsl","diagnostics":[]}"#,
+                r#"{"type":"done","elapsed_secs":0.0,"total_files":1,"total_diagnostics":0,"failed_files":0}"#,
+            ],
+        );
+
+        let result = parser.finish();
+        assert_eq!(result.error.unwrap().code, "diagnostics_invalid:");
+        assert!(result.data["items"].as_array().unwrap().is_empty());
     }
 }
