@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::domain::documentation::*;
+use crate::infrastructure::documentation_retrieval::{RetrievalFields, RetrievalIndex};
 
 /// Длина фрагмента выдачи — как у остальных локальных корпусов.
 const SNIPPET_CHARS: usize = 400;
@@ -244,46 +245,41 @@ impl DocumentationProvider for ConfigurationHelpProvider {
             .iter()
             .map(|(name, root)| (name.as_str(), configuration_version(root)))
             .collect();
-        let needle = request.query.to_lowercase();
-        let mut scored: Vec<(f32, &HelpPage)> = pages
-            .iter()
-            .filter(|page| page.locale == locale)
-            .filter_map(|page| {
-                let title_lower = page.title.to_lowercase();
-                if title_lower.contains(&needle) {
-                    Some((1.0, page))
-                } else if page.text.to_lowercase().contains(&needle) {
-                    Some((0.5, page))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        scored.sort_by(|left, right| {
-            right
-                .0
-                .partial_cmp(&left.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.1.relative.cmp(&right.1.relative))
-        });
-        let hits: Vec<DocumentationHit> = scored
+        // Матчинг — лексическим ядром (ADR-0037). Корпус — страницы справки
+        // одной конфигурации, единицы и десятки, поэтому индекс строится на
+        // вызов: кешировать его значило бы завести ключ по файлам выгрузки
+        // ради экономии, которую здесь не с чего собирать.
+        let locale_pages: Vec<&HelpPage> =
+            pages.iter().filter(|page| page.locale == locale).collect();
+        let retrieval = RetrievalIndex::build(locale_pages.iter().map(|page| RetrievalFields {
+            title: &page.title,
+            signature: "",
+            body: &page.text,
+        }));
+        let hits: Vec<DocumentationHit> = retrieval
+            .query(&request.query, request.limit, &[])
             .into_iter()
-            .take(request.limit)
             .enumerate()
-            .map(|(index, (score, page))| DocumentationHit {
-                rank: index as u32 + 1,
-                provider_score: score,
-                document_id: format!("configuration-help:{}:{}", page.source_set, page.relative),
-                title: page.title.clone(),
-                signature: None,
-                snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
-                // Применимая версия — версия КОНФИГУРАЦИИ: страницы описывают
-                // её объекты, а не платформу.
-                applicable_version: versions
-                    .get(page.source_set.as_str())
-                    .cloned()
-                    .flatten()
-                    .unwrap_or_else(|| "unversioned".to_string()),
+            .map(|(index, scored)| {
+                let page = locale_pages[scored.document];
+                DocumentationHit {
+                    rank: index as u32 + 1,
+                    provider_score: scored.score,
+                    document_id: format!(
+                        "configuration-help:{}:{}",
+                        page.source_set, page.relative
+                    ),
+                    title: page.title.clone(),
+                    signature: None,
+                    snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
+                    // Применимая версия — версия КОНФИГУРАЦИИ: страницы
+                    // описывают её объекты, а не платформу.
+                    applicable_version: versions
+                        .get(page.source_set.as_str())
+                        .cloned()
+                        .flatten()
+                        .unwrap_or_else(|| "unversioned".to_string()),
+                }
             })
             .collect();
         let status = if hits.is_empty() {
@@ -449,16 +445,46 @@ mod tests {
         assert!(hit.snippet.contains("единиц измерения"), "{}", hit.snippet);
     }
 
+    /// Терм в заголовке страницы весит больше терма в тексте (ADR-0037):
+    /// «заказ» стоит в заголовке страницы документа и лишь в тексте страницы
+    /// справочника — страница документа обязана быть первой.
     #[test]
     fn a_text_match_ranks_below_a_title_match() {
         let root = workspace();
-        let sections = provider(&root).search(&request("заказа клиента", "ru"), &context());
+        let catalog = root.path().join("Catalogs/Номенклатура/Ext/Help");
+        std::fs::write(
+            catalog.join("ru.html"),
+            "<html><body><h1>Карточка номенклатуры</h1>\
+             <p>Позиции добавляются в заказ клиента из карточки.</p></body></html>",
+        )
+        .expect("catalog page rewritten");
+        let sections = provider(&root).search(&request("заказ клиента", "ru"), &context());
         let hits = &sections[0].hits;
-        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits.len(), 2, "{hits:?}");
         assert!(
-            hits[0].provider_score < 1.0,
-            "совпадение по тексту дешевле совпадения по заголовку: {}",
-            hits[0].provider_score
+            hits[0].document_id.contains("ЗаказКлиента"),
+            "заголовок обязан перевесить текст: {hits:?}"
+        );
+        assert!(hits[0].provider_score > hits[1].provider_score, "{hits:?}");
+    }
+
+    /// Ядро ADR-0037: естественная формулировка с падежами находит страницу,
+    /// хотя точной подстроки запроса в ней нет (#415).
+    #[test]
+    fn natural_phrasing_with_morphology_finds_the_page() {
+        let root = workspace();
+        let sections =
+            provider(&root).search(&request("единицы измерения номенклатуры", "ru"), &context());
+        let section = &sections[0];
+        assert_eq!(
+            section.status,
+            DocumentationSectionStatus::Ok,
+            "{section:?}"
+        );
+        assert!(
+            section.hits[0].document_id.contains("Номенклатура"),
+            "{:?}",
+            section.hits
         );
     }
 
@@ -561,16 +587,17 @@ mod tests {
         for (_, object) in &cases {
             let sections =
                 provider(&root).search(&request(&format!("Страница {object}"), "ru"), &context());
-            assert_eq!(
-                sections[0].hits.len(),
-                1,
-                "страница объекта {object} обязана найтись: {:?}",
-                sections[0].hits
+            // Пословный матчинг вправе поднять и соседние страницы с общим
+            // словом «Страница» — важна не единственность, а то, что своя
+            // страница найдена и стоит первой (ADR-0037).
+            assert!(
+                !sections[0].hits.is_empty(),
+                "страница объекта {object} обязана найтись"
             );
             assert!(
                 sections[0].hits[0].title.starts_with(object),
-                "{}",
-                sections[0].hits[0].title
+                "своя страница обязана быть первой: {:?}",
+                sections[0].hits
             );
         }
     }
