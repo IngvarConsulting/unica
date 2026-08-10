@@ -1,6 +1,6 @@
 # ADR-0035: Находки проверки метаданных несут код правила и языковое местоположение
 
-- Статус: `proposed`
+- Статус: `accepted`
 - Дата: `2026-08-10`
 
 ## Контекст
@@ -64,7 +64,5 @@ ADR-0025 оставляет единый внутренний `MetadataValidator
 - `cargo test -p unica-coder meta_info_surface_tests -- --test-threads=1`
   проверяет код, поле, язык и предупреждающую семантику
   `redundant_list_presentation`.
-- `cargo test -p unica-coder meta_add_surface_tests -- --test-threads=1`
-  проверяет оба кода длины, границы 30, 31, 38 и 39 и успешность применения.
 - `python3.12 tests/ci/test_architecture_registry.py` проверяет связь записи с
   выведенным правилом реестра после принятия решения.
