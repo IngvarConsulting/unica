@@ -50,7 +50,6 @@ pub(crate) fn invoke(
     ports: &dyn ApplicationPorts,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-    _dry_run: bool,
     cancellation: &CancellationToken,
 ) -> Result<HandlerOutcome, String> {
     let (summary, data, events, projected_events, changes, recorded_cache, warnings) =

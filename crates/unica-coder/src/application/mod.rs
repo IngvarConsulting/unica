@@ -1082,7 +1082,6 @@ fn call_tool(
                 ports,
                 args,
                 &context,
-                dry_run,
                 operational_config.as_ref().ok_or_else(|| {
                     "code intelligence call is missing operational config".to_string()
                 })?,
@@ -1095,7 +1094,6 @@ fn call_tool(
                     operation,
                     args,
                     workspace: &context,
-                    dry_run,
                     operational_config: operational_config.as_ref().ok_or_else(|| {
                         "code intelligence call is missing operational config".to_string()
                     })?,
@@ -1106,7 +1104,7 @@ fn call_tool(
                 source_navigation::invoke(operation, ports, args, &context, cancellation)?
             }
             ToolHandler::SourceResources { operation } => {
-                source_resources::invoke(operation, ports, args, &context, dry_run, cancellation)?
+                source_resources::invoke(operation, ports, args, &context, cancellation)?
             }
             _ => ports.invoke_handler_with_operational_config(
                 spec,
@@ -1504,20 +1502,10 @@ fn invoke_code_intelligence_search(
     ports: &dyn ApplicationPorts,
     args: &Map<String, Value>,
     workspace: &WorkspaceContext,
-    dry_run: bool,
     operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
 ) -> Result<ports::HandlerOutcome, String> {
     let context = ports.resolve_code_intelligence_context(workspace, args)?;
-    if dry_run {
-        let mut outcome = AdapterOutcome::ok(
-            "dry run: unica.code.search would run the provider-neutral search coordinator",
-        );
-        outcome
-            .artifacts
-            .push(context.source_root.path.display().to_string());
-        return Ok(ports::HandlerOutcome::plain(outcome));
-    }
     let request = SearchRequest {
         query: args
             .get("query")
@@ -1572,7 +1560,6 @@ struct CodeIntelligenceReadInvocation<'a> {
     operation: CodeIntelligenceOperation,
     args: &'a Map<String, Value>,
     workspace: &'a WorkspaceContext,
-    dry_run: bool,
     operational_config: &'a crate::domain::operational_config::OperationalConfig,
     cancellation: &'a CancellationToken,
 }
@@ -1586,20 +1573,10 @@ fn invoke_code_intelligence_read(
         operation,
         args,
         workspace,
-        dry_run,
         operational_config,
         cancellation,
     } = invocation;
     let context = ports.resolve_code_intelligence_context(workspace, args)?;
-    if dry_run {
-        let mut outcome = AdapterOutcome::ok(format!(
-            "dry run: {tool_name} would use the provider-neutral code intelligence registry"
-        ));
-        outcome
-            .artifacts
-            .push(context.source_root.path.display().to_string());
-        return Ok(ports::HandlerOutcome::plain(outcome));
-    }
     let request = ports.normalize_code_intelligence_read_request(
         code_intelligence_read_request(operation, args)?,
         &context,
