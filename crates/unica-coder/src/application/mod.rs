@@ -2112,12 +2112,10 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 mod tests {
     use super::*;
     use crate::composition::testing::{
-        create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,
-        set_unix_mode_for_test, unix_mode_for_test, with_publication_lock_contention_signal,
-        with_publication_lock_pause, CompileTransaction, FileLinkFixtureOutcome,
-    };
-    use crate::infrastructure::platform::secure_read::{
-        with_secure_tree_test_hook, SecureTreePhase,
+        child_subsystem_stub_xml, create_file_link_fixture_for_test, file_identity_for_test,
+        prepare_file_for_removal, set_unix_mode_for_test, unix_mode_for_test,
+        with_publication_lock_contention_signal, with_publication_lock_pause,
+        with_secure_tree_test_hook, CompileTransaction, FileLinkFixtureOutcome, SecureTreePhase,
     };
     use serde_json::Map;
     use std::cell::Cell;
@@ -6287,23 +6285,14 @@ mod tests {
         .unwrap();
         std::fs::write(
             source.join("Subsystems/Parent.xml"),
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Parent", "2.20",
-            )
-            .replacen(
+            child_subsystem_stub_xml("Parent", "2.20").replacen(
                 "<ChildObjects/>",
                 "<ChildObjects><Subsystem>Child</Subsystem></ChildObjects>",
                 1,
             ),
         )
         .unwrap();
-        std::fs::write(
-            &child,
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Child", "2.21",
-            ),
-        )
-        .unwrap();
+        std::fs::write(&child, child_subsystem_stub_xml("Child", "2.21")).unwrap();
         let physical_workspace = workspace.canonicalize().unwrap();
         (root, physical_workspace, child)
     }
@@ -6605,9 +6594,7 @@ mod tests {
                     if completed == 0 {
                         std::fs::write(
                             &child_during_capture,
-                            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                                "Child", "2.20",
-                            ),
+                            child_subsystem_stub_xml("Child", "2.20"),
                         )
                         .unwrap();
                     }
