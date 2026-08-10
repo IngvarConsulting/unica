@@ -456,23 +456,115 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .map(HandlerOutcome::plain)
             }
             ToolHandler::StandardsAdapter { operation } => {
-                let standards = StandardsAdapter::invoke(operation, args);
+                // Фасады делят с поставщиком v8std движок И политику: запрет в
+                // unica.toml выключает оба маршрута одним файлом (ADR-0032
+                // п.4, следствие 2). Нечитаемая политика — жёсткий отказ, а не
+                // молчаливое разрешение: это файл запрета.
+                let policy =
+                    crate::infrastructure::documentation_policy::DocumentationPolicy::load(
+                        &context.workspace_root,
+                        DOCUMENTATION_PROVIDER_IDS,
+                    )
+                    .map_err(|error| format!("{}: {error}", spec.name))?;
+                if policy.network("v8std")
+                    == crate::infrastructure::documentation_policy::NetworkAccess::Deny
+                {
+                    return Err(format!(
+                        "{}: сетевой выход v8std запрещён политикой unica.toml (policy-denied)",
+                        spec.name
+                    ));
+                }
+                let endpoint =
+                    crate::infrastructure::standards_documentation::resolve_standards_endpoint(
+                        &policy,
+                    );
+                let standards = StandardsAdapter::invoke(operation, args, &endpoint);
                 Ok(match standards.data {
                     Some(data) => HandlerOutcome::with_data(standards.outcome, data),
                     None => HandlerOutcome::plain(standards.outcome),
                 })
             }
+            ToolHandler::Documentation { operation: "get" } => {
+                let document_id = args
+                    .get("documentId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "unica.documentation.get requires documentId".to_string())?;
+                // Пустой локатор отклоняется и всухую — тем же текстом, что и
+                // слой application: сломанный пример скилла обязан падать в
+                // parity-тесте, а не у живого пользователя.
+                if document_id.trim().is_empty() {
+                    return Err(
+                        "unica.documentation.get requires a non-blank documentId".to_string()
+                    );
+                }
+                let language = args
+                    .get("language")
+                    .and_then(Value::as_str)
+                    .unwrap_or("ru")
+                    .to_string();
+                // Предпросмотр — до опроса поставщиков, как у search
+                // (INV-SKILL-EXECUTABLE-EXAMPLES).
+                if dry_run {
+                    return Ok(HandlerOutcome::plain(AdapterOutcome::ok(format!(
+                        "dry run: {} would fetch the document from its owning provider",
+                        spec.name
+                    ))));
+                }
+                let registry = documentation_registry(context, cancellation)?;
+                let requested_version = args.get("platformVersion").and_then(Value::as_str);
+                let context = documentation_context(
+                    &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
+                    ),
+                    requested_version,
+                    context,
+                );
+                let data = crate::application::documentation::get(
+                    &registry,
+                    document_id,
+                    &language,
+                    &context,
+                )?;
+                Ok(HandlerOutcome::with_data(
+                    AdapterOutcome::ok("unica.documentation.get completed"),
+                    data,
+                ))
+            }
             ToolHandler::Documentation { operation } => {
                 if operation != "search" {
                     return Err(format!("unknown documentation operation: {operation}"));
                 }
+                // Фильтр по смыслу источника (ADR-0032 п.5). Чужое значение —
+                // отказ с перечнем допустимых: молча проигнорированный фильтр
+                // отвечал бы стандартами на просьбу «только справка платформы».
+                let source_kinds = match args.get("sourceKinds") {
+                    None => Vec::new(),
+                    Some(value) => value
+                        .as_array()
+                        .ok_or_else(|| {
+                            "unica.documentation.search: sourceKinds must be an array".to_string()
+                        })?
+                        .iter()
+                        .map(|entry| {
+                            entry
+                                .as_str()
+                                .and_then(crate::domain::documentation::SourceKind::parse)
+                                .ok_or_else(|| {
+                                    // Нестроковое значение называется самим
+                                    // JSON-значением, а не пустой строкой.
+                                    format!(
+                                        "unica.documentation.search: unknown sourceKinds value {entry}; allowed: platform-help, development-standard, configuration-documentation"
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                };
                 let request = crate::domain::documentation::DocumentationSearchRequest {
                     query: args
                         .get("query")
                         .and_then(Value::as_str)
                         .ok_or_else(|| "unica.documentation.search requires query".to_string())?
                         .to_string(),
-                    source_kinds: Vec::new(),
+                    source_kinds,
                     limit: args
                         .get("limit")
                         .and_then(Value::as_u64)
@@ -503,6 +595,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         spec.name
                     ))));
                 }
+                // Реестр собирается по рабочему пространству ДО того, как имя
+                // `context` затенит DocumentationContext: политика unica.toml —
+                // файлы проекта, и нечитаемая политика — отказ вызова.
+                let registry = documentation_registry(context, cancellation)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
                     &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
@@ -510,7 +606,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     requested_version,
                     context,
                 );
-                let registry = documentation_registry()?;
                 let data =
                     crate::application::documentation::search(&registry, &request, &context)?;
                 Ok(HandlerOutcome::with_data(
@@ -700,21 +795,77 @@ fn prepared_subsystem_info_failure(
     })
 }
 
+/// Идентификаторы поставщиков документации — единственный перечень, против
+/// которого политика `unica.toml` проверяет свои секции `[providers.*]`.
+const DOCUMENTATION_PROVIDER_IDS: &[&str] = &[
+    "configuration-help",
+    "platform-syntax-help",
+    "kb-1ci",
+    "v8std",
+];
+
 /// Composition root: the registry of documentation providers. Declaration
-/// order here is the section order of the public result (ADR-0029 point 5),
-/// and it is assembled here rather than in the domain layer so tests can
-/// inject stand-in providers instead.
-fn documentation_registry() -> Result<crate::domain::documentation::DocumentationRegistry, String> {
+/// order here is the section order of the public result (ADR-0029 point 5):
+/// локальная справка платформы раньше сетевых поставщиков, справка раньше
+/// стандартов. Собирается здесь, а не в домене, чтобы тесты внедряли
+/// подмены; политика читается на каждый вызов — она из файлов проекта.
+fn documentation_registry(
+    context: &WorkspaceContext,
+    cancellation: &crate::domain::cancellation::CancellationToken,
+) -> Result<crate::domain::documentation::DocumentationRegistry, String> {
     use std::sync::Arc;
 
     #[cfg(test)]
-    if let Some(stand_in) = documentation_registry_stand_in() {
-        return crate::domain::documentation::DocumentationRegistry::new(vec![stand_in]);
+    {
+        let _ = cancellation;
+        if let Some(stand_in) = documentation_registry_stand_in() {
+            return crate::domain::documentation::DocumentationRegistry::new(vec![stand_in]);
+        }
     }
-    crate::domain::documentation::DocumentationRegistry::new(vec![Arc::new(
-        crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new(),
-    )
-        as Arc<dyn crate::domain::documentation::DocumentationProvider>])
+    let policy = crate::infrastructure::documentation_policy::DocumentationPolicy::load(
+        &context.workspace_root,
+        DOCUMENTATION_PROVIDER_IDS,
+    )?;
+    let endpoint =
+        crate::infrastructure::standards_documentation::resolve_standards_endpoint(&policy);
+    // Справка конфигурации читает source-set'ы рабочего пространства; битая
+    // настройка проекта — отказ вызова, как и битая политика: неясность — отказ.
+    let source_map = crate::infrastructure::project_sources::discover_project_source_map(
+        &context.workspace_root,
+    )?;
+    let source_sets = source_map
+        .source_sets
+        .iter()
+        .map(|source_set| {
+            (
+                source_set.name.clone(),
+                context.workspace_root.join(&source_set.path),
+            )
+        })
+        .collect();
+    crate::domain::documentation::DocumentationRegistry::new(vec![
+        Arc::new(
+            crate::infrastructure::configuration_help::ConfigurationHelpProvider { source_sets },
+        ) as Arc<dyn crate::domain::documentation::DocumentationProvider>,
+        Arc::new(crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new()),
+        Arc::new(crate::infrastructure::kb_1ci::Kb1ciProvider {
+            base: crate::infrastructure::kb_1ci::KB_BASE.to_string(),
+            network: policy.network("kb-1ci"),
+            transport: Arc::new(crate::infrastructure::kb_1ci::UreqKbTransport),
+            // Токен вызова: сетевой обход обязан отменяться вместе с вызовом
+            // MCP, поэтому реестр собирается на вызов, а не на процесс.
+            cancellation: cancellation.clone(),
+            cache_ttl: crate::infrastructure::kb_1ci::KB_CACHE_TTL,
+        }),
+        Arc::new(
+            crate::infrastructure::standards_documentation::V8StdDocumentationProvider {
+                endpoint,
+                network: policy.network("v8std"),
+                http: crate::infrastructure::internal_adapters::shared_http_client(),
+                cancellation: cancellation.clone(),
+            },
+        ),
+    ])
 }
 
 /// Подмена реестра для тестов — та самая, которую допускает п.5 ADR-0029
@@ -1424,21 +1575,180 @@ mod tests {
     }
 
     #[test]
-    fn documentation_registry_wires_the_platform_syntax_help_provider() {
-        // The composition root is the only place a documentation provider is
-        // constructed; a registry left empty (forgot to wire the provider) or
-        // wired to the wrong provider must fail this, not merely compile.
+    fn documentation_registry_wires_providers_in_the_declared_order() {
+        // The composition root is the only place documentation providers are
+        // constructed; a registry left short (forgot to wire one) or ordered
+        // differently must fail this, not merely compile. Порядок реестра —
+        // порядок секций публичного ответа, специфичность убывает: справка
+        // самой конфигурации раньше справки платформы, локальные поставщики
+        // раньше сетевых, справка раньше стандартов.
         // Замок общий со стенд-тестами: без него параллельный прогон подменил
         // бы реестр на стенд прямо под этой проверкой.
         let _serial = documentation_registry_serial();
-        let registry = documentation_registry().expect("registry constructs");
-        let providers: Vec<_> = registry.providers().collect();
-        assert_eq!(providers.len(), 1, "exactly one provider is wired today");
-        assert_eq!(providers[0].id().to_string(), "platform-syntax-help");
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let registry = documentation_registry(
+            &context,
+            &crate::domain::cancellation::CancellationToken::default(),
+        )
+        .expect("registry constructs");
+        let ids: Vec<String> = registry
+            .providers()
+            .map(|provider| provider.id().to_string())
+            .collect();
         assert_eq!(
-            providers[0].corpora().len(),
+            ids,
+            vec![
+                "configuration-help".to_string(),
+                "platform-syntax-help".to_string(),
+                "kb-1ci".to_string(),
+                "v8std".to_string()
+            ],
+            "состав и порядок реестра"
+        );
+        let providers: Vec<_> = registry.providers().collect();
+        assert_eq!(providers[0].corpora().len(), 1, "configuration-help");
+        assert_eq!(
+            providers[0].corpora()[0].source_kind,
+            crate::domain::documentation::SourceKind::ConfigurationDocumentation
+        );
+        assert_eq!(
+            providers[1].corpora().len(),
             2,
             "syntax-context and platform-guides"
+        );
+        assert_eq!(
+            providers[2].corpora().len(),
+            2,
+            "kb-developer-guide and kb-administrator-guide"
+        );
+        assert_eq!(providers[3].corpora().len(), 1, "public-standards");
+        assert_eq!(
+            providers[3].corpora()[0].source_kind,
+            crate::domain::documentation::SourceKind::DevelopmentStandard
+        );
+    }
+
+    /// Источник поставщика справки конфигурации — source-set'ы рабочего
+    /// пространства: выгрузка с `Configuration.xml` в корне обязана дать
+    /// секцию с попаданием без какой-либо настройки проекта.
+    #[test]
+    fn documentation_registry_feeds_configuration_help_with_workspace_sources() {
+        let _serial = documentation_registry_serial();
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        std::fs::write(
+            workspace.join("Configuration.xml"),
+            "<?xml version=\"1.0\"?><MetaDataObject><Configuration><Properties>\
+             <Version>1.0.0.1</Version></Properties></Configuration></MetaDataObject>",
+        )
+        .expect("configuration");
+        let help = workspace.join("Catalogs/Товары/Ext/Help");
+        std::fs::create_dir_all(&help).expect("help dir");
+        std::fs::write(
+            help.join("ru.html"),
+            "<html><body><h1>Товары</h1><p>Справочник товаров.</p></body></html>",
+        )
+        .expect("help page");
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let registry = documentation_registry(
+            &context,
+            &crate::domain::cancellation::CancellationToken::default(),
+        )
+        .expect("registry constructs");
+        let provider = registry.providers().next().expect("первый поставщик");
+        let sections = provider.search(
+            &crate::domain::documentation::DocumentationSearchRequest {
+                query: "Товары".to_string(),
+                source_kinds: Vec::new(),
+                limit: 5,
+                language: "ru".to_string(),
+            },
+            &crate::domain::documentation::DocumentationContext {
+                platform_version: None,
+                installation_root: None,
+            },
+        );
+        assert_eq!(
+            sections[0].hits[0].document_id,
+            "configuration-help:main:Catalogs/Товары/Ext/Help/ru.html",
+            "source-set найден автодетектом и назван в локаторе"
+        );
+        assert_eq!(sections[0].hits[0].applicable_version, "1.0.0.1");
+    }
+
+    /// Фасады `unica.standards.*` делят с поставщиком движок и политику
+    /// (ADR-0032 п.4, следствие 2: «оба выключаются одним файлом настройки»).
+    /// Запрет в `unica.toml` обязан отказывать фасаду ДО транспорта, называя
+    /// политику; endpoint на закрытый локальный порт делает и красное
+    /// состояние герметичным — сеть за пределы машины не выходит.
+    /// Различающая сила доказана мутацией: со снятой проверкой запрета
+    /// (`if false`) тест падает.
+    #[test]
+    fn the_standards_facades_refuse_when_policy_denies_v8std() {
+        use crate::application::ports::ApplicationPorts;
+
+        struct EnvGuard {
+            previous: Option<String>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var("UNICA_STANDARDS_MCP_URL", value),
+                    None => std::env::remove_var("UNICA_STANDARDS_MCP_URL"),
+                }
+            }
+        }
+        let _env = EnvGuard {
+            previous: std::env::var("UNICA_STANDARDS_MCP_URL").ok(),
+        };
+        std::env::set_var("UNICA_STANDARDS_MCP_URL", "http://127.0.0.1:9/mcp");
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        std::fs::write(
+            workspace.join("unica.toml"),
+            "[providers.v8std]\nnetwork = \"deny\"\n",
+        )
+        .expect("политика");
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("ссылка"));
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.standards.search",
+                ToolHandler::StandardsAdapter {
+                    operation: "search",
+                },
+            ),
+            &args,
+            &context,
+            false,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("запрет политики обязан отказывать фасаду"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("unica.toml"),
+            "отказ обязан назвать политику, получено {error}"
         );
     }
 
@@ -1459,7 +1769,19 @@ mod tests {
             .description;
         // Замок общий со стенд-тестами: настоящий реестр, а не стенд соседа.
         let _serial = documentation_registry_serial();
-        let registry = documentation_registry().expect("реестр собран");
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let registry = documentation_registry(
+            &context,
+            &crate::domain::cancellation::CancellationToken::default(),
+        )
+        .expect("реестр собран");
         let declares_standards = registry.providers().any(|provider| {
             provider.corpora().iter().any(|corpus| {
                 corpus.source_kind == crate::domain::documentation::SourceKind::DevelopmentStandard
@@ -1706,6 +2028,13 @@ mod tests {
                 crate::domain::documentation::DocumentationContext,
             )>,
         >,
+        seen_gets: std::sync::Mutex<
+            Vec<(
+                String,
+                String,
+                crate::domain::documentation::DocumentationContext,
+            )>,
+        >,
     }
 
     impl crate::domain::documentation::DocumentationProvider for RecordingProvider {
@@ -1713,7 +2042,13 @@ mod tests {
             crate::domain::documentation::DocumentationProviderId::new("recording")
         }
         fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
-            Vec::new()
+            // Смысл корпуса объявлен, чтобы фильтр sourceKinds считал стенд
+            // применимым и его опрос был наблюдаем.
+            vec![crate::domain::documentation::DocumentationCorpus {
+                id: "syntax-context".to_string(),
+                source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
+                authority: crate::domain::documentation::Authority::Vendor,
+            }]
         }
         fn needs_network(&self) -> bool {
             false
@@ -1734,6 +2069,34 @@ mod tests {
                 crate::domain::documentation::Authority::Vendor,
                 &request.language,
             )]
+        }
+
+        fn get(
+            &self,
+            document_id: &str,
+            language: &str,
+            context: &crate::domain::documentation::DocumentationContext,
+        ) -> Option<Result<crate::domain::documentation::DocumentationDocument, String>> {
+            self.seen_gets
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((
+                    document_id.to_string(),
+                    language.to_string(),
+                    context.clone(),
+                ));
+            Some(Ok(crate::domain::documentation::DocumentationDocument {
+                provider: self.id(),
+                corpus: "syntax-context".to_string(),
+                source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
+                authority: crate::domain::documentation::Authority::Vendor,
+                language: language.to_string(),
+                document_id: document_id.to_string(),
+                title: "Заголовок".to_string(),
+                signature: None,
+                applicable_version: "8.3.27.2074".to_string(),
+                text: "Полный текст.".to_string(),
+            }))
         }
     }
 
@@ -2068,6 +2431,231 @@ mod tests {
         assert!(
             error.contains("query"),
             "отказ обязан назвать недостающий аргумент, получено {error}"
+        );
+    }
+
+    /// Аргумент `sourceKinds` (ADR-0032 п.5) фильтрует по смыслу источника, а
+    /// не по идентификатору поставщика. Разобранные значения обязаны дойти до
+    /// запроса, а чужое значение — отказ с перечнем допустимых: молча
+    /// проигнорированный фильтр отвечал бы стандартами на просьбу «только
+    /// справка платформы».
+    #[test]
+    fn the_documentation_branch_parses_source_kinds_and_refuses_unknown_values() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("query".to_string(), json!("СтрНайти"));
+        args.insert("sourceKinds".to_string(), json!(["platform-help"]));
+        super::InfrastructureApplicationPorts::new()
+            .invoke_handler(
+                spec(
+                    "unica.documentation.search",
+                    ToolHandler::Documentation {
+                        operation: "search",
+                    },
+                ),
+                &args,
+                &context,
+                false,
+                &crate::domain::cancellation::CancellationToken::default(),
+            )
+            .expect("вызов с применимым фильтром обязан пройти");
+        {
+            let seen = recorder
+                .seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(seen.len(), 1, "применимый стенд опрошен ровно раз");
+            assert_eq!(
+                seen[0].0.source_kinds,
+                vec![crate::domain::documentation::SourceKind::PlatformHelp],
+                "разобранный фильтр обязан дойти до запроса, а не подменяться пустым"
+            );
+        }
+
+        let mut alien = Map::new();
+        alien.insert("query".to_string(), json!("СтрНайти"));
+        alien.insert("sourceKinds".to_string(), json!(["standards"]));
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.documentation.search",
+                ToolHandler::Documentation {
+                    operation: "search",
+                },
+            ),
+            &alien,
+            &context,
+            false,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("чужое значение sourceKinds обязано отклоняться"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("standards") && error.contains("platform-help"),
+            "отказ обязан назвать чужое значение и допустимые, получено {error}"
+        );
+
+        // Нестроковое значение — тот же отказ, но с самим значением, а не с
+        // пустой строкой: «unknown value \"\"» не говорит автору вызова ничего.
+        let mut non_string = Map::new();
+        non_string.insert("query".to_string(), json!("СтрНайти"));
+        non_string.insert("sourceKinds".to_string(), json!([42]));
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.documentation.search",
+                ToolHandler::Documentation {
+                    operation: "search",
+                },
+            ),
+            &non_string,
+            &context,
+            false,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("нестроковое значение sourceKinds обязано отклоняться"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("42"),
+            "отказ обязан назвать само значение, получено {error}"
+        );
+    }
+
+    /// Ветка `unica.documentation.get`: аргументы обязаны дойти до владельца
+    /// локатора — `documentId` и `language` в вызов `get`, `platformVersion`
+    /// в контекст, — а документ владельца обязан дойти обратно типизированным
+    /// `data.document`. Версия намеренно невозможная: разрешение установки не
+    /// должно зависеть от машин сборки.
+    #[test]
+    fn the_documentation_get_branch_carries_arguments_and_returns_the_document() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert(
+            "documentId".to_string(),
+            json!("platform-syntax-help:syntax-context:page.html"),
+        );
+        args.insert("language".to_string(), json!("en"));
+        args.insert("platformVersion".to_string(), json!("9.9.9.9999"));
+
+        let outcome = super::InfrastructureApplicationPorts::new()
+            .invoke_handler(
+                spec(
+                    "unica.documentation.get",
+                    ToolHandler::Documentation { operation: "get" },
+                ),
+                &args,
+                &context,
+                false,
+                &crate::domain::cancellation::CancellationToken::default(),
+            )
+            .expect("ветка get обязана ответить");
+
+        let seen = recorder
+            .seen_gets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(seen.len(), 1, "владелец опрошен ровно раз");
+        let (document_id, language, documentation_context) = &seen[0];
+        assert_eq!(document_id, "platform-syntax-help:syntax-context:page.html");
+        assert_eq!(language, "en", "language обязан дойти до get");
+        assert_eq!(
+            documentation_context.platform_version.as_deref(),
+            Some("9.9.9.9999"),
+            "platformVersion обязан дойти до контекста"
+        );
+
+        let data = outcome.data.expect("типизированный data");
+        assert_eq!(
+            data["document"]["documentId"],
+            "platform-syntax-help:syntax-context:page.html"
+        );
+        assert_eq!(data["document"]["text"], "Полный текст.");
+    }
+
+    /// Сухой прогон `get` — предпросмотр до опроса поставщиков, но разбор
+    /// аргументов настоящий: пример без `documentId` обязан падать и всухую.
+    #[test]
+    fn the_documentation_get_dry_run_previews_without_polling_and_requires_document_id() {
+        use crate::application::ports::ApplicationPorts;
+
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+
+        let dir = tempfile::tempdir().expect("каталог");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let mut args = Map::new();
+        args.insert("documentId".to_string(), json!("https://kb.1ci.com/x/"));
+        let outcome = super::InfrastructureApplicationPorts::new()
+            .invoke_handler(
+                spec(
+                    "unica.documentation.get",
+                    ToolHandler::Documentation { operation: "get" },
+                ),
+                &args,
+                &context,
+                true,
+                &crate::domain::cancellation::CancellationToken::default(),
+            )
+            .expect("сухой прогон обязан ответить успехом");
+        assert!(
+            recorder
+                .seen_gets
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "сухой прогон не должен опрашивать поставщиков"
+        );
+        assert!(outcome.adapter.summary.contains("dry run"));
+
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec(
+                "unica.documentation.get",
+                ToolHandler::Documentation { operation: "get" },
+            ),
+            &Map::new(),
+            &context,
+            true,
+            &crate::domain::cancellation::CancellationToken::default(),
+        ) {
+            Ok(_) => panic!("сухой прогон без documentId обязан отказывать"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("documentId"),
+            "отказ обязан назвать аргумент, получено {error}"
         );
     }
 

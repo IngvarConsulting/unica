@@ -2628,6 +2628,51 @@ class PlatformHelpRoutingTests(unittest.TestCase):
     def test_states_the_source_boundary(self) -> None:
         self.assertIn("версию установки", self.text)
 
+    def test_filters_platform_questions_by_source_kind(self) -> None:
+        # ADR-0032 п.5: вопрос об API платформы зовётся с фильтром по смыслу
+        # источника, а не полагается на то, что секция стандартов не помешает.
+        self.assertIn('"sourceKinds"', self.text)
+        self.assertIn('"platform-help"', self.text)
+
+    def test_explains_policy_denied_as_a_user_choice(self) -> None:
+        # Запрет сетевого выхода — решение пользователя (unica.toml), и ответ
+        # обязан называть его, а не выдавать за сбой площадки.
+        self.assertIn("policy-denied", self.text)
+        self.assertIn("unica.toml", self.text)
+
+    def test_confirms_answers_with_the_opened_document(self) -> None:
+        # ADR-0029 п.4: доказательство — текст открытой страницы, и с
+        # ADR-0033 он достижим маршрутом MCP. Проверяются сами примеры, а не
+        # подстроки прозы: скилл обязан нести исполнимый вызов
+        # unica.documentation.get с обязательным documentId рядом с вызовом
+        # search — поток «нашёл → открыл» закреплён формой, а не упоминанием.
+        self.assertIn("фрагмент выдачи доказательством не является", self.text)
+        calls = [
+            json.loads(block)
+            for block in re.findall(r"```json\n(.*?)\n```", self.text, flags=re.S)
+            if '"method": "tools/call"' in block
+        ]
+        names = [call["params"]["name"] for call in calls]
+        self.assertIn("unica.documentation.search", names)
+        self.assertIn("unica.documentation.get", names)
+        get_calls = [
+            call for call in calls if call["params"]["name"] == "unica.documentation.get"
+        ]
+        for call in get_calls:
+            self.assertIn(
+                "documentId",
+                call["params"]["arguments"],
+                "пример get обязан нести обязательный documentId",
+            )
+
+    def test_routes_configuration_domain_questions_to_configuration_help(self) -> None:
+        # ADR-0034: доменный вопрос о самой конфигурации — назначение
+        # объекта, роль документа в учёте — закрывает её встроенная справка,
+        # а не справка платформы; скилл обязан назвать и фильтр, и формат
+        # локатора нового корпуса.
+        self.assertIn('"configuration-documentation"', self.text)
+        self.assertIn("configuration-help:", self.text)
+
     def test_requires_naming_the_answering_locale(self) -> None:
         # ADR-0029 п.3: подстановка соседней локали разрешена и обязана быть
         # названной в ответе. Данные называют её полем `language` секции, но

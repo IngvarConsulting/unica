@@ -553,12 +553,21 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.documentation.search",
-            description: "Search installed-platform help across documentation providers.",
+            description:
+                "Search the workspace configuration's embedded help, platform help, and development standards across documentation providers.",
             mutating: false,
             cache_access: CacheAccess::default(),
             handler: ToolHandler::Documentation {
                 operation: "search",
             },
+        },
+        ToolSpec {
+            name: "unica.documentation.get",
+            description:
+                "Fetch the full text of a documentation search hit by its documentId locator.",
+            mutating: false,
+            cache_access: CacheAccess::default(),
+            handler: ToolHandler::Documentation { operation: "get" },
         },
     ]);
     specs

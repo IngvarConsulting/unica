@@ -20,6 +20,7 @@ impl std::fmt::Display for DocumentationProviderId {
 pub enum SourceKind {
     PlatformHelp,
     DevelopmentStandard,
+    ConfigurationDocumentation,
 }
 
 impl SourceKind {
@@ -27,6 +28,20 @@ impl SourceKind {
         match self {
             SourceKind::PlatformHelp => "platform-help",
             SourceKind::DevelopmentStandard => "development-standard",
+            SourceKind::ConfigurationDocumentation => "configuration-documentation",
+        }
+    }
+
+    /// Разбор публичного значения `sourceKinds` — зеркало `as_str`: та же
+    /// пара wire-строк, что и в поле `sourceKind` секции, точно и без
+    /// нормализации. Чужое значение не разбирается — вызывающий отказывает,
+    /// а не игнорирует фильтр молча.
+    pub fn parse(value: &str) -> Option<SourceKind> {
+        match value {
+            "platform-help" => Some(SourceKind::PlatformHelp),
+            "development-standard" => Some(SourceKind::DevelopmentStandard),
+            "configuration-documentation" => Some(SourceKind::ConfigurationDocumentation),
+            _ => None,
         }
     }
 }
@@ -138,6 +153,25 @@ impl DocumentationSection {
     }
 }
 
+/// Документ целиком — то, что `unica.documentation.get` возвращает по
+/// устойчивому локатору попадания. Доказательством поведения платформы
+/// считается текст открытой страницы (ADR-0029 п.4); фрагмент выдачи
+/// доказательством не является, и этот тип — та самая «открытая страница».
+#[derive(Debug, Clone)]
+pub struct DocumentationDocument {
+    pub provider: DocumentationProviderId,
+    pub corpus: String,
+    pub source_kind: SourceKind,
+    pub authority: Authority,
+    /// Локаль, которой документ ответил на самом деле, — как у секции.
+    pub language: String,
+    pub document_id: String,
+    pub title: String,
+    pub signature: Option<String>,
+    pub applicable_version: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct DocumentationSearchRequest {
     pub query: String,
@@ -169,6 +203,21 @@ pub trait DocumentationProvider: Send + Sync {
         request: &DocumentationSearchRequest,
         context: &DocumentationContext,
     ) -> Vec<DocumentationSection>;
+
+    /// Документ целиком по устойчивому локатору попадания. `None` — «локатор
+    /// не мой»: форматы локаторов у поставщиков не пересекаются, и владельца
+    /// находит первый не-`None` ответ в порядке реестра. `Some(Err)` — «мой,
+    /// но отдать не смог»: страница исчезла, сеть запрещена политикой,
+    /// установка не разрешена. Умолчание `None` оставляет поставщиков без
+    /// полного текста честными: их попадания и так несут только локатор.
+    fn get(
+        &self,
+        _document_id: &str,
+        _language: &str,
+        _context: &DocumentationContext,
+    ) -> Option<Result<DocumentationDocument, String>> {
+        None
+    }
 }
 
 pub struct DocumentationRegistry {
@@ -327,12 +376,43 @@ mod tests {
     // "reason": reason.as_str()). Опечатка в строке (например, подчёркивание
     // вместо дефиса) молча ломает формат ответа `unica.documentation.search`
     // и осталась бы незамеченной без этого теста.
+    /// Разбор — зеркало `as_str`: публичный аргумент `sourceKinds` несёт те же
+    /// wire-строки, что и поле `sourceKind` секции, и никакие другие. Значение
+    /// не из перечня не разбирается: диспетчер обязан отказать, а не молча
+    /// проигнорировать фильтр.
+    #[test]
+    fn source_kind_parses_exactly_its_wire_identifiers() {
+        assert_eq!(
+            SourceKind::parse("platform-help"),
+            Some(SourceKind::PlatformHelp)
+        );
+        assert_eq!(
+            SourceKind::parse("development-standard"),
+            Some(SourceKind::DevelopmentStandard)
+        );
+        assert_eq!(
+            SourceKind::parse("configuration-documentation"),
+            Some(SourceKind::ConfigurationDocumentation)
+        );
+        for alien in ["standards", "platform_help", "PLATFORM-HELP", ""] {
+            assert_eq!(
+                SourceKind::parse(alien),
+                None,
+                "чужое значение {alien:?} не должно разбираться"
+            );
+        }
+    }
+
     #[test]
     fn source_kind_authority_and_reason_expose_stable_wire_identifiers() {
         assert_eq!(SourceKind::PlatformHelp.as_str(), "platform-help");
         assert_eq!(
             SourceKind::DevelopmentStandard.as_str(),
             "development-standard"
+        );
+        assert_eq!(
+            SourceKind::ConfigurationDocumentation.as_str(),
+            "configuration-documentation"
         );
         assert_eq!(Authority::Vendor.as_str(), "vendor");
         assert_eq!(Authority::Community.as_str(), "community");
