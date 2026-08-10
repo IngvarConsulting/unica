@@ -275,6 +275,7 @@ pub(crate) enum MetadataTypeVariant {
         sign: NumberSign,
     },
     Boolean,
+    Uuid,
     Date {
         fractions: DateFractions,
     },
@@ -378,6 +379,7 @@ enum MetadataTypeIdentity {
     String,
     Number,
     Boolean,
+    Uuid,
     Date,
     BinaryData,
     ValueStorage,
@@ -390,6 +392,7 @@ fn variant_identity(variant: &MetadataTypeVariant) -> MetadataTypeIdentity {
         MetadataTypeVariant::String { .. } => MetadataTypeIdentity::String,
         MetadataTypeVariant::Number { .. } => MetadataTypeIdentity::Number,
         MetadataTypeVariant::Boolean => MetadataTypeIdentity::Boolean,
+        MetadataTypeVariant::Uuid => MetadataTypeIdentity::Uuid,
         MetadataTypeVariant::Date { .. } => MetadataTypeIdentity::Date,
         MetadataTypeVariant::BinaryData { .. } => MetadataTypeIdentity::BinaryData,
         MetadataTypeVariant::ValueStorage => MetadataTypeIdentity::ValueStorage,

@@ -1110,6 +1110,7 @@ fn info_observes_every_typed_mutation_field() {
         serde_json::json!({"kind": "number", "value": "12.50"})
     );
     assert_eq!(renamed["type"]["variants"][0]["kind"], "number");
+    assert_eq!(renamed["type"]["mutationCapability"], "editable");
     let rows = &data["collections"]["tabularSections"][0];
     assert_eq!(rows["synonym"], "Rows synonym");
     assert_eq!(rows["comment"], "Rows comment");
@@ -1143,31 +1144,92 @@ fn info_observes_every_typed_mutation_field() {
 }
 
 #[test]
-fn info_marks_malformed_optional_field_incomplete_with_diagnostic() {
-    let workspace = create_info_workspace("malformed-optional-type");
+fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
+    let workspace = create_info_workspace("unknown-platform-type");
     let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
     let xml = std::fs::read_to_string(&descriptor).unwrap();
-    let malformed = xml.replacen(
+    let unknown = xml.replacen(
         "<v8:Type>xs:string</v8:Type>",
-        "<v8:Type>xs:unsupported</v8:Type>",
+        "<v8:Type>v8:FutureOpaque</v8:Type>",
         1,
     );
-    assert_ne!(malformed, xml, "fixture must contain a typed attribute");
-    std::fs::write(&descriptor, malformed).unwrap();
+    assert_ne!(unknown, xml, "fixture must contain a typed attribute");
+    std::fs::write(&descriptor, unknown).unwrap();
 
     let result = call_info(workspace.path(), []);
 
-    assert!(!result.ok);
+    assert!(result.ok, "{:?}", result.errors);
     let data = result.data.as_ref().expect("partial typed info");
     assert_eq!(data["collections"]["attributes"][0]["incomplete"], true);
-    assert!(result
-        .diagnostics
-        .as_ref()
-        .unwrap()
+    assert!(data["collections"]["attributes"][0].get("type").is_none());
+    assert!(data["validation"]["diagnostics"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|diagnostic| diagnostic["field"] == "collections.attributes[0].type"));
+        .any(|diagnostic| {
+            diagnostic["field"] == "collections.attributes[0].type"
+                && diagnostic["severity"] == "warning"
+        }));
+}
+
+#[test]
+fn info_reads_uuid_as_an_editable_observed_type() {
+    let workspace = create_info_workspace("uuid-observation");
+    let descriptor = workspace.path().join("src/Catalogs/Inspectable.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let uuid = xml.replacen(
+        "<v8:Type>xs:string</v8:Type>",
+        "<v8:Type>v8:UUID</v8:Type>",
+        1,
+    );
+    assert_ne!(uuid, xml, "fixture must contain a typed attribute");
+    std::fs::write(&descriptor, uuid).unwrap();
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let observed = &result.data.unwrap()["collections"]["attributes"][0]["type"];
+    assert_eq!(observed["variants"], serde_json::json!([{"kind": "uuid"}]));
+    assert_eq!(observed["mutationCapability"], "editable");
+}
+
+#[test]
+fn uuid_writer_round_trips_through_meta_edit_and_info() {
+    let workspace = create_info_workspace("uuid-writer-round-trip");
+    let edited = call_edit(
+        workspace.path(),
+        "Catalog.Inspectable",
+        serde_json::json!([{
+            "op": "add",
+            "collection": "attributes",
+            "elements": [{
+                "name": "ExternalId",
+                "type": {"variants": [{"kind": "uuid"}]}
+            }]
+        }]),
+        false,
+    );
+
+    assert!(edited.ok, "{:?}", edited.errors);
+    let result = call_info(workspace.path(), []);
+    assert!(result.ok, "{:?}", result.errors);
+    let external_id = result.data.unwrap()["collections"]["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|attribute| attribute["name"] == "ExternalId")
+        .cloned()
+        .expect("round-tripped UUID attribute");
+    assert_eq!(
+        external_id["type"],
+        serde_json::json!({
+            "variants": [{"kind": "uuid"}],
+            "mutationCapability": "editable"
+        })
+    );
+    let descriptor =
+        std::fs::read_to_string(workspace.path().join("src/Catalogs/Inspectable.xml")).unwrap();
+    assert!(descriptor.contains("<v8:Type>v8:UUID</v8:Type>"));
 }
 
 #[test]

@@ -4467,6 +4467,7 @@ pub(super) fn parse_typed_metadata_type(
                     },
                 },
                 "xs:boolean" => MetadataTypeVariant::Boolean,
+                "v8:UUID" => MetadataTypeVariant::Uuid,
                 "xs:dateTime" => MetadataTypeVariant::Date {
                     fractions: match qualifier_text("DateQualifiers", "DateFractions") {
                         Some("Date") => DateFractions::Date,
@@ -5655,6 +5656,7 @@ mod tests {
                 sign: NumberSign::NonNegative,
             },
             MetadataTypeVariant::Boolean,
+            MetadataTypeVariant::Uuid,
             MetadataTypeVariant::Date {
                 fractions: DateFractions::DateTime,
             },
@@ -5697,10 +5699,39 @@ mod tests {
         assert!(xml.contains("<v8:AllowedLength>Fixed</v8:AllowedLength>"));
         assert!(xml.contains("<v8:Type>xs:decimal</v8:Type>"));
         assert!(xml.contains("<v8:Type>xs:boolean</v8:Type>"));
+        assert!(xml.contains("<v8:Type>v8:UUID</v8:Type>"));
         assert!(xml.contains("<v8:Type>xs:dateTime</v8:Type>"));
         assert!(xml.contains("<v8:Type>cfg:CatalogRef.Items</v8:Type>"));
         assert!(xml.contains("<v8:TypeSet>cfg:DefinedType.ExternalCode</v8:TypeSet>"));
         assert!(xml.contains("<FillChecking>ShowError</FillChecking>"));
+    }
+
+    #[test]
+    fn tracked_platform_uuid_fixture_round_trips_through_the_typed_emitter() {
+        let xml = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/",
+            "meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+        ));
+        let document = Document::parse(xml).unwrap();
+        let properties = document
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+            .find(|properties| {
+                meta_info_child(*properties, "Type").is_some_and(|type_node| {
+                    meta_info_children(type_node, "Type")
+                        .iter()
+                        .any(|node| node.text() == Some("v8:UUID"))
+                })
+            })
+            .expect("tracked fixture contains a UUID metadata field");
+        let parsed = parse_typed_metadata_type(&xml[properties.range()]).unwrap();
+        assert_eq!(parsed.variants, vec![MetadataTypeVariant::Uuid]);
+
+        let mut emitted = Vec::new();
+        emit_meta_typed_value_type(&mut emitted, "\t", &parsed);
+        let properties = format!("<Properties>{}</Properties>", emitted.join("\n"));
+        assert_eq!(parse_typed_metadata_type(&properties).unwrap(), parsed);
     }
 
     fn information_register_xml_with_data_cr() -> String {
