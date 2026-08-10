@@ -4,7 +4,7 @@
 > inline. Steps use checkbox syntax so the red-green evidence remains reviewable.
 
 **Goal:** Deliver issues #297, #291 and the still-current `code.definition` part
-of #292 in PR #425, together with ADR-0043, executable contracts and regression
+of #292 in PR #425, together with ADR-0044, executable contracts and regression
 tests.
 
 **Architecture:** The application registry derives a closed execution category
@@ -20,7 +20,7 @@ lifecycle, Python 3.12 architecture guards and GitHub Actions.
 ## Global constraints
 
 - The only public MCP server remains `unica`; no tool is added or renamed.
-- ADR-0023 remains immutable; ADR-0043 becomes the accepted owner of the new
+- ADR-0023 remains immutable; ADR-0044 becomes the accepted owner of the new
   execution enforcement and the diagnostics/RLM subject protocols.
 - Every production change follows a test that was observed failing for the
   intended reason.
@@ -79,7 +79,7 @@ lifecycle, Python 3.12 architecture guards and GitHub Actions.
 - Produces: a `ManagedChild` line-drain API with an 8 MiB physical-line bound,
   bounded stderr and no raw stdout result.
 - Produces: stable `OperationResult.data` with counters, filtering, ordering,
-  limit and completion state from ADR-0043.
+  limit and completion state from ADR-0044.
 
 - [x] Add command contract tests proving default and explicit analyze always
   report `--format jsonl`; `json`/`jsonl` are migration aliases and all other
@@ -128,7 +128,7 @@ lifecycle, Python 3.12 architecture guards and GitHub Actions.
 ### Task 4: Architecture and publication
 
 **Files:**
-- Modify: `spec/decisions/0043-typed-reader-completion-contract.md`
+- Modify: `spec/decisions/0044-typed-reader-completion-contract.md`
 - Modify: `spec/decisions/README.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `docs/design/2026-08-10-typed-reader-completion-design.md`
@@ -141,7 +141,7 @@ lifecycle, Python 3.12 architecture guards and GitHub Actions.
 - Produces: one mergeable implementation PR that relates to #297, fixes #291
   and fixes the current `code.definition` part of #292.
 
-- [x] Change ADR-0043 to `accepted` and make it own the combined implementation
+- [x] Change ADR-0044 to `accepted` and make it own the combined implementation
   rather than depending on a separate PR.
 - [x] Change the design delivery boundary to the single-PR decision explicitly
   approved by the user.
