@@ -185,21 +185,3 @@ allowed-tools:
   ]
 }
 ```
-
-### Дерево ветки
-
-Каталог `Subsystems` внутри подсистемы даёт полное поддерево этой ветки.
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "tools/call",
-  "params": {
-    "name": "unica.subsystem.info",
-    "arguments": {
-      "cwd": "<workspace>",
-      "SubsystemPath": "Subsystems/Продажи/Subsystems"
-    }
-  }
-}
-```

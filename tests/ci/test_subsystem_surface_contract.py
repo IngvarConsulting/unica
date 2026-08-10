@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -104,6 +105,28 @@ class SubsystemSurfaceContractTests(unittest.TestCase):
             self.assertNotIn("functionalSubsystems", text)
             self.assertNotIn("interfaceSubsystems", text)
             self.assertIn("цепоч", text)
+
+    def test_skill_examples_do_not_advertise_nested_subsystems_directories(
+        self,
+    ) -> None:
+        skill = (
+            REPO_ROOT / "plugins/unica/skills/subsystem-info/SKILL.md"
+        ).read_text(encoding="utf-8")
+        targets = re.findall(r'"SubsystemPath"\s*:\s*"([^"]+)"', skill)
+        directory_targets = {
+            target.rstrip("/")
+            for target in targets
+            if not target.rstrip("/").endswith(".xml")
+        }
+
+        self.assertEqual(directory_targets, {"Subsystems"})
+        self.assertIsNone(
+            re.search(
+                r"(?:каталог.{0,120}поддерев|поддерев.{0,120}каталог)",
+                skill,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        )
 
     def test_bsp_address_does_not_replace_platform_xml_reference(self) -> None:
         specification = (
