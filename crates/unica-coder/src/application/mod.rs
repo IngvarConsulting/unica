@@ -725,13 +725,20 @@ fn call_tool(
         None
     };
 
-    if operational_config::requires_snapshot(spec, args) && cancellation.is_cancelled() {
+    let requires_operational_config = operational_config::requires_snapshot(spec, args);
+    if requires_operational_config && cancellation.is_cancelled() {
         return Err(crate::domain::cancellation::cancelled_error(
             "operational config resolution stopped before reading workspace files",
         ));
     }
-    let operational_config = match operational_config::resolve_for_call(ports, spec, args, &context)
-    {
+    let resolved_operational_config =
+        operational_config::resolve_for_call(ports, spec, args, &context);
+    if requires_operational_config && cancellation.is_cancelled() {
+        return Err(crate::domain::cancellation::cancelled_error(
+            "operational config resolution stopped after reading workspace files",
+        ));
+    }
+    let operational_config = match resolved_operational_config {
         Ok(config) => config,
         Err(diagnostic) => {
             let error = diagnostic.to_string();
@@ -756,12 +763,6 @@ fn call_tool(
             });
         }
     };
-    if operational_config.is_some() && cancellation.is_cancelled() {
-        return Err(crate::domain::cancellation::cancelled_error(
-            "operational config resolution stopped after reading workspace files",
-        ));
-    }
-
     let handler_outcome = match prepared.handler.take() {
         Some(handler) => handler,
         None => match spec.handler {
@@ -2248,6 +2249,7 @@ mod tests {
         handler_calls: AtomicUsize,
         code_context_calls: AtomicUsize,
         fail_load: bool,
+        cancellation_on_load: Option<CancellationToken>,
         prepared_code_search_handler: bool,
         observed_analyze_timeout: Mutex<Option<Duration>>,
     }
@@ -2256,6 +2258,14 @@ mod tests {
         fn failing() -> Self {
             Self {
                 fail_load: true,
+                ..Self::default()
+            }
+        }
+
+        fn failing_and_cancelling(cancellation: CancellationToken) -> Self {
+            Self {
+                fail_load: true,
+                cancellation_on_load: Some(cancellation),
                 ..Self::default()
             }
         }
@@ -2300,6 +2310,9 @@ mod tests {
             crate::domain::operational_config::OperationalConfigDiagnostic,
         > {
             self.load_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(cancellation) = &self.cancellation_on_load {
+                cancellation.cancel();
+            }
             if self.fail_load {
                 return Err(
                     crate::domain::operational_config::OperationalConfigDiagnostic::new(
@@ -2486,6 +2499,28 @@ mod tests {
             assert_eq!(diagnostic["source"], "unica.toml");
             assert_eq!(diagnostic["fieldPath"], "$");
         }
+    }
+
+    #[test]
+    fn cancellation_during_failed_operational_config_load_wins() {
+        let token = CancellationToken::new();
+        let ports = Arc::new(OperationalConfigRecordingPorts::failing_and_cancelling(
+            token.clone(),
+        ));
+        let app = UnicaApplication::with_ports(ports);
+
+        let error = app
+            .call_tool_cancellable(
+                "unica.code.search",
+                json!({"query": "needle"}).as_object().unwrap(),
+                token,
+            )
+            .expect_err("cancellation must win over invalid config");
+
+        assert!(
+            error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX),
+            "{error}"
+        );
     }
 
     #[test]
