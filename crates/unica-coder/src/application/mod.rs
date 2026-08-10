@@ -586,11 +586,15 @@ fn call_tool(
     let xdto_target = XdtoLogicalTarget::from_call(spec, args);
     let mut format_guard_warning = None;
     let mut format_diagnostic = None;
-    let format_guard = match prepared.format_guard.take() {
-        Some(check) => check,
-        None => ports
-            .evaluate_format_guard(spec, args, &context)
-            .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?,
+    let format_guard = if dry_run && !spec.mutating {
+        FormatGuardCheck::Allow
+    } else {
+        match prepared.format_guard.take() {
+            Some(check) => check,
+            None => ports
+                .evaluate_format_guard(spec, args, &context)
+                .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?,
+        }
     };
     match format_guard {
         FormatGuardCheck::Allow => {}
@@ -6357,7 +6361,7 @@ mod tests {
     }
 
     #[test]
-    fn public_subsystem_format_guard_propagates_registered_dependency_resolution_errors() {
+    fn public_subsystem_info_projects_registered_dependency_errors_as_typed_failures() {
         let root = test_workspace_root("unica-subsystem-format-resolver-error");
         let workspace = root.join("workspace");
         let source = workspace.join("src");
@@ -6383,12 +6387,131 @@ mod tests {
             ),
         ]);
 
-        let error = UnicaApplication::new()
+        let result = UnicaApplication::new()
             .call_tool("unica.subsystem.info", &args)
-            .expect_err("format dependency resolution must fail before the handler");
+            .expect("provider evidence failures stay inside the public tool envelope");
 
-        assert!(error.contains("registered subsystem descriptor"), "{error}");
-        assert!(error.contains("Subsystems/Missing.xml"), "{error}");
+        assert!(!result.ok, "{result:?}");
+        assert!(result.data.is_none(), "{result:?}");
+        let diagnostics = result
+            .diagnostics
+            .as_ref()
+            .and_then(Value::as_array)
+            .expect("typed provider diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "provider_unavailable"),
+            "{diagnostics:?}"
+        );
+        assert!(
+            result.errors.iter().any(|error| {
+                error.contains("registered subsystem descriptor")
+                    && error.contains("Subsystems/Missing.xml")
+            }),
+            "{result:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_info_dry_run_does_not_read_a_missing_target() {
+        let root = test_workspace_root("unica-subsystem-dry-run-missing-target");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        let missing = workspace.join("src/Subsystems/Продажи.xml");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems/Продажи.xml".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(true)),
+        ]);
+
+        assert!(!missing.exists());
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .expect("dry-run must not require target or topology bytes");
+
+        assert!(result.ok, "{result:?}");
+        assert!(result.summary.contains("dry run"), "{result:?}");
+        assert!(result.data.is_none(), "{result:?}");
+        assert!(
+            !missing.exists(),
+            "dry-run must not create the missing target"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_validate_dry_run_does_not_read_a_missing_target() {
+        let root = test_workspace_root("unica-subsystem-validate-dry-run-missing-target");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        let missing = workspace.join("Subsystems/Продажи.xml");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("Subsystems/Продажи.xml".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(true)),
+        ]);
+
+        assert!(!missing.exists());
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.validate", &args)
+            .expect("read-only dry-run must not require target bytes");
+
+        assert!(result.ok, "{result:?}");
+        assert!(result.summary.contains("dry run"), "{result:?}");
+        assert!(
+            !missing.exists(),
+            "dry-run must not create the missing target"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_validate_missing_target_is_a_normal_typed_failure() {
+        let root = test_workspace_root("unica-subsystem-validate-missing-target");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("missing/Subsystem.xml".to_string()),
+            ),
+            ("dryRun".to_string(), Value::Bool(false)),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.validate", &args)
+            .expect("validation failures stay inside the public tool envelope");
+
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("File not found")),
+            "{result:?}"
+        );
+        assert!(result.data.is_none(), "{result:?}");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -6446,6 +6569,12 @@ mod tests {
         assert!(
             !read_after_cancellation.get(),
             "public preflight continued into registered descriptors after cancellation"
+        );
+        assert!(
+            result.diagnostics.as_ref().is_none_or(|diagnostics| {
+                !diagnostics.to_string().contains("provider_unavailable")
+            }),
+            "cancellation must not be mislabeled as provider_unavailable: {result:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -6536,6 +6665,12 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("provider deadline exceeded")),
             "{result:?}"
+        );
+        assert!(
+            result.diagnostics.as_ref().is_none_or(|diagnostics| {
+                !diagnostics.to_string().contains("provider_unavailable")
+            }),
+            "deadline expiry must not be mislabeled as provider_unavailable: {result:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

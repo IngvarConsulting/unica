@@ -671,6 +671,71 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test]
+    async fn subsystem_provider_failures_are_normal_typed_tool_results() {
+        for (case, descriptor) in [("missing", None), ("malformed", Some("<broken"))] {
+            let root = tempfile::Builder::new()
+                .prefix(&format!("unica-subsystem-mcp-{case}"))
+                .tempdir()
+                .unwrap();
+            let workspace = root.path().join("workspace");
+            let source = workspace.join("src");
+            std::fs::create_dir_all(source.join("Subsystems")).unwrap();
+            std::fs::write(
+                workspace.join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::write(
+                source.join("Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+            if let Some(descriptor) = descriptor {
+                std::fs::write(source.join("Subsystems/Sales.xml"), descriptor).unwrap();
+            }
+
+            let (mut client, _) = spawn_server(application_handler());
+            client.initialize().await;
+            client
+                .send(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "unica.subsystem.info",
+                        "arguments": {
+                            "cwd": workspace.canonicalize().unwrap(),
+                            "SubsystemPath": "src/Subsystems/Sales.xml"
+                        }
+                    }
+                }))
+                .await;
+            let response = client.receive().await;
+
+            assert!(response.get("error").is_none(), "{case}: {response}");
+            assert_eq!(response["result"]["isError"], false, "{case}: {response}");
+            let result: Value = serde_json::from_str(
+                response["result"]["content"][0]["text"]
+                    .as_str()
+                    .expect("text tool result"),
+            )
+            .unwrap();
+            assert_eq!(result["ok"], false, "{case}: {result}");
+            assert!(result.get("data").is_none(), "{case}: {result}");
+            assert!(result.get("tree").is_none(), "{case}: {result}");
+            assert!(
+                result["diagnostics"]
+                    .as_array()
+                    .is_some_and(|diagnostics| diagnostics
+                        .iter()
+                        .any(|diagnostic| { diagnostic["code"] == "provider_unavailable" })),
+                "{case}: {result}"
+            );
+            client.shutdown().await;
+        }
+    }
+
     #[test]
     fn tool_definitions_contain_orchestrated_tool_names() {
         let listed = tool_definitions(&crate::application::tools());

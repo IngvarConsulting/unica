@@ -486,10 +486,17 @@ fn add_operation_format_dependencies(
             add_named_child_tree_format_dependencies(args, paths, "Forms", "FormName")?
         }
         "interface-edit" => add_interface_format_dependencies(args, context, paths),
-        "subsystem-info" | "subsystem-validate" => {
+        "subsystem-info" => {
             paths.extend(subsystem_read_format_dependency_paths(
                 args, context, operation,
             )?);
+        }
+        "subsystem-validate" => {
+            if let Ok(dependencies) =
+                subsystem_read_format_dependency_paths(args, context, operation)
+            {
+                paths.extend(dependencies);
+            }
         }
         "subsystem-compile" => add_subsystem_compile_format_dependencies(args, context, paths)?,
         "subsystem-edit" => add_subsystem_edit_format_dependencies(args, context, paths)?,

@@ -37,7 +37,7 @@ use crate::infrastructure::platform::full_dump_publication::{
 };
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -243,7 +243,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         spec: ToolSpec,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
-        _dry_run: bool,
+        dry_run: bool,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<PreparedToolInvocation, String> {
@@ -255,19 +255,26 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             return Ok(PreparedToolInvocation::empty());
         };
 
+        if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
+            return prepared_subsystem_info_failure(error, false);
+        }
+        if dry_run {
+            return Ok(PreparedToolInvocation {
+                format_guard: Some(FormatGuardCheck::Allow),
+                handler: Some(HandlerOutcome::plain(AdapterOutcome::ok(format!(
+                    "dry run: {} would execute native XML/DSL operation",
+                    spec.name
+                )))),
+            });
+        }
+
         let prepared =
             match subsystem::prepare_subsystem_info(args, context, cancellation, deadline) {
                 Ok(prepared) => prepared,
                 Err(error) if subsystem::is_subsystem_info_control_error(&error) => {
-                    let native = NativeOperationAdapter::prepared_subsystem_info_with_data(
-                        subsystem::subsystem_info_failure(error),
-                    )?;
-                    return Ok(PreparedToolInvocation {
-                        format_guard: Some(FormatGuardCheck::Allow),
-                        handler: Some(native_handler_outcome(native)),
-                    });
+                    return prepared_subsystem_info_failure(error, false);
                 }
-                Err(error) => return Err(error),
+                Err(error) => return prepared_subsystem_info_failure(error, true),
             };
         let format_guard =
             crate::infrastructure::format_guard::evaluate_prepared_subsystem_info_format_guard(
@@ -276,13 +283,9 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             )
             .map_err(|error| error.to_string())?;
         if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
-            let native = NativeOperationAdapter::prepared_subsystem_info_with_data(
-                subsystem::subsystem_info_failure(error),
-            )?;
-            return Ok(PreparedToolInvocation {
-                format_guard: Some(format_guard),
-                handler: Some(native_handler_outcome(native)),
-            });
+            let mut failure = prepared_subsystem_info_failure(error, false)?;
+            failure.format_guard = Some(format_guard);
+            return Ok(failure);
         }
         let native = NativeOperationAdapter::prepared_subsystem_info_with_data(prepared.execution)?;
         Ok(PreparedToolInvocation {
@@ -674,6 +677,27 @@ fn native_handler_outcome(
         Some(data) => HandlerOutcome::with_data(outcome.adapter, data),
         None => HandlerOutcome::plain(outcome.adapter),
     }
+}
+
+fn prepared_subsystem_info_failure(
+    error: String,
+    provider_unavailable: bool,
+) -> Result<PreparedToolInvocation, String> {
+    let native = NativeOperationAdapter::prepared_subsystem_info_with_data(
+        subsystem::subsystem_info_failure(error),
+    )?;
+    let mut handler = native_handler_outcome(native);
+    if provider_unavailable {
+        handler.diagnostics = Some(json!([{
+            "code": "provider_unavailable",
+            "severity": "error",
+            "message": "registered subsystem topology is unavailable"
+        }]));
+    }
+    Ok(PreparedToolInvocation {
+        format_guard: Some(FormatGuardCheck::Allow),
+        handler: Some(handler),
+    })
 }
 
 /// Composition root: the registry of documentation providers. Declaration
