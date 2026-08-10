@@ -586,15 +586,11 @@ fn call_tool(
     let xdto_target = XdtoLogicalTarget::from_call(spec, args);
     let mut format_guard_warning = None;
     let mut format_diagnostic = None;
-    let format_guard = if dry_run && !spec.mutating {
-        FormatGuardCheck::Allow
-    } else {
-        match prepared.format_guard.take() {
-            Some(check) => check,
-            None => ports
-                .evaluate_format_guard(spec, args, &context)
-                .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?,
-        }
+    let format_guard = match prepared.format_guard.take() {
+        Some(check) => check,
+        None => ports
+            .evaluate_format_guard(spec, args, &context)
+            .map_err(|error| project_xdto_format_guard_error(xdto_target.as_ref(), error))?,
     };
     match format_guard {
         FormatGuardCheck::Allow => {}
