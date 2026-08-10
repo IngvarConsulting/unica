@@ -175,7 +175,7 @@ fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, Strin
                     policy.providers.insert(id.clone(), provider);
                 }
             }
-            "version" | "operational" => {}
+            "operational" => {}
             _ => unreachable!("shared root parser only returns known root fields"),
         }
     }
@@ -185,15 +185,6 @@ fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, Strin
 fn root_error_message(error: WorkspaceConfigRootError) -> String {
     match error.kind() {
         WorkspaceConfigRootErrorKind::InvalidToml => "файл не разбирается".to_string(),
-        WorkspaceConfigRootErrorKind::MissingVersion => {
-            "отсутствует обязательное поле version".to_string()
-        }
-        WorkspaceConfigRootErrorKind::InvalidVersionType => {
-            "поле version обязано быть целым числом".to_string()
-        }
-        WorkspaceConfigRootErrorKind::UnsupportedVersion => {
-            "версия конфигурации не поддерживается".to_string()
-        }
         WorkspaceConfigRootErrorKind::UnknownField => {
             format!("неизвестная секция [{}]", error.field_path())
         }
@@ -225,11 +216,11 @@ mod tests {
     }
 
     #[test]
-    fn mixed_versioned_container_serves_network_and_operational_consumers() {
+    fn mixed_unversioned_container_serves_network_and_operational_consumers() {
         let dir = workspace();
         std::fs::write(
             dir.path().join("unica.toml"),
-            "version = 1\n\n[network]\ndefault = \"deny\"\n\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
+            "[network]\ndefault = \"deny\"\n\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
         )
         .expect("write mixed workspace config");
 
@@ -250,7 +241,7 @@ mod tests {
         let dir = workspace();
         std::fs::write(
             dir.path().join("unica.toml"),
-            "version = 1\n\n[network]\ndefault = \"deny\"\n\n[operational.code_diagnostics]\nanalyze_timeout_seconds = 60\n",
+            "[network]\ndefault = \"deny\"\n\n[operational.code_diagnostics]\nanalyze_timeout_seconds = 60\n",
         )
         .expect("write mixed workspace config");
 
@@ -268,7 +259,7 @@ mod tests {
         let dir = workspace();
         std::fs::write(
             dir.path().join("unica.toml"),
-            "version = 1\n\n[network]\ndefault = \"deny\"\n\n[operational.code_intelligence]\nunknown_timeout = 60\n",
+            "[network]\ndefault = \"deny\"\n\n[operational.code_intelligence]\nunknown_timeout = 60\n",
         )
         .expect("write mixed workspace config");
 
@@ -284,11 +275,8 @@ mod tests {
     #[test]
     fn characterization_operational_loader_ignores_invalid_policy_subtrees() {
         let cases = [
-            ("version = 1\n\n[network]\nunknown = \"deny\"\n", "unknown"),
-            (
-                "version = 1\n\n[providers.v8std]\nnetwork = \"maybe\"\n",
-                "maybe",
-            ),
+            ("[network]\nunknown = \"deny\"\n", "unknown"),
+            ("[providers.v8std]\nnetwork = \"maybe\"\n", "maybe"),
         ];
 
         for (contents, policy_error_fragment) in cases {

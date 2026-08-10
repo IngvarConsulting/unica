@@ -4433,9 +4433,7 @@ source-set:
         let context = temp_context("diagnostics-operational-config-timeout");
         fs::write(
             context.workspace_root.join("unica.toml"),
-            r#"version = 1
-
-[operational.code_diagnostics]
+            r#"[operational.code_diagnostics]
 analyze_timeout_seconds = 900
 "#,
         )

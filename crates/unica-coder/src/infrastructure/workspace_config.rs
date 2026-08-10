@@ -1,14 +1,10 @@
 use toml::Table;
 
-const ROOT_FIELDS: &[&str] = &["version", "operational", "network", "providers"];
-const SUPPORTED_VERSION: i64 = 1;
+const ROOT_FIELDS: &[&str] = &["operational", "network", "providers"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspaceConfigRootErrorKind {
     InvalidToml,
-    MissingVersion,
-    InvalidVersionType,
-    UnsupportedVersion,
     UnknownField,
 }
 
@@ -33,10 +29,6 @@ pub(crate) fn parse_workspace_config_root(
 ) -> Result<Table, WorkspaceConfigRootError> {
     let root = contents.parse::<Table>().map_err(|_| invalid_toml())?;
     reject_unknown_root_fields(&root)?;
-    validate_present_version(&root)?;
-    if root.contains_key("operational") && !root.contains_key("version") {
-        return Err(missing_version());
-    }
     Ok(root)
 }
 
@@ -44,13 +36,6 @@ fn invalid_toml() -> WorkspaceConfigRootError {
     WorkspaceConfigRootError {
         kind: WorkspaceConfigRootErrorKind::InvalidToml,
         field_path: "$".to_string(),
-    }
-}
-
-fn missing_version() -> WorkspaceConfigRootError {
-    WorkspaceConfigRootError {
-        kind: WorkspaceConfigRootErrorKind::MissingVersion,
-        field_path: "version".to_string(),
     }
 }
 
@@ -64,72 +49,24 @@ fn reject_unknown_root_fields(root: &Table) -> Result<(), WorkspaceConfigRootErr
     })
 }
 
-fn validate_present_version(root: &Table) -> Result<(), WorkspaceConfigRootError> {
-    let Some(value) = root.get("version") else {
-        return Ok(());
-    };
-    let Some(version) = value.as_integer() else {
-        return Err(WorkspaceConfigRootError {
-            kind: WorkspaceConfigRootErrorKind::InvalidVersionType,
-            field_path: "version".to_string(),
-        });
-    };
-    if version != SUPPORTED_VERSION {
-        return Err(WorkspaceConfigRootError {
-            kind: WorkspaceConfigRootErrorKind::UnsupportedVersion,
-            field_path: "version".to_string(),
-        });
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn accepts_legacy_network_only_root_without_version() {
-        let root = parse_workspace_config_root("[network]\ndefault = \"deny\"\n")
-            .expect("legacy network-only root");
-
-        assert!(root.contains_key("network"));
-    }
-
-    #[test]
-    fn requires_version_only_when_operational_subtree_is_present() {
-        let error = parse_workspace_config_root(
+    fn accepts_operational_root_without_version() {
+        let root = parse_workspace_config_root(
             "[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
         )
-        .expect_err("operational subtree without version must fail");
-
-        assert_eq!(error.kind(), WorkspaceConfigRootErrorKind::MissingVersion);
-        assert_eq!(error.field_path(), "version");
+        .expect("unversioned operational root");
+        assert!(root.contains_key("operational"));
     }
 
     #[test]
-    fn validates_any_present_version_and_unknown_root_field() {
-        let cases = [
-            (
-                "version = \"one\"\n",
-                WorkspaceConfigRootErrorKind::InvalidVersionType,
-                "version",
-            ),
-            (
-                "version = 2\n",
-                WorkspaceConfigRootErrorKind::UnsupportedVersion,
-                "version",
-            ),
-            (
-                "version = 1\nunrelated = true\n",
-                WorkspaceConfigRootErrorKind::UnknownField,
-                "unrelated",
-            ),
-        ];
-
-        for (contents, kind, field_path) in cases {
-            let error = parse_workspace_config_root(contents).expect_err("invalid root");
-            assert_eq!(error.kind(), kind);
-            assert_eq!(error.field_path(), field_path);
-        }
+    fn rejects_version_as_unknown_root_field() {
+        let error = parse_workspace_config_root("version = 1\n")
+            .expect_err("version is outside the fixed schema");
+        assert_eq!(error.kind(), WorkspaceConfigRootErrorKind::UnknownField);
+        assert_eq!(error.field_path(), "version");
     }
 }

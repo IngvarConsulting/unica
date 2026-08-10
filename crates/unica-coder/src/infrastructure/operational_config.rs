@@ -147,15 +147,6 @@ fn root_error_diagnostic(
 ) -> OperationalConfigDiagnostic {
     let code = match error.kind() {
         WorkspaceConfigRootErrorKind::InvalidToml => OperationalConfigDiagnosticCode::InvalidToml,
-        WorkspaceConfigRootErrorKind::MissingVersion => {
-            OperationalConfigDiagnosticCode::MissingField
-        }
-        WorkspaceConfigRootErrorKind::InvalidVersionType => {
-            OperationalConfigDiagnosticCode::InvalidType
-        }
-        WorkspaceConfigRootErrorKind::UnsupportedVersion => {
-            OperationalConfigDiagnosticCode::UnsupportedVersion
-        }
         WorkspaceConfigRootErrorKind::UnknownField => OperationalConfigDiagnosticCode::UnknownField,
     };
     OperationalConfigDiagnostic::new(code, source, error.field_path())
@@ -290,7 +281,7 @@ mod tests {
     #[test]
     fn operational_consumer_rejects_unknown_root_field_after_shared_root_validation() {
         assert_diagnostic(
-            "version = 1\nunknown_root = true\n",
+            "unknown_root = true\n",
             OperationalConfigDiagnosticCode::UnknownField,
             "unknown_root",
         );
@@ -299,7 +290,7 @@ mod tests {
     #[test]
     fn operational_consumer_keeps_operational_subtree_errors_local() {
         assert_diagnostic(
-            "version = 1\n[network]\ndefault = \"deny\"\n\n[operational.unsupported]\ntimeout = 10\n",
+            "[network]\ndefault = \"deny\"\n\n[operational.unsupported]\ntimeout = 10\n",
             OperationalConfigDiagnosticCode::UnknownField,
             "operational.unsupported",
         );
@@ -337,9 +328,7 @@ mod tests {
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            r#"version = 1
-
-[operational.code_intelligence]
+            r#"[operational.code_intelligence]
 search_total_timeout_seconds = 100
 search_rlm_timeout_seconds = 40
 search_git_grep_timeout_seconds = 30
@@ -369,8 +358,7 @@ analyze_timeout_seconds = 900
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            r#"version = 1
-[operational.code_intelligence]
+            r#"[operational.code_intelligence]
 search_total_timeout_seconds = 100
 search_rlm_timeout_seconds = 40
 provider_read_timeout_seconds = 30
@@ -381,8 +369,7 @@ analyze_timeout_seconds = 600
         write_config(
             &workspace,
             LOCAL_CONFIG_FILENAME,
-            r#"version = 1
-[operational.code_intelligence]
+            r#"[operational.code_intelligence]
 search_rlm_timeout_seconds = 35
 [operational.code_diagnostics]
 analyze_timeout_seconds = 700
@@ -408,8 +395,7 @@ analyze_timeout_seconds = 700
         write_config(
             &workspace,
             LOCAL_CONFIG_FILENAME,
-            r#"version = 1
-[operational.code_intelligence]
+            r#"[operational.code_intelligence]
 search_total_timeout_seconds = 90
 "#,
         );
@@ -432,8 +418,7 @@ search_total_timeout_seconds = 90
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            r#"version = 1
-[operational.code_intelligence]
+            r#"[operational.code_intelligence]
 search_total_timeout_seconds = 120
 search_rlm_timeout_seconds = 45
 search_git_grep_timeout_seconds = 120
@@ -468,8 +453,7 @@ analyze_timeout_seconds = 3600
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            r#"version = 1
-[operational.code_intelligence]
+            r#"[operational.code_intelligence]
 search_total_timeout_seconds = 1
 search_rlm_timeout_seconds = 1
 search_git_grep_timeout_seconds = 1
@@ -496,12 +480,12 @@ analyze_timeout_seconds = 30
         write_config(
             &first,
             SHARED_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
+            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
         );
         write_config(
             &second,
             SHARED_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 80\n",
+            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 80\n",
         );
 
         let first_config = load_operational_config(first.path()).expect("load first workspace");
@@ -523,14 +507,14 @@ analyze_timeout_seconds = 30
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
+            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
         );
         let first = load_operational_config(workspace.path()).expect("load first snapshot");
 
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 80\n",
+            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 80\n",
         );
         let second = load_operational_config(workspace.path()).expect("load second snapshot");
 
@@ -545,50 +529,40 @@ analyze_timeout_seconds = 30
     }
 
     #[test]
-    fn version_and_structure_errors_are_typed_with_exact_paths() {
+    fn structure_errors_are_typed_with_exact_paths() {
         let cases = [
             (
-                "[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
-                OperationalConfigDiagnosticCode::MissingField,
+                "version = 1\n",
+                OperationalConfigDiagnosticCode::UnknownField,
                 "version",
             ),
             (
-                "version = \"one\"\n",
-                OperationalConfigDiagnosticCode::InvalidType,
-                "version",
-            ),
-            (
-                "version = 2\n",
-                OperationalConfigDiagnosticCode::UnsupportedVersion,
-                "version",
-            ),
-            (
-                "version = 1\nunsupported = true\n",
+                "unsupported = true\n",
                 OperationalConfigDiagnosticCode::UnknownField,
                 "unsupported",
             ),
             (
-                "version = 1\noperational = 1\n",
+                "operational = 1\n",
                 OperationalConfigDiagnosticCode::InvalidType,
                 "operational",
             ),
             (
-                "version = 1\n[operational.network]\ntimeout = 10\n",
+                "[operational.network]\ntimeout = 10\n",
                 OperationalConfigDiagnosticCode::UnknownField,
                 "operational.network",
             ),
             (
-                "version = 1\n[operational]\ncode_intelligence = 10\n",
+                "[operational]\ncode_intelligence = 10\n",
                 OperationalConfigDiagnosticCode::InvalidType,
                 "operational.code_intelligence",
             ),
             (
-                "version = 1\n[operational.code_intelligence]\nunknown_timeout_seconds = 10\n",
+                "[operational.code_intelligence]\nunknown_timeout_seconds = 10\n",
                 OperationalConfigDiagnosticCode::UnknownField,
                 "operational.code_intelligence.unknown_timeout_seconds",
             ),
             (
-                "version = 1\n[operational.code_diagnostics]\nunknown_timeout_seconds = 10\n",
+                "[operational.code_diagnostics]\nunknown_timeout_seconds = 10\n",
                 OperationalConfigDiagnosticCode::UnknownField,
                 "operational.code_diagnostics.unknown_timeout_seconds",
             ),
@@ -653,12 +627,12 @@ analyze_timeout_seconds = 30
         ];
 
         for (field, value, path, section) in cases {
-            let contents = format!("version = 1\n[operational.{section}]\n{field} = {value}\n");
+            let contents = format!("[operational.{section}]\n{field} = {value}\n");
             assert_diagnostic(&contents, OperationalConfigDiagnosticCode::OutOfRange, path);
         }
 
         assert_diagnostic(
-            "version = 1\n[operational.code_intelligence]\nprovider_read_timeout_seconds = \"45\"\n",
+            "[operational.code_intelligence]\nprovider_read_timeout_seconds = \"45\"\n",
             OperationalConfigDiagnosticCode::InvalidType,
             "operational.code_intelligence.provider_read_timeout_seconds",
         );
@@ -667,7 +641,7 @@ analyze_timeout_seconds = 30
     #[test]
     fn syntax_errors_report_only_the_root_path() {
         assert_diagnostic(
-            "version = 1\nsecret-value =\n",
+            "secret-value =\n",
             OperationalConfigDiagnosticCode::InvalidToml,
             "$",
         );
@@ -679,12 +653,12 @@ analyze_timeout_seconds = 30
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 121\n",
+            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 121\n",
         );
         write_config(
             &workspace,
             LOCAL_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
+            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
         );
 
         let diagnostic = load_operational_config(workspace.path())
@@ -703,11 +677,11 @@ analyze_timeout_seconds = 30
     #[test]
     fn invalid_local_overlay_is_not_ignored() {
         let workspace = tempdir().expect("workspace tempdir");
-        write_config(&workspace, SHARED_CONFIG_FILENAME, "version = 1\n");
+        write_config(&workspace, SHARED_CONFIG_FILENAME, "");
         write_config(
             &workspace,
             LOCAL_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nprovider_read_timeout_seconds = 46\n",
+            "[operational.code_intelligence]\nprovider_read_timeout_seconds = 46\n",
         );
 
         let diagnostic =
@@ -724,27 +698,22 @@ analyze_timeout_seconds = 30
     }
 
     #[test]
-    fn every_present_local_file_requires_version_one() {
+    fn every_present_local_file_accepts_an_unversioned_operational_layer() {
         let workspace = tempdir().expect("workspace tempdir");
-        write_config(&workspace, SHARED_CONFIG_FILENAME, "version = 1\n");
+        write_config(&workspace, SHARED_CONFIG_FILENAME, "");
         write_config(
             &workspace,
             LOCAL_CONFIG_FILENAME,
             "[operational.code_intelligence]\nsearch_total_timeout_seconds = 90\n",
         );
 
-        let diagnostic = load_operational_config(workspace.path())
-            .expect_err("present local file without a version must fail");
+        let config = load_operational_config(workspace.path())
+            .expect("present local file without a version must load");
 
         assert_eq!(
-            diagnostic.source(),
-            OperationalConfigDiagnosticSource::Local
+            config.code_intelligence().search_total_timeout(),
+            Duration::from_secs(90)
         );
-        assert_eq!(
-            diagnostic.code(),
-            OperationalConfigDiagnosticCode::MissingField
-        );
-        assert_eq!(diagnostic.field_path(), "version");
     }
 
     #[test]
@@ -766,7 +735,7 @@ analyze_timeout_seconds = 30
                 &workspace,
                 SHARED_CONFIG_FILENAME,
                 &format!(
-                    "version = 1\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 20\n{provider_line}\n"
+                    "[operational.code_intelligence]\nsearch_total_timeout_seconds = 20\n{provider_line}\n"
                 ),
             );
 
@@ -786,12 +755,12 @@ analyze_timeout_seconds = 30
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nsearch_rlm_timeout_seconds = 30\n",
+            "[operational.code_intelligence]\nsearch_rlm_timeout_seconds = 30\n",
         );
         write_config(
             &workspace,
             LOCAL_CONFIG_FILENAME,
-            "version = 1\n[operational.code_intelligence]\nsearch_total_timeout_seconds = 20\n",
+            "[operational.code_intelligence]\nsearch_total_timeout_seconds = 20\n",
         );
 
         let diagnostic = load_operational_config(workspace.path())
@@ -815,7 +784,7 @@ analyze_timeout_seconds = 30
             &workspace,
             SHARED_CONFIG_FILENAME,
             &format!(
-                "version = 1\n[operational.code_intelligence]\nprovider_read_timeout_seconds = \"{secret}\"\n"
+                "[operational.code_intelligence]\nprovider_read_timeout_seconds = \"{secret}\"\n"
             ),
         );
 
