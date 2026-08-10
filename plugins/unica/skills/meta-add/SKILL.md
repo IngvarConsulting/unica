@@ -57,10 +57,10 @@ allowed-tools:
           "collection": "attributes",
           "elements": [
             {
-              "name": "ВнешнийКод",
+              "name": "ВнешнийИдентификатор",
               "type": {
                 "variants": [
-                  {"kind": "string", "length": 36, "allowedLength": "variable"}
+                  {"kind": "uuid"}
                 ]
               },
               "required": true

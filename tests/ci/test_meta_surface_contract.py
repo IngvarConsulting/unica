@@ -141,6 +141,86 @@ def registered_tool_blocks() -> dict[str, str]:
 
 
 class MetaSurfaceContractTests(unittest.TestCase):
+    def test_meta_observation_and_mutation_capability_contract_is_published(
+        self,
+    ) -> None:
+        adr = (
+            REPO_ROOT
+            / "spec/decisions/0042-meta-observation-does-not-depend-on-mutation.md"
+        ).read_text(encoding="utf-8")
+        superseded = (
+            REPO_ROOT / "spec/decisions/0028-chtenie-meta-info-ne-teryaet-dannye.md"
+        ).read_text(encoding="utf-8")
+        invariants = (
+            REPO_ROOT / "spec/architecture/invariants.md"
+        ).read_text(encoding="utf-8")
+        surface = (
+            REPO_ROOT / "spec/architecture/tool-surface.md"
+        ).read_text(encoding="utf-8")
+        surface_review = json.loads(
+            (
+                REPO_ROOT / "spec/architecture/tool-surface-review.json"
+            ).read_text(encoding="utf-8")
+        )
+        meta_info = (
+            REPO_ROOT / "plugins/unica/skills/meta-info/SKILL.md"
+        ).read_text(encoding="utf-8")
+        meta_edit = (
+            REPO_ROOT / "plugins/unica/skills/meta-edit/SKILL.md"
+        ).read_text(encoding="utf-8")
+        format_spec = (
+            REPO_ROOT / "plugins/unica/references/specs/1c-config-objects-spec.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Статус: `accepted`", adr)
+        self.assertIn("- Статус: `superseded`", superseded)
+        self.assertIn("ADR-0042", superseded)
+        self.assertIn("INV-MCP-META-OBSERVATION", invariants)
+        for text in (surface, meta_info):
+            for marker in ("mutationCapability", "editable", "readOnly", "uuid"):
+                self.assertIn(marker, text)
+        self.assertIn('{"kind": "uuid"}', meta_edit)
+        self.assertIn("Forms/<Имя>.xml", format_spec)
+        self.assertIn("Templates/<Имя>.xml", format_spec)
+        self.assertNotIn("Forms/<Имя>/<Имя>.xml", format_spec)
+        self.assertNotIn("Templates/<Имя>/<Имя>.xml", format_spec)
+
+        command_section = format_spec.split("### 6.5. Команда (Command)", 1)[1].split(
+            "---", 1
+        )[0]
+        self.assertIn(
+            "Отдельного файла `Commands/<Имя>.xml` платформа не создаёт",
+            command_section,
+        )
+        self.assertIn("Commands/<Имя>/Ext/CommandModule.bsl", command_section)
+
+        html_section = format_spec.split("Для `HTMLDocument`", 1)[1].split(
+            "### 6.5.", 1
+        )[0]
+        self.assertIn("HTML-страница не разбирается как XML", html_section)
+        self.assertIn("кодировку UTF-8", html_section)
+        self.assertIn("сохраняется побайтово", html_section)
+
+        meta_info_compact = " ".join(meta_info.split())
+        self.assertIn(
+            "Синтаксически корректный, но ещё не моделируемый платформенный QName",
+            meta_info_compact,
+        )
+        self.assertIn(
+            "даёт warning, не превращая весь вызов в ошибку", meta_info_compact
+        )
+
+        review = surface_review["unica.meta.info"]["result"]
+        self.assertEqual(review["target"], "достигнут")
+        for marker in (
+            "встроенные команды",
+            "mutationCapability: editable | readOnly",
+            "UUID представлен вариантом `uuid`",
+            "QName оставляет только свой элемент `incomplete` с warning",
+            "HTML-страницы зарегистрированных макетов удерживаются как UTF-8 без XML-разбора",
+        ):
+            self.assertIn(marker, review["now"])
+
     def test_subsystem_membership_has_one_registered_topology_owner(self) -> None:
         ports = (REPO_ROOT / "crates/unica-coder/src/application/ports.rs").read_text(
             encoding="utf-8"

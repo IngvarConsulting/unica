@@ -671,6 +671,26 @@ pub(super) struct TypedChildResourcePlan {
     pub(super) relation_dependencies: Vec<TypedRelationDependency>,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct TypedChildObservation {
+    pub(super) validation_resources: Vec<MetadataResourceImage>,
+    pub(super) validation_footprints: Vec<MetadataChildFootprintEvidence>,
+    pub(super) diagnostics: Vec<MetaDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypedChildDescriptorStorage {
+    Standalone,
+    InlineOwner,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TypedChildStorageProfile {
+    directory: &'static str,
+    resource: MetaPublicationResource,
+    descriptor: TypedChildDescriptorStorage,
+}
+
 #[derive(Debug)]
 pub(super) struct TypedRelationDependency {
     pub(super) handle: ClosedPlatformXmlTarget,
@@ -866,6 +886,7 @@ pub(super) fn plan_typed_child_resources(
         collection: MetaCollection,
         origin: Origin,
         current_name: Option<String>,
+        touched: bool,
     }
 
     let mut states = Vec::<State>::new();
@@ -885,6 +906,7 @@ pub(super) fn plan_typed_child_resources(
                         collection: *collection,
                         origin: Origin::Added,
                         current_name: Some(element.name.clone()),
+                        touched: true,
                     });
                     active.insert(
                         (collection.as_str().to_string(), element.name.clone()),
@@ -906,6 +928,7 @@ pub(super) fn plan_typed_child_resources(
                             collection: *collection,
                             origin: Origin::Existing(element.name.clone()),
                             current_name: Some(element.name.clone()),
+                            touched: true,
                         });
                         index
                     });
@@ -914,6 +937,7 @@ pub(super) fn plan_typed_child_resources(
                         .clone()
                         .unwrap_or_else(|| element.name.clone());
                     states[index].current_name = Some(next_name.clone());
+                    states[index].touched = true;
                     active.insert((collection.as_str().to_string(), next_name), index);
                 }
             }
@@ -929,10 +953,12 @@ pub(super) fn plan_typed_child_resources(
                             collection: *collection,
                             origin: Origin::Existing(name.clone()),
                             current_name: Some(name.clone()),
+                            touched: true,
                         });
                         index
                     });
                     states[index].current_name = None;
+                    states[index].touched = true;
                 }
             }
             _ => {}
@@ -981,6 +1007,7 @@ pub(super) fn plan_typed_child_resources(
                     collection,
                     origin: Origin::Existing(name.clone()),
                     current_name: Some(name),
+                    touched: false,
                 });
             }
         }
@@ -1001,8 +1028,8 @@ pub(super) fn plan_typed_child_resources(
             .find(|state| state.collection.as_str() == collection_name)
             .map(|state| state.collection)
             .expect("a touched physical collection has at least one state");
-        let (directory, _) = typed_physical_collection(collection).unwrap();
-        let collection_dir = object_dir.join(directory);
+        let profile = typed_child_storage_profile(collection).unwrap();
+        let collection_dir = object_dir.join(profile.directory);
         let snapshot = snapshot_directory_membership(
             &collection_dir,
             DirectoryMembershipSelector::AllDirectEntries,
@@ -1015,8 +1042,9 @@ pub(super) fn plan_typed_child_resources(
     }
 
     for state in &states {
-        let (directory, resource) = typed_physical_collection(state.collection).unwrap();
-        let collection_dir = object_dir.join(directory);
+        let profile = typed_child_storage_profile(state.collection).unwrap();
+        let collection_dir = object_dir.join(profile.directory);
+        let resource = profile.resource;
         let mut initial_descriptor = None;
         let mut initial_payload = Vec::new();
         let mut initial_payload_directories = Vec::new();
@@ -1028,10 +1056,12 @@ pub(super) fn plan_typed_child_resources(
                 state.collection,
                 initial_name,
             )?;
-            let descriptor = collection_dir.join(format!("{initial_name}.xml"));
-            let bytes = read_typed_child_file(&descriptor, owner)?;
-            initial_descriptor = Some(bytes.clone());
-            initial_files.insert(descriptor, bytes);
+            if profile.descriptor == TypedChildDescriptorStorage::Standalone {
+                let descriptor = collection_dir.join(format!("{initial_name}.xml"));
+                let bytes = read_typed_child_file(&descriptor, owner)?;
+                initial_descriptor = Some(bytes.clone());
+                initial_files.insert(descriptor, bytes);
+            }
             let payload_root = collection_dir.join(initial_name);
             child_topology_roots.push((payload_root.clone(), initial_child.clone()));
             if payload_root.exists() {
@@ -1063,10 +1093,12 @@ pub(super) fn plan_typed_child_resources(
                 }
                 Origin::Existing(_) | Origin::Added => Err(failure),
             })?;
-            final_files.insert(
-                collection_dir.join(format!("{final_name}.xml")),
-                bytes.clone(),
-            );
+            if profile.descriptor == TypedChildDescriptorStorage::Standalone {
+                final_files.insert(
+                    collection_dir.join(format!("{final_name}.xml")),
+                    bytes.clone(),
+                );
+            }
             plan.validation_resources.push(MetadataResourceImage {
                 role: typed_child_role(state.collection, owner, final_name),
                 bytes: bytes.clone(),
@@ -1160,8 +1192,10 @@ pub(super) fn plan_typed_child_resources(
                 }
             }
             (Origin::Existing(initial_name), Some(final_name)) => {
-                if initial_name != final_name
-                    || initial_descriptor.as_ref() != final_descriptor.as_ref()
+                if state.touched
+                    && (initial_name != final_name
+                        || profile.descriptor == TypedChildDescriptorStorage::InlineOwner
+                        || initial_descriptor.as_ref() != final_descriptor.as_ref())
                 {
                     plan.publication_plan.push(MetaPublicationPlanEntry {
                         action: MetaPublicationAction::Update,
@@ -1339,12 +1373,192 @@ fn typed_physical_owner_child_name(node: roxmltree::Node<'_, '_>) -> Option<Stri
 fn typed_physical_collection(
     collection: MetaCollection,
 ) -> Option<(&'static str, MetaPublicationResource)> {
+    typed_child_storage_profile(collection).map(|profile| (profile.directory, profile.resource))
+}
+
+fn typed_child_storage_profile(collection: MetaCollection) -> Option<TypedChildStorageProfile> {
     match collection {
-        MetaCollection::Forms => Some(("Forms", MetaPublicationResource::Form)),
-        MetaCollection::Templates => Some(("Templates", MetaPublicationResource::Template)),
-        MetaCollection::Commands => Some(("Commands", MetaPublicationResource::Command)),
+        MetaCollection::Forms => Some(TypedChildStorageProfile {
+            directory: "Forms",
+            resource: MetaPublicationResource::Form,
+            descriptor: TypedChildDescriptorStorage::Standalone,
+        }),
+        MetaCollection::Templates => Some(TypedChildStorageProfile {
+            directory: "Templates",
+            resource: MetaPublicationResource::Template,
+            descriptor: TypedChildDescriptorStorage::Standalone,
+        }),
+        MetaCollection::Commands => Some(TypedChildStorageProfile {
+            directory: "Commands",
+            resource: MetaPublicationResource::Command,
+            descriptor: TypedChildDescriptorStorage::InlineOwner,
+        }),
         _ => None,
     }
+}
+
+pub(super) fn observe_typed_child_resources(
+    descriptor_path: &Path,
+    owner: &MetadataAddress,
+    object_kind: &str,
+    object_name: &str,
+    owner_xml: &str,
+) -> Result<TypedChildObservation, MetaFailure> {
+    let document = Document::parse(owner_xml.trim_start_matches('\u{feff}')).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed owner observation image is not valid XML",
+                None,
+            )
+            .with_metadata_path(owner.clone()),
+        )
+    })?;
+    let object = meta_edit_object_node(&document).map_err(|_| {
+        MetaFailure::from(
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "typed owner observation object is unavailable",
+                None,
+            )
+            .with_metadata_path(owner.clone()),
+        )
+    })?;
+    let Some(children) = meta_info_child(object, "ChildObjects") else {
+        return Ok(TypedChildObservation::default());
+    };
+
+    let object_dir = descriptor_path.with_extension("");
+    let mut observation = TypedChildObservation::default();
+    for (collection, tag) in [
+        (MetaCollection::Forms, "Form"),
+        (MetaCollection::Templates, "Template"),
+        (MetaCollection::Commands, "Command"),
+    ] {
+        let profile = typed_child_storage_profile(collection)
+            .expect("closed observed child collection has a storage profile");
+        let collection_dir = object_dir.join(profile.directory);
+        for child_node in meta_info_children(children, tag) {
+            let Some(name) = typed_physical_owner_child_name(child_node) else {
+                continue;
+            };
+            let child = match typed_child_logical_address(
+                owner,
+                object_kind,
+                object_name,
+                collection,
+                &name,
+            ) {
+                Ok(child) => child,
+                Err(failure) => {
+                    observation.diagnostics.extend(failure.diagnostics);
+                    continue;
+                }
+            };
+            let descriptor = match profile.descriptor {
+                TypedChildDescriptorStorage::Standalone => {
+                    let path = collection_dir.join(format!("{name}.xml"));
+                    match fs::read(&path) {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            observation.diagnostics.push(
+                                typed_diagnostic(
+                                    MetaDiagnosticCode::ProviderUnavailable,
+                                    format!("typed child descriptor is unavailable: {child}"),
+                                    Some("resources.child.descriptor"),
+                                )
+                                .with_metadata_path(child.clone()),
+                            );
+                            continue;
+                        }
+                    }
+                }
+                TypedChildDescriptorStorage::InlineOwner => {
+                    match typed_child_descriptor_image(owner_xml, tag, &name) {
+                        Ok(bytes) => bytes,
+                        Err(failure) => {
+                            observation.diagnostics.extend(failure.diagnostics);
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            observation
+                .validation_resources
+                .push(MetadataResourceImage {
+                    role: typed_child_role(collection, owner, &name),
+                    bytes: descriptor.clone(),
+                });
+            let template_type = (collection == MetaCollection::Templates)
+                .then(|| typed_template_type_from_descriptor(&descriptor, &child))
+                .transpose();
+            let template_type = match template_type {
+                Ok(value) => value,
+                Err(failure) => {
+                    observation.diagnostics.extend(failure.diagnostics);
+                    continue;
+                }
+            };
+
+            let payload_root = collection_dir.join(&name);
+            let (payload, directories) = if payload_root.exists() {
+                match read_typed_child_tree(&payload_root) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        observation.diagnostics.push(
+                            typed_diagnostic(
+                                MetaDiagnosticCode::ProviderUnavailable,
+                                format!(
+                                    "typed child resource topology is unavailable: {child}: {}",
+                                    error.public_message()
+                                ),
+                                Some("resources.child.topology"),
+                            )
+                            .with_metadata_path(child.clone()),
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            let footprint = match validate_typed_child_footprint(
+                collection,
+                template_type,
+                &child,
+                &payload,
+                &directories,
+            ) {
+                Ok(footprint) => footprint,
+                Err(failure) => {
+                    observation.diagnostics.extend(failure.diagnostics);
+                    continue;
+                }
+            };
+            let retained = footprint.retained.clone();
+            observation.validation_footprints.push(footprint);
+            for (relative, bytes) in payload {
+                let role = match typed_child_payload_role(
+                    collection,
+                    &child,
+                    &relative,
+                    template_type,
+                    &retained,
+                ) {
+                    Ok(role) => role,
+                    Err(failure) => {
+                        observation.diagnostics.extend(failure.diagnostics);
+                        continue;
+                    }
+                };
+                observation
+                    .validation_resources
+                    .push(MetadataResourceImage { role, bytes });
+            }
+        }
+    }
+    Ok(observation)
 }
 
 #[derive(Debug)]
@@ -4264,6 +4478,7 @@ pub(super) fn parse_typed_metadata_type(
                     },
                 },
                 "xs:boolean" => MetadataTypeVariant::Boolean,
+                "v8:UUID" => MetadataTypeVariant::Uuid,
                 "xs:dateTime" => MetadataTypeVariant::Date {
                     fractions: match qualifier_text("DateQualifiers", "DateFractions") {
                         Some("Date") => DateFractions::Date,
@@ -5452,6 +5667,7 @@ mod tests {
                 sign: NumberSign::NonNegative,
             },
             MetadataTypeVariant::Boolean,
+            MetadataTypeVariant::Uuid,
             MetadataTypeVariant::Date {
                 fractions: DateFractions::DateTime,
             },
@@ -5494,10 +5710,39 @@ mod tests {
         assert!(xml.contains("<v8:AllowedLength>Fixed</v8:AllowedLength>"));
         assert!(xml.contains("<v8:Type>xs:decimal</v8:Type>"));
         assert!(xml.contains("<v8:Type>xs:boolean</v8:Type>"));
+        assert!(xml.contains("<v8:Type>v8:UUID</v8:Type>"));
         assert!(xml.contains("<v8:Type>xs:dateTime</v8:Type>"));
         assert!(xml.contains("<v8:Type>cfg:CatalogRef.Items</v8:Type>"));
         assert!(xml.contains("<v8:TypeSet>cfg:DefinedType.ExternalCode</v8:TypeSet>"));
         assert!(xml.contains("<FillChecking>ShowError</FillChecking>"));
+    }
+
+    #[test]
+    fn tracked_platform_uuid_fixture_round_trips_through_the_typed_emitter() {
+        let xml = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/unica_mcp_script_parity/",
+            "meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+        ));
+        let document = Document::parse(xml).unwrap();
+        let properties = document
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+            .find(|properties| {
+                meta_info_child(*properties, "Type").is_some_and(|type_node| {
+                    meta_info_children(type_node, "Type")
+                        .iter()
+                        .any(|node| node.text() == Some("v8:UUID"))
+                })
+            })
+            .expect("tracked fixture contains a UUID metadata field");
+        let parsed = parse_typed_metadata_type(&xml[properties.range()]).unwrap();
+        assert_eq!(parsed.variants, vec![MetadataTypeVariant::Uuid]);
+
+        let mut emitted = Vec::new();
+        emit_meta_typed_value_type(&mut emitted, "\t", &parsed);
+        let properties = format!("<Properties>{}</Properties>", emitted.join("\n"));
+        assert_eq!(parse_typed_metadata_type(&properties).unwrap(), parsed);
     }
 
     fn information_register_xml_with_data_cr() -> String {
@@ -7118,7 +7363,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_command_add_plans_only_its_required_descriptor() {
+    fn typed_command_add_does_not_invent_a_standalone_descriptor() {
         let root = std::env::temp_dir().join(format!(
             "unica-meta-edit-command-plan-{}",
             uuid::Uuid::new_v4()
@@ -7147,12 +7392,55 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resources.file_mutations.len(), 1);
+        assert!(
+            resources.file_mutations.is_empty(),
+            "platform commands are inline owner descriptors: {:?}",
+            resources.file_mutations
+        );
+        assert_eq!(resources.publication_plan.len(), 1);
         assert_eq!(
-            resources.file_mutations[0].path,
-            root.join("Documents/Order/Commands/Open.xml")
+            resources.publication_plan[0]
+                .metadata_path
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "Document.Order.Command.Open"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn child_observation_localizes_an_invalid_address_and_keeps_valid_siblings() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-meta-observe-invalid-child-address-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let descriptor_path = root.join("Catalogs/Items.xml");
+        let owner = metadata_reference("Catalog.Items").metadata_path;
+        let owner_xml = object_xml("Catalog", "Items", "").replace(
+            "<ChildObjects/>",
+            r#"<ChildObjects>
+			<Form>Bad..Name</Form>
+			<Command uuid="22222222-2222-4222-8222-222222222222">
+				<Properties><Name>Refresh</Name></Properties>
+			</Command>
+		</ChildObjects>"#,
+        );
+
+        let observation =
+            observe_typed_child_resources(&descriptor_path, &owner, "Catalog", "Items", &owner_xml)
+                .unwrap();
+
+        assert!(observation.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message == "typed child logical address cannot be represented"
+        }));
+        assert!(observation.validation_resources.iter().any(|resource| {
+            matches!(
+                &resource.role,
+                MetadataResourceRole::Command { owner, name }
+                    if owner.as_str() == "Catalog.Items" && name == "Refresh"
+            )
+        }));
     }
 
     #[test]

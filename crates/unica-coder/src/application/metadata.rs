@@ -860,6 +860,7 @@ fn parse_type_variant(
             },
         ),
         "boolean" => (&["kind"][..], MetadataTypeVariant::Boolean),
+        "uuid" => (&["kind"][..], MetadataTypeVariant::Uuid),
         "date" => (
             &["kind", "fractions"][..],
             MetadataTypeVariant::Date {
@@ -1997,6 +1998,7 @@ fn metadata_type_schema() -> Value {
         "string",
         "number",
         "boolean",
+        "uuid",
         "date",
         "binaryData",
         "valueStorage",
@@ -2091,6 +2093,7 @@ fn type_variant_schema() -> Value {
             string,
             number,
             tagged_type_variant("boolean", json!({}), &["kind"]),
+            tagged_type_variant("uuid", json!({}), &["kind"]),
             tagged_type_variant(
                 "date",
                 json!({
@@ -5287,6 +5290,32 @@ mod tests {
                 allowed_length: StringLengthMode::Fixed
             }
         ));
+    }
+
+    #[test]
+    fn schema_and_parser_accept_the_uuid_writer_variant() {
+        let call = edit(json!({
+            "op": "add",
+            "collection": "attributes",
+            "elements": [{
+                "name": "ExternalId",
+                "type": {"variants": [{"kind": "uuid"}]}
+            }]
+        }));
+        assert!(validate_schema_and_parse(MetadataOperation::Edit, &call));
+
+        let MetadataRequest::Edit(request) =
+            parse_metadata_request(MetadataOperation::Edit, &object(call)).unwrap()
+        else {
+            panic!("expected edit request")
+        };
+        let MetaEditOperation::Add { elements, .. } = &request.operations[0] else {
+            panic!("expected add operation")
+        };
+        assert_eq!(
+            elements[0].r#type.as_ref().unwrap().variants,
+            vec![MetadataTypeVariant::Uuid]
+        );
     }
 
     #[test]

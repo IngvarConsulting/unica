@@ -8,7 +8,8 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode,
     MetaElementData, MetaEventSource, MetaPropertyData, MetaPropertyValue, MetaRelationTargetData,
-    MetaRelationsData, MetaSupportStatus, MetadataKind, METADATA_PROPERTY_SPECS,
+    MetaRelationsData, MetaSupportStatus, MetadataKind, ObservedMetadataType,
+    METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -383,20 +384,20 @@ pub(crate) fn read_typed_meta_info(
         deadline,
         cancellation,
     ));
-    let child_resources = match super::edit::plan_typed_child_resources(
+    let child_resources = match super::edit::observe_typed_child_resources(
         &resolved.descriptor_path,
         target,
         kind.as_str(),
         &local.name,
-        &[],
         xml,
     ) {
         Ok(resources) => resources,
         Err(failure) => {
             local.diagnostics.extend(failure.diagnostics);
-            super::edit::TypedChildResourcePlan::default()
+            super::edit::TypedChildObservation::default()
         }
     };
+    local.diagnostics.extend(child_resources.diagnostics);
     validation_resources.extend(child_resources.validation_resources);
     let validation_subject = MetadataValidationSubject {
         target: target.clone(),
@@ -964,14 +965,14 @@ fn typed_element(
     let properties_text = &xml[properties.range()];
     let r#type = if meta_info_child(properties, "Type").is_some() {
         match super::edit::parse_typed_metadata_type(properties_text) {
-            Ok(value) => Some(value),
+            Ok(value) => Some(ObservedMetadataType::editable(value)),
             Err(diagnostic) => {
                 incomplete = true;
-                let read_only = typed_read_only_platform_type(properties_text);
-                let typed = if read_only {
+                let unmodelled = typed_unmodelled_platform_type(properties);
+                let typed = if unmodelled {
                     MetaDiagnostic::warning(
                         MetaDiagnosticCode::ValidationFailed,
-                        "metadata type is valid but outside the public mutation algebra",
+                        "metadata type is syntactically valid but not modelled by this format profile",
                     )
                 } else {
                     MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, diagnostic.message)
@@ -1045,18 +1046,73 @@ fn typed_element(
     })
 }
 
-fn typed_read_only_platform_type(properties_text: &str) -> bool {
-    const WRAPPER_START: &str = r#"<Root xmlns:v8="http://v8.1c.ru/8.1/data/core">"#;
-    let wrapped = format!("{WRAPPER_START}{properties_text}</Root>");
-    let Ok(document) = Document::parse(&wrapped) else {
+fn typed_unmodelled_platform_type(properties: roxmltree::Node<'_, '_>) -> bool {
+    const DATA_CORE: &str = "http://v8.1c.ru/8.1/data/core";
+    const XML_SCHEMA: &str = "http://www.w3.org/2001/XMLSchema";
+    const CURRENT_CONFIG: &str = "http://v8.1c.ru/8.1/data/enterprise/current-config";
+
+    let Some(container) = meta_info_child(properties, "Type") else {
         return false;
     };
-    document.descendants().any(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
-            && node.tag_name().name() == "Type"
-            && matches!(node.text(), Some("v8:UUID"))
-    })
+    let nodes = container
+        .children()
+        .filter(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(DATA_CORE)
+                && matches!(node.tag_name().name(), "Type" | "TypeSet")
+        })
+        .collect::<Vec<_>>();
+    if nodes.is_empty() {
+        return false;
+    }
+
+    let mut saw_unmodelled = false;
+    for node in nodes {
+        let Some(raw) = node.text().map(str::trim) else {
+            return false;
+        };
+        let Some((prefix, local)) = platform_qname_parts(raw) else {
+            return false;
+        };
+        let Some(namespace) = node.lookup_namespace_uri(Some(prefix)) else {
+            return false;
+        };
+        if !matches!(namespace, DATA_CORE | XML_SCHEMA | CURRENT_CONFIG) {
+            return false;
+        }
+        let modelled = match (node.tag_name().name(), namespace, local) {
+            ("Type", XML_SCHEMA, "string" | "decimal" | "boolean" | "dateTime" | "binary") => true,
+            ("Type", DATA_CORE, "ValueStorage" | "UUID") => true,
+            ("Type", CURRENT_CONFIG, value) => value
+                .split_once('.')
+                .is_some_and(|(generated, name)| generated.ends_with("Ref") && !name.is_empty()),
+            ("TypeSet", CURRENT_CONFIG, value) => value
+                .strip_prefix("DefinedType.")
+                .is_some_and(|name| !name.is_empty()),
+            _ => false,
+        };
+        saw_unmodelled |= !modelled;
+    }
+    saw_unmodelled
+}
+
+fn platform_qname_parts(raw: &str) -> Option<(&str, &str)> {
+    let (prefix, local) = raw.split_once(':')?;
+    if local.contains(':') || !xml_name_part(prefix) || !xml_name_part(local) {
+        return None;
+    }
+    Some((prefix, local))
+}
+
+fn xml_name_part(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_alphabetic())
+        && chars.all(|character| {
+            character == '_' || character == '-' || character == '.' || character.is_alphanumeric()
+        })
 }
 
 #[cfg(test)]

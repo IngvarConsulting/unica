@@ -1121,6 +1121,7 @@ pub(super) fn emit_meta_typed_value_type(
                     lines.push(format!("{content_indent}</v8:BinaryDataQualifiers>"));
                 }
                 MetadataTypeVariant::Boolean
+                | MetadataTypeVariant::Uuid
                 | MetadataTypeVariant::ValueStorage
                 | MetadataTypeVariant::Reference { .. }
                 | MetadataTypeVariant::DefinedType { .. } => {}
@@ -1135,6 +1136,7 @@ fn typed_wire_type(variant: &MetadataTypeVariant) -> (&'static str, String) {
         MetadataTypeVariant::String { .. } => ("Type", "xs:string".to_string()),
         MetadataTypeVariant::Number { .. } => ("Type", "xs:decimal".to_string()),
         MetadataTypeVariant::Boolean => ("Type", "xs:boolean".to_string()),
+        MetadataTypeVariant::Uuid => ("Type", "v8:UUID".to_string()),
         MetadataTypeVariant::Date { .. } => ("Type", "xs:dateTime".to_string()),
         MetadataTypeVariant::BinaryData { .. } => ("Type", "xs:binary".to_string()),
         MetadataTypeVariant::ValueStorage => ("Type", "v8:ValueStorage".to_string()),

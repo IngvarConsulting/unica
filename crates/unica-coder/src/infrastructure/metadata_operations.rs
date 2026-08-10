@@ -2965,10 +2965,12 @@ mod tests {
         prepared.publish(&cancellation).unwrap();
         let object_root = fixture.root.join("src/Catalogs/Editable");
         let template_content = object_root.join("Templates/Print/Ext/Template.xml");
-        let command_descriptor = object_root.join("Commands/Run.xml");
         assert!(object_root.join("Templates/Print.xml").is_file());
         assert!(template_content.is_file());
-        assert!(command_descriptor.is_file());
+        assert!(
+            !object_root.join("Commands/Run.xml").exists(),
+            "platform commands are described inline in the owner"
+        );
         assert!(!object_root.join("Commands/Run").exists());
         let command_module = object_root.join("Commands/Run/Ext/CommandModule.bsl");
         fs::create_dir_all(command_module.parent().unwrap()).unwrap();
