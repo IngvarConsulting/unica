@@ -517,7 +517,7 @@ Unica. Каждая запись формулирует одно нормати�
   одного рабочего пространства не переиспользуется другим. Невалидный файловый
   слой останавливает затронутый вызов до запуска поставщика или процесса;
   остальные вызовы конфигурационные файлы не читают.
-- **Decision:** ADR-0033
+- **Decision:** ADR-0038
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
