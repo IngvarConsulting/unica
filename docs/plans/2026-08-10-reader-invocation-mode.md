@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- [ ] Proposal PR #426 не сливать. После явного подтверждения реализации закрыть #426 без merge, обновить `origin/main`, убедиться через `git cat-file -e origin/main:spec/decisions/0042-readers-ne-prinimayut-preview.md`, что ADR-0042 в `main` отсутствует, и в уже изолированном linked worktree Codex переключиться на новую ветку `codex/issue-297-reader-invocation` непосредственно от `origin/main`. Не создавать вложенный или соседний worktree без необходимости. Перенести в implementation branch утверждённые design, ADR-0042 и этот план как обычные файлы того же связного changeset. Если ADR-0042 уже появилась в `main`, остановиться: менять её статус запрещает `INV-DOC-SUPERSEDE-NOT-EDIT`, а новый номер требует отдельного решения пользователя.
+- [ ] Proposal PR #426 не сливать. После явного подтверждения реализации закрыть #426 без merge, обновить `origin/main`, убедиться, что номер ADR свободен в целевой ветке, и в уже изолированном linked worktree Codex переключиться на новую ветку `codex/issue-297-reader-invocation` непосредственно от `origin/main`. Не создавать вложенный или соседний worktree без необходимости. Перенести в implementation branch утверждённые design, ADR-0043 и этот план как обычные файлы того же связного changeset. Если номер уже занят параллельно в `main`, перенумеровать ещё не принятую запись по фактическому порядку слияния; принятую запись в target branch не переписывать (`INV-DOC-SUPERSEDE-NOT-EDIT`).
 - [ ] Не включать #298–#301 и не менять контракт preview/apply мутаторов из #290: отсутствие `dryRun` у мутации по-прежнему означает preview, `true` — preview, `false` — apply.
 - [ ] Не сохранять alias `dryRun` у readers: версия 0.12.0 ещё не выпущена, совместимый двусмысленный маршрут не нужен.
 - [ ] Не добавлять `outputSchema`, не менять JSON-RPC code/shape ошибок и не подставлять `{}`, `null` либо иной синтетический `data`.
@@ -26,7 +26,7 @@
 
 - Import after branch creation: `docs/design/2026-08-10-reader-invocation-mode-design.md`
 - Import after branch creation: `docs/plans/2026-08-10-reader-invocation-mode.md`
-- Import after branch creation: `spec/decisions/0042-readers-ne-prinimayut-preview.md`
+- Import after branch creation: `spec/decisions/0043-readers-ne-prinimayut-preview.md`
 - Import after branch creation: `spec/decisions/README.md`
 
 - [ ] **Step 1: Verify the explicit execution approval and proposal state.**
@@ -46,22 +46,22 @@ Expected: #426 открыт с base `main`, head
 - [ ] **Step 2: Close #426 without merge.**
 
 ```bash
-gh pr close 426 --comment "Проект ADR-0042 утверждён. Закрываю proposal без merge: implementation PR от main перенесёт эти документы вместе с кодом, тестами и accepted ADR, не нарушая INV-DOC-SUPERSEDE-NOT-EDIT."
+gh pr close 426 --comment "Проект решения утверждён. Закрываю proposal без merge: implementation PR от main перенесёт эти документы вместе с кодом, тестами и accepted ADR, не нарушая INV-DOC-SUPERSEDE-NOT-EDIT."
 gh pr view 426 --json state,mergedAt
 ```
 
 Expected: `state` равен `CLOSED`, `mergedAt` равен `null`.
 
-- [ ] **Step 3: Refresh main and prove ADR-0042 has not become history.**
+- [ ] **Step 3: Refresh main and prove the decision number is still free.**
 
 ```bash
 git fetch origin main codex/issue-297-reader-invocation-design
-git cat-file -e origin/main:spec/decisions/0042-readers-ne-prinimayut-preview.md
+git ls-tree -r --name-only origin/main spec/decisions
 ```
 
-Expected: `git cat-file` завершается code 1. Code 0 — жёсткая остановка и
-запрос решения пользователя: существующую в target branch ADR-0042 менять
-нельзя.
+Expected: номер свободен. Если его заняла параллельно принятая запись,
+перенумеровать ещё не принятую ADR по фактическому порядку слияния; существующую
+в target branch ADR менять нельзя.
 
 - [ ] **Step 4: Reuse the existing isolated linked worktree and branch from main.**
 
@@ -92,7 +92,7 @@ git commit -m "docs(design): approve reader invocation boundary"
 git merge-base --is-ancestor origin/codex/issue-297-reader-invocation-design HEAD
 ```
 
-Expected: squash commit содержит design, plan и proposed ADR-0042;
+Expected: squash commit содержит design, plan и proposed ADR;
 `merge-base --is-ancestor` завершается code 1, доказывая отсутствие parent/base
 зависимости от proposal head.
 
@@ -728,11 +728,11 @@ git commit -m "test(skills): execute reader examples against local fixtures"
 
 ---
 
-### Task 7: Принять ADR-0042 и синхронизировать нормативную архитектуру
+### Task 7: Принять ADR-0043 и синхронизировать нормативную архитектуру
 
 **Files:**
 
-- Modify: `spec/decisions/0042-readers-ne-prinimayut-preview.md`
+- Modify: `spec/decisions/0043-readers-ne-prinimayut-preview.md`
 - Modify: `spec/decisions/README.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/change-checklist.md`
@@ -747,9 +747,9 @@ git commit -m "test(skills): execute reader examples against local fixtures"
 
 Проверить, что:
 
-- ADR-0042 имеет `accepted` и находится в accepted index;
+- ADR-0043 имеет `accepted` и находится в accepted index;
 - существует уникальный `INV-MCP-PREVIEW-MUTATION-ONLY`;
-- `INV-MCP-TYPED-RESULT` называет `typed_result_missing` и ADR-0042;
+- `INV-MCP-TYPED-RESULT` называет `typed_result_missing` и ADR-0043;
 - `INV-SKILL-EXECUTABLE-EXAMPLES` различает preview mutation и real deterministic reader;
 - change checklist ссылается на новый invariant, не копируя его Rule.
 
@@ -761,9 +761,9 @@ python3.12 -m unittest tests.ci.test_architecture_registry tests.ci.test_tool_su
 
 Expected: FAIL до нормативных правок.
 
-- [ ] **Step 2: Accept ADR-0042 in the implementation changeset.**
+- [ ] **Step 2: Accept ADR-0043 in the implementation changeset.**
 
-Proposal PR #426 к этому моменту закрыт без merge, поэтому ADR-0042 ещё не
+Proposal PR #426 к этому моменту закрыт без merge, поэтому ADR-0043 ещё не
 попадала в целевую ветку и остаётся редактируемой по правилам жизненного цикла.
 Перенести утверждённый файл в implementation branch сразу со статусом
 `accepted` и добавить строку в Accepted в `spec/decisions/README.md`; Proposed
@@ -777,21 +777,21 @@ entry в implementation diff не создаётся. Содержание ра�
 Добавить:
 
 ```markdown
-### INV-MCP-PREVIEW-MUTATION-ONLY — Предпросмотр принадлежит мутации
+Запись `INV-MCP-PREVIEW-MUTATION-ONLY` — «Предпросмотр принадлежит мутации»:
 
 - **Rule:** `ToolExecution::Read` не публикует и не принимает `dryRun` и
   исполняется только как `InvocationMode::Read`; `ToolExecution::Mutation`
   выводит `Preview` при отсутствующем или истинном `dryRun` и `Apply` только
   при `dryRun: false`.
-- **Decision:** ADR-0042
-- **Check:** `cargo-test` — `crates/unica-coder/src/application/mod.rs`
+- **Decision:** ADR-0043
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
 - **Scope:** source, runtime, packaged
 ```
 
-В `INV-MCP-TYPED-RESULT` добавить постусловие successful `Read + Typed` и stable `typed_result_missing`, Decision ADR-0042 и Rust check `tool_specs_match_reviewed_result_contracts`.
+В `INV-MCP-TYPED-RESULT` добавить постусловие successful `Read + Typed` и stable `typed_result_missing`, Decision ADR-0043 и Rust check `tool_specs_match_reviewed_result_contracts`.
 
-В `INV-SKILL-EXECUTABLE-EXAMPLES` заменить «каждый как сухой прогон» на «mutation — preview; reader — настоящий MCP read над deterministic fixture/local stand-in», Decision ADR-0005, ADR-0042.
+В `INV-SKILL-EXECUTABLE-EXAMPLES` заменить «каждый как сухой прогон» на «mutation — preview; reader — настоящий MCP read над deterministic fixture/local stand-in», Decision ADR-0005, ADR-0043.
 
 - [ ] **Step 4: Regenerate the ledger from the built registry.**
 
@@ -883,7 +883,7 @@ Expected: все CI unit/contract tests green; parity не использует 
 
 - [ ] **Step 4: Inspect package-contract files for unintended drift.**
 
-Проверить, что manifests и `tools.lock.json` не изменились: stand-ins существуют только в test fixtures/temp plugin root. Если diff затронул package-contract metadata, остановиться и объяснить причину — ADR-0042 не требует version/package change.
+Проверить, что manifests и `tools.lock.json` не изменились: stand-ins существуют только в test fixtures/temp plugin root. Если diff затронул package-contract metadata, остановиться и объяснить причину — ADR-0043 не требует version/package change.
 
 - [ ] **Step 5: Request code review.**
 
@@ -928,7 +928,7 @@ gh pr create \
 
 Перед командой создать игнорируемый `.superpowers/issue-297-pr-body.md` через
 `apply_patch`; не добавлять его в git. PR body должен ссылаться на #297,
-ADR-0042 и proposal PR #426, явно разделять root
+ADR-0043 и proposal PR #426, явно разделять root
 cause/schema/dispatch/result/parity, перечислять red tests и финальные команды.
 Issue #297 закрывать только этим implementation PR (`Closes #297`), не
 proposal PR.
@@ -945,7 +945,7 @@ Expected: ready PR, base `main`, head `codex/issue-297-reader-invocation`, clean
 
 ## Plan self-review checklist
 
-- [ ] Каждая цель ADR-0042 имеет task: независимая топология (0), schema/category (1), validation/mode (2), reader dispatch (3), typed postcondition (4), transport (5), skill parity (6), normative sync (7), full proof (8).
+- [ ] Каждая цель ADR-0043 имеет task: независимая топология (0), schema/category (1), validation/mode (2), reader dispatch (3), typed postcondition (4), transport (5), skill parity (6), normative sync (7), full proof (8).
 - [ ] Каждый production defect получает тест, который запускается red до исправления.
 - [ ] В плане нет незаполненных шагов, сетевой зависимости или машинно-зависимой установки.
 - [ ] Все новые типы согласованы: `ToolExecution` классифицирует tool, `InvocationMode` — конкретный call, `ResultContract` — result postcondition.

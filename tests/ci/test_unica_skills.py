@@ -2768,6 +2768,22 @@ Use `.claude/commands/xdto.md` as the execution route.
                     self.assertNotEqual(set(params["arguments"].keys()), {"cwd"})
 
 
+class ExecutableSkillExampleInvariantTests(unittest.TestCase):
+    def test_reader_examples_execute_real_deterministic_reads(self) -> None:
+        invariants = (
+            REPO_ROOT / "spec" / "architecture" / "invariants.md"
+        ).read_text(encoding="utf-8")
+        section = invariants.split(
+            "### INV-SKILL-EXECUTABLE-EXAMPLES", 1
+        )[1].split("\n### ", 1)[0]
+
+        self.assertIn("ADR-0043", section)
+        self.assertIn("предпросмотр", section)
+        self.assertIn("настоящее чтение MCP", section)
+        self.assertIn("детерминирован", section)
+        self.assertNotIn("каждый как сухой прогон", " ".join(section.lower().split()))
+
+
 class PlatformHelpRoutingTests(unittest.TestCase):
     """Скилл получил источник: отказ перестаёт быть штатным ответом."""
 

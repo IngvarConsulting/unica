@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
 LEDGER = REPO_ROOT / "spec/architecture/tool-surface.md"
 REVIEW = REPO_ROOT / "spec/architecture/tool-surface-review.json"
+INVARIANTS = REPO_ROOT / "spec/architecture/invariants.md"
 BINARY = REPO_ROOT / "target/debug/unica"
 
 
@@ -421,6 +422,14 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertIn(
             f"- {self.module.CONTRACT_STATES['partial']}: **{len(partial)}**", text
         )
+
+    def test_typed_result_invariant_names_the_registry_contract_check(self) -> None:
+        text = INVARIANTS.read_text(encoding="utf-8")
+        section = text.split("### INV-MCP-TYPED-RESULT", 1)[1].split("\n### ", 1)[0]
+
+        self.assertIn("typed_result_missing", section)
+        self.assertIn("tool_specs_match_reviewed_result_contracts", section)
+        self.assertIn("ADR-0043", section)
 
 
 if __name__ == "__main__":
