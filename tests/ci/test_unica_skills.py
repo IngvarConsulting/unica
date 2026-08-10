@@ -2769,7 +2769,7 @@ Use `.claude/commands/xdto.md` as the execution route.
 
 
 class ExecutableSkillExampleInvariantTests(unittest.TestCase):
-    def test_reader_examples_execute_real_deterministic_reads(self) -> None:
+    def test_invariant_distinguishes_reader_execution_from_preview(self) -> None:
         invariants = (
             REPO_ROOT / "spec" / "architecture" / "invariants.md"
         ).read_text(encoding="utf-8")
@@ -2781,7 +2781,12 @@ class ExecutableSkillExampleInvariantTests(unittest.TestCase):
         self.assertIn("предпросмотр", section)
         self.assertIn("настоящее чтение MCP", section)
         self.assertIn("детерминирован", section)
-        self.assertNotIn("каждый как сухой прогон", " ".join(section.lower().split()))
+        normalized = " ".join(section.casefold().split())
+        self.assertNotRegex(
+            normalized,
+            r"(?:все|кажд\w*)\s+(?:mcp\s+)?(?:пример\w*|вызов\w*)\s+"
+            r"(?:—\s+|это\s+)?(?:сух\w*\s+прогон\w*|dry\s*run\w*|предпросмотр\w*)",
+        )
 
 
 class PlatformHelpRoutingTests(unittest.TestCase):

@@ -51,8 +51,6 @@ def tool_payload(tool: str, arguments: dict[str, object]) -> object:
                     }
                 ]
             }
-        elif "search(" in code:
-            stdout = []
         else:
             stdout = []
         return {"stdout": json.dumps(stdout, ensure_ascii=False), "stderr": ""}

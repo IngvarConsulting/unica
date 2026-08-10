@@ -267,6 +267,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<PreparedToolInvocation, String> {
+        // Validate the execution/mode pair before any preparation work. The
+        // preparation path itself does not branch on preview state.
         adapter_dry_run(spec, mode)?;
         let ToolHandler::NativeOperation {
             operation: "subsystem-info",
@@ -1208,6 +1210,30 @@ mod tests {
             };
             assert_eq!(error, "invalid invocation mode for unica.project.status");
         }
+    }
+
+    #[test]
+    fn infrastructure_rejects_read_mode_for_a_mutation() {
+        use crate::application::ports::ApplicationPorts;
+
+        let root = tempfile::tempdir().unwrap();
+        let context = WorkspaceContext {
+            cwd: root.path().to_path_buf(),
+            workspace_root: root.path().to_path_buf(),
+            cache_root: root.path().join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let error = match super::InfrastructureApplicationPorts::new().invoke_handler(
+            spec("unica.cf.edit", ToolHandler::ProjectStatus),
+            &Map::new(),
+            &context,
+            InvocationMode::Read,
+            &CancellationToken::new(),
+        ) {
+            Ok(_) => panic!("mutation unexpectedly accepted Read"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "invalid invocation mode for unica.cf.edit");
     }
 
     fn subsystem_info_fixture(

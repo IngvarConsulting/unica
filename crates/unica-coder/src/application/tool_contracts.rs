@@ -2278,8 +2278,7 @@ fn property_schema(name: &str) -> Value {
 
     let value_type = if matches!(
         name,
-        "dryRun"
-            | "confirm"
+        "confirm"
             | "Detailed"
             | "detailed"
             | "Force"
@@ -2516,7 +2515,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "confirm",
-        "Boolean acknowledgement accepted by every tool and stripped before the runner is called; it does not enable execution on its own, dryRun false does",
+        "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
     ),
     (
         "connection",

@@ -9,7 +9,11 @@ from pathlib import Path
 
 
 def main() -> int:
-    index_root = Path(os.environ["RLM_INDEX_DIR"]) / "reader-parity"
+    configured_root = os.environ.get("RLM_INDEX_DIR")
+    if not configured_root:
+        print("RLM_INDEX_DIR must be set for reader parity", file=sys.stderr)
+        return 2
+    index_root = Path(configured_root) / "reader-parity"
     index_root.mkdir(parents=True, exist_ok=True)
     database = index_root / "bsl_index.db"
     action = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == "index" else ""

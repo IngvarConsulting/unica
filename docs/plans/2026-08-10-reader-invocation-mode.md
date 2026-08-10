@@ -1,6 +1,8 @@
 # Reader Invocation Mode Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution state:** План исполнен в implementation PR #428. Текст ниже —
+> историческая трасса принятого способа реализации; команды и исходные
+> checkbox не являются инструкцией для повторного запуска.
 
 **Goal:** Исправить #297: убрать `dryRun` из всех read-only инструментов, провести через application предметные режимы `Read | Preview | Apply`, всегда выполнять настоящее чтение и отклонять успешный typed-reader без `data`.
 
@@ -10,7 +12,11 @@
 
 ## Global Constraints
 
-- [ ] Proposal PR #426 не сливать. После явного подтверждения реализации закрыть #426 без merge, обновить `origin/main`, убедиться, что номер ADR свободен в целевой ветке, и в уже изолированном linked worktree Codex переключиться на новую ветку `codex/issue-297-reader-invocation` непосредственно от `origin/main`. Не создавать вложенный или соседний worktree без необходимости. Перенести в implementation branch утверждённые design, ADR-0043 и этот план как обычные файлы того же связного changeset. Если номер уже занят параллельно в `main`, перенумеровать ещё не принятую запись по фактическому порядку слияния; принятую запись в target branch не переписывать (`INV-DOC-SUPERSEDE-NOT-EDIT`).
+- [x] Proposal PR #426 закрыт без merge; implementation branch
+  `codex/issue-297-reader-invocation` создан непосредственно от обновлённого
+  `origin/main` в существующем linked worktree. Утверждённые design, ADR-0043 и
+  этот план перенесены в один changeset с runtime и тестами. Номер ADR проверен
+  по целевой ветке согласно `INV-DOC-SUPERSEDE-NOT-EDIT`.
 - [ ] Не включать #298–#301 и не менять контракт preview/apply мутаторов из #290: отсутствие `dryRun` у мутации по-прежнему означает preview, `true` — preview, `false` — apply.
 - [ ] Не сохранять alias `dryRun` у readers: версия 0.12.0 ещё не выпущена, совместимый двусмысленный маршрут не нужен.
 - [ ] Не добавлять `outputSchema`, не менять JSON-RPC code/shape ошибок и не подставлять `{}`, `null` либо иной синтетический `data`.

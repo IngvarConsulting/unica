@@ -344,6 +344,11 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         for name, tool in sorted(tools.items()):
             with self.subTest(tool=name):
                 properties = tool["inputSchema"]["properties"]
+                if confirm := properties.get("confirm"):
+                    self.assertNotIn(
+                        "dryrun",
+                        confirm["description"].casefold(),
+                    )
                 if name in MUTATION_TOOL_NAMES:
                     dry_run = properties.get("dryRun")
                     self.assertIsNotNone(dry_run)

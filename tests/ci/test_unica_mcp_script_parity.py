@@ -23,6 +23,7 @@ from collections.abc import Callable, Iterable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest import mock
 from xml.sax.saxutils import escape
 
 MODULE_REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1884,6 +1885,10 @@ network = "allow"
                 snapshot_workspace_bytes(workspace),
                 workspace_before_calls,
             )
+            self.assertTrue(
+                standin_call_log.is_file(),
+                f"no reader stand-in was invoked: {standin_call_log}",
+            )
             standin_calls = [
                 json.loads(line)
                 for line in standin_call_log.read_text(encoding="utf-8").splitlines()
@@ -1905,7 +1910,6 @@ network = "allow"
                 all(str(call["host"]).startswith("127.0.0.1:") for call in v8std.calls),
                 v8std.calls,
             )
-            v8std.stop()
         self.assertEqual(len(responses), len(examples))
         for example, message in zip(examples, messages):
             with self.subTest(skill=example.skill, line=example.line):
@@ -3184,8 +3188,6 @@ def current_reader_standin_target() -> tuple[str, str, str]:
         return "darwin-arm64", "aarch64-apple-darwin", ""
     if sys.platform.startswith("linux") and machine in {"x86_64", "amd64"}:
         return "linux-x64", "x86_64-unknown-linux-gnu", ""
-    if os.name == "nt" and machine in {"x86_64", "amd64"}:
-        return "win-x64", "x86_64-pc-windows-msvc", ".exe"
     raise AssertionError(f"reader stand-ins do not support {sys.platform}/{machine}")
 
 
@@ -4060,6 +4062,38 @@ def normalize_snapshot_text(text: str, workspace: Path) -> str:
         count=1,
     )
     return normalized.removesuffix("\n")
+
+
+class ReaderStandinFixtureTests(unittest.TestCase):
+    def test_windows_target_is_not_claimed_without_native_launchers(self) -> None:
+        with (
+            mock.patch.object(sys, "platform", "win32"),
+            mock.patch.object(os, "name", "nt"),
+            mock.patch.object(platform, "machine", return_value="AMD64"),
+        ):
+            with self.assertRaisesRegex(AssertionError, "do not support"):
+                current_reader_standin_target()
+
+    def test_rlm_index_standin_reports_missing_index_root(self) -> None:
+        env = os.environ.copy()
+        env.pop("RLM_INDEX_DIR", None)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(READER_STANDINS_ROOT / "rlm_index.py"),
+                "index",
+                "info",
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 2, result)
+        self.assertIn("RLM_INDEX_DIR must be set", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 class WindowsParityNormalizationTests(unittest.TestCase):
