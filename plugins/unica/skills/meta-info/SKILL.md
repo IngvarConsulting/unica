@@ -52,6 +52,13 @@ allowed-tools:
 типизированные `diagnostics`; та же внутренняя проверка выполняется перед каждой
 мутацией.
 
+У `EventSubscription` поле `data.relations.source` содержит массив того же
+закрытого размеченного объединения, которое принимают `meta.add` и
+`meta.edit`: примитивы возвращаются с квалификаторами, а `object`, `reference`,
+`recordSet` и `definedType` — с логическим `metadataPath`. Это обратное чтение
+фактически записанного `Properties/Source`, а не строка XML-типа. Массив —
+wire-представление набора: позиция элемента не входит в идентичность источника.
+
 `data.functionalSubsystems` и `data.interfaceSubsystems` — только членства
 текущего объекта соответственно в функциональных и интерфейсных подсистемах.
 Запись `Content` может ссылаться на объект логическим адресом метаданных или
@@ -167,6 +174,22 @@ UUID его корневого дескриптора. После полного
     "arguments": {
       "sourceSet": "main",
       "metadataPath": "DefinedType.GLN"
+    }
+  }
+}
+```
+
+### Подписка на событие: типизированные источники
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.meta.info",
+    "arguments": {
+      "sourceSet": "main",
+      "metadataPath": "EventSubscription.ОбработкаИзменений"
     }
   }
 }

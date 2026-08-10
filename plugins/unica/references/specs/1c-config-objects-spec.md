@@ -1612,11 +1612,54 @@ XML-элемент: `<EventSubscription>`.
 
 | Свойство | Тип | Описание |
 |---|---|---|
-| `Source` | `v8:Type[]` | Типы объектов-источников (в формате `cfg:{Тип}.{Имя}`) |
+| `Source` | `v8:Type[]` / `v8:TypeSet[]` | Типы источников подписки: примитивы, порождаемые типы объектов и наборов записей, ссылки и определяемые типы |
 | `Event` | enum | `BeforeWrite` \| `OnWrite` \| `AfterWrite` \| `BeforeDelete` \| `Posting` \| `UndoPosting` \| `FillCheckProcessing` и др. |
 | `Handler` | string | Обработчик вида `CommonModule.ИмяМодуля.ИмяПроцедуры` |
 
-Типы источников: `cfg:CatalogObject.Xxx`, `cfg:DocumentObject.Xxx`, `cfg:InformationRegisterRecordSet.Xxx`, `cfg:AccumulationRegisterRecordSet.Xxx` и др.
+Типы источников включают `cfg:CatalogObject.Xxx`,
+`cfg:DocumentObject.Xxx`, `cfg:InformationRegisterRecordSet.Xxx`,
+`cfg:AccumulationRegisterRecordSet.Xxx`, `cfg:AccountingRegisterRecordSet.Xxx`
+и `cfg:CalculationRegisterRecordSet.Xxx`.
+
+Публичный типизированный маршрут создания и редактирования подписки — операция
+`editRelations` с `relation: "source"`, `mode: "replace"` и массивом `targets`.
+Это один из пяти существующих тегов `op`, а не отдельный тег операции. Пустой
+`targets` очищает `Source`; частичные режимы для этой связи не поддерживаются.
+Массив является wire-представлением набора: порядок целей не участвует в
+семантическом сравнении. Перестановка тех же членов сохраняет точные байты XML;
+при действительном изменении цели выпускаются в детерминированном порядке по
+группе платформенного типа и семантическому ключу.
+
+Каждый элемент `targets` принадлежит закрытому размеченному объединению:
+
+| `kind` | Поля | XML-представление |
+| --- | --- | --- |
+| `string` | `length: 0`, `allowedLength: "variable"` | `xs:string` и строковые квалификаторы |
+| `number` | `digits: 0..38`, `fraction: 0..digits`, `sign: "any" \| "nonNegative"` | `xs:decimal` и числовые квалификаторы |
+| `boolean` | — | `xs:boolean` |
+| `date` | `fractions: "date" \| "dateTime"` | `xs:dateTime` и квалификаторы даты |
+| `valueStorage` | — | `v8:ValueStorage`; этот элемент должен быть единственным источником |
+| `object` | `metadataPath` | `cfg:<ObjectGeneratedType>.<Имя>` |
+| `reference` | `metadataPath` | `cfg:<ReferenceGeneratedType>.<Имя>` |
+| `recordSet` | `metadataPath` | `cfg:<RegisterRecordSetGeneratedType>.<Имя>` |
+| `definedType` | `metadataPath` | `<v8:TypeSet>cfg:DefinedType.<Имя></v8:TypeSet>` |
+
+Допустимые владельцы конфигурационных вариантов определяются видом цели:
+`object` — Catalog, Document, ChartOfAccounts,
+ChartOfCharacteristicTypes, ChartOfCalculationTypes, ExchangePlan,
+BusinessProcess, Task, Report или DataProcessor; `reference` — те же ссылочные
+виды без Report и DataProcessor, но с Enum; `recordSet` — InformationRegister,
+AccumulationRegister, AccountingRegister или CalculationRegister;
+`definedType` — только DefinedType.
+
+Для каждого конфигурационного варианта регистрация в `ChildObjects`, дескриптор
+и совпадающий `xr:GeneratedType` разрешаются под тем же точным владельцем
+`Configuration.xml`, что и подписка. Владелец, дескрипторы зависимостей и
+целевой XML связываются одной транзакцией: отсутствующая, неоднозначная,
+несовместимая или конкурентно изменённая зависимость отклоняется до публикации.
+`unica.meta.info` читает тот же `Source` обратно в это типизированное
+представление. Позиция элемента readback-массива не является частью его
+идентичности.
 
 **ChildObjects** отсутствует.
 

@@ -693,9 +693,9 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "cfe-init": 6,
     "cfe-patch-method": 4,
     "cfe-validate": 2,
-    "meta-add": 1,
-    "meta-edit": 2,
-    "meta-info": 5,
+    "meta-add": 2,
+    "meta-edit": 3,
+    "meta-info": 6,
     "meta-remove": 1,
     "form-add": 6,
     "form-compile": 4,
@@ -783,6 +783,8 @@ SCENARIO_PRESERVING_TOKENS = {
     "meta-add": [
         '"kind": "Catalog"',
         '"name": "НовыйСправочник"',
+        '"kind": "EventSubscription"',
+        '"relation": "source"',
         '"dryRun": true',
     ],
     "meta-edit": [
@@ -792,6 +794,9 @@ SCENARIO_PRESERVING_TOKENS = {
         '"allowedLength": "variable"',
         '"op": "editRelations"',
         '"relation": "basedOn"',
+        '"relation": "source"',
+        '"kind": "recordSet"',
+        '"metadataPath": "InformationRegister.ИсторияИзменений"',
         '"mode": "replace"',
         '"targets": [',
     ],
@@ -804,6 +809,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"metadataPath": "HTTPService.ExternalAPI"',
         '"metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"',
         '"metadataPath": "DefinedType.GLN"',
+        '"metadataPath": "EventSubscription.ОбработкаИзменений"',
     ],
     "meta-remove": [
         '"metadataPath": "Catalog.Устаревший"',
@@ -1270,6 +1276,60 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     for operation in matching
                 )
             )
+
+        source_operations = [
+            operation
+            for operation in edit_operations
+            if operation.get("relation") == "source"
+        ]
+        self.assertTrue(source_operations)
+        for operation in source_operations:
+            self.assertEqual(operation["op"], "editRelations")
+            self.assertEqual(operation["mode"], "replace")
+            self.assertIsInstance(operation["targets"], list)
+            for target in operation["targets"]:
+                self.assertIn(
+                    target.get("kind"),
+                    {
+                        "string",
+                        "number",
+                        "boolean",
+                        "date",
+                        "valueStorage",
+                        "object",
+                        "reference",
+                        "recordSet",
+                        "definedType",
+                    },
+                )
+        self.assertTrue(
+            any(
+                target.get("kind") == "recordSet"
+                and target.get("metadataPath")
+                == "InformationRegister.ИсторияИзменений"
+                for operation in source_operations
+                for target in operation["targets"]
+            )
+        )
+        self.assertIn("wire-массив набора", documents["meta-edit"])
+        self.assertIn(
+            "порядок его членов семантически незначим", documents["meta-edit"]
+        )
+        self.assertIn("exact-byte no-op", documents["meta-edit"])
+
+        add_operations = [
+            operation
+            for call in calls["meta-add"]
+            for operation in call["params"]["arguments"].get("operations", [])
+        ]
+        self.assertTrue(
+            any(
+                operation.get("op") == "editRelations"
+                and operation.get("relation") == "source"
+                and operation.get("mode") == "replace"
+                for operation in add_operations
+            )
+        )
 
         info = documents["meta-info"]
         # `meta.info` no longer consults an index, so the fields that only made

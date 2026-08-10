@@ -262,6 +262,9 @@ class MetaSurfaceContractTests(unittest.TestCase):
                             "unica.meta.edit.editRelations.registerRecords": (
                                 'Self::RegisterRecords => "registerRecords"'
                             ),
+                            "unica.meta.edit.editRelations.source": (
+                                'Self::Source => "source"'
+                            ),
                         }
                         self.assertIn(contract, operation_evidence)
                         self.assertIn(operation_evidence[contract], operation_registry)
@@ -491,7 +494,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         self.assertEqual(len(capabilities), 97)
         self.assertIn(f"{len(capabilities)} ключей", compact_migration)
         self.assertIn(f"{supported} поддерживаемых", compact_migration)
-        self.assertIn(f"{removed} намеренно снятая", compact_migration)
+        self.assertIn(f"{removed} намеренно снятых", compact_migration)
         self.assertIn(
             "../../spec/architecture/meta-capability-parity.json", migration
         )

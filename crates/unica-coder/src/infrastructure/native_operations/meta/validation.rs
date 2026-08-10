@@ -38,11 +38,13 @@ use super::info::resolve_meta_info_path;
 use super::validation_context::{
     inspect_metadata_image_identity, inspect_metadata_language_image,
     inspect_metadata_registration_image, meta_validate_registrar_document_scan,
-    meta_validate_types_with_list_presentation, MetaValidationImageIdentityError,
+    meta_validate_types_with_list_presentation, validate_event_source_dependency_descriptor,
+    validate_event_source_registration, MetaValidationImageIdentityError,
 };
 use super::xml_model::{
-    meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
-    parse_metadata_image,
+    event_source_generated_prefix, meta_event_subscription_source_node, meta_info_child,
+    meta_info_child_text, meta_info_children, meta_info_inner_text,
+    parse_meta_event_subscription_source, parse_metadata_image,
 };
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -560,6 +562,72 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
         }
     }
 
+    if object_type == "EventSubscription" {
+        if let Ok(sources) = meta_event_subscription_source_node(&document)
+            .and_then(parse_meta_event_subscription_source)
+        {
+            let registration = subject
+                .resources
+                .iter()
+                .find(|resource| matches!(resource.role, MetadataResourceRole::Registration));
+            for (index, source) in sources.iter().enumerate() {
+                let Some(target) = source.metadata_path() else {
+                    continue;
+                };
+                let dependency = subject.resources.iter().find(|resource| {
+                    matches!(
+                        &resource.role,
+                        MetadataResourceRole::Dependency { target: dependency_target }
+                            if dependency_target == target
+                    )
+                });
+                let Some(dependency) = dependency else {
+                    diagnostics.push(complete_read_source_missing(
+                        subject,
+                        index,
+                        format!("EventSubscription Source dependency `{target}` is unavailable"),
+                    ));
+                    continue;
+                };
+                let segments = target.segments().collect::<Vec<_>>();
+                let [expected_kind, expected_name] = segments.as_slice() else {
+                    diagnostics.push(complete_read_source_invalid(
+                        subject,
+                        index,
+                        format!(
+                            "EventSubscription Source dependency `{target}` is not a top-level metadata object"
+                        ),
+                    ));
+                    continue;
+                };
+                let Some(registration) = registration else {
+                    diagnostics.push(complete_read_source_missing(
+                        subject,
+                        index,
+                        "EventSubscription Source registration evidence is unavailable",
+                    ));
+                    continue;
+                };
+                let generated_prefixes = vec![event_source_generated_prefix(source).to_string()];
+                if let Err(message) = validate_event_source_registration(
+                    &registration.bytes,
+                    expected_kind,
+                    expected_name,
+                )
+                .and_then(|()| {
+                    validate_event_source_dependency_descriptor(
+                        &dependency.bytes,
+                        expected_kind,
+                        expected_name,
+                        &generated_prefixes,
+                    )
+                }) {
+                    diagnostics.push(complete_read_source_invalid(subject, index, message));
+                }
+            }
+        }
+    }
+
     if matches!(object_type, "EventSubscription" | "ScheduledJob") {
         let property = if object_type == "EventSubscription" {
             "Handler"
@@ -702,6 +770,26 @@ fn complete_read_invalid(
     MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
         .with_metadata_path(subject.target.clone())
         .with_field("resources")
+}
+
+fn complete_read_source_missing(
+    subject: &MetadataValidationSubject,
+    index: usize,
+    message: impl Into<String>,
+) -> MetaDiagnostic {
+    MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, message)
+        .with_metadata_path(subject.target.clone())
+        .with_field(format!("relations.source[{index}]"))
+}
+
+fn complete_read_source_invalid(
+    subject: &MetadataValidationSubject,
+    index: usize,
+    message: impl Into<String>,
+) -> MetaDiagnostic {
+    MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+        .with_metadata_path(subject.target.clone())
+        .with_field(format!("relations.source[{index}]"))
 }
 
 fn validate_auxiliary_xml(kind: MetadataAuxiliaryXmlKind, bytes: &[u8]) -> Result<(), String> {
@@ -2805,7 +2893,11 @@ pub(super) fn meta_validate_check_cross_properties(
             issues += 1;
         }
         let has_source = meta_info_child(props_node, "Source")
-            .map(|node| !meta_info_children(node, "Type").is_empty())
+            .map(|node| {
+                ["Type", "TypeSet"]
+                    .iter()
+                    .any(|name| !meta_info_children(node, name).is_empty())
+            })
             .unwrap_or(false);
         if !has_source {
             report.warn("10. EventSubscription: no Source types specified");
@@ -5635,6 +5727,31 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("Duplicate URLTemplate")));
+    }
+
+    #[test]
+    fn event_subscription_defined_type_source_is_not_reported_as_empty() {
+        let document = Document::parse(
+            r#"<Properties xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"><Handler>CommonModule.Target.Run</Handler><Source><v8:TypeSet>cfg:DefinedType.Identifier</v8:TypeSet></Source></Properties>"#,
+        )
+        .unwrap();
+        let mut report = MetaValidationReporter::new(30);
+
+        meta_validate_check_cross_properties(
+            &mut report,
+            "EventSubscription",
+            Some(document.root_element()),
+            None,
+            None,
+            None,
+            "Events",
+        );
+
+        assert!(report.errors.is_empty());
+        assert!(report
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("no Source types specified")));
     }
 
     #[test]

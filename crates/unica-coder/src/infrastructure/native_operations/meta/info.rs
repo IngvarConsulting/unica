@@ -7,11 +7,18 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode,
-    MetaElementData, MetaPropertyData, MetaPropertyValue, MetaRelationTargetData,
+    MetaElementData, MetaEventSource, MetaPropertyData, MetaPropertyValue, MetaRelationTargetData,
     MetaRelationsData, MetaSupportStatus, MetadataKind, METADATA_PROPERTY_SPECS,
 };
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use crate::domain::source_target::{
+    MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
+use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::platform_xml_source_targets::{
+    platform_xml_resource_evidence, resolve_platform_xml_target, TargetKindPolicy,
+};
 use roxmltree::Document;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -159,8 +166,9 @@ fn emit_subsystem_evidence_processing_phase(phase: SubsystemEvidenceProcessingPh
 use super::super::common::object_support_state;
 use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
-    meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
-    meta_info_ml_text, meta_info_normalize_cfg_prefix,
+    meta_event_subscription_source_node, meta_info_child, meta_info_child_text, meta_info_children,
+    meta_info_inner_text, meta_info_ml_text, meta_info_normalize_cfg_prefix,
+    parse_meta_event_subscription_source,
 };
 
 /// Parse the descriptor image already acquired by the logical resolver. The
@@ -168,7 +176,9 @@ use super::xml_model::{
 /// performs a second descriptor read between structure and validation.
 pub(crate) fn read_typed_meta_info(
     resolved: &ResolvedMetadataObject,
+    source_set: &str,
     target: &MetadataAddress,
+    context: &WorkspaceContext,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
@@ -252,7 +262,7 @@ pub(crate) fn read_typed_meta_info(
         synonym,
         support: typed_support_status(&resolved.descriptor_path),
         properties: typed_properties(properties, kind),
-        relations: typed_relations(properties, target, &mut diagnostics),
+        relations: typed_relations(&doc, properties, target, &mut diagnostics),
         collections: MetaCollectionsData {
             attributes: typed_elements_with_diagnostics(
                 xml,
@@ -354,6 +364,13 @@ pub(crate) fn read_typed_meta_info(
         descriptor_preimage,
         Some(&resolved.source_root),
     );
+    validation_resources.extend(typed_event_source_dependency_images(
+        resolved,
+        source_set,
+        &local.relations.source,
+        context,
+        cancellation,
+    ));
     let (registrar_resources, registrar_evidence) =
         typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
     validation_resources.extend(registrar_resources);
@@ -386,6 +403,58 @@ pub(crate) fn read_typed_meta_info(
         subsystem_evidence,
     };
     Ok((local, validation_subject))
+}
+
+fn typed_event_source_dependency_images(
+    resolved: &ResolvedMetadataObject,
+    source_set: &str,
+    sources: &[MetaEventSource],
+    context: &WorkspaceContext,
+    cancellation: &CancellationToken,
+) -> Vec<MetadataResourceImage> {
+    let mut resources = Vec::new();
+    let mut seen = HashSet::new();
+    for source in sources {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        let Some(metadata_path) = source.metadata_path() else {
+            continue;
+        };
+        if !seen.insert(metadata_path.clone()) {
+            continue;
+        }
+        let source_target = SourceTarget {
+            source_set: source_set.to_string(),
+            metadata_path: Some(metadata_path.clone()),
+        };
+        let Ok(resolution) =
+            resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
+        else {
+            continue;
+        };
+        if resolution.resolved.target_kind != TargetKind::MetadataObject {
+            continue;
+        }
+        let Ok(evidence) = platform_xml_resource_evidence(context, &resolution.handle) else {
+            continue;
+        };
+        if evidence.source_root != resolved.source_root
+            || evidence.registration_path != resolved.owner_path
+        {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&evidence.target_path) else {
+            continue;
+        };
+        resources.push(MetadataResourceImage {
+            role: MetadataResourceRole::Dependency {
+                target: metadata_path.clone(),
+            },
+            bytes,
+        });
+    }
+    resources
 }
 
 fn typed_registrar_document_images(
@@ -725,50 +794,74 @@ pub(super) fn typed_properties(
 }
 
 pub(super) fn typed_relations(
+    document: &Document<'_>,
     properties: Option<roxmltree::Node<'_, '_>>,
     target: &MetadataAddress,
     diagnostics: &mut Vec<MetaDiagnostic>,
 ) -> MetaRelationsData {
-    let mut read = |tag: &str, public_name: &str, kind: &str| {
-        let Some(container) = properties.and_then(|node| meta_info_child(node, tag)) else {
-            return Vec::new();
-        };
-        container
-            .children()
-            .filter(|node| node.is_element())
-            .enumerate()
-            .filter_map(|(index, node)| {
-                let raw = meta_info_inner_text(node);
-                let normalized = meta_info_normalize_cfg_prefix(raw.trim());
-                let normalized = normalized.strip_prefix("cfg:").unwrap_or(&normalized);
-                let valid = if kind == "field" {
-                    crate::domain::metadata::MetadataFieldPath::parse(normalized).is_ok()
-                } else {
-                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
-                };
-                if !valid {
-                    diagnostics.push(
-                        MetaDiagnostic::error(
-                            MetaDiagnosticCode::ValidationFailed,
-                            "metadata relation target is malformed",
-                        )
-                        .with_metadata_path(target.clone())
-                        .with_field(format!("relations.{public_name}[{index}]")),
-                    );
-                    return None;
-                }
-                Some(MetaRelationTargetData {
-                    kind: kind.to_string(),
-                    value: normalized.to_string(),
+    let (owners, register_records, based_on, input_by_string) = {
+        let mut read = |tag: &str, public_name: &str, kind: &str| {
+            let Some(container) = properties.and_then(|node| meta_info_child(node, tag)) else {
+                return Vec::new();
+            };
+            container
+                .children()
+                .filter(|node| node.is_element())
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    let raw = meta_info_inner_text(node);
+                    let normalized = meta_info_normalize_cfg_prefix(raw.trim());
+                    let normalized = normalized.strip_prefix("cfg:").unwrap_or(&normalized);
+                    let valid = if kind == "field" {
+                        crate::domain::metadata::MetadataFieldPath::parse(normalized).is_ok()
+                    } else {
+                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
+                    };
+                    if !valid {
+                        diagnostics.push(
+                            MetaDiagnostic::error(
+                                MetaDiagnosticCode::ValidationFailed,
+                                "metadata relation target is malformed",
+                            )
+                            .with_metadata_path(target.clone())
+                            .with_field(format!("relations.{public_name}[{index}]")),
+                        );
+                        return None;
+                    }
+                    Some(MetaRelationTargetData {
+                        kind: kind.to_string(),
+                        value: normalized.to_string(),
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        };
+        (
+            read("Owners", "owners", "object"),
+            read("RegisterRecords", "registerRecords", "object"),
+            read("BasedOn", "basedOn", "object"),
+            read("InputByString", "inputByString", "field"),
+        )
+    };
+    let source = match meta_event_subscription_source_node(document)
+        .and_then(parse_meta_event_subscription_source)
+    {
+        Ok(source) => source,
+        Err(message) if target.segments().next() == Some("EventSubscription") => {
+            diagnostics.push(
+                MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+                    .with_metadata_path(target.clone())
+                    .with_field("relations.source"),
+            );
+            Vec::new()
+        }
+        Err(_) => Vec::new(),
     };
     MetaRelationsData {
-        owners: read("Owners", "owners", "object"),
-        register_records: read("RegisterRecords", "registerRecords", "object"),
-        based_on: read("BasedOn", "basedOn", "object"),
-        input_by_string: read("InputByString", "inputByString", "field"),
+        owners,
+        register_records,
+        based_on,
+        input_by_string,
+        source,
     }
 }
 

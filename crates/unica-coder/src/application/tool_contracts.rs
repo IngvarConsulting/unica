@@ -3730,12 +3730,110 @@ mod tests {
         relations.sort_unstable();
         assert_eq!(
             relations,
-            vec!["basedOn", "inputByString", "owners", "registerRecords"]
+            vec![
+                "basedOn",
+                "inputByString",
+                "owners",
+                "registerRecords",
+                "source",
+            ]
         );
         assert_eq!(
             variants[4]["properties"]["mode"]["enum"],
             json!(["add", "remove", "replace"])
         );
+        let targets = &variants[4]["properties"]["targets"];
+        assert_eq!(targets["uniqueItems"], true);
+        assert!(
+            targets.get("minItems").is_none(),
+            "relation-specific branches own target cardinality"
+        );
+        let relation_variants = variants[4]["oneOf"]
+            .as_array()
+            .expect("editRelations publishes a relation-correlated oneOf");
+        assert_eq!(relation_variants.len(), 5);
+        let relation = |name: &str| {
+            relation_variants
+                .iter()
+                .find(|branch| branch["properties"]["relation"]["const"] == name)
+                .unwrap_or_else(|| panic!("missing relation branch {name}"))
+        };
+        let source = relation("source");
+        assert_eq!(source["properties"]["mode"]["enum"], json!(["replace"]));
+        let source_arrays = source["properties"]["targets"]["oneOf"]
+            .as_array()
+            .expect("source targets publish a closed array oneOf");
+        assert_eq!(source_arrays.len(), 3);
+        assert!(source_arrays.iter().any(|branch| branch["maxItems"] == 0));
+        let non_storage = source_arrays
+            .iter()
+            .find(|branch| branch["minItems"] == 1 && branch.get("maxItems").is_none())
+            .expect("source publishes a non-storage array branch");
+        let target_variants = non_storage["items"]["oneOf"]
+            .as_array()
+            .expect("non-storage source targets publish a closed oneOf");
+        assert_eq!(target_variants.len(), 8);
+        for target in target_variants {
+            assert_eq!(target["type"], "object");
+            assert_eq!(target["additionalProperties"], false);
+        }
+        let event_kinds = target_variants
+            .iter()
+            .map(|target| {
+                target["properties"]["kind"]["const"]
+                    .as_str()
+                    .expect("event target kind is a const")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_kinds,
+            [
+                "string",
+                "number",
+                "boolean",
+                "date",
+                "object",
+                "reference",
+                "recordSet",
+                "definedType",
+            ]
+        );
+        let value_storage = source_arrays
+            .iter()
+            .find(|branch| branch["minItems"] == 1 && branch["maxItems"] == 1)
+            .expect("source publishes a sole ValueStorage branch");
+        assert_eq!(
+            value_storage["items"]["properties"]["kind"]["const"],
+            "valueStorage"
+        );
+        assert_eq!(target_variants[0]["properties"]["length"]["const"], 0);
+        assert_eq!(
+            target_variants[0]["properties"]["allowedLength"]["const"],
+            "variable"
+        );
+        assert_eq!(
+            target_variants[3]["properties"]["fractions"]["enum"],
+            json!(["date", "dateTime"])
+        );
+        for name in ["owners", "registerRecords", "basedOn", "inputByString"] {
+            let branch = relation(name);
+            assert_eq!(
+                branch["properties"]["mode"]["enum"],
+                json!(["add", "remove", "replace"])
+            );
+            assert_eq!(branch["properties"]["targets"]["minItems"], 1);
+        }
+        assert_eq!(
+            relation("owners")["properties"]["targets"]["items"]["required"],
+            json!(["metadataPath"])
+        );
+        assert_eq!(
+            relation("inputByString")["properties"]["targets"]["items"]["required"],
+            json!(["fieldPath"])
+        );
+        assert!(variants[4]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("replace-only")));
 
         let schemas = [
             info,
@@ -3757,6 +3855,7 @@ mod tests {
             "Object",
             "jsonPath",
             "definitionFile",
+            "generatedType",
             "operation",
             "objectPath",
             "configDir",
