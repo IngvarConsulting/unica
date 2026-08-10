@@ -428,6 +428,60 @@ fn info_omits_memberships_when_registered_content_reference_is_malformed() {
 }
 
 #[test]
+fn info_omits_memberships_when_content_type_prefix_has_a_foreign_namespace() {
+    let workspace = create_info_workspace("object-subsystem-foreign-content-qname");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        concat!(
+            "<readable:Item xmlns:readable=\"http://v8.1c.ru/8.3/xcf/readable\" ",
+            "xmlns:xr=\"urn:foreign\" xsi:type=\"xr:MDObjectRef\">",
+            "Catalog.Inspectable</readable:Item>"
+        ),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_omits_memberships_when_content_value_contains_a_nested_element() {
+    let workspace = create_info_workspace("object-subsystem-mixed-content-value");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "Поврежденная",
+        "true",
+        concat!(
+            "<xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Inspectable",
+            "<foreign:Decoy xmlns:foreign=\"urn:foreign\"/>",
+            "</xr:Item>"
+        ),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    let data = result
+        .data
+        .as_ref()
+        .expect("partial typed metadata info data");
+    assert!(data.get("functionalSubsystems").is_none());
+    assert!(data.get("interfaceSubsystems").is_none());
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
 fn info_rejects_an_invalid_root_descriptor_uuid_instead_of_matching_by_address_only() {
     let workspace = create_info_workspace("object-invalid-root-uuid");
     let relative_descriptor = "Catalogs/Inspectable.xml";
@@ -448,6 +502,154 @@ fn info_rejects_an_invalid_root_descriptor_uuid_instead_of_matching_by_address_o
     );
 
     let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_missing_root_descriptor_uuid_instead_of_matching_by_address_only() {
+    let workspace = create_info_workspace("object-missing-root-uuid");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let descriptor_path = workspace.path().join("src").join(relative_descriptor);
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    let descriptor = std::fs::read_to_string(&descriptor_path).unwrap().replacen(
+        &format!(" uuid=\"{target_uuid}\""),
+        "",
+        1,
+    );
+    std::fs::write(&descriptor_path, descriptor).unwrap();
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = call_info(workspace.path(), []);
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_root_descriptor_name_that_disagrees_with_the_target() {
+    let workspace = create_info_workspace("object-root-name-mismatch");
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоАдресу",
+        "true",
+        &content_item("Catalog.Inspectable"),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            std::str::from_utf8(bytes)
+                .unwrap()
+                .replacen("<Name>Inspectable</Name>", "<Name>Other</Name>", 1)
+                .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_foreign_namespace_descriptor_root_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-foreign-descriptor-root");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            xml.replacen(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+                "<MetaDataObject xmlns=\"urn:foreign\"",
+                1,
+            )
+            .replacen(
+                "<Catalog uuid=",
+                "<Catalog xmlns=\"http://v8.1c.ru/8.3/MDClasses\" uuid=",
+                1,
+            )
+            .into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
+
+    assert!(!result.ok);
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("functionalSubsystems").is_none()));
+    assert!(result
+        .data
+        .as_ref()
+        .is_none_or(|data| data.get("interfaceSubsystems").is_none()));
+    assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
+}
+
+#[test]
+fn info_rejects_a_foreign_direct_descriptor_artifact_before_publishing_memberships() {
+    let workspace = create_info_workspace("object-foreign-direct-descriptor-artifact");
+    let relative_descriptor = "Catalogs/Inspectable.xml";
+    let target_uuid = metadata_object_uuid(workspace.path(), relative_descriptor);
+    write_subsystem(
+        workspace.path(),
+        "src/Subsystems",
+        "ПоUUID",
+        "true",
+        &content_item(&target_uuid),
+    );
+
+    let result = with_meta_info_descriptor_image_hook(
+        |bytes| {
+            let xml = std::str::from_utf8(bytes).unwrap();
+            let closing = xml
+                .rfind("</MetaDataObject>")
+                .expect("metadata descriptor root closes");
+            let mut ambiguous = xml.to_string();
+            ambiguous.insert_str(closing, "<foreign:Decoy xmlns:foreign=\"urn:foreign\"/>");
+            ambiguous.into_bytes()
+        },
+        || call_info(workspace.path(), []),
+    );
 
     assert!(!result.ok);
     assert!(result

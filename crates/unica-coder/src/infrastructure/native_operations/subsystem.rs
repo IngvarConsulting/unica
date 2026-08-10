@@ -5,9 +5,12 @@ use crate::application::AdapterOutcome;
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
+use crate::domain::project_sources::SourceSetKind;
 use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_owner::root_version_literal;
+use crate::infrastructure::project_sources::discover_project_source_map;
+use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::subsystem_topology::{
     capture_registered_subsystem_topology, SubsystemTopology, SubsystemTopologyNode,
 };
@@ -1525,7 +1528,7 @@ mod subsystem_info_typed_result_tests {
     }
 
     #[test]
-    fn nested_subsystems_folder_keeps_absolute_addresses_and_limits_the_scope() {
+    fn nested_subsystems_folder_is_not_a_tree_target() {
         let (context, root) = workspace("nested-tree", false);
         fs::write(
             root.join("src/Configuration.xml"),
@@ -1550,19 +1553,118 @@ mod subsystem_info_typed_result_tests {
 
         let execution = analyze_subsystem_info(&args, &context);
 
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
+        assert!(
+            execution
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("root Subsystems directory")),
+            "{:?}",
+            execution.outcome
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn nested_configuration_cannot_lend_registered_topology_to_a_local_xml() {
+        let (context, root) = workspace("nested-configuration-decoy", false);
+        let source_root = root.join("src");
+        write_configuration(&source_root, &["Parent"]);
+        fs::write(
+            source_root.join("Subsystems/Parent.xml"),
+            child_subsystem_stub_xml("Parent", "2.20"),
+        )
+        .unwrap();
+        let nested_root = source_root.join("Subsystems/Parent");
+        fs::create_dir_all(nested_root.join("Subsystems")).unwrap();
+        write_configuration(&nested_root, &["Child"]);
+        fs::write(
+            nested_root.join("Subsystems/Child.xml"),
+            child_subsystem_stub_xml("Child", "2.20"),
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Parent/Subsystems/Child.xml"),
+        )]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
-        assert_eq!(
-            serde_json::to_value(
-                execution
-                    .data
-                    .expect("nested folder answers with its subtree")
-            )
-            .unwrap(),
-            serde_json::json!({
-                "tree": [
-                    {"name": "Обсуждения", "content": 0, "children": []}
-                ]
-            })
+        let SubsystemInfoAnswer::Subsystem(data) = execution
+            .data
+            .expect("the unregistered XML remains local data")
+        else {
+            panic!("a concrete XML must answer with subsystem data");
+        };
+        assert!(
+            data.tree.is_none(),
+            "a nested Configuration.xml must not redefine the registered source root"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unconfigured_configuration_source_cannot_lend_registered_topology() {
+        let (context, root) = workspace("unconfigured-configuration-decoy", false);
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: configured\n",
+        )
+        .unwrap();
+        let configured = root.join("configured");
+        fs::create_dir_all(configured.join("Subsystems")).unwrap();
+        write_configuration(&configured, &[]);
+
+        let decoy = root.join("src");
+        write_configuration(&decoy, &["Продажи"]);
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Продажи.xml"),
+        )]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let SubsystemInfoAnswer::Subsystem(data) =
+            execution.data.expect("the exact XML remains local data")
+        else {
+            panic!("a concrete XML must answer with subsystem data");
+        };
+        assert!(
+            data.tree.is_none(),
+            "an undeclared source root must not lend registered topology"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn single_subsystem_directory_alias_is_not_an_info_target() {
+        let (context, root) = workspace("single-directory-alias", false);
+        let source_root = root.join("src");
+        write_configuration(&source_root, &["Parent"]);
+        fs::write(
+            source_root.join("Subsystems/Parent.xml"),
+            child_subsystem_stub_xml("Parent", "2.20"),
+        )
+        .unwrap();
+        fs::create_dir_all(source_root.join("Subsystems/Parent")).unwrap();
+        let args = Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems/Parent"))]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
+        assert!(
+            execution
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("XML file or the root Subsystems directory")),
+            "{:?}",
+            execution.outcome
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -1729,7 +1831,7 @@ mod subsystem_info_typed_result_tests {
     }
 
     #[test]
-    fn bak_symlink_alias_is_local_data_and_cannot_borrow_registered_tree() {
+    fn bak_symlink_alias_is_not_a_subsystem_info_xml_target() {
         let (context, root) = workspace("bak-alias", false);
         let source_root = root.join("src");
         write_configuration(&source_root, &["Sales"]);
@@ -1747,16 +1849,52 @@ mod subsystem_info_typed_result_tests {
 
         let execution = analyze_subsystem_info(&args, &context);
 
-        assert!(execution.outcome.ok, "{:?}", execution.outcome);
-        let SubsystemInfoAnswer::Subsystem(data) = execution.data.expect("local alias data") else {
-            panic!("a concrete alias must answer with local data");
-        };
-        assert!(data.tree.is_none(), "a .bak alias is not `<Leaf>.xml`");
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
+        assert!(
+            execution
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("exact lowercase .xml")),
+            "{:?}",
+            execution.outcome
+        );
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn extensionless_alias_is_local_data_and_cannot_borrow_registered_tree() {
+    fn xml_symlink_alias_is_not_a_subsystem_info_target() {
+        let (context, root) = workspace("xml-symlink-alias", false);
+        let registered = root.join("src/Subsystems/Продажи.xml");
+        let alias = root.join("src/Subsystems/Alias.xml");
+        if !create_file_symlink_or_skip(&registered, &alias) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Alias.xml"),
+        )]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
+        assert!(
+            execution
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("regular lowercase .xml")),
+            "{:?}",
+            execution.outcome
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extensionless_alias_is_not_a_subsystem_info_xml_target() {
         let (context, root) = workspace("extensionless-alias", false);
         let source_root = root.join("src");
         write_configuration(&source_root, &["Sales"]);
@@ -1774,13 +1912,46 @@ mod subsystem_info_typed_result_tests {
 
         let execution = analyze_subsystem_info(&args, &context);
 
-        assert!(execution.outcome.ok, "{:?}", execution.outcome);
-        let SubsystemInfoAnswer::Subsystem(data) = execution.data.expect("local alias data") else {
-            panic!("a concrete alias must answer with local data");
-        };
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
         assert!(
-            data.tree.is_none(),
-            "an extensionless alias is not `<Leaf>.xml`"
+            execution
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("exact lowercase .xml")),
+            "{:?}",
+            execution.outcome
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn uppercase_xml_alias_is_not_a_subsystem_info_xml_target() {
+        let (context, root) = workspace("uppercase-xml-alias", false);
+        let source_root = root.join("src");
+        fs::write(
+            source_root.join("Subsystems/Sales.XML"),
+            child_subsystem_stub_xml("Sales", "2.20"),
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Sales.XML"),
+        )]);
+
+        let execution = analyze_subsystem_info(&args, &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(execution.data.is_none());
+        assert!(
+            execution
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("exact lowercase .xml")),
+            "{:?}",
+            execution.outcome
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -1919,17 +2090,51 @@ pub(crate) fn analyze_subsystem_info_cancellable(
 ) -> SubsystemInfoExecution {
     prepare_subsystem_info(args, context, cancellation, deadline)
         .map(|prepared| prepared.execution)
-        .unwrap_or_else(subsystem_info_failure)
+        .unwrap_or_else(|error| subsystem_info_failure(error.to_string()))
 }
+
+#[derive(Debug)]
+pub(crate) enum SubsystemInfoPreparationError {
+    Control(String),
+    Provider(String),
+}
+
+impl SubsystemInfoPreparationError {
+    pub(crate) fn is_control(&self) -> bool {
+        matches!(self, Self::Control(_))
+    }
+}
+
+impl std::fmt::Display for SubsystemInfoPreparationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Control(message) | Self::Provider(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for SubsystemInfoPreparationError {}
 
 pub(crate) fn prepare_subsystem_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-) -> Result<PreparedSubsystemInfo, String> {
-    prepare_subsystem_info_with_checkpoint(args, context, || {
-        subsystem_info_checkpoint(cancellation, deadline)
+) -> Result<PreparedSubsystemInfo, SubsystemInfoPreparationError> {
+    let control_error = std::cell::RefCell::new(None);
+    let prepared = prepare_subsystem_info_with_checkpoint(args, context, || {
+        let checkpoint = subsystem_info_checkpoint(cancellation, deadline);
+        if let Err(error) = &checkpoint {
+            if let Some(error) = subsystem_info_control_error(error) {
+                control_error.replace(Some(error));
+            }
+        }
+        checkpoint
+    });
+    prepared.map_err(|error| {
+        control_error
+            .into_inner()
+            .unwrap_or(SubsystemInfoPreparationError::Provider(error))
     })
 }
 
@@ -1955,12 +2160,27 @@ fn subsystem_info_checkpoint(
 pub(crate) fn ensure_subsystem_info_control(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-) -> Result<(), String> {
-    subsystem_info_checkpoint(cancellation, deadline).map_err(subsystem_info_checkpoint_message)
+) -> Result<(), SubsystemInfoPreparationError> {
+    subsystem_info_checkpoint(cancellation, deadline).map_err(|error| {
+        subsystem_info_control_error(&error).unwrap_or_else(|| {
+            SubsystemInfoPreparationError::Provider(subsystem_info_checkpoint_message(error))
+        })
+    })
 }
 
-pub(crate) fn is_subsystem_info_control_error(error: &str) -> bool {
-    error.starts_with("cancelled:") || error.contains("provider deadline exceeded")
+fn subsystem_info_control_error(error: &io::Error) -> Option<SubsystemInfoPreparationError> {
+    let message = error.to_string();
+    if error.kind() == io::ErrorKind::Interrupted
+        && message.starts_with(crate::domain::cancellation::CANCELLED_PREFIX)
+    {
+        return Some(SubsystemInfoPreparationError::Control(message));
+    }
+    if error.kind() == io::ErrorKind::TimedOut {
+        return Some(SubsystemInfoPreparationError::Control(format!(
+            "subsystem info snapshot failed: {message}"
+        )));
+    }
+    None
 }
 
 fn prepare_subsystem_info_with_checkpoint(
@@ -1973,14 +2193,33 @@ fn prepare_subsystem_info_with_checkpoint(
     reject_subsystem_info_parent_components(&raw_path)?;
     let path = absolutize(raw_path, &context.cwd);
 
-    // A `Subsystems/` folder is the hierarchy question; a single subsystem
-    // directory resolves to its own XML like before.
-    if path.is_dir() && path.file_name().and_then(|name| name.to_str()) == Some("Subsystems") {
-        let (source_root, parent_address) = subsystem_tree_scope(&path)?;
+    // Only the source root's `Subsystems/` folder asks the hierarchy question.
+    // A nested folder would omit the required ancestor chain, while a
+    // single-subsystem directory is not the public XML address at all.
+    if path.is_dir() {
+        if path.file_name().and_then(|name| name.to_str()) != Some("Subsystems") {
+            return Err(
+                "SubsystemPath must name an XML file or the root Subsystems directory".to_string(),
+            );
+        }
+        let (source_root, parent_address) =
+            subsystem_tree_scope(&path, context)?.ok_or_else(|| {
+                "the requested Subsystems directory is outside every configured source root"
+                    .to_string()
+            })?;
+        if !parent_address.is_empty() {
+            return Err(
+                "SubsystemPath must name the root Subsystems directory, not a nested Subsystems directory"
+                    .to_string(),
+            );
+        }
         let topology = capture_registered_subsystem_topology(&source_root, &mut checkpoint)
             .map_err(|error| error.to_string())?;
-        let nodes = scoped_subsystem_nodes(&topology.roots, &parent_address)?;
-        let tree = nodes.iter().map(subsystem_tree_node).collect::<Vec<_>>();
+        let tree = topology
+            .roots
+            .iter()
+            .map(subsystem_tree_node)
+            .collect::<Vec<_>>();
         let summary = format!(
             "unica.subsystem.info described {} subsystem(s) in the requested scope",
             tree.len()
@@ -1993,8 +2232,25 @@ fn prepare_subsystem_info_with_checkpoint(
         });
     }
 
-    let xml_path = resolve_subsystem_info_xml(path, true)?;
-    let scope = subsystem_descriptor_scope(&xml_path)?;
+    if path.extension().and_then(|extension| extension.to_str()) != Some("xml") {
+        return Err(
+            "SubsystemPath must name an exact lowercase .xml file or the root Subsystems directory"
+                .to_string(),
+        );
+    }
+
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| format!("[ERROR] File not found: {}: {error}", path.display()))?;
+    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
+        || !metadata.is_file()
+    {
+        return Err(
+            "SubsystemPath must name a regular lowercase .xml file, not a filesystem alias"
+                .to_string(),
+        );
+    }
+    let xml_path = path;
+    let scope = subsystem_descriptor_scope(&xml_path, context)?;
     let mut format_documents = Vec::new();
     let (descriptor_bytes, tree) = if let Some((source_root, address_names, address)) = scope {
         let topology = capture_registered_subsystem_topology(&source_root, &mut checkpoint)
@@ -2331,6 +2587,7 @@ fn subsystem_node_by_address<'a>(
 
 fn subsystem_descriptor_scope(
     descriptor: &Path,
+    context: &WorkspaceContext,
 ) -> Result<Option<(PathBuf, Vec<String>, SubsystemAddress)>, String> {
     let Some(file_name) = descriptor.file_name().and_then(|name| name.to_str()) else {
         return Ok(None);
@@ -2344,7 +2601,9 @@ fn subsystem_descriptor_scope(
     if parent.file_name().and_then(|name| name.to_str()) != Some("Subsystems") {
         return Ok(None);
     }
-    let (source_root, mut address_names) = subsystem_tree_scope(parent)?;
+    let Some((source_root, mut address_names)) = subsystem_tree_scope(parent, context)? else {
+        return Ok(None);
+    };
     match fs::symlink_metadata(source_root.join("Configuration.xml")) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -2377,23 +2636,49 @@ fn focused_subsystem_tree_node(
     })
 }
 
-fn subsystem_tree_scope(path: &Path) -> Result<(PathBuf, Vec<String>), String> {
+fn subsystem_tree_scope(
+    path: &Path,
+    context: &WorkspaceContext,
+) -> Result<Option<(PathBuf, Vec<String>)>, String> {
     let subsystem_ancestors = path
         .ancestors()
         .filter(|ancestor| {
             ancestor.file_name().and_then(|name| name.to_str()) == Some("Subsystems")
         })
         .collect::<Vec<_>>();
-    let outermost = subsystem_ancestors
-        .iter()
-        .copied()
-        .find(|ancestor| {
-            ancestor.parent().is_some_and(|parent| {
-                fs::symlink_metadata(parent.join("Configuration.xml")).is_ok()
-            })
+    let configured_source_roots = discover_project_source_map(&context.workspace_root)?
+        .source_sets
+        .into_iter()
+        .filter(|source_set| {
+            matches!(
+                source_set.kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
         })
-        .or_else(|| subsystem_ancestors.last().copied())
-        .ok_or_else(|| "the requested directory is not a Subsystems directory".to_string())?;
+        .map(|source_set| {
+            let configured = PathBuf::from(source_set.path);
+            let configured = if configured.is_absolute() {
+                configured
+            } else {
+                context.workspace_root.join(configured)
+            };
+            normalize_path_identity(&configured)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let configured_outermost = subsystem_ancestors.iter().copied().find(|ancestor| {
+        ancestor.parent().is_some_and(|parent| {
+            normalize_path_identity(parent)
+                .is_ok_and(|parent| configured_source_roots.contains(&parent))
+        })
+    });
+    let outermost = if configured_source_roots.is_empty() {
+        subsystem_ancestors.last().copied()
+    } else {
+        configured_outermost
+    };
+    let Some(outermost) = outermost else {
+        return Ok(None);
+    };
     let source_root = outermost
         .parent()
         .ok_or_else(|| "Subsystems directory has no source root".to_string())?
@@ -2419,22 +2704,7 @@ fn subsystem_tree_scope(path: &Path) -> Result<(PathBuf, Vec<String>), String> {
         return Err("subsystem scope does not follow the nested Subsystems layout".to_string());
     }
     let parent_address = parts.chunks_exact(2).map(|pair| pair[0].clone()).collect();
-    Ok((source_root, parent_address))
-}
-
-fn scoped_subsystem_nodes<'a>(
-    roots: &'a [SubsystemTopologyNode],
-    parent_address: &[String],
-) -> Result<&'a [SubsystemTopologyNode], String> {
-    let mut nodes = roots;
-    for segment in parent_address {
-        let parent = nodes
-            .iter()
-            .find(|node| node.name == *segment)
-            .ok_or_else(|| format!("subsystem scope parent `{segment}` is not registered"))?;
-        nodes = &parent.children;
-    }
-    Ok(nodes)
+    Ok(Some((source_root, parent_address)))
 }
 
 /// Reads the command interface as data. `None` means the file is absent; an

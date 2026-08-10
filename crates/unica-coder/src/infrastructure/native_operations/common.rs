@@ -635,61 +635,6 @@ pub(crate) fn emit_subsystem_edit_ml(lines: &mut Vec<String>, indent: &str, tag:
     lines.push(format!("{indent}</{tag}>"));
 }
 
-pub(crate) fn resolve_subsystem_info_xml(
-    mut path: PathBuf,
-    directory_hint: bool,
-) -> Result<PathBuf, String> {
-    if path.is_dir() {
-        let dir_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_string();
-        let candidate = path.join(format!("{dir_name}.xml"));
-        let sibling = path
-            .parent()
-            .map(|parent| parent.join(format!("{dir_name}.xml")))
-            .unwrap_or_else(|| PathBuf::from(format!("{dir_name}.xml")));
-        if candidate.is_file() {
-            path = candidate;
-        } else if sibling.is_file() {
-            path = sibling;
-        } else if directory_hint {
-            return Err(format!(
-                "[ERROR] No {dir_name}.xml found in directory. Use -Mode tree for directory listing."
-            ));
-        } else {
-            return Err(format!("[ERROR] File not found: {}", path.display()));
-        }
-    }
-
-    if !path.is_file() {
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        let parent = path.parent().unwrap_or_else(|| Path::new(""));
-        if stem
-            == parent
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-        {
-            if let Some(grand) = parent.parent() {
-                let candidate = grand.join(format!("{stem}.xml"));
-                if candidate.is_file() {
-                    path = candidate;
-                }
-            }
-        }
-    }
-
-    if !path.is_file() {
-        return Err(format!("[ERROR] File not found: {}", path.display()));
-    }
-    Ok(path)
-}
-
 pub(crate) fn resolve_subsystem_validate_xml(mut path: PathBuf) -> Result<PathBuf, String> {
     if path.is_dir() {
         let dir_name = path

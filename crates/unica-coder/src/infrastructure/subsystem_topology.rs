@@ -334,15 +334,29 @@ fn content_items(
         .children()
         .filter(Node::is_element)
         .map(|node| {
+            let type_is_metadata_reference = node
+                .attribute((XSI_NS, "type"))
+                .and_then(|value| value.split_once(':'))
+                .is_some_and(|(prefix, local)| {
+                    !prefix.is_empty()
+                        && local == "MDObjectRef"
+                        && node.lookup_namespace_uri(Some(prefix)) == Some(READABLE_NS)
+                });
             if node.tag_name().namespace() != Some(READABLE_NS)
                 || node.tag_name().name() != "Item"
-                || node.attribute((XSI_NS, "type")) != Some("xr:MDObjectRef")
+                || !type_is_metadata_reference
+                || node.children().any(|child| child.is_element())
             {
                 return Err(SubsystemTopologyError::new(format!(
                     "registered subsystem `{logical_path}` has an invalid Content item"
                 )));
             }
-            let value = node.text().unwrap_or_default().trim();
+            let scalar = node
+                .children()
+                .filter(|child| child.is_text())
+                .filter_map(|child| child.text())
+                .collect::<String>();
+            let value = scalar.trim();
             if value.is_empty() {
                 return Err(SubsystemTopologyError::new(format!(
                     "registered subsystem `{logical_path}` has an empty Content item"
@@ -466,12 +480,11 @@ fn single_object<'a>(
             "`{logical_path}` has an unexpected root element"
         )));
     }
-    let objects = root
-        .children()
-        .filter(Node::is_element)
-        .filter(|node| node.tag_name().namespace() == Some(MD_NS))
-        .collect::<Vec<_>>();
-    if objects.len() != 1 || objects[0].tag_name().name() != expected {
+    let objects = root.children().filter(Node::is_element).collect::<Vec<_>>();
+    if objects.len() != 1
+        || objects[0].tag_name().namespace() != Some(MD_NS)
+        || objects[0].tag_name().name() != expected
+    {
         return Err(SubsystemTopologyError::new(format!(
             "`{logical_path}` must contain exactly one {expected} object"
         )));
@@ -487,10 +500,9 @@ fn single_child<'a>(
     let children = parent
         .children()
         .filter(Node::is_element)
-        .filter(|node| node.tag_name().namespace() == Some(MD_NS))
         .filter(|node| node.tag_name().name() == name)
         .collect::<Vec<_>>();
-    if children.len() != 1 {
+    if children.len() != 1 || children[0].tag_name().namespace() != Some(MD_NS) {
         return Err(SubsystemTopologyError::new(format!(
             "`{logical_path}` must contain exactly one {name}"
         )));
@@ -504,7 +516,17 @@ fn single_text_child(
     logical_path: &str,
 ) -> Result<String, SubsystemTopologyError> {
     let child = single_child(parent, name, logical_path)?;
-    let value = child.text().unwrap_or_default().trim();
+    if child.children().any(|node| node.is_element()) {
+        return Err(SubsystemTopologyError::new(format!(
+            "`{logical_path}` contains a non-scalar {name}"
+        )));
+    }
+    let scalar = child
+        .children()
+        .filter(|node| node.is_text())
+        .filter_map(|node| node.text())
+        .collect::<String>();
+    let value = scalar.trim();
     if value.is_empty() {
         return Err(SubsystemTopologyError::new(format!(
             "`{logical_path}` contains an empty {name}"
@@ -520,10 +542,22 @@ fn registered_children(
     child_objects
         .children()
         .filter(Node::is_element)
-        .filter(|node| node.tag_name().namespace() == Some(MD_NS))
         .filter(|node| node.tag_name().name() == "Subsystem")
         .map(|node| {
-            let name = node.text().unwrap_or_default().trim();
+            if node.tag_name().namespace() != Some(MD_NS)
+                || node.tag_name().name() != "Subsystem"
+                || node.children().any(|child| child.is_element())
+            {
+                return Err(SubsystemTopologyError::new(format!(
+                    "`{logical_path}` contains an invalid Subsystem registration"
+                )));
+            }
+            let scalar = node
+                .children()
+                .filter(|child| child.is_text())
+                .filter_map(|child| child.text())
+                .collect::<String>();
+            let name = scalar.trim();
             if name.is_empty() {
                 Err(SubsystemTopologyError::new(format!(
                     "`{logical_path}` contains an empty Subsystem registration"
@@ -921,6 +955,115 @@ mod tests {
             .expect_err("a foreign Content item cannot prove membership");
 
         assert!(error.to_string().contains("Content"), "{error}");
+    }
+
+    #[test]
+    fn registered_content_resolves_the_xsi_type_qname_namespace() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(
+            root.path(),
+            &[],
+            "Sales",
+            "true",
+            &["InformationRegister.Ledger"],
+            &[],
+        );
+        let descriptor = root.path().join("Subsystems/Sales.xml");
+        let malformed = fs::read_to_string(&descriptor).unwrap().replace(
+            r#"<xr:Item xsi:type="xr:MDObjectRef">InformationRegister.Ledger</xr:Item>"#,
+            r#"<readable:Item xmlns:readable="http://v8.1c.ru/8.3/xcf/readable" xmlns:xr="urn:foreign" xsi:type="xr:MDObjectRef">InformationRegister.Ledger</readable:Item>"#,
+        );
+        fs::write(&descriptor, malformed).unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("a foreign QName cannot prove typed metadata membership");
+
+        assert!(error.to_string().contains("Content"), "{error}");
+    }
+
+    #[test]
+    fn registered_content_rejects_nested_or_mixed_value_nodes() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(
+            root.path(),
+            &[],
+            "Sales",
+            "true",
+            &["InformationRegister.Ledger"],
+            &[],
+        );
+        let descriptor = root.path().join("Subsystems/Sales.xml");
+        let malformed = fs::read_to_string(&descriptor).unwrap().replace(
+            "InformationRegister.Ledger</xr:Item>",
+            r#"InformationRegister.Ledger<foreign:Decoy xmlns:foreign="urn:foreign"/>.Ignored</xr:Item>"#,
+        );
+        fs::write(&descriptor, malformed).unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("nested Content nodes cannot be collapsed into a scalar membership");
+
+        assert!(error.to_string().contains("Content"), "{error}");
+    }
+
+    #[test]
+    fn configuration_registration_rejects_nested_or_mixed_value_nodes() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(root.path(), &[], "Sales", "true", &[], &[]);
+        let configuration = root.path().join("Configuration.xml");
+        let malformed = fs::read_to_string(&configuration).unwrap().replace(
+            "<Subsystem>Sales</Subsystem>",
+            r#"<Subsystem>Sales<foreign:Decoy xmlns:foreign="urn:foreign"/></Subsystem>"#,
+        );
+        fs::write(&configuration, malformed).unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("a registration must be one closed scalar value");
+
+        assert!(error.to_string().contains("registration"), "{error}");
+    }
+
+    #[test]
+    fn required_subsystem_property_rejects_nested_or_mixed_value_nodes() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(root.path(), &[], "Sales", "true", &[], &[]);
+        let descriptor = root.path().join("Subsystems/Sales.xml");
+        let malformed = fs::read_to_string(&descriptor).unwrap().replace(
+            "<Name>Sales</Name>",
+            r#"<Name>Sales<foreign:Decoy xmlns:foreign="urn:foreign"/></Name>"#,
+        );
+        fs::write(&descriptor, malformed).unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("a required property must be one closed scalar value");
+
+        assert!(error.to_string().contains("Name"), "{error}");
+    }
+
+    #[test]
+    fn metadata_root_rejects_a_foreign_direct_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        write_configuration(root.path(), &["Sales"]);
+        write_subsystem(root.path(), &[], "Sales", "true", &[], &[]);
+        let descriptor = root.path().join("Subsystems/Sales.xml");
+        let malformed = fs::read_to_string(&descriptor).unwrap().replace(
+            "</MetaDataObject>",
+            r#"<foreign:Decoy xmlns:foreign="urn:foreign"/></MetaDataObject>"#,
+        );
+        fs::write(&descriptor, malformed).unwrap();
+        let source_root = root.path().canonicalize().unwrap();
+
+        let error = capture_registered_subsystem_topology(&source_root, checkpoint)
+            .expect_err("a foreign direct artifact makes the object identity ambiguous");
+
+        assert!(error.to_string().contains("exactly one"), "{error}");
     }
 
     #[test]

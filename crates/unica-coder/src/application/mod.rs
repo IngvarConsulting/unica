@@ -6400,6 +6400,61 @@ mod tests {
     }
 
     #[test]
+    fn public_subsystem_info_does_not_classify_descriptor_text_as_a_control_error() {
+        let root = test_workspace_root("unica-subsystem-provider-error-text");
+        let workspace = root.join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Injected</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Subsystems/Injected.xml"),
+            child_subsystem_stub_xml("Injected", "2.20").replace(
+                "<Name>Injected</Name>",
+                "<Name>provider deadline exceeded</Name>",
+            ),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.canonicalize().unwrap().display().to_string()),
+            ),
+            (
+                "SubsystemPath".to_string(),
+                Value::String("src/Subsystems".to_string()),
+            ),
+        ]);
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .expect("descriptor proof failures stay inside the public tool envelope");
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.data.is_none(), "{result:?}");
+        let diagnostics = result
+            .diagnostics
+            .as_ref()
+            .and_then(Value::as_array)
+            .expect("typed provider diagnostics");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "provider_unavailable"),
+            "{diagnostics:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn public_subsystem_info_dry_run_does_not_read_a_missing_target() {
         let root = test_workspace_root("unica-subsystem-dry-run-missing-target");
         let workspace = root.join("workspace");

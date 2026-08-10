@@ -256,7 +256,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         };
 
         if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
-            return prepared_subsystem_info_failure(error, false);
+            return prepared_subsystem_info_failure(error.to_string(), false);
         }
         if dry_run {
             return Ok(PreparedToolInvocation {
@@ -271,10 +271,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         let prepared =
             match subsystem::prepare_subsystem_info(args, context, cancellation, deadline) {
                 Ok(prepared) => prepared,
-                Err(error) if subsystem::is_subsystem_info_control_error(&error) => {
-                    return prepared_subsystem_info_failure(error, false);
+                Err(error) if error.is_control() => {
+                    return prepared_subsystem_info_failure(error.to_string(), false);
                 }
-                Err(error) => return prepared_subsystem_info_failure(error, true),
+                Err(error) => return prepared_subsystem_info_failure(error.to_string(), true),
             };
         let format_guard =
             crate::infrastructure::format_guard::evaluate_prepared_subsystem_info_format_guard(
@@ -283,7 +283,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             )
             .map_err(|error| error.to_string())?;
         if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
-            let mut failure = prepared_subsystem_info_failure(error, false)?;
+            let mut failure = prepared_subsystem_info_failure(error.to_string(), false)?;
             failure.format_guard = Some(format_guard);
             return Ok(failure);
         }

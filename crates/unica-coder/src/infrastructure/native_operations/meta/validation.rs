@@ -264,16 +264,30 @@ impl MetadataValidator {
         let (target_type, target_name) = subject_target_identity(subject);
         if let Some(descriptor_index) = descriptor_indices.first().copied() {
             let descriptor = &subject.resources[descriptor_index];
-            if let Ok(identity) = inspect_metadata_image_identity(&descriptor.bytes) {
-                if identity.object_type != target_type || identity.object_name != target_name {
-                    diagnostics.push(validation_diagnostic(
-                        subject,
-                        &format!("resources[{descriptor_index}].bytes"),
-                        format!(
-                            "descriptor identity {}.{} does not match target {}",
-                            identity.object_type, identity.object_name, subject.target
-                        ),
-                    ));
+            match inspect_metadata_image_identity(&descriptor.bytes) {
+                Ok(identity) => {
+                    if identity.object_type != target_type || identity.object_name != target_name {
+                        diagnostics.push(validation_diagnostic(
+                            subject,
+                            &format!("resources[{descriptor_index}].bytes"),
+                            format!(
+                                "descriptor identity {}.{} does not match target {}",
+                                identity.object_type, identity.object_name, subject.target
+                            ),
+                        ));
+                    }
+                }
+                Err(error) => {
+                    let message = format!("metadata descriptor identity is invalid: {error}");
+                    if !error.is_structural() {
+                        diagnostics.push(validation_diagnostic(
+                            subject,
+                            &format!("resources[{descriptor_index}].bytes"),
+                            message,
+                        ));
+                    } else {
+                        diagnostics.push(provider_diagnostic(subject, descriptor_index, message));
+                    }
                 }
             }
 
@@ -437,15 +451,23 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
             "metadata descriptor proof is unavailable",
         )];
     };
-    let Ok((_, document)) = parse_metadata_image(&descriptor.bytes) else {
-        return Vec::new();
+    let (_, document) = match parse_metadata_image(&descriptor.bytes) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return vec![complete_read_missing(
+                subject,
+                format!("metadata descriptor proof is invalid: {error}"),
+            )]
+        }
     };
-    let Some(object) = document
-        .root_element()
-        .children()
-        .find(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
-    else {
-        return Vec::new();
+    let object = match exact_metadata_artifact(&document) {
+        Ok(object) => object,
+        Err(error) => {
+            return vec![complete_read_missing(
+                subject,
+                format!("metadata descriptor proof is invalid: {error}"),
+            )]
+        }
     };
     let object_type = object.tag_name().name();
     let properties = meta_info_child(object, "Properties");

@@ -23,7 +23,6 @@ use crate::infrastructure::platform::secure_read::{
 use crate::infrastructure::subsystem_topology::{
     capture_registered_subsystem_topology, MetadataObjectIdentity,
 };
-use uuid::Uuid;
 
 const REGISTRAR_SCAN_MAX_ENTRIES: usize = 20_000;
 const REGISTRAR_SCAN_MAX_FILES: usize = 20_000;
@@ -182,77 +181,51 @@ pub(crate) fn read_typed_meta_info(
         .unwrap_or(&resolved.descriptor_preimage);
     #[cfg(not(test))]
     let descriptor_preimage = resolved.descriptor_preimage.as_slice();
-    let text = std::str::from_utf8(descriptor_preimage).map_err(|_| {
-        MetaFailure::from(
-            MetaDiagnostic::error(
+    let identity = super::validation_context::inspect_metadata_image_identity(descriptor_preimage)
+        .map_err(|error| {
+            let diagnostic = MetaDiagnostic::error(
                 MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor image is not UTF-8",
+                format!("metadata descriptor identity proof is invalid: {error}"),
             )
-            .with_metadata_path(target.clone()),
-        )
-    })?;
+            .with_metadata_path(target.clone());
+            MetaFailure::from(match error.field() {
+                Some(field) => diagnostic.with_field(field),
+                None => diagnostic,
+            })
+        })?;
+    let text = std::str::from_utf8(descriptor_preimage)
+        .expect("the exact metadata identity proof parsed these bytes as UTF-8");
     let xml = text.trim_start_matches('\u{feff}');
-    let doc = Document::parse(xml).map_err(|_| {
-        MetaFailure::from(
-            MetaDiagnostic::error(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor image is not valid XML",
-            )
-            .with_metadata_path(target.clone()),
-        )
-    })?;
-    let root = doc.root_element();
-    if root.tag_name().name() != "MetaDataObject" {
-        return Err(MetaDiagnostic::error(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor root is not MetaDataObject",
-        )
-        .with_metadata_path(target.clone())
-        .into());
-    }
-    let mut objects = root.children().filter(|node| {
-        node.is_element() && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
-    });
-    let object = objects.next().ok_or_else(|| {
-        MetaFailure::from(
-            MetaDiagnostic::error(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata descriptor has no MDClasses object",
-            )
-            .with_metadata_path(target.clone()),
-        )
-    })?;
-    if objects.next().is_some() {
-        return Err(MetaDiagnostic::error(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor must contain exactly one MDClasses object",
-        )
-        .with_metadata_path(target.clone())
-        .with_field("uuid")
-        .into());
-    }
-    let kind = MetadataKind::parse(object.tag_name().name()).map_err(|diagnostic| {
+    let doc = Document::parse(xml)
+        .expect("the exact metadata identity proof parsed the same XML document");
+    let object = doc
+        .root_element()
+        .children()
+        .find(|node| node.is_element())
+        .expect("the exact metadata identity proof found one object");
+    let kind = MetadataKind::parse(&identity.object_type).map_err(|diagnostic| {
         MetaFailure::from(
             MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, diagnostic.message)
                 .with_metadata_path(target.clone()),
         )
     })?;
-    let object_uuid = object
-        .attribute("uuid")
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or_else(|| {
-            MetaFailure::from(
-                MetaDiagnostic::error(
-                    MetaDiagnosticCode::ProviderUnavailable,
-                    "metadata descriptor has no valid object UUID",
-                )
-                .with_metadata_path(target.clone())
-                .with_field("uuid"),
-            )
-        })?;
+    let mut expected = target.segments();
+    let expected_type = expected.next().unwrap_or_default();
+    let expected_name = expected.next().unwrap_or_default();
+    if identity.object_type != expected_type || identity.object_name != expected_name {
+        return Err(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            format!(
+                "metadata descriptor identity {}.{} does not match target {target}",
+                identity.object_type, identity.object_name
+            ),
+        )
+        .with_metadata_path(target.clone())
+        .into());
+    }
     let object_identity = MetadataObjectIdentity {
         address: target.clone(),
-        uuid: object_uuid,
+        uuid: identity.object_uuid,
     };
     let properties = meta_info_child(object, "Properties");
     let child_objects = meta_info_child(object, "ChildObjects");
