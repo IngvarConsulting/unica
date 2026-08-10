@@ -2312,7 +2312,12 @@ fn meta_validate_check_command_texts(
                 .collect::<Vec<_>>()
         };
         for (source, text) in selected {
-            meta_validate_warn_long_command_text(report, source, text, Some(language_code));
+            meta_validate_warn_long_command_text(
+                report,
+                source,
+                text,
+                Some(language_code.as_str()),
+            );
         }
     }
 }
@@ -2321,26 +2326,29 @@ fn meta_validate_warn_long_command_text(
     report: &mut MetaValidationReporter,
     source: &str,
     text: &str,
-    language: Option<&String>,
+    language: Option<&str>,
 ) {
     let length = text.chars().count();
-    if length <= 30 {
-        return;
-    }
-    let language_suffix = language
-        .map(|language| format!(", language '{language}'"))
-        .unwrap_or_default();
-    // 38 is the hard ceiling; 30 is the recommended target. A value over the
-    // ceiling reports only the ceiling so the stricter message is not doubled.
-    if length > 38 {
-        report.warn(format!(
-            "3. Properties: {source} '{text}' is longer than 38 characters ({length}) for the command interface{language_suffix}"
-        ));
+    let (code, message) = if length > 38 {
+        (
+            MetaDiagnosticCode::CommandTextUpperLimit,
+            format!(
+                "3. Properties: {source} '{text}' is longer than the upper \
+                 command-interface threshold of 38 characters ({length})"
+            ),
+        )
+    } else if length > 30 {
+        (
+            MetaDiagnosticCode::CommandTextRecommendedLimit,
+            format!(
+                "3. Properties: {source} '{text}' is longer than the recommended \
+                 command-interface length of 30 characters ({length})"
+            ),
+        )
     } else {
-        report.warn(format!(
-            "3. Properties: {source} '{text}' is longer than the recommended 30 characters ({length}) for the command interface{language_suffix}"
-        ));
-    }
+        return;
+    };
+    report.warn_finding(code, format!("properties.{source}"), language, message);
 }
 
 pub(super) fn meta_validate_check_property_values(

@@ -909,7 +909,7 @@ fn meta_edit_warning_is_derived_from_late_support_authorization() {
     );
 }
 
-fn add_with_synonym(workspace: &TempWorkspace, name: &str, synonym: &str) -> Vec<String> {
+fn add_with_synonym(workspace: &TempWorkspace, name: &str, synonym: &str) -> Vec<Value> {
     let mut args = add_args(workspace.path(), "Catalog", name, false);
     args.insert(
         "operations".to_string(),
@@ -917,112 +917,126 @@ fn add_with_synonym(workspace: &TempWorkspace, name: &str, synonym: &str) -> Vec
     );
     let result = call_add_with_args(workspace.path(), &args);
     assert!(result.ok, "{name}: {:?}", result.errors);
+    assert!(
+        workspace
+            .path()
+            .join(format!("src/Catalogs/{name}.xml"))
+            .exists(),
+        "warning must not block apply for Catalog.{name}"
+    );
     let data = result.data.expect("typed mutation data");
     assert_eq!(data["validation"]["status"], "passed", "{name}");
     data["validation"]["diagnostics"]
         .as_array()
         .expect("validation diagnostics")
-        .iter()
-        .filter(|diagnostic| diagnostic["severity"] == "warning")
-        .map(|diagnostic| diagnostic["message"].as_str().unwrap().to_string())
-        .collect()
+        .clone()
 }
 
-/// Classifies the command-text warning a synonym of `length` characters draws,
-/// so the two thresholds are pinned at their exact boundaries.
-fn command_text_warning_at(workspace: &TempWorkspace, name: &str, length: usize) -> Option<String> {
-    let warnings = add_with_synonym(workspace, name, &"Д".repeat(length));
-    let recommended = warnings
+fn diagnostic_by_code<'a>(diagnostics: &'a [Value], code: &str) -> Option<&'a Value> {
+    diagnostics
         .iter()
-        .any(|warning| warning.contains("recommended 30 characters"));
-    let ceiling = warnings
-        .iter()
-        .any(|warning| warning.contains("longer than 38 characters"));
-    assert!(
-        !(recommended && ceiling),
-        "one value must never draw both warnings: {warnings:?}"
-    );
-    match (recommended, ceiling) {
-        (true, _) => Some("recommended".to_string()),
-        (_, true) => Some("ceiling".to_string()),
-        _ => None,
-    }
+        .find(|diagnostic| diagnostic["code"] == code)
 }
 
 #[test]
 fn add_pins_both_command_text_thresholds_at_their_boundaries() {
     let workspace = create_configuration_workspace("command-text-boundaries");
+    let cases = [
+        (30, None),
+        (31, Some("command_text_recommended_limit")),
+        (38, Some("command_text_recommended_limit")),
+        (39, Some("command_text_upper_limit")),
+    ];
 
-    assert_eq!(command_text_warning_at(&workspace, "Exactly30", 30), None);
-    assert_eq!(
-        command_text_warning_at(&workspace, "Exactly31", 31).as_deref(),
-        Some("recommended")
-    );
-    assert_eq!(
-        command_text_warning_at(&workspace, "Exactly38", 38).as_deref(),
-        Some("recommended")
-    );
-    assert_eq!(
-        command_text_warning_at(&workspace, "Exactly39", 39).as_deref(),
-        Some("ceiling")
-    );
+    for (length, expected_code) in cases {
+        let name = format!("Exactly{length}");
+        let diagnostics = add_with_synonym(&workspace, &name, &"Д".repeat(length));
+        let recommended = diagnostic_by_code(&diagnostics, "command_text_recommended_limit");
+        let upper = diagnostic_by_code(&diagnostics, "command_text_upper_limit");
+
+        match expected_code {
+            Some(code) => {
+                let warning = diagnostic_by_code(&diagnostics, code)
+                    .unwrap_or_else(|| panic!("missing {code} for {length}: {diagnostics:?}"));
+                assert_eq!(warning["severity"], "warning", "{diagnostics:?}");
+                assert_eq!(warning["metadataPath"], format!("Catalog.{name}"));
+                assert_eq!(warning["field"], "properties.Synonym");
+                assert_eq!(warning["language"], "ru");
+                assert!(
+                    warning["message"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty()),
+                    "{diagnostics:?}"
+                );
+            }
+            None => assert!(recommended.is_none() && upper.is_none(), "{diagnostics:?}"),
+        }
+        assert_eq!(
+            (recommended.is_some(), upper.is_some()),
+            match expected_code {
+                Some("command_text_recommended_limit") => (true, false),
+                Some("command_text_upper_limit") => (false, true),
+                _ => (false, false),
+            },
+            "one value must never draw both threshold findings: {diagnostics:?}"
+        );
+    }
 }
 
 #[test]
-fn add_warns_when_command_text_passes_the_recommended_limit() {
-    let workspace = create_configuration_workspace("command-text-soft-limit");
-    // 33 characters: over the recommended 30 but within the hard 38 ceiling.
-    let warnings = add_with_synonym(&workspace, "SoftLimit", "Договоры контрагентов по продажам");
-
+fn info_uses_nonempty_list_presentation_for_command_text_finding() {
+    let workspace = create_configuration_workspace("command-text-list-presentation");
+    let name = "ListPresentationLimit";
+    let synonym_diagnostics = add_with_synonym(&workspace, name, "Короткий синоним");
     assert!(
-        warnings.iter().any(|warning| warning
-            == "3. Properties: Synonym 'Договоры контрагентов по продажам' is longer than \
-                the recommended 30 characters (33) for the command interface, language 'ru'"),
-        "{warnings:?}"
-    );
-    assert!(
-        !warnings
-            .iter()
-            .any(|warning| warning.contains("longer than 38 characters")),
-        "{warnings:?}"
-    );
-}
-
-#[test]
-fn add_allows_command_text_within_the_recommended_limit() {
-    let workspace = create_configuration_workspace("command-text-within-limit");
-    let warnings = add_with_synonym(&workspace, "ShortLimit", "Договоры");
-
-    assert!(
-        !warnings
-            .iter()
-            .any(|warning| warning.contains("for the command interface")),
-        "{warnings:?}"
-    );
-}
-
-#[test]
-fn add_still_warns_above_the_hard_command_text_ceiling() {
-    let workspace = create_configuration_workspace("command-text-hard-limit");
-    // 52 characters: the ceiling message replaces the recommended-limit one so
-    // a single value never reports both.
-    let warnings = add_with_synonym(
-        &workspace,
-        "HardLimit",
-        "Очень длинное наименование для командного интерфейса",
+        diagnostic_by_code(&synonym_diagnostics, "command_text_recommended_limit").is_none()
+            && diagnostic_by_code(&synonym_diagnostics, "command_text_upper_limit").is_none(),
+        "{synonym_diagnostics:?}"
     );
 
-    assert!(
-        warnings.iter().any(|warning| warning
-            == "3. Properties: Synonym 'Очень длинное наименование для командного интерфейса' \
-                is longer than 38 characters (52) for the command interface, language 'ru'"),
-        "{warnings:?}"
+    let descriptor = workspace.path().join(format!("src/Catalogs/{name}.xml"));
+    let source = std::fs::read_to_string(&descriptor).unwrap();
+    let list_text = "Текст длиной не менее тридцати девяти символов";
+    assert!(list_text.chars().count() > 38);
+    let replacement = format!(
+        "<ListPresentation>\n\t\t\t<v8:item>\n\t\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t\t<v8:content>{list_text}</v8:content>\n\t\t\t</v8:item>\n\t\t</ListPresentation>"
     );
+    let patched = source.replacen("<ListPresentation/>", &replacement, 1);
+    assert_ne!(
+        patched, source,
+        "fixture must patch a real ListPresentation"
+    );
+    std::fs::write(&descriptor, patched).unwrap();
+
+    let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
+    let result = UnicaApplication::new()
+        .call_tool(
+            "unica.meta.info",
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!(format!("Catalog.{name}"))),
+            ]),
+        )
+        .expect("private typed meta.info call");
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.expect("typed info data");
+    assert_eq!(data["validation"]["status"], "passed");
+    let diagnostics = data["validation"]["diagnostics"]
+        .as_array()
+        .expect("validation diagnostics");
+    let warning = diagnostic_by_code(diagnostics, "command_text_upper_limit")
+        .unwrap_or_else(|| panic!("typed ListPresentation warning: {diagnostics:?}"));
+    assert_eq!(warning["severity"], "warning");
+    assert_eq!(warning["metadataPath"], format!("Catalog.{name}"));
+    assert_eq!(warning["field"], "properties.ListPresentation");
+    assert_eq!(warning["language"], "ru");
     assert!(
-        !warnings
-            .iter()
-            .any(|warning| warning.contains("recommended 30 characters")),
-        "{warnings:?}"
+        diagnostics.iter().all(|diagnostic| {
+            diagnostic["code"] != "command_text_recommended_limit"
+                && !(diagnostic["code"] == "command_text_upper_limit"
+                    && diagnostic["field"] == "properties.Synonym")
+        }),
+        "nonempty ListPresentation must take priority: {diagnostics:?}"
     );
 }
 

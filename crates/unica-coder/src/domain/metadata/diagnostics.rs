@@ -13,6 +13,8 @@ pub(crate) enum MetaDiagnosticCode {
     ReferenceConflict,
     ValidationFailed,
     RedundantListPresentation,
+    CommandTextRecommendedLimit,
+    CommandTextUpperLimit,
     ConcurrentModification,
     ProviderUnavailable,
     RollbackFailed,
@@ -30,6 +32,8 @@ impl MetaDiagnosticCode {
         Self::ReferenceConflict,
         Self::ValidationFailed,
         Self::RedundantListPresentation,
+        Self::CommandTextRecommendedLimit,
+        Self::CommandTextUpperLimit,
         Self::ConcurrentModification,
         Self::ProviderUnavailable,
         Self::RollbackFailed,
@@ -132,6 +136,14 @@ mod tests {
                 "\"redundant_list_presentation\"",
             ),
             (
+                MetaDiagnosticCode::CommandTextRecommendedLimit,
+                "\"command_text_recommended_limit\"",
+            ),
+            (
+                MetaDiagnosticCode::CommandTextUpperLimit,
+                "\"command_text_upper_limit\"",
+            ),
+            (
                 MetaDiagnosticCode::ConcurrentModification,
                 "\"concurrent_modification\"",
             ),
@@ -159,7 +171,7 @@ mod tests {
 
         let localized = serde_json::to_value(
             MetaDiagnostic::warning(
-                MetaDiagnosticCode::RedundantListPresentation,
+                MetaDiagnosticCode::CommandTextRecommendedLimit,
                 "localized validation warning",
             )
             .with_language("ru"),
@@ -169,7 +181,7 @@ mod tests {
 
         let empty = serde_json::to_value(
             MetaDiagnostic::warning(
-                MetaDiagnosticCode::RedundantListPresentation,
+                MetaDiagnosticCode::CommandTextUpperLimit,
                 "language-independent validation warning",
             )
             .with_language(""),
