@@ -1020,7 +1020,27 @@ mod tests {
             .expect("unica.role.validate must be listed");
 
         let schema = &role_validate["inputSchema"];
-        assert_eq!(schema["required"], json!(["RightsPath"]));
+        // ADR-0048 moved the requirement into the two selector branches: the
+        // path is still required to reach the tool by path, and the logical
+        // branch requires the address pair instead.
+        assert_eq!(schema["required"], json!([]));
+        assert_eq!(
+            schema["oneOf"],
+            json!([
+                {
+                    "required": ["sourceSet", "metadataPath"],
+                    "not": {"required": ["RightsPath"]}
+                },
+                {
+                    "required": ["RightsPath"],
+                    "not": {"anyOf": [
+                        {"required": ["sourceSet"]},
+                        {"required": ["metadataPath"]}
+                    ]}
+                }
+            ]),
+            "{schema}"
+        );
         assert!(schema.get("allOf").is_none());
         assert!(schema["properties"].get("RightsPath").is_some());
         assert!(schema["properties"].get("Detailed").is_some());

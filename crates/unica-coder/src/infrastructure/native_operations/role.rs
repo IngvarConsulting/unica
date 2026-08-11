@@ -4430,6 +4430,122 @@ mod role_info_typed_result_tests {
         assert_eq!(data.restricted_objects.len(), 1);
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
+
+    /// The same dump, made addressable: a project map naming the source set and
+    /// a configuration that registers the role.
+    fn addressable_workspace(name: &str) -> WorkspaceContext {
+        let context = workspace(name);
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Role>Reader</Role></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        context
+    }
+
+    #[test]
+    fn role_info_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = addressable_workspace("bridge");
+
+        let physical = analyze_role_info(
+            &Map::from_iter([(
+                "RightsPath".to_string(),
+                json!("src/Roles/Reader/Ext/Rights.xml"),
+            )]),
+            &context,
+        );
+        let logical = analyze_role_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Role.Reader")),
+            ]),
+            &context,
+        );
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert!(physical.outcome.ok, "{:?}", physical.outcome);
+        // Compare what the caller actually receives: the serialized
+        // answer, not a struct the wire never carries.
+        assert_eq!(
+            serde_json::to_value(&logical.data).unwrap(),
+            serde_json::to_value(&physical.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn role_info_accepts_the_russian_kind_alias() {
+        let context = addressable_workspace("bridge-alias");
+
+        let logical = analyze_role_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Роль.Reader")),
+            ]),
+            &context,
+        );
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert_eq!(
+            logical.data.expect("role info answers with data").name,
+            "Reader"
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn role_info_refuses_an_address_that_is_not_a_role() {
+        let context = addressable_workspace("bridge-wrong-kind");
+
+        let outcome = analyze_role_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Catalog.Goods")),
+            ]),
+            &context,
+        )
+        .outcome;
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .chain(std::iter::once(&outcome.summary))
+                .any(|message| message.contains("target_kind_unsupported")),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn role_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = addressable_workspace("bridge-validate");
+
+        let physical = validate_role(
+            &Map::from_iter([(
+                "RightsPath".to_string(),
+                json!("src/Roles/Reader/Ext/Rights.xml"),
+            )]),
+            &context,
+        );
+        let logical = validate_role(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Role.Reader")),
+            ]),
+            &context,
+        );
+
+        assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
+        assert_eq!(logical.errors, physical.errors);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
 }
 
 #[cfg(test)]

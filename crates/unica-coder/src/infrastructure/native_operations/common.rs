@@ -14,6 +14,9 @@ use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
     TargetKindPolicy,
 };
+use crate::infrastructure::native_operations::logical_selector::{
+    logical_selection, AttachedResource,
+};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -1140,6 +1143,11 @@ pub(crate) fn resolve_role_read_rights_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, &["Role"]) {
+        return selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+    }
     let raw = required_path(args, RIGHTS_PATH, "RightsPath")?;
     Ok(resolve_role_validate_rights_path(absolutize(
         raw,
@@ -1213,6 +1221,13 @@ pub(crate) fn resolve_cf_read_config_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::ConfigurationRoot, &[])
+    {
+        return selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+    }
     resolve_configuration_read_path(args, CF_PATH, "ConfigPath", context)
 }
 
