@@ -67,6 +67,7 @@
 - [ADR-0047: `unica.meta.info` имеет отдельную полную read-model](0047-polnaya-read-model-meta-info.md)
 - [ADR-0048: Типизированный читатель публикует только достижимый селектор](0048-selektory-tipizirovannyh-chitateley.md)
 - [ADR-0049: Предметный читатель принимает логический адрес раньше, чем теряет путь](0049-most-logicheskoy-adresacii-predmetnyh-chitateley.md)
+- [ADR-0053: Постоянная сессия поставщика не удерживает рабочее дерево](0053-sessiya-ne-uderzhivaet-rabochee-derevo.md)
 - [ADR-0050: Идентичность заимствованного описателя выдаётся один раз](0050-identichnost-zaimstvovannogo-opisatelya.md)
 - [ADR-0051: Аргументы команды публикует тот инструмент, который её исполняет](0051-argumenty-komandy-prinadlezhat-instrumentu.md)
 

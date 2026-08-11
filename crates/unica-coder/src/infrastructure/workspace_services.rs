@@ -2588,11 +2588,20 @@ impl Drop for PersistentMcpSession {
     }
 }
 
+/// A persistent session outlives the tool call that started it, by design
+/// (ADR-0006). While its working directory sits inside the source tree, the
+/// process holds that tree open, and `git worktree remove` fails long after the
+/// call returned (#204). The tree is addressed by `--source-dir` as an absolute
+/// path, so the working directory carries no information — it only holds.
+///
+/// The child therefore runs from the short private runtime directory it already
+/// uses for its socket, outside any workspace.
 fn configure_bsl_analyzer_runtime_dir(command: &mut Command) -> Result<(), String> {
     if let Some(runtime_dir) = short_private_runtime_dir().map_err(|error| {
         format!("failed to prepare short runtime directory for bsl-analyzer: {error}")
     })? {
-        command.env("XDG_RUNTIME_DIR", runtime_dir);
+        command.env("XDG_RUNTIME_DIR", &runtime_dir);
+        command.current_dir(&runtime_dir);
     }
     Ok(())
 }
@@ -4077,6 +4086,24 @@ mod tests {
                 limit: 7
             }
         );
+    }
+
+    /// #204. A persistent session outlives its tool call, so a working
+    /// directory inside the source tree keeps that tree open and
+    /// `git worktree remove` fails long after the call returned. The tree is
+    /// addressed by `--source-dir`, so the working directory only holds.
+    #[test]
+    fn bsl_analyzer_child_does_not_run_from_inside_the_workspace() {
+        let Some(runtime_dir) = short_private_runtime_dir().unwrap() else {
+            return;
+        };
+        let mut command = Command::new("bsl-analyzer");
+        command.current_dir(std::env::temp_dir().join("unica-worktree-under-test"));
+
+        configure_bsl_analyzer_runtime_dir(&mut command).unwrap();
+
+        assert_eq!(command.get_current_dir(), Some(runtime_dir.as_path()));
+        assert_eq!(runtime_dir.parent(), Some(Path::new("/tmp")));
     }
 
     #[test]
