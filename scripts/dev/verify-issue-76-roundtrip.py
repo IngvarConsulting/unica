@@ -94,6 +94,72 @@ _EXACT_SECRET_KEYS = frozenset(
     {"connection", "pwd", "user", "usr", "username", "db_user", "dbuser"}
 )
 _SUBSTRING_SECRET_KEYS = ("password", "token", "secret")
+_SENSITIVE_ENVIRONMENT_MARKERS = (
+    "PASSWORD",
+    "PASSWD",
+    "TOKEN",
+    "SECRET",
+    "CREDENTIAL",
+    "ACCESS_KEY",
+    "PRIVATE_KEY",
+    "API_KEY",
+    "AUTHORIZATION",
+)
+_SENSITIVE_ENVIRONMENT_NAMES = frozenset(
+    {
+        "DOCKER_CONFIG",
+        "GPG_AGENT_INFO",
+        "KUBECONFIG",
+        "NETRC",
+        "SSH_AUTH_SOCK",
+    }
+)
+_CHILD_ENVIRONMENT_NAMES = frozenset(
+    {
+        "APPDATA",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "COMMONPROGRAMW6432",
+        "COMPUTERNAME",
+        "COMSPEC",
+        "DISPLAY",
+        "HASP_SERVER",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LANGUAGE",
+        "LOCALAPPDATA",
+        "LOGNAME",
+        "LSFORCEHOST",
+        "NETHASP_INI",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+        "PATH",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_IDENTIFIER",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "SHELL",
+        "SYSTEMROOT",
+        "TEMP",
+        "TERM",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USER",
+        "USERNAME",
+        "USERPROFILE",
+        "WAYLAND_DISPLAY",
+        "WINDIR",
+        "XDG_RUNTIME_DIR",
+        "__CF_USER_TEXT_ENCODING",
+    }
+)
+_CHILD_ENVIRONMENT_PREFIXES = ("HASP_", "LC_", "NETHASP_")
 _MANIFEST_TOOL_NAMES = ("unica", "v8-runner")
 _MANIFEST_TOOL_FIELDS = ("version", "sourceCommit", "sourceTag", "sha256")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -134,7 +200,12 @@ def _argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--binary-arg", action="append", default=[])
-    parser.add_argument("--plugin-root", required=True, type=Path)
+    parser.add_argument(
+        "--plugin-root",
+        required=True,
+        type=Path,
+        help="single-target packaged Unica runtime root",
+    )
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--sources", required=True, type=Path)
     parser.add_argument(
@@ -317,9 +388,38 @@ def _safe_automatic_evidence_parent(
 
 
 def _require_regular_file(path: Path, label: str) -> Path:
-    if path.is_symlink() or not path.is_file():
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise SourceError(f"cannot inspect {label}: {error}") from error
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    file_attributes = getattr(metadata, "st_file_attributes", 0)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or bool(reparse_flag and file_attributes & reparse_flag)
+    ):
         raise SourceError(f"{label} must be a regular non-symlink file: {path}")
     return path
+
+
+def _require_unlinked_directory_ancestors(path: Path, label: str) -> None:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    for candidate in (path.parent, *path.parent.parents):
+        try:
+            metadata = candidate.lstat()
+        except OSError as error:
+            raise SourceError(f"cannot inspect {label} ancestor {candidate}: {error}") from error
+        file_attributes = getattr(metadata, "st_file_attributes", 0)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or bool(reparse_flag and file_attributes & reparse_flag)
+        ):
+            raise SourceError(
+                f"{label} ancestor must be a real directory, not a link or reparse point: "
+                f"{candidate}"
+            )
 
 
 def _hash_file(path: Path) -> str:
@@ -777,7 +877,7 @@ def _redaction_pairs(redactions) -> list[tuple[str, str, bool]]:
         value = str(raw)
         if not value:
             continue
-        path_like = isinstance(raw, os.PathLike) or Path(value).is_absolute()
+        path_like = isinstance(raw, os.PathLike)
         pairs.add((value, str(replacement), path_like))
         if not path_like:
             continue
@@ -802,8 +902,17 @@ def _sanitize_text(
         if path_like:
             text = text.replace(raw, replacement)
         elif redact_tokens:
-            token = re.compile(rf"(?<![\w$]){re.escape(raw)}(?![\w])")
-            text = token.sub(lambda _match: replacement, text)
+            if any(character.isalnum() for character in raw):
+                token = re.compile(rf"(?<![\w$]){re.escape(raw)}(?![\w])")
+                text = token.sub(lambda _match: replacement, text)
+            elif replacement == "$DB_USER":
+                contextual_user = re.compile(
+                    rf"(?i)(\b(?:authenticated\s+)?user\s+){re.escape(raw)}(?!\S)"
+                )
+                text = contextual_user.sub(
+                    lambda match: match.group(1) + replacement,
+                    text,
+                )
     text = _SECRET_ASSIGNMENT_RE.sub("<credential-redacted>", text)
     text = _CONNECTION_CREDENTIAL_RE.sub("<credential-redacted>", text)
     text = _CLI_CREDENTIAL_RE.sub("<credential-redacted>", text)
@@ -862,6 +971,34 @@ def _sanitize_value(value, redactions, *, redact_tokens: bool = True):
             for child in value
         ]
     return value
+
+
+def _filtered_child_environment(source) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    environment: dict[str, str] = {}
+    secret_redactions: list[tuple[str, str]] = []
+    for raw_name, raw_value in source.items():
+        name = str(raw_name)
+        value = str(raw_value)
+        upper_name = name.upper()
+        normalized = re.sub(r"[^A-Z0-9]+", "_", upper_name)
+        name_parts = frozenset(part for part in normalized.split("_") if part)
+        sensitive = (
+            upper_name in _SENSITIVE_ENVIRONMENT_NAMES
+            or bool(name_parts.intersection({"JWT", "PAT"}))
+            or any(
+                marker in normalized for marker in _SENSITIVE_ENVIRONMENT_MARKERS
+            )
+        )
+        if sensitive:
+            if value:
+                secret_redactions.append((value, "$ENV_SECRET"))
+            continue
+        allowed = upper_name in _CHILD_ENVIRONMENT_NAMES or any(
+            upper_name.startswith(prefix) for prefix in _CHILD_ENVIRONMENT_PREFIXES
+        )
+        if allowed:
+            environment[name] = value
+    return environment, secret_redactions
 
 
 def _json_digest(value) -> str:
@@ -932,6 +1069,7 @@ def _restore_private_preimage(
 ) -> None:
     """Atomically restore a private target after proving its mutation preimage."""
 
+    _require_unlinked_directory_ancestors(path, "round-trip source target")
     _require_regular_file(path, "round-trip source target")
     if _hash_file(path) != expected_current_sha256:
         raise SourceError(
@@ -951,13 +1089,26 @@ def _restore_private_preimage(
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
+        _require_unlinked_directory_ancestors(path, "round-trip source target")
+        _require_regular_file(path, "round-trip source target")
+        if _hash_file(path) != expected_current_sha256:
+            raise SourceError(
+                "round-trip source target changed while the pre-dump oracle reset "
+                f"was prepared: {path}"
+            )
         os.replace(temporary_path, path)
-    except OSError as error:
+    except Exception as error:
         if temporary_path is not None:
             try:
+                _require_unlinked_directory_ancestors(
+                    temporary_path,
+                    "round-trip temporary target",
+                )
                 temporary_path.unlink(missing_ok=True)
-            except OSError:
+            except (OSError, SourceError):
                 pass
+        if isinstance(error, SourceError):
+            raise
         raise SourceError(f"cannot restore private round-trip preimage: {error}") from error
 
 
@@ -1054,7 +1205,11 @@ def _step_record(
     duration_ms: int,
     redactions,
 ) -> dict:
-    sanitized_arguments = _sanitize_value(arguments, redactions)
+    sanitized_arguments = _sanitize_value(
+        arguments,
+        redactions,
+        redact_tokens=False,
+    )
     sanitized_payload = _sanitize_value(payload, redactions)
     projection = {
         "ok": payload.get("ok"),
@@ -1244,7 +1399,11 @@ def run_roundtrip_flow(
     client below; unit tests supply a scripted public-tool fake.
     """
 
-    workspace = Path(workspace)
+    workspace = _resolved_absolute(
+        Path(workspace),
+        "private round-trip workspace",
+        directory=True,
+    )
     source = workspace / "src"
     catalog = workspace / CATALOG_RELATIVE_PATH
     common_module_descriptor = workspace / COMMON_MODULE_DESCRIPTOR_RELATIVE_PATH
@@ -1255,6 +1414,7 @@ def run_roundtrip_flow(
         (common_module_descriptor, "common module descriptor"),
         (module, "common module source"),
     ):
+        _require_unlinked_directory_ancestors(path, label)
         _require_regular_file(path, label)
 
     redactions = list(redactions or [])
@@ -2138,7 +2298,8 @@ def execute_gate(
             parent_configuration_path,
             source_copy,
         )
-        (workspace / "work").mkdir(mode=0o700)
+        private_work = workspace / "work"
+        private_work.mkdir(mode=0o700)
         cache = evidence / "cache"
         cache.mkdir(mode=0o700)
         runtime_platform = platform
@@ -2237,9 +2398,15 @@ def execute_gate(
 
         integrity_probe = inspect_input_integrity
 
-        environment = os.environ.copy()
+        environment, secret_environment_redactions = _filtered_child_environment(
+            os.environ
+        )
+        redactions.extend(secret_environment_redactions)
         environment["UNICA_PLUGIN_ROOT"] = str(plugin)
         environment["UNICA_CACHE_DIR"] = str(cache)
+        environment["PWD"] = str(workspace)
+        for temporary_name in ("TMPDIR", "TMP", "TEMP"):
+            environment[temporary_name] = str(private_work)
         command = [str(private_binary), *binary_args]
         session = session_factory(
             command,
@@ -2300,7 +2467,7 @@ def execute_gate(
         if integrity_probe is not None:
             try:
                 integrity = integrity_probe()
-            except SourceError as integrity_error:
+            except Exception as integrity_error:
                 _record_source_error(
                     report,
                     f"{report['sourceError']['message']}; input integrity check failed: {integrity_error}",
@@ -2338,7 +2505,7 @@ def execute_gate(
     if temporary is not None:
         try:
             temporary.cleanup()
-        except OSError as error:
+        except Exception as error:
             cleanup_message = f"temporary issue #76 evidence cleanup failed: {error}"
             exit_code = 2
             evidence_report = report.setdefault("evidence", {})

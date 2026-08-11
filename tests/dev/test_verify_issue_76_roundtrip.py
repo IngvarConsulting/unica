@@ -668,9 +668,89 @@ class Issue76RoundTripTests(unittest.TestCase):
         self.assertIs(persisted["evidence"]["retained"], False)
         self.assertIs(persisted["evidence"]["cleanupSucceeded"], True)
 
+    def test_unexpected_integrity_probe_error_still_cleans_up_and_writes_report(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = write_gate_inputs(root)
+            automatic_evidence = root / "automatic-evidence"
+            automatic_evidence.mkdir()
+            temporary = mock.Mock()
+            temporary.name = str(automatic_evidence)
+            original_digest = verifier._stat_tree_digest
+            calls = 0
+
+            def flaky_digest(path):
+                nonlocal calls
+                calls += 1
+                if calls >= 3:
+                    raise RuntimeError("synthetic integrity probe failure")
+                return original_digest(path)
+
+            class StartFailingSession(ScriptedSession):
+                def start(self, _required_tools) -> None:
+                    raise verifier.SourceError("synthetic MCP start failure")
+
+            with mock.patch.object(
+                verifier.tempfile,
+                "TemporaryDirectory",
+                return_value=temporary,
+            ), mock.patch.object(
+                verifier,
+                "_stat_tree_digest",
+                side_effect=flaky_digest,
+            ):
+                exit_code, report = verifier.execute_gate(
+                    **inputs,
+                    evidence_dir=None,
+                    session_factory=lambda *_args, cwd, **_kwargs: StartFailingSession(
+                        cwd
+                    ),
+                )
+
+            persisted = json.loads(inputs["report_path"].read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 2, report)
+        self.assertEqual(persisted["status"], "source-error")
+        self.assertIn("integrity", persisted["sourceError"]["message"])
+        temporary.cleanup.assert_called_once_with()
+
+    def test_unexpected_cleanup_error_is_normalized_into_terminal_report(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = write_gate_inputs(root)
+            automatic_evidence = root / "automatic-evidence"
+            automatic_evidence.mkdir()
+            temporary = mock.Mock()
+            temporary.name = str(automatic_evidence)
+            temporary.cleanup.side_effect = RuntimeError(
+                "synthetic unexpected cleanup failure"
+            )
+
+            with mock.patch.object(
+                verifier.tempfile,
+                "TemporaryDirectory",
+                return_value=temporary,
+            ):
+                exit_code, report = verifier.execute_gate(
+                    **inputs,
+                    evidence_dir=None,
+                    session_factory=lambda *_args, cwd, **_kwargs: ScriptedSession(
+                        cwd
+                    ),
+                )
+
+            persisted = json.loads(inputs["report_path"].read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 2, report)
+        self.assertEqual(persisted["status"], "source-error")
+        self.assertIn("cleanup", persisted["sourceError"]["message"])
+        self.assertIs(persisted["evidence"]["retained"], True)
+
     def test_short_db_user_redaction_does_not_corrupt_report_schema(self):
         verifier = load_verifier()
-        for db_user in ("a", "status", "EVIDENCE", "pass"):
+        for db_user in ("a", "status", "EVIDENCE", "pass", "main", "/"):
             with self.subTest(db_user=db_user), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 inputs = write_gate_inputs(root)
@@ -699,6 +779,88 @@ class Issue76RoundTripTests(unittest.TestCase):
                 self.assertNotIn("st$DB_USERtus", rendered)
                 self.assertNotIn("$$DB_USER", rendered)
                 self.assertIn("authenticated user $DB_USER", rendered)
+                source_sets = {
+                    step["arguments"].get("sourceSet")
+                    for step in persisted["steps"]
+                    if "sourceSet" in step["arguments"]
+                }
+                self.assertEqual(source_sets, {"main"})
+                self.assertEqual(
+                    persisted["evidence"]["workspace"],
+                    "$EVIDENCE/workspace",
+                )
+
+    def test_secret_environment_is_neither_inherited_nor_serialized(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = write_gate_inputs(root)
+            secret_environment = {
+                "AWS_SECRET_ACCESS_KEY": "aws-secret-value-for-issue-76",
+                "CI_JOB_JWT": "ci-jwt-value-for-issue-76",
+                "GH_PAT": "github-pat-value-for-issue-76",
+                "HASP_TOKEN": "hasp-token-value-for-issue-76",
+                "KUBECONFIG": "/private/credential/kubeconfig-issue-76",
+                "LC_SECRET": "locale-secret-value-for-issue-76",
+                "NETHASP_PASSWORD": "nethasp-password-value-for-issue-76",
+                "SSH_AUTH_SOCK": "/private/credential/ssh-agent-issue-76.sock",
+            }
+            hostile_temporary_environment = {
+                "TMPDIR": "/private/hostile/issue-76-tmpdir",
+                "TMP": "/private/hostile/issue-76-tmp",
+                "TEMP": "/private/hostile/issue-76-temp",
+            }
+            captured_environment = {}
+
+            def session_factory(_command, environment, _timeout, *, cwd):
+                captured_environment.update(environment)
+                diagnostic = "backend said " + " ".join(secret_environment.values())
+                return ScriptedSession(cwd, diagnostic=diagnostic)
+
+            with mock.patch.dict(
+                os.environ,
+                {**secret_environment, **hostile_temporary_environment},
+                clear=False,
+            ):
+                exit_code, report = verifier.execute_gate(
+                    **inputs,
+                    evidence_dir=None,
+                    session_factory=session_factory,
+                )
+            persisted = json.loads(inputs["report_path"].read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0, report)
+        rendered = json.dumps(persisted, ensure_ascii=False)
+        for name, secret in secret_environment.items():
+            self.assertNotIn(name, captured_environment)
+            self.assertNotIn(secret, rendered)
+        private_work = str(Path(captured_environment["PWD"]) / "work")
+        for name, hostile_path in hostile_temporary_environment.items():
+            self.assertEqual(captured_environment[name], private_work)
+            self.assertNotEqual(captured_environment[name], hostile_path)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlink support is required")
+    def test_private_preimage_restore_rejects_a_symlinked_ancestor(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "workspace/src"
+            outside = root / "outside"
+            source.mkdir(parents=True)
+            outside.mkdir()
+            outside_target = outside / "Item.xml"
+            outside_before = b"outside sentinel"
+            outside_target.write_bytes(outside_before)
+            (source / "Catalogs").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(verifier.SourceError):
+                verifier._restore_private_preimage(
+                    source / "Catalogs/Item.xml",
+                    b"private preimage",
+                    expected_current_sha256=sha256(outside_before),
+                )
+
+            self.assertEqual(outside_target.read_bytes(), outside_before)
 
     def test_explicit_evidence_source_error_reports_retained_parent_configuration(self):
         verifier = load_verifier()

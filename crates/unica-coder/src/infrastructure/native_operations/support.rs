@@ -272,7 +272,10 @@ fn edit_support_execution(
                 &text,
                 vendor_count,
                 capability,
-                &vendor_payload_preimages.1,
+                vendor_payload_preimages
+                    .1
+                    .iter()
+                    .map(|(path, _)| path.as_path()),
             )?;
             capability_vendor_payload_preimages = Some(vendor_payload_preimages);
             plan_capability(&bin_path, &text, capability, &resolved_path)
@@ -390,6 +393,57 @@ fn support_edit_action(args: &Map<String, Value>) -> Result<SupportEditAction, S
 
 pub(crate) fn support_edit_reads_uuid_dependency(args: &Map<String, Value>) -> bool {
     matches!(support_edit_action(args), Ok(SupportEditAction::Set(_)))
+}
+
+/// Read-only capability preflight used by the public application guard.
+///
+/// The mutation handler repeats this validation while binding exact preimages.
+/// This keeps preview and apply aligned without weakening commit-time race
+/// protection.
+pub(crate) fn preflight_support_edit_capability(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let SupportEditAction::Capability(capability) = support_edit_action(args)? else {
+        return Ok(());
+    };
+    let target_path = support_target_path(args, context)?;
+    if !target_path.exists() {
+        return Err(format!("Путь не найден: {}", target_path.display()));
+    }
+    let resolved_path = target_path
+        .canonicalize()
+        .unwrap_or_else(|_| target_path.clone());
+    let Some(config_dir) = find_support_config_dir(&resolved_path) else {
+        return Err(format!(
+            "Не найден корень конфигурации (Configuration.xml) над путём: {}",
+            resolved_path.display()
+        ));
+    };
+    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
+    if !bin_path.exists() {
+        return Ok(());
+    }
+    let raw = fs::read(&bin_path)
+        .map_err(|error| format!("failed to read {}: {error}", bin_path.display()))?;
+    if raw.len() <= 32 {
+        return Ok(());
+    }
+    let text = decode_parent_configurations(&raw)?;
+    let Some((global_flag, vendor_count)) = parse_support_header(&text) else {
+        return Err("Неизвестный формат ParentConfigurations.bin".to_string());
+    };
+    if vendor_count == 0 || (global_flag == 0) == capability.enabled() {
+        return Ok(());
+    }
+    let (_, vendor_payloads) = support_vendor_payload_paths(&config_dir)?;
+    preflight_required_vendor_payloads(
+        &config_dir,
+        &text,
+        vendor_count,
+        capability,
+        vendor_payloads.iter().map(PathBuf::as_path),
+    )
 }
 
 fn string_arg(args: &Map<String, Value>, names: &[&str]) -> Option<String> {
@@ -561,6 +615,25 @@ fn parent_configurations_bytes(text: &str) -> Vec<u8> {
 fn support_vendor_payload_preimages(
     config_dir: &Path,
 ) -> Result<SupportVendorPayloadSnapshot, String> {
+    let (snapshot, paths) = support_vendor_payload_paths(config_dir)?;
+    let reads = paths
+        .into_iter()
+        .map(|path| {
+            let preimage = fs::read(&path).map_err(|error| {
+                format!(
+                    "failed to read support vendor payload {}: {error}",
+                    path.display()
+                )
+            })?;
+            Ok::<_, String>((path, preimage))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((snapshot, reads))
+}
+
+fn support_vendor_payload_paths(
+    config_dir: &Path,
+) -> Result<(DirectoryMembershipSnapshot, Vec<PathBuf>), String> {
     let directory = config_dir.join("Ext").join("ParentConfigurations");
     let metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,
@@ -623,45 +696,41 @@ fn support_vendor_payload_preimages(
             })
             .collect(),
     );
-    let reads = paths
-        .into_iter()
-        .map(|path| {
-            let metadata = fs::symlink_metadata(&path).map_err(|error| {
-                format!(
-                    "failed to inspect support vendor payload {}: {error}",
-                    path.display()
-                )
-            })?;
-            if metadata_is_link_or_reparse_point(&metadata) {
-                return Err(format!(
-                    "support vendor payload must not be a symbolic link or reparse point: {}",
-                    path.display()
-                ));
-            }
-            if !metadata.is_file() {
-                return Err(format!(
-                    "support vendor payload is not a regular file: {}",
-                    path.display()
-                ));
-            }
-            let preimage = fs::read(&path).map_err(|error| {
-                format!(
-                    "failed to read support vendor payload {}: {error}",
-                    path.display()
-                )
-            })?;
-            Ok((path, preimage))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((snapshot, reads))
+    for path in &paths {
+        let metadata = fs::symlink_metadata(path).map_err(|error| {
+            format!(
+                "failed to inspect support vendor payload {}: {error}",
+                path.display()
+            )
+        })?;
+        if metadata_is_link_or_reparse_point(&metadata) {
+            return Err(format!(
+                "support vendor payload must not be a symbolic link or reparse point: {}",
+                path.display()
+            ));
+        }
+        if !metadata.is_file() {
+            return Err(format!(
+                "support vendor payload is not a regular file: {}",
+                path.display()
+            ));
+        }
+        fs::File::open(path).map_err(|error| {
+            format!(
+                "failed to open support vendor payload {} for reading: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok((snapshot, paths))
 }
 
-fn preflight_required_vendor_payloads(
+fn preflight_required_vendor_payloads<'a>(
     config_dir: &Path,
     parent_configurations: &str,
     vendor_count: usize,
     capability: SupportCapability,
-    vendor_payloads: &[SupportVendorPayloadPreimage],
+    vendor_payloads: impl IntoIterator<Item = &'a Path>,
 ) -> Result<(), String> {
     let quoted = parse_quoted_support_strings(parent_configurations);
     let expected_fields = vendor_count.checked_mul(3).ok_or_else(|| {
@@ -673,14 +742,13 @@ fn preflight_required_vendor_payloads(
             quoted.len()
         ));
     }
-    let vendor_flags = support_vendor_rule_flags(parent_configurations, vendor_count)?;
-    let missing = vendor_flags
-        .into_iter()
-        .zip(quoted.chunks_exact(3))
-        .filter(|(flag, _)| *flag != SupportObjectRule::Locked.flag())
-        .map(|(_, fields)| fields[2].as_str())
+    support_vendor_rule_flags(parent_configurations, vendor_count)?;
+    let vendor_payloads = vendor_payloads.into_iter().collect::<Vec<_>>();
+    let missing = quoted
+        .chunks_exact(3)
+        .map(|fields| fields[2].as_str())
         .filter(|vendor_name| {
-            !vendor_payloads.iter().any(|(path, _)| {
+            !vendor_payloads.iter().any(|path| {
                 path.file_stem()
                     .and_then(|stem| stem.to_str())
                     .is_some_and(|stem| stem == *vendor_name)
@@ -880,6 +948,9 @@ mod tests {
             fs::write(&config_path, configuration_xml(version)).unwrap();
             let bin_path = source.join("Ext/ParentConfigurations.bin");
             fs::write(&bin_path, parent_configurations()).unwrap();
+            let vendor_dir = source.join("Ext/ParentConfigurations");
+            fs::create_dir(&vendor_dir).unwrap();
+            fs::write(vendor_dir.join("VendorConf.cf"), b"platform vendor payload").unwrap();
             let context = WorkspaceContext {
                 cwd: root.clone(),
                 workspace_root: root.clone(),
@@ -996,6 +1067,16 @@ mod tests {
         )
     }
 
+    fn editable_parent_configurations_with_two_vendors() -> String {
+        parent_configurations()
+            .replacen("{6,0,1,", "{6,0,2,", 1)
+            .replacen(
+                ",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                ",ffffffff-ffff-ffff-ffff-ffffffffffff,0,cccccccc-cccc-cccc-cccc-cccccccccccc,\"2.0\",\"Second Vendor\",\"SecondVendor\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                1,
+            )
+    }
+
     #[test]
     fn support_edit_replaces_parent_configurations_transactionally() {
         let fixture = SupportFixture::new("transaction", "2.20");
@@ -1013,7 +1094,7 @@ mod tests {
     fn support_capability_off_only_changes_global_flag_and_locks_object_rules() {
         let fixture = SupportFixture::new("capability-off-semantics", "2.20");
         let vendor_dir = fixture.root.join("src/Ext/ParentConfigurations");
-        fs::create_dir(&vendor_dir).unwrap();
+        fs::create_dir_all(&vendor_dir).unwrap();
         let vendor_payload = vendor_dir.join("VendorConf.cf");
         let vendor_bytes = b"platform vendor payload".to_vec();
         fs::write(&vendor_payload, &vendor_bytes).unwrap();
@@ -1043,6 +1124,7 @@ mod tests {
     #[test]
     fn support_capability_on_rejects_missing_required_vendor_payload_without_writing_bin() {
         let fixture = SupportFixture::new("capability-on-missing-vendor-payload", "2.20");
+        fs::remove_dir_all(fixture.root.join("src/Ext/ParentConfigurations")).unwrap();
         fs::write(
             &fixture.bin_path,
             locked_parent_configurations_without_payload(),
@@ -1068,6 +1150,7 @@ mod tests {
     #[test]
     fn support_capability_off_rejects_missing_required_vendor_payload_without_writing_bin() {
         let fixture = SupportFixture::new("capability-off-missing-vendor-payload", "2.20");
+        fs::remove_dir_all(fixture.root.join("src/Ext/ParentConfigurations")).unwrap();
         fs::write(
             &fixture.bin_path,
             editable_parent_configurations_with_unlocked_vendor_without_payload(),
@@ -1091,6 +1174,43 @@ mod tests {
     }
 
     #[test]
+    fn support_capability_off_rejects_missing_payload_for_already_locked_vendor() {
+        let fixture = SupportFixture::new("capability-off-locked-vendor-missing-payload", "2.20");
+        fs::remove_dir_all(fixture.root.join("src/Ext/ParentConfigurations")).unwrap();
+        let bin_before = fs::read(&fixture.bin_path).unwrap();
+
+        let error =
+            edit_support_result(&fixture.capability_off_args(), &fixture.context).unwrap_err();
+
+        assert!(error.contains("Capability=off"), "{error}");
+        assert!(error.contains("VendorConf.cf"), "{error}");
+        assert_eq!(fs::read(&fixture.bin_path).unwrap(), bin_before);
+    }
+
+    #[test]
+    fn support_capability_off_validates_every_vendor_in_the_post_image() {
+        let fixture = SupportFixture::new("capability-off-multi-vendor-missing-payload", "2.20");
+        fs::write(
+            &fixture.bin_path,
+            editable_parent_configurations_with_two_vendors(),
+        )
+        .unwrap();
+        let vendor_dir = fixture.root.join("src/Ext/ParentConfigurations");
+        fs::remove_dir_all(&vendor_dir).unwrap();
+        fs::create_dir(&vendor_dir).unwrap();
+        fs::write(vendor_dir.join("VendorConf.cf"), b"first vendor payload").unwrap();
+        let bin_before = fs::read(&fixture.bin_path).unwrap();
+
+        let error =
+            edit_support_result(&fixture.capability_off_args(), &fixture.context).unwrap_err();
+
+        assert!(error.contains("Capability=off"), "{error}");
+        assert!(error.contains("SecondVendor.cf"), "{error}");
+        assert!(!error.contains("VendorConf.cf,"), "{error}");
+        assert_eq!(fs::read(&fixture.bin_path).unwrap(), bin_before);
+    }
+
+    #[test]
     fn support_capability_on_accepts_and_preserves_matching_vendor_payload() {
         let fixture = SupportFixture::new("capability-on-with-vendor-payload", "2.20");
         fs::write(
@@ -1099,6 +1219,7 @@ mod tests {
         )
         .unwrap();
         let vendor_dir = fixture.root.join("src/Ext/ParentConfigurations");
+        fs::remove_dir_all(&vendor_dir).unwrap();
         fs::create_dir(&vendor_dir).unwrap();
         let vendor_payload = vendor_dir.join("VendorConf.CF");
         let vendor_bytes = b"platform vendor payload".to_vec();
@@ -1150,7 +1271,7 @@ mod tests {
     fn support_edit_rejects_a_concurrent_vendor_payload_change() {
         let fixture = SupportFixture::new("vendor-payload-race", "2.20");
         let vendor_dir = fixture.root.join("src/Ext/ParentConfigurations");
-        fs::create_dir(&vendor_dir).unwrap();
+        fs::create_dir_all(&vendor_dir).unwrap();
         let vendor_payload = vendor_dir.join("VendorConf.cf");
         let original_vendor = b"original vendor payload".to_vec();
         let concurrent_vendor = b"concurrent vendor payload".to_vec();
@@ -1174,7 +1295,7 @@ mod tests {
     fn support_edit_rejects_a_concurrent_vendor_payload_create_case_insensitively() {
         let fixture = SupportFixture::new("vendor-payload-create-race", "2.20");
         let vendor_dir = fixture.root.join("src/Ext/ParentConfigurations");
-        fs::create_dir(&vendor_dir).unwrap();
+        fs::create_dir_all(&vendor_dir).unwrap();
         let existing_payload = vendor_dir.join("VendorConf.cf");
         fs::write(&existing_payload, b"original vendor payload").unwrap();
         let concurrent_payload = vendor_dir.join("ConcurrentVendor.CF");
