@@ -5203,8 +5203,54 @@ fn dcs_compile_emit_structure_axes_item(
     if let Some(output_parameters) = item.get("outputParameters").and_then(Value::as_object) {
         dcs_compile_emit_output_parameters(lines, output_parameters, &format!("{indent}\t"));
     }
+    let axis_modes: &[(&str, &str)] = if item_type == "table" {
+        &[
+            ("columnsViewMode", "columnsViewMode"),
+            ("rowsViewMode", "rowsViewMode"),
+        ]
+    } else {
+        &[
+            ("pointsViewMode", "pointsViewMode"),
+            ("seriesViewMode", "seriesViewMode"),
+        ]
+    };
+    dcs_compile_emit_setting_visibility(lines, item, &format!("{indent}\t"), axis_modes);
     lines.push(format!("{indent}</dcsset:item>"));
     Ok(())
+}
+
+/// The user-settings tail shared by a structure item and by an axis. The
+/// compiler accepted these documented keys and wrote none of them, so a caller
+/// who fixed a setting silently lost it (#443 review).
+fn dcs_compile_emit_setting_visibility(
+    lines: &mut Vec<String>,
+    item: &Value,
+    indent: &str,
+    axis_modes: &[(&str, &str)],
+) {
+    let tags = axis_modes.iter().copied().chain([
+        ("viewMode", "viewMode"),
+        ("userSettingID", "userSettingID"),
+        ("itemsViewMode", "itemsViewMode"),
+    ]);
+    for (json_key, xml_tag) in tags {
+        if let Some(value) = json_string_field(item, json_key).filter(|value| !value.is_empty()) {
+            lines.push(format!(
+                "{indent}<dcsset:{xml_tag}>{}</dcsset:{xml_tag}>",
+                escape_xml(&value)
+            ));
+        }
+    }
+    if let Some(presentation) =
+        json_string_field(item, "userSettingPresentation").filter(|value| !value.is_empty())
+    {
+        dcs_compile_emit_mltext(
+            lines,
+            indent,
+            "dcsset:userSettingPresentation",
+            &presentation,
+        );
+    }
 }
 
 fn dcs_compile_emit_table_axis(
@@ -5245,6 +5291,7 @@ fn dcs_compile_emit_table_axis(
             dcs_compile_emit_structure_item_inner(lines, child, indent, true)?;
         }
     }
+    dcs_compile_emit_setting_visibility(lines, axis, indent, &[]);
     Ok(())
 }
 
@@ -11568,6 +11615,48 @@ mod tests {
         let nested = dcs_children(row, "item", TEST_DCS_SETTINGS_NS);
         assert_eq!(nested.len(), 1, "the nested row group is published");
         assert_eq!(attribute_by_local_name(nested[0], "type"), None);
+    }
+
+    /// Review of #443: the published user settings of a table and of its axes
+    /// were accepted and silently dropped. A caller who fixed `viewMode` or
+    /// pinned a `userSettingID` got a valid template without them.
+    #[test]
+    fn dcs_compile_structure_emits_the_published_user_settings() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "structure": [{
+                        "type": "table",
+                        "name": "Balances",
+                        "rowsViewMode": "Inaccessible",
+                        "viewMode": "QuickAccess",
+                        "userSettingID": "fixed-table",
+                        "userSettingPresentation": "Таблица остатков",
+                        "rows": [{
+                            "groupFields": ["Item"],
+                            "viewMode": "Inaccessible",
+                            "userSettingID": "fixed-axis",
+                            "itemsViewMode": "Normal"
+                        }]
+                    }]
+                }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+
+        for fragment in [
+            "<dcsset:rowsViewMode>Inaccessible</dcsset:rowsViewMode>",
+            "<dcsset:viewMode>QuickAccess</dcsset:viewMode>",
+            "<dcsset:userSettingID>fixed-table</dcsset:userSettingID>",
+            "Таблица остатков",
+            "<dcsset:viewMode>Inaccessible</dcsset:viewMode>",
+            "<dcsset:userSettingID>fixed-axis</dcsset:userSettingID>",
+            "<dcsset:itemsViewMode>Normal</dcsset:itemsViewMode>",
+        ] {
+            assert!(xml.contains(fragment), "missing {fragment} in {xml}");
+        }
     }
 
     /// A structure type the compiler cannot emit must say so.
