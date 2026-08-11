@@ -145,6 +145,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         tool_entries: list[object],
         *,
         server_name: str = "unica",
+        instructions: str = "",
         result_drift: bool = False,
         provider_revision: bool = False,
         read_writes: bool = False,
@@ -237,7 +238,12 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 message = json.loads(line)
                 request_id = message.get("id")
                 if message.get("method") == "initialize":
-                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"serverInfo": {"name": __NAME__}}}), flush=True)
+                    initialized = {"jsonrpc": "2.0", "id": request_id, "result": {"serverInfo": {"name": __NAME__}, "instructions": __INSTRUCTIONS__}}
+                    # Written as bytes rather than printed: the point of the
+                    # UTF-8 case is that real non-ASCII bytes cross the pipe,
+                    # and `print` would re-encode them in the console codec.
+                    sys.stdout.buffer.write(json.dumps(initialized, ensure_ascii=False).encode("utf-8") + b"\\n")
+                    sys.stdout.buffer.flush()
                 elif message.get("method") == "tools/list":
                     print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}), flush=True)
                 elif message.get("method") == "tools/call":
@@ -308,6 +314,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             )
             .replace("__READ_WRITES__", repr(read_writes))
             .replace("__NAME__", repr(server_name))
+            .replace("__INSTRUCTIONS__", repr(instructions))
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -389,9 +396,31 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertIn("unica.xdto.validate", result.stderr)
 
     def test_decodes_mcp_json_as_utf8_independently_of_windows_locale(self) -> None:
-        result = self.run_smoke(self.tool_entries(), server_name="Уника")
+        # The server name is fixed by INV-MCP-SERVER-NAME, so it cannot carry
+        # the non-ASCII payload this case is about. `instructions` is a
+        # documented initialize field and carries it instead, serialized with
+        # `ensure_ascii=False` and written as raw UTF-8 bytes.
+        result = self.run_smoke(
+            self.tool_entries(),
+            instructions="Уника читает выгрузку конфигуратора",
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_accepts_the_invariant_server_name(self) -> None:
+        result = self.run_smoke(self.tool_entries(), server_name="unica")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_a_server_name_other_than_unica(self) -> None:
+        # INV-MCP-SERVER-NAME fixes the published identity of the server. A
+        # release smoke that accepts any name cannot prove the invariant holds
+        # in the artifact it is smoking.
+        result = self.run_smoke(self.tool_entries(), server_name="Уника")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("serverInfo", result.stderr)
+        self.assertIn("Уника", result.stderr)
 
     def test_rejects_incomplete_source_schema(self) -> None:
         entries = self.tool_entries()
