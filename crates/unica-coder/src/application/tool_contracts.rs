@@ -4352,11 +4352,26 @@ mod tests {
     /// that would drift.
     #[test]
     fn no_published_argument_is_described_as_unread() {
-        let unread = ARG_DESCRIPTIONS
-            .iter()
-            .filter(|(_, description)| description.contains("no handler reads"))
-            .map(|(name, _)| *name)
-            .collect::<std::collections::BTreeSet<_>>();
+        // Review of #451: the previous oracle was built from the descriptions
+        // this change removes, so after the removal it was empty and the test
+        // held nothing. The names are pinned here instead — the table is the
+        // contract, and it does not vanish with the descriptions.
+        const REMOVED: &[&str] = &[
+            "baseForm",
+            "batch",
+            "child",
+            "children",
+            "columns",
+            "command",
+            "commandName",
+            "dataPath",
+            "field",
+            "fields",
+            "maxParams",
+            "preset",
+            "type",
+        ];
+
         let published = tools()
             .into_iter()
             .flat_map(|tool| {
@@ -4367,13 +4382,25 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .filter(|(_, name)| {
-                unread.contains(name.as_str())
-                    || unread
-                        .contains(format!("{}{}", name[..1].to_lowercase(), &name[1..]).as_str())
+                let lower = format!("{}{}", name[..1].to_lowercase(), &name[1..]);
+                REMOVED.contains(&lower.as_str())
             })
             .collect::<Vec<_>>();
 
         assert!(published.is_empty(), "{published:?}");
+
+        // And the descriptions must not describe an argument as unread while
+        // still publishing it, so a future addition cannot reintroduce the
+        // class the table pins by name.
+        let unread = ARG_DESCRIPTIONS
+            .iter()
+            .filter(|(_, description)| description.contains("no handler reads"))
+            .map(|(name, _)| *name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            unread.is_empty(),
+            "an argument described as unread must not stay published: {unread:?}"
+        );
     }
 
     #[test]
