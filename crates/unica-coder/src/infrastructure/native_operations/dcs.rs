@@ -2805,6 +2805,22 @@ pub(crate) fn dcs_check_settings(
             }
         }
     }
+    // A `SettingsParameterValue` without a name is a well-formed element that
+    // names nothing, so the platform reads the variant as having no value for
+    // that parameter. Validation used to pass it (#311).
+    for parameter_item in dcs_find_all_path(
+        settings_node,
+        &[("dataParameters", NS_SETTINGS), ("item", DCS_CORE_NS)],
+    ) {
+        let parameter = dcs_child(parameter_item, "parameter", DCS_CORE_NS)
+            .map(dcs_inner_text)
+            .unwrap_or_default();
+        if parameter.trim().is_empty() {
+            report.error(format!(
+                "Variant '{variant_name}' dataParameters: SettingsParameterValue has empty parameter name"
+            ));
+        }
+    }
     dcs_check_filter_items(report, settings_node, variant_name);
     for order_item in dcs_find_all_path(
         settings_node,
@@ -3342,7 +3358,7 @@ fn dcs_compile_xml_with_inputs(
     dcs_compile_emit_calculated_fields(&mut lines, defn)?;
     dcs_compile_emit_total_fields(&mut lines, defn);
     dcs_compile_emit_parameters(&mut lines, defn)?;
-    dcs_compile_emit_settings_variants(&mut lines, defn);
+    dcs_compile_emit_settings_variants(&mut lines, defn)?;
     lines.push("</DataCompositionSchema>".to_string());
     Ok(format!("{}\n", lines.join("\n")))
 }
@@ -4520,14 +4536,17 @@ pub(crate) fn dcs_compile_emit_parameter_value(
     ));
 }
 
-pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_settings_variants(
+    lines: &mut Vec<String>,
+    defn: &Value,
+) -> Result<(), String> {
     let Some(variants) = defn.get("settingsVariants").and_then(Value::as_array) else {
         dcs_compile_emit_default_settings_variant(lines);
-        return;
+        return Ok(());
     };
     if variants.is_empty() {
         dcs_compile_emit_default_settings_variant(lines);
-        return;
+        return Ok(());
     }
     for variant in variants {
         lines.push("\t<settingsVariant>".to_string());
@@ -4549,7 +4568,7 @@ pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: 
             dcs_compile_emit_filter(lines, filter, "\t\t\t");
         }
         if let Some(data_parameters) = settings.get("dataParameters").and_then(Value::as_array) {
-            dcs_compile_emit_data_parameters(lines, data_parameters, "\t\t\t");
+            dcs_compile_emit_data_parameters(lines, data_parameters, "\t\t\t")?;
         }
         if let Some(order) = settings.get("order").and_then(Value::as_array) {
             dcs_compile_emit_order(lines, order, "\t\t\t");
@@ -4570,6 +4589,7 @@ pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: 
         lines.push("\t\t</dcsset:settings>".to_string());
         lines.push("\t</settingsVariant>".to_string());
     }
+    Ok(())
 }
 
 pub(crate) fn dcs_compile_emit_selection(lines: &mut Vec<String>, items: &[Value], indent: &str) {
@@ -4901,12 +4921,37 @@ pub(crate) fn dcs_compile_emit_data_parameters(
     lines: &mut Vec<String>,
     items: &[Value],
     indent: &str,
-) {
+) -> Result<(), String> {
     if items.is_empty() {
-        return;
+        return Ok(());
     }
     lines.push(format!("{indent}<dcsset:dataParameters>"));
     for item in items {
+        // `dcs-dsl-spec` publishes a shorthand string here, and `dcs.edit`
+        // already parses and emits it. Reusing both keeps one grammar for the
+        // two tools instead of a second one that silently lost the parameter
+        // name and could not reach the nested value shapes at all.
+        let parsed_from_string;
+        let mut shorthand_value = None;
+        let item = if let Some(text) = item.as_str() {
+            let parsed = dcs_edit_parse_data_parameter(text);
+            let mut object = Map::new();
+            object.insert("parameter".to_string(), json!(parsed.parameter));
+            shorthand_value = parsed.value;
+            if let Some(use_flag) = parsed.use_flag {
+                object.insert("use".to_string(), json!(use_flag));
+            }
+            if let Some(view_mode) = parsed.view_mode {
+                object.insert("viewMode".to_string(), json!(view_mode));
+            }
+            if let Some(user_setting_id) = parsed.user_setting_id {
+                object.insert("userSettingID".to_string(), json!(user_setting_id));
+            }
+            parsed_from_string = Value::Object(object);
+            &parsed_from_string
+        } else {
+            item
+        };
         lines.push(format!(
             "{indent}\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">"
         ));
@@ -4922,7 +4967,16 @@ pub(crate) fn dcs_compile_emit_data_parameters(
             "{indent}\t\t<dcscor:parameter>{}</dcscor:parameter>",
             escape_xml(&parameter)
         ));
-        if item
+        if let Some(value) = &shorthand_value {
+            // The shorthand value goes through the same emitter `dcs.edit`
+            // uses for this element, so a period variant reaches its nested
+            // `v8:StandardPeriod` shape instead of being flattened to text.
+            lines.extend(dcs_edit_settings_value_lines(
+                "dcscor:value",
+                value,
+                &format!("{indent}\t"),
+            )?);
+        } else if item
             .get("nilValue")
             .and_then(Value::as_bool)
             .unwrap_or(false)
@@ -4966,6 +5020,7 @@ pub(crate) fn dcs_compile_emit_data_parameters(
         lines.push(format!("{indent}\t</dcscor:item>"));
     }
     lines.push(format!("{indent}</dcsset:dataParameters>"));
+    Ok(())
 }
 
 pub(crate) fn dcs_compile_emit_structure(lines: &mut Vec<String>, structure: &Value, indent: &str) {
@@ -7012,10 +7067,15 @@ pub(crate) fn dcs_edit_parse_data_parameter(value: &str) -> DcsEditDataParameter
     } else {
         None
     };
+    // `@inaccessible` is published alongside the other view-mode flags. Left
+    // unrecognised it was not stripped either, so it ended up inside the
+    // parameter name.
     let view_mode = if value.contains("@quickAccess") {
         Some("QuickAccess".to_string())
     } else if value.contains("@normal") {
         Some("Normal".to_string())
+    } else if value.contains("@inaccessible") {
+        Some("Inaccessible".to_string())
     } else {
         None
     };
@@ -7024,7 +7084,8 @@ pub(crate) fn dcs_edit_parse_data_parameter(value: &str) -> DcsEditDataParameter
         .replace("@on", "")
         .replace("@user", "")
         .replace("@quickAccess", "")
-        .replace("@normal", "");
+        .replace("@normal", "")
+        .replace("@inaccessible", "");
     let (parameter, val) = cleaned
         .split_once('=')
         .map(|(left, right)| (left.trim().to_string(), Some(right.trim().to_string())))
@@ -11206,6 +11267,75 @@ mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// #311. `dcs-dsl-spec` publishes a shorthand string for `dataParameters`
+    /// — `"<Имя> [= <значение>] [@off] [@user] [@quickAccess]"` — and
+    /// `dcs.edit` already parses it. Compilation read `parameter` only from
+    /// the object form, so a shorthand item compiled to an item with an empty
+    /// name and neither `viewMode` nor `userSettingID`.
+    #[test]
+    fn dcs_compile_variant_data_parameters_accept_the_published_shorthand() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "dataParameters": [
+                        "Period = ThisMonth @user @quickAccess",
+                        "Company @user @quickAccess"
+                    ]
+                }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let data_parameters = document
+            .descendants()
+            .find(|node| role_info_element(*node, "dataParameters", Some(TEST_DCS_SETTINGS_NS)))
+            .expect("the variant publishes its data parameters");
+        let items = dcs_children(data_parameters, "item", TEST_DCS_CORE_NS);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| dcs_child(*item, "parameter", TEST_DCS_CORE_NS)
+                    .and_then(|node| node.text())
+                    .unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["Period", "Company"],
+            "the shorthand carries the parameter name"
+        );
+        for item in &items {
+            assert_eq!(
+                dcs_child(*item, "viewMode", TEST_DCS_SETTINGS_NS).and_then(|node| node.text()),
+                Some("QuickAccess"),
+                "@quickAccess selects the view mode"
+            );
+            assert!(
+                dcs_child(*item, "userSettingID", TEST_DCS_SETTINGS_NS)
+                    .and_then(|node| node.text())
+                    .is_some_and(|id| !id.is_empty()),
+                "@user issues a user setting id"
+            );
+        }
+        assert!(
+            dcs_child(items[0], "value", TEST_DCS_CORE_NS).is_some(),
+            "the shorthand value reaches the item"
+        );
+        assert_eq!(
+            test_direct_child_names(items[0]),
+            ["parameter", "value", "viewMode", "userSettingID"],
+            "the 8.3.27 child sequence is preserved"
+        );
+        assert_eq!(
+            dcs_child(items[0], "value", TEST_DCS_CORE_NS).and_then(
+                |node| node.attribute(("http://www.w3.org/2001/XMLSchema-instance", "type"))
+            ),
+            Some("v8:StandardPeriod"),
+            "a period variant reaches its nested shape instead of flattening to text"
+        );
+    }
+
     #[test]
     fn dcs_compile_calculated_field_merges_restrictions_in_8_3_27_order() {
         let definition = json!({
@@ -12186,6 +12316,36 @@ mod tests {
             data.items
         );
         assert_eq!(fs::read(&template_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// #311. A `SettingsParameterValue` with an empty `<dcscor:parameter>` is
+    /// well-formed XML that names no parameter, so the variant carries no value
+    /// for it. Validation reported `Validation OK` on exactly that shape.
+    #[test]
+    fn native_dcs_validate_rejects_a_data_parameter_without_a_name() {
+        let context = temp_context("dcs-validate-empty-data-parameter");
+        let template_path = context.cwd.join("Template.xml");
+        fs::write(
+            &template_path,
+            base_dcs_xml().replace(
+                "\t\t\t<dcsset:order>",
+                "\t\t\t<dcsset:dataParameters>\n\t\t\t\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">\n\t\t\t\t\t<dcscor:parameter></dcscor:parameter>\n\t\t\t\t</dcscor:item>\n\t\t\t</dcsset:dataParameters>\n\t\t\t<dcsset:order>",
+            ),
+        )
+        .unwrap();
+
+        let mut args = Map::new();
+        args.insert("TemplatePath".to_string(), json!("Template.xml"));
+        let outcome = validate_dcs(&args, &context);
+
+        let stdout = outcome.stdout.unwrap_or_default();
+        assert!(!outcome.ok, "{stdout}");
+        assert!(
+            stdout.contains("SettingsParameterValue has empty parameter name"),
+            "{stdout}"
+        );
 
         let _ = fs::remove_dir_all(&context.cwd);
     }
