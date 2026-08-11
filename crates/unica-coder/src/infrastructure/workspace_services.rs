@@ -1258,7 +1258,7 @@ fn workspace_service_startup_failure(
             }
         }
         Ok(None) => format!(
-            "{readiness_error}; spawned workspace service {pid} remained running until the readiness deadline"
+            "{readiness_error}; spawned workspace service {pid} was still running when readiness failed"
         ),
         Err(error) => format!(
             "{readiness_error}; failed to inspect spawned workspace service {pid}: {error}"
@@ -7428,8 +7428,46 @@ fn main() {
 
         assert!(error.contains("exited before readiness"), "{error}");
         assert!(error.contains("23"), "{error}");
-        assert!(error.contains("issue-339-startup-marker"), "{error}");
+        assert!(error.contains("issue-339-startup-tail-marker"), "{error}");
+        assert!(!error.contains("issue-339-startup-head-marker"), "{error}");
         assert!(error.len() <= SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize + 512);
+        child.terminate_bounded(Duration::from_secs(1)).unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn startup_failure_reports_live_child_without_assuming_deadline_expired() {
+        let context = test_context("startup-failure-live-child");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let stderr_path = identity.service_dir.join("service.stderr.log");
+        fs::create_dir_all(&identity.service_dir).unwrap();
+        let stderr = fs::File::create(&stderr_path).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "--nocapture",
+            ])
+            .env("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr));
+        let mut child = ManagedStartupChild::spawn_configured(command).unwrap();
+        thread::sleep(Duration::from_millis(75));
+        assert!(child.is_running().unwrap());
+
+        let error = workspace_service_startup_failure(
+            "cancelled: workspace service readiness was cancelled",
+            &mut child,
+            &stderr_path,
+        );
+
+        assert!(
+            error.contains("was still running when readiness failed"),
+            "{error}"
+        );
+        assert!(!error.contains("readiness deadline"), "{error}");
         child.terminate_bounded(Duration::from_secs(1)).unwrap();
         cleanup(&context);
     }
@@ -7437,7 +7475,12 @@ fn main() {
     #[test]
     fn startup_failure_child_fixture() {
         if std::env::var_os("UNICA_STARTUP_FAILURE_CHILD_FIXTURE").is_some() {
-            eprintln!("issue-339-startup-marker");
+            eprintln!("issue-339-startup-head-marker");
+            eprintln!(
+                "{}",
+                "x".repeat(SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize + 1024)
+            );
+            eprintln!("issue-339-startup-tail-marker");
             std::process::exit(23);
         }
     }
