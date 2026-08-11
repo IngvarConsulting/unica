@@ -2874,6 +2874,8 @@ class PlatformHelpRoutingTests(unittest.TestCase):
 # ADR-0048: a bridged reader accepts a logical selector beside its path, so a
 # skill whose parameter table still names only the path — or still marks it
 # unconditionally required — contradicts the schema the tool publishes.
+CONDITIONAL_MARKER = "один из двух"
+
 BRIDGED_SKILL_SELECTORS = {
     "cf-info": ("ConfigPath", False),
     "cf-validate": ("ConfigPath", False),
@@ -2891,54 +2893,135 @@ BRIDGED_SKILL_SELECTORS = {
 }
 
 
-def _table_rows(text: str) -> list[list[str]]:
-    rows = []
+def _tables(text: str) -> list[list[list[str]]]:
+    """Every contiguous run of Markdown table rows, cells stripped of backticks."""
+    tables: list[list[list[str]]] = []
+    current: list[list[str]] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if not stripped.startswith("|"):
+        if stripped.startswith("|"):
+            cells = [cell.strip().strip("`") for cell in stripped.strip("|").split("|")]
+            if set("".join(cells)) <= set("-: "):
+                continue  # the header separator carries no argument
+            current.append(cells)
             continue
-        cells = [cell.strip().strip("`") for cell in stripped.strip("|").split("|")]
-        if cells:
-            rows.append(cells)
-    return rows
+        if current:
+            tables.append(current)
+            current = []
+    if current:
+        tables.append(current)
+    return tables
+
+
+def _parameter_table(text: str, legacy: str) -> list[list[str]] | None:
+    """The one table that documents the tool's target selector."""
+    for table in _tables(text):
+        if any(row and row[0] == legacy for row in table):
+            return table
+    return None
 
 
 class BridgedSkillSelectorDocumentationTests(unittest.TestCase):
-    """The parameter tables must describe the contract the tool publishes."""
+    """The parameter table must describe the contract the tool publishes.
+
+    Weak assertions here would pass on a table that dropped the legacy row, or
+    marked a selector plainly optional, or lost the exclusivity rule — each of
+    which leaves a caller unable to build a valid call from the document.
+    """
 
     def skill_root(self) -> Path:
         return REPO_ROOT / "plugins" / "unica" / "skills"
 
-    def test_parameter_tables_name_the_logical_selector(self) -> None:
-        for skill, (_, takes_address) in BRIDGED_SKILL_SELECTORS.items():
+    def parameter_table(self, skill: str, legacy: str) -> list[list[str]]:
+        text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
+        table = _parameter_table(text, legacy)
+        self.assertIsNotNone(
+            table, f"{skill}: не найдена таблица параметров со строкой `{legacy}`"
+        )
+        return table
+
+    def test_the_parameter_table_carries_every_selector(self) -> None:
+        for skill, (legacy, takes_address) in BRIDGED_SKILL_SELECTORS.items():
             with self.subTest(skill=skill):
-                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
-                first_cells = {row[0] for row in _table_rows(text) if row}
-                self.assertIn(
-                    "sourceSet",
-                    first_cells,
-                    f"{skill}: таблица параметров не называет логический селектор",
-                )
+                table = self.parameter_table(skill, legacy)
+                names = {row[0] for row in table if row}
+                expected = {legacy, "sourceSet"}
                 if takes_address:
-                    self.assertIn(
-                        "metadataPath",
-                        first_cells,
-                        f"{skill}: таблица параметров не называет `metadataPath`",
+                    expected.add("metadataPath")
+                self.assertLessEqual(
+                    expected,
+                    names,
+                    f"{skill}: таблица параметров не описывает все селекторы",
+                )
+
+    def test_no_selector_is_documented_as_required_or_as_optional(self) -> None:
+        for skill, (legacy, takes_address) in BRIDGED_SKILL_SELECTORS.items():
+            with self.subTest(skill=skill):
+                table = self.parameter_table(skill, legacy)
+                if len(table[0]) < 3:
+                    continue  # the table has no obligation column to check
+                selectors = {legacy, "sourceSet"}
+                if takes_address:
+                    selectors.add("metadataPath")
+                for row in table:
+                    if not row or row[0] not in selectors:
+                        continue
+                    obligation = row[1].lower()
+                    self.assertNotIn(
+                        obligation,
+                        {"да", "нет"},
+                        f"{skill}: `{row[0]}` не безусловно обязателен и не просто"
+                        " необязателен — он часть взаимоисключающей ветви",
+                    )
+                    self.assertEqual(
+                        obligation,
+                        CONDITIONAL_MARKER,
+                        f"{skill}: `{row[0]}` обязан нести маркер ветви",
                     )
 
-    def test_parameter_tables_do_not_mark_the_path_unconditionally_required(self) -> None:
-        for skill, (legacy, _) in BRIDGED_SKILL_SELECTORS.items():
+    def test_each_skill_states_the_exclusivity_rule(self) -> None:
+        for skill, (legacy, takes_address) in BRIDGED_SKILL_SELECTORS.items():
             with self.subTest(skill=skill):
-                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
-                for row in _table_rows(text):
-                    if not row or row[0] != legacy:
-                        continue
-                    self.assertNotIn(
-                        "да",
-                        [cell.lower() for cell in row[1:]],
-                        f"{skill}: `{legacy}` больше не обязателен безусловно — "
-                        "он один из двух селекторов",
+                text = (self.skill_root() / skill / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                rule = [
+                    line
+                    for line in text.splitlines()
+                    if line.startswith("Селектор цели ровно один")
+                ]
+                self.assertTrue(
+                    rule, f"{skill}: правило единственного селектора не сформулировано"
+                )
+                statement = " ".join(
+                    text.split("Селектор цели ровно один", 1)[1].splitlines()[:3]
+                )
+                for name in [legacy, "sourceSet"] + (
+                    ["metadataPath"] if takes_address else []
+                ):
+                    self.assertIn(
+                        name,
+                        statement,
+                        f"{skill}: правило не называет `{name}`",
                     )
+                self.assertIn(
+                    "selector_conflict",
+                    statement,
+                    f"{skill}: правило не называет стабильный код отказа",
+                )
+
+    def test_subsystem_info_states_that_the_address_is_optional(self) -> None:
+        # Its logical branch takes `sourceSet` alone; the schema forbids
+        # `metadataPath` in the path branch, so it is neither required nor
+        # freely optional.
+        table = self.parameter_table("subsystem-info", "SubsystemPath")
+        row = next(row for row in table if row and row[0] == "metadataPath")
+        description = row[-1].lower()
+        self.assertIn(
+            "без него",
+            description,
+            f"subsystem-info: не сказано, что адрес можно опустить: {row}",
+        )
 
 
 if __name__ == "__main__":

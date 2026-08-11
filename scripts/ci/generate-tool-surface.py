@@ -119,20 +119,46 @@ def escape_cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
 
-def selector_branches(schema: dict) -> list[list[str]]:
-    """Alternative required sets published as mutually exclusive `oneOf` arms.
+def branch_forbids(branch: dict) -> list[str]:
+    """Arguments a branch refuses outright, from its `not` constraint."""
+    forbidden: list[str] = []
+    constraint = branch.get("not")
+    if not isinstance(constraint, dict):
+        return forbidden
+    clauses = constraint.get("anyOf")
+    if not isinstance(clauses, list):
+        clauses = [constraint]
+    for clause in clauses:
+        if not isinstance(clause, dict):
+            continue
+        required = clause.get("required")
+        if isinstance(required, list):
+            forbidden.extend(str(name) for name in required)
+    return forbidden
+
+
+def selector_branches(schema: dict) -> list[dict]:
+    """Alternative selectors published as mutually exclusive `oneOf` arms.
 
     A branch that also constrains `properties` selects on an argument's value
     (`unica.code.patch` on `operation`), not between whole selectors, so it is
     not a selector branch.
+
+    Each arm keeps what it refuses: an argument the other arm forbids is valid
+    only inside this one, which the `Обяз.` column alone cannot express.
     """
-    branches: list[list[str]] = []
+    branches: list[dict] = []
     for branch in schema.get("oneOf") or []:
         if not isinstance(branch, dict) or "properties" in branch:
             continue
         required = branch.get("required")
         if isinstance(required, list) and required:
-            branches.append([str(name) for name in required])
+            branches.append(
+                {
+                    "required": [str(name) for name in required],
+                    "forbids": branch_forbids(branch),
+                }
+            )
     return branches
 
 
@@ -144,11 +170,21 @@ def render_arguments(tool: dict) -> list[str]:
     # A conditionally required argument is not optional, and the `Обяз.` column
     # cannot say so on its own: without this the ledger reads as though every
     # selector could be omitted.
-    conditional = sorted({name for branch in branches for name in branch})
+    conditional = sorted({name for branch in branches for name in branch["required"]})
+    # An argument some branch forbids is not freely optional either: it is
+    # accepted only inside the branches that do not refuse it.
+    branch_only = {
+        name
+        for branch in branches
+        for name in branch["forbids"]
+        if name not in conditional
+    }
     lines: list[str] = []
     shared = len(properties) > SHARED_ARGUMENT_THRESHOLD
     shown = (
-        sorted(set(required) | set(conditional)) if shared else sorted(properties)
+        sorted(set(required) | set(conditional) | branch_only)
+        if shared
+        else sorted(properties)
     )
     if shown:
         lines.append("| Аргумент | Тип | Обяз. | Описание |")
@@ -160,6 +196,8 @@ def render_arguments(tool: dict) -> list[str]:
                 obligation = "да"
             elif name in conditional:
                 obligation = "по ветви"
+            elif name in branch_only:
+                obligation = "только в ветви"
             else:
                 obligation = "нет"
             lines.append(
@@ -179,7 +217,8 @@ def render_arguments(tool: dict) -> list[str]:
         lines.append("Опубликованных аргументов нет.")
     if branches:
         rendered = " **либо** ".join(
-            " + ".join(f"`{name}`" for name in branch) for branch in branches
+            " + ".join(f"`{name}`" for name in branch["required"])
+            for branch in branches
         )
         if lines:
             lines.append("")
@@ -187,6 +226,16 @@ def render_arguments(tool: dict) -> list[str]:
             f"**Селектор:** ровно одна ветвь — {rendered}."
             " Ни одной или обе сразу отклоняются."
         )
+        for name in sorted(branch_only):
+            allowed = [
+                branch for branch in branches if name not in branch["forbids"]
+            ]
+            if len(allowed) != 1:
+                continue
+            with_names = " + ".join(f"`{other}`" for other in allowed[0]["required"])
+            lines.append(
+                f"`{name}` принимается только вместе с {with_names}."
+            )
     return lines
 
 

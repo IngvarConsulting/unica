@@ -1391,12 +1391,14 @@ Open or page an immutable bounded manifest for one logical source target.
 | `cursor` | string | по ветви | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `limit` | integer | нет | Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results). |
-| `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `scope` | string | нет | Bounded source.resources manifest scope: self, aggregate, or registrations |
+| `metadataPath` | string | только в ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `scope` | string | только в ветви | Bounded source.resources manifest scope: self, aggregate, or registrations |
 | `snapshotId` | string | по ветви | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `snapshotId` + `cursor`. Ни одной или обе сразу отклоняются.
+`metadataPath` принимается только вместе с `sourceSet`.
+`scope` принимается только вместе с `sourceSet`.
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -1514,10 +1516,11 @@ Inspect a registered subsystem tree from a directory, a focused registered tree 
 | `SubsystemPath` | string | по ветви | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `metadataPath` | string | только в ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
+`metadataPath` принимается только вместе с `sourceSet`.
 
 **Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс; каталог `Subsystems` возвращает зарегистрированное `tree`, зарегистрированный XML — сфокусированное `tree` с цепочкой от корня до выбранного узла и всеми его потомками, а самостоятельный незарегистрированный XML — только локальные данные без `tree`; повреждение доказательства даёт `provider_unavailable`, а отмена и истечение срока сохраняют собственную типизированную семантику сбоя; ни один из этих случаев не публикует частичное дерево (ADR-0023, ADR-0036, INV-SOURCE-SUBSYSTEM-TOPOLOGY) (отвечают типизированным `data`)
 

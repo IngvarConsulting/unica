@@ -63,6 +63,57 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         cls.tools = cls.module.read_registry(BINARY)
         cls.review = json.loads(REVIEW.read_text(encoding="utf-8"))
 
+    def test_a_branch_only_argument_is_not_published_as_freely_optional(self) -> None:
+        """ADR-0048: `metadataPath` is valid only alongside `sourceSet`.
+
+        `unica.subsystem.info` forbids it in the path branch, so rendering it
+        as plain `нет` tells a caller it may be sent with `SubsystemPath`.
+        """
+        schema = {
+            "type": "object",
+            "properties": {
+                "SubsystemPath": {"type": "string"},
+                "sourceSet": {"type": "string"},
+                "metadataPath": {"type": "string"},
+                "cwd": {"type": "string"},
+            },
+            "required": [],
+            "oneOf": [
+                {
+                    "required": ["sourceSet"],
+                    "not": {"required": ["SubsystemPath"]},
+                },
+                {
+                    "required": ["SubsystemPath"],
+                    "not": {
+                        "anyOf": [
+                            {"required": ["sourceSet"]},
+                            {"required": ["metadataPath"]},
+                        ]
+                    },
+                },
+            ],
+        }
+        rendered = "\n".join(
+            self.module.render_arguments({"inputSchema": schema})
+        )
+
+        metadata_row = next(
+            line for line in rendered.splitlines() if line.startswith("| `metadataPath`")
+        )
+        self.assertNotIn(
+            " нет ",
+            metadata_row,
+            f"a branch-only argument is not freely optional: {metadata_row}",
+        )
+        self.assertIn("`metadataPath`", rendered)
+        self.assertIn("`sourceSet`", rendered)
+        # `cwd` is genuinely optional in both branches and must stay that way.
+        cwd_row = next(
+            line for line in rendered.splitlines() if line.startswith("| `cwd`")
+        )
+        self.assertIn(" нет ", cwd_row, cwd_row)
+
     def test_published_patterns_stay_inside_the_ecmascript_dialect(self) -> None:
         """JSON Schema `pattern` — это ECMA-262.
 
