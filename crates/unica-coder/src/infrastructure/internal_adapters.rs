@@ -672,6 +672,7 @@ impl<'a> RuntimeAdapter<'a> {
                 format!("{tool_name} cancelled before adapter work"),
             )));
         }
+        reject_missing_client_mcp_extension(args, context)?;
         if let Some(outcome) = bind_external_processor_config(args, context, dry_run)? {
             return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
@@ -2755,6 +2756,44 @@ fn append_runtime_global_args(
 ///
 /// The refusal names the field and never echoes the value: the argument it is
 /// refusing is the one carrying the secret.
+/// A project that declares a client MCP extension must have its artifact where
+/// it says. Without this the run reached the platform and failed late, deep in
+/// the build, on a cause the caller could have been told before it started
+/// (#408).
+fn reject_missing_client_mcp_extension(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    if args.get("operation").and_then(Value::as_str) != Some("build") {
+        return Ok(());
+    }
+    let config_arg = args
+        .get("config")
+        .and_then(Value::as_str)
+        .unwrap_or("v8project.yaml");
+    let config_path = context.cwd.join(config_arg);
+    let Ok(text) = std::fs::read_to_string(&config_path) else {
+        return Ok(());
+    };
+    let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
+        return Ok(());
+    };
+    let declared = ["tools", "client_mcp", "extension", "artifact", "path"]
+        .iter()
+        .try_fold(&config, |node, key| node.get(key))
+        .and_then(serde_yaml::Value::as_str);
+    let Some(declared) = declared.filter(|path| !path.trim().is_empty()) else {
+        return Ok(());
+    };
+    let artifact = config_path.parent().unwrap_or(&context.cwd).join(declared);
+    if artifact.is_file() {
+        return Ok(());
+    }
+    Err(format!(
+        "project declares `tools.client_mcp.extension.artifact.path` = `{declared}` but the artifact is missing; download it with operation `tools-download` before `build`"
+    ))
+}
+
 fn reject_credentials_in_connection(args: &Map<String, Value>) -> Result<(), String> {
     let Some(connection) = args.get("connection").and_then(Value::as_str) else {
         return Ok(());
@@ -3691,6 +3730,36 @@ mod tests {
         args.insert("builder".to_string(), json!("IBCMD"));
 
         validate_runtime_mapper_payload("config-init", &args).unwrap();
+    }
+
+    /// #408. A project that declares a client MCP extension but has no
+    /// artifact used to fail deep inside `build`, on a cause the caller could
+    /// have been told before the run started.
+    #[test]
+    fn runtime_adapter_refuses_build_when_the_declared_client_mcp_artifact_is_missing() {
+        let context = temp_context("client-mcp-preflight");
+        std::fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\ntools:\n  client_mcp:\n    extension:\n      artifact:\n        path: .build/client_mcp.cfe\n",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let error = reject_missing_client_mcp_extension(&args, &context)
+            .expect_err("a declared artifact that is absent is refused before the run");
+
+        assert!(error.contains("tools-download"), "{error}");
+        assert!(error.contains("client_mcp.cfe"), "{error}");
+
+        // Present artifact, and a project that declares none, both pass.
+        std::fs::create_dir_all(context.cwd.join(".build")).unwrap();
+        std::fs::write(context.cwd.join(".build/client_mcp.cfe"), b"cfe").unwrap();
+        reject_missing_client_mcp_extension(&args, &context).unwrap();
+
+        std::fs::write(context.cwd.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        reject_missing_client_mcp_extension(&args, &context).unwrap();
+        cleanup_context(&context);
     }
 
     #[test]
