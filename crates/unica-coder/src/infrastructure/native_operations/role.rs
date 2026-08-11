@@ -12,6 +12,7 @@ use crate::domain::source_target::{
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::logical_selector::prove_attached_resource;
 use crate::infrastructure::native_operations::text_snapshot::{
     resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
 };
@@ -2514,57 +2515,24 @@ fn read_regular_file(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|_| "required role resource is unavailable".to_string())
 }
 
+/// The identity check is role-specific; the proof that `<Roles>/<R>/Ext/Rights.xml`
+/// is a direct regular file inside the selected source set is the general one
+/// every subject reader needs, and lives in `logical_selector` (ADR-0048).
 fn prove_role_rights_path(
     evidence: &PlatformXmlResourceEvidence,
     role_name: &str,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    let stem = evidence
+    if evidence
         .target_path
         .file_stem()
         .and_then(|value| value.to_str())
-        .filter(|value| *value == role_name)
-        .ok_or_else(|| "role descriptor identity does not match metadataPath".to_string())?;
-    let parent = evidence
-        .target_path
-        .parent()
-        .ok_or_else(|| "role descriptor has no containing directory".to_string())?;
-    let candidate = WorkspacePathPolicy::new(context)
-        .resolve_write(parent.join(stem).join("Ext").join("Rights.xml"))
-        .map_err(|_| "role Rights.xml is outside the workspace boundary".to_string())?;
-    ensure_role_no_link_components(&evidence.source_root, &candidate)?;
-    let normalized_root = normalize_path_identity(&evidence.source_root)
-        .map_err(|_| "source root identity is unavailable".to_string())?;
-    let normalized_candidate = normalize_path_identity(&candidate)
-        .map_err(|_| "Rights.xml identity is unavailable".to_string())?;
-    if !normalized_candidate.starts_with(&normalized_root) {
-        return Err("role Rights.xml escaped the selected source set".to_string());
+        != Some(role_name)
+    {
+        return Err("role descriptor identity does not match metadataPath".to_string());
     }
-    Ok(candidate)
-}
-
-fn ensure_role_no_link_components(source_root: &Path, target: &Path) -> Result<(), String> {
-    let relative = target
-        .strip_prefix(source_root)
-        .map_err(|_| "role Rights.xml escaped the selected source set".to_string())?;
-    let mut current = source_root.to_path_buf();
-    for component in relative.components() {
-        let std::path::Component::Normal(component) = component else {
-            return Err("role Rights.xml contains a non-normal path component".to_string());
-        };
-        current.push(component);
-        let metadata = match fs::symlink_metadata(&current) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Err("required role resource is unavailable".to_string());
-            }
-            Err(_) => return Err("required role resource cannot be inspected".to_string()),
-        };
-        if metadata_is_link_or_reparse_point(&metadata) {
-            return Err("role resource path contains a symbolic link or reparse point".to_string());
-        }
-    }
-    Ok(())
+    prove_attached_resource(evidence, "Rights.xml", context)
+        .map_err(|failure| failure.to_string())
 }
 
 fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), String> {
