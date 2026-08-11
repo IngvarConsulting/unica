@@ -2178,10 +2178,19 @@ pub(crate) fn resolve_platform_xml_target(
     let selected = resolve_named_source_set(context, &target.source_set)
         .map_err(|error| public_source_set_error(&target.source_set, error))?;
     validate_source_set(&selected)?;
-    if target.metadata_path.is_none() {
+    let Some(address) = target.metadata_path.as_ref() else {
+        // The policy is a fail-closed declaration, so it decides before any
+        // resolution succeeds. The source root has no `metadataPath` to match
+        // on, which is exactly why it has to be refused here and not in the
+        // match below.
+        if !matches!(policy, TargetKindPolicy::Any) {
+            return Err(SourceTargetError::new(
+                SourceTargetErrorCode::TargetKindMismatch,
+                "metadataPath does not identify a module terminal",
+            ));
+        }
         return resolve_platform_xml_root(context, target, selected);
-    }
-    let address = target.metadata_path.as_ref().expect("checked above");
+    };
     match (address.target_kind(), policy) {
         (TargetKind::Module, _) => {
             resolve_platform_xml_module(context, target, selected, address, policy)
@@ -3416,6 +3425,16 @@ mod tests {
         super::resolve_platform_xml_target(context, target, super::TargetKindPolicy::Any)
     }
 
+    /// A source root is a read-only target: only `Any` admits it, so a root
+    /// test that reached for the writer's policy would be testing nothing it
+    /// claims to test.
+    fn resolve_platform_xml_root_target(
+        context: &WorkspaceContext,
+        target: &SourceTarget,
+    ) -> Result<super::PlatformXmlResolution, crate::domain::source_target::SourceTargetError> {
+        super::resolve_platform_xml_target(context, target, super::TargetKindPolicy::Any)
+    }
+
     fn resolve_platform_xml_source_navigation(
         context: &WorkspaceContext,
         request: &SourceResolveRequest,
@@ -4018,7 +4037,7 @@ mod tests {
 
         for (source_set, root) in [("main", "cfg"), ("addOn", "ext")] {
             let resolution =
-                resolve_platform_xml_target(&context, &root_target(source_set)).unwrap();
+                resolve_platform_xml_root_target(&context, &root_target(source_set)).unwrap();
 
             assert_eq!(resolution.resolved.source_set, source_set);
             assert_eq!(resolution.resolved.metadata_path, None);
@@ -4052,8 +4071,10 @@ mod tests {
         };
         result.unwrap();
 
-        let error = resolve_platform_xml_target(&context, &root_target("main")).unwrap_err();
+        let error = resolve_platform_xml_root_target(&context, &root_target("main")).unwrap_err();
 
+        // The source set itself is refused before the target-kind policy is
+        // consulted, so the message names the root, not the terminal.
         assert_eq!(error.code, SourceTargetErrorCode::ContainmentDenied);
         assert_eq!(
             error.message,
@@ -4073,7 +4094,7 @@ mod tests {
         );
         let root = context.workspace_root.join("src");
         fs::create_dir_all(&root).unwrap();
-        let resolution = resolve_platform_xml_target(&context, &root_target("main")).unwrap();
+        let resolution = resolve_platform_xml_root_target(&context, &root_target("main")).unwrap();
         let replacement = context.workspace_root.join("replacement");
         fs::rename(&root, &replacement).unwrap();
         let Some(result) = create_dir_symlink_for_test(&replacement, &root) else {
@@ -5215,6 +5236,60 @@ mod tests {
             "{}",
             error.message
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_target_kind_policy_applies_to_every_target_kind() {
+        let context = fixture(
+            "policy-covers-root",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_module_fixture(
+            &root,
+            "CommonModules/Shared.xml",
+            "CommonModules/Shared/Ext/Module.bsl",
+            "CommonModule",
+            "Shared",
+        );
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+
+        let root_target = root_target("main");
+        let object = target("main", "Catalog.Items");
+        let module = target("main", "CommonModule.Shared.Module");
+
+        // `Any` is the read policy: every kind resolves.
+        for candidate in [&root_target, &object, &module] {
+            assert!(
+                super::resolve_platform_xml_target(&context, candidate, super::TargetKindPolicy::Any)
+                    .is_ok(),
+                "Any must resolve every target kind"
+            );
+        }
+
+        // `ModuleOnly` is a fail-closed declaration: it admits the module
+        // terminal and refuses every other kind, the source root included.
+        assert!(super::resolve_platform_xml_target(
+            &context,
+            &module,
+            super::TargetKindPolicy::ModuleOnly
+        )
+        .is_ok());
+        for candidate in [&root_target, &object] {
+            let error = super::resolve_platform_xml_target(
+                &context,
+                candidate,
+                super::TargetKindPolicy::ModuleOnly,
+            )
+            .expect_err("ModuleOnly must refuse a non-module target");
+            assert_eq!(error.code, SourceTargetErrorCode::TargetKindMismatch);
+            assert!(
+                !error.message.contains(std::path::MAIN_SEPARATOR),
+                "a refusal must not disclose a physical path: {}",
+                error.message
+            );
+        }
         cleanup(&context);
     }
 
