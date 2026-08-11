@@ -234,7 +234,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "limit": {
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
+        "description": "Cap on returned entities, never on printed lines, with per-tool defaults (meta.info sections 20, code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards and documentation results). The typed XML readers answer with every section at once and publish no `limit`.",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -269,7 +269,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "limit": {
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
+        "description": "Cap on returned entities, never on printed lines, with per-tool defaults (meta.info sections 20, code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards and documentation results). The typed XML readers answer with every section at once and publish no `limit`.",
         "maximum": 65536,
         "minimum": 1,
         "type": "integer"
@@ -316,7 +316,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "limit": {
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
+        "description": "Cap on returned entities, never on printed lines, with per-tool defaults (meta.info sections 20, code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards and documentation results). The typed XML readers answer with every section at once and publish no `limit`.",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -420,7 +420,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "limit": {
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
+        "description": "Cap on returned entities, never on printed lines, with per-tool defaults (meta.info sections 20, code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards and documentation results). The typed XML readers answer with every section at once and publish no `limit`.",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -486,7 +486,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         "type": "integer",
         "minimum": 1,
         "maximum": 50,
-        "description": "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results)."
+        "description": "Cap on returned entities, never on printed lines, with per-tool defaults (meta.info sections 20, code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards and documentation results). The typed XML readers answer with every section at once and publish no `limit`."
       },
       "metadataPath": {
         "type": "string",
@@ -559,7 +559,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         "type": "string",
         "minLength": 1,
         "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
-        "description": "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section`"
+        "description": "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`). The typed XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into."
       },
       "operation": {
         "type": "string",

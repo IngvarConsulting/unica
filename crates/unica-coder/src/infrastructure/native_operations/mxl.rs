@@ -1889,28 +1889,17 @@ pub(crate) fn non_empty_string(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// `TemplatePath` is the only address `unica.mxl.info` publishes, and the
+/// schema requires it. The composite `ProcessorName`/`TemplateName`/`SrcDir`
+/// form guessed a physical layout and could never be reached past that
+/// requirement, so it is gone rather than left as an unreachable branch.
 pub(crate) fn resolve_mxl_info_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    if let Some(path) = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"]) {
-        return Ok(absolutize(path, &context.cwd));
-    }
-    let processor_name = string_arg(args, &["processorName", "ProcessorName"]).unwrap_or("");
-    let template_name = string_arg(args, &["templateName", "TemplateName"]).unwrap_or("");
-    if processor_name.is_empty() || template_name.is_empty() {
-        return Err("Specify -TemplatePath or both -ProcessorName and -TemplateName".to_string());
-    }
-    let src_dir = string_arg(args, &["srcDir", "SrcDir"]).unwrap_or("src");
-    Ok(absolutize(
-        PathBuf::from(src_dir)
-            .join(processor_name)
-            .join("Templates")
-            .join(template_name)
-            .join("Ext")
-            .join("Template.xml"),
-        &context.cwd,
-    ))
+    let path = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
+        .ok_or_else(|| "Specify -TemplatePath".to_string())?;
+    Ok(absolutize(path, &context.cwd))
 }
 
 pub(crate) fn resolve_mxl_validate_path(
@@ -2150,30 +2139,6 @@ pub(crate) fn truncate_mxl_list(items: &[String], max_count: usize) -> String {
     }
     let shown = items[..max_count].join(", ");
     format!("{shown}, ... (+{})", items.len() - max_count)
-}
-
-pub(crate) fn paginate_mxl_info(mut lines: Vec<String>, args: &Map<String, Value>) -> String {
-    let total_lines = lines.len();
-    let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0);
-    let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150);
-    if offset > 0 {
-        if offset as usize >= total_lines {
-            return format!(
-                "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
-            );
-        }
-        lines = lines[offset as usize..].to_vec();
-    }
-    if lines.len() > limit as usize {
-        let mut output = lines[..limit as usize].join("\n");
-        output.push_str(&format!(
-            "\n\n[TRUNCATED] Shown {limit} of {total_lines} lines. Use -Offset {} to continue.\n",
-            offset + limit
-        ));
-        output
-    } else {
-        format!("{}\n", lines.join("\n"))
-    }
 }
 
 #[derive(Clone)]

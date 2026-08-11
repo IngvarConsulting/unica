@@ -11899,6 +11899,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// The published `OperationResult` is where a consumer reads the effect of
+    /// a borrow, so `data.mutation`, `changes` and the workspace itself must
+    /// agree on which files were created and which were replaced.
+    #[test]
+    fn cfe_borrow_result_mutation_changes_and_workspace_agree() {
+        let root =
+            std::env::temp_dir().join(format!("unica-cfe-borrow-mutation-{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("src/Catalogs")).unwrap();
+        std::fs::create_dir_all(workspace.join("ext")).unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration.xml"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n\t<Configuration uuid=\"55555555-5555-5555-5555-555555555555\"/>\n</MetaDataObject>\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/Catalogs/Items.xml"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n\t<Catalog uuid=\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\">\n\t\t<Properties><Name>Items</Name></Properties>\n\t\t<ChildObjects/>\n\t</Catalog>\n</MetaDataObject>\n",
+        )
+        .unwrap();
+        let extension_owner = workspace.join("ext/Configuration.xml");
+        std::fs::write(
+            &extension_owner,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n\t<Configuration uuid=\"66666666-6666-6666-6666-666666666666\">\n\t\t<InternalInfo/>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>SmokeExtension</Name>\n\t\t\t<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>\n\t\t\t<NamePrefix>SE_</NamePrefix>\n\t\t</Properties>\n\t\t<ChildObjects/>\n\t</Configuration>\n</MetaDataObject>\n",
+        )
+        .unwrap();
+        let borrowed = workspace.join("ext/Catalogs/Items.xml");
+        assert!(!borrowed.exists());
+
+        let mut args = Map::new();
+        args.insert(
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        );
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        args.insert(
+            "ExtensionPath".to_string(),
+            Value::String("ext".to_string()),
+        );
+        args.insert("ConfigPath".to_string(), Value::String("src".to_string()));
+        args.insert(
+            "Object".to_string(),
+            Value::String("Catalog.Items".to_string()),
+        );
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.cfe.borrow", &args)
+            .expect("borrow must succeed");
+
+        assert!(result.ok, "{:?}", result.errors);
+        let mutation = &result
+            .data
+            .as_ref()
+            .expect("cfe.borrow publishes typed data")["mutation"];
+        let created = mutation["created"]
+            .as_array()
+            .expect("created is an array")
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        let updated = mutation["updated"]
+            .as_array()
+            .expect("updated is an array")
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(borrowed.exists(), "the borrow must have created the object");
+        assert!(
+            created.contains(&borrowed.display().to_string()),
+            "{created:?}"
+        );
+        assert!(
+            updated.contains(&extension_owner.display().to_string()),
+            "{updated:?}"
+        );
+        for path in &created {
+            assert!(!updated.contains(path), "{path} is created and updated");
+        }
+        let expected_changes = created
+            .iter()
+            .map(|path| format!("created {path}"))
+            .chain(updated.iter().map(|path| format!("updated {path}")))
+            .collect::<Vec<_>>();
+        assert_eq!(result.changes, expected_changes);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn native_operations_rs_is_thin_facade_not_xml_dsl_monolith() {
         let infrastructure_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
