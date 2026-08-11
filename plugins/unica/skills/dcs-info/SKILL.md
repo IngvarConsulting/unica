@@ -41,11 +41,16 @@ allowed-tools:
 | Параметр | Описание |
 |----------|----------|
 | `TemplatePath` | Путь к Template.xml или каталогу макета (авто-резолв в `Ext/Template.xml`) |
+| `sourceSet`    | Имя набора исходников из `v8project.yaml`                                  |
+| `metadataPath` | Логический адрес, например `Report.<Отчёт>.Template.<Макет>`               |
 | `Mode` | Режим анализа (по умолчанию `overview`) |
 | `Name` | Имя набора (query), поля (fields/calculated/resources/trace), варианта (variant) или группировки/поля (templates) |
 | `Batch` | Номер пакета запроса, 0 = все (только query) |
 | `Raw` | Только для `Mode=query`: сырой текст запроса целиком, без заголовков/оглавления/разделителей пакетов. Для round-trip передай возвращённый текст в `unica.dcs.edit` / `set-query` как `Value` |
 | `Limit` / `Offset` | Пагинация (по умолчанию 150 строк; `Raw` не усекается) |
+
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо
+`TemplatePath`. Оба сразу отклоняются кодом `selector_conflict` (ADR-0048).
 
 ### Overview: точка входа
 

@@ -26,6 +26,10 @@ allowed-tools:
 | Параметр | Описание |
 |----------|----------|
 | `ConfigPath` | Путь к Configuration.xml или каталогу выгрузки |
+| `sourceSet`  | Имя набора исходников из `v8project.yaml`      |
+
+Селектор цели ровно один: либо `sourceSet`, либо `ConfigPath`. Оба сразу
+отклоняются кодом `selector_conflict` (ADR-0048).
 
 ## Поля `data`
 

@@ -141,10 +141,23 @@ fn resolve(
         (TargetKind::MetadataObject, AttachedResource::Descriptor) => {
             prove_regular_file(&evidence, evidence.target_path.clone(), context)?
         }
-        (TargetKind::MetadataObject, _) => {
-            let file_name = want
-                .file_name()
-                .expect("object-attached resources are named");
+        // A configuration root is not an object, so asking for one by address
+        // is a caller mistake. Matching it here keeps `file_name` total for
+        // every arm that reaches it, instead of leaving a panic behind an
+        // `expect` that only the current schema happens to prevent.
+        (TargetKind::MetadataObject, AttachedResource::ConfigurationRoot) => {
+            return Err(LogicalSelectorFailure::new(
+                "target_kind_unsupported",
+                "metadataPath does not identify what this tool reads",
+            ))
+        }
+        (TargetKind::MetadataObject, resource) => {
+            let Some(file_name) = resource.file_name() else {
+                return Err(LogicalSelectorFailure::new(
+                    "target_kind_unsupported",
+                    "metadataPath does not identify what this tool reads",
+                ));
+            };
             prove_attached_resource(&evidence, file_name, context)?
         }
         _ => {
@@ -570,6 +583,24 @@ mod tests {
         )
         .expect_err("a .bin template has no Template.xml");
         assert_eq!(failure.code(), "resource_absent");
+        cleanup(&context);
+    }
+
+    /// A configuration root has no address, so asking for one while naming an
+    /// object is a caller mistake — and a mistake must be a typed refusal, not
+    /// a panic. The public schema keeps `metadataPath` off `unica.cf.*` today,
+    /// but this seam is shared and must not rely on that.
+    #[test]
+    fn logical_selector_refuses_a_configuration_root_asked_for_by_address() {
+        let context = fixture("root-asked-by-address");
+        let failure = selection(
+            &context,
+            "Catalog.Items",
+            AttachedResource::ConfigurationRoot,
+            &[],
+        )
+        .expect_err("a metadata object is not a configuration root");
+        assert_eq!(failure.code(), "target_kind_unsupported");
         cleanup(&context);
     }
 

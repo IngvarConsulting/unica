@@ -158,7 +158,7 @@ pub(crate) struct LogicalSelection {
 
 `resource_absent` отличается от `target_not_found` намеренно: объект существует
 и адресуется, а конкретного ресурса у него нет. Слить их — повторить ошибку
-#273 на уровень выше.
+[#273](https://github.com/IngvarConsulting/unica/issues/273) на уровень выше.
 
 ### Контракт инструмента
 

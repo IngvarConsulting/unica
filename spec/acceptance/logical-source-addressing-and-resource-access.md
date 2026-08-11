@@ -72,6 +72,10 @@ cargo test -p unica-coder meta_info -- --test-threads=1
 cargo test -p unica-coder logical_selector -- --test-threads=1
 cargo test -p unica-coder answers_identically -- --test-threads=1
 cargo test -p unica-coder bridged_readers -- --test-threads=1
+cargo test -p unica-coder dcs_info_reports_a_binary_template -- --test-threads=1
+cargo test -p unica-coder platform_xml_target_kind_policy_applies -- --test-threads=1
+cargo test -p unica-coder subsystem_info_refuses_a_nested_address -- --test-threads=1
 cargo test -p unica-coder domain::cache::tests -- --test-threads=1
 python3.12 -m unittest tests/ci/test_architecture_registry.py tests/ci/test_design_documents.py tests/ci/test_unica_skills.py tests/ci/test_skill_provenance.py
+python3.12 -m unittest tests/ci/test_unica_mcp_script_parity.py tests/ci/test_smoke_unica_mcp.py
 ```

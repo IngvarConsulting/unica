@@ -2871,5 +2871,75 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertIn("назовите подстановку локали в ответе", self.text)
 
 
+# ADR-0048: a bridged reader accepts a logical selector beside its path, so a
+# skill whose parameter table still names only the path — or still marks it
+# unconditionally required — contradicts the schema the tool publishes.
+BRIDGED_SKILL_SELECTORS = {
+    "cf-info": ("ConfigPath", False),
+    "cf-validate": ("ConfigPath", False),
+    "subsystem-info": ("SubsystemPath", True),
+    "subsystem-validate": ("SubsystemPath", True),
+    "role-info": ("RightsPath", True),
+    "role-validate": ("RightsPath", True),
+    "form-info": ("FormPath", True),
+    "form-validate": ("FormPath", True),
+    "dcs-info": ("TemplatePath", True),
+    "dcs-validate": ("TemplatePath", True),
+    "mxl-info": ("TemplatePath", True),
+    "mxl-validate": ("TemplatePath", True),
+    "mxl-decompile": ("TemplatePath", True),
+}
+
+
+def _table_rows(text: str) -> list[list[str]]:
+    rows = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip().strip("`") for cell in stripped.strip("|").split("|")]
+        if cells:
+            rows.append(cells)
+    return rows
+
+
+class BridgedSkillSelectorDocumentationTests(unittest.TestCase):
+    """The parameter tables must describe the contract the tool publishes."""
+
+    def skill_root(self) -> Path:
+        return REPO_ROOT / "plugins" / "unica" / "skills"
+
+    def test_parameter_tables_name_the_logical_selector(self) -> None:
+        for skill, (_, takes_address) in BRIDGED_SKILL_SELECTORS.items():
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
+                first_cells = {row[0] for row in _table_rows(text) if row}
+                self.assertIn(
+                    "sourceSet",
+                    first_cells,
+                    f"{skill}: таблица параметров не называет логический селектор",
+                )
+                if takes_address:
+                    self.assertIn(
+                        "metadataPath",
+                        first_cells,
+                        f"{skill}: таблица параметров не называет `metadataPath`",
+                    )
+
+    def test_parameter_tables_do_not_mark_the_path_unconditionally_required(self) -> None:
+        for skill, (legacy, _) in BRIDGED_SKILL_SELECTORS.items():
+            with self.subTest(skill=skill):
+                text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
+                for row in _table_rows(text):
+                    if not row or row[0] != legacy:
+                        continue
+                    self.assertNotIn(
+                        "да",
+                        [cell.lower() for cell in row[1:]],
+                        f"{skill}: `{legacy}` больше не обязателен безусловно — "
+                        "он один из двух селекторов",
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()

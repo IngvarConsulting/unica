@@ -33,8 +33,13 @@ allowed-tools:
 | Параметр | Описание |
 |----------|----------|
 | `TemplatePath` | Путь к `Template.xml` макета или к каталогу макета |
+| `sourceSet`    | Имя набора исходников из `v8project.yaml`          |
+| `metadataPath` | Логический адрес, например `Report.<Отчёт>.Template.<Макет>` |
 | `SrcDir` | Каталог выгрузки — вместе с именем объекта и макета вместо пути |
 | `WithText` | Включить текстовое содержимое ячеек в `texts` и `templates` |
+
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо
+`TemplatePath`. Оба сразу отклоняются кодом `selector_conflict` (ADR-0048).
 
 `Format`, `MaxParams`, `Limit` и `Offset` сняты: результат приходит
 типизированным в `data` (ADR-0023), поэтому режим вывода, обрезка списков

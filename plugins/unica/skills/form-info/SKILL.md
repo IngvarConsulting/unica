@@ -41,10 +41,15 @@ allowed-tools:
 
 | Параметр | Обязательный | Описание |
 |----------|:------------:|----------|
-| FormPath | да | Путь к файлу Form.xml |
+| FormPath | один из двух | Путь к файлу Form.xml |
+| sourceSet | один из двух | Имя набора исходников из `v8project.yaml` |
+| metadataPath | один из двух | Логический адрес, например `Catalog.<Объект>.Form.<Форма>` |
 | Expand   | нет | Раскрыть свёрнутую секцию по имени или title, `*` — все |
 | Limit    | нет | Макс. строк (по умолчанию 150) |
 | Offset   | нет | Пропустить N строк (пагинация) |
+
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо `FormPath`.
+Оба сразу отклоняются кодом `selector_conflict` (ADR-0048).
 
 Вывод самодокументирован. `[Group:AH]`/`[Group:AV]` = AlwaysHorizontal/AlwaysVertical.
 

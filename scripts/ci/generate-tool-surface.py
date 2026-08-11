@@ -119,22 +119,52 @@ def escape_cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
 
+def selector_branches(schema: dict) -> list[list[str]]:
+    """Alternative required sets published as mutually exclusive `oneOf` arms.
+
+    A branch that also constrains `properties` selects on an argument's value
+    (`unica.code.patch` on `operation`), not between whole selectors, so it is
+    not a selector branch.
+    """
+    branches: list[list[str]] = []
+    for branch in schema.get("oneOf") or []:
+        if not isinstance(branch, dict) or "properties" in branch:
+            continue
+        required = branch.get("required")
+        if isinstance(required, list) and required:
+            branches.append([str(name) for name in required])
+    return branches
+
+
 def render_arguments(tool: dict) -> list[str]:
     schema = tool.get("inputSchema", {})
     properties = schema.get("properties", {})
     required = schema.get("required", [])
+    branches = selector_branches(schema)
+    # A conditionally required argument is not optional, and the `Обяз.` column
+    # cannot say so on its own: without this the ledger reads as though every
+    # selector could be omitted.
+    conditional = sorted({name for branch in branches for name in branch})
     lines: list[str] = []
     shared = len(properties) > SHARED_ARGUMENT_THRESHOLD
-    shown = required if shared else sorted(properties)
+    shown = (
+        sorted(set(required) | set(conditional)) if shared else sorted(properties)
+    )
     if shown:
         lines.append("| Аргумент | Тип | Обяз. | Описание |")
         lines.append("| --- | --- | --- | --- |")
         for name in shown:
             entry = properties.get(name, {})
             description = escape_cell(entry.get("description", "—"))
+            if name in required:
+                obligation = "да"
+            elif name in conditional:
+                obligation = "по ветви"
+            else:
+                obligation = "нет"
             lines.append(
                 f"| `{name}` | {argument_type(entry)} |"
-                f" {'да' if name in required else 'нет'} | {description} |"
+                f" {obligation} | {description} |"
             )
     if shared:
         if lines:
@@ -147,6 +177,16 @@ def render_arguments(tool: dict) -> list[str]:
         )
     elif not shown:
         lines.append("Опубликованных аргументов нет.")
+    if branches:
+        rendered = " **либо** ".join(
+            " + ".join(f"`{name}`" for name in branch) for branch in branches
+        )
+        if lines:
+            lines.append("")
+        lines.append(
+            f"**Селектор:** ровно одна ветвь — {rendered}."
+            " Ни одной или обе сразу отклоняются."
+        )
     return lines
 
 

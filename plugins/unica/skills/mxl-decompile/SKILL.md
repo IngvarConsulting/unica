@@ -30,7 +30,12 @@ allowed-tools:
 
 | Параметр     | Обязательный | Описание            |
 |--------------|:------------:|---------------------|
-| TemplatePath | да           | Путь к Template.xml |
+| TemplatePath | один из двух | Путь к Template.xml |
+| sourceSet    | один из двух | Имя набора исходников из `v8project.yaml` |
+| metadataPath | один из двух | Логический адрес, например `Report.<Отчёт>.Template.<Макет>` |
+
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо
+`TemplatePath`. Оба сразу отклоняются кодом `selector_conflict` (ADR-0048).
 
 ## MCP вызов
 

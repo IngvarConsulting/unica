@@ -330,7 +330,11 @@ pub(crate) fn resolve_subsystem_read_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    if args.contains_key("sourceSet") && !args.contains_key("metadataPath") {
+    // `metadataPath` is read with `string_arg` everywhere else, so a null or
+    // non-string value is absent. A raw key-presence check here would send such
+    // a call down the object branch and answer `target_kind_unsupported`
+    // instead of the registered tree.
+    if args.contains_key("sourceSet") && string_arg(args, &["metadataPath"]).is_none() {
         let selection = logical_selection(args, context, AttachedResource::ConfigurationRoot, &[])
             .expect("sourceSet is present")
             .map_err(|failure| failure.to_string())?;
@@ -5130,6 +5134,34 @@ mod subsystem_read_selector_bridge_tests {
         assert_eq!(
             serde_json::to_value(&by_set.data).unwrap(),
             serde_json::to_value(&by_path.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// `metadataPath` is not type-checked as a string, so a null value reaches
+    /// the handler. The shared resolver reads it with `string_arg` and sees
+    /// nothing; a raw key-presence check here would see something, and the two
+    /// would disagree about which branch the call took.
+    #[test]
+    fn subsystem_info_treats_a_null_address_as_no_address() {
+        let context = workspace("null-address");
+
+        let by_set = analyze_subsystem_info(
+            &Map::from_iter([("sourceSet".to_string(), json!("main"))]),
+            &context,
+        );
+        let with_null = analyze_subsystem_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), Value::Null),
+            ]),
+            &context,
+        );
+
+        assert!(with_null.outcome.ok, "{:?}", with_null.outcome);
+        assert_eq!(
+            serde_json::to_value(&with_null.data).unwrap(),
+            serde_json::to_value(&by_set.data).unwrap()
         );
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
