@@ -18,7 +18,7 @@ use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
@@ -48,6 +48,7 @@ const SERVICE_MAX_WORKERS: usize = 8;
 const SERVICE_REQUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_TEARDOWN_GRACE: Duration = Duration::from_secs(3);
 const SERVICE_SPAWN_CLEANUP_WAIT: Duration = Duration::from_secs(2);
+const SERVICE_STARTUP_STDERR_TAIL_LIMIT: u64 = 16 * 1024;
 const BSL_STDERR_TAIL_LIMIT: usize = 64 * 1024;
 const SERVICE_RECORD_LOCK_FILE: &str = "service.record.lock";
 
@@ -1158,7 +1159,8 @@ impl ServiceSpawner for SystemServiceSpawner {
         let stdout = fs::File::create(identity.service_dir.join("service.stdout.log"))
             .map_err(|err| format!("failed to create workspace service stdout log: {err}"))?;
         deadline.remaining(cancellation)?;
-        let stderr = fs::File::create(identity.service_dir.join("service.stderr.log"))
+        let stderr_path = identity.service_dir.join("service.stderr.log");
+        let stderr = fs::File::create(&stderr_path)
             .map_err(|err| format!("failed to create workspace service stderr log: {err}"))?;
         deadline.remaining(cancellation)?;
         let exe = env::current_exe()
@@ -1186,7 +1188,7 @@ impl ServiceSpawner for SystemServiceSpawner {
         let mut child = ManagedStartupChild::spawn_configured(command)
             .map_err(|err| format!("failed to spawn workspace service: {err}"))?;
         let child_pid = child.id();
-        let readiness = (|| {
+        let readiness: Result<WorkspaceServiceRecord, String> = (|| {
             let wait_budget = deadline
                 .remaining(cancellation)?
                 .min(SERVICE_CONNECT_TIMEOUT);
@@ -1218,6 +1220,8 @@ impl ServiceSpawner for SystemServiceSpawner {
                 }
             },
             Err(error) => {
+                let startup_error =
+                    workspace_service_startup_failure(&error, &mut child, &stderr_path);
                 let cleanup = terminate_failed_workspace_service_spawn(
                     &mut child,
                     identity,
@@ -1225,12 +1229,63 @@ impl ServiceSpawner for SystemServiceSpawner {
                     SERVICE_SPAWN_CLEANUP_WAIT,
                 );
                 match cleanup {
-                    Ok(()) => Err(error),
-                    Err(cleanup_error) => Err(format!("{error}; {cleanup_error}")),
+                    Ok(()) => Err(startup_error),
+                    Err(cleanup_error) => Err(format!("{startup_error}; {cleanup_error}")),
                 }
             }
         }
     }
+}
+
+fn workspace_service_startup_failure(
+    readiness_error: &str,
+    child: &mut ManagedStartupChild,
+    stderr_path: &Path,
+) -> String {
+    let pid = child.id();
+    match child.try_wait_status() {
+        Ok(Some(status)) => {
+            let stderr = read_workspace_service_stderr_tail(stderr_path).unwrap_or_default();
+            if stderr.trim().is_empty() {
+                format!(
+                    "{readiness_error}; spawned workspace service {pid} exited before readiness with {status}"
+                )
+            } else {
+                format!(
+                    "{readiness_error}; spawned workspace service {pid} exited before readiness with {status}; stderr tail: {}",
+                    stderr.trim()
+                )
+            }
+        }
+        Ok(None) => format!(
+            "{readiness_error}; spawned workspace service {pid} remained running until the readiness deadline"
+        ),
+        Err(error) => format!(
+            "{readiness_error}; failed to inspect spawned workspace service {pid}: {error}"
+        ),
+    }
+}
+
+fn read_workspace_service_stderr_tail(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path).map_err(|error| {
+        format!(
+            "failed to open workspace service stderr log {}: {error}",
+            path.display()
+        )
+    })?;
+    let length = file
+        .metadata()
+        .map_err(|error| format!("failed to inspect workspace service stderr log: {error}"))?
+        .len();
+    file.seek(SeekFrom::Start(
+        length.saturating_sub(SERVICE_STARTUP_STDERR_TAIL_LIMIT),
+    ))
+    .map_err(|error| format!("failed to seek workspace service stderr log: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(SERVICE_STARTUP_STDERR_TAIL_LIMIT)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read workspace service stderr log: {error}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn terminate_failed_workspace_service_spawn(
@@ -7338,6 +7393,53 @@ fn main() {
 
         assert_eq!(read_record(&identity), Some(replacement));
         cleanup(&context);
+    }
+
+    #[test]
+    fn startup_failure_reports_exit_status_and_bounded_stderr_tail() {
+        let context = test_context("startup-failure-diagnostic");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let stderr_path = identity.service_dir.join("service.stderr.log");
+        fs::create_dir_all(&identity.service_dir).unwrap();
+        let stderr = fs::File::create(&stderr_path).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "--nocapture",
+            ])
+            .env("UNICA_STARTUP_FAILURE_CHILD_FIXTURE", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(stderr));
+        let mut child = ManagedStartupChild::spawn_configured(command).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while child.is_running().unwrap() {
+            assert!(Instant::now() < deadline, "fixture did not exit");
+            thread::yield_now();
+        }
+
+        let error = workspace_service_startup_failure(
+            "workspace service did not become ready",
+            &mut child,
+            &stderr_path,
+        );
+
+        assert!(error.contains("exited before readiness"), "{error}");
+        assert!(error.contains("23"), "{error}");
+        assert!(error.contains("issue-339-startup-marker"), "{error}");
+        assert!(error.len() <= SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize + 512);
+        child.terminate_bounded(Duration::from_secs(1)).unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn startup_failure_child_fixture() {
+        if std::env::var_os("UNICA_STARTUP_FAILURE_CHILD_FIXTURE").is_some() {
+            eprintln!("issue-339-startup-marker");
+            std::process::exit(23);
+        }
     }
 
     #[test]

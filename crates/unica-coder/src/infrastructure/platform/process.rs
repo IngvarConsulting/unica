@@ -439,14 +439,17 @@ impl ManagedStartupChild {
         self.child.as_ref().expect("startup child exists").id()
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_running(&mut self) -> Result<bool, String> {
+    pub(crate) fn try_wait_status(&mut self) -> Result<Option<ExitStatus>, String> {
         self.child
             .as_mut()
             .expect("startup child exists")
             .try_wait()
-            .map(|status| status.is_none())
             .map_err(process_error)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_running(&mut self) -> Result<bool, String> {
+        self.try_wait_status().map(|status| status.is_none())
     }
 
     pub(crate) fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String> {
@@ -1897,6 +1900,34 @@ mod tests {
 
         thread::sleep(Duration::from_millis(75));
         assert!(process_test_support::is_alive(pid));
+    }
+
+    #[test]
+    fn startup_child_exposes_exit_status_without_detaching() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "success")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ManagedStartupChild::spawn_configured(command).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = child.try_wait_status().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "startup child did not exit");
+            thread::yield_now();
+        };
+
+        assert!(status.success());
+        child.terminate_bounded(Duration::from_secs(1)).unwrap();
     }
 
     #[test]
