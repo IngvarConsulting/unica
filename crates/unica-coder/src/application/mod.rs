@@ -2810,7 +2810,7 @@ mod tests {
     use std::time::Duration;
 
     fn normalized_path(path: &std::path::Path) -> std::path::PathBuf {
-        crate::infrastructure::platform::testing::canonical_path_for_test(path)
+        crate::test_support::canonical_path(path)
     }
 
     fn call_public_tool_from_workspace(

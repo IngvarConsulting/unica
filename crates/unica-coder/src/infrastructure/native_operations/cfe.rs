@@ -6816,13 +6816,10 @@ mod tests {
     }
 
     fn matching_mutation_path<'a>(paths: &'a [String], expected: &Path) -> Option<&'a str> {
-        let expected = crate::infrastructure::platform::testing::canonical_path_for_test(expected);
+        let expected = crate::test_support::canonical_path(expected);
         paths
             .iter()
-            .find(|path| {
-                crate::infrastructure::platform::testing::canonical_path_for_test(Path::new(path))
-                    == expected
-            })
+            .find(|path| crate::test_support::canonical_path(Path::new(path)) == expected)
             .map(String::as_str)
     }
 

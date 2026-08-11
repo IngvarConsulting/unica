@@ -15,20 +15,6 @@ pub(crate) fn path_text_for_test(path: &Path) -> String {
     normalize_path_text_for_test(&path.display().to_string())
 }
 
-pub(crate) fn canonical_path_for_test(path: &Path) -> PathBuf {
-    let canonical = std::fs::canonicalize(path).expect("test path identity must canonicalize");
-    if std::path::MAIN_SEPARATOR == '\\' {
-        let display = canonical.to_string_lossy();
-        if let Some(path) = display.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{path}"));
-        }
-        if let Some(path) = display.strip_prefix(r"\\?\") {
-            return PathBuf::from(path);
-        }
-    }
-    canonical
-}
-
 #[cfg(unix)]
 pub(crate) fn can_rename_parent_with_retained_cleanup_child_for_test() -> bool {
     true
