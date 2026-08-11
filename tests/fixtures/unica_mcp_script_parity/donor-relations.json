@@ -327,19 +327,19 @@
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
-        "donorExpectedFiles": {},
         "donorOk": true,
-        "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "unicaOk": true,
+        "mismatchKind": "stdout_mismatch_snapshot_diff",
         "donorStdoutSha256": "9ce0d3f89a1f6bb5704e776305f5456801e9463bf48dd2ac3dff30179cbd5e9d",
+        "unicaStdoutSha256": "a178a9d664ae5a63c51090c9da02e390fa8559b63b86aaf9ebd87cfa8dd5aa74",
+        "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
         "donorWorkspaceSha256": "7fb0bbc01cf8e153041cfffe8ead2046967c3114379b829ad5e53923ff2d0b16",
-        "mismatchKind": "unsupported_form_element",
-        "unicaExpectedFiles": {},
-        "unicaOk": false,
-        "unicaStderrSha256": "1982f74f27c4891fc5a84fa759013002d37d0545782b748f91f1d77863adac8a",
-        "unicaStdoutSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaWorkspaceSha256": "cb2ed64d993f9a118a6ffee0564d498e9827e0f0fdbabe929e84e2b610728bc8"
+        "unicaWorkspaceSha256": "944a13a41ef2a0a23174fdde81ac23a13c97646369a34f6bfa82b07bd2f1beca",
+        "donorExpectedFiles": {},
+        "unicaExpectedFiles": {}
       },
-      "observationFingerprint": "9ab2490ec6d5f8dbcd38d5e648030a570891e6f927af3e0ac5f1265c35f093e6",
+      "observationFingerprint": "6082a3915efcaff73b860c27977684f936973b5028e69813f3fd2d7071f56684",
       "owner": "unica-maintainers/form",
       "reason": "The reviewed donor case exercises behavior or validation not implemented by the current native Unica operation; it is recorded for adoption review without blocking unrelated 8.3.27 work.",
       "relation": "donor_ahead"
@@ -734,19 +734,19 @@
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
-        "donorExpectedFiles": {},
         "donorOk": true,
-        "donorStderrSha256": "8524e598c6e0b2449e67266f6903301d8fa4cd33ba3dada468ee675f980a045f",
-        "donorStdoutSha256": "11d79454a1048222a2e7e2763a339adca0325ae15bec0f9082afa16e5fe1a86b",
-        "donorWorkspaceSha256": "69d59d3f06cc6d047c3abe025dc31de125b7f317d946faa921717ee96048be97",
-        "mismatchKind": "unsupported_form_element",
-        "unicaExpectedFiles": {},
         "unicaOk": false,
-        "unicaStderrSha256": "c00654f859c6e896059420e59102d049981117e41b90252da8aa39a0114ef3f9",
+        "mismatchKind": "unsupported_form_element",
+        "donorStdoutSha256": "11d79454a1048222a2e7e2763a339adca0325ae15bec0f9082afa16e5fe1a86b",
         "unicaStdoutSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaWorkspaceSha256": "6905569628075f99ba247ba569508db45c8f500bc5c656c5aecac22566beabe6"
+        "donorStderrSha256": "8524e598c6e0b2449e67266f6903301d8fa4cd33ba3dada468ee675f980a045f",
+        "unicaStderrSha256": "e90242dcad4d565d0ef84b451803ef7167d48f88444825adccdd6637d65c6805",
+        "donorWorkspaceSha256": "69d59d3f06cc6d047c3abe025dc31de125b7f317d946faa921717ee96048be97",
+        "unicaWorkspaceSha256": "6905569628075f99ba247ba569508db45c8f500bc5c656c5aecac22566beabe6",
+        "donorExpectedFiles": {},
+        "unicaExpectedFiles": {}
       },
-      "observationFingerprint": "c3b8728c1ddac518e2137a68ace41e411d964797ea088952cbdde7e5515b8536",
+      "observationFingerprint": "bbb0dd92f9243b987e5305dc2f86b3d30efa15ae910049f5dfb1f68b836e9e62",
       "owner": "unica-maintainers/form",
       "reason": "The reviewed donor case exercises behavior or validation not implemented by the current native Unica operation; it is recorded for adoption review without blocking unrelated 8.3.27 work.",
       "relation": "donor_ahead"
@@ -760,19 +760,19 @@
         "crates/unica-coder/src/infrastructure/native_operations/form.rs"
       ],
       "observation": {
-        "donorExpectedFiles": {},
         "donorOk": true,
-        "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "unicaOk": true,
+        "mismatchKind": "snapshot_diff",
         "donorStdoutSha256": "8c07b9dae53ec1851f7836a8f8d8ec8d5f9cc3d3f9a24cf885d3f16d3562fd47",
+        "unicaStdoutSha256": "8c07b9dae53ec1851f7836a8f8d8ec8d5f9cc3d3f9a24cf885d3f16d3562fd47",
+        "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
         "donorWorkspaceSha256": "c5d12993dba182d52dd0e7a364fd992ce2fd55ecf5f056bc93e26b7b11e53e2b",
-        "mismatchKind": "unsupported_form_element",
-        "unicaExpectedFiles": {},
-        "unicaOk": false,
-        "unicaStderrSha256": "98e0d10ef3b9b35c5ca91238642241ff67f163a8282f26b5e1ccaf653feebb32",
-        "unicaStdoutSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
-        "unicaWorkspaceSha256": "17919d4b1725f875df61ce5d303d5db4a2650430733fdd03dc264c81549602d5"
+        "unicaWorkspaceSha256": "336a75ab9e402d66ad7d3ce121fc32364f08217203b83521d6b7750593c204ff",
+        "donorExpectedFiles": {},
+        "unicaExpectedFiles": {}
       },
-      "observationFingerprint": "989a41b2ae10d720c11c72096a89a3b5d9c3618421b18706cd5d5418cf6f7588",
+      "observationFingerprint": "22aa9287ba5bd618ce77b0e93d8a7141c5785802d99a8123638c09ea37fd9dff",
       "owner": "unica-maintainers/form",
       "reason": "The reviewed donor case exercises behavior or validation not implemented by the current native Unica operation; it is recorded for adoption review without blocking unrelated 8.3.27 work.",
       "relation": "donor_ahead"
