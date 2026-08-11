@@ -2531,8 +2531,7 @@ fn prove_role_rights_path(
     {
         return Err("role descriptor identity does not match metadataPath".to_string());
     }
-    prove_attached_resource(evidence, "Rights.xml", context)
-        .map_err(|failure| failure.to_string())
+    prove_attached_resource(evidence, "Rights.xml", context).map_err(|failure| failure.to_string())
 }
 
 fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), String> {

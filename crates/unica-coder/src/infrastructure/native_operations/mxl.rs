@@ -4224,7 +4224,10 @@ mod mxl_read_selector_bridge_tests {
     pub(crate) fn logical_args() -> Map<String, Value> {
         Map::from_iter([
             ("sourceSet".to_string(), json!("main")),
-            ("metadataPath".to_string(), json!("Report.Sales.Template.Main")),
+            (
+                "metadataPath".to_string(),
+                json!("Report.Sales.Template.Main"),
+            ),
         ])
     }
 

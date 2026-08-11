@@ -64,13 +64,25 @@ const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
         LogicalAddress::Required,
     ),
     ("unica.role.info", "RightsPath", LogicalAddress::Required),
-    ("unica.role.validate", "RightsPath", LogicalAddress::Required),
+    (
+        "unica.role.validate",
+        "RightsPath",
+        LogicalAddress::Required,
+    ),
     ("unica.form.info", "FormPath", LogicalAddress::Required),
     ("unica.form.validate", "FormPath", LogicalAddress::Required),
     ("unica.dcs.info", "TemplatePath", LogicalAddress::Required),
-    ("unica.dcs.validate", "TemplatePath", LogicalAddress::Required),
+    (
+        "unica.dcs.validate",
+        "TemplatePath",
+        LogicalAddress::Required,
+    ),
     ("unica.mxl.info", "TemplatePath", LogicalAddress::Required),
-    ("unica.mxl.validate", "TemplatePath", LogicalAddress::Required),
+    (
+        "unica.mxl.validate",
+        "TemplatePath",
+        LogicalAddress::Required,
+    ),
     (
         "unica.mxl.decompile",
         "TemplatePath",
@@ -5221,10 +5233,7 @@ mod tests {
             }
             let error = validate_tool_arguments(tool, &args, false)
                 .expect_err("two selectors must be refused before the handler");
-            assert!(
-                error.contains("selector_conflict"),
-                "{name}: {error}"
-            );
+            assert!(error.contains("selector_conflict"), "{name}: {error}");
         }
     }
 

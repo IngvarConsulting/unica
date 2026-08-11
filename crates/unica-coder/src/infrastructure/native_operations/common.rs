@@ -10,12 +10,12 @@ use crate::domain::source_target::{
     TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::logical_selector::{
+    logical_selection, AttachedResource,
+};
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
     TargetKindPolicy,
-};
-use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, AttachedResource,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;

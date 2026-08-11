@@ -8,11 +8,11 @@ use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::subsystem::SubsystemAddress;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform::secure_read::{
-    RetainedRootSecureRead, SecureTreeCaptureLimits,
-};
 use crate::infrastructure::native_operations::logical_selector::{
     logical_selection, AttachedResource,
+};
+use crate::infrastructure::platform::secure_read::{
+    RetainedRootSecureRead, SecureTreeCaptureLimits,
 };
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::project_sources::discover_project_source_map;
@@ -340,12 +340,9 @@ pub(crate) fn resolve_subsystem_read_path(
             .ok_or_else(|| "the resolved source root has no directory".to_string())?;
         return Ok(source_root.join("Subsystems"));
     }
-    if let Some(selection) = logical_selection(
-        args,
-        context,
-        AttachedResource::Descriptor,
-        SUBSYSTEM_KINDS,
-    ) {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::Descriptor, SUBSYSTEM_KINDS)
+    {
         return selection
             .map(|selection| selection.resource_path)
             .map_err(|failure| failure.to_string());

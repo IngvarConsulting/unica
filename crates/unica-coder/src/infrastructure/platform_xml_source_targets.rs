@@ -5262,8 +5262,12 @@ mod tests {
         // `Any` is the read policy: every kind resolves.
         for candidate in [&root_target, &object, &module] {
             assert!(
-                super::resolve_platform_xml_target(&context, candidate, super::TargetKindPolicy::Any)
-                    .is_ok(),
+                super::resolve_platform_xml_target(
+                    &context,
+                    candidate,
+                    super::TargetKindPolicy::Any
+                )
+                .is_ok(),
                 "Any must resolve every target kind"
             );
         }

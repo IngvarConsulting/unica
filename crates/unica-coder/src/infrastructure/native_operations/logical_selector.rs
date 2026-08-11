@@ -81,7 +81,9 @@ impl LogicalSelectorFailure {
 
 impl std::fmt::Display for LogicalSelectorFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.code, self.reason)
+        // Through the accessor, so the stable code has one definition and the
+        // rendered message cannot drift from what a caller matches on.
+        write!(formatter, "{}: {}", self.code(), self.reason)
     }
 }
 
@@ -496,10 +498,12 @@ mod tests {
         let context = fixture("attached-resources");
         let src = context.workspace_root.join("src");
 
-        assert!(selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])
-            .unwrap()
-            .resource_path
-            .ends_with("Roles/Sales/Ext/Rights.xml"));
+        assert!(
+            selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])
+                .unwrap()
+                .resource_path
+                .ends_with("Roles/Sales/Ext/Rights.xml")
+        );
         assert!(selection(
             &context,
             "Catalog.Items.Form.Order",
@@ -572,8 +576,13 @@ mod tests {
     #[test]
     fn logical_selector_refuses_an_address_of_another_kind() {
         let context = fixture("wrong-kind");
-        let failure = selection(&context, "Catalog.Items", AttachedResource::Rights, &["Role"])
-            .expect_err("a catalog is not a role");
+        let failure = selection(
+            &context,
+            "Catalog.Items",
+            AttachedResource::Rights,
+            &["Role"],
+        )
+        .expect_err("a catalog is not a role");
         assert_eq!(failure.code(), "target_kind_unsupported");
         cleanup(&context);
     }
@@ -585,10 +594,12 @@ mod tests {
         let planted = src.join("planted.xml");
         fs::write(&planted, "<Rights/>").unwrap();
         fs::remove_file(src.join("Roles/Sales/Ext/Rights.xml")).unwrap();
-        let Some(created) = crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
-            &planted,
-            src.join("Roles/Sales/Ext/Rights.xml"),
-        ) else {
+        let Some(created) =
+            crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
+                &planted,
+                src.join("Roles/Sales/Ext/Rights.xml"),
+            )
+        else {
             // The host cannot create symlinks, so there is nothing to refuse.
             cleanup(&context);
             return;
@@ -605,9 +616,14 @@ mod tests {
     fn logical_selector_separates_an_unknown_address_from_an_unknown_source_set() {
         let context = fixture("separate-codes");
         assert_eq!(
-            selection(&context, "Role.Missing", AttachedResource::Rights, &["Role"])
-                .expect_err("an absent role is a missing target")
-                .code(),
+            selection(
+                &context,
+                "Role.Missing",
+                AttachedResource::Rights,
+                &["Role"]
+            )
+            .expect_err("an absent role is a missing target")
+            .code(),
             "target_not_found"
         );
 

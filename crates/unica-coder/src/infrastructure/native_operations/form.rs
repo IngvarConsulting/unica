@@ -19141,7 +19141,10 @@ mod form_read_selector_bridge_tests {
         let logical = analyze_form_info_with_data(
             &Map::from_iter([
                 ("sourceSet".to_string(), json!("main")),
-                ("metadataPath".to_string(), json!("Catalog.Items.Form.Order")),
+                (
+                    "metadataPath".to_string(),
+                    json!("Catalog.Items.Form.Order"),
+                ),
             ]),
             &context,
         );
@@ -19184,7 +19187,10 @@ mod form_read_selector_bridge_tests {
         let logical = validate_form(
             &Map::from_iter([
                 ("sourceSet".to_string(), json!("main")),
-                ("metadataPath".to_string(), json!("Catalog.Items.Form.Order")),
+                (
+                    "metadataPath".to_string(),
+                    json!("Catalog.Items.Form.Order"),
+                ),
             ]),
             &context,
         );
