@@ -7256,6 +7256,27 @@ mod tests {
         }
     }
 
+    /// Every regular file under `root` with its exact bytes, so a test can
+    /// assert that a call changed nothing at all.
+    fn workspace_byte_map(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(directory: &Path, map: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            let Ok(entries) = fs::read_dir(directory) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, map);
+                } else if let Ok(bytes) = fs::read(&path) {
+                    map.insert(path, bytes);
+                }
+            }
+        }
+        let mut map = BTreeMap::new();
+        walk(root, &mut map);
+        map
+    }
+
     fn minimal_borrow_args() -> Map<String, Value> {
         Map::from_iter([
             ("ExtensionPath".to_string(), json!("ext")),
@@ -8223,6 +8244,71 @@ mod tests {
                 "every change names its effect: {change}"
             );
         }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// #300 asks that an identical plan publish nothing. The property belongs
+    /// to the write plan, so it is proven there: planning a file with exactly
+    /// the bytes it already holds must leave the commit report empty.
+    #[test]
+    fn cfe_write_plan_identical_bytes_publish_no_created_or_updated_entry() {
+        let context = temp_context("borrow-noop-plan");
+        let owner = context.cwd.join("Configuration.xml");
+        let image = "<Owner><State>stable</State></Owner>\n";
+        write_file(&owner, &format!("\u{feff}{image}"));
+        let before = fs::read(&owner).unwrap();
+
+        let mut write_plan = CfeBorrowWritePlan::default();
+        let text = write_plan.read_utf8_sig(&owner).unwrap();
+        write_plan.write_utf8_bom(&owner, &text).unwrap();
+        let report = write_plan.commit().expect("an identical plan commits");
+
+        assert!(report.created.is_empty(), "{report:?}");
+        assert!(report.updated.is_empty(), "{report:?}");
+        assert_eq!(fs::read(&owner).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Borrowing the same object twice is not a no-op today: the writer mints a
+    /// fresh descriptor uuid on every borrow, unlike the form path which keeps
+    /// the existing one. The report must state that truthfully — the file is
+    /// rewritten, so it is `updated` and nothing is `created`. The regeneration
+    /// itself is a separate defect, tracked in #435.
+    #[test]
+    fn borrow_cfe_repeat_reports_the_rewrite_it_actually_performs() {
+        let context = temp_context("borrow-mutation-repeat");
+        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        let target = context.cwd.join("ext/Catalogs/Items.xml");
+
+        let first = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+        assert!(first.outcome.ok, "{:?}", first.outcome);
+        let after_first = fs::read(&target).unwrap();
+
+        let second = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+
+        assert!(second.outcome.ok, "{:?}", second.outcome);
+        let mutation = &second
+            .data
+            .as_ref()
+            .expect("cfe.borrow answers with data")
+            .mutation;
+        let target_path = target.display().to_string();
+        assert!(
+            mutation.created.is_empty(),
+            "nothing is created on a repeat: {mutation:?}"
+        );
+        assert!(mutation.updated.contains(&target_path), "{mutation:?}");
+        assert_ne!(
+            fs::read(&target).unwrap(),
+            after_first,
+            "the report claims a rewrite, so the bytes must have changed"
+        );
+        assert!(second
+            .outcome
+            .changes
+            .contains(&format!("updated {target_path}")));
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

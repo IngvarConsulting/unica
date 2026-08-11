@@ -180,8 +180,8 @@ impl<'a> RlmNavigationAdapter<'a> {
         match request {
             // ADR-0023: the index already answers with structure, so the tool
             // publishes it instead of rendering it into a line grammar.
-            CodeIntelligenceReadRequest::Definition { .. } => {
-                let (result, warnings) = definition_result(&value)?;
+            CodeIntelligenceReadRequest::Definition { name, .. } => {
+                let (result, warnings) = definition_result(&value, name)?;
                 // The transport phrase stays: the issue-89 service test proves
                 // reuse of the persistent RLM process through this summary.
                 outcome.summary = format!(
@@ -261,12 +261,42 @@ fn operation_for_request(
 /// of nothing at all, so the entry is dropped with a warning naming the field
 /// rather than published with a plausible substitute. `file` and `line` are
 /// required: a definition without them cannot be opened.
-fn definition_result(value: &Value) -> Result<(CodeDefinitionResult, Vec<String>), String> {
-    let name = value
+///
+/// `requested` is the name the caller asked about. It stands in when the index
+/// reports no name of its own, so the subject of the answer is always proven —
+/// either by the index or by the request — and never an empty string.
+/// Cases that are not about the subject name read the answer as if the caller
+/// had asked for exactly what the index reported.
+#[cfg(test)]
+fn definition_result_for_test(
+    value: &Value,
+) -> Result<(CodeDefinitionResult, Vec<String>), String> {
+    let requested = value
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or_default()
+        .unwrap_or("requested")
         .to_string();
+    definition_result(value, &requested)
+}
+
+fn definition_result(
+    value: &Value,
+    requested: &str,
+) -> Result<(CodeDefinitionResult, Vec<String>), String> {
+    let name = match value.get("name") {
+        None | Some(Value::Null) => requested.to_string(),
+        Some(value) => {
+            let reported = value.as_str().ok_or_else(|| {
+                "RLM definition response reports a name that is not text".to_string()
+            })?;
+            // An empty string names nothing, so it is absence, not an answer.
+            if reported.is_empty() {
+                requested.to_string()
+            } else {
+                reported.to_string()
+            }
+        }
+    };
     let definitions = value
         .get("definitions")
         .and_then(Value::as_array)
@@ -457,7 +487,7 @@ mod tests {
 
     #[test]
     fn a_definition_keeps_every_field_the_helper_reported() {
-        let (result, warnings) = super::definition_result(&json!({
+        let (result, warnings) = super::definition_result_for_test(&json!({
             "name": "Найти",
             "definitions": [{
                 "file": "CommonModules/X/Module.bsl",
@@ -488,7 +518,7 @@ mod tests {
 
     #[test]
     fn a_malformed_definition_is_dropped_with_a_warning_not_listed_as_one() {
-        let (result, warnings) = super::definition_result(&json!({
+        let (result, warnings) = super::definition_result_for_test(&json!({
             "name": "Найти",
             "definitions": [
                 {"file": "CommonModules/X/Module.bsl", "line": 7, "type": "function"},
@@ -509,7 +539,7 @@ mod tests {
     /// claim the index never made.
     #[test]
     fn an_unreported_definition_field_is_null_rather_than_a_fabricated_default() {
-        let (result, warnings) = super::definition_result(&json!({
+        let (result, warnings) = super::definition_result_for_test(&json!({
             "name": "Найти",
             "definitions": [{"file": "CommonModules/X/Module.bsl", "line": 7}]
         }))
@@ -527,7 +557,7 @@ mod tests {
     /// is a proven negative and survives untouched.
     #[test]
     fn an_explicit_empty_definition_value_stays_a_proven_answer() {
-        let (result, warnings) = super::definition_result(&json!({
+        let (result, warnings) = super::definition_result_for_test(&json!({
             "name": "Найти",
             "definitions": [{
                 "file": "CommonModules/X/Module.bsl",
@@ -569,7 +599,7 @@ mod tests {
                 "is_export": true
             });
             definition[field] = value.clone();
-            let (result, warnings) = super::definition_result(&json!({
+            let (result, warnings) = super::definition_result_for_test(&json!({
                 "name": "Найти",
                 "definitions": [definition]
             }))
@@ -587,11 +617,45 @@ mod tests {
         }
     }
 
+    /// The result's `name` is the subject the answer is about. An index that
+    /// reports it as something other than text is malformed, and substituting
+    /// an empty subject would publish an answer about nothing.
+    #[test]
+    fn a_definition_result_name_is_never_fabricated() {
+        let requested = "Найти";
+
+        let (result, _) = super::definition_result(
+            &json!({"name": "НайтиПоСсылке", "definitions": []}),
+            requested,
+        )
+        .unwrap();
+        assert_eq!(result.name, "НайтиПоСсылке", "upstream keeps its answer");
+
+        // Absent upstream name falls back to the proven subject of the request,
+        // which the caller supplied, rather than to an empty string.
+        let (result, _) = super::definition_result(&json!({"definitions": []}), requested).unwrap();
+        assert_eq!(result.name, requested);
+        let (result, _) =
+            super::definition_result(&json!({"name": null, "definitions": []}), requested).unwrap();
+        assert_eq!(result.name, requested);
+        // An empty string is no more a subject than a missing field is.
+        let (result, _) =
+            super::definition_result(&json!({"name": "", "definitions": []}), requested).unwrap();
+        assert_eq!(result.name, requested);
+
+        for wrong in [json!(7), json!(["Найти"]), json!({"value": "Найти"})] {
+            let error =
+                super::definition_result(&json!({"name": wrong, "definitions": []}), requested)
+                    .expect_err("a non-text name must fail closed");
+            assert!(error.contains("name"), "{wrong}: {error}");
+        }
+    }
+
     /// A missing `line` is not a definition anybody can open, so it is dropped
     /// with the same evidence rule that already governs `file`.
     #[test]
     fn a_definition_without_a_line_is_dropped_rather_than_anchored_at_zero() {
-        let (result, warnings) = super::definition_result(&json!({
+        let (result, warnings) = super::definition_result_for_test(&json!({
             "name": "Найти",
             "definitions": [{"file": "CommonModules/X/Module.bsl", "type": "function"}]
         }))
@@ -733,7 +797,7 @@ mod tests {
             ]
         });
 
-        let (result, warnings) = super::definition_result(&value).unwrap();
+        let (result, warnings) = super::definition_result_for_test(&value).unwrap();
 
         assert_eq!(result.definitions.len(), 1);
         let definition = &result.definitions[0];
