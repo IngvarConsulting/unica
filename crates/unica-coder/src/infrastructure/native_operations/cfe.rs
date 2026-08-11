@@ -1337,7 +1337,7 @@ pub(crate) fn cfe_borrow_object_shell(
 pub(crate) struct CfeBorrowIdentity {
     wrapper_uuid: Option<String>,
     this_node: Option<String>,
-    generated_types: BTreeMap<String, (String, String)>,
+    generated_types: BTreeMap<String, (Option<String>, Option<String>)>,
 }
 
 impl CfeBorrowIdentity {
@@ -1358,16 +1358,19 @@ impl CfeBorrowIdentity {
         if let Some(internal_info) = meta_info_child(wrapper, "InternalInfo") {
             identity.this_node = meta_info_child_text(internal_info, "ThisNode");
             for generated in meta_info_children(internal_info, "GeneratedType") {
-                let (Some(name), Some(type_id), Some(value_id)) = (
-                    generated.attribute("name"),
-                    meta_info_child_text(generated, "TypeId"),
-                    meta_info_child_text(generated, "ValueId"),
-                ) else {
+                // Each identifier is preserved on its own: a descriptor that
+                // lost one of them must keep the other, or reissuing both would
+                // move an identity that is still referenced (ADR-0050 §3).
+                let Some(name) = generated.attribute("name") else {
                     continue;
                 };
-                identity
-                    .generated_types
-                    .insert(name.to_string(), (type_id, value_id));
+                identity.generated_types.insert(
+                    name.to_string(),
+                    (
+                        meta_info_child_text(generated, "TypeId"),
+                        meta_info_child_text(generated, "ValueId"),
+                    ),
+                );
             }
         }
         Ok(identity)
@@ -1382,10 +1385,15 @@ impl CfeBorrowIdentity {
     }
 
     fn generated_type(&self, name: &str) -> (String, String) {
-        self.generated_types
+        let (type_id, value_id) = self
+            .generated_types
             .get(name)
             .cloned()
-            .unwrap_or_else(|| (fresh_uuid(), fresh_uuid()))
+            .unwrap_or((None, None));
+        (
+            type_id.unwrap_or_else(fresh_uuid),
+            value_id.unwrap_or_else(fresh_uuid),
+        )
     }
 }
 
@@ -8411,6 +8419,44 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Review of #440. A partially damaged descriptor must keep what it still
+    /// has: reissuing both identifiers because one is missing would move a
+    /// `TypeId` that is still referenced (ADR-0050 §3).
+    #[test]
+    fn borrow_cfe_keeps_a_surviving_identifier_when_its_pair_is_missing() {
+        for (kept, dropped) in [("TypeId", "ValueId"), ("ValueId", "TypeId")] {
+            let context = temp_context(&format!("borrow-partial-{kept}"));
+            write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+            let target = context.cwd.join("ext/Catalogs/Items.xml");
+
+            let first = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+            assert!(first.outcome.ok, "{:?}", first.outcome);
+            let after_first = fs::read_to_string(&target).unwrap();
+            let survivor = after_first
+                .split(&format!("<xr:{kept}>"))
+                .nth(1)
+                .and_then(|tail| tail.split(&format!("</xr:{kept}>")).next())
+                .expect("the first borrow issued the identifier")
+                .to_string();
+            let damaged = after_first
+                .lines()
+                .filter(|line| !line.contains(&format!("<xr:{dropped}>")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            fs::write(&target, format!("{damaged}\n")).unwrap();
+
+            let second = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+
+            assert!(second.outcome.ok, "{:?}", second.outcome);
+            let after_second = fs::read_to_string(&target).unwrap();
+            assert!(
+                after_second.contains(&format!("<xr:{kept}>{survivor}</xr:{kept}>")),
+                "the surviving {kept} must not be reissued: {after_second}"
+            );
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
     }
 
     /// A rollback publishes no successful mutation at all: the typed report
