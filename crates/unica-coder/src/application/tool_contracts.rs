@@ -204,31 +204,21 @@ const CFE_PATCH_METHOD_INTERCEPTOR_TYPES: &[&str] = &["Before", "After"];
 const CFE_PATCH_METHOD_IDENTIFIER_PATTERN: &str = r"^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё]*$";
 
 const NATIVE_XML_DSL_ARGS: &[&str] = &[
-    "BaseForm",
-    "Batch",
     "BodyLimit",
     "BorrowMainAttribute",
     "Capability",
-    "Child",
-    "Children",
     "CIPath",
-    "Columns",
-    "Command",
-    "CommandName",
     "CompatibilityMode",
     "ConfigDir",
     "ConfigPath",
     "Context",
     "CreateIfMissing",
     "DataSet",
-    "DataPath",
     "DefinitionFile",
     "Detailed",
     "EmitDsl",
     "ExtensionPath",
     "Expand",
-    "Field",
-    "Fields",
     "Force",
     "FromObject",
     "FormName",
@@ -242,7 +232,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "Limit",
     "IsFunction",
     "MaxErrors",
-    "MaxParams",
     "MethodName",
     "MetadataPath",
     "Mode",
@@ -261,7 +250,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "OutputPath",
     "Parent",
     "Path",
-    "Preset",
     "ProcessorName",
     "Purpose",
     "RightsPath",
@@ -278,37 +266,26 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "TemplatePath",
     "TemplateType",
     "TargetPath",
-    "Type",
     "Value",
     "Variant",
     "Vendor",
     "Version",
     "WithText",
-    "baseForm",
-    "batch",
     "bodyLimit",
     "borrowMainAttribute",
     "capability",
-    "child",
-    "children",
     "ciPath",
-    "columns",
-    "command",
-    "commandName",
     "compatibilityMode",
     "configDir",
     "configPath",
     "context",
     "createIfMissing",
     "dataSet",
-    "dataPath",
     "definitionFile",
     "detailed",
     "emitDsl",
     "extensionPath",
     "expand",
-    "field",
-    "fields",
     "force",
     "fromObject",
     "formName",
@@ -322,7 +299,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "limit",
     "isFunction",
     "maxErrors",
-    "maxParams",
     "methodName",
     "metadataPath",
     "mode",
@@ -341,7 +317,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "outputPath",
     "parent",
     "path",
-    "preset",
     "processorName",
     "purpose",
     "rightsPath",
@@ -358,7 +333,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "templatePath",
     "templateType",
     "targetPath",
-    "type",
     "value",
     "variant",
     "vendor",
@@ -2629,14 +2603,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Boolean --all-extensions covering every extension in operation syntax; only for the designer-* modes, since mode edt rejects it together with extension",
     ),
     (
-        "baseForm",
-        "Declared string argument that no handler reads; `<BaseForm>` is an element inside a borrowed Form.xml marking extension mode, never a call argument",
-    ),
-    (
-        "batch",
-        "Declared argument that no handler reads; `unica.dcs.info` with `Mode=query` always prints every packet and narrows only by `Name`.",
-    ),
-    (
         "bodyLimit",
         "Max page-body size for `unica.standards.explain` when it fetches a standard by `id`/`idOrAliasOrUrl`; the XML/DSL tools accept the key but never read it",
     ),
@@ -2685,14 +2651,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Boolean Designer syntax-check option (--check-use-synchronous-calls) accepted only by operation syntax with a designer-* mode",
     ),
     (
-        "child",
-        "Declared string argument that no handler reads; a child subsystem is added via `unica.subsystem.edit` with `operation: \"add-child\"` and the name in `value`",
-    ),
-    (
-        "children",
-        "Declared array-of-strings argument that no handler reads; nested form elements are a `children` key inside the form DSL definition, not a call argument",
-    ),
-    (
         "ciPath",
         "Path to a subsystem's `Ext/CommandInterface.xml` (the subsystem directory also resolves) for `unica.interface.edit` and `unica.interface.validate`, relative to `cwd`",
     ),
@@ -2703,18 +2661,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "codes",
         "Array of diagnostic codes such as \"АПК:142\" or \"LineLength\"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, on code.diagnostics it filters the catalog, and standards.search ignores it.",
-    ),
-    (
-        "columns",
-        "Declared string argument that no handler reads; table columns are a `columns` key inside the form DSL definition, not a call argument",
-    ),
-    (
-        "command",
-        "Declared string argument that no handler reads; commands are described in the `commands` section of the form DSL definition instead",
-    ),
-    (
-        "commandName",
-        "Declared string argument that no handler reads; `CommandName` is an element inside Form.xml, not a call argument",
     ),
     (
         "compatibilityMode",
@@ -2763,10 +2709,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "cwd",
         "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
-    ),
-    (
-        "dataPath",
-        "Declared string argument that no handler reads; `DataPath` is a Form.xml binding element, expressed as a `path` key in the form DSL",
     ),
     (
         "dataSet",
@@ -2852,14 +2794,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "features",
         "Array of Vanessa Automation feature paths narrowing operation test with testRunner va; each entry becomes one --feature",
-    ),
-    (
-        "field",
-        "Declared string argument that no handler reads; DCS fields are added via `unica.dcs.edit` with `operation: \"add-field\"` and the shorthand in `value`",
-    ),
-    (
-        "fields",
-        "Declared array-of-strings argument that no handler reads; data-set fields are a `fields` key inside the DCS JSON definition, not a call argument",
     ),
     (
         "filterTags",
@@ -2965,10 +2899,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "maxOutputTokens",
         "Integer output budget for unica.code.graph, forwarded as max_output_tokens; use it to keep a large graph answer within context",
-    ),
-    (
-        "maxParams",
-        "Declared integer argument that no handler reads: `unica.mxl.info` answers with every area parameter as typed data and publishes no cap",
     ),
     (
         "mcpConfig",
@@ -3094,10 +3024,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "position",
         "Where unica.code.patch places the content relative to the selector: before or after. Accepted only when insert names a selector",
-    ),
-    (
-        "preset",
-        "Declared string argument that no handler reads; role presets are a `preset` key (`view`, `edit`) inside the role JSON definition, not a call argument",
     ),
     (
         "processorName",
@@ -3290,10 +3216,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "tool",
         "Runner tool payload to fetch with operation tools-download: yaxunit, vanessa or client-mcp",
-    ),
-    (
-        "type",
-        "Declared string argument that no handler reads",
     ),
     (
         "types",
@@ -4421,6 +4343,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #315. A published argument that no handler reads is noise in every
+    /// schema that carries the shared native list, and a caller who passes it
+    /// gets silence instead of a rejection. The descriptions already say which
+    /// ones those are, so the check reads them rather than repeating a list
+    /// that would drift.
+    #[test]
+    fn no_published_argument_is_described_as_unread() {
+        let unread = ARG_DESCRIPTIONS
+            .iter()
+            .filter(|(_, description)| description.contains("no handler reads"))
+            .map(|(name, _)| *name)
+            .collect::<std::collections::BTreeSet<_>>();
+        let published = tools()
+            .into_iter()
+            .flat_map(|tool| {
+                let schema = input_schema_for_tool(&tool);
+                sorted_property_names(&schema)
+                    .into_iter()
+                    .map(move |name| (tool.name, name.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|(_, name)| {
+                unread.contains(name.as_str())
+                    || unread
+                        .contains(format!("{}{}", name[..1].to_lowercase(), &name[1..]).as_str())
+            })
+            .collect::<Vec<_>>();
+
+        assert!(published.is_empty(), "{published:?}");
     }
 
     #[test]
