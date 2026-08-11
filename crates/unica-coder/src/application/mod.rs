@@ -547,7 +547,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.build.make",
-            description: "Export a CF/CFE artifact out of the infobase through the internal build/runtime adapter; it does not build one from sources — load them with unica.build.build first.",
+            description: "Export a CF/CFE artifact out of the infobase through the internal build/runtime adapter; it does not build one from sources — load them into the infobase first with unica.runtime.execute operation `build`.",
             execution: ToolExecution::Mutation,
             result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),

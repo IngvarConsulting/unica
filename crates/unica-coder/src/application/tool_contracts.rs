@@ -4404,6 +4404,23 @@ mod tests {
             "the verb names what the command does: {}",
             tool.description
         );
+
+        // Review of #447: a description that sends the caller to a tool that
+        // does not exist is worse than the vague one it replaced. Every
+        // `unica.*` name it mentions must be in the registry.
+        let published = tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        for word in tool.description.split_whitespace() {
+            let referenced = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
+            if referenced.starts_with("unica.") {
+                assert!(
+                    published.contains(referenced),
+                    "description names a tool that does not exist: {referenced}"
+                );
+            }
+        }
     }
 
     #[test]

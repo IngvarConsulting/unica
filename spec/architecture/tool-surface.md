@@ -86,7 +86,7 @@ Load/build XML source set through the internal build/runtime adapter.
 
 ### `unica.build.make`
 
-Export a CF/CFE artifact out of the infobase through the internal build/runtime adapter; it does not build one from sources — load them with unica.build.build first.
+Export a CF/CFE artifact out of the infobase through the internal build/runtime adapter; it does not build one from sources — load them into the infobase first with unica.runtime.execute operation `build`.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
