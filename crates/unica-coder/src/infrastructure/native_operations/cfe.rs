@@ -917,23 +917,20 @@ impl CfeBorrowWritePlan {
         Ok(())
     }
 
-    fn existing_metadata_uuid(
+    /// Identity the descriptor at `path` already carries, or an empty one when
+    /// there is nothing there yet. ADR-0050 makes this the single source of the
+    /// policy for every borrowed descriptor, object and form alike.
+    fn existing_identity(
         &mut self,
         path: &Path,
         child_name: &str,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<CfeBorrowIdentity, String> {
         if !self.exists(path) {
-            return Ok(None);
+            return Ok(CfeBorrowIdentity::default());
         }
         let text = self.read_utf8_sig(path)?;
-        let document = Document::parse(&text)
-            .map_err(|error| format!("[ERROR] XML parse error in {}: {error}", path.display()))?;
-        Ok(document
-            .root_element()
-            .children()
-            .find(|node| node.is_element() && node.tag_name().name() == child_name)
-            .and_then(|node| node.attribute("uuid"))
-            .map(ToOwned::to_owned))
+        CfeBorrowIdentity::read(&text, child_name)
+            .map_err(|error| format!("[ERROR] XML parse error in {}: {error}", path.display()))
     }
 
     fn validate_xml(&self) -> Result<(), String> {
@@ -1312,16 +1309,92 @@ pub(crate) fn cfe_borrow_object_shell(
         return Ok(target_file);
     }
     let source_props = meta_info_child(source_el, "Properties");
+    let identity = write_plan.existing_identity(&target_file, type_name)?;
     let xml = cfe_borrow_object_xml(
         type_name,
         object_name,
         source_uuid,
         source_props,
         format_version,
+        &identity,
     )?;
     write_plan.write_utf8_bom(&target_file, &xml)?;
     cfe_borrow_add_to_child_objects(ext_text, type_name, object_name, log)?;
     Ok(target_file)
+}
+
+/// Identity a borrowed descriptor is issued once and keeps: the wrapper uuid,
+/// the exchange-plan node, and the `TypeId`/`ValueId` pair of every
+/// `xr:GeneratedType`.
+///
+/// `cfe.borrow` rewrites the whole descriptor on every call, so without this a
+/// second borrow of the same object minted all of it again and moved an
+/// identity that the extension and its callers may already reference. ADR-0050
+/// makes a borrow idempotent instead: a value read from the existing
+/// descriptor reuses what is there, and the default value — what a first borrow
+/// gets — mints fresh.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CfeBorrowIdentity {
+    wrapper_uuid: Option<String>,
+    this_node: Option<String>,
+    generated_types: BTreeMap<String, (Option<String>, Option<String>)>,
+}
+
+impl CfeBorrowIdentity {
+    fn read(text: &str, child_name: &str) -> Result<Self, String> {
+        let document = Document::parse(text.trim_start_matches('\u{feff}'))
+            .map_err(|error| error.to_string())?;
+        let Some(wrapper) = document
+            .root_element()
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == child_name)
+        else {
+            return Ok(Self::default());
+        };
+        let mut identity = Self {
+            wrapper_uuid: wrapper.attribute("uuid").map(ToOwned::to_owned),
+            ..Self::default()
+        };
+        if let Some(internal_info) = meta_info_child(wrapper, "InternalInfo") {
+            identity.this_node = meta_info_child_text(internal_info, "ThisNode");
+            for generated in meta_info_children(internal_info, "GeneratedType") {
+                // Each identifier is preserved on its own: a descriptor that
+                // lost one of them must keep the other, or reissuing both would
+                // move an identity that is still referenced (ADR-0050 §3).
+                let Some(name) = generated.attribute("name") else {
+                    continue;
+                };
+                identity.generated_types.insert(
+                    name.to_string(),
+                    (
+                        meta_info_child_text(generated, "TypeId"),
+                        meta_info_child_text(generated, "ValueId"),
+                    ),
+                );
+            }
+        }
+        Ok(identity)
+    }
+
+    fn wrapper_uuid(&self) -> String {
+        self.wrapper_uuid.clone().unwrap_or_else(fresh_uuid)
+    }
+
+    fn this_node(&self) -> String {
+        self.this_node.clone().unwrap_or_else(fresh_uuid)
+    }
+
+    fn generated_type(&self, name: &str) -> (String, String) {
+        let (type_id, value_id) = self
+            .generated_types
+            .get(name)
+            .cloned()
+            .unwrap_or((None, None));
+        (
+            type_id.unwrap_or_else(fresh_uuid),
+            value_id.unwrap_or_else(fresh_uuid),
+        )
+    }
 }
 
 pub(crate) fn cfe_borrow_object_xml(
@@ -1330,6 +1403,7 @@ pub(crate) fn cfe_borrow_object_xml(
     source_uuid: &str,
     source_props: Option<roxmltree::Node<'_, '_>>,
     format_version: &str,
+    identity: &CfeBorrowIdentity,
 ) -> Result<String, String> {
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -1338,11 +1412,15 @@ pub(crate) fn cfe_borrow_object_xml(
         cfe_borrow_xmlns_decl(),
         escape_xml(format_version)
     ));
-    lines.push(format!("\t<{type_name} uuid=\"{}\">", fresh_uuid()));
+    lines.push(format!(
+        "\t<{type_name} uuid=\"{}\">",
+        identity.wrapper_uuid()
+    ));
     lines.push(cfe_borrow_internal_info_xml(
         type_name,
         object_name,
         "\t\t",
+        identity,
     )?);
     lines.push("\t\t<Properties>".to_string());
     lines.push("\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>".to_string());
@@ -1398,6 +1476,7 @@ pub(crate) fn cfe_borrow_internal_info_xml(
     type_name: &str,
     object_name: &str,
     indent: &str,
+    identity: &CfeBorrowIdentity,
 ) -> Result<String, String> {
     let types = cfe_borrow_generated_types(type_name).ok_or_else(|| {
         format!(
@@ -1411,24 +1490,19 @@ pub(crate) fn cfe_borrow_internal_info_xml(
     if type_name == "ExchangePlan" {
         lines.push(format!(
             "{indent}\t<xr:ThisNode>{}</xr:ThisNode>",
-            fresh_uuid()
+            identity.this_node()
         ));
     }
     for (prefix, category) in types {
+        let name = format!("{prefix}.{object_name}");
+        let (type_id, value_id) = identity.generated_type(&name);
         lines.push(format!(
-            "{indent}\t<xr:GeneratedType name=\"{}.{}\" category=\"{}\">",
-            prefix,
-            escape_xml(object_name),
+            "{indent}\t<xr:GeneratedType name=\"{}\" category=\"{}\">",
+            escape_xml(&name),
             category
         ));
-        lines.push(format!(
-            "{indent}\t\t<xr:TypeId>{}</xr:TypeId>",
-            fresh_uuid()
-        ));
-        lines.push(format!(
-            "{indent}\t\t<xr:ValueId>{}</xr:ValueId>",
-            fresh_uuid()
-        ));
+        lines.push(format!("{indent}\t\t<xr:TypeId>{type_id}</xr:TypeId>"));
+        lines.push(format!("{indent}\t\t<xr:ValueId>{value_id}</xr:ValueId>"));
         lines.push(format!("{indent}\t</xr:GeneratedType>"));
     }
     lines.push(format!("{indent}</InternalInfo>"));
@@ -2177,8 +2251,8 @@ pub(crate) fn cfe_borrow_form_shell(
     let form_meta_dir = ext_dir.join(dir_name).join(object_name).join("Forms");
     let form_meta_target = form_meta_dir.join(format!("{form_name}.xml"));
     let form_wrapper_uuid = write_plan
-        .existing_metadata_uuid(&form_meta_target, "Form")?
-        .unwrap_or_else(fresh_uuid);
+        .existing_identity(&form_meta_target, "Form")?
+        .wrapper_uuid();
     write_plan.write_utf8_bom(
         &form_meta_target,
         &cfe_borrow_form_metadata_xml(form_name, source_uuid, &form_wrapper_uuid, format_version),
@@ -6869,6 +6943,7 @@ mod tests {
             "11111111-1111-1111-1111-111111111111",
             Some(source.root_element()),
             "2.20",
+            &CfeBorrowIdentity::default(),
         )
         .unwrap();
 
@@ -6922,6 +6997,7 @@ mod tests {
             "22222222-2222-2222-2222-222222222222",
             None,
             "2.20",
+            &CfeBorrowIdentity::default(),
         )
         .unwrap();
         let defaults = Document::parse(&defaults_xml).unwrap();
@@ -7141,8 +7217,13 @@ mod tests {
                 "{object_type} must use the shared 8.3.27 GeneratedType profile"
             );
 
-            let borrowed_xml =
-                cfe_borrow_internal_info_xml(object_type, "SharedContract", "\t\t").unwrap();
+            let borrowed_xml = cfe_borrow_internal_info_xml(
+                object_type,
+                "SharedContract",
+                "\t\t",
+                &CfeBorrowIdentity::default(),
+            )
+            .unwrap();
             let mut meta_lines = Vec::new();
             let mut next = || "11111111-1111-1111-1111-111111111111".to_string();
             emit_meta_internal_info(
@@ -7181,8 +7262,13 @@ mod tests {
         );
         assert_eq!(cfe_borrow_generated_types("CommonModule"), Some(&[][..]));
 
-        let exchange =
-            cfe_borrow_internal_info_xml("ExchangePlan", "CorpusExchangePlan", "\t\t").unwrap();
+        let exchange = cfe_borrow_internal_info_xml(
+            "ExchangePlan",
+            "CorpusExchangePlan",
+            "\t\t",
+            &CfeBorrowIdentity::default(),
+        )
+        .unwrap();
         assert!(
             exchange.contains("<xr:ThisNode>"),
             "ExchangePlan requires its own internal node id: {exchange}"
@@ -7213,11 +7299,22 @@ mod tests {
             "cfe.borrow must fail closed instead of using an implicit empty InternalInfo profile: {missing:?}"
         );
         assert_eq!(cfe_borrow_generated_types("UnknownMetadataType"), None);
-        let error =
-            cfe_borrow_internal_info_xml("UnknownMetadataType", "Unknown", "\t\t").unwrap_err();
+        let error = cfe_borrow_internal_info_xml(
+            "UnknownMetadataType",
+            "Unknown",
+            "\t\t",
+            &CfeBorrowIdentity::default(),
+        )
+        .unwrap_err();
         assert!(error.contains("no proven cfe.borrow InternalInfo profile"));
         assert_eq!(
-            cfe_borrow_internal_info_xml("CommonModule", "KnownEmpty", "\t\t").unwrap(),
+            cfe_borrow_internal_info_xml(
+                "CommonModule",
+                "KnownEmpty",
+                "\t\t",
+                &CfeBorrowIdentity::default()
+            )
+            .unwrap(),
             "\t\t<InternalInfo/>"
         );
     }
@@ -7242,8 +7339,13 @@ mod tests {
 
         for (object_type, expected) in profiles {
             assert_eq!(cfe_borrow_generated_types(object_type), Some(*expected));
-            let borrowed_xml =
-                cfe_borrow_internal_info_xml(object_type, "Evidence", "\t\t").unwrap();
+            let borrowed_xml = cfe_borrow_internal_info_xml(
+                object_type,
+                "Evidence",
+                "\t\t",
+                &CfeBorrowIdentity::default(),
+            )
+            .unwrap();
             let mut meta_lines = Vec::new();
             let mut next = || "11111111-1111-1111-1111-111111111111".to_string();
             emit_meta_internal_info(&mut meta_lines, "\t\t", object_type, "Evidence", &mut next);
@@ -8271,14 +8373,18 @@ mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
-    /// Borrowing the same object twice is not a no-op today: the writer mints a
-    /// fresh descriptor uuid on every borrow, unlike the form path which keeps
-    /// the existing one. The report must state that truthfully — the file is
-    /// rewritten, so it is `updated` and nothing is `created`. The regeneration
-    /// itself is a separate defect, tracked in #435.
+    /// ADR-0050. A borrowed descriptor is issued its identity once, so
+    /// borrowing the same object again leaves the descriptor byte-identical
+    /// and publishes nothing — the write plan already reports an identical
+    /// image as no change.
+    ///
+    /// This replaces `borrow_cfe_repeat_reports_the_rewrite_it_actually
+    /// _performs`, which asserted the opposite while the regeneration it
+    /// described was still open as #435: the report was truthful about a
+    /// rewrite that should never have happened.
     #[test]
-    fn borrow_cfe_repeat_reports_the_rewrite_it_actually_performs() {
-        let context = temp_context("borrow-mutation-repeat");
+    fn borrow_cfe_preserves_object_identity_on_repeated_borrow() {
+        let context = temp_context("borrow-repeat-identity");
         write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
         let target = context.cwd.join("ext/Catalogs/Items.xml");
 
@@ -8289,28 +8395,68 @@ mod tests {
         let second = borrow_cfe_with_data(&minimal_borrow_args(), &context);
 
         assert!(second.outcome.ok, "{:?}", second.outcome);
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            after_first,
+            "a repeated borrow must not reissue the descriptor identity"
+        );
         let mutation = &second
             .data
             .as_ref()
             .expect("cfe.borrow answers with data")
             .mutation;
         let target_path = target.display().to_string();
+        assert!(!mutation.created.contains(&target_path), "{mutation:?}");
+        assert!(!mutation.updated.contains(&target_path), "{mutation:?}");
         assert!(
-            mutation.created.is_empty(),
-            "nothing is created on a repeat: {mutation:?}"
+            !second
+                .outcome
+                .changes
+                .iter()
+                .any(|change| change.ends_with(&target_path)),
+            "an unchanged descriptor is named in no change: {:?}",
+            second.outcome.changes
         );
-        assert!(mutation.updated.contains(&target_path), "{mutation:?}");
-        assert_ne!(
-            fs::read(&target).unwrap(),
-            after_first,
-            "the report claims a rewrite, so the bytes must have changed"
-        );
-        assert!(second
-            .outcome
-            .changes
-            .contains(&format!("updated {target_path}")));
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Review of #440. A partially damaged descriptor must keep what it still
+    /// has: reissuing both identifiers because one is missing would move a
+    /// `TypeId` that is still referenced (ADR-0050 §3).
+    #[test]
+    fn borrow_cfe_keeps_a_surviving_identifier_when_its_pair_is_missing() {
+        for (kept, dropped) in [("TypeId", "ValueId"), ("ValueId", "TypeId")] {
+            let context = temp_context(&format!("borrow-partial-{kept}"));
+            write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+            let target = context.cwd.join("ext/Catalogs/Items.xml");
+
+            let first = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+            assert!(first.outcome.ok, "{:?}", first.outcome);
+            let after_first = fs::read_to_string(&target).unwrap();
+            let survivor = after_first
+                .split(&format!("<xr:{kept}>"))
+                .nth(1)
+                .and_then(|tail| tail.split(&format!("</xr:{kept}>")).next())
+                .expect("the first borrow issued the identifier")
+                .to_string();
+            let damaged = after_first
+                .lines()
+                .filter(|line| !line.contains(&format!("<xr:{dropped}>")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            fs::write(&target, format!("{damaged}\n")).unwrap();
+
+            let second = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+
+            assert!(second.outcome.ok, "{:?}", second.outcome);
+            let after_second = fs::read_to_string(&target).unwrap();
+            assert!(
+                after_second.contains(&format!("<xr:{kept}>{survivor}</xr:{kept}>")),
+                "the surviving {kept} must not be reissued: {after_second}"
+            );
+            let _ = fs::remove_dir_all(&context.cwd);
+        }
     }
 
     /// A rollback publishes no successful mutation at all: the typed report
