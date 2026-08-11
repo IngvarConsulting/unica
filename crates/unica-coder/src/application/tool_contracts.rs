@@ -4403,6 +4403,47 @@ mod tests {
         );
     }
 
+    /// #290, требование 1: у каждого мутатора есть объявленная стратегия
+    /// предпросмотра, и она выводится из реестра, а не из растущего набора
+    /// исключений по имени операции. Читатель стратегии не имеет — предпросмотр
+    /// ему не адресован (ADR-0044).
+    #[test]
+    fn every_mutating_tool_declares_a_preview_strategy() {
+        use crate::application::{preview_strategy, PreviewStrategy};
+
+        let mut planned = Vec::new();
+        for tool in tools() {
+            let strategy = preview_strategy(&tool);
+            if !tool.execution.is_mutating() {
+                assert_eq!(strategy, None, "{} is a reader", tool.name);
+                continue;
+            }
+            let strategy = strategy
+                .unwrap_or_else(|| panic!("{} has no declared preview strategy", tool.name));
+            if strategy == PreviewStrategy::PlannedCommand {
+                planned.push(tool.name);
+            }
+        }
+
+        planned.sort_unstable();
+        // Табличная часть: внешнюю команду показывают ровно те мутаторы,
+        // которые её и запускают. Новый такой инструмент обязан появиться
+        // здесь осознанно, а не попасть в класс молча.
+        assert_eq!(
+            planned,
+            [
+                "unica.build.dump",
+                "unica.build.load",
+                "unica.build.make",
+                "unica.build.run",
+                "unica.build.update",
+                "unica.runtime.execute",
+                "unica.runtime.job.cancel",
+                "unica.runtime.job.start",
+            ]
+        );
+    }
+
     #[test]
     fn native_contracts_reject_unknown_args() {
         let tool = tools()

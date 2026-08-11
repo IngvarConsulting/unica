@@ -77,6 +77,45 @@ pub enum ResultContract {
     ExternalStream,
 }
 
+/// What a mutating tool can honestly show before it writes.
+///
+/// #290 found the preview path decided by a growing set of exceptions keyed on
+/// operation name: most typed mutation handlers ran only inside `!dry_run`, and
+/// `code.patch`, `form.edit`, `meta.edit`, `role.edit` and `xdto.edit` were
+/// carved out one at a time. A caller could not tell from the surface which
+/// behaviour it would get.
+///
+/// The strategy is derived from the registry rather than restated per tool, so
+/// a new mutator cannot be added without falling into one of these classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewStrategy {
+    /// The tool computes the post-image it would write and answers with it.
+    /// Every file mutator belongs here: the bytes are derivable without
+    /// touching the workspace.
+    PostImage,
+    /// The tool answers with the external command it would run. A build or a
+    /// runtime job cannot show its result without doing the work, but it can
+    /// show exactly what it would launch.
+    PlannedCommand,
+}
+
+/// The preview class of a mutating tool, or `None` for a reader.
+///
+/// Totality over the mutating registry is the point: the table-driven contract
+/// test fails when a new mutator appears without a class, which is what turns
+/// "growing set of exceptions" into a declared decision.
+pub fn preview_strategy(tool: &ToolSpec) -> Option<PreviewStrategy> {
+    if !tool.execution.is_mutating() {
+        return None;
+    }
+    Some(match tool.handler {
+        ToolHandler::BuildRuntime { .. }
+        | ToolHandler::RuntimeAdapter
+        | ToolHandler::RuntimeJob { .. } => PreviewStrategy::PlannedCommand,
+        _ => PreviewStrategy::PostImage,
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ToolSpec {
     pub name: &'static str,
