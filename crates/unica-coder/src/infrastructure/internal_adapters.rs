@@ -7,6 +7,7 @@ use crate::domain::operational_config::OperationalConfig;
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
 use crate::infrastructure::diagnostics_jsonl::{
     DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
 };
@@ -1616,15 +1617,33 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             );
         }
 
-        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
-            "could not locate Unica plugin root for bsl-analyzer MCP adapter lookup".to_string()
-        })?;
+        let plugin_root = match find_plugin_root(&context.cwd) {
+            Some(plugin_root) => plugin_root,
+            None => {
+                return Ok(provider_unavailable_outcome(
+                    tool_name,
+                    "could not locate Unica plugin root for bsl-analyzer MCP adapter lookup"
+                        .to_string(),
+                ))
+            }
+        };
         let source_dir = resolve_source_dir(context, args)?;
         if let Some(path) = diagnostics_path {
             validate_diagnostics_path(&source_dir, path)?;
         }
         let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
-        let bundled_tool = resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run)?;
+        // A workspace that has not downloaded the tools has no analyzer in its
+        // manifest. `code.search` already answers that state with an
+        // unavailable section and a working result (ADR-0017); answering it
+        // here with a failed call made the same workstation look broken (#275).
+        // A provider that ran and failed is a different case and still fails.
+        let bundled_tool = match resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run) {
+            Ok(bundled_tool) => bundled_tool,
+            Err(error) if is_provider_unavailable_error(&error) => {
+                return Ok(provider_unavailable_outcome(tool_name, error))
+            }
+            Err(error) => return Err(error),
+        };
         let command = bsl_mcp_command(
             &source_dir,
             context,
@@ -1874,6 +1893,27 @@ impl BslAnalyzerOutcome {
             data: None,
         }
     }
+}
+
+/// The answer for a provider that is not present in this workspace: a normal
+/// tool result that states the cause, not a failed call. The
+/// `provider_unavailable:` prefix is the machine-readable part — it separates
+/// "the analyzer is not here" from "the analyzer ran and failed", which the
+/// caller has to tell apart to decide whether retrying is worth anything.
+fn provider_unavailable_outcome(tool_name: &str, error: String) -> BslAnalyzerOutcome {
+    BslAnalyzerOutcome::plain(AdapterOutcome {
+        ok: false,
+        summary: format!(
+            "{tool_name} is unavailable: bsl-analyzer is not bundled in this workspace"
+        ),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![format!("provider_unavailable: {error}")],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: None,
+        command: None,
+    })
 }
 
 impl Default for BslAnalyzerMcpAdapter<'_> {
@@ -4655,6 +4695,55 @@ analyze_timeout_seconds = 900
         cleanup_context(&context);
     }
 
+    /// #275. A checkout that has not downloaded the tools has no
+    /// `bsl-analyzer` in its manifest. `code.search` already answers that
+    /// workstation state with an unavailable section and a working result;
+    /// `code.graph` must not turn the same cause into a failed call.
+    #[test]
+    fn bsl_graph_adapter_degrades_when_the_analyzer_is_not_bundled() {
+        let context = temp_context("graph-missing-analyzer");
+        drop_tool_from_fake_manifest(&context.cwd, "bsl-analyzer");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: String::new(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("resolve"));
+        args.insert("query".to_string(), json!("ВидыНоменклатуры"));
+
+        let analyzer = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.graph", &args, &context, false)
+            .expect("an absent provider is a reportable state, not a failed call");
+
+        assert!(!analyzer.outcome.ok, "{:?}", analyzer.outcome);
+        assert!(
+            analyzer
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.starts_with("provider_unavailable:")),
+            "the answer names the cause in a machine-readable form: {:?}",
+            analyzer.outcome.errors
+        );
+        assert!(
+            analyzer
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("bsl-analyzer")),
+            "{:?}",
+            analyzer.outcome.errors
+        );
+        assert!(
+            runner.commands.borrow().is_empty(),
+            "an absent provider is never invoked"
+        );
+        cleanup_context(&context);
+    }
+
     #[test]
     fn bsl_graph_adapter_maps_typed_args_to_allowlisted_mcp_call() {
         let context = temp_context("graph-mcp");
@@ -5814,6 +5903,21 @@ analyze_timeout_seconds = 900
             cache_root: root.join(".build").join("unica"),
             workspace_epoch: 1,
         }
+    }
+
+    /// Rewrites the fake manifest without `tool_name`, the way a checkout that
+    /// has not run the tools download looks.
+    fn drop_tool_from_fake_manifest(root: &Path, tool_name: &str) {
+        let manifest_path = root
+            .join("plugins")
+            .join("unica")
+            .join("third-party")
+            .join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let tools = manifest["tools"].as_array_mut().unwrap();
+        tools.retain(|tool| tool["name"] != json!(tool_name));
+        fs::write(&manifest_path, serde_json::to_string(&manifest).unwrap()).unwrap();
     }
 
     fn create_fake_plugin_root(root: &Path) {
