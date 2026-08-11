@@ -182,9 +182,11 @@ pub(crate) struct DcsInfoCalculatedField {
     pub(crate) data_path: String,
     pub(crate) expression: Option<String>,
     pub(crate) title: Option<String>,
-    /// `useRestriction`; `null` when the field declares none, so a schema that
-    /// says nothing is not reported as an unrestricted field.
-    pub(crate) restricted: Option<bool>,
+    /// Which uses `useRestriction` bars, in schema order: `field`, `condition`,
+    /// `group`, `order`. On a field the element is structured, not a flag, so a
+    /// boolean cannot carry the answer the retired `calculated` report printed.
+    /// `null` when the field declares no restriction at all.
+    pub(crate) restrictions: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -274,6 +276,24 @@ fn dcs_info_flag(node: roxmltree::Node<'_, '_>, tag: &str, ns_schema: &str) -> O
             "false" => Some(false),
             _ => None,
         })
+}
+
+/// The uses a structured `useRestriction` bars. Each child set to `true` names
+/// one barred use; `None` when the element is absent, so an unrestricted field
+/// and a field that says nothing stay distinguishable.
+fn dcs_info_restrictions(
+    node: roxmltree::Node<'_, '_>,
+    tag: &str,
+    ns_schema: &str,
+) -> Option<Vec<String>> {
+    dcs_child(node, tag, ns_schema).map(|restriction| {
+        restriction
+            .children()
+            .filter(|child| child.is_element())
+            .filter(|child| dcs_text_of(*child).trim() == "true")
+            .map(|child| child.tag_name().name().to_string())
+            .collect()
+    })
 }
 
 /// Order items of one variant: the field and, when declared, its direction.
@@ -386,7 +406,7 @@ fn dcs_info_collect(
                     title: dcs_child(field, "title", ns_schema)
                         .map(dcs_info_multilang_or_inner_text)
                         .and_then(dcs_info_opt),
-                    restricted: dcs_info_flag(field, "useRestriction", ns_schema),
+                    restrictions: dcs_info_restrictions(field, "useRestriction", ns_schema),
                 })
             })
             .collect(),
@@ -10807,8 +10827,13 @@ mod tests {
             "{data:?}"
         );
 
-        // `calculated` marked a field restricted from the user.
-        assert_eq!(data.calculated_fields[0].restricted, Some(true), "{data:?}");
+        // `calculated -Name` printed which uses a field is barred from; the
+        // element is structured, so a boolean cannot carry that answer.
+        assert_eq!(
+            data.calculated_fields[0].restrictions.as_deref(),
+            Some(&["condition".to_string(), "order".to_string()][..]),
+            "{data:?}"
+        );
 
         // `params` marked a parameter that cannot be used as a field.
         assert_eq!(
@@ -12852,7 +12877,10 @@ mod tests {
 	<calculatedField>
 		<dataPath>Наценка</dataPath>
 		<expression>Сумма - Себестоимость</expression>
-		<useRestriction>true</useRestriction>
+		<useRestriction>
+			<condition>true</condition>
+			<order>true</order>
+		</useRestriction>
 	</calculatedField>
 	<totalField>
 		<dataPath>Сумма</dataPath>

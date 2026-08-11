@@ -285,10 +285,17 @@ fn definition_result(
 ) -> Result<(CodeDefinitionResult, Vec<String>), String> {
     let name = match value.get("name") {
         None | Some(Value::Null) => requested.to_string(),
-        Some(value) => value
-            .as_str()
-            .ok_or_else(|| "RLM definition response reports a name that is not text".to_string())?
-            .to_string(),
+        Some(value) => {
+            let reported = value.as_str().ok_or_else(|| {
+                "RLM definition response reports a name that is not text".to_string()
+            })?;
+            // An empty string names nothing, so it is absence, not an answer.
+            if reported.is_empty() {
+                requested.to_string()
+            } else {
+                reported.to_string()
+            }
+        }
     };
     let definitions = value
         .get("definitions")
@@ -630,6 +637,10 @@ mod tests {
         assert_eq!(result.name, requested);
         let (result, _) =
             super::definition_result(&json!({"name": null, "definitions": []}), requested).unwrap();
+        assert_eq!(result.name, requested);
+        // An empty string is no more a subject than a missing field is.
+        let (result, _) =
+            super::definition_result(&json!({"name": "", "definitions": []}), requested).unwrap();
         assert_eq!(result.name, requested);
 
         for wrong in [json!(7), json!(["Найти"]), json!({"value": "Найти"})] {

@@ -242,8 +242,11 @@ allowed-tools:
 | `trace` | Собирается у потребителя: поле ищется в `dataSets[].fields`, затем в `calculatedFields` и `totalFields` |
 | `full` | Весь ответ и есть `full` |
 
-Отбор по имени, который делал `-Name`, теперь выполняется над `data`: это
-обычная фильтрация массива, а не второй вызов инструмента.
+`-Name` больше не аргумент инструмента. Отбор по имени делается над нужной
+коллекцией внутри `data`: набор — фильтром `data.dataSets` по `name`, поле —
+обходом `data.dataSets[].fields` по `dataPath`, вычисляемое поле и ресурс — по
+`dataPath` в `data.calculatedFields` и `data.totalFields`, вариант — по `name` в
+`data.variants`. Второй вызов инструмента для этого не нужен.
 
 ## Типичный workflow
 
