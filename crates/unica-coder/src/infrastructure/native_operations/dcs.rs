@@ -11336,6 +11336,38 @@ mod tests {
         );
     }
 
+    /// Review of #442. The shared parser gained `@inaccessible`: before, the
+    /// published flag was neither recognised nor stripped, so it ended up
+    /// inside the parameter name. The fix reaches both `dcs.compile` and
+    /// `dcs.edit`, so it is proven on the public route.
+    #[test]
+    fn dcs_compile_variant_data_parameters_accept_the_inaccessible_flag() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": { "dataParameters": ["Period @inaccessible"] }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let data_parameters = document
+            .descendants()
+            .find(|node| role_info_element(*node, "dataParameters", Some(TEST_DCS_SETTINGS_NS)))
+            .expect("the variant publishes its data parameters");
+        let item = dcs_child(data_parameters, "item", TEST_DCS_CORE_NS).unwrap();
+
+        assert_eq!(
+            dcs_child(item, "parameter", TEST_DCS_CORE_NS).and_then(|node| node.text()),
+            Some("Period"),
+            "the flag is stripped from the name, not carried into it"
+        );
+        assert_eq!(
+            dcs_child(item, "viewMode", TEST_DCS_SETTINGS_NS).and_then(|node| node.text()),
+            Some("Inaccessible")
+        );
+    }
+
     #[test]
     fn dcs_compile_calculated_field_merges_restrictions_in_8_3_27_order() {
         let definition = json!({
