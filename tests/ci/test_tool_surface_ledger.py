@@ -98,21 +98,27 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             self.module.render_arguments({"inputSchema": schema})
         )
 
-        metadata_row = next(
-            line for line in rendered.splitlines() if line.startswith("| `metadataPath`")
-        )
-        self.assertNotIn(
-            " нет ",
-            metadata_row,
-            f"a branch-only argument is not freely optional: {metadata_row}",
-        )
-        self.assertIn("`metadataPath`", rendered)
-        self.assertIn("`sourceSet`", rendered)
+        def row(argument: str) -> str:
+            return next(
+                line
+                for line in rendered.splitlines()
+                if line.startswith(f"| `{argument}`")
+            )
+
+        # Assert the exact marker, not merely "not optional": `да` and
+        # `по ветви` are both wrong here and both would pass a negative check.
+        # `metadataPath` is valid only inside the sourceSet branch, while
+        # `sourceSet` is required by one branch and refused by the other.
+        self.assertIn(" только в ветви |", row("metadataPath"), row("metadataPath"))
+        self.assertIn(" по ветви |", row("sourceSet"), row("sourceSet"))
+        self.assertIn(" по ветви |", row("SubsystemPath"), row("SubsystemPath"))
         # `cwd` is genuinely optional in both branches and must stay that way.
-        cwd_row = next(
-            line for line in rendered.splitlines() if line.startswith("| `cwd`")
+        self.assertIn(" нет |", row("cwd"), row("cwd"))
+        self.assertIn(
+            "`metadataPath` принимается только вместе с `sourceSet`.",
+            rendered,
+            rendered,
         )
-        self.assertIn(" нет ", cwd_row, cwd_row)
 
     def test_published_patterns_stay_inside_the_ecmascript_dialect(self) -> None:
         """JSON Schema `pattern` — это ECMA-262.
