@@ -848,8 +848,11 @@ pub(crate) fn decompile_mxl(
             // Report the selector the caller gave, not the absolutised path:
             // a logical call never reaches here — the selector refuses an
             // absent resource before this point — so the raw argument is the
-            // only thing worth echoing back.
+            // only thing worth echoing back. A layout directory is the one
+            // exception: it exists, so naming it would describe the wrong
+            // thing, and the descriptor that was looked for is named instead.
             let shown = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
+                .filter(|raw| !absolutize(raw.clone(), &context.cwd).is_dir())
                 .unwrap_or_else(|| template_path.clone());
             return Err(format!("File not found: {}", shown.display()));
         }
@@ -1915,7 +1918,20 @@ pub(crate) fn resolve_mxl_decompile_path(
         &["templatePath", "TemplatePath", "path", "Path"],
         "TemplatePath",
     )?;
-    Ok(absolutize(raw, &context.cwd))
+    Ok(resolve_template_layout_path(&raw, &context.cwd))
+}
+
+/// Both documented forms of the physical `TemplatePath` name the same
+/// descriptor: the `Template.xml` itself, or the layout directory holding
+/// `Ext/Template.xml`. Every reader the published description lists shares this
+/// step, so the promise stays true for all of them instead of per-handler.
+pub(crate) fn resolve_template_layout_path(path: &Path, cwd: &Path) -> PathBuf {
+    let absolute = absolutize(path.to_path_buf(), cwd);
+    if absolute.is_dir() {
+        absolute.join("Ext").join("Template.xml")
+    } else {
+        absolute
+    }
 }
 
 /// `unica.mxl.info` publishes two addresses: the logical selector and
@@ -1939,12 +1955,7 @@ pub(crate) fn resolve_mxl_info_path(
     }
     let path = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
         .ok_or_else(|| "Specify -TemplatePath".to_string())?;
-    let path = absolutize(path, &context.cwd);
-    Ok(if path.is_dir() {
-        path.join("Ext").join("Template.xml")
-    } else {
-        path
-    })
+    Ok(resolve_template_layout_path(&path, &context.cwd))
 }
 
 pub(crate) fn resolve_mxl_validate_path(
@@ -3322,6 +3333,46 @@ mod tests {
         assert_eq!(
             execution.outcome.artifacts,
             vec![template_path.display().to_string()]
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// The published `templatePath` description names `unica.mxl.decompile`
+    /// among the readers that auto-resolve a layout directory to
+    /// `Ext/Template.xml`, so the directory form must reach the decompiler the
+    /// same way it reaches `unica.mxl.info` and `unica.mxl.validate`.
+    #[test]
+    fn mxl_decompile_resolves_a_layout_directory_to_its_template() {
+        let context = test_context("decompile-layout-directory");
+        let layout = context.cwd.join("Templates").join("ПФ_MXL_Продажи");
+        let template_path = layout.join("Ext").join("Template.xml");
+        fs::create_dir_all(template_path.parent().unwrap()).unwrap();
+        fs::write(&template_path, empty_spreadsheet_document_xml()).unwrap();
+
+        let outcome = decompile_mxl(&path_args(&layout), &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert_eq!(outcome.artifacts, vec![template_path.display().to_string()]);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// A missing layout directory still has to read as missing, and the report
+    /// names the descriptor the reader actually looked for rather than the
+    /// directory the caller typed.
+    #[test]
+    fn mxl_decompile_reports_the_resolved_descriptor_for_a_layout_without_one() {
+        let context = test_context("decompile-layout-directory-missing");
+        let layout = context.cwd.join("Templates").join("ПФ_MXL_Пусто");
+        fs::create_dir_all(&layout).unwrap();
+
+        let outcome = decompile_mxl(&path_args(&layout), &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.iter().any(|error| {
+                error.contains("File not found") && error.contains("Template.xml")
+            }),
+            "{outcome:?}"
         );
         let _ = fs::remove_dir_all(&context.cwd);
     }
