@@ -7,6 +7,7 @@ use crate::domain::operational_config::OperationalConfig;
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
 use crate::infrastructure::diagnostics_jsonl::{
     DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
 };
@@ -671,6 +672,7 @@ impl<'a> RuntimeAdapter<'a> {
                 format!("{tool_name} cancelled before adapter work"),
             )));
         }
+        reject_missing_client_mcp_extension(args, context)?;
         if let Some(outcome) = bind_external_processor_config(args, context, dry_run)? {
             return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
@@ -1616,15 +1618,33 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             );
         }
 
-        let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
-            "could not locate Unica plugin root for bsl-analyzer MCP adapter lookup".to_string()
-        })?;
+        let plugin_root = match find_plugin_root(&context.cwd) {
+            Some(plugin_root) => plugin_root,
+            None => {
+                return Ok(provider_unavailable_outcome(
+                    tool_name,
+                    "could not locate Unica plugin root for bsl-analyzer MCP adapter lookup"
+                        .to_string(),
+                ))
+            }
+        };
         let source_dir = resolve_source_dir(context, args)?;
         if let Some(path) = diagnostics_path {
             validate_diagnostics_path(&source_dir, path)?;
         }
         let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
-        let bundled_tool = resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run)?;
+        // A workspace that has not downloaded the tools has no analyzer in its
+        // manifest. `code.search` already answers that state with an
+        // unavailable section and a working result (ADR-0017); answering it
+        // here with a failed call made the same workstation look broken (#275).
+        // A provider that ran and failed is a different case and still fails.
+        let bundled_tool = match resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run) {
+            Ok(bundled_tool) => bundled_tool,
+            Err(error) if is_provider_unavailable_error(&error) => {
+                return Ok(provider_unavailable_outcome(tool_name, error))
+            }
+            Err(error) => return Err(error),
+        };
         let command = bsl_mcp_command(
             &source_dir,
             context,
@@ -1874,6 +1894,27 @@ impl BslAnalyzerOutcome {
             data: None,
         }
     }
+}
+
+/// The answer for a provider that is not present in this workspace: a normal
+/// tool result that states the cause, not a failed call. The
+/// `provider_unavailable:` prefix is the machine-readable part — it separates
+/// "the analyzer is not here" from "the analyzer ran and failed", which the
+/// caller has to tell apart to decide whether retrying is worth anything.
+fn provider_unavailable_outcome(tool_name: &str, error: String) -> BslAnalyzerOutcome {
+    BslAnalyzerOutcome::plain(AdapterOutcome {
+        ok: false,
+        summary: format!(
+            "{tool_name} is unavailable: bsl-analyzer is not bundled in this workspace"
+        ),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![format!("provider_unavailable: {error}")],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: None,
+        command: None,
+    })
 }
 
 impl Default for BslAnalyzerMcpAdapter<'_> {
@@ -2708,6 +2749,71 @@ fn append_runtime_global_args(
     append_arg(result, "--workdir", args, "workdir", redact);
 }
 
+/// Credentials belong to `infobase.user`/`infobase.password`, not to the
+/// connection string. Written into `connection` they reached the project
+/// config and were dropped on the way to the platform, so the run reported a
+/// wrong password while the same connection worked in Designer (#343).
+///
+/// The refusal names the field and never echoes the value: the argument it is
+/// refusing is the one carrying the secret.
+/// A project that declares a client MCP extension must have its artifact where
+/// it says. Without this the run reached the platform and failed late, deep in
+/// the build, on a cause the caller could have been told before it started
+/// (#408).
+fn reject_missing_client_mcp_extension(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    if args.get("operation").and_then(Value::as_str) != Some("build") {
+        return Ok(());
+    }
+    let config_arg = args
+        .get("config")
+        .and_then(Value::as_str)
+        .unwrap_or("v8project.yaml");
+    let config_path = context.cwd.join(config_arg);
+    let Ok(text) = std::fs::read_to_string(&config_path) else {
+        return Ok(());
+    };
+    let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
+        return Ok(());
+    };
+    let declared = ["tools", "client_mcp", "extension", "artifact", "path"]
+        .iter()
+        .try_fold(&config, |node, key| node.get(key))
+        .and_then(serde_yaml::Value::as_str);
+    let Some(declared) = declared.filter(|path| !path.trim().is_empty()) else {
+        return Ok(());
+    };
+    let artifact = config_path.parent().unwrap_or(&context.cwd).join(declared);
+    if artifact.is_file() {
+        return Ok(());
+    }
+    Err(format!(
+        "project declares `tools.client_mcp.extension.artifact.path` = `{declared}` but the artifact is missing; download it with operation `tools-download` before `build`"
+    ))
+}
+
+fn reject_credentials_in_connection(args: &Map<String, Value>) -> Result<(), String> {
+    let Some(connection) = args.get("connection").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let carries = |field: &str| {
+        connection.split(';').any(|part| {
+            part.trim().split_once('=').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case(field) && !value.trim().is_empty()
+            })
+        })
+    };
+    if carries("Usr") || carries("Pwd") {
+        return Err(
+            "`connection` must not carry `Usr` or `Pwd`; the platform never receives them from it — put the credentials in infobase.user and infobase.password of v8project.local.yaml"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_runtime_mapper_payload(
     operation: &str,
     args: &Map<String, Value>,
@@ -2725,6 +2831,7 @@ fn validate_runtime_mapper_payload(
     for key in RUNTIME_MAPPER_ARRAY_ARGS {
         validate_mapper_string_array(args, key)?;
     }
+    reject_credentials_in_connection(args)?;
 
     match operation {
         "dump" => {
@@ -3579,6 +3686,79 @@ mod tests {
             Some("Designer build completed after 240 seconds")
         );
         assert!(runner.commands.borrow()[0].timeout.is_none());
+        cleanup_context(&context);
+    }
+
+    /// #343. Credentials written into the connection string were carried into
+    /// the project config and then silently dropped: the run reported a wrong
+    /// password while the same connection worked in Designer. The safe answer
+    /// is an early refusal naming where credentials belong — and it must not
+    /// echo the secret it just refused.
+    #[test]
+    fn runtime_adapter_refuses_credentials_hidden_in_the_connection_string() {
+        for connection in [
+            "File=build/ib;Usr=Админ;Pwd=с3кр3т;",
+            "File=build/ib;usr=Админ;pwd=с3кр3т;",
+        ] {
+            let mut args = Map::new();
+            args.insert("operation".to_string(), json!("config-init"));
+            args.insert("config".to_string(), json!("./v8project.yaml"));
+            args.insert("connection".to_string(), json!(connection));
+            args.insert("format".to_string(), json!("edt"));
+            args.insert("builder".to_string(), json!("IBCMD"));
+
+            let error = validate_runtime_mapper_payload("config-init", &args)
+                .expect_err("credentials in the connection string are refused, not dropped");
+
+            assert!(error.contains("connection"), "{error}");
+            assert!(error.contains("user"), "{error}");
+            assert!(
+                !error.contains("с3кр3т"),
+                "the refusal must not echo the secret: {error}"
+            );
+        }
+    }
+
+    /// A connection without credentials stays accepted.
+    #[test]
+    fn runtime_adapter_accepts_a_connection_without_credentials() {
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("config-init"));
+        args.insert("config".to_string(), json!("./v8project.yaml"));
+        args.insert("connection".to_string(), json!("File=build/ib"));
+        args.insert("format".to_string(), json!("edt"));
+        args.insert("builder".to_string(), json!("IBCMD"));
+
+        validate_runtime_mapper_payload("config-init", &args).unwrap();
+    }
+
+    /// #408. A project that declares a client MCP extension but has no
+    /// artifact used to fail deep inside `build`, on a cause the caller could
+    /// have been told before the run started.
+    #[test]
+    fn runtime_adapter_refuses_build_when_the_declared_client_mcp_artifact_is_missing() {
+        let context = temp_context("client-mcp-preflight");
+        std::fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\ntools:\n  client_mcp:\n    extension:\n      artifact:\n        path: .build/client_mcp.cfe\n",
+        )
+        .unwrap();
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let error = reject_missing_client_mcp_extension(&args, &context)
+            .expect_err("a declared artifact that is absent is refused before the run");
+
+        assert!(error.contains("tools-download"), "{error}");
+        assert!(error.contains("client_mcp.cfe"), "{error}");
+
+        // Present artifact, and a project that declares none, both pass.
+        std::fs::create_dir_all(context.cwd.join(".build")).unwrap();
+        std::fs::write(context.cwd.join(".build/client_mcp.cfe"), b"cfe").unwrap();
+        reject_missing_client_mcp_extension(&args, &context).unwrap();
+
+        std::fs::write(context.cwd.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
+        reject_missing_client_mcp_extension(&args, &context).unwrap();
         cleanup_context(&context);
     }
 
@@ -4655,6 +4835,55 @@ analyze_timeout_seconds = 900
         cleanup_context(&context);
     }
 
+    /// #275. A checkout that has not downloaded the tools has no
+    /// `bsl-analyzer` in its manifest. `code.search` already answers that
+    /// workstation state with an unavailable section and a working result;
+    /// `code.graph` must not turn the same cause into a failed call.
+    #[test]
+    fn bsl_graph_adapter_degrades_when_the_analyzer_is_not_bundled() {
+        let context = temp_context("graph-missing-analyzer");
+        drop_tool_from_fake_manifest(&context.cwd, "bsl-analyzer");
+        let runner = RecordingBslMcpRunner {
+            commands: RefCell::new(Vec::new()),
+            output: BslMcpOutput {
+                result_text: String::new(),
+                stderr: String::new(),
+            },
+        };
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("resolve"));
+        args.insert("query".to_string(), json!("ВидыНоменклатуры"));
+
+        let analyzer = BslAnalyzerMcpAdapter::with_runner(&runner)
+            .invoke("unica.code.graph", &args, &context, false)
+            .expect("an absent provider is a reportable state, not a failed call");
+
+        assert!(!analyzer.outcome.ok, "{:?}", analyzer.outcome);
+        assert!(
+            analyzer
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.starts_with("provider_unavailable:")),
+            "the answer names the cause in a machine-readable form: {:?}",
+            analyzer.outcome.errors
+        );
+        assert!(
+            analyzer
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("bsl-analyzer")),
+            "{:?}",
+            analyzer.outcome.errors
+        );
+        assert!(
+            runner.commands.borrow().is_empty(),
+            "an absent provider is never invoked"
+        );
+        cleanup_context(&context);
+    }
+
     #[test]
     fn bsl_graph_adapter_maps_typed_args_to_allowlisted_mcp_call() {
         let context = temp_context("graph-mcp");
@@ -5161,9 +5390,13 @@ analyze_timeout_seconds = 900
         let context = discover_workspace(Some(std::env::current_dir().unwrap())).unwrap();
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("config-init"));
+        // Credentials in the connection string are refused outright (#343),
+        // so the redaction case uses a connection the mapper accepts. What it
+        // proves is unchanged: the connection value never reaches the reported
+        // command, whatever it holds.
         args.insert(
             "connection".to_string(),
-            json!("Srvr=prod;Ref=ib;Usr=admin;Pwd=super-secret"),
+            json!("Srvr=prod-secret-host;Ref=ib"),
         );
 
         let outcome = RuntimeAdapter::new()
@@ -5172,7 +5405,7 @@ analyze_timeout_seconds = 900
 
         let command = outcome.command.unwrap().join(" ");
         assert!(command.contains("--connection <redacted>"));
-        assert!(!command.contains("super-secret"));
+        assert!(!command.contains("prod-secret-host"));
     }
 
     #[test]
@@ -5814,6 +6047,21 @@ analyze_timeout_seconds = 900
             cache_root: root.join(".build").join("unica"),
             workspace_epoch: 1,
         }
+    }
+
+    /// Rewrites the fake manifest without `tool_name`, the way a checkout that
+    /// has not run the tools download looks.
+    fn drop_tool_from_fake_manifest(root: &Path, tool_name: &str) {
+        let manifest_path = root
+            .join("plugins")
+            .join("unica")
+            .join("third-party")
+            .join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        let tools = manifest["tools"].as_array_mut().unwrap();
+        tools.retain(|tool| tool["name"] != json!(tool_name));
+        fs::write(&manifest_path, serde_json::to_string(&manifest).unwrap()).unwrap();
     }
 
     fn create_fake_plugin_root(root: &Path) {

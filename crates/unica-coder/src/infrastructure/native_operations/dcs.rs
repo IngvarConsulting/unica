@@ -2805,6 +2805,22 @@ pub(crate) fn dcs_check_settings(
             }
         }
     }
+    // A `SettingsParameterValue` without a name is a well-formed element that
+    // names nothing, so the platform reads the variant as having no value for
+    // that parameter. Validation used to pass it (#311).
+    for parameter_item in dcs_find_all_path(
+        settings_node,
+        &[("dataParameters", NS_SETTINGS), ("item", DCS_CORE_NS)],
+    ) {
+        let parameter = dcs_child(parameter_item, "parameter", DCS_CORE_NS)
+            .map(dcs_inner_text)
+            .unwrap_or_default();
+        if parameter.trim().is_empty() {
+            report.error(format!(
+                "Variant '{variant_name}' dataParameters: SettingsParameterValue has empty parameter name"
+            ));
+        }
+    }
     dcs_check_filter_items(report, settings_node, variant_name);
     for order_item in dcs_find_all_path(
         settings_node,
@@ -3342,7 +3358,7 @@ fn dcs_compile_xml_with_inputs(
     dcs_compile_emit_calculated_fields(&mut lines, defn)?;
     dcs_compile_emit_total_fields(&mut lines, defn);
     dcs_compile_emit_parameters(&mut lines, defn)?;
-    dcs_compile_emit_settings_variants(&mut lines, defn);
+    dcs_compile_emit_settings_variants(&mut lines, defn)?;
     lines.push("</DataCompositionSchema>".to_string());
     Ok(format!("{}\n", lines.join("\n")))
 }
@@ -4520,14 +4536,17 @@ pub(crate) fn dcs_compile_emit_parameter_value(
     ));
 }
 
-pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: &Value) {
+pub(crate) fn dcs_compile_emit_settings_variants(
+    lines: &mut Vec<String>,
+    defn: &Value,
+) -> Result<(), String> {
     let Some(variants) = defn.get("settingsVariants").and_then(Value::as_array) else {
         dcs_compile_emit_default_settings_variant(lines);
-        return;
+        return Ok(());
     };
     if variants.is_empty() {
         dcs_compile_emit_default_settings_variant(lines);
-        return;
+        return Ok(());
     }
     for variant in variants {
         lines.push("\t<settingsVariant>".to_string());
@@ -4549,7 +4568,7 @@ pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: 
             dcs_compile_emit_filter(lines, filter, "\t\t\t");
         }
         if let Some(data_parameters) = settings.get("dataParameters").and_then(Value::as_array) {
-            dcs_compile_emit_data_parameters(lines, data_parameters, "\t\t\t");
+            dcs_compile_emit_data_parameters(lines, data_parameters, "\t\t\t")?;
         }
         if let Some(order) = settings.get("order").and_then(Value::as_array) {
             dcs_compile_emit_order(lines, order, "\t\t\t");
@@ -4565,11 +4584,12 @@ pub(crate) fn dcs_compile_emit_settings_variants(lines: &mut Vec<String>, defn: 
             dcs_compile_emit_output_parameters(lines, output_parameters, "\t\t\t");
         }
         if let Some(structure) = settings.get("structure") {
-            dcs_compile_emit_structure(lines, structure, "\t\t\t");
+            dcs_compile_emit_structure(lines, structure, "\t\t\t")?;
         }
         lines.push("\t\t</dcsset:settings>".to_string());
         lines.push("\t</settingsVariant>".to_string());
     }
+    Ok(())
 }
 
 pub(crate) fn dcs_compile_emit_selection(lines: &mut Vec<String>, items: &[Value], indent: &str) {
@@ -4901,12 +4921,37 @@ pub(crate) fn dcs_compile_emit_data_parameters(
     lines: &mut Vec<String>,
     items: &[Value],
     indent: &str,
-) {
+) -> Result<(), String> {
     if items.is_empty() {
-        return;
+        return Ok(());
     }
     lines.push(format!("{indent}<dcsset:dataParameters>"));
     for item in items {
+        // `dcs-dsl-spec` publishes a shorthand string here, and `dcs.edit`
+        // already parses and emits it. Reusing both keeps one grammar for the
+        // two tools instead of a second one that silently lost the parameter
+        // name and could not reach the nested value shapes at all.
+        let parsed_from_string;
+        let mut shorthand_value = None;
+        let item = if let Some(text) = item.as_str() {
+            let parsed = dcs_edit_parse_data_parameter(text);
+            let mut object = Map::new();
+            object.insert("parameter".to_string(), json!(parsed.parameter));
+            shorthand_value = parsed.value;
+            if let Some(use_flag) = parsed.use_flag {
+                object.insert("use".to_string(), json!(use_flag));
+            }
+            if let Some(view_mode) = parsed.view_mode {
+                object.insert("viewMode".to_string(), json!(view_mode));
+            }
+            if let Some(user_setting_id) = parsed.user_setting_id {
+                object.insert("userSettingID".to_string(), json!(user_setting_id));
+            }
+            parsed_from_string = Value::Object(object);
+            &parsed_from_string
+        } else {
+            item
+        };
         lines.push(format!(
             "{indent}\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">"
         ));
@@ -4922,7 +4967,16 @@ pub(crate) fn dcs_compile_emit_data_parameters(
             "{indent}\t\t<dcscor:parameter>{}</dcscor:parameter>",
             escape_xml(&parameter)
         ));
-        if item
+        if let Some(value) = &shorthand_value {
+            // The shorthand value goes through the same emitter `dcs.edit`
+            // uses for this element, so a period variant reaches its nested
+            // `v8:StandardPeriod` shape instead of being flattened to text.
+            lines.extend(dcs_edit_settings_value_lines(
+                "dcscor:value",
+                value,
+                &format!("{indent}\t"),
+            )?);
+        } else if item
             .get("nilValue")
             .and_then(Value::as_bool)
             .unwrap_or(false)
@@ -4966,35 +5020,65 @@ pub(crate) fn dcs_compile_emit_data_parameters(
         lines.push(format!("{indent}\t</dcscor:item>"));
     }
     lines.push(format!("{indent}</dcsset:dataParameters>"));
+    Ok(())
 }
 
-pub(crate) fn dcs_compile_emit_structure(lines: &mut Vec<String>, structure: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_structure(
+    lines: &mut Vec<String>,
+    structure: &Value,
+    indent: &str,
+) -> Result<(), String> {
     if let Some(text) = structure.as_str() {
         for item in dcs_edit_parse_structure(text) {
             let fragment = dcs_edit_structure_item_fragment(&item, indent);
             lines.extend(fragment.lines().map(ToOwned::to_owned));
         }
-        return;
+        return Ok(());
     }
     if let Some(item) = structure.as_object() {
-        dcs_compile_emit_structure_item(lines, &Value::Object(item.clone()), indent);
-        return;
+        return dcs_compile_emit_structure_item(lines, &Value::Object(item.clone()), indent);
     }
     if let Some(items) = structure.as_array() {
         for item in items {
-            dcs_compile_emit_structure_item(lines, item, indent);
+            dcs_compile_emit_structure_item(lines, item, indent)?;
         }
     }
+    Ok(())
 }
 
-pub(crate) fn dcs_compile_emit_structure_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_structure_item(
+    lines: &mut Vec<String>,
+    item: &Value,
+    indent: &str,
+) -> Result<(), String> {
+    dcs_compile_emit_structure_item_inner(lines, item, indent, false)
+}
+
+/// A group nested in a table axis is written in the short form, without
+/// `xsi:type` — that is what the platform writes and what the donor emits.
+/// Elsewhere the explicit `dcsset:StructureItemGroup` form is used.
+fn dcs_compile_emit_structure_item_inner(
+    lines: &mut Vec<String>,
+    item: &Value,
+    indent: &str,
+    short_group: bool,
+) -> Result<(), String> {
     let item_type = json_string_field(item, "type").unwrap_or_else(|| "group".to_string());
-    if item_type != "group" {
-        return;
+    if item_type == "table" || item_type == "chart" {
+        return dcs_compile_emit_structure_axes_item(lines, item, indent, &item_type);
     }
-    lines.push(format!(
-        "{indent}<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">"
-    ));
+    if item_type != "group" {
+        // Dropping the item produced a template that validated and reported
+        // nothing, so the caller learned about it only from an empty report.
+        return Err(format!(
+            "structure item type '{item_type}' is not supported by unica.dcs.compile (supported: group, table, chart)"
+        ));
+    }
+    lines.push(if short_group {
+        format!("{indent}<dcsset:item>")
+    } else {
+        format!("{indent}<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">")
+    });
     if item
         .get("use")
         .and_then(Value::as_bool)
@@ -5033,10 +5117,182 @@ pub(crate) fn dcs_compile_emit_structure_item(lines: &mut Vec<String>, item: &Va
     }
     if let Some(children) = item.get("children").and_then(Value::as_array) {
         for child in children {
-            dcs_compile_emit_structure_item(lines, child, &format!("{indent}\t"));
+            dcs_compile_emit_structure_item_inner(lines, child, &format!("{indent}\t"), false)?;
         }
     }
     lines.push(format!("{indent}</dcsset:item>"));
+    Ok(())
+}
+
+/// The two structure items built from axes: `dcsset:StructureItemTable`, whose
+/// axes are `column` and `row`, and `dcsset:StructureItemChart`, whose axes are
+/// `point` and `series`. Both carry the same axis block, so they share one
+/// emitter rather than two that drift apart.
+///
+/// The chart always publishes its own `selection` — the values it plots — and
+/// the platform fills in `Auto` when the caller named none.
+fn dcs_compile_emit_structure_axes_item(
+    lines: &mut Vec<String>,
+    item: &Value,
+    indent: &str,
+    item_type: &str,
+) -> Result<(), String> {
+    let (xsi_type, axes) = if item_type == "table" {
+        (
+            "dcsset:StructureItemTable",
+            [("columns", "column"), ("rows", "row")],
+        )
+    } else {
+        (
+            "dcsset:StructureItemChart",
+            [("points", "point"), ("series", "series")],
+        )
+    };
+    lines.push(format!("{indent}<dcsset:item xsi:type=\"{xsi_type}\">"));
+    if item
+        .get("use")
+        .and_then(Value::as_bool)
+        .is_some_and(|value| !value)
+    {
+        lines.push(format!("{indent}\t<dcsset:use>false</dcsset:use>"));
+    }
+    if let Some(name) = json_string_field(item, "name").filter(|value| !value.is_empty()) {
+        lines.push(format!(
+            "{indent}\t<dcsset:name>{}</dcsset:name>",
+            escape_xml(&name)
+        ));
+    }
+    for (key, tag) in axes {
+        let Some(blocks) = item.get(key) else {
+            continue;
+        };
+        // A chart axis is published as one object or as a list of them.
+        let owned;
+        let blocks = match blocks.as_array() {
+            Some(blocks) => blocks,
+            None if blocks.is_object() => {
+                owned = vec![blocks.clone()];
+                &owned
+            }
+            None => continue,
+        };
+        for block in blocks {
+            lines.push(format!("{indent}\t<dcsset:{tag}>"));
+            dcs_compile_emit_table_axis(lines, block, &format!("{indent}\t\t"))?;
+            lines.push(format!("{indent}\t</dcsset:{tag}>"));
+        }
+    }
+    let auto = json!(["Auto"]);
+    let selection = if item_type == "chart" {
+        item.get("selection").unwrap_or(&auto)
+    } else {
+        item.get("selection").unwrap_or(&Value::Null)
+    };
+    if let Some(selection) = selection.as_array() {
+        dcs_compile_emit_selection(lines, selection, &format!("{indent}\t"));
+    }
+    if let Some(conditional_appearance) =
+        item.get("conditionalAppearance").and_then(Value::as_array)
+    {
+        dcs_compile_emit_conditional_appearance(
+            lines,
+            conditional_appearance,
+            &format!("{indent}\t"),
+        );
+    }
+    if let Some(output_parameters) = item.get("outputParameters").and_then(Value::as_object) {
+        dcs_compile_emit_output_parameters(lines, output_parameters, &format!("{indent}\t"));
+    }
+    let axis_modes: &[(&str, &str)] = if item_type == "table" {
+        &[
+            ("columnsViewMode", "columnsViewMode"),
+            ("rowsViewMode", "rowsViewMode"),
+        ]
+    } else {
+        &[
+            ("pointsViewMode", "pointsViewMode"),
+            ("seriesViewMode", "seriesViewMode"),
+        ]
+    };
+    dcs_compile_emit_setting_visibility(lines, item, &format!("{indent}\t"), axis_modes);
+    lines.push(format!("{indent}</dcsset:item>"));
+    Ok(())
+}
+
+/// The user-settings tail shared by a structure item and by an axis. The
+/// compiler accepted these documented keys and wrote none of them, so a caller
+/// who fixed a setting silently lost it (#443 review).
+fn dcs_compile_emit_setting_visibility(
+    lines: &mut Vec<String>,
+    item: &Value,
+    indent: &str,
+    axis_modes: &[(&str, &str)],
+) {
+    let tags = axis_modes.iter().copied().chain([
+        ("viewMode", "viewMode"),
+        ("userSettingID", "userSettingID"),
+        ("itemsViewMode", "itemsViewMode"),
+    ]);
+    for (json_key, xml_tag) in tags {
+        if let Some(value) = json_string_field(item, json_key).filter(|value| !value.is_empty()) {
+            lines.push(format!(
+                "{indent}<dcsset:{xml_tag}>{}</dcsset:{xml_tag}>",
+                escape_xml(&value)
+            ));
+        }
+    }
+    if let Some(presentation) =
+        json_string_field(item, "userSettingPresentation").filter(|value| !value.is_empty())
+    {
+        dcs_compile_emit_mltext(
+            lines,
+            indent,
+            "dcsset:userSettingPresentation",
+            &presentation,
+        );
+    }
+}
+
+fn dcs_compile_emit_table_axis(
+    lines: &mut Vec<String>,
+    axis: &Value,
+    indent: &str,
+) -> Result<(), String> {
+    if let Some(name) = json_string_field(axis, "name").filter(|value| !value.is_empty()) {
+        lines.push(format!(
+            "{indent}<dcsset:name>{}</dcsset:name>",
+            escape_xml(&name)
+        ));
+    }
+    let group_by = axis.get("groupBy").or_else(|| axis.get("groupFields"));
+    dcs_compile_emit_group_items(lines, group_by, indent);
+    if let Some(filter) = axis.get("filter").and_then(Value::as_array) {
+        dcs_compile_emit_filter(lines, filter, indent);
+    }
+    let auto = json!(["Auto"]);
+    let order = axis.get("order").unwrap_or(&auto);
+    if let Some(order) = order.as_array() {
+        dcs_compile_emit_order(lines, order, indent);
+    }
+    let selection = axis.get("selection").unwrap_or(&auto);
+    if let Some(selection) = selection.as_array() {
+        dcs_compile_emit_selection(lines, selection, indent);
+    }
+    if let Some(conditional_appearance) =
+        axis.get("conditionalAppearance").and_then(Value::as_array)
+    {
+        dcs_compile_emit_conditional_appearance(lines, conditional_appearance, indent);
+    }
+    if let Some(output_parameters) = axis.get("outputParameters").and_then(Value::as_object) {
+        dcs_compile_emit_output_parameters(lines, output_parameters, indent);
+    }
+    if let Some(children) = axis.get("children").and_then(Value::as_array) {
+        for child in children {
+            dcs_compile_emit_structure_item_inner(lines, child, indent, true)?;
+        }
+    }
+    dcs_compile_emit_setting_visibility(lines, axis, indent, &[]);
+    Ok(())
 }
 
 pub(crate) fn dcs_compile_emit_group_items(
@@ -7012,10 +7268,15 @@ pub(crate) fn dcs_edit_parse_data_parameter(value: &str) -> DcsEditDataParameter
     } else {
         None
     };
+    // `@inaccessible` is published alongside the other view-mode flags. Left
+    // unrecognised it was not stripped either, so it ended up inside the
+    // parameter name.
     let view_mode = if value.contains("@quickAccess") {
         Some("QuickAccess".to_string())
     } else if value.contains("@normal") {
         Some("Normal".to_string())
+    } else if value.contains("@inaccessible") {
+        Some("Inaccessible".to_string())
     } else {
         None
     };
@@ -7024,7 +7285,8 @@ pub(crate) fn dcs_edit_parse_data_parameter(value: &str) -> DcsEditDataParameter
         .replace("@on", "")
         .replace("@user", "")
         .replace("@quickAccess", "")
-        .replace("@normal", "");
+        .replace("@normal", "")
+        .replace("@inaccessible", "");
     let (parameter, val) = cleaned
         .split_once('=')
         .map(|(left, right)| (left.trim().to_string(), Some(right.trim().to_string())))
@@ -11206,6 +11468,216 @@ mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// #311. `dcs-dsl-spec` publishes a shorthand string for `dataParameters`
+    /// — `"<Имя> [= <значение>] [@off] [@user] [@quickAccess]"` — and
+    /// `dcs.edit` already parses it. Compilation read `parameter` only from
+    /// the object form, so a shorthand item compiled to an item with an empty
+    /// name and neither `viewMode` nor `userSettingID`.
+    #[test]
+    fn dcs_compile_variant_data_parameters_accept_the_published_shorthand() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "dataParameters": [
+                        "Period = ThisMonth @user @quickAccess",
+                        "Company @user @quickAccess"
+                    ]
+                }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let data_parameters = document
+            .descendants()
+            .find(|node| role_info_element(*node, "dataParameters", Some(TEST_DCS_SETTINGS_NS)))
+            .expect("the variant publishes its data parameters");
+        let items = dcs_children(data_parameters, "item", TEST_DCS_CORE_NS);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| dcs_child(*item, "parameter", TEST_DCS_CORE_NS)
+                    .and_then(|node| node.text())
+                    .unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["Period", "Company"],
+            "the shorthand carries the parameter name"
+        );
+        for item in &items {
+            assert_eq!(
+                dcs_child(*item, "viewMode", TEST_DCS_SETTINGS_NS).and_then(|node| node.text()),
+                Some("QuickAccess"),
+                "@quickAccess selects the view mode"
+            );
+            assert!(
+                dcs_child(*item, "userSettingID", TEST_DCS_SETTINGS_NS)
+                    .and_then(|node| node.text())
+                    .is_some_and(|id| !id.is_empty()),
+                "@user issues a user setting id"
+            );
+        }
+        assert!(
+            dcs_child(items[0], "value", TEST_DCS_CORE_NS).is_some(),
+            "the shorthand value reaches the item"
+        );
+        assert_eq!(
+            test_direct_child_names(items[0]),
+            ["parameter", "value", "viewMode", "userSettingID"],
+            "the 8.3.27 child sequence is preserved"
+        );
+        assert_eq!(
+            dcs_child(items[0], "value", TEST_DCS_CORE_NS).and_then(
+                |node| node.attribute(("http://www.w3.org/2001/XMLSchema-instance", "type"))
+            ),
+            Some("v8:StandardPeriod"),
+            "a period variant reaches its nested shape instead of flattening to text"
+        );
+    }
+
+    /// Review of #442. The shared parser gained `@inaccessible`: before, the
+    /// published flag was neither recognised nor stripped, so it ended up
+    /// inside the parameter name. The fix reaches both `dcs.compile` and
+    /// `dcs.edit`, so it is proven on the public route.
+    #[test]
+    fn dcs_compile_variant_data_parameters_accept_the_inaccessible_flag() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": { "dataParameters": ["Period @inaccessible"] }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let data_parameters = document
+            .descendants()
+            .find(|node| role_info_element(*node, "dataParameters", Some(TEST_DCS_SETTINGS_NS)))
+            .expect("the variant publishes its data parameters");
+        let item = dcs_child(data_parameters, "item", TEST_DCS_CORE_NS).unwrap();
+
+        assert_eq!(
+            dcs_child(item, "parameter", TEST_DCS_CORE_NS).and_then(|node| node.text()),
+            Some("Period"),
+            "the flag is stripped from the name, not carried into it"
+        );
+        assert_eq!(
+            dcs_child(item, "viewMode", TEST_DCS_SETTINGS_NS).and_then(|node| node.text()),
+            Some("Inaccessible")
+        );
+    }
+
+    /// #312. `"type": "table"` was dropped by the structure emitter, so a
+    /// variant built around a cross-table compiled to no structure at all.
+    #[test]
+    fn dcs_compile_structure_emits_a_cross_table_with_its_axes() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "structure": [{
+                        "type": "table",
+                        "name": "Balances",
+                        "columns": [{ "groupFields": ["Period"] }],
+                        "rows": [{
+                            "groupFields": ["Item"],
+                            "children": [{ "groupFields": ["Account"] }]
+                        }],
+                        "selection": ["Amount"]
+                    }]
+                }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let table = document
+            .descendants()
+            .find(|node| {
+                role_info_element(*node, "item", Some(TEST_DCS_SETTINGS_NS))
+                    && attribute_by_local_name(*node, "type") == Some("dcsset:StructureItemTable")
+            })
+            .expect("a table structure item reaches the template");
+
+        assert_eq!(
+            dcs_child(table, "name", TEST_DCS_SETTINGS_NS).and_then(|node| node.text()),
+            Some("Balances")
+        );
+        let column =
+            dcs_child(table, "column", TEST_DCS_SETTINGS_NS).expect("the column axis is published");
+        let row = dcs_child(table, "row", TEST_DCS_SETTINGS_NS).expect("the row axis is published");
+        assert!(dcs_child(column, "groupItems", TEST_DCS_SETTINGS_NS).is_some());
+        assert!(dcs_child(row, "groupItems", TEST_DCS_SETTINGS_NS).is_some());
+        assert!(dcs_child(row, "order", TEST_DCS_SETTINGS_NS).is_some());
+        assert!(dcs_child(row, "selection", TEST_DCS_SETTINGS_NS).is_some());
+        let nested = dcs_children(row, "item", TEST_DCS_SETTINGS_NS);
+        assert_eq!(nested.len(), 1, "the nested row group is published");
+        assert_eq!(attribute_by_local_name(nested[0], "type"), None);
+    }
+
+    /// Review of #443: the published user settings of a table and of its axes
+    /// were accepted and silently dropped. A caller who fixed `viewMode` or
+    /// pinned a `userSettingID` got a valid template without them.
+    #[test]
+    fn dcs_compile_structure_emits_the_published_user_settings() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "structure": [{
+                        "type": "table",
+                        "name": "Balances",
+                        "rowsViewMode": "Inaccessible",
+                        "viewMode": "QuickAccess",
+                        "userSettingID": "fixed-table",
+                        "userSettingPresentation": "Таблица остатков",
+                        "rows": [{
+                            "groupFields": ["Item"],
+                            "viewMode": "Inaccessible",
+                            "userSettingID": "fixed-axis",
+                            "itemsViewMode": "Normal"
+                        }]
+                    }]
+                }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+
+        for fragment in [
+            "<dcsset:rowsViewMode>Inaccessible</dcsset:rowsViewMode>",
+            "<dcsset:viewMode>QuickAccess</dcsset:viewMode>",
+            "<dcsset:userSettingID>fixed-table</dcsset:userSettingID>",
+            "Таблица остатков",
+            "<dcsset:viewMode>Inaccessible</dcsset:viewMode>",
+            "<dcsset:userSettingID>fixed-axis</dcsset:userSettingID>",
+            "<dcsset:itemsViewMode>Normal</dcsset:itemsViewMode>",
+        ] {
+            assert!(xml.contains(fragment), "missing {fragment} in {xml}");
+        }
+    }
+
+    /// A structure type the compiler cannot emit must say so.
+    #[test]
+    fn dcs_compile_structure_rejects_a_type_it_cannot_emit() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "structure": [{ "type": "nestedObject", "name": "Nested" }]
+                }
+            }]
+        });
+
+        let error = dcs_compile_xml(&definition, Path::new("."), Path::new("."))
+            .expect_err("an unsupported structure type is reported, not dropped");
+
+        assert!(error.contains("nestedObject"), "{error}");
+        assert!(error.contains("structure"), "{error}");
+    }
+
     #[test]
     fn dcs_compile_calculated_field_merges_restrictions_in_8_3_27_order() {
         let definition = json!({
@@ -12186,6 +12658,36 @@ mod tests {
             data.items
         );
         assert_eq!(fs::read(&template_path).unwrap(), before);
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// #311. A `SettingsParameterValue` with an empty `<dcscor:parameter>` is
+    /// well-formed XML that names no parameter, so the variant carries no value
+    /// for it. Validation reported `Validation OK` on exactly that shape.
+    #[test]
+    fn native_dcs_validate_rejects_a_data_parameter_without_a_name() {
+        let context = temp_context("dcs-validate-empty-data-parameter");
+        let template_path = context.cwd.join("Template.xml");
+        fs::write(
+            &template_path,
+            base_dcs_xml().replace(
+                "\t\t\t<dcsset:order>",
+                "\t\t\t<dcsset:dataParameters>\n\t\t\t\t<dcscor:item xsi:type=\"dcsset:SettingsParameterValue\">\n\t\t\t\t\t<dcscor:parameter></dcscor:parameter>\n\t\t\t\t</dcscor:item>\n\t\t\t</dcsset:dataParameters>\n\t\t\t<dcsset:order>",
+            ),
+        )
+        .unwrap();
+
+        let mut args = Map::new();
+        args.insert("TemplatePath".to_string(), json!("Template.xml"));
+        let outcome = validate_dcs(&args, &context);
+
+        let stdout = outcome.stdout.unwrap_or_default();
+        assert!(!outcome.ok, "{stdout}");
+        assert!(
+            stdout.contains("SettingsParameterValue has empty parameter name"),
+            "{stdout}"
+        );
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

@@ -848,7 +848,11 @@ fn parse_git_grep_line(line: &str) -> Option<ProviderSearchHit> {
     })
 }
 
-fn is_provider_unavailable_error(error: &str) -> bool {
+/// Causes that mean "this provider is not present here", as opposed to "this
+/// provider ran and failed". `code.search` degrades on them and `code.graph`
+/// reports them instead of failing the call, so the classification stays in one
+/// place rather than being restated per caller.
+pub(crate) fn is_provider_unavailable_error(error: &str) -> bool {
     [
         "could not locate Unica plugin root",
         "Unica third-party manifest not found",

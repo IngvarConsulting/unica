@@ -1303,6 +1303,16 @@ pub(crate) fn form_is_data_type_declaration_type_node(node: roxmltree::Node<'_, 
 }
 
 pub(crate) fn form_is_config_context(form_path: &Path) -> bool {
+    // The owner of the form decides its context. Looking only for a
+    // `Configuration.xml` above read an external artifact stored inside a
+    // workspace that also holds a configuration as configuration context, and
+    // then rejected the main attribute `epf.init` had just written (#340).
+    if let Some(owner) = form_owner_artifact_name(form_path) {
+        return !matches!(
+            owner.as_str(),
+            "ExternalDataProcessor" | "ExternalReport" | "ExternalDataProcessorForm"
+        );
+    }
     let mut walk_dir = form_path
         .parent()
         .unwrap_or_else(|| Path::new(""))
@@ -1320,6 +1330,29 @@ pub(crate) fn form_is_config_context(form_path: &Path) -> bool {
         walk_dir = parent.to_path_buf();
     }
     false
+}
+
+/// The artifact tag of the object that owns this form, read from the object's
+/// own descriptor next to its `Forms` directory. `None` when the form is not
+/// stored in the object layout or the descriptor cannot be read, and the
+/// caller falls back to the tree walk.
+fn form_owner_artifact_name(form_path: &Path) -> Option<String> {
+    let mut dir = form_path.parent()?;
+    for _ in 0..15 {
+        if dir.file_name() == Some(std::ffi::OsStr::new("Forms")) {
+            let object_dir = dir.parent()?;
+            let descriptor = object_dir.with_extension("xml");
+            let text = fs::read_to_string(&descriptor).ok()?;
+            let document = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+            return document
+                .root_element()
+                .children()
+                .find(|node| node.is_element())
+                .map(|node| node.tag_name().name().to_string());
+        }
+        dir = dir.parent()?;
+    }
+    None
 }
 
 pub(crate) fn form_invalid_types() -> &'static [&'static str] {
@@ -6604,6 +6637,7 @@ pub(crate) fn form_edit_element_summary(element: &Value) -> Option<String> {
     let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
     let tag = match kind {
         FormEditElementDefinitionKind::Table => "Table",
+        FormEditElementDefinitionKind::Label => "Label",
         FormEditElementDefinitionKind::LabelField => "LabelField",
         FormEditElementDefinitionKind::Button => "Button",
         FormEditElementDefinitionKind::CommandBar => "CommandBar",
@@ -6746,6 +6780,15 @@ pub(crate) enum FormEditInsertTarget {
         pos: usize,
         child_indent: String,
     },
+    /// A form that has no root `ChildItems` yet. An empty form legitimately
+    /// has none — the platform writes the section only once it holds
+    /// something — so the editor creates it rather than refusing the form
+    /// another writer produced (#341).
+    RootNeedsChildItems {
+        pos: usize,
+        section_indent: String,
+        child_indent: String,
+    },
 }
 
 impl FormEditInsertTarget {
@@ -6753,7 +6796,8 @@ impl FormEditInsertTarget {
         match self {
             Self::ExistingChildItems { child_indent, .. }
             | Self::ElementNeedsChildItems { child_indent, .. }
-            | Self::AfterElement { child_indent, .. } => child_indent,
+            | Self::AfterElement { child_indent, .. }
+            | Self::RootNeedsChildItems { child_indent, .. } => child_indent,
         }
     }
 }
@@ -6807,7 +6851,27 @@ pub(crate) fn form_edit_target_child_items_range(
         });
     }
     let Some(child_items) = root_child_items else {
-        return Err("No <ChildItems> section found in form".to_string());
+        // 8.3.27 orders the root as ChildItems -> Attributes -> Parameters ->
+        // Commands and omits the section entirely while the form is empty, so
+        // the new one goes before the earliest of those that is present.
+        let anchor = ["Attributes", "Parameters", "Commands"]
+            .iter()
+            .filter_map(|tag| form_child(root, tag))
+            .map(|node| node.range().start)
+            .min()
+            .or_else(|| {
+                root.children()
+                    .rfind(roxmltree::Node::is_element)
+                    .map(|node| node.range().end)
+            })
+            .ok_or_else(|| "No <ChildItems> section found in form".to_string())?;
+        let section_indent = form_edit_line_indent_at(xml_text, anchor);
+        let child_indent = format!("{section_indent}\t");
+        return Ok(FormEditInsertTarget::RootNeedsChildItems {
+            pos: anchor,
+            section_indent,
+            child_indent,
+        });
     };
     Ok(FormEditInsertTarget::ExistingChildItems {
         child_indent: form_edit_child_indent_for_section(xml_text, child_items.range()),
@@ -6861,6 +6925,20 @@ pub(crate) fn form_edit_insert_lines_into_target(
         FormEditInsertTarget::AfterElement { pos, .. } => {
             let content = lines.join("\n");
             xml_text.insert_str(pos, &format!("\n{content}"));
+            Ok(())
+        }
+        FormEditInsertTarget::RootNeedsChildItems {
+            pos,
+            section_indent,
+            ..
+        } => {
+            let content = lines.join("\n");
+            xml_text.insert_str(
+                pos,
+                &format!(
+                    "<ChildItems>\n{content}\n{section_indent}</ChildItems>\n{section_indent}"
+                ),
+            );
             Ok(())
         }
     }
@@ -7269,6 +7347,7 @@ impl FormIdAllocator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FormEditElementDefinitionKind {
     Table,
+    Label,
     LabelField,
     Button,
     CommandBar,
@@ -7287,6 +7366,7 @@ impl FormEditElementDefinitionKind {
         // considering those two standalone-element shorthands.
         let primary_candidates = [
             (Self::Table, "table", object.contains_key("table")),
+            (Self::Label, "label", object.contains_key("label")),
             (
                 Self::LabelField,
                 "labelField",
@@ -7341,6 +7421,7 @@ impl FormEditElementDefinitionKind {
     const fn event_kind(self) -> FormElementKind {
         match self {
             Self::Table => FormElementKind::Table,
+            Self::Label => FormElementKind::LabelDecoration,
             Self::LabelField => FormElementKind::LabelField,
             Self::Button => FormElementKind::Button,
             Self::CommandBar | Self::AutoCommandBar => FormElementKind::CommandBar,
@@ -7355,6 +7436,7 @@ impl FormEditElementDefinitionKind {
     fn name(self, object: &Map<String, Value>) -> Result<&str, String> {
         let (keys, description): (&[&str], &str) = match self {
             Self::Table => (&["table"], "table"),
+            Self::Label => (&["label"], "label decoration"),
             Self::LabelField => (&["labelField"], "label field"),
             Self::Button => (&["button"], "button"),
             Self::CommandBar => (&["cmdBar", "commandBar"], "command bar"),
@@ -8596,6 +8678,9 @@ fn emit_form_element_with_context(
         FormEditElementDefinitionKind::Table => {
             emit_form_table(lines, object, kind.name(object)?, indent, ids)
         }
+        FormEditElementDefinitionKind::Label => {
+            emit_form_label_decoration(lines, object, kind.name(object)?, indent, ids)
+        }
         FormEditElementDefinitionKind::LabelField => {
             emit_form_label_field(lines, object, kind.name(object)?, indent, ids);
             Ok(())
@@ -9271,6 +9356,117 @@ pub(crate) fn emit_form_command_bar_element(
     }
     lines.push(format!("{indent}</CommandBar>"));
     Ok(())
+}
+
+/// `LabelDecoration` — the documented `label` element.
+///
+/// The platform writes a decoration layout-first: own content — flags,
+/// hyperlink and geometry — comes before `Title`, unlike a field, whose title
+/// leads. `Title` on a decoration carries the `formatted` attribute, taken
+/// from the published `{text, formatted}` form or from the explicit
+/// back-compat `formatted` key.
+pub(crate) fn emit_form_label_decoration(
+    lines: &mut Vec<String>,
+    element: &Map<String, Value>,
+    name: &str,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+) -> Result<(), String> {
+    let id = ids.next();
+    lines.push(format!(
+        "{indent}<LabelDecoration name=\"{}\" id=\"{id}\">",
+        escape_xml(name)
+    ));
+    let inner = format!("{indent}\t");
+    emit_form_common_flags(lines, element, &inner);
+    if element.get("hyperlink").and_then(Value::as_bool) == Some(true) {
+        lines.push(format!("{inner}<Hyperlink>true</Hyperlink>"));
+    }
+    for (json_key, xml_tag) in [("width", "Width"), ("height", "Height")] {
+        if let Some(value) = element.get(json_key) {
+            let number = value
+                .as_u64()
+                .filter(|number| *number <= u32::MAX as u64)
+                .ok_or_else(|| {
+                    format!(
+                        "form label property {json_key} must be an integer in 0..=4294967295 for 8.3.27"
+                    )
+                })?;
+            lines.push(format!("{inner}<{xml_tag}>{number}</{xml_tag}>"));
+        }
+    }
+    for (key, tag) in [
+        ("autoMaxWidth", "AutoMaxWidth"),
+        ("autoMaxHeight", "AutoMaxHeight"),
+    ] {
+        if element.get(key).and_then(Value::as_bool) == Some(false) {
+            lines.push(format!("{inner}<{tag}>false</{tag}>"));
+        }
+    }
+    if let Some(value) = element.get("tooltipRepresentation").and_then(Value::as_str) {
+        lines.push(format!(
+            "{inner}<ToolTipRepresentation>{}</ToolTipRepresentation>",
+            escape_xml(value)
+        ));
+    }
+    emit_form_decoration_title(lines, element, name, &inner);
+    emit_form_companion(
+        lines,
+        "ContextMenu",
+        &format!("{name}КонтекстноеМеню"),
+        &inner,
+        ids,
+    );
+    emit_form_companion(
+        lines,
+        "ExtendedTooltip",
+        &format!("{name}РасширеннаяПодсказка"),
+        &inner,
+        ids,
+    );
+    emit_form_element_events(lines, element, name, &inner);
+    lines.push(format!("{indent}</LabelDecoration>"));
+    Ok(())
+}
+
+/// A decoration `Title` carries `formatted`. The flag comes from the published
+/// `{text, formatted}` form, or from the back-compat `formatted` key beside a
+/// plain title.
+fn emit_form_decoration_title(
+    lines: &mut Vec<String>,
+    element: &Map<String, Value>,
+    name: &str,
+    indent: &str,
+) {
+    // A decoration without an explicit title takes its own name, the way the
+    // platform does; writing nothing left the element unlabelled (#450 review).
+    let fallback;
+    let title = match element.get("title") {
+        Some(title) => title,
+        None => {
+            fallback = Value::String(name.to_string());
+            &fallback
+        }
+    };
+    let formatted = title
+        .get("formatted")
+        .and_then(Value::as_bool)
+        .or_else(|| element.get("formatted").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let text = title.get("text").unwrap_or(title);
+    let mut rendered = Vec::new();
+    emit_form_mltext_value(&mut rendered, indent, "Title", text);
+    // A decoration title always carries the attribute, true or false; the
+    // platform writes it either way, so omitting it when false would diverge.
+    if let Some(first) = rendered.first_mut() {
+        *first = first.replacen("<Title>", &format!("<Title formatted=\"{formatted}\">"), 1);
+        *first = first.replacen(
+            "<Title/>",
+            &format!("<Title formatted=\"{formatted}\"/>"),
+            1,
+        );
+    }
+    lines.extend(rendered);
 }
 
 pub(crate) fn emit_form_label_field(
@@ -11106,6 +11302,226 @@ mod tests {
             assert!(forms.join("AddedForm/Ext/Form/Module.bsl").is_file());
             let _ = fs::remove_dir_all(&context.cwd);
         }
+    }
+
+    /// #340. The context of a form is decided by the object that owns it, not
+    /// by whether some `Configuration.xml` happens to sit above it in the
+    /// tree. An external data processor stored under a workspace that also
+    /// holds a configuration was read as configuration context, so the main
+    /// attribute `epf.init` had just written was rejected as invalid there.
+    #[test]
+    fn form_validation_reads_context_from_the_owning_object_not_the_tree_above() {
+        let context = temp_context("external-form-under-configuration");
+        // A configuration lives in the same workspace, above the external
+        // object — the layout the report describes.
+        fs::create_dir_all(&context.cwd).unwrap();
+        fs::write(
+            context.cwd.join("Configuration.xml"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n\
+             \t<Configuration uuid=\"55555555-5555-5555-5555-555555555555\">\n\
+             \t\t<Properties>\n\t\t\t<Name>Sample</Name>\n\t\t\t<NamePrefix/>\n\t\t</Properties>\n\
+             \t\t<ChildObjects/>\n\t</Configuration>\n</MetaDataObject>\n",
+        )
+        .unwrap();
+        let owner = create_external_owner(&context, "ExternalDataProcessor", "ContextProcessor");
+        assert!(owner.is_file());
+        let added = add_form(&add_object_form_args(&owner, "MainForm"), &context);
+        assert!(added.ok, "{added:?}");
+        let form_path = context
+            .cwd
+            .join("external")
+            .join("ContextProcessor")
+            .join("Forms")
+            .join("MainForm/Ext/Form.xml");
+
+        assert!(
+            !form_is_config_context(&form_path),
+            "a form owned by an external object is never configuration context"
+        );
+
+        let outcome = validate_form(
+            &Map::from_iter([(
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            )]),
+            &context,
+        );
+
+        assert!(
+            !outcome
+                .errors
+                .iter()
+                .chain(outcome.warnings.iter())
+                .any(|line| line.contains("External* type in configuration context")),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// #389. `form-dsl-spec` documents `label` as `LabelDecoration`, the
+    /// pattern reference recommends it for forms built with
+    /// `unica.form.compile`, and `form-edit` says it uses the same DSL keys.
+    /// The native compiler had no such discriminator and answered
+    /// `Unsupported form element in native compiler`.
+    #[test]
+    fn form_compile_accepts_the_documented_label_decoration() {
+        let context = temp_context("compile-label-decoration");
+        let form_path = context.cwd.join("Form.xml");
+        fs::create_dir_all(&context.cwd).unwrap();
+        fs::write(&form_path, form_edit_remove_test_xml("")).unwrap();
+
+        let outcome = edit_form(
+            &Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({
+                        "elements": [{
+                            "label": "ИнформационнаяНадпись",
+                            "title": "Выберите параметры",
+                            "hyperlink": true,
+                            "width": 40
+                        }]
+                    }),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        let xml = fs::read_to_string(&form_path).unwrap();
+        assert!(
+            xml.contains("<LabelDecoration name=\"ИнформационнаяНадпись\""),
+            "{xml}"
+        );
+        assert!(xml.contains("<Hyperlink>true</Hyperlink>"), "{xml}");
+        assert!(xml.contains("<Width>40</Width>"), "{xml}");
+        assert!(xml.contains("Выберите параметры"), "{xml}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Review of #450: `LabelDecoration` allows only `Click` and
+    /// `URLProcessing`. Classifying `label` as a `LabelField` let `OnChange`
+    /// through preflight and would have emitted an event the platform does
+    /// not accept on a decoration.
+    #[test]
+    fn form_compile_refuses_a_label_event_the_decoration_does_not_allow() {
+        let context = temp_context("label-event-registry");
+        let form_path = context.cwd.join("Form.xml");
+        fs::create_dir_all(&context.cwd).unwrap();
+        fs::write(&form_path, form_edit_remove_test_xml("")).unwrap();
+
+        let outcome = edit_form(
+            &Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({
+                        "elements": [{
+                            "label": "Подсказка",
+                            "on": ["OnChange"]
+                        }]
+                    }),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("OnChange")),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// #341. One writer must not produce a form the other refuses. `form.add`
+    /// wrote a `Form.xml` without a root `ChildItems`, so the very next
+    /// `form.edit` failed with `No <ChildItems> section found in form`.
+    #[test]
+    fn add_form_produces_a_form_the_editor_accepts() {
+        let context = temp_context("add-form-round-trip");
+        let owner = create_external_owner(&context, "ExternalDataProcessor", "RoundTripProcessor");
+        let added = add_form(&add_object_form_args(&owner, "MainForm"), &context);
+        assert!(added.ok, "{added:?}");
+        let form_path = context
+            .cwd
+            .join("external")
+            .join("RoundTripProcessor")
+            .join("Forms")
+            .join("MainForm/Ext/Form.xml");
+
+        let edited = edit_form(
+            &Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({ "elements": [{ "input": "Комментарий" }] }),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(edited.ok, "{edited:?}");
+        let xml = fs::read_to_string(&form_path).unwrap();
+        assert!(xml.contains("<ChildItems>"), "{xml}");
+        assert!(xml.contains("Комментарий"), "{xml}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Review of #446: without `Attributes`, a root that has both `Parameters`
+    /// and `Commands` must still receive `ChildItems` before `Parameters`.
+    #[test]
+    fn form_edit_creates_child_items_before_parameters_when_attributes_are_absent() {
+        let context = temp_context("child-items-anchor-order");
+        let form_path = context.cwd.join("Form.xml");
+        fs::create_dir_all(&context.cwd).unwrap();
+        fs::write(
+            &form_path,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n\
+             \t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n\
+             \t<Parameters/>\n\t<Commands/>\n</Form>\n",
+        )
+        .unwrap();
+
+        let edited = edit_form(
+            &Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({ "elements": [{ "input": "Комментарий" }] }),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(edited.ok, "{edited:?}");
+        let xml = fs::read_to_string(&form_path).unwrap();
+        let items = xml.find("<ChildItems>").expect("the section was created");
+        let parameters = xml.find("<Parameters").expect("Parameters stays");
+        let commands = xml.find("<Commands").expect("Commands stays");
+        assert!(
+            items < parameters && parameters < commands,
+            "8.3.27 orders ChildItems -> Parameters -> Commands: {xml}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 
     #[test]

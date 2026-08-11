@@ -204,31 +204,21 @@ const CFE_PATCH_METHOD_INTERCEPTOR_TYPES: &[&str] = &["Before", "After"];
 const CFE_PATCH_METHOD_IDENTIFIER_PATTERN: &str = r"^[A-Za-z_А-Яа-яЁё][A-Za-z0-9_А-Яа-яЁё]*$";
 
 const NATIVE_XML_DSL_ARGS: &[&str] = &[
-    "BaseForm",
-    "Batch",
     "BodyLimit",
     "BorrowMainAttribute",
     "Capability",
-    "Child",
-    "Children",
     "CIPath",
-    "Columns",
-    "Command",
-    "CommandName",
     "CompatibilityMode",
     "ConfigDir",
     "ConfigPath",
     "Context",
     "CreateIfMissing",
     "DataSet",
-    "DataPath",
     "DefinitionFile",
     "Detailed",
     "EmitDsl",
     "ExtensionPath",
     "Expand",
-    "Field",
-    "Fields",
     "Force",
     "FromObject",
     "FormName",
@@ -242,7 +232,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "Limit",
     "IsFunction",
     "MaxErrors",
-    "MaxParams",
     "MethodName",
     "MetadataPath",
     "Mode",
@@ -261,7 +250,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "OutputPath",
     "Parent",
     "Path",
-    "Preset",
     "ProcessorName",
     "Purpose",
     "RightsPath",
@@ -278,37 +266,26 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "TemplatePath",
     "TemplateType",
     "TargetPath",
-    "Type",
     "Value",
     "Variant",
     "Vendor",
     "Version",
     "WithText",
-    "baseForm",
-    "batch",
     "bodyLimit",
     "borrowMainAttribute",
     "capability",
-    "child",
-    "children",
     "ciPath",
-    "columns",
-    "command",
-    "commandName",
     "compatibilityMode",
     "configDir",
     "configPath",
     "context",
     "createIfMissing",
     "dataSet",
-    "dataPath",
     "definitionFile",
     "detailed",
     "emitDsl",
     "extensionPath",
     "expand",
-    "field",
-    "fields",
     "force",
     "fromObject",
     "formName",
@@ -322,7 +299,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "limit",
     "isFunction",
     "maxErrors",
-    "maxParams",
     "methodName",
     "metadataPath",
     "mode",
@@ -341,7 +317,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "outputPath",
     "parent",
     "path",
-    "preset",
     "processorName",
     "purpose",
     "rightsPath",
@@ -358,7 +333,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "templatePath",
     "templateType",
     "targetPath",
-    "type",
     "value",
     "variant",
     "vendor",
@@ -383,6 +357,10 @@ const BUILD_ARGS: &[&str] = &[
     "target",
     "user",
 ];
+
+/// `unica.build.make` alone: the destination of the exported artifact and, for
+/// a cfe export, the extension it is exported from.
+const BUILD_MAKE_ARGS: &[&str] = &["extension", "output"];
 
 const RUNTIME_ARGS: &[&str] = &[
     "allExtensions",
@@ -2319,7 +2297,16 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                 names.push("definition");
             }
         }
-        ToolHandler::BuildRuntime { .. } => names.extend(BUILD_ARGS),
+        ToolHandler::BuildRuntime { command, .. } => {
+            names.extend(BUILD_ARGS);
+            // `make` is the only build command whose CLI takes an artifact
+            // destination, and the adapter already forwards both names. The
+            // schema is closed, so leaving them unpublished made the tool
+            // impossible to call correctly (#318).
+            if command.first() == Some(&"make") {
+                names.extend(BUILD_MAKE_ARGS);
+            }
+        }
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
         ToolHandler::RuntimeJob { action } => names.extend(runtime_job_args(action)),
         ToolHandler::CodeIntelligence { operation } => {
@@ -2413,6 +2400,11 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             "unica.code.graph" => vec!["mode"],
             _ => Vec::new(),
         },
+        // `v8-runner make` refuses the call without `--output`, so the schema
+        // says so instead of letting every call fail in the adapter.
+        ToolHandler::BuildRuntime { command, .. } if command.first() == Some(&"make") => {
+            vec!["output"]
+        }
         _ => Vec::new(),
     }
 }
@@ -2611,14 +2603,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Boolean --all-extensions covering every extension in operation syntax; only for the designer-* modes, since mode edt rejects it together with extension",
     ),
     (
-        "baseForm",
-        "Declared string argument that no handler reads; `<BaseForm>` is an element inside a borrowed Form.xml marking extension mode, never a call argument",
-    ),
-    (
-        "batch",
-        "Declared argument that no handler reads; `unica.dcs.info` with `Mode=query` always prints every packet and narrows only by `Name`.",
-    ),
-    (
         "bodyLimit",
         "Max page-body size for `unica.standards.explain` when it fetches a standard by `id`/`idOrAliasOrUrl`; the XML/DSL tools accept the key but never read it",
     ),
@@ -2667,14 +2651,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Boolean Designer syntax-check option (--check-use-synchronous-calls) accepted only by operation syntax with a designer-* mode",
     ),
     (
-        "child",
-        "Declared string argument that no handler reads; a child subsystem is added via `unica.subsystem.edit` with `operation: \"add-child\"` and the name in `value`",
-    ),
-    (
-        "children",
-        "Declared array-of-strings argument that no handler reads; nested form elements are a `children` key inside the form DSL definition, not a call argument",
-    ),
-    (
         "ciPath",
         "Path to a subsystem's `Ext/CommandInterface.xml` (the subsystem directory also resolves) for `unica.interface.edit` and `unica.interface.validate`, relative to `cwd`",
     ),
@@ -2685,18 +2661,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "codes",
         "Array of diagnostic codes such as \"АПК:142\" or \"LineLength\"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, on code.diagnostics it filters the catalog, and standards.search ignores it.",
-    ),
-    (
-        "columns",
-        "Declared string argument that no handler reads; table columns are a `columns` key inside the form DSL definition, not a call argument",
-    ),
-    (
-        "command",
-        "Declared string argument that no handler reads; commands are described in the `commands` section of the form DSL definition instead",
-    ),
-    (
-        "commandName",
-        "Declared string argument that no handler reads; `CommandName` is an element inside Form.xml, not a call argument",
     ),
     (
         "compatibilityMode",
@@ -2745,10 +2709,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "cwd",
         "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
-    ),
-    (
-        "dataPath",
-        "Declared string argument that no handler reads; `DataPath` is a Form.xml binding element, expressed as a `path` key in the form DSL",
     ),
     (
         "dataSet",
@@ -2834,14 +2794,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "features",
         "Array of Vanessa Automation feature paths narrowing operation test with testRunner va; each entry becomes one --feature",
-    ),
-    (
-        "field",
-        "Declared string argument that no handler reads; DCS fields are added via `unica.dcs.edit` with `operation: \"add-field\"` and the shorthand in `value`",
-    ),
-    (
-        "fields",
-        "Declared array-of-strings argument that no handler reads; data-set fields are a `fields` key inside the DCS JSON definition, not a call argument",
     ),
     (
         "filterTags",
@@ -2947,10 +2899,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "maxOutputTokens",
         "Integer output budget for unica.code.graph, forwarded as max_output_tokens; use it to keep a large graph answer within context",
-    ),
-    (
-        "maxParams",
-        "Declared integer argument that no handler reads: `unica.mxl.info` answers with every area parameter as typed data and publishes no cap",
     ),
     (
         "mcpConfig",
@@ -3076,10 +3024,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "position",
         "Where unica.code.patch places the content relative to the selector: before or after. Accepted only when insert names a selector",
-    ),
-    (
-        "preset",
-        "Declared string argument that no handler reads; role presets are a `preset` key (`view`, `edit`) inside the role JSON definition, not a call argument",
     ),
     (
         "processorName",
@@ -3272,10 +3216,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "tool",
         "Runner tool payload to fetch with operation tools-download: yaxunit, vanessa or client-mcp",
-    ),
-    (
-        "type",
-        "Declared string argument that no handler reads",
     ),
     (
         "types",
@@ -4337,6 +4277,170 @@ mod tests {
         assert!(
             stale.is_empty(),
             "described arguments no longer exist: {stale:?}"
+        );
+    }
+
+    /// #318. `v8-runner make` requires `--output`, and cfe export additionally
+    /// requires `--extension`. The internal mapper already forwards both, but
+    /// the published schema carried neither and is closed, so no MCP caller
+    /// could ever pass them and the tool could not do its one job.
+    #[test]
+    fn build_make_publishes_the_arguments_its_command_requires() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.build.make")
+            .unwrap();
+
+        let schema = input_schema_for_tool(&tool);
+        let properties = sorted_property_names(&schema);
+
+        assert!(properties.contains(&"output"), "{properties:?}");
+        assert!(properties.contains(&"extension"), "{properties:?}");
+        assert_eq!(
+            schema["required"],
+            json!(["output"]),
+            "the CLI refuses the call without it, so the schema says so"
+        );
+
+        let mut args = Map::new();
+        args.insert("output".to_string(), json!("build/Extension.cfe"));
+        args.insert("extension".to_string(), json!("МоёРасширение"));
+        validate_tool_arguments(tool, &args, false).expect("the documented make call is accepted");
+    }
+
+    /// #319. `make` exports an artifact out of an infobase; it does not build
+    /// one from sources. The description read as the latter, so an agent
+    /// reached for `make` where `build` then `make` was needed.
+    #[test]
+    fn build_make_description_says_the_artifact_comes_out_of_the_infobase() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.build.make")
+            .unwrap();
+
+        let description = tool.description.to_lowercase();
+
+        assert!(description.contains("infobase"), "{}", tool.description);
+        assert!(
+            description.contains("export"),
+            "the verb names what the command does: {}",
+            tool.description
+        );
+
+        // Review of #447: a description that sends the caller to a tool that
+        // does not exist is worse than the vague one it replaced. Every
+        // `unica.*` name it mentions must be in the registry.
+        let published = tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        for word in tool.description.split_whitespace() {
+            let referenced = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
+            if referenced.starts_with("unica.") {
+                assert!(
+                    published.contains(referenced),
+                    "description names a tool that does not exist: {referenced}"
+                );
+            }
+        }
+    }
+
+    /// #315. A published argument that no handler reads is noise in every
+    /// schema that carries the shared native list, and a caller who passes it
+    /// gets silence instead of a rejection. The descriptions already say which
+    /// ones those are, so the check reads them rather than repeating a list
+    /// that would drift.
+    #[test]
+    fn no_published_argument_is_described_as_unread() {
+        // Review of #451: the previous oracle was built from the descriptions
+        // this change removes, so after the removal it was empty and the test
+        // held nothing. The names are pinned here instead — the table is the
+        // contract, and it does not vanish with the descriptions.
+        const REMOVED: &[&str] = &[
+            "baseForm",
+            "batch",
+            "child",
+            "children",
+            "columns",
+            "command",
+            "commandName",
+            "dataPath",
+            "field",
+            "fields",
+            "maxParams",
+            "preset",
+            "type",
+        ];
+
+        let published = tools()
+            .into_iter()
+            .flat_map(|tool| {
+                let schema = input_schema_for_tool(&tool);
+                sorted_property_names(&schema)
+                    .into_iter()
+                    .map(move |name| (tool.name, name.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|(_, name)| {
+                let lower = format!("{}{}", name[..1].to_lowercase(), &name[1..]);
+                REMOVED.contains(&lower.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        assert!(published.is_empty(), "{published:?}");
+
+        // And the descriptions must not describe an argument as unread while
+        // still publishing it, so a future addition cannot reintroduce the
+        // class the table pins by name.
+        let unread = ARG_DESCRIPTIONS
+            .iter()
+            .filter(|(_, description)| description.contains("no handler reads"))
+            .map(|(name, _)| *name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            unread.is_empty(),
+            "an argument described as unread must not stay published: {unread:?}"
+        );
+    }
+
+    /// #290, требование 1: у каждого мутатора есть объявленная стратегия
+    /// предпросмотра, и она выводится из реестра, а не из растущего набора
+    /// исключений по имени операции. Читатель стратегии не имеет — предпросмотр
+    /// ему не адресован (ADR-0044).
+    #[test]
+    fn every_mutating_tool_declares_a_preview_strategy() {
+        use crate::application::{preview_strategy, PreviewStrategy};
+
+        let mut planned = Vec::new();
+        for tool in tools() {
+            let strategy = preview_strategy(&tool);
+            if !tool.execution.is_mutating() {
+                assert_eq!(strategy, None, "{} is a reader", tool.name);
+                continue;
+            }
+            let strategy = strategy
+                .unwrap_or_else(|| panic!("{} has no declared preview strategy", tool.name));
+            if strategy == PreviewStrategy::PlannedCommand {
+                planned.push(tool.name);
+            }
+        }
+
+        planned.sort_unstable();
+        // Табличная часть: внешнюю команду показывают ровно те мутаторы,
+        // которые её и запускают. Новый такой инструмент обязан появиться
+        // здесь осознанно, а не попасть в класс молча.
+        assert_eq!(
+            planned,
+            [
+                "unica.build.dump",
+                "unica.build.load",
+                "unica.build.make",
+                "unica.build.run",
+                "unica.build.update",
+                "unica.runtime.execute",
+                "unica.runtime.job.cancel",
+                "unica.runtime.job.start",
+            ]
         );
     }
 

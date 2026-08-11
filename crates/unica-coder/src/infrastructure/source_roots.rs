@@ -64,11 +64,21 @@ pub(crate) fn resolve_source_root(
     result.map_err(invalid_source_root)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
+thread_local! {
+    /// Counts how many times a call re-reads the project config. A scan that
+    /// resolves the source set once per candidate instead of once per call is
+    /// what made a bare-kind prefix query cost seconds (#277).
+    pub(crate) static NAMED_SOURCE_SET_RESOLUTIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn resolve_named_source_set(
     context: &WorkspaceContext,
     name: &str,
 ) -> Result<ResolvedNamedSourceSet, NamedSourceSetError> {
+    #[cfg(test)]
+    NAMED_SOURCE_SET_RESOLUTIONS.with(|count| count.set(count.get() + 1));
     if name.is_empty() {
         return Err(NamedSourceSetError::new(
             NamedSourceSetErrorKind::NotFound,

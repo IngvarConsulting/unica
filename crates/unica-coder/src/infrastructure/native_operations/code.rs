@@ -2605,6 +2605,46 @@ mod tests {
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
+    /// #420. The writer must not be the source of a dirty diff: content that
+    /// carries no trailing whitespace must not gain any on the way in, and the
+    /// separator the writer adds itself is a bare EOL, never an indented blank
+    /// line. What the caller wrote is preserved verbatim — the writer neither
+    /// adds whitespace nor silently edits the body it was given.
+    #[test]
+    fn code_patch_insert_adds_no_trailing_whitespace_of_its_own() {
+        let context = temp_context("insert-trailing-whitespace");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(
+            &module,
+            "Процедура Первая()\r\nКонецПроцедуры\r\n\
+             Процедура Цель()\r\n\tСтарое = 1;\r\nКонецПроцедуры\r\n",
+        )
+        .unwrap();
+        let mut args = tail_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "Процедура Помощник()\n\tЗначение = 1;\n\n\tВозврат Значение;\nКонецПроцедуры",
+        );
+        args.insert("selector".to_string(), json!({"method": "Цель"}));
+        args.insert("position".to_string(), json!("before"));
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let after = fs::read_to_string(&module).unwrap();
+        let dirty = after
+            .split("\r\n")
+            .enumerate()
+            .filter(|(_, line)| line.len() != line.trim_end().len())
+            .collect::<Vec<_>>();
+        assert!(dirty.is_empty(), "git diff --check would flag {dirty:?}");
+        assert!(after.contains("\tВозврат Значение;"), "{after}");
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
     fn tail_args(source_set: &str, metadata_path: &str, content: &str) -> Map<String, Value> {
         Map::from_iter([
             ("sourceSet".to_string(), json!(source_set)),
