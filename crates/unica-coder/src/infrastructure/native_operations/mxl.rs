@@ -845,7 +845,13 @@ pub(crate) fn decompile_mxl(
     let result = (|| -> Result<(String, String, PathBuf), String> {
         let template_path = resolve_mxl_decompile_path(args, context)?;
         if !template_path.is_file() {
-            return Err(format!("File not found: {}", template_path.display()));
+            // Report the selector the caller gave, not the absolutised path:
+            // a logical call never reaches here — the selector refuses an
+            // absent resource before this point — so the raw argument is the
+            // only thing worth echoing back.
+            let shown = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
+                .unwrap_or_else(|| template_path.clone());
+            return Err(format!("File not found: {}", shown.display()));
         }
         let text = read_utf8_sig(&template_path)?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))

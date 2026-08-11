@@ -1700,8 +1700,11 @@ Record what fails before changing prose.
 A new record in `spec/architecture/invariants.md`, Rule in Russian, one
 statement:
 
+Add a record named `INV-SOURCE-READER-SELECTOR` (shown here without its heading
+marker, so the registry's identifier ledger sees exactly one declaration):
+
 ```markdown
-### INV-SOURCE-READER-SELECTOR — Читатель принимает ровно один селектор цели
+INV-SOURCE-READER-SELECTOR — Читатель принимает ровно один селектор цели
 
 - **Rule:** Предметный читатель в переходном состоянии публикует логический
   селектор `sourceSet` с необязательным `metadataPath` и своё файловое поле,

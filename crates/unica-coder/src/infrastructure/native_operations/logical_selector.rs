@@ -585,13 +585,19 @@ mod tests {
         let planted = src.join("planted.xml");
         fs::write(&planted, "<Rights/>").unwrap();
         fs::remove_file(src.join("Roles/Sales/Ext/Rights.xml")).unwrap();
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&planted, src.join("Roles/Sales/Ext/Rights.xml")).unwrap();
-            let failure = selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])
-                .expect_err("a symlinked resource is not a direct regular file");
-            assert_eq!(failure.code(), "containment_denied");
-        }
+        let Some(created) = crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
+            &planted,
+            src.join("Roles/Sales/Ext/Rights.xml"),
+        ) else {
+            // The host cannot create symlinks, so there is nothing to refuse.
+            cleanup(&context);
+            return;
+        };
+        created.unwrap();
+
+        let failure = selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])
+            .expect_err("a symlinked resource is not a direct regular file");
+        assert_eq!(failure.code(), "containment_denied");
         cleanup(&context);
     }
 

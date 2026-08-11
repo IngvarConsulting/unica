@@ -3022,6 +3022,117 @@ def write_named_subsystem_fixture(target: Path, name: str, child: str | None = N
     )
 
 
+# ADR-0048: a bridged reader may select its target logically. Such an example
+# carries no path to substitute, so the harness materialises a registered,
+# addressable object instead and points the example at it.
+LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
+    "unica.role.info": {"address": "Role.ParityRole"},
+    "unica.role.validate": {"address": "Role.ParityRole"},
+    "unica.form.info": {"address": "Catalog.ParityCatalog.Form.ParityForm"},
+    "unica.form.validate": {"address": "Catalog.ParityCatalog.Form.ParityForm"},
+    "unica.dcs.info": {"address": "Report.ParityReport.Template.ParityDcs"},
+    "unica.dcs.validate": {"address": "Report.ParityReport.Template.ParityDcs"},
+    "unica.mxl.info": {"address": "Report.ParityReport.Template.ParityMxl"},
+    "unica.mxl.validate": {"address": "Report.ParityReport.Template.ParityMxl"},
+    "unica.mxl.decompile": {"address": "Report.ParityReport.Template.ParityMxl"},
+    "unica.subsystem.info": {"address": "Subsystem.ParitySubsystem"},
+    "unica.subsystem.validate": {"address": "Subsystem.ParitySubsystem"},
+    "unica.cf.info": {"address": None},
+    "unica.cf.validate": {"address": None},
+}
+
+
+def descriptor_image(kind: str, name: str, children: str = "") -> str:
+    # A validator reads the descriptor, so the identity fields it checks — the
+    # UUID and a non-empty synonym — have to be real, not omitted.
+    # Derived, not random: `hash` is salted per process, and a fixture
+    # that changes between runs is not a fixture.
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+    uuid = f"{digest[:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
+    synonym = (
+        "\t\t\t<Synonym>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>ru</v8:lang>\n"
+        f"\t\t\t\t\t<v8:content>{name}</v8:content>\n"
+        "\t\t\t\t</v8:item>\n\t\t\t</Synonym>\n"
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"'
+        ' xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">\n'
+        f'\t<{kind} uuid="{uuid}">\n\t\t<Properties>\n\t\t\t<Name>{name}</Name>\n'
+        f"{synonym}\t\t</Properties>\n{children}\t</{kind}>\n</MetaDataObject>\n"
+    )
+
+
+def child_objects(kind: str, name: str) -> str:
+    return f"\t\t<ChildObjects>\n\t\t\t<{kind}>{name}</{kind}>\n\t\t</ChildObjects>\n"
+
+
+def materialise_logical_reader_target(source_root: Path) -> None:
+    """Write the registered objects every logical reader example addresses."""
+    configuration = source_root / "Configuration.xml"
+
+    (source_root / "Roles").mkdir(parents=True, exist_ok=True)
+    (source_root / "Roles" / "ParityRole.xml").write_text(
+        descriptor_image("Role", "ParityRole"), encoding="utf-8"
+    )
+    copy_reader_fixture(
+        BSP_ROLE_ADMIN_RIGHTS_FIXTURE,
+        source_root / "Roles" / "ParityRole" / "Ext" / "Rights.xml",
+    )
+    register_configuration_child(configuration, "Role", "ParityRole")
+
+    (source_root / "Catalogs").mkdir(parents=True, exist_ok=True)
+    (source_root / "Catalogs" / "ParityCatalog.xml").write_text(
+        descriptor_image("Catalog", "ParityCatalog", child_objects("Form", "ParityForm")),
+        encoding="utf-8",
+    )
+    forms = source_root / "Catalogs" / "ParityCatalog" / "Forms"
+    forms.mkdir(parents=True, exist_ok=True)
+    (forms / "ParityForm.xml").write_text(
+        descriptor_image("Form", "ParityForm"), encoding="utf-8"
+    )
+    copy_reader_fixture(
+        BSP_FORM_BUSINESS_PROCESS_FIXTURE, forms / "ParityForm" / "Ext" / "Form.xml"
+    )
+    register_configuration_child(configuration, "Catalog", "ParityCatalog")
+
+    (source_root / "Reports").mkdir(parents=True, exist_ok=True)
+    (source_root / "Reports" / "ParityReport.xml").write_text(
+        descriptor_image(
+            "Report",
+            "ParityReport",
+            "\t\t<ChildObjects>\n\t\t\t<Template>ParityDcs</Template>\n"
+            "\t\t\t<Template>ParityMxl</Template>\n\t\t</ChildObjects>\n",
+        ),
+        encoding="utf-8",
+    )
+    templates = source_root / "Reports" / "ParityReport" / "Templates"
+    templates.mkdir(parents=True, exist_ok=True)
+    for template, fixture in (
+        ("ParityDcs", BSP_DCS_OBJECT_FIXTURE),
+        ("ParityMxl", BSP_MXL_RECEIPT_FIXTURE),
+    ):
+        (templates / f"{template}.xml").write_text(
+            descriptor_image("Template", template), encoding="utf-8"
+        )
+        copy_reader_fixture(fixture, templates / template / "Ext" / "Template.xml")
+    register_configuration_child(configuration, "Report", "ParityReport")
+
+    write_named_subsystem_fixture(
+        source_root / "Subsystems" / "ParitySubsystem.xml", "ParitySubsystem"
+    )
+    register_configuration_child(configuration, "Subsystem", "ParitySubsystem")
+
+
+def prepare_logical_reader_example(arguments: dict[str, Any], tool_name: str) -> None:
+    arguments["sourceSet"] = "main"
+    address = LOGICAL_READER_TARGETS[tool_name]["address"]
+    if address is None:
+        arguments.pop("metadataPath", None)
+    else:
+        arguments["metadataPath"] = address
+
+
 def prepare_skill_reader_fixtures(
     examples: list[SkillMcpExample],
     execution_by_tool: dict[str, str],
@@ -3076,6 +3187,8 @@ EndProcedure
 
     interface_fixture = "interface-validate/Sales/Ext/CommandInterface.xml"
     role_rights_fixture = BSP_ROLE_ADMIN_RIGHTS_FIXTURE
+    materialise_logical_reader_target(source_roots["main"])
+
     handled: set[str] = set()
     for example in examples:
         tool_name = example.payload["params"]["name"]
@@ -3083,6 +3196,12 @@ EndProcedure
             continue
         handled.add(tool_name)
         arguments = example.payload["params"]["arguments"]
+
+        # ADR-0048: a logical example carries a selector, not a path, so the
+        # path substitution below has nothing to work on.
+        if "sourceSet" in arguments and tool_name in LOGICAL_READER_TARGETS:
+            prepare_logical_reader_example(arguments, tool_name)
+            continue
 
         if tool_name in {"unica.cf.info", "unica.cf.validate", "unica.cfe.diff"}:
             continue
