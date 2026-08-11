@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 
 use super::common::{
     absolutize, find_support_config_dir, guard_active_format_dependencies,
-    guard_exact_preimage_if_unprotected, is_uuid_text, parse_support_header, path_arg,
-    support_root_uuid_from_bytes, support_uuid_dependency_paths, MutationData,
+    guard_exact_preimage_if_unprotected, is_uuid_text, parse_quoted_support_strings,
+    parse_support_header, path_arg, support_root_uuid_from_bytes, support_uuid_dependency_paths,
+    MutationData,
 };
 use super::compile_transaction::{
     CompileTransaction, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
@@ -46,6 +47,13 @@ impl SupportCapability {
 
     fn enabled(self) -> bool {
         matches!(self, Self::On)
+    }
+
+    fn argument_value(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
     }
 }
 
@@ -244,6 +252,7 @@ fn edit_support_execution(
         ));
     }
 
+    let mut capability_vendor_payload_preimages = None;
     let (mut outcome, updated, data) = match action {
         SupportEditAction::Capability(capability) => {
             if (global_flag == 0) == capability.enabled() {
@@ -257,6 +266,15 @@ fn edit_support_execution(
                     format!("Возможность изменения конфигурации уже {word} — изменений нет."),
                 ));
             }
+            let vendor_payload_preimages = support_vendor_payload_preimages(&config_dir)?;
+            preflight_required_vendor_payloads(
+                &config_dir,
+                &text,
+                vendor_count,
+                capability,
+                &vendor_payload_preimages.1,
+            )?;
+            capability_vendor_payload_preimages = Some(vendor_payload_preimages);
             plan_capability(&bin_path, &text, capability, &resolved_path)
         }
         SupportEditAction::Set(rule) => {
@@ -296,7 +314,11 @@ fn edit_support_execution(
     }
 
     let (vendor_payload_snapshot, vendor_payload_reads) =
-        support_vendor_payload_preimages(&config_dir)?;
+        if let Some(preimages) = capability_vendor_payload_preimages {
+            preimages
+        } else {
+            support_vendor_payload_preimages(&config_dir)?
+        };
     let updated_bytes = parent_configurations_bytes(&updated);
     let mut transaction = CompileTransaction::new();
     transaction.replace_bytes(&bin_path, &raw, updated_bytes.clone())?;
@@ -634,6 +656,89 @@ fn support_vendor_payload_preimages(
     Ok((snapshot, reads))
 }
 
+fn preflight_required_vendor_payloads(
+    config_dir: &Path,
+    parent_configurations: &str,
+    vendor_count: usize,
+    capability: SupportCapability,
+    vendor_payloads: &[SupportVendorPayloadPreimage],
+) -> Result<(), String> {
+    let quoted = parse_quoted_support_strings(parent_configurations);
+    let expected_fields = vendor_count.checked_mul(3).ok_or_else(|| {
+        "Слишком много записей поставщиков в ParentConfigurations.bin".to_string()
+    })?;
+    if quoted.len() != expected_fields {
+        return Err(format!(
+            "Не удалось сопоставить записи поставщиков в ParentConfigurations.bin: заголовок объявляет {vendor_count}, строковых полей {}",
+            quoted.len()
+        ));
+    }
+    let vendor_flags = support_vendor_rule_flags(parent_configurations, vendor_count)?;
+    let missing = vendor_flags
+        .into_iter()
+        .zip(quoted.chunks_exact(3))
+        .filter(|(flag, _)| *flag != SupportObjectRule::Locked.flag())
+        .map(|(_, fields)| fields[2].as_str())
+        .filter(|vendor_name| {
+            !vendor_payloads.iter().any(|(path, _)| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| stem == *vendor_name)
+                    && path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("cf"))
+            })
+        })
+        .map(|vendor_name| {
+            config_dir
+                .join("Ext")
+                .join("ParentConfigurations")
+                .join(format!("{vendor_name}.cf"))
+        })
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Capability={} cannot be applied: missing required vendor payload(s): {}. ParentConfigurations.bin was not changed; export the matching vendor configuration payload with the 1C platform first.",
+        capability.argument_value(),
+        missing
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn support_vendor_rule_flags(text: &str, expected_count: usize) -> Result<Vec<u8>, String> {
+    let mut flags = Vec::with_capacity(expected_count);
+    let mut cursor = 0usize;
+    while cursor < text.len() {
+        if let Some((flag_start, flag_end)) = vendor_flag_span(text, cursor) {
+            let flag = text[flag_start..flag_end].parse::<u8>().map_err(|_| {
+                "Неизвестный флаг поставщика в ParentConfigurations.bin".to_string()
+            })?;
+            flags.push(flag);
+            cursor = flag_end;
+            continue;
+        }
+        let ch = text[cursor..]
+            .chars()
+            .next()
+            .expect("cursor remains on a valid character boundary");
+        cursor += ch.len_utf8();
+    }
+    if flags.len() != expected_count {
+        return Err(format!(
+            "Не удалось сопоставить флаги поставщиков в ParentConfigurations.bin: заголовок объявляет {expected_count}, разобрано {}",
+            flags.len()
+        ));
+    }
+    Ok(flags)
+}
+
 fn replace_global_flag(text: &str, target: u8) -> Result<String, String> {
     let prefix = "{6,";
     let Some(rest) = text.strip_prefix(prefix) else {
@@ -873,6 +978,24 @@ mod tests {
             .to_string()
     }
 
+    fn locked_parent_configurations_without_payload() -> String {
+        parent_configurations()
+            .replacen("{6,0,1,", "{6,1,1,", 1)
+            .replacen(
+                "dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                "dddddddd-dddd-dddd-dddd-dddddddddddd,1,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                1,
+            )
+    }
+
+    fn editable_parent_configurations_with_unlocked_vendor_without_payload() -> String {
+        parent_configurations().replacen(
+            "dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            "dddddddd-dddd-dddd-dddd-dddddddddddd,1,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            1,
+        )
+    }
+
     #[test]
     fn support_edit_replaces_parent_configurations_transactionally() {
         let fixture = SupportFixture::new("transaction", "2.20");
@@ -912,6 +1035,91 @@ mod tests {
         );
         assert!(
             updated.contains(",0,0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            "{updated}"
+        );
+        assert_eq!(fs::read(vendor_payload).unwrap(), vendor_bytes);
+    }
+
+    #[test]
+    fn support_capability_on_rejects_missing_required_vendor_payload_without_writing_bin() {
+        let fixture = SupportFixture::new("capability-on-missing-vendor-payload", "2.20");
+        fs::write(
+            &fixture.bin_path,
+            locked_parent_configurations_without_payload(),
+        )
+        .unwrap();
+        let bin_before = fs::read(&fixture.bin_path).unwrap();
+        let args = json!({
+            "Path": "src",
+            "Capability": "on"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let error = edit_support_result(&args, &fixture.context).unwrap_err();
+
+        assert!(error.contains("Capability=on"), "{error}");
+        assert!(error.contains("required vendor payload"), "{error}");
+        assert!(error.contains("VendorConf.cf"), "{error}");
+        assert_eq!(fs::read(&fixture.bin_path).unwrap(), bin_before);
+    }
+
+    #[test]
+    fn support_capability_off_rejects_missing_required_vendor_payload_without_writing_bin() {
+        let fixture = SupportFixture::new("capability-off-missing-vendor-payload", "2.20");
+        fs::write(
+            &fixture.bin_path,
+            editable_parent_configurations_with_unlocked_vendor_without_payload(),
+        )
+        .unwrap();
+        let bin_before = fs::read(&fixture.bin_path).unwrap();
+        let args = json!({
+            "Path": "src",
+            "Capability": "off"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let error = edit_support_result(&args, &fixture.context).unwrap_err();
+
+        assert!(error.contains("Capability=off"), "{error}");
+        assert!(error.contains("required vendor payload"), "{error}");
+        assert!(error.contains("VendorConf.cf"), "{error}");
+        assert_eq!(fs::read(&fixture.bin_path).unwrap(), bin_before);
+    }
+
+    #[test]
+    fn support_capability_on_accepts_and_preserves_matching_vendor_payload() {
+        let fixture = SupportFixture::new("capability-on-with-vendor-payload", "2.20");
+        fs::write(
+            &fixture.bin_path,
+            locked_parent_configurations_without_payload(),
+        )
+        .unwrap();
+        let vendor_dir = fixture.root.join("src/Ext/ParentConfigurations");
+        fs::create_dir(&vendor_dir).unwrap();
+        let vendor_payload = vendor_dir.join("VendorConf.CF");
+        let vendor_bytes = b"platform vendor payload".to_vec();
+        fs::write(&vendor_payload, &vendor_bytes).unwrap();
+        let args = json!({
+            "Path": "src",
+            "Capability": "on"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let outcome = edit_support_result(&args, &fixture.context).unwrap();
+
+        assert!(outcome.ok, "{outcome:?}");
+        let updated = fs::read_to_string(&fixture.bin_path).unwrap();
+        assert!(updated.contains("{6,0,1,"), "{updated}");
+        assert!(
+            updated.contains(
+                "dddddddd-dddd-dddd-dddd-dddddddddddd,0,eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+            ),
             "{updated}"
         );
         assert_eq!(fs::read(vendor_payload).unwrap(), vendor_bytes);
