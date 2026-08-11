@@ -27,6 +27,7 @@ use crate::infrastructure::native_operations::dcs::{
 use crate::infrastructure::native_operations::external::external_init_planned_xml_paths;
 use crate::infrastructure::native_operations::form::{
     form_compile_infer_from_object_target, form_compile_normalize_from_object_output_label,
+    resolve_form_read_path,
     form_parent_metadata_owner_candidate,
 };
 use crate::infrastructure::native_operations::help::resolve_help_object_dir_for_format_guard;
@@ -1036,9 +1037,7 @@ fn handler_resolved_format_paths(
         "form-add" => {
             raw.and_then(|path| resolve_form_add_object_path(absolutize(path, &context.cwd)).ok())
         }
-        "form-info" | "form-validate" => {
-            raw.map(|path| resolve_form_info_path(absolutize(path, &context.cwd)))
-        }
+        "form-info" | "form-validate" => resolve_form_read_path(args, context).ok(),
         "interface-validate" => resolve_interface_validate_path(args, context).ok(),
         "subsystem-edit" => {
             raw.and_then(|path| resolve_subsystem_edit_xml(absolutize(path, &context.cwd)).ok())

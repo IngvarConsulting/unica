@@ -11,6 +11,9 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::secure_read::{
     RetainedRootSecureRead, SecureTreeCaptureLimits,
 };
+use crate::infrastructure::native_operations::logical_selector::{
+    logical_selection, AttachedResource,
+};
 use crate::infrastructure::platform_xml_owner::root_version_literal;
 use crate::infrastructure::project_sources::discover_project_source_map;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -310,13 +313,54 @@ pub(crate) fn subsystem_validation_format_dependency_paths(
 
 /// Return the exact platform XML documents whose contents the public
 /// subsystem read handlers inspect for the requested path semantics.
+/// A subsystem descriptor is itself what the reader parses, so the address maps
+/// to the descriptor rather than to something under an `Ext/` directory.
+pub(crate) const SUBSYSTEM_KINDS: &[&str] = &["Subsystem"];
+
+/// The single args→path entry point of `subsystem.info` and
+/// `subsystem.validate`, and the one the format guard calls.
+///
+/// `sourceSet` with no address means the source root, which for this reader is
+/// the registered tree of the whole set — the same answer the `Subsystems`
+/// directory path gives today. `subsystem.validate` publishes `metadataPath` as
+/// required, so the schema refuses that call before it arrives here; the branch
+/// stays because `resolve_subsystem_validate_xml` rejects a directory anyway,
+/// and a future schema change must not be able to produce a wrong answer.
+pub(crate) fn resolve_subsystem_read_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    if args.contains_key("sourceSet") && !args.contains_key("metadataPath") {
+        let selection = logical_selection(args, context, AttachedResource::ConfigurationRoot, &[])
+            .expect("sourceSet is present")
+            .map_err(|failure| failure.to_string())?;
+        let source_root = selection
+            .resource_path
+            .parent()
+            .ok_or_else(|| "the resolved source root has no directory".to_string())?;
+        return Ok(source_root.join("Subsystems"));
+    }
+    if let Some(selection) = logical_selection(
+        args,
+        context,
+        AttachedResource::Descriptor,
+        SUBSYSTEM_KINDS,
+    ) {
+        return selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+    }
+    let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
+    reject_subsystem_info_parent_components(&raw_path)?;
+    Ok(absolutize(raw_path, &context.cwd))
+}
+
 pub(crate) fn subsystem_read_format_dependency_paths(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     operation: &str,
 ) -> Result<Vec<PathBuf>, String> {
-    let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
-    let path = absolutize(raw_path, &context.cwd);
+    let path = resolve_subsystem_read_path(args, context)?;
 
     if operation == "subsystem-validate" {
         let descriptor = resolve_subsystem_validate_xml(path)?;
@@ -986,8 +1030,7 @@ pub(crate) fn validate_subsystem(
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
     let result = (|| -> Result<(bool, String, PathBuf), String> {
-        let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
-        let path = absolutize(raw_path, &context.cwd);
+        let path = resolve_subsystem_read_path(args, context)?;
         let detailed = bool_arg(args, &["detailed", "Detailed"]);
         let xml_path = match resolve_subsystem_validate_xml(path) {
             Ok(path) => path,
@@ -2250,9 +2293,7 @@ fn prepare_subsystem_info_with_checkpoint(
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> Result<PreparedSubsystemInfo, String> {
     checkpoint().map_err(subsystem_info_checkpoint_message)?;
-    let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
-    reject_subsystem_info_parent_components(&raw_path)?;
-    let path = absolutize(raw_path, &context.cwd);
+    let path = resolve_subsystem_read_path(args, context)?;
 
     // Only the source root's `Subsystems/` folder asks the hierarchy question.
     // A nested folder would omit the required ancestor chain, while a
@@ -4992,5 +5033,158 @@ mod tests {
         assert_eq!(fs::read(&config_path).unwrap(), config_before);
         assert!(!context.cwd.join("Subsystems").exists());
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+}
+
+#[cfg(test)]
+mod subsystem_read_selector_bridge_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    /// One registered top-level subsystem with a registered child, so both the
+    /// whole-tree and the single-node reads have something to answer.
+    fn workspace(name: &str) -> WorkspaceContext {
+        let root = std::env::temp_dir().join(format!(
+            "unica-subsystem-read-bridge-{name}-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let src = root.join("src");
+        fs::create_dir_all(src.join("Subsystems/Parent/Subsystems")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Subsystem>Parent</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Subsystems/Parent.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Parent</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects><Subsystem>Child</Subsystem></ChildObjects></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Subsystems/Parent/Subsystems/Child.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Subsystem uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"><Properties><Name>Child</Name><IncludeInCommandInterface>true</IncludeInCommandInterface><Content/></Properties><ChildObjects/></Subsystem></MetaDataObject>"#,
+        )
+        .unwrap();
+        // The topology walk compares a physical path against the configured
+        // source roots. On macOS the temp directory is a symlink, so a
+        // non-canonical workspace root makes that comparison fail for reasons
+        // that have nothing to do with the tool under test.
+        let physical_root = root.canonicalize().unwrap();
+        WorkspaceContext {
+            cwd: physical_root.clone(),
+            workspace_root: physical_root.clone(),
+            cache_root: physical_root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    #[test]
+    fn subsystem_info_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("info");
+
+        let physical = analyze_subsystem_info(
+            &Map::from_iter([(
+                "SubsystemPath".to_string(),
+                json!("src/Subsystems/Parent.xml"),
+            )]),
+            &context,
+        );
+        let logical = analyze_subsystem_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Subsystem.Parent")),
+            ]),
+            &context,
+        );
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert!(physical.outcome.ok, "{:?}", physical.outcome);
+        assert_eq!(
+            serde_json::to_value(&logical.data).unwrap(),
+            serde_json::to_value(&physical.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// `sourceSet` with no address is the source root, and the whole registered
+    /// tree is exactly what the `Subsystems` directory path answers today.
+    #[test]
+    fn subsystem_info_reads_the_whole_registered_tree_from_the_source_set_alone() {
+        let context = workspace("root");
+
+        let by_path = analyze_subsystem_info(
+            &Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems"))]),
+            &context,
+        );
+        let by_set = analyze_subsystem_info(
+            &Map::from_iter([("sourceSet".to_string(), json!("main"))]),
+            &context,
+        );
+
+        assert!(by_set.outcome.ok, "{:?}", by_set.outcome);
+        assert_eq!(
+            serde_json::to_value(&by_set.data).unwrap(),
+            serde_json::to_value(&by_path.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// ADR-0036 keeps the nested node outside `unica.source.*`, so the grammar
+    /// must refuse it rather than resolve a plausible-looking path.
+    #[test]
+    fn subsystem_info_refuses_a_nested_address_instead_of_guessing() {
+        let context = workspace("nested");
+
+        let outcome = analyze_subsystem_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Subsystem.Parent.Child")),
+            ]),
+            &context,
+        )
+        .outcome;
+
+        assert!(!outcome.ok);
+        let text = outcome
+            .errors
+            .iter()
+            .cloned()
+            .chain(std::iter::once(outcome.summary.clone()))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(text.contains("target_kind_unsupported"), "{text}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("validate");
+
+        let physical = validate_subsystem(
+            &Map::from_iter([(
+                "SubsystemPath".to_string(),
+                json!("src/Subsystems/Parent.xml"),
+            )]),
+            &context,
+        );
+        let logical = validate_subsystem(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Subsystem.Parent")),
+            ]),
+            &context,
+        );
+
+        assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
+        assert_eq!(logical.errors, physical.errors);
+        let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }
