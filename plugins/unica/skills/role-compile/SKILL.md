@@ -133,8 +133,7 @@ allowed-tools:
     "name": "unica.role.validate",
     "arguments": {
       "cwd": "<workspace>",
-      "RightsPath": "<RightsPath>",
-      "MetadataPath": "<MetadataPath>"
+      "RightsPath": "<RightsPath>"
     }
   }
 }

@@ -242,7 +242,7 @@ Validate root configuration XML structure.
 | `ConfigPath` | string | по ветви | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `ConfigPath`. Ни одной или обе сразу отклоняются.
 
@@ -569,7 +569,7 @@ Validate Data Composition Schema Template.xml.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
@@ -778,7 +778,7 @@ Validate managed Form.xml.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `FormPath`. Ни одной или обе сразу отклоняются.
 
@@ -973,7 +973,7 @@ Decompile spreadsheet Template.xml to JSON DSL.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **157** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **156** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
@@ -1021,7 +1021,7 @@ Validate spreadsheet Template.xml.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
@@ -1146,7 +1146,7 @@ Validate role Rights.xml.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `RightsPath`. Ни одной или обе сразу отклоняются.
 
@@ -1543,7 +1543,7 @@ Validate subsystem XML.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
 

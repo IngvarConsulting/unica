@@ -94,10 +94,16 @@ const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
 /// of its schema can honour them, and publishing one would name a selector the
 /// tool cannot use. Refusing them instead would break calls that worked before
 /// the bridge, which it does not do.
+///
+/// `MetadataPath` is always here. The shared catch-all hands it to every native
+/// tool and no handler has ever read it; once the bridge gave the lowercase
+/// name a meaning, publishing both would put two arguments differing only in
+/// case, with different semantics, in one schema.
 fn unpublished_bridge_args(name: &str) -> &'static [&'static str] {
     match bridged_selector(name) {
-        Some((_, address)) if !address.publishes_address() => &["metadataPath"],
-        _ => &[],
+        Some((_, address)) if !address.publishes_address() => &["metadataPath", "MetadataPath"],
+        Some(_) => &["MetadataPath"],
+        None => &[],
     }
 }
 
@@ -5224,6 +5230,62 @@ mod tests {
                 schema["properties"].get("metadataPath").is_none(),
                 "{name} publishes an address it cannot use: {schema}"
             );
+        }
+    }
+
+    /// The bridged tools whose arguments come from `NATIVE_XML_DSL_ARGS`. The
+    /// rest carry narrow published lists and never saw the catch-all names.
+    const CATCH_ALL_BRIDGED_READERS: &[&str] = &[
+        "unica.cf.validate",
+        "unica.role.validate",
+        "unica.form.validate",
+        "unica.dcs.validate",
+        "unica.mxl.validate",
+        "unica.mxl.decompile",
+        "unica.subsystem.validate",
+    ];
+
+    /// Two arguments differing only in case, with different meanings, is a
+    /// contract no caller can read. The bridge is what made the lowercase name
+    /// meaningful, so it is the bridge's job not to advertise the inherited
+    /// uppercase one beside it — while still accepting it, because it was
+    /// accepted before and no handler ever read it.
+    #[test]
+    fn a_bridged_reader_never_publishes_two_addresses_differing_only_in_case() {
+        for (name, _, address) in BRIDGED_SELECTORS {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == *name)
+                .expect("tool is registered");
+            let schema = input_schema_for_tool(&tool);
+            let properties = schema["properties"].as_object().expect("object schema");
+
+            assert!(
+                properties.get("MetadataPath").is_none(),
+                "{name} publishes `MetadataPath` beside a selector it does not drive: {schema}"
+            );
+            assert_eq!(
+                properties.contains_key("metadataPath"),
+                address.publishes_address(),
+                "{name}"
+            );
+
+            // Only the tools that drew from the shared catch-all ever accepted
+            // it. The six `*.info` readers have carried narrow lists since
+            // ADR-0023, so refusing it there is the contract they already had.
+            if !CATCH_ALL_BRIDGED_READERS.contains(name) {
+                continue;
+            }
+            let mut args = Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("MetadataPath".to_string(), json!("Role.Sales")),
+            ]);
+            if *address == LogicalAddress::Required {
+                args.insert("metadataPath".to_string(), json!("Role.Sales"));
+            }
+            validate_tool_arguments(tool, &args, false).unwrap_or_else(|error| {
+                panic!("{name} must keep tolerating the inherited name: {error}")
+            });
         }
     }
 
