@@ -6790,7 +6790,7 @@ mod tests {
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use serde_json::{json, Map, Value};
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_context(name: &str) -> WorkspaceContext {
@@ -6815,25 +6815,14 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
-    fn normalized_test_path(path: &Path) -> PathBuf {
-        let canonical = fs::canonicalize(path).expect("test path identity must canonicalize");
-        if std::path::MAIN_SEPARATOR == '\\' {
-            let display = canonical.to_string_lossy();
-            if let Some(path) = display.strip_prefix(r"\\?\UNC\") {
-                return PathBuf::from(format!(r"\\{path}"));
-            }
-            if let Some(path) = display.strip_prefix(r"\\?\") {
-                return PathBuf::from(path);
-            }
-        }
-        canonical
-    }
-
     fn matching_mutation_path<'a>(paths: &'a [String], expected: &Path) -> Option<&'a str> {
-        let expected = normalized_test_path(expected);
+        let expected = crate::infrastructure::platform::testing::canonical_path_for_test(expected);
         paths
             .iter()
-            .find(|path| normalized_test_path(Path::new(path)) == expected)
+            .find(|path| {
+                crate::infrastructure::platform::testing::canonical_path_for_test(Path::new(path))
+                    == expected
+            })
             .map(String::as_str)
     }
 

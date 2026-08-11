@@ -2810,17 +2810,7 @@ mod tests {
     use std::time::Duration;
 
     fn normalized_path(path: &std::path::Path) -> std::path::PathBuf {
-        let canonical = std::fs::canonicalize(path).expect("test path identity must canonicalize");
-        if std::path::MAIN_SEPARATOR == '\\' {
-            let display = canonical.to_string_lossy();
-            if let Some(path) = display.strip_prefix(r"\\?\UNC\") {
-                return std::path::PathBuf::from(format!(r"\\{path}"));
-            }
-            if let Some(path) = display.strip_prefix(r"\\?\") {
-                return std::path::PathBuf::from(path);
-            }
-        }
-        canonical
+        crate::infrastructure::platform::testing::canonical_path_for_test(path)
     }
 
     fn call_public_tool_from_workspace(
