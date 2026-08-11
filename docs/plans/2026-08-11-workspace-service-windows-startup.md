@@ -457,9 +457,9 @@ result.
 
 - [ ] **Step 4: Repeat the large-tree self-spawn acceptance test**
 
-Run this bounded harness. It creates and removes only
-`C:\Projects\unica\.build\issue-339-large-repro` and uses the installed 0.11.0
-runtime only as a checked manifest/tool-binary source:
+Run this bounded harness from the issue worktree. It creates and removes only
+`.build/issue-339-large-repro` under that resolved worktree and uses the
+installed 0.11.0 runtime only as a checked manifest/tool-binary source:
 
 ```powershell
 $python = 'C:\Users\user\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
@@ -473,7 +473,7 @@ import subprocess
 import threading
 import time
 
-repo = pathlib.Path(r"C:\Projects\unica")
+repo = pathlib.Path.cwd().resolve()
 root = repo / ".build" / "issue-339-large-repro"
 runtime = pathlib.Path(r"C:\Users\user\.codex\unica\runtimes\0.11.0\win-x64")
 binary = repo / "target" / "debug" / "unica.exe"
