@@ -6780,6 +6780,15 @@ pub(crate) enum FormEditInsertTarget {
         pos: usize,
         child_indent: String,
     },
+    /// A form that has no root `ChildItems` yet. An empty form legitimately
+    /// has none — the platform writes the section only once it holds
+    /// something — so the editor creates it rather than refusing the form
+    /// another writer produced (#341).
+    RootNeedsChildItems {
+        pos: usize,
+        section_indent: String,
+        child_indent: String,
+    },
 }
 
 impl FormEditInsertTarget {
@@ -6787,7 +6796,8 @@ impl FormEditInsertTarget {
         match self {
             Self::ExistingChildItems { child_indent, .. }
             | Self::ElementNeedsChildItems { child_indent, .. }
-            | Self::AfterElement { child_indent, .. } => child_indent,
+            | Self::AfterElement { child_indent, .. }
+            | Self::RootNeedsChildItems { child_indent, .. } => child_indent,
         }
     }
 }
@@ -6841,7 +6851,27 @@ pub(crate) fn form_edit_target_child_items_range(
         });
     }
     let Some(child_items) = root_child_items else {
-        return Err("No <ChildItems> section found in form".to_string());
+        // 8.3.27 orders the root as ChildItems -> Attributes -> Parameters ->
+        // Commands and omits the section entirely while the form is empty, so
+        // the new one goes before the earliest of those that is present.
+        let anchor = ["Attributes", "Parameters", "Commands"]
+            .iter()
+            .filter_map(|tag| form_child(root, tag))
+            .map(|node| node.range().start)
+            .min()
+            .or_else(|| {
+                root.children()
+                    .rfind(roxmltree::Node::is_element)
+                    .map(|node| node.range().end)
+            })
+            .ok_or_else(|| "No <ChildItems> section found in form".to_string())?;
+        let section_indent = form_edit_line_indent_at(xml_text, anchor);
+        let child_indent = format!("{section_indent}\t");
+        return Ok(FormEditInsertTarget::RootNeedsChildItems {
+            pos: anchor,
+            section_indent,
+            child_indent,
+        });
     };
     Ok(FormEditInsertTarget::ExistingChildItems {
         child_indent: form_edit_child_indent_for_section(xml_text, child_items.range()),
@@ -6895,6 +6925,20 @@ pub(crate) fn form_edit_insert_lines_into_target(
         FormEditInsertTarget::AfterElement { pos, .. } => {
             let content = lines.join("\n");
             xml_text.insert_str(pos, &format!("\n{content}"));
+            Ok(())
+        }
+        FormEditInsertTarget::RootNeedsChildItems {
+            pos,
+            section_indent,
+            ..
+        } => {
+            let content = lines.join("\n");
+            xml_text.insert_str(
+                pos,
+                &format!(
+                    "<ChildItems>\n{content}\n{section_indent}</ChildItems>\n{section_indent}"
+                ),
+            );
             Ok(())
         }
     }
@@ -11397,6 +11441,85 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("OnChange")),
             "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// #341. One writer must not produce a form the other refuses. `form.add`
+    /// wrote a `Form.xml` without a root `ChildItems`, so the very next
+    /// `form.edit` failed with `No <ChildItems> section found in form`.
+    #[test]
+    fn add_form_produces_a_form_the_editor_accepts() {
+        let context = temp_context("add-form-round-trip");
+        let owner = create_external_owner(&context, "ExternalDataProcessor", "RoundTripProcessor");
+        let added = add_form(&add_object_form_args(&owner, "MainForm"), &context);
+        assert!(added.ok, "{added:?}");
+        let form_path = context
+            .cwd
+            .join("external")
+            .join("RoundTripProcessor")
+            .join("Forms")
+            .join("MainForm/Ext/Form.xml");
+
+        let edited = edit_form(
+            &Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({ "elements": [{ "input": "Комментарий" }] }),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(edited.ok, "{edited:?}");
+        let xml = fs::read_to_string(&form_path).unwrap();
+        assert!(xml.contains("<ChildItems>"), "{xml}");
+        assert!(xml.contains("Комментарий"), "{xml}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Review of #446: without `Attributes`, a root that has both `Parameters`
+    /// and `Commands` must still receive `ChildItems` before `Parameters`.
+    #[test]
+    fn form_edit_creates_child_items_before_parameters_when_attributes_are_absent() {
+        let context = temp_context("child-items-anchor-order");
+        let form_path = context.cwd.join("Form.xml");
+        fs::create_dir_all(&context.cwd).unwrap();
+        fs::write(
+            &form_path,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n\
+             \t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n\
+             \t<Parameters/>\n\t<Commands/>\n</Form>\n",
+        )
+        .unwrap();
+
+        let edited = edit_form(
+            &Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({ "elements": [{ "input": "Комментарий" }] }),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(edited.ok, "{edited:?}");
+        let xml = fs::read_to_string(&form_path).unwrap();
+        let items = xml.find("<ChildItems>").expect("the section was created");
+        let parameters = xml.find("<Parameters").expect("Parameters stays");
+        let commands = xml.find("<Commands").expect("Commands stays");
+        assert!(
+            items < parameters && parameters < commands,
+            "8.3.27 orders ChildItems -> Parameters -> Commands: {xml}"
         );
         let _ = fs::remove_dir_all(&context.cwd);
     }
