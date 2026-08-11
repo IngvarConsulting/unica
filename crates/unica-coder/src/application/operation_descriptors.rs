@@ -228,7 +228,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "cf-info",
-        &["ConfigPath"],
+        EMPTY,
         EMPTY,
         CF_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -245,7 +245,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "cf-validate",
-        &["ConfigPath"],
+        EMPTY,
         EMPTY,
         CF_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -343,7 +343,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "form-info",
-        FORM_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         FORM_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -361,7 +361,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "form-validate",
-        FORM_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         FORM_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -408,14 +408,14 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor(
         "subsystem-info",
-        SUBSYSTEM_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         SUBSYSTEM_PATH,
         None,
     ),
     descriptor(
         "subsystem-validate",
-        SUBSYSTEM_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         SUBSYSTEM_PATH,
         None,
@@ -456,14 +456,14 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor(
         "dcs-info",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
         None,
     ),
     descriptor_with_paths(
         "dcs-validate",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -480,21 +480,21 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor(
         "mxl-decompile",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
         None,
     ),
     descriptor(
         "mxl-info",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
         None,
     ),
     descriptor_with_paths(
         "mxl-validate",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -519,7 +519,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "role-info",
-        RIGHTS_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         RIGHTS_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -528,7 +528,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "role-validate",
-        RIGHTS_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         RIGHTS_PATH,
         FormatGuardPolicy::ExistingDump,
