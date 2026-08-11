@@ -2762,7 +2762,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "limit",
-        "Cap on returned entities, never on printed lines, with per-tool defaults (meta.info sections 20, code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards and documentation results). The typed XML readers answer with every section at once and publish no `limit`.",
+        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
     ),
     (
         "maxErrors",
@@ -2778,7 +2778,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "maxParams",
-        "Declared string argument that no handler reads: `unica.mxl.info` answers with every area parameter as typed data and publishes no cap",
+        "Declared integer argument that no handler reads: `unica.mxl.info` answers with every area parameter as typed data and publishes no cap",
     ),
     (
         "mcpConfig",
@@ -2834,7 +2834,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "name",
-        "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`). The typed XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into.",
+        "Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, the required BSL method to locate on `unica.code.definition`, and the XDTO type or property named by the chosen `unica.xdto.edit` operation. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048).",
     ),
     (
         "namePrefix",

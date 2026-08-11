@@ -1893,13 +1893,22 @@ pub(crate) fn non_empty_string(value: String) -> Option<String> {
 /// schema requires it. The composite `ProcessorName`/`TemplateName`/`SrcDir`
 /// form guessed a physical layout and could never be reached past that
 /// requirement, so it is gone rather than left as an unreachable branch.
+///
+/// Being the only published address, it must accept both documented forms: the
+/// descriptor file and the layout directory holding it, the way
+/// `resolve_mxl_validate_path` already does.
 pub(crate) fn resolve_mxl_info_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let path = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
         .ok_or_else(|| "Specify -TemplatePath".to_string())?;
-    Ok(absolutize(path, &context.cwd))
+    let path = absolutize(path, &context.cwd);
+    Ok(if path.is_dir() {
+        path.join("Ext").join("Template.xml")
+    } else {
+        path
+    })
 }
 
 pub(crate) fn resolve_mxl_validate_path(
@@ -3250,6 +3259,27 @@ mod tests {
         // ADR-0023: the template description is data, not a JSON string in stdout.
         let report = serde_json::to_value(execution.data.unwrap()).unwrap();
         assert_eq!(report["rows"], 1);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// `TemplatePath` is the only address this reader publishes, so both
+    /// documented forms of it must work: the descriptor file and the layout
+    /// directory that resolves to `Ext/Template.xml`.
+    #[test]
+    fn mxl_info_resolves_a_layout_directory_to_its_template() {
+        let context = test_context("info-layout-directory");
+        let layout = context.cwd.join("Templates").join("ПФ_MXL_Продажи");
+        let template_path = layout.join("Ext").join("Template.xml");
+        fs::create_dir_all(template_path.parent().unwrap()).unwrap();
+        fs::write(&template_path, empty_spreadsheet_document_xml()).unwrap();
+
+        let execution = analyze_mxl_info(&path_args(&layout), &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(
+            execution.outcome.artifacts,
+            vec![template_path.display().to_string()]
+        );
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

@@ -42,7 +42,8 @@ allowed-tools:
 |----------|----------|
 | `TemplatePath` | Путь к Template.xml или каталогу макета (авто-резолв в `Ext/Template.xml`) |
 
-Других аргументов нет. `Mode`, `Name`, `Batch`, `Raw`, `Limit` и `Offset` сняты
+Других предметных аргументов нет — только общие `cwd` и `confirm`. `Mode`,
+`Name`, `Batch`, `Raw`, `Limit` и `Offset` сняты
 (ADR-0048): схема приходит целиком, сырой текст запроса лежит в
 `dataSets[].query`, а отбор набора, поля или варианта выполняется над `data`.
 
