@@ -1073,7 +1073,12 @@ fn exact_module_outcome(
         source_set: source_set.to_string(),
         metadata_path: Some(address.clone()),
     };
-    match resolve_platform_xml_target(context, &target, TargetKindPolicy::ModuleOnly) {
+    match resolve_platform_xml_target_in(
+        context,
+        &target,
+        TargetKindPolicy::ModuleOnly,
+        selected.clone(),
+    ) {
         Ok(_) => Ok(ExactCandidate::Proven),
         Err(error) if error.code == SourceTargetErrorCode::ContainmentDenied => {
             Err(error.to_string())
@@ -2177,6 +2182,21 @@ pub(crate) fn resolve_platform_xml_target(
     }
     let selected = resolve_named_source_set(context, &target.source_set)
         .map_err(|error| public_source_set_error(&target.source_set, error))?;
+    resolve_platform_xml_target_in(context, target, policy, selected)
+}
+
+/// The same resolution against an already-resolved source set.
+///
+/// A prefix scan proves thousands of candidates against one source set, and
+/// re-reading the project config for each of them was the whole cost of a
+/// bare-kind query (#277). The containment chain is unchanged — this takes the
+/// value the caller already proved instead of proving it again.
+pub(crate) fn resolve_platform_xml_target_in(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+    policy: TargetKindPolicy,
+    selected: ResolvedNamedSourceSet,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
     validate_source_set(&selected)?;
     // The policy decides every target kind, including the source root a missing
     // `metadataPath` names. Answering the root before the policy is consulted
@@ -4444,6 +4464,56 @@ mod tests {
             assert_eq!(result.completeness, NavigationCompleteness::Partial);
         }
         cleanup(&context);
+    }
+
+    /// #277. A bare-kind prefix query proves every candidate of the kind, and
+    /// each proof used to re-read the project config. On a vendor-class
+    /// configuration that is thousands of re-parses and 2.5-4.4 s per query.
+    /// The source set is resolved once per call, whatever the candidate count.
+    #[test]
+    fn prefix_scan_resolves_the_source_set_once_per_call() {
+        let context = fixture(
+            "navigation-prefix-source-map",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        for name in ["Items", "Goods", "Partners", "Orders"] {
+            write_metadata_descriptor(&root, "Catalogs", "Catalog", name, name);
+            fs::create_dir_all(root.join(format!("Catalogs/{name}/Ext"))).unwrap();
+            fs::write(
+                root.join(format!("Catalogs/{name}/Ext/ManagerModule.bsl")),
+                "Procedure Run()\nEndProcedure\n",
+            )
+            .unwrap();
+        }
+
+        crate::infrastructure::source_roots::NAMED_SOURCE_SET_RESOLUTIONS
+            .with(|count| count.set(0));
+        let answer = resolve_platform_xml_source_navigation(
+            &context,
+            &SourceResolveRequest {
+                source_set: "main".to_string(),
+                query: "Catalog".to_string(),
+                mode: SourceNavigationMode::Prefix,
+                target_kind: None,
+                limit: 50,
+                cursor: None,
+            },
+        )
+        .unwrap();
+        let resolutions = crate::infrastructure::source_roots::NAMED_SOURCE_SET_RESOLUTIONS
+            .with(|count| count.get());
+
+        assert!(
+            answer.candidates.len() >= 4,
+            "the scan still answers: {:?}",
+            answer.candidates
+        );
+        assert_eq!(
+            resolutions, 1,
+            "the project config is read once per call, not once per candidate"
+        );
     }
 
     #[test]
