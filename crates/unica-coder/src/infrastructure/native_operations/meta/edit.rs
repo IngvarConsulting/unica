@@ -5969,6 +5969,69 @@ mod tests {
         );
     }
 
+    /// Review of #444: the change covers three settings and two collections,
+    /// so the regression has to prove `Indexing` and the `Dimension` branch as
+    /// well — otherwise either could break with the suite still green.
+    #[test]
+    fn typed_register_field_add_inherits_indexing_and_covers_dimensions() {
+        let existing = rendered_resource("СуммаПродаж").replace(
+            "<Indexing>DontIndex</Indexing>",
+            "<Indexing>Index</Indexing>",
+        );
+        let mut xml = object_xml("InformationRegister", "PaymentTerms", &existing);
+
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Resources,
+                None,
+                vec![MetaElementInput::named("СуммаЗакупок")],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            xml.matches("<Indexing>Index</Indexing>").count(),
+            2,
+            "the new resource follows its sibling indexing: {xml}"
+        );
+
+        let dimension = rendered_dimension("Организация")
+            .replace(
+                "<FullTextSearch>Use</FullTextSearch>",
+                "<FullTextSearch>DontUse</FullTextSearch>",
+            )
+            .replace(
+                "<Indexing>DontIndex</Indexing>",
+                "<Indexing>Index</Indexing>",
+            );
+        let mut xml = object_xml("InformationRegister", "PaymentTerms", &dimension);
+
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Dimensions,
+                None,
+                vec![MetaElementInput::named("Склад")],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            xml.matches("<FullTextSearch>DontUse</FullTextSearch>")
+                .count(),
+            2,
+            "the dimension branch inherits too: {xml}"
+        );
+        assert_eq!(
+            xml.matches("<Indexing>Index</Indexing>").count(),
+            2,
+            "the dimension branch inherits indexing too: {xml}"
+        );
+    }
+
     #[test]
     fn typed_child_tree_rejects_excessive_depth_before_capture() {
         let root = std::env::temp_dir().join(format!(
@@ -6087,6 +6150,22 @@ mod tests {
             "<InformationRegisterPeriodicity>Nonperiodical</InformationRegisterPeriodicity>",
         )
         .replace("<Comment/>", "<Comment>First&#13;Second</Comment>")
+    }
+
+    fn rendered_dimension(name: &str) -> String {
+        let element = MetaElementDefinition::convert(
+            MetaCollection::Dimensions,
+            MetaElementInput::named(name),
+        )
+        .unwrap();
+        render_typed_element(
+            "InformationRegister",
+            "Sample",
+            MetaCollection::Dimensions,
+            &element,
+        )
+        .unwrap()
+        .join("\n")
     }
 
     fn rendered_resource(name: &str) -> String {
