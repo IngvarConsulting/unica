@@ -109,4 +109,163 @@ pub fn path_for_report(path: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    /// Every event kind, listed once. `index_of` below is what keeps the list
+    /// honest: it has no wildcard arm, so adding a variant stops compilation
+    /// until the new event is given an invalidation rule and a place here.
+    const ALL_KINDS: [DomainEventKind; 13] = [
+        DomainEventKind::ConfigXmlChanged,
+        DomainEventKind::CfeChanged,
+        DomainEventKind::MetadataChanged,
+        DomainEventKind::FormChanged,
+        DomainEventKind::ModuleChanged,
+        DomainEventKind::RoleChanged,
+        DomainEventKind::DcsChanged,
+        DomainEventKind::MxlChanged,
+        DomainEventKind::SubsystemChanged,
+        DomainEventKind::TemplateChanged,
+        DomainEventKind::SourceSetChanged,
+        DomainEventKind::BuildCompleted,
+        DomainEventKind::SourceResourcesReplaced,
+    ];
+
+    fn index_of(kind: DomainEventKind) -> usize {
+        match kind {
+            DomainEventKind::ConfigXmlChanged => 0,
+            DomainEventKind::CfeChanged => 1,
+            DomainEventKind::MetadataChanged => 2,
+            DomainEventKind::FormChanged => 3,
+            DomainEventKind::ModuleChanged => 4,
+            DomainEventKind::RoleChanged => 5,
+            DomainEventKind::DcsChanged => 6,
+            DomainEventKind::MxlChanged => 7,
+            DomainEventKind::SubsystemChanged => 8,
+            DomainEventKind::TemplateChanged => 9,
+            DomainEventKind::SourceSetChanged => 10,
+            DomainEventKind::BuildCompleted => 11,
+            DomainEventKind::SourceResourcesReplaced => 12,
+        }
+    }
+
+    fn event(kind: DomainEventKind) -> DomainEvent {
+        DomainEvent {
+            kind,
+            artifact: "fixture".to_string(),
+            details: None,
+        }
+    }
+
+    fn names(set: &BTreeSet<String>) -> Vec<&str> {
+        set.iter().map(String::as_str).collect()
+    }
+
+    /// How many variants the enum has. Deriving this from `ALL_KINDS.len()`
+    /// would make the check below a tautology — both sides would shrink
+    /// together and a forgotten kind would pass. Adding a variant forces a new
+    /// arm in `index_of`, and this constant is what then fails until the kind
+    /// reaches `ALL_KINDS` too.
+    const EXPECTED_KIND_COUNT: usize = 13;
+
+    #[test]
+    fn the_kind_list_covers_the_whole_enum() {
+        assert_eq!(ALL_KINDS.len(), EXPECTED_KIND_COUNT);
+        let mut seen = ALL_KINDS.map(index_of).to_vec();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..EXPECTED_KIND_COUNT).collect::<Vec<_>>());
+    }
+
+    /// ADR-0022: the bounded resource writer replaces one proven BSL module, so
+    /// the BSL caches are the only ones that can have gone stale — and nothing
+    /// is rebuilt eagerly, because the caller asked to write, not to warm.
+    #[test]
+    fn replacing_a_source_resource_invalidates_only_the_two_bsl_caches() {
+        let impact = CacheImpact::from_events(&[event(DomainEventKind::SourceResourcesReplaced)]);
+
+        assert_eq!(names(&impact.invalidated), ["bsl_diagnostics", "bsl_index"]);
+        assert!(
+            impact.eager_refresh.is_empty(),
+            "a resource replacement rebuilds nothing eagerly: {:?}",
+            impact.eager_refresh
+        );
+    }
+
+    /// A module edit reaches the same two caches by a different route, so the
+    /// claim above is about the pair, not about one event that happens to
+    /// match it today.
+    #[test]
+    fn a_module_change_invalidates_the_same_two_caches() {
+        let impact = CacheImpact::from_events(&[event(DomainEventKind::ModuleChanged)]);
+
+        assert_eq!(names(&impact.invalidated), ["bsl_diagnostics", "bsl_index"]);
+        assert!(
+            impact.eager_refresh.is_empty(),
+            "{:?}",
+            impact.eager_refresh
+        );
+    }
+
+    /// Refreshing a cache that was never invalidated would rebuild something
+    /// already fresh; the report would then name work that did not need doing.
+    #[test]
+    fn no_event_refreshes_a_cache_it_did_not_invalidate() {
+        for kind in ALL_KINDS {
+            let impact = CacheImpact::from_events(&[event(kind)]);
+            let dangling = impact
+                .eager_refresh
+                .difference(&impact.invalidated)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(
+                dangling.is_empty(),
+                "{kind:?} refreshes caches it never invalidated: {dangling:?}"
+            );
+        }
+    }
+
+    /// An event that invalidates nothing would be a change no consumer hears
+    /// about, which is the failure this whole model exists to prevent.
+    #[test]
+    fn every_event_invalidates_at_least_one_cache() {
+        for kind in ALL_KINDS {
+            let impact = CacheImpact::from_events(&[event(kind)]);
+            assert!(
+                !impact.invalidated.is_empty(),
+                "{kind:?} invalidates nothing"
+            );
+        }
+    }
+
+    /// One call reporting several events must answer for all of them: a
+    /// mutation that emits two events cannot leave one of their caches warm.
+    #[test]
+    fn from_events_unions_the_impact_of_every_event() {
+        let combined = CacheImpact::from_events(&[
+            event(DomainEventKind::SourceResourcesReplaced),
+            event(DomainEventKind::RoleChanged),
+        ]);
+
+        assert_eq!(
+            names(&combined.invalidated),
+            [
+                "bsl_diagnostics",
+                "bsl_index",
+                "metadata_graph",
+                "rights_graph"
+            ]
+        );
+        assert_eq!(
+            names(&combined.eager_refresh),
+            ["metadata_graph", "rights_graph"]
+        );
+    }
+
+    #[test]
+    fn no_events_leave_the_impact_empty() {
+        let impact = CacheImpact::from_events(&[]);
+
+        assert!(impact.invalidated.is_empty());
+        assert!(impact.eager_refresh.is_empty());
+    }
+}
