@@ -130,6 +130,7 @@ allowed-tools:
 | `"group"`    | UsualGroup        | `"horizontal"` / `"vertical"` / `"alwaysHorizontal"` / `"alwaysVertical"` / `"collapsible"` |
 | `"input"`    | InputField        | имя элемента                                      |
 | `"check"`    | CheckBoxField     | имя                                               |
+| `"label"`    | LabelDecoration   | имя — надпись-декорация; текст задаётся `title`, гиперссылка `hyperlink` |
 | `"labelField"` | LabelField      | имя                                               |
 | `"table"`    | Table             | имя                                               |
 | `"pages"`    | Pages             | имя                                               |

@@ -6637,6 +6637,7 @@ pub(crate) fn form_edit_element_summary(element: &Value) -> Option<String> {
     let kind = FormEditElementDefinitionKind::from_object(object).ok()?;
     let tag = match kind {
         FormEditElementDefinitionKind::Table => "Table",
+        FormEditElementDefinitionKind::Label => "Label",
         FormEditElementDefinitionKind::LabelField => "LabelField",
         FormEditElementDefinitionKind::Button => "Button",
         FormEditElementDefinitionKind::CommandBar => "CommandBar",
@@ -7302,6 +7303,7 @@ impl FormIdAllocator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FormEditElementDefinitionKind {
     Table,
+    Label,
     LabelField,
     Button,
     CommandBar,
@@ -7320,6 +7322,7 @@ impl FormEditElementDefinitionKind {
         // considering those two standalone-element shorthands.
         let primary_candidates = [
             (Self::Table, "table", object.contains_key("table")),
+            (Self::Label, "label", object.contains_key("label")),
             (
                 Self::LabelField,
                 "labelField",
@@ -7374,6 +7377,7 @@ impl FormEditElementDefinitionKind {
     const fn event_kind(self) -> FormElementKind {
         match self {
             Self::Table => FormElementKind::Table,
+            Self::Label => FormElementKind::LabelDecoration,
             Self::LabelField => FormElementKind::LabelField,
             Self::Button => FormElementKind::Button,
             Self::CommandBar | Self::AutoCommandBar => FormElementKind::CommandBar,
@@ -7388,6 +7392,7 @@ impl FormEditElementDefinitionKind {
     fn name(self, object: &Map<String, Value>) -> Result<&str, String> {
         let (keys, description): (&[&str], &str) = match self {
             Self::Table => (&["table"], "table"),
+            Self::Label => (&["label"], "label decoration"),
             Self::LabelField => (&["labelField"], "label field"),
             Self::Button => (&["button"], "button"),
             Self::CommandBar => (&["cmdBar", "commandBar"], "command bar"),
@@ -8629,6 +8634,9 @@ fn emit_form_element_with_context(
         FormEditElementDefinitionKind::Table => {
             emit_form_table(lines, object, kind.name(object)?, indent, ids)
         }
+        FormEditElementDefinitionKind::Label => {
+            emit_form_label_decoration(lines, object, kind.name(object)?, indent, ids)
+        }
         FormEditElementDefinitionKind::LabelField => {
             emit_form_label_field(lines, object, kind.name(object)?, indent, ids);
             Ok(())
@@ -9304,6 +9312,117 @@ pub(crate) fn emit_form_command_bar_element(
     }
     lines.push(format!("{indent}</CommandBar>"));
     Ok(())
+}
+
+/// `LabelDecoration` — the documented `label` element.
+///
+/// The platform writes a decoration layout-first: own content — flags,
+/// hyperlink and geometry — comes before `Title`, unlike a field, whose title
+/// leads. `Title` on a decoration carries the `formatted` attribute, taken
+/// from the published `{text, formatted}` form or from the explicit
+/// back-compat `formatted` key.
+pub(crate) fn emit_form_label_decoration(
+    lines: &mut Vec<String>,
+    element: &Map<String, Value>,
+    name: &str,
+    indent: &str,
+    ids: &mut FormIdAllocator,
+) -> Result<(), String> {
+    let id = ids.next();
+    lines.push(format!(
+        "{indent}<LabelDecoration name=\"{}\" id=\"{id}\">",
+        escape_xml(name)
+    ));
+    let inner = format!("{indent}\t");
+    emit_form_common_flags(lines, element, &inner);
+    if element.get("hyperlink").and_then(Value::as_bool) == Some(true) {
+        lines.push(format!("{inner}<Hyperlink>true</Hyperlink>"));
+    }
+    for (json_key, xml_tag) in [("width", "Width"), ("height", "Height")] {
+        if let Some(value) = element.get(json_key) {
+            let number = value
+                .as_u64()
+                .filter(|number| *number <= u32::MAX as u64)
+                .ok_or_else(|| {
+                    format!(
+                        "form label property {json_key} must be an integer in 0..=4294967295 for 8.3.27"
+                    )
+                })?;
+            lines.push(format!("{inner}<{xml_tag}>{number}</{xml_tag}>"));
+        }
+    }
+    for (key, tag) in [
+        ("autoMaxWidth", "AutoMaxWidth"),
+        ("autoMaxHeight", "AutoMaxHeight"),
+    ] {
+        if element.get(key).and_then(Value::as_bool) == Some(false) {
+            lines.push(format!("{inner}<{tag}>false</{tag}>"));
+        }
+    }
+    if let Some(value) = element.get("tooltipRepresentation").and_then(Value::as_str) {
+        lines.push(format!(
+            "{inner}<ToolTipRepresentation>{}</ToolTipRepresentation>",
+            escape_xml(value)
+        ));
+    }
+    emit_form_decoration_title(lines, element, name, &inner);
+    emit_form_companion(
+        lines,
+        "ContextMenu",
+        &format!("{name}КонтекстноеМеню"),
+        &inner,
+        ids,
+    );
+    emit_form_companion(
+        lines,
+        "ExtendedTooltip",
+        &format!("{name}РасширеннаяПодсказка"),
+        &inner,
+        ids,
+    );
+    emit_form_element_events(lines, element, name, &inner);
+    lines.push(format!("{indent}</LabelDecoration>"));
+    Ok(())
+}
+
+/// A decoration `Title` carries `formatted`. The flag comes from the published
+/// `{text, formatted}` form, or from the back-compat `formatted` key beside a
+/// plain title.
+fn emit_form_decoration_title(
+    lines: &mut Vec<String>,
+    element: &Map<String, Value>,
+    name: &str,
+    indent: &str,
+) {
+    // A decoration without an explicit title takes its own name, the way the
+    // platform does; writing nothing left the element unlabelled (#450 review).
+    let fallback;
+    let title = match element.get("title") {
+        Some(title) => title,
+        None => {
+            fallback = Value::String(name.to_string());
+            &fallback
+        }
+    };
+    let formatted = title
+        .get("formatted")
+        .and_then(Value::as_bool)
+        .or_else(|| element.get("formatted").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let text = title.get("text").unwrap_or(title);
+    let mut rendered = Vec::new();
+    emit_form_mltext_value(&mut rendered, indent, "Title", text);
+    // A decoration title always carries the attribute, true or false; the
+    // platform writes it either way, so omitting it when false would diverge.
+    if let Some(first) = rendered.first_mut() {
+        *first = first.replacen("<Title>", &format!("<Title formatted=\"{formatted}\">"), 1);
+        *first = first.replacen(
+            "<Title/>",
+            &format!("<Title formatted=\"{formatted}\"/>"),
+            1,
+        );
+    }
+    lines.extend(rendered);
 }
 
 pub(crate) fn emit_form_label_field(
@@ -11191,6 +11310,92 @@ mod tests {
                 .iter()
                 .chain(outcome.warnings.iter())
                 .any(|line| line.contains("External* type in configuration context")),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// #389. `form-dsl-spec` documents `label` as `LabelDecoration`, the
+    /// pattern reference recommends it for forms built with
+    /// `unica.form.compile`, and `form-edit` says it uses the same DSL keys.
+    /// The native compiler had no such discriminator and answered
+    /// `Unsupported form element in native compiler`.
+    #[test]
+    fn form_compile_accepts_the_documented_label_decoration() {
+        let context = temp_context("compile-label-decoration");
+        let form_path = context.cwd.join("Form.xml");
+        fs::create_dir_all(&context.cwd).unwrap();
+        fs::write(&form_path, form_edit_remove_test_xml("")).unwrap();
+
+        let outcome = edit_form(
+            &Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({
+                        "elements": [{
+                            "label": "ИнформационнаяНадпись",
+                            "title": "Выберите параметры",
+                            "hyperlink": true,
+                            "width": 40
+                        }]
+                    }),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(outcome.ok, "{outcome:?}");
+        let xml = fs::read_to_string(&form_path).unwrap();
+        assert!(
+            xml.contains("<LabelDecoration name=\"ИнформационнаяНадпись\""),
+            "{xml}"
+        );
+        assert!(xml.contains("<Hyperlink>true</Hyperlink>"), "{xml}");
+        assert!(xml.contains("<Width>40</Width>"), "{xml}");
+        assert!(xml.contains("Выберите параметры"), "{xml}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Review of #450: `LabelDecoration` allows only `Click` and
+    /// `URLProcessing`. Classifying `label` as a `LabelField` let `OnChange`
+    /// through preflight and would have emitted an event the platform does
+    /// not accept on a decoration.
+    #[test]
+    fn form_compile_refuses_a_label_event_the_decoration_does_not_allow() {
+        let context = temp_context("label-event-registry");
+        let form_path = context.cwd.join("Form.xml");
+        fs::create_dir_all(&context.cwd).unwrap();
+        fs::write(&form_path, form_edit_remove_test_xml("")).unwrap();
+
+        let outcome = edit_form(
+            &Map::from_iter([
+                (
+                    "FormPath".to_string(),
+                    json!(form_path.display().to_string()),
+                ),
+                (
+                    "definition".to_string(),
+                    json!({
+                        "elements": [{
+                            "label": "Подсказка",
+                            "on": ["OnChange"]
+                        }]
+                    }),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("OnChange")),
             "{outcome:?}"
         );
         let _ = fs::remove_dir_all(&context.cwd);
