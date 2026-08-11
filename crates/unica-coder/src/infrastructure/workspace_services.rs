@@ -1354,8 +1354,8 @@ struct WorkspaceServiceRuntime {
     /// let a late `cancel` for the finished read kill the scheduled update.
     rlm_maintenance_cancellation: CancellationToken,
     session_teardowns: SessionTeardownLifecycle,
-    analyzer_source_generation: Mutex<u64>,
-    rlm_source_generation: Mutex<u64>,
+    analyzer_source_generation: Mutex<Option<u64>>,
+    rlm_source_generation: Mutex<Option<u64>>,
     analyzer_invalidated: AtomicBool,
     rlm_invalidated: AtomicBool,
     operations: Mutex<HashMap<String, CancellationToken>>,
@@ -1384,6 +1384,20 @@ impl Drop for RlmMaintenanceRequestGuard {
     }
 }
 
+fn observe_source_generation(
+    observed: &Mutex<Option<u64>>,
+    invalidated: &AtomicBool,
+    current: u64,
+) -> bool {
+    let Ok(mut observed) = observed.lock() else {
+        return false;
+    };
+    let changed = observed
+        .replace(current)
+        .is_some_and(|previous| previous != current);
+    invalidated.swap(false, Ordering::AcqRel) || changed
+}
+
 impl WorkspaceServiceRuntime {
     fn new(identity: WorkspaceServiceIdentity, record_owner: &WorkspaceServiceRecord) -> Self {
         let context = WorkspaceContext {
@@ -1392,7 +1406,6 @@ impl WorkspaceServiceRuntime {
             cache_root: service_cache_root(&identity.service_dir),
             workspace_epoch: 0,
         };
-        let source_generation = source_generation(Path::new(&identity.source_root));
         Self {
             identity,
             token: record_owner.token.clone(),
@@ -1420,8 +1433,8 @@ impl WorkspaceServiceRuntime {
             rlm_maintenance_pending: Arc::new(AtomicBool::new(false)),
             rlm_maintenance_cancellation: CancellationToken::new(),
             session_teardowns: SessionTeardownLifecycle::default(),
-            analyzer_source_generation: Mutex::new(source_generation),
-            rlm_source_generation: Mutex::new(source_generation),
+            analyzer_source_generation: Mutex::new(None),
+            rlm_source_generation: Mutex::new(None),
             analyzer_invalidated: AtomicBool::new(false),
             rlm_invalidated: AtomicBool::new(false),
             operations: Mutex::new(HashMap::new()),
@@ -1618,13 +1631,12 @@ impl WorkspaceServiceRuntime {
             .unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
         let current_generation = source_generation(Path::new(&self.identity.source_root));
-        if let Ok(mut generation) = self.analyzer_source_generation.lock() {
-            if self.analyzer_invalidated.swap(false, Ordering::AcqRel)
-                || current_generation != *generation
-            {
-                stale_session = analyzer.take();
-                *generation = current_generation;
-            }
+        if observe_source_generation(
+            &self.analyzer_source_generation,
+            &self.analyzer_invalidated,
+            current_generation,
+        ) {
+            stale_session = analyzer.take();
         }
         if stale_session.is_none()
             && analyzer
@@ -1742,13 +1754,12 @@ impl WorkspaceServiceRuntime {
         let mut stale_session = None;
         let source_root = Path::new(&self.identity.source_root);
         let pre_execution_generation = source_generation(source_root);
-        if let Ok(mut generation) = self.rlm_source_generation.lock() {
-            if self.rlm_invalidated.swap(false, Ordering::AcqRel)
-                || pre_execution_generation != *generation
-            {
-                stale_session = rlm.take();
-                *generation = pre_execution_generation;
-            }
+        if observe_source_generation(
+            &self.rlm_source_generation,
+            &self.rlm_invalidated,
+            pre_execution_generation,
+        ) {
+            stale_session = rlm.take();
         }
         if stale_session.is_none() && rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
             stale_session = rlm.take();
@@ -6834,6 +6845,34 @@ fn main() {
         )
         .unwrap();
         assert_ne!(source_generation(&source_root), baseline);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn first_source_generation_observation_is_not_stale() {
+        let observed = Mutex::new(None);
+        let invalidated = AtomicBool::new(false);
+
+        assert!(!observe_source_generation(&observed, &invalidated, 41));
+        assert_eq!(*observed.lock().unwrap(), Some(41));
+        assert!(!observe_source_generation(&observed, &invalidated, 41));
+        assert!(observe_source_generation(&observed, &invalidated, 42));
+
+        invalidated.store(true, Ordering::Release);
+        assert!(observe_source_generation(&observed, &invalidated, 42));
+    }
+
+    #[test]
+    fn workspace_service_runtime_starts_without_observed_source_generations() {
+        let context = test_context("lazy-runtime-generation");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+
+        assert_eq!(*runtime.analyzer_source_generation.lock().unwrap(), None);
+        assert_eq!(*runtime.rlm_source_generation.lock().unwrap(), None);
         cleanup(&context);
     }
 
