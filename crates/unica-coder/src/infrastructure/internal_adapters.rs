@@ -2708,6 +2708,33 @@ fn append_runtime_global_args(
     append_arg(result, "--workdir", args, "workdir", redact);
 }
 
+/// Credentials belong to `infobase.user`/`infobase.password`, not to the
+/// connection string. Written into `connection` they reached the project
+/// config and were dropped on the way to the platform, so the run reported a
+/// wrong password while the same connection worked in Designer (#343).
+///
+/// The refusal names the field and never echoes the value: the argument it is
+/// refusing is the one carrying the secret.
+fn reject_credentials_in_connection(args: &Map<String, Value>) -> Result<(), String> {
+    let Some(connection) = args.get("connection").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let carries = |field: &str| {
+        connection.split(';').any(|part| {
+            part.trim().split_once('=').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case(field) && !value.trim().is_empty()
+            })
+        })
+    };
+    if carries("Usr") || carries("Pwd") {
+        return Err(
+            "`connection` must not carry `Usr` or `Pwd`; the platform never receives them from it — put the credentials in infobase.user and infobase.password of v8project.local.yaml"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_runtime_mapper_payload(
     operation: &str,
     args: &Map<String, Value>,
@@ -2725,6 +2752,7 @@ fn validate_runtime_mapper_payload(
     for key in RUNTIME_MAPPER_ARRAY_ARGS {
         validate_mapper_string_array(args, key)?;
     }
+    reject_credentials_in_connection(args)?;
 
     match operation {
         "dump" => {
@@ -3580,6 +3608,49 @@ mod tests {
         );
         assert!(runner.commands.borrow()[0].timeout.is_none());
         cleanup_context(&context);
+    }
+
+    /// #343. Credentials written into the connection string were carried into
+    /// the project config and then silently dropped: the run reported a wrong
+    /// password while the same connection worked in Designer. The safe answer
+    /// is an early refusal naming where credentials belong — and it must not
+    /// echo the secret it just refused.
+    #[test]
+    fn runtime_adapter_refuses_credentials_hidden_in_the_connection_string() {
+        for connection in [
+            "File=build/ib;Usr=Админ;Pwd=с3кр3т;",
+            "File=build/ib;usr=Админ;pwd=с3кр3т;",
+        ] {
+            let mut args = Map::new();
+            args.insert("operation".to_string(), json!("config-init"));
+            args.insert("config".to_string(), json!("./v8project.yaml"));
+            args.insert("connection".to_string(), json!(connection));
+            args.insert("format".to_string(), json!("edt"));
+            args.insert("builder".to_string(), json!("IBCMD"));
+
+            let error = validate_runtime_mapper_payload("config-init", &args)
+                .expect_err("credentials in the connection string are refused, not dropped");
+
+            assert!(error.contains("connection"), "{error}");
+            assert!(error.contains("user"), "{error}");
+            assert!(
+                !error.contains("с3кр3т"),
+                "the refusal must not echo the secret: {error}"
+            );
+        }
+    }
+
+    /// A connection without credentials stays accepted.
+    #[test]
+    fn runtime_adapter_accepts_a_connection_without_credentials() {
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("config-init"));
+        args.insert("config".to_string(), json!("./v8project.yaml"));
+        args.insert("connection".to_string(), json!("File=build/ib"));
+        args.insert("format".to_string(), json!("edt"));
+        args.insert("builder".to_string(), json!("IBCMD"));
+
+        validate_runtime_mapper_payload("config-init", &args).unwrap();
     }
 
     #[test]
@@ -5161,9 +5232,13 @@ analyze_timeout_seconds = 900
         let context = discover_workspace(Some(std::env::current_dir().unwrap())).unwrap();
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("config-init"));
+        // Credentials in the connection string are refused outright (#343),
+        // so the redaction case uses a connection the mapper accepts. What it
+        // proves is unchanged: the connection value never reaches the reported
+        // command, whatever it holds.
         args.insert(
             "connection".to_string(),
-            json!("Srvr=prod;Ref=ib;Usr=admin;Pwd=super-secret"),
+            json!("Srvr=prod-secret-host;Ref=ib"),
         );
 
         let outcome = RuntimeAdapter::new()
@@ -5172,7 +5247,7 @@ analyze_timeout_seconds = 900
 
         let command = outcome.command.unwrap().join(" ");
         assert!(command.contains("--connection <redacted>"));
-        assert!(!command.contains("super-secret"));
+        assert!(!command.contains("prod-secret-host"));
     }
 
     #[test]
