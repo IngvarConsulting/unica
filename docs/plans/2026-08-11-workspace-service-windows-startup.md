@@ -465,10 +465,12 @@ installed 0.11.0 runtime only as a checked manifest/tool-binary source:
 $python = 'C:\Users\user\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
 @'
 import json
+import ctypes
 import os
 import pathlib
 import queue
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -494,8 +496,8 @@ try:
 
     environment = os.environ.copy()
     environment["UNICA_PLUGIN_ROOT"] = str(runtime)
-    environment["UNICA_WORKSPACE_SERVICE_IDLE_SECS"] = "1"
-    environment["UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS"] = "2"
+    environment["UNICA_WORKSPACE_SERVICE_IDLE_SECS"] = "30"
+    environment["UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS"] = "120"
     process = subprocess.Popen(
         [str(binary)],
         cwd=repo,
@@ -538,7 +540,7 @@ try:
         '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
     )
     process.stdin.flush()
-    response = request({
+    tool_message = {
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/call",
@@ -551,14 +553,62 @@ try:
                 "detail": "concise",
             },
         },
-    })
+    }
+    call_result = {}
+
+    def call_tool():
+        try:
+            call_result["response"] = request(tool_message)
+        except BaseException as error:
+            call_result["error"] = error
+
+    caller = threading.Thread(target=call_tool)
+    caller.start()
+    service_root = repo / ".build" / "unica" / "services"
+    source_identity = source.resolve()
+    record_path = None
+    record = None
+    readiness_deadline = time.time() + 10
+    while time.time() < readiness_deadline and caller.is_alive():
+        for candidate in service_root.glob("*/service.json"):
+            candidate_record = json.loads(candidate.read_text(encoding="utf-8"))
+            if pathlib.Path(candidate_record["source_root"]).resolve() == source_identity:
+                record_path = candidate
+                record = candidate_record
+                break
+        if record is not None:
+            break
+        time.sleep(0.05)
+    caller.join(timeout=150)
+    assert not caller.is_alive(), "tools/call exceeded 150 seconds"
+    if "error" in call_result:
+        raise call_result["error"]
+    response = call_result["response"]
     encoded = json.dumps(response, ensure_ascii=False)
     assert "workspace service did not become ready" not in encoded, encoded
-    records = list((root / ".build" / "unica" / "services").glob("*/service.json"))
-    assert records, encoded
+    assert record_path is not None and record is not None, encoded
+
+    shutdown_request = json.dumps({
+        "token": record["token"],
+        "kind": {"type": "shutdown"},
+    }, separators=(",", ":")) + "\n"
+    with socket.create_connection(("127.0.0.1", record["port"]), timeout=2) as control:
+        control.settimeout(10)
+        control.sendall(shutdown_request.encode("utf-8"))
+        shutdown_line = control.makefile("r", encoding="utf-8").readline()
+    shutdown_response = json.loads(shutdown_line)
+    assert shutdown_response.get("ok") is True, shutdown_response
+    assert shutdown_response.get("shutdown") is True, shutdown_response
+
+    process_handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, record["pid"])
+    if process_handle:
+        try:
+            wait_result = ctypes.windll.kernel32.WaitForSingleObject(process_handle, 10_000)
+            assert wait_result == 0, f"workspace service PID {record['pid']} did not exit"
+        finally:
+            ctypes.windll.kernel32.CloseHandle(process_handle)
     process.stdin.close()
     process.wait(timeout=5)
-    time.sleep(3)
 finally:
     if root.exists():
         shutil.rmtree(root)
@@ -566,9 +616,11 @@ finally:
 ```
 
 Expected: the call does not contain `workspace service did not become ready`;
-`service.json` is published during the call. A later analyzer-specific error is
-acceptable because this acceptance step isolates the workspace-service startup
-boundary.
+the matching `service.json` is observed under the discovered worktree cache
+during the call. A later analyzer-specific error is acceptable because this
+acceptance step isolates the workspace-service startup boundary. The shutdown
+response has `ok: true` and `shutdown: true`, and the service PID exits within
+10 seconds before the fixture is removed.
 
 - [ ] **Step 5: Review final scope and history**
 
