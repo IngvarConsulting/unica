@@ -1020,7 +1020,7 @@ mod tests {
             .expect("unica.role.validate must be listed");
 
         let schema = &role_validate["inputSchema"];
-        // ADR-0048 moved the requirement into the two selector branches: the
+        // ADR-0049 moved the requirement into the two selector branches: the
         // path is still required to reach the tool by path, and the logical
         // branch requires the address pair instead.
         assert_eq!(schema["required"], json!([]));

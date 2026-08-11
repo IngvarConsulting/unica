@@ -2071,8 +2071,8 @@ impl ClosedPlatformXmlTarget {
 }
 
 /// Which target kinds a caller is prepared to receive. The write surface passes
-/// `ModuleOnly` so that widening the resolver can never hand a descriptor to a
-/// writer; read-only callers pass `Any`.
+/// `ModuleOnly` so that widening the resolver can never hand a descriptor or a
+/// source root to a writer; read-only callers pass `Any`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TargetKindPolicy {
     ModuleOnly,
@@ -2178,26 +2178,33 @@ pub(crate) fn resolve_platform_xml_target(
     let selected = resolve_named_source_set(context, &target.source_set)
         .map_err(|error| public_source_set_error(&target.source_set, error))?;
     validate_source_set(&selected)?;
-    let Some(address) = target.metadata_path.as_ref() else {
-        // The policy is a fail-closed declaration, so it decides before any
-        // resolution succeeds. The source root has no `metadataPath` to match
-        // on, which is exactly why it has to be refused here and not in the
-        // match below.
-        if !matches!(policy, TargetKindPolicy::Any) {
-            return Err(SourceTargetError::new(
-                SourceTargetErrorCode::TargetKindMismatch,
-                "metadataPath does not identify a module terminal",
-            ));
+    // The policy decides every target kind, including the source root a missing
+    // `metadataPath` names. Answering the root before the policy is consulted
+    // would make `ModuleOnly` a filter over addresses rather than the
+    // fail-closed declaration a writer relies on.
+    let address = target.metadata_path.as_ref();
+    let target_kind = address.map_or(TargetKind::SourceRoot, MetadataAddress::target_kind);
+    match (target_kind, policy) {
+        (TargetKind::Module, _) => resolve_platform_xml_module(
+            context,
+            target,
+            selected,
+            address.expect("a module kind comes from an address"),
+            policy,
+        ),
+        (TargetKind::MetadataObject, TargetKindPolicy::Any) => resolve_platform_xml_object(
+            context,
+            target,
+            selected,
+            address.expect("a metadata object kind comes from an address"),
+        ),
+        (TargetKind::SourceRoot, TargetKindPolicy::Any) => {
+            resolve_platform_xml_root(context, target, selected)
         }
-        return resolve_platform_xml_root(context, target, selected);
-    };
-    match (address.target_kind(), policy) {
-        (TargetKind::Module, _) => {
-            resolve_platform_xml_module(context, target, selected, address, policy)
-        }
-        (TargetKind::MetadataObject, TargetKindPolicy::Any) => {
-            resolve_platform_xml_object(context, target, selected, address)
-        }
+        (TargetKind::SourceRoot, _) => Err(SourceTargetError::new(
+            SourceTargetErrorCode::TargetKindMismatch,
+            "sourceSet root is not a module terminal",
+        )),
         _ => Err(SourceTargetError::new(
             SourceTargetErrorCode::TargetKindMismatch,
             "metadataPath does not identify a module terminal",
@@ -4052,6 +4059,169 @@ mod tests {
                 normalize_path_identity(&context.workspace_root.join(root)).unwrap()
             );
         }
+        cleanup(&context);
+    }
+
+    /// `ModuleOnly` is a fail-closed declaration, not a filter on addresses that
+    /// happen to carry a `metadataPath`: a source-root target must be refused by
+    /// the same barrier that refuses a descriptor.
+    #[test]
+    fn platform_xml_module_only_policy_refuses_a_source_root_target() {
+        let context = fixture(
+            "module-only-source-root",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+
+        let allowed = resolve_platform_xml_object_target(&context, &root_target("main"))
+            .expect("a read-only caller still resolves the source root under `Any`");
+        assert_eq!(
+            allowed.resolved.target_kind,
+            crate::domain::source_target::TargetKind::SourceRoot
+        );
+
+        let error = resolve_platform_xml_target(&context, &root_target("main")).unwrap_err();
+
+        assert_eq!(error.code, SourceTargetErrorCode::TargetKindMismatch);
+        assert_eq!(error.message, "sourceSet root is not a module terminal");
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert!(!serialized.contains(&context.workspace_root.display().to_string()));
+        assert!(!serialized.contains("src"));
+        cleanup(&context);
+    }
+
+    /// The complete `(target kind, policy)` table, so widening one cell cannot
+    /// pass unnoticed because only its own scenario was covered.
+    #[test]
+    fn platform_xml_target_kind_policy_table_is_closed() {
+        let context = fixture(
+            "target-kind-policy-table",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_module_fixture(
+            &root,
+            "CommonModules/Shared.xml",
+            "CommonModules/Shared/Ext/Module.bsl",
+            "CommonModule",
+            "Shared",
+        );
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+
+        let root_target = root_target("main");
+        let object_target = target("main", "Catalog.Items");
+        let module_target = target("main", "CommonModule.Shared.Module");
+        let cases = [
+            (
+                "source root",
+                &root_target,
+                super::TargetKindPolicy::Any,
+                true,
+            ),
+            (
+                "source root",
+                &root_target,
+                super::TargetKindPolicy::ModuleOnly,
+                false,
+            ),
+            (
+                "source root",
+                &root_target,
+                super::TargetKindPolicy::ModuleOnlyAllowingAbsent,
+                false,
+            ),
+            (
+                "metadata object",
+                &object_target,
+                super::TargetKindPolicy::Any,
+                true,
+            ),
+            (
+                "metadata object",
+                &object_target,
+                super::TargetKindPolicy::ModuleOnly,
+                false,
+            ),
+            (
+                "metadata object",
+                &object_target,
+                super::TargetKindPolicy::ModuleOnlyAllowingAbsent,
+                false,
+            ),
+            ("module", &module_target, super::TargetKindPolicy::Any, true),
+            (
+                "module",
+                &module_target,
+                super::TargetKindPolicy::ModuleOnly,
+                true,
+            ),
+            (
+                "module",
+                &module_target,
+                super::TargetKindPolicy::ModuleOnlyAllowingAbsent,
+                true,
+            ),
+        ];
+
+        for (label, source_target, policy, accepted) in cases {
+            let outcome = super::resolve_platform_xml_target(&context, source_target, policy);
+            match (accepted, outcome) {
+                (true, Ok(_)) => {}
+                (false, Err(error)) => assert_eq!(
+                    error.code,
+                    SourceTargetErrorCode::TargetKindMismatch,
+                    "{label} under {policy:?} must fail as a kind mismatch"
+                ),
+                (true, Err(error)) => {
+                    panic!("{label} under {policy:?} must resolve, got {error:?}")
+                }
+                (false, Ok(_)) => panic!("{label} under {policy:?} must not resolve"),
+            }
+        }
+        cleanup(&context);
+    }
+
+    /// A handle revalidates under the policy that issued it, so a source-root
+    /// handle keeps resolving while a module handle can never widen into one.
+    #[test]
+    fn platform_xml_source_root_handle_revalidates_without_widening() {
+        let context = fixture(
+            "source-root-rebind",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_module_fixture(
+            &root,
+            "CommonModules/Shared.xml",
+            "CommonModules/Shared/Ext/Module.bsl",
+            "CommonModule",
+            "Shared",
+        );
+
+        let root_handle = resolve_platform_xml_object_target(&context, &root_target("main"))
+            .unwrap()
+            .handle;
+        assert_eq!(
+            revalidate_platform_xml_target(&context, &root_handle)
+                .unwrap()
+                .path,
+            normalize_path_identity(&root).unwrap()
+        );
+
+        let module_handle =
+            resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
+                .unwrap()
+                .handle;
+        assert_eq!(
+            module_handle.target_kind(),
+            crate::domain::source_target::TargetKind::Module
+        );
+        assert_ne!(
+            revalidate_platform_xml_target(&context, &module_handle)
+                .unwrap()
+                .path,
+            normalize_path_identity(&root).unwrap()
+        );
         cleanup(&context);
     }
 

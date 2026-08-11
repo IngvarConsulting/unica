@@ -29,7 +29,7 @@ allowed-tools:
 | MaxErrors    | нет   | 30      | Макс. ошибок до остановки (по умолчанию 30)      |
 
 Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо `RightsPath`.
-Оба сразу отклоняются кодом `selector_conflict` (ADR-0048).
+Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
 
 ## MCP вызов
 
@@ -71,4 +71,4 @@ allowed-tools:
 
 Имя набора даёт `unica.project.map`, адрес — `unica.source.resolve`, а `unica.source.locate` переводит
 в адрес путь, найденный иначе. Файловый селектор сохраняется до
-отдельного среза его снятия (ADR-0048).
+отдельного среза его снятия (ADR-0049).

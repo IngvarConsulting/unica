@@ -2517,7 +2517,7 @@ fn read_regular_file(path: &Path) -> Result<Vec<u8>, String> {
 
 /// The identity check is role-specific; the proof that `<Roles>/<R>/Ext/Rights.xml`
 /// is a direct regular file inside the selected source set is the general one
-/// every subject reader needs, and lives in `logical_selector` (ADR-0048).
+/// every subject reader needs, and lives in `logical_selector` (ADR-0049).
 fn prove_role_rights_path(
     evidence: &PlatformXmlResourceEvidence,
     role_name: &str,

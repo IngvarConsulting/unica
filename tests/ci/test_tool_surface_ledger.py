@@ -64,7 +64,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         cls.review = json.loads(REVIEW.read_text(encoding="utf-8"))
 
     def test_a_branch_only_argument_is_not_published_as_freely_optional(self) -> None:
-        """ADR-0048: `metadataPath` is valid only alongside `sourceSet`.
+        """ADR-0049: `metadataPath` is valid only alongside `sourceSet`.
 
         `unica.subsystem.info` forbids it in the path branch, so rendering it
         as plain `нет` tells a caller it may be sent with `SubsystemPath`.

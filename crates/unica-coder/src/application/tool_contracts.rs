@@ -47,7 +47,7 @@ impl LogicalAddress {
     }
 }
 
-/// ADR-0048 transitional bridge: tool name, its canonical legacy target
+/// ADR-0049 transitional bridge: tool name, its canonical legacy target
 /// argument, and how much address the tool takes. Removing the legacy column is
 /// the separate per-tool slice ADR-0021 §13 requires.
 const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
@@ -124,14 +124,15 @@ const DCS_INFO_ARGS: &[&str] = &["TemplatePath", "templatePath", "Path", "path"]
 const FORM_INFO_ARGS: &[&str] = &["FormPath", "formPath", "Path", "path"];
 /// `mxl.info` answers with typed data. `WithText` stays: it selects cell
 /// content, the way `includeMethods` selects methods in ADR-0020. `Format`,
-/// `MaxParams`, `Limit` and `Offset` only shaped a printed report.
+/// `MaxParams`, `Limit` and `Offset` only shaped a printed report. `SrcDir`
+/// addressed a template only together with `ProcessorName` and `TemplateName`,
+/// and `TemplatePath` has always been required, so that composite address was
+/// never reachable through the published schema.
 const MXL_INFO_ARGS: &[&str] = &[
     "TemplatePath",
     "templatePath",
     "Path",
     "path",
-    "SrcDir",
-    "srcDir",
     "WithText",
     "withText",
 ];
@@ -713,7 +714,7 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         "required": required_args(tool),
     });
     if let Some((legacy, address)) = bridged_selector(tool.name) {
-        // ADR-0048: the two selectors are alternatives, never a precedence
+        // ADR-0049: the two selectors are alternatives, never a precedence
         // question, so the schema says so instead of leaving a client to guess
         // which one an answer came from.
         let logical_required = address.required_args();
@@ -1594,7 +1595,7 @@ fn validate_form_add_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Res
     validate_unique_alias_group(tool.name, args, &["SetDefault", "setDefault"])
 }
 
-/// ADR-0048: a bridged reader accepts exactly one selector. Two at once is a
+/// ADR-0049: a bridged reader accepts exactly one selector. Two at once is a
 /// caller mistake, not a precedence question — resolving it silently would hide
 /// which selector produced the answer. Zero is the pre-existing missing-argument
 /// error, restated so it names both ways in.
@@ -2322,7 +2323,7 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     if tool.name == "unica.mxl.decompile" {
         names.retain(|name| *name != "OutputPath" && *name != "outputPath");
     }
-    // ADR-0048: one place adds the logical selector to all thirteen bridged
+    // ADR-0049: one place adds the logical selector to all thirteen bridged
     // readers, so the narrow reader lists and the shared validator list cannot
     // drift apart. Narrowing the validator lists themselves is a separate
     // contract question and stays out of this bridge.
@@ -2914,7 +2915,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "limit",
-        "Output cap for the tool being called: maximum printed lines, default 150, for the paginating XML readers (cf.info, form.info, dcs.info, subsystem.info, role.info, mxl.info); elsewhere it caps returned results with per-tool defaults (code.search 20 per provider, code.definition 50, code.graph nodes, code.diagnostics findings, standards results).",
+        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
     ),
     (
         "maxErrors",
@@ -2930,7 +2931,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "maxParams",
-        "`unica.mxl.info` only: maximum number of parameters listed per area, default 10",
+        "Declared integer argument that no handler reads: `unica.mxl.info` answers with every area parameter as typed data and publishes no cap",
     ),
     (
         "mcpConfig",
@@ -2986,7 +2987,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "name",
-        "Name of the object being created (`cf.init`, `cfe.init`, `epf.init`, `erf.init`), or the drill-down target for `subsystem.info` and `dcs.info`; on `cf.info` it is an alias of `section`",
+        "Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, the required BSL method to locate on `unica.code.definition`, and the XDTO type or property named by the chosen `unica.xdto.edit` operation. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048).",
     ),
     (
         "namePrefix",
@@ -3063,7 +3064,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "processorName",
-        "Name of the owning object, used together with `templateName` and `srcDir` instead of a direct `templatePath` by `unica.mxl.info` and `unica.mxl.validate`; `unica.help.add` also accepts it as an alias of `objectName`.",
+        "Name of the owning object, used together with `templateName` and `srcDir` instead of a direct `templatePath` by `unica.mxl.validate`; `unica.help.add` also accepts it as an alias of `objectName`. `unica.mxl.info` addresses a template by `templatePath` only.",
     ),
     (
         "projects",
@@ -3175,7 +3176,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "srcDir",
-        "Directory holding `<objectName>.xml`, default `src`; for `unica.form.remove` and `unica.template.add`/`remove` point it at the type folder such as `src/Reports`, and `unica.mxl.info`/`help.add` use it too",
+        "Directory holding `<objectName>.xml`, default `src`; for `unica.form.remove` and `unica.template.add`/`remove` point it at the type folder such as `src/Reports`, and `unica.help.add` uses it too",
     ),
     (
         "stderrOutput",
@@ -3207,7 +3208,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "templateName",
-        "Name of the template to create with `unica.template.add`, delete with `unica.template.remove`, or read with `unica.mxl.info` together with `processorName`",
+        "Name of the template to create with `unica.template.add`, delete with `unica.template.remove`, or address with `unica.mxl.validate` together with `processorName`",
     ),
     (
         "templatePath",
@@ -6504,7 +6505,7 @@ mod tests {
                 "{retired} no longer selects anything: {schema}"
             );
         }
-        // ADR-0048 moved the requirement into the selector branches: the path
+        // ADR-0049 moved the requirement into the selector branches: the path
         // is still required, just not unconditionally — a logical call carries
         // `sourceSet` + `metadataPath` instead.
         assert_eq!(schema["required"], json!([]));
@@ -6521,6 +6522,238 @@ mod tests {
             json!("Reports/Sales/Templates/Main"),
         );
         validate_tool_arguments(dcs_info, &args, false).unwrap();
+    }
+
+    /// The eight readers ADR-0023 narrowed publish exactly this set and accept
+    /// exactly that one. The table is the contract: dropping a functional
+    /// selector by accident fails here, publishing an unreachable one fails
+    /// here, and so does letting a reader fall back to the historical catch-all.
+    /// Published names are canonical (ADR-0019 collapses path aliases in
+    /// `tools/list`); accepted names include the aliases validation still takes.
+    /// Six of them are also ADR-0049 bridges, so their logical selector belongs
+    /// to the pinned set: losing it would be as invisible as losing the path.
+    #[test]
+    fn every_narrowed_reader_publishes_its_exact_argument_set() {
+        let cases: [(&str, &[&str], &[&str]); 8] = [
+            (
+                "unica.cf.info",
+                &["ConfigPath", "confirm", "cwd", "sourceSet"],
+                &[
+                    "ConfigPath",
+                    "Path",
+                    "configPath",
+                    "confirm",
+                    "cwd",
+                    "path",
+                    "sourceSet",
+                ],
+            ),
+            (
+                "unica.role.info",
+                &["RightsPath", "confirm", "cwd", "metadataPath", "sourceSet"],
+                &[
+                    "Path",
+                    "RightsPath",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "path",
+                    "rightsPath",
+                    "sourceSet",
+                ],
+            ),
+            (
+                "unica.subsystem.info",
+                &[
+                    "SubsystemPath",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "sourceSet",
+                ],
+                &[
+                    "Path",
+                    "SubsystemPath",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "path",
+                    "sourceSet",
+                    "subsystemPath",
+                ],
+            ),
+            (
+                "unica.dcs.info",
+                &[
+                    "TemplatePath",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "sourceSet",
+                ],
+                &[
+                    "Path",
+                    "TemplatePath",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "path",
+                    "sourceSet",
+                    "templatePath",
+                ],
+            ),
+            (
+                "unica.form.info",
+                &["FormPath", "confirm", "cwd", "metadataPath", "sourceSet"],
+                &[
+                    "FormPath",
+                    "Path",
+                    "confirm",
+                    "cwd",
+                    "formPath",
+                    "metadataPath",
+                    "path",
+                    "sourceSet",
+                ],
+            ),
+            (
+                "unica.mxl.info",
+                &[
+                    "TemplatePath",
+                    "WithText",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "sourceSet",
+                    "withText",
+                ],
+                &[
+                    "Path",
+                    "TemplatePath",
+                    "WithText",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "path",
+                    "sourceSet",
+                    "templatePath",
+                    "withText",
+                ],
+            ),
+            (
+                "unica.cfe.diff",
+                &["ConfigPath", "ExtensionPath", "confirm", "cwd"],
+                &[
+                    "ConfigPath",
+                    "ExtensionPath",
+                    "configPath",
+                    "confirm",
+                    "cwd",
+                    "extensionPath",
+                ],
+            ),
+            (
+                "unica.meta.info",
+                &["limit", "metadataPath", "sections", "sourceSet"],
+                // The metadata surface has no path aliases and validates its
+                // own closed shape, so `allowed_args` stays empty by design.
+                &[],
+            ),
+        ];
+
+        for (name, published, accepted) in cases {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            let schema = input_schema_for_tool(&tool);
+            assert_eq!(schema["additionalProperties"], false, "{name}");
+            assert_eq!(sorted_property_names(&schema), published, "{name}");
+            assert_eq!(allowed_args(&tool), accepted, "{name}");
+        }
+    }
+
+    /// The historical catch-all is what made a narrowing invisible: every native
+    /// XML tool accepted every name, so removing one from a handler changed
+    /// nothing observable. No reader may reach it again.
+    #[test]
+    fn no_narrowed_reader_falls_back_to_the_native_catch_all() {
+        for name in [
+            "unica.cf.info",
+            "unica.role.info",
+            "unica.subsystem.info",
+            "unica.dcs.info",
+            "unica.form.info",
+            "unica.mxl.info",
+            "unica.cfe.diff",
+        ] {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} must be registered"));
+            let published = allowed_args(&tool);
+            assert!(
+                published.len() < NATIVE_XML_DSL_ARGS.len(),
+                "{name} publishes the catch-all argument list"
+            );
+            // One representative name from every family the catch-all carried.
+            for foreign in ["Mode", "Limit", "Offset", "Name", "Format", "OutputDir"] {
+                assert!(
+                    !published.contains(&foreign),
+                    "{name} accepts `{foreign}` again"
+                );
+            }
+        }
+    }
+
+    /// `SrcDir` only ever addressed a template together with `ProcessorName`
+    /// and `TemplateName`, and `TemplatePath` has been required throughout, so
+    /// the composite address was never reachable. Publishing `SrcDir` alone
+    /// advertised a lever that could not select anything.
+    #[test]
+    fn mxl_info_publishes_one_reachable_template_address() {
+        let mxl_info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.mxl.info")
+            .expect("unica.mxl.info must be registered");
+
+        let schema = input_schema_for_tool(&mxl_info);
+        // ADR-0049 moved the requirement into the selector branches: the
+        // physical branch still requires the path, and the logical one requires
+        // the address pair instead.
+        assert_eq!(schema["required"], json!([]));
+        assert_eq!(
+            schema["oneOf"][1]["required"],
+            json!(["TemplatePath"]),
+            "the physical branch still requires one reachable address: {schema}"
+        );
+        for unreachable in ["SrcDir", "srcDir", "ProcessorName", "TemplateName"] {
+            assert!(
+                schema["properties"].get(unreachable).is_none(),
+                "{unreachable} cannot address a template on its own: {schema}"
+            );
+            let args = Map::from_iter([
+                (
+                    "TemplatePath".to_string(),
+                    json!("Reports/Sales/Templates/Main"),
+                ),
+                (unreachable.to_string(), json!("src")),
+            ]);
+            let error = validate_tool_arguments(mxl_info, &args, false).unwrap_err();
+            assert!(
+                error.contains(&format!("does not accept argument `{unreachable}`")),
+                "{unreachable}: {error}"
+            );
+        }
+
+        // `WithText` stays: it selects cell content, not report formatting.
+        let mut args = Map::new();
+        args.insert(
+            "TemplatePath".to_string(),
+            json!("Reports/Sales/Templates/Main"),
+        );
+        args.insert("WithText".to_string(), json!(true));
+        validate_tool_arguments(mxl_info, &args, false).unwrap();
     }
 
     #[test]

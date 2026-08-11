@@ -3022,7 +3022,7 @@ def write_named_subsystem_fixture(target: Path, name: str, child: str | None = N
     )
 
 
-# ADR-0048: a bridged reader may select its target logically. Such an example
+# ADR-0049: a bridged reader may select its target logically. Such an example
 # carries no path to substitute, so the harness materialises a registered,
 # addressable object instead and points the example at it.
 LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
@@ -3197,7 +3197,7 @@ EndProcedure
         handled.add(tool_name)
         arguments = example.payload["params"]["arguments"]
 
-        # ADR-0048: a logical example carries a selector, not a path, so the
+        # ADR-0049: a logical example carries a selector, not a path, so the
         # path substitution below has nothing to work on.
         if "sourceSet" in arguments and tool_name in LOGICAL_READER_TARGETS:
             prepare_logical_reader_example(arguments, tool_name)

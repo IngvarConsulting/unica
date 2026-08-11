@@ -31,7 +31,7 @@ ADR/invariant/acceptance corpus.
 
 ## Global Constraints
 
-- ADR-0048 owns the transitional state. A reader publishes **both** selectors and
+- ADR-0049 owns the transitional state. A reader publishes **both** selectors and
   requires **exactly one**: neither is the existing missing-argument error, both
   is `selector_conflict`.
 - The bridge does not change any answer. For the same object, the logical call
@@ -522,7 +522,7 @@ Expected: FAIL to compile — `logical_selection`, `AttachedResource`,
 Above the test module in the same file:
 
 ```rust
-//! Logical target → attached resource for subject readers (ADR-0048).
+//! Logical target → attached resource for subject readers (ADR-0049).
 //!
 //! The rule is one line of the 8.3.27 layout: a descriptor `<…>/<Stem>.xml`
 //! owns its content under `<…>/<Stem>/Ext/<Resource>`. Everything else here is
@@ -887,7 +887,7 @@ The thirteen tools take **three** shapes of logical selector, not one. Publishin
 In the `tests` module of `tool_contracts.rs`:
 
 ```rust
-/// The thirteen readers bridged by ADR-0048: tool name, its legacy target
+/// The thirteen readers bridged by ADR-0049: tool name, its legacy target
 /// argument, and whether the logical branch also requires `metadataPath`.
 const BRIDGED_READERS: &[(&str, &str, bool)] = &[
     ("unica.cf.info", "ConfigPath", false),
@@ -1014,7 +1014,7 @@ Near the argument lists, one table that every later step reads, so the thirteen
 tools cannot drift apart:
 
 ```rust
-/// ADR-0048 bridge: tool name, canonical legacy argument, and whether the
+/// ADR-0049 bridge: tool name, canonical legacy argument, and whether the
 /// logical branch also takes `metadataPath`. `unica.cf.*` selects a
 /// configuration root, which has no address, so it publishes `sourceSet` alone.
 const BRIDGED_SELECTORS: &[(&str, &str, bool)] = &[
@@ -1049,7 +1049,7 @@ whose third column is `true`. That is `CF_INFO_ARGS`, `ROLE_INFO_ARGS`,
 the lists of the six `*.validate` tools and `mxl.decompile`. Where a validator
 still draws from the shared `NATIVE_XML_DSL_ARGS`, give it its own narrow list
 in the style of the readers above, carrying only the arguments that tool already
-consumed plus the selector, and say so in a comment: the list is the ADR-0048
+consumed plus the selector, and say so in a comment: the list is the ADR-0049
 bridge, not a new catch-all.
 
 - [ ] **Step 5: Publish the two branches as mutually exclusive**
@@ -1088,7 +1088,7 @@ The schema states the contract; the Rust check is what produces the stable code.
 Next to `validate_unique_alias_group`:
 
 ```rust
-/// ADR-0048: a bridged reader accepts exactly one selector. Two at once is a
+/// ADR-0049: a bridged reader accepts exactly one selector. Two at once is a
 /// caller mistake, not a precedence question — resolving it silently would hide
 /// which selector the answer came from.
 fn validate_bridged_selector(tool: &ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
@@ -1711,7 +1711,7 @@ INV-SOURCE-READER-SELECTOR — Читатель принимает ровно о
   принимает ровно один из них, отклоняет одновременную передачу обоих стабильным
   `selector_conflict` до вызова обработчика и отвечает на логический вызов теми
   же типизированными данными, что на файловый.
-- **Decision:** ADR-0048
+- **Decision:** ADR-0049
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs`
 - **Scope:** source, runtime

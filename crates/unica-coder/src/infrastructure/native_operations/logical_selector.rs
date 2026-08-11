@@ -1,4 +1,4 @@
-//! Logical target → attached resource for subject readers (ADR-0048).
+//! Logical target → attached resource for subject readers (ADR-0049).
 //!
 //! The derivation rule is one line of the 8.3.27 layout, verified against a
 //! real Designer dump: a descriptor `<…>/<Stem>.xml` owns its body under

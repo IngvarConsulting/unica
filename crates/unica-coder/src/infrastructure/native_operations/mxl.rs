@@ -1918,6 +1918,14 @@ pub(crate) fn resolve_mxl_decompile_path(
     Ok(absolutize(raw, &context.cwd))
 }
 
+/// `unica.mxl.info` publishes two addresses: the logical selector and
+/// `TemplatePath`. The composite `ProcessorName`/`TemplateName`/`SrcDir` form
+/// guessed a physical layout and could never be reached past the schema, so it
+/// is gone rather than left as an unreachable branch.
+///
+/// The physical address must still accept both documented forms — the
+/// descriptor file and the layout directory holding it — the way
+/// `resolve_mxl_validate_path` already does.
 pub(crate) fn resolve_mxl_info_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -1929,24 +1937,14 @@ pub(crate) fn resolve_mxl_info_path(
             .map(|selection| selection.resource_path)
             .map_err(|failure| failure.to_string());
     }
-    if let Some(path) = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"]) {
-        return Ok(absolutize(path, &context.cwd));
-    }
-    let processor_name = string_arg(args, &["processorName", "ProcessorName"]).unwrap_or("");
-    let template_name = string_arg(args, &["templateName", "TemplateName"]).unwrap_or("");
-    if processor_name.is_empty() || template_name.is_empty() {
-        return Err("Specify -TemplatePath or both -ProcessorName and -TemplateName".to_string());
-    }
-    let src_dir = string_arg(args, &["srcDir", "SrcDir"]).unwrap_or("src");
-    Ok(absolutize(
-        PathBuf::from(src_dir)
-            .join(processor_name)
-            .join("Templates")
-            .join(template_name)
-            .join("Ext")
-            .join("Template.xml"),
-        &context.cwd,
-    ))
+    let path = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
+        .ok_or_else(|| "Specify -TemplatePath".to_string())?;
+    let path = absolutize(path, &context.cwd);
+    Ok(if path.is_dir() {
+        path.join("Ext").join("Template.xml")
+    } else {
+        path
+    })
 }
 
 pub(crate) fn resolve_mxl_validate_path(
@@ -2193,30 +2191,6 @@ pub(crate) fn truncate_mxl_list(items: &[String], max_count: usize) -> String {
     }
     let shown = items[..max_count].join(", ");
     format!("{shown}, ... (+{})", items.len() - max_count)
-}
-
-pub(crate) fn paginate_mxl_info(mut lines: Vec<String>, args: &Map<String, Value>) -> String {
-    let total_lines = lines.len();
-    let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0);
-    let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150);
-    if offset > 0 {
-        if offset as usize >= total_lines {
-            return format!(
-                "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
-            );
-        }
-        lines = lines[offset as usize..].to_vec();
-    }
-    if lines.len() > limit as usize {
-        let mut output = lines[..limit as usize].join("\n");
-        output.push_str(&format!(
-            "\n\n[TRUNCATED] Shown {limit} of {total_lines} lines. Use -Offset {} to continue.\n",
-            offset + limit
-        ));
-        output
-    } else {
-        format!("{}\n", lines.join("\n"))
-    }
 }
 
 #[derive(Clone)]
@@ -3328,6 +3302,27 @@ mod tests {
         // ADR-0023: the template description is data, not a JSON string in stdout.
         let report = serde_json::to_value(execution.data.unwrap()).unwrap();
         assert_eq!(report["rows"], 1);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// `TemplatePath` is the only address this reader publishes, so both
+    /// documented forms of it must work: the descriptor file and the layout
+    /// directory that resolves to `Ext/Template.xml`.
+    #[test]
+    fn mxl_info_resolves_a_layout_directory_to_its_template() {
+        let context = test_context("info-layout-directory");
+        let layout = context.cwd.join("Templates").join("ПФ_MXL_Продажи");
+        let template_path = layout.join("Ext").join("Template.xml");
+        fs::create_dir_all(template_path.parent().unwrap()).unwrap();
+        fs::write(&template_path, empty_spreadsheet_document_xml()).unwrap();
+
+        let execution = analyze_mxl_info(&path_args(&layout), &context);
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        assert_eq!(
+            execution.outcome.artifacts,
+            vec![template_path.display().to_string()]
+        );
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

@@ -1704,14 +1704,6 @@ pub(crate) fn analyze_form_info_with_data(
             return Err(format!("File not found: {}", form_path.display()));
         }
 
-        let limit = int_arg(args, &["limit", "Limit"])
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(150);
-        let offset = int_arg(args, &["offset", "Offset"])
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(0);
-        let expand = string_arg(args, &["expand", "Expand"]).unwrap_or("");
-
         let text = read_utf8_sig(&form_path)?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error in {}: {err}", form_path.display()))?;
@@ -1799,7 +1791,6 @@ pub(crate) fn analyze_form_info_with_data(
                 .map(form_info_commands)
                 .unwrap_or_default(),
         };
-        let _ = (limit, offset, expand);
 
         Ok((data, form_path))
     })();

@@ -110,7 +110,7 @@ converts a path discovered by other means into one.
 
 ### Readers that accept either selector
 
-Thirteen readers and validators are in the transitional state ADR-0048
+Thirteen readers and validators are in the transitional state ADR-0049
 defines: they accept the logical selector **and** still accept their existing
 path. Nothing is removed here, so no call breaks; removing each path is its own
 later merge request.

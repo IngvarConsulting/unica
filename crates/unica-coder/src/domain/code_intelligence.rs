@@ -288,13 +288,17 @@ pub struct CodeDefinitionResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Every field the index does not report is `null` (ADR-0023). An explicit
+/// zero, `false` or empty list is a proven answer and keeps its value; only
+/// `file` and `line` are required, because a definition nobody can open is not
+/// a definition.
 pub struct CodeDefinition {
     pub file: String,
     pub line: u64,
-    /// Platform kind reported by the index, `method` when it says nothing.
-    pub kind: String,
-    pub params: Vec<String>,
-    pub export: bool,
+    /// Platform kind reported by the index; `null` when it reported none.
+    pub kind: Option<String>,
+    pub params: Option<Vec<String>>,
+    pub export: Option<bool>,
     pub category: Option<String>,
     pub object_name: Option<String>,
     pub module_type: Option<String>,

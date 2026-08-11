@@ -29,7 +29,7 @@ allowed-tools:
 | `sourceSet`  | Имя набора исходников из `v8project.yaml`      |
 
 Селектор цели ровно один: либо `sourceSet`, либо `ConfigPath`. Оба сразу
-отклоняются кодом `selector_conflict` (ADR-0048).
+отклоняются кодом `selector_conflict` (ADR-0049).
 
 ## Поля `data`
 
@@ -177,4 +177,4 @@ allowed-tools:
 ```
 
 Имя набора даёт `unica.project.map`. Файловый селектор сохраняется до
-отдельного среза его снятия (ADR-0048).
+отдельного среза его снятия (ADR-0049).

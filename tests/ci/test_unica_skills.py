@@ -2871,7 +2871,7 @@ class PlatformHelpRoutingTests(unittest.TestCase):
         self.assertIn("назовите подстановку локали в ответе", self.text)
 
 
-# ADR-0048: a bridged reader accepts a logical selector beside its path, so a
+# ADR-0049: a bridged reader accepts a logical selector beside its path, so a
 # skill whose parameter table still names only the path — or still marks it
 # unconditionally required — contradicts the schema the tool publishes.
 CONDITIONAL_MARKER = "один из двух"

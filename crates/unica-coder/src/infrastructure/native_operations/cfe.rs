@@ -600,6 +600,15 @@ pub(crate) struct CfeBorrowExecution {
     pub(crate) data: Option<CfeBorrowData>,
 }
 
+/// What one committed borrow produced. `changes` states the effect the
+/// transaction reported, so it never disagrees with `data.mutation`.
+struct CommittedCfeBorrow {
+    data: CfeBorrowData,
+    artifacts: Vec<PathBuf>,
+    changes: Vec<String>,
+    warnings: Vec<String>,
+}
+
 pub(crate) fn borrow_cfe(args: &Map<String, Value>, context: &WorkspaceContext) -> AdapterOutcome {
     borrow_cfe_with_data(args, context).outcome
 }
@@ -608,7 +617,7 @@ pub(crate) fn borrow_cfe_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> CfeBorrowExecution {
-    let result = (|| -> Result<(CfeBorrowData, Vec<PathBuf>, Vec<String>), String> {
+    let result = (|| -> Result<CommittedCfeBorrow, String> {
         let PreparedCfeBorrow {
             cfg_path,
             ext_path,
@@ -625,15 +634,36 @@ pub(crate) fn borrow_cfe_with_data(
         format_owner_targets.extend(registered_format_dependencies.iter().map(PathBuf::as_path));
         format_owner_targets.sort();
         format_owner_targets.dedup();
-        let cleanup_warnings =
-            write_plan.commit_with_post_validation(&format_owner_targets, context, || {
-                cfe_borrow_validate_extension(&ext_path, context)
-            })?;
+        // The commit knows which paths it brought into existence and which it
+        // replaced; the plan's own artifact list knows neither, so the typed
+        // report is built from the commit and not from the plan.
+        let CommitReport {
+            mut created,
+            mut updated,
+            cleanup_warnings,
+        } = write_plan.commit_with_post_validation(&format_owner_targets, context, || {
+            cfe_borrow_validate_extension(&ext_path, context)
+        })?;
+        created.sort();
+        created.dedup();
+        updated.sort();
+        updated.dedup();
         let mut mutation = MutationData::new(true);
-        for artifact in &artifacts {
-            mutation = mutation.updated(artifact);
+        for path in &created {
+            mutation = mutation.created(path);
         }
-        mutation = mutation.updated(&ext_path);
+        for path in &updated {
+            mutation = mutation.updated(path);
+        }
+        let changes = created
+            .iter()
+            .map(|path| format!("created {}", path.display()))
+            .chain(
+                updated
+                    .iter()
+                    .map(|path| format!("updated {}", path.display())),
+            )
+            .collect::<Vec<_>>();
         let CfeBorrowLog {
             auto_borrowed,
             skipped,
@@ -651,11 +681,21 @@ pub(crate) fn borrow_cfe_with_data(
         artifacts.push(ext_path);
         let mut warnings = borrow_warnings;
         warnings.extend(cleanup_warnings);
-        Ok((data, artifacts, warnings))
+        Ok(CommittedCfeBorrow {
+            data,
+            artifacts,
+            changes,
+            warnings,
+        })
     })();
 
     match result {
-        Ok((data, artifacts, warnings)) => CfeBorrowExecution {
+        Ok(CommittedCfeBorrow {
+            data,
+            artifacts,
+            changes,
+            warnings,
+        }) => CfeBorrowExecution {
             outcome: AdapterOutcome {
                 ok: true,
                 summary: format!(
@@ -663,10 +703,7 @@ pub(crate) fn borrow_cfe_with_data(
                     data.borrowed.len(),
                     data.extension
                 ),
-                changes: artifacts
-                    .iter()
-                    .map(|path| format!("updated {}", path.display()))
-                    .collect(),
+                changes,
                 warnings,
                 errors: Vec::new(),
                 artifacts: artifacts
@@ -917,16 +954,18 @@ impl CfeBorrowWritePlan {
         Ok(())
     }
 
-    fn commit(self) -> Result<Vec<String>, String> {
+    fn commit(self) -> Result<CommitReport, String> {
         self.commit_inner(None, || Ok(()))
     }
 
+    /// Returns what the transaction actually published, so the caller reports
+    /// the effect of the commit rather than restating its own plan.
     fn commit_with_post_validation<F>(
         self,
         format_owner_targets: &[&Path],
         context: &WorkspaceContext,
         post_validation: F,
-    ) -> Result<Vec<String>, String>
+    ) -> Result<CommitReport, String>
     where
         F: FnOnce() -> Result<(), String>,
     {
@@ -937,7 +976,7 @@ impl CfeBorrowWritePlan {
         self,
         format_guard: Option<(&[&Path], &WorkspaceContext)>,
         post_validation: F,
-    ) -> Result<Vec<String>, String>
+    ) -> Result<CommitReport, String>
     where
         F: FnOnce() -> Result<(), String>,
     {
@@ -978,9 +1017,7 @@ impl CfeBorrowWritePlan {
                 context,
             )?;
         }
-        Ok(transaction
-            .commit_with_post_validation(post_validation)?
-            .cleanup_warnings)
+        transaction.commit_with_post_validation(post_validation)
     }
 }
 
@@ -8090,6 +8127,121 @@ mod tests {
         assert!(!context.cwd.join("ext/Catalogs/Items.xml").exists());
         assert!(outcome.changes.is_empty(), "{outcome:?}");
         assert!(outcome.artifacts.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// A first borrow creates the extension descriptor; only the extension
+    /// owner it registers into is updated. Reporting both as `updated` would
+    /// make the typed mutation state something the filesystem contradicts.
+    #[test]
+    fn borrow_cfe_reports_a_first_borrow_as_created_and_its_owner_as_updated() {
+        let context = temp_context("borrow-mutation-created");
+        let (_, _, extension_owner) =
+            write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        let target = context.cwd.join("ext/Catalogs/Items.xml");
+        assert!(!target.exists());
+
+        let execution = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+        let outcome = &execution.outcome;
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let mutation = &execution
+            .data
+            .as_ref()
+            .expect("cfe.borrow answers with data")
+            .mutation;
+        assert!(mutation.applied);
+        let target_path = target.display().to_string();
+        let owner_path = extension_owner.display().to_string();
+        assert!(
+            mutation.created.contains(&target_path),
+            "a file that did not exist must be reported as created: {mutation:?}"
+        );
+        assert!(
+            !mutation.updated.contains(&target_path),
+            "a created file must not also be reported as updated: {mutation:?}"
+        );
+        assert!(
+            mutation.updated.contains(&owner_path),
+            "the registered owner is rewritten, not created: {mutation:?}"
+        );
+        assert!(
+            !mutation.created.contains(&owner_path),
+            "an existing owner must not be reported as created: {mutation:?}"
+        );
+        assert!(
+            outcome.changes.contains(&format!("created {target_path}")),
+            "changes must agree with the typed mutation: {:?}",
+            outcome.changes
+        );
+        assert!(
+            outcome.changes.contains(&format!("updated {owner_path}")),
+            "changes must agree with the typed mutation: {:?}",
+            outcome.changes
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// Borrowing again over an existing descriptor updates it. Nothing is
+    /// created, and a path never appears in both lists.
+    #[test]
+    fn borrow_cfe_reports_a_repeated_borrow_as_updated_only() {
+        let context = temp_context("borrow-mutation-updated");
+        let (_, _, extension_owner) =
+            write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", Some("2.20"));
+        let target = context.cwd.join("ext/Catalogs/Items.xml");
+        assert!(target.exists());
+
+        let execution = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+        let outcome = &execution.outcome;
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let mutation = &execution
+            .data
+            .as_ref()
+            .expect("cfe.borrow answers with data")
+            .mutation;
+        let owner_path = extension_owner.display().to_string();
+        assert!(
+            mutation.created.is_empty(),
+            "nothing is created on a repeated borrow: {mutation:?}"
+        );
+        assert!(
+            mutation.updated.contains(&owner_path),
+            "the owner registration is rewritten: {mutation:?}"
+        );
+        for path in &mutation.created {
+            assert!(
+                !mutation.updated.contains(path),
+                "{path} must not be both created and updated"
+            );
+        }
+        for change in &outcome.changes {
+            assert!(
+                change.starts_with("created ") || change.starts_with("updated "),
+                "every change names its effect: {change}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// A rollback publishes no successful mutation at all: the typed report
+    /// belongs to a commit that happened.
+    #[test]
+    fn borrow_cfe_rolled_back_borrow_publishes_no_mutation() {
+        let context = temp_context("borrow-mutation-rollback");
+        write_minimal_borrow_fixture(&context, "2.20", "2.21", "2.20", None);
+
+        let execution = borrow_cfe_with_data(&minimal_borrow_args(), &context);
+
+        assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+        assert!(
+            execution.data.is_none(),
+            "a failed borrow publishes no mutation classification"
+        );
+        assert!(!context.cwd.join("ext/Catalogs/Items.xml").exists());
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

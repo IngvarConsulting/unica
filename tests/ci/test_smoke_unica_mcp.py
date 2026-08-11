@@ -244,7 +244,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     name = message["params"]["name"]
                     args = message["params"]["arguments"]
                     if name == "unica.role.info":
-                        # ADR-0048 bridge: the stub answers the three
+                        # ADR-0049 bridge: the stub answers the three
                         # outcomes the smoke asserts and nothing else.
                         if "sourceSet" in args and "RightsPath" in args:
                             payload = operation_result(
