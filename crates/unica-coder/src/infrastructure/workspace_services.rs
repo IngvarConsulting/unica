@@ -6,7 +6,9 @@ use crate::infrastructure::platform::{
     short_private_runtime_dir, ManagedChild, ManagedStartupChild,
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
-use crate::infrastructure::source_roots::{normalize_path_identity, source_generation};
+#[cfg(test)]
+use crate::infrastructure::source_roots::source_generation;
+use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
     ready_index_for_source_generation, IndexReadiness, WorkspaceIndexService,
     SOURCE_GENERATION_STALE_STATUS,
@@ -185,6 +187,12 @@ impl ElapsedBudgetDeadline {
         self.budget
             .checked_sub(self.started.elapsed())
             .filter(|remaining| !remaining.is_zero())
+    }
+
+    fn remaining_cancellable(&self, cancellation: &CancellationToken) -> Result<Duration, String> {
+        cancellation_error(cancellation)?;
+        self.remaining()
+            .ok_or_else(|| workspace_service_request_timeout_error(self.budget))
     }
 }
 
@@ -1285,7 +1293,33 @@ fn read_workspace_service_stderr_tail(path: &Path) -> Result<String, String> {
     file.take(SERVICE_STARTUP_STDERR_TAIL_LIMIT)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("failed to read workspace service stderr log: {error}"))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    let mut rendered = String::from_utf8_lossy(&bytes).into_owned();
+    let limit = SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize;
+    if rendered.len() > limit {
+        let mut start = rendered.len() - limit;
+        while !rendered.is_char_boundary(start) {
+            start += 1;
+        }
+        rendered.drain(..start);
+    }
+    Ok(rendered)
+}
+
+fn source_generation_with_deadline(
+    source_root: &Path,
+    deadline: &ElapsedBudgetDeadline,
+    cancellation: &CancellationToken,
+) -> Result<u64, String> {
+    let generation = source_generation_until(source_root, &|| {
+        cancellation.is_cancelled() || deadline.remaining().is_none()
+    });
+    match generation {
+        Some(generation) => Ok(generation),
+        None => {
+            deadline.remaining_cancellable(cancellation)?;
+            unreachable!("source generation only stops on cancellation or timeout")
+        }
+    }
 }
 
 fn terminate_failed_workspace_service_spawn(
@@ -1673,19 +1707,27 @@ impl WorkspaceServiceRuntime {
             Ok(timeout) => timeout,
             Err(error) => return ServiceResponse::error(error),
         };
+        let deadline = ElapsedBudgetDeadline::new(timeout);
         let _lane = match self.acquire_analyzer_lane(cancellation) {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
         };
-        if cancellation.is_cancelled() {
-            return ServiceResponse::error(cancelled_error("workspace analyzer operation stopped"));
+        if let Err(error) = deadline.remaining_cancellable(cancellation) {
+            return ServiceResponse::error(error);
         }
         let mut analyzer = self
             .analyzer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
-        let current_generation = source_generation(Path::new(&self.identity.source_root));
+        let current_generation = match source_generation_with_deadline(
+            Path::new(&self.identity.source_root),
+            &deadline,
+            cancellation,
+        ) {
+            Ok(generation) => generation,
+            Err(error) => return ServiceResponse::error(error),
+        };
         if observe_source_generation(
             &self.analyzer_source_generation,
             &self.analyzer_invalidated,
@@ -1709,6 +1751,7 @@ impl WorkspaceServiceRuntime {
                 .unwrap_or_else(|error| error.into_inner());
         }
         let result = (|| {
+            deadline.remaining_cancellable(cancellation)?;
             if analyzer.is_none() {
                 *analyzer = Some((self.analyzer_starter)(
                     &self.context,
@@ -1716,10 +1759,11 @@ impl WorkspaceServiceRuntime {
                     cancellation,
                 )?);
             }
+            let remaining = deadline.remaining_cancellable(cancellation)?;
             analyzer
                 .as_mut()
                 .expect("bsl session must exist after start")
-                .call(tool_name, tool_args, timeout, cancellation)
+                .call(tool_name, tool_args, remaining, cancellation)
         })();
         match result {
             Ok(output) => ServiceResponse {
@@ -1798,17 +1842,22 @@ impl WorkspaceServiceRuntime {
             Ok(timeout) => timeout,
             Err(error) => return ServiceResponse::error(error),
         };
+        let deadline = ElapsedBudgetDeadline::new(timeout);
         let _lane = match self.acquire_rlm_lane(cancellation) {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
         };
-        if cancellation.is_cancelled() {
-            return ServiceResponse::error(cancelled_error("workspace RLM operation stopped"));
+        if let Err(error) = deadline.remaining_cancellable(cancellation) {
+            return ServiceResponse::error(error);
         }
         let mut rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
         let source_root = Path::new(&self.identity.source_root);
-        let pre_execution_generation = source_generation(source_root);
+        let pre_execution_generation =
+            match source_generation_with_deadline(source_root, &deadline, cancellation) {
+                Ok(generation) => generation,
+                Err(error) => return ServiceResponse::error(error),
+            };
         if observe_source_generation(
             &self.rlm_source_generation,
             &self.rlm_invalidated,
@@ -1836,6 +1885,7 @@ impl WorkspaceServiceRuntime {
             return ServiceResponse::unavailable_rlm_execution(pre_execution_readiness, warnings);
         }
         let result = (|| {
+            deadline.remaining_cancellable(cancellation)?;
             if rlm.is_none() {
                 *rlm = Some((self.rlm_starter)(
                     &self.context,
@@ -1843,13 +1893,18 @@ impl WorkspaceServiceRuntime {
                     cancellation,
                 )?);
             }
+            let remaining = deadline.remaining_cancellable(cancellation)?;
             rlm.as_mut()
                 .expect("RLM session must exist after start")
-                .execute(&operation, timeout, cancellation)
+                .execute(&operation, remaining, cancellation)
         })();
         match result {
             Ok(output) => {
-                let post_execution_generation = source_generation(source_root);
+                let post_execution_generation =
+                    match source_generation_with_deadline(source_root, &deadline, cancellation) {
+                        Ok(generation) => generation,
+                        Err(error) => return ServiceResponse::error(error),
+                    };
                 // Deliberately re-checked against the generation this read was
                 // admitted under, not the one observed just now: a background
                 // job that landed a newer marker mid-execute discards this
@@ -5543,8 +5598,8 @@ mod tests {
         let first = runtime.handle_bsl_mcp(
             "unica.code.search",
             json!({}),
+            2,
             0,
-            2_000_000,
             &CancellationToken::new(),
         );
         assert!(first.ok, "{:?}", first.error);
@@ -5555,8 +5610,8 @@ mod tests {
         let second = runtime.handle_bsl_mcp(
             "unica.code.search",
             json!({}),
+            2,
             0,
-            2_000_000,
             &CancellationToken::new(),
         );
         assert!(second.ok, "{:?}", second.error);
@@ -5593,8 +5648,8 @@ mod tests {
         let first = runtime.handle_bsl_mcp(
             "unica.code.search",
             json!({}),
+            2,
             0,
-            2_000_000,
             &CancellationToken::new(),
         );
         assert!(first.ok, "{:?}", first.error);
@@ -5605,8 +5660,8 @@ mod tests {
         let second = runtime.handle_bsl_mcp(
             "unica.code.search",
             json!({}),
+            2,
             0,
-            2_000_000,
             &CancellationToken::new(),
         );
         assert!(second.ok, "{:?}", second.error);
@@ -6932,6 +6987,89 @@ fn main() {
     }
 
     #[test]
+    fn bsl_generation_exhausts_operation_budget_before_provider_start() {
+        let context = test_context("bsl-generation-budget");
+        let source_root = context.workspace_root.join("src");
+        fs::write(
+            source_root.join("Module.bsl"),
+            "Процедура Тест()\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let starts = Arc::new(AtomicUsize::new(0));
+        runtime.analyzer_starter = Arc::new({
+            let starts = Arc::clone(&starts);
+            move |_context, _source_root, _cancellation| {
+                starts.fetch_add(1, Ordering::AcqRel);
+                Err("provider started after operation budget expired".to_string())
+            }
+        });
+
+        let response = runtime.handle_bsl_mcp(
+            "diagnostics_status",
+            json!({}),
+            0,
+            1,
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(starts.load(Ordering::Acquire), 0, "{response:?}");
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("timeout:")),
+            "{response:?}"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_generation_exhausts_operation_budget_before_provider_start() {
+        let context = test_context("rlm-generation-budget");
+        let source_root = context.workspace_root.join("src");
+        fs::write(
+            source_root.join("Module.bsl"),
+            "Процедура Тест()\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let starts = Arc::new(AtomicUsize::new(0));
+        runtime.rlm_starter = Arc::new({
+            let starts = Arc::clone(&starts);
+            move |_context, _source_root, _cancellation| {
+                starts.fetch_add(1, Ordering::AcqRel);
+                Err("provider started after operation budget expired".to_string())
+            }
+        });
+
+        let response = runtime.handle_rlm_mcp(
+            WorkspaceRlmOperation::Search {
+                query: "Тест".to_string(),
+                limit: 20,
+            },
+            0,
+            1,
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(starts.load(Ordering::Acquire), 0, "{response:?}");
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("timeout:")),
+            "{response:?}"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
     fn rlm_execute_rechecks_generation_after_readiness_before_starting_session() {
         let context = test_context("rlm-generation-before-execute");
         let source_root = context.workspace_root.join("src");
@@ -7432,6 +7570,27 @@ fn main() {
         assert!(!error.contains("issue-339-startup-head-marker"), "{error}");
         assert!(error.len() <= SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize + 512);
         child.terminate_bounded(Duration::from_secs(1)).unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn startup_stderr_tail_stays_bounded_after_lossy_utf8_decoding() {
+        let context = test_context("startup-stderr-invalid-utf8");
+        let stderr_path = context.cache_root.join("service.stderr.log");
+        fs::create_dir_all(&context.cache_root).unwrap();
+        let marker = b"issue-339-startup-tail-marker";
+        let mut stderr = vec![0xff; SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize];
+        stderr.extend_from_slice(marker);
+        fs::write(&stderr_path, stderr).unwrap();
+
+        let rendered = read_workspace_service_stderr_tail(&stderr_path).unwrap();
+
+        assert!(rendered.contains("issue-339-startup-tail-marker"));
+        assert!(
+            rendered.len() <= SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize,
+            "lossy UTF-8 expanded the diagnostic to {} bytes",
+            rendered.len()
+        );
         cleanup(&context);
     }
 

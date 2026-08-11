@@ -230,18 +230,36 @@ const MAX_SOURCE_WALK_WORKERS: usize = 4;
 /// top-level child is fingerprinted independently, so the children fan out
 /// across worker threads and fold back in sorted order for a stable result.
 pub(crate) fn source_generation(source_root: &Path) -> u64 {
+    source_generation_until(source_root, &|| false)
+        .expect("uncontrolled source generation must not be interrupted")
+}
+
+pub(crate) fn source_generation_until(
+    source_root: &Path,
+    should_stop: &(dyn Fn() -> bool + Sync),
+) -> Option<u64> {
+    if should_stop() {
+        return None;
+    }
     let normalized_root =
         normalize_path_identity(source_root).unwrap_or_else(|_| source_root.to_path_buf());
+    if should_stop() {
+        return None;
+    }
     let mut hasher = DefaultHasher::new();
-    let Some(children) = read_source_children(&normalized_root) else {
+    let Some(children) = read_source_children(&normalized_root, should_stop).ok()? else {
         UNREADABLE_ENTRY.hash(&mut hasher);
-        return hasher.finish();
+        return Some(hasher.finish());
     };
-    for (child, digest) in children.iter().zip(child_digests(&children)) {
+    let digests = child_digests(&children, should_stop)?;
+    for (child, digest) in children.iter().zip(digests) {
+        if should_stop() {
+            return None;
+        }
         child.name.as_encoded_bytes().hash(&mut hasher);
         digest.hash(&mut hasher);
     }
-    hasher.finish()
+    Some(hasher.finish())
 }
 
 struct SourceChild {
@@ -252,9 +270,22 @@ struct SourceChild {
 
 /// Lists the entries of one directory that take part in the fingerprint, in a
 /// stable order. `None` means the directory itself could not be read.
-fn read_source_children(directory: &Path) -> Option<Vec<SourceChild>> {
+fn read_source_children(
+    directory: &Path,
+    should_stop: &(dyn Fn() -> bool + Sync),
+) -> Result<Option<Vec<SourceChild>>, ()> {
+    if should_stop() {
+        return Err(());
+    }
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(None),
+    };
     let mut children = Vec::new();
-    for entry in fs::read_dir(directory).ok()?.flatten() {
+    for entry in entries.flatten() {
+        if should_stop() {
+            return Err(());
+        }
         // `file_type` comes from the directory enumeration, so this neither
         // follows symlinks nor pays for the extra stat the old `is_dir` did.
         let Ok(file_type) = entry.file_type() else {
@@ -279,19 +310,28 @@ fn read_source_children(directory: &Path) -> Option<Vec<SourceChild>> {
         });
     }
     children.sort_by(|left, right| left.name.cmp(&right.name));
-    Some(children)
+    Ok(Some(children))
 }
 
-fn child_digests(children: &[SourceChild]) -> Vec<u64> {
+fn child_digests(
+    children: &[SourceChild],
+    should_stop: &(dyn Fn() -> bool + Sync),
+) -> Option<Vec<u64>> {
+    if should_stop() {
+        return None;
+    }
     let workers = thread::available_parallelism()
         .map(NonZeroUsize::get)
         .unwrap_or(1)
         .min(children.len())
         .min(MAX_SOURCE_WALK_WORKERS);
     if workers <= 1 {
-        return children.iter().map(child_digest).collect();
+        return children
+            .iter()
+            .map(|child| child_digest(child, should_stop))
+            .collect();
     }
-    let mut digests = vec![0_u64; children.len()];
+    let mut digests = vec![None; children.len()];
     let cursor = AtomicUsize::new(0);
     thread::scope(|scope| {
         let workers = (0..workers)
@@ -299,11 +339,17 @@ fn child_digests(children: &[SourceChild]) -> Vec<u64> {
                 scope.spawn(|| {
                     let mut computed = Vec::new();
                     loop {
+                        if should_stop() {
+                            return computed;
+                        }
                         let index = cursor.fetch_add(1, Ordering::Relaxed);
                         let Some(child) = children.get(index) else {
                             return computed;
                         };
-                        computed.push((index, child_digest(child)));
+                        let Some(digest) = child_digest(child, should_stop) else {
+                            return computed;
+                        };
+                        computed.push((index, digest));
                     }
                 })
             })
@@ -312,49 +358,64 @@ fn child_digests(children: &[SourceChild]) -> Vec<u64> {
             // A panic here would be a bug in the walk itself; propagating it
             // beats folding a silently wrong fingerprint into the generation.
             for (index, digest) in worker.join().expect("source generation worker panicked") {
-                digests[index] = digest;
+                digests[index] = Some(digest);
             }
         }
     });
-    digests
+    digests.into_iter().collect()
 }
 
 /// Fingerprints one child on its own hasher so subtrees stay independent of the
 /// order their workers happen to finish in.
-fn child_digest(child: &SourceChild) -> u64 {
+fn child_digest(child: &SourceChild, should_stop: &(dyn Fn() -> bool + Sync)) -> Option<u64> {
+    if should_stop() {
+        return None;
+    }
     let mut hasher = DefaultHasher::new();
     if child.is_directory {
         ENTER_DIRECTORY.hash(&mut hasher);
-        hash_source_tree(&mut hasher, &child.entry.path(), 1);
+        hash_source_tree(&mut hasher, &child.entry.path(), 1, should_stop)?;
         LEAVE_DIRECTORY.hash(&mut hasher);
     } else {
         hash_source_file(&mut hasher, &child.entry);
     }
-    hasher.finish()
+    Some(hasher.finish())
 }
 
 /// Hashes names relative to the walked directory rather than absolute paths:
 /// the fingerprint answers "did these sources change", and the marker that
 /// stores it is pinned to its source root separately.
-fn hash_source_tree(hasher: &mut DefaultHasher, directory: &Path, depth: usize) {
+fn hash_source_tree(
+    hasher: &mut DefaultHasher,
+    directory: &Path,
+    depth: usize,
+    should_stop: &(dyn Fn() -> bool + Sync),
+) -> Option<()> {
+    if should_stop() {
+        return None;
+    }
     if depth > MAX_SOURCE_DEPTH {
         UNREADABLE_ENTRY.hash(hasher);
-        return;
+        return Some(());
     }
-    let Some(children) = read_source_children(directory) else {
+    let Some(children) = read_source_children(directory, should_stop).ok()? else {
         UNREADABLE_ENTRY.hash(hasher);
-        return;
+        return Some(());
     };
     for child in children {
+        if should_stop() {
+            return None;
+        }
         child.name.as_encoded_bytes().hash(hasher);
         if child.is_directory {
             ENTER_DIRECTORY.hash(hasher);
-            hash_source_tree(hasher, &child.entry.path(), depth + 1);
+            hash_source_tree(hasher, &child.entry.path(), depth + 1, should_stop)?;
             LEAVE_DIRECTORY.hash(hasher);
         } else {
             hash_source_file(hasher, &child.entry);
         }
     }
+    Some(())
 }
 
 fn is_source_file_name(name: &OsStr) -> bool {
@@ -537,15 +598,34 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_path_identity, resolve_source_root, source_generation};
+    use super::{
+        normalize_path_identity, resolve_source_root, source_generation, source_generation_until,
+    };
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::workspace::discover_workspace;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn source_generation_stops_when_control_requests_it() {
+        let context = fixture(&[("main", "CONFIGURATION", "src")]);
+        let source_root = context.workspace_root.join("src");
+        for index in 0..32 {
+            fs::write(source_root.join(format!("Module{index}.bsl")), "// source").unwrap();
+        }
+        let checks = AtomicUsize::new(0);
+
+        let generation =
+            source_generation_until(&source_root, &|| checks.fetch_add(1, Ordering::AcqRel) >= 4);
+
+        assert_eq!(generation, None);
+        assert!(checks.load(Ordering::Acquire) >= 5);
+        cleanup(&context);
+    }
 
     #[test]
     fn source_generation_ignores_build_cache_and_tracks_bsl_changes() {

@@ -350,7 +350,15 @@ fn read_workspace_service_stderr_tail(path: &Path) -> Result<String, String> {
     file.take(SERVICE_STARTUP_STDERR_TAIL_LIMIT)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("failed to read workspace service stderr log: {error}"))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    let mut rendered = String::from_utf8_lossy(&bytes).into_owned();
+    if rendered.len() > SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize {
+        let mut start = rendered.len() - SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize;
+        while !rendered.is_char_boundary(start) {
+            start += 1;
+        }
+        rendered.drain(..start);
+    }
+    Ok(rendered)
 }
 ```
 
@@ -378,7 +386,7 @@ fn workspace_service_startup_failure(
             }
         }
         Ok(None) => format!(
-            "{readiness_error}; spawned workspace service {pid} remained running until the readiness deadline"
+            "{readiness_error}; spawned workspace service {pid} was still running when readiness failed"
         ),
         Err(error) => format!(
             "{readiness_error}; failed to inspect spawned workspace service {pid}: {error}"
