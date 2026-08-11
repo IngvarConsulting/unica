@@ -203,9 +203,12 @@ Inspect root Configuration.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
+| `ConfigPath` | string | по ветви | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+
+**Селектор:** ровно одна ветвь — `sourceSet` **либо** `ConfigPath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** `data`: идентичность, поддержка, свойства корня, состав и начальная страница (ADR-0023) (отвечают типизированным `data`)
 
@@ -236,9 +239,12 @@ Validate root configuration XML structure.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
+| `ConfigPath` | string | по ветви | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+
+**Селектор:** ровно одна ветвь — `sourceSet` **либо** `ConfigPath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -256,8 +262,8 @@ Borrow configuration objects/forms into an extension.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
 | `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
+| `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
 | `Object` | string | да | On unica.runtime.execute this is one metadata object name for operation dump with mode partial, written in colon form such as Catalog:Номенклатура (use objects for several); on the native XML tools Object is instead the dotted metadata reference the tool acts on, such as Catalog.Контрагенты.Form.ФормаЭлемента for unica.cfe.borrow. |
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
@@ -312,9 +318,9 @@ Generate a CFE Before/After interceptor for a caller-verified existing parameter
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
-| `ModulePath` | string | да | `unica.cfe.patch_method` only: dotted module reference such as `Catalog.X.ObjectModule`, `CommonModule.X` or `Document.X.Form.Y` — a metadata path, not a filesystem path |
-| `MethodName` | string | да | `unica.cfe.patch_method` only: name of the existing parameterless procedure to intercept; must match a 1C identifier (Latin or Cyrillic letter or underscore, then letters, digits, underscores) |
 | `InterceptorType` | string | да | `unica.cfe.patch_method` only: `"Before"` to generate a `&Перед` interceptor or `"After"` for `&После` |
+| `MethodName` | string | да | `unica.cfe.patch_method` only: name of the existing parameterless procedure to intercept; must match a 1C identifier (Latin or Cyrillic letter or underscore, then letters, digits, underscores) |
+| `ModulePath` | string | да | `unica.cfe.patch_method` only: dotted module reference such as `Catalog.X.ObjectModule`, `CommonModule.X` or `Document.X.Form.Y` — a metadata path, not a filesystem path |
 
 Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -536,9 +542,13 @@ Inspect Data Composition Schema Template.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** `data`: наборы данных с полями и точным текстом запроса, связи, вычисляемые поля, ресурсы, параметры, варианты настроек и макеты — все секции сразу (отвечают типизированным `data`)
 
@@ -555,9 +565,13 @@ Validate Data Composition Schema Template.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -723,9 +737,13 @@ Inspect managed Form.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `FormPath` | string | да | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
+| `FormPath` | string | по ветви | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `FormPath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** `data`: свойства, события, полное дерево элементов без сворачивания, реквизиты с колонками, параметры и команды (отвечают типизированным `data`)
 
@@ -756,9 +774,13 @@ Validate managed Form.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `FormPath` | string | да | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
+| `FormPath` | string | по ветви | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `FormPath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -947,9 +969,13 @@ Decompile spreadsheet Template.xml to JSON DSL.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 Публикует **156** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -965,11 +991,15 @@ Inspect spreadsheet Template.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
 | `WithText` | boolean | нет | `unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 | `withText` | boolean | нет | `unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report |
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** `data`: области с границами и параметрами, наборы колонок, содержимое вне областей и счётчики (ADR-0023) (отвечают типизированным `data`)
 
@@ -987,9 +1017,13 @@ Validate spreadsheet Template.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -1085,9 +1119,13 @@ Inspect role Rights.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `RightsPath` | string | да | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
+| `RightsPath` | string | по ветви | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `RightsPath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** `data`: разрешённые и запрещённые права по видам объектов, RLS, шаблоны и поддержка (ADR-0023) (отвечают типизированным `data`)
 
@@ -1104,9 +1142,13 @@ Validate role Rights.xml.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `RightsPath` | string | да | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
+| `RightsPath` | string | по ветви | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `RightsPath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -1345,13 +1387,17 @@ Open or page an immutable bounded manifest for one logical source target.
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
+| `cursor` | string | по ветви | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `scope` | string | нет | Bounded source.resources manifest scope: self, aggregate, or registrations |
-| `snapshotId` | string | нет | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
-| `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `metadataPath` | string | только в ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `scope` | string | только в ветви | Bounded source.resources manifest scope: self, aggregate, or registrations |
+| `snapshotId` | string | по ветви | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+
+**Селектор:** ровно одна ветвь — `sourceSet` **либо** `snapshotId` + `cursor`. Ни одной или обе сразу отклоняются.
+`metadataPath` принимается только вместе с `sourceSet`.
+`scope` принимается только вместе с `sourceSet`.
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -1466,9 +1512,14 @@ Inspect a registered subsystem tree from a directory, a focused registered tree 
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
+| `SubsystemPath` | string | по ветви | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `metadataPath` | string | только в ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+
+**Селектор:** ровно одна ветвь — `sourceSet` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
+`metadataPath` принимается только вместе с `sourceSet`.
 
 **Результат сейчас:** `data`: состав, группы, дочерние подсистемы и командный интерфейс; каталог `Subsystems` возвращает зарегистрированное `tree`, зарегистрированный XML — сфокусированное `tree` с цепочкой от корня до выбранного узла и всеми его потомками, а самостоятельный незарегистрированный XML — только локальные данные без `tree`; повреждение доказательства даёт `provider_unavailable`, а отмена и истечение срока сохраняют собственную типизированную семантику сбоя; ни один из этих случаев не публикует частичное дерево (ADR-0023, ADR-0036, INV-SOURCE-SUBSYSTEM-TOPOLOGY) (отвечают типизированным `data`)
 
@@ -1488,9 +1539,13 @@ Validate subsystem XML.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
+| `SubsystemPath` | string | по ветви | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
+| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
+| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
 Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+
+**Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 

@@ -18,6 +18,101 @@ use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "confirm"];
 const MUTATION_ARGS: &[&str] = &["dryRun"];
+/// How much of a logical address a bridged reader can actually use. Publishing
+/// `metadataPath` on a tool that never reads one would be a lie in the schema,
+/// so the three cases are distinguished rather than collapsed into a flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LogicalAddress {
+    /// The target is the source root itself: `unica.cf.*` reads
+    /// `Configuration.xml`, which has no address.
+    Absent,
+    /// The address narrows the read, and its absence selects the whole set:
+    /// `unica.subsystem.info` answers with the entire registered tree.
+    Optional,
+    /// The tool reads exactly one addressed object.
+    Required,
+}
+
+impl LogicalAddress {
+    /// The arguments the logical branch requires.
+    const fn required_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Absent | Self::Optional => &["sourceSet"],
+            Self::Required => &["sourceSet", "metadataPath"],
+        }
+    }
+
+    const fn publishes_address(self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+}
+
+/// ADR-0049 transitional bridge: tool name, its canonical legacy target
+/// argument, and how much address the tool takes. Removing the legacy column is
+/// the separate per-tool slice ADR-0021 §13 requires.
+const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
+    ("unica.cf.info", "ConfigPath", LogicalAddress::Absent),
+    ("unica.cf.validate", "ConfigPath", LogicalAddress::Absent),
+    (
+        "unica.subsystem.info",
+        "SubsystemPath",
+        LogicalAddress::Optional,
+    ),
+    (
+        "unica.subsystem.validate",
+        "SubsystemPath",
+        LogicalAddress::Required,
+    ),
+    ("unica.role.info", "RightsPath", LogicalAddress::Required),
+    (
+        "unica.role.validate",
+        "RightsPath",
+        LogicalAddress::Required,
+    ),
+    ("unica.form.info", "FormPath", LogicalAddress::Required),
+    ("unica.form.validate", "FormPath", LogicalAddress::Required),
+    ("unica.dcs.info", "TemplatePath", LogicalAddress::Required),
+    (
+        "unica.dcs.validate",
+        "TemplatePath",
+        LogicalAddress::Required,
+    ),
+    ("unica.mxl.info", "TemplatePath", LogicalAddress::Required),
+    (
+        "unica.mxl.validate",
+        "TemplatePath",
+        LogicalAddress::Required,
+    ),
+    (
+        "unica.mxl.decompile",
+        "TemplatePath",
+        LogicalAddress::Required,
+    ),
+];
+
+/// Arguments a bridged reader still accepts but must not advertise: no branch
+/// of its schema can honour them, and publishing one would name a selector the
+/// tool cannot use. Refusing them instead would break calls that worked before
+/// the bridge, which it does not do.
+///
+/// `MetadataPath` is always here. The shared catch-all hands it to every native
+/// tool and no handler has ever read it; once the bridge gave the lowercase
+/// name a meaning, publishing both would put two arguments differing only in
+/// case, with different semantics, in one schema.
+fn unpublished_bridge_args(name: &str) -> &'static [&'static str] {
+    match bridged_selector(name) {
+        Some((_, address)) if !address.publishes_address() => &["metadataPath", "MetadataPath"],
+        Some(_) => &["MetadataPath"],
+        None => &[],
+    }
+}
+
+fn bridged_selector(name: &str) -> Option<(&'static str, LogicalAddress)> {
+    BRIDGED_SELECTORS
+        .iter()
+        .find(|(tool, _, _)| *tool == name)
+        .map(|(_, legacy, address)| (*legacy, *address))
+}
 const CODE_PATCH_ARGS: &[&str] = &[
     "sourceSet",
     "metadataPath",
@@ -613,6 +708,9 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             });
         }
     }
+    // ADR-0049: still accepted for compatibility, never advertised.
+    let unpublished = unpublished_bridge_args(tool.name);
+    property_names.retain(|name| !unpublished.contains(name));
     let mut properties = Map::new();
     for name in property_names {
         let mut property = property_schema_for_tool(tool, name);
@@ -635,6 +733,29 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         "properties": properties,
         "required": required_args(tool),
     });
+    if let Some((legacy, address)) = bridged_selector(tool.name) {
+        // ADR-0049: the two selectors are alternatives, never a precedence
+        // question, so the schema says so instead of leaving a client to guess
+        // which one an answer came from.
+        let logical_required = address.required_args();
+        let mut forbidden_in_legacy = logical_required
+            .iter()
+            .map(|name| json!({"required": [name]}))
+            .collect::<Vec<_>>();
+        if address == LogicalAddress::Optional {
+            forbidden_in_legacy.push(json!({"required": ["metadataPath"]}));
+        }
+        schema["oneOf"] = json!([
+            {
+                "required": logical_required,
+                "not": {"required": [legacy]}
+            },
+            {
+                "required": [legacy],
+                "not": {"anyOf": forbidden_in_legacy}
+            }
+        ]);
+    }
     if tool.name == "unica.form.edit" {
         schema["anyOf"] = json!([
             {"required": ["JsonPath"]},
@@ -855,6 +976,7 @@ pub fn validate_tool_argument_semantics(
     validate_cfe_patch_method_arguments(tool, args)?;
     validate_xdto_arguments(tool, args)?;
     validate_role_edit_arguments(tool, args)?;
+    validate_bridged_selector(tool, args)?;
 
     if !dry_run || is_external_init_tool(tool) {
         for required in required_args(&tool) {
@@ -1491,6 +1613,41 @@ fn validate_form_add_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Res
         return Ok(());
     }
     validate_unique_alias_group(tool.name, args, &["SetDefault", "setDefault"])
+}
+
+/// ADR-0049: a bridged reader accepts exactly one selector. Two at once is a
+/// caller mistake, not a precedence question — resolving it silently would hide
+/// which selector produced the answer. Zero is the pre-existing missing-argument
+/// error, restated so it names both ways in.
+fn validate_bridged_selector(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
+    let Some((legacy, address)) = bridged_selector(tool.name) else {
+        return Ok(());
+    };
+    let logical = address.required_args();
+    let has_logical = contains_any(args, logical) || args.contains_key("metadataPath");
+    let has_legacy = args.contains_key(legacy);
+    if has_logical && has_legacy {
+        return Err(format!(
+            "selector_conflict: {} accepts either `{}` or `{legacy}`, not both",
+            tool.name,
+            logical.join("` + `"),
+        ));
+    }
+    if !has_logical && !has_legacy {
+        return Err(format!(
+            "{} requires either `{}` or `{legacy}` argument",
+            tool.name,
+            logical.join("` + `"),
+        ));
+    }
+    if has_logical {
+        for required in logical {
+            if !args.contains_key(*required) {
+                return Err(format!("{} requires `{required}` argument", tool.name));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_form_edit_arguments(
@@ -2185,6 +2342,21 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
     }
     if tool.name == "unica.mxl.decompile" {
         names.retain(|name| *name != "OutputPath" && *name != "outputPath");
+    }
+    // ADR-0049: one place adds the logical selector to all thirteen bridged
+    // readers, so the narrow reader lists and the shared validator list cannot
+    // drift apart. Narrowing the validator lists themselves is a separate
+    // contract question and stays out of this bridge.
+    if let Some((_, address)) = bridged_selector(tool.name) {
+        names.push("sourceSet");
+        if address.publishes_address() {
+            names.push("metadataPath");
+        }
+        // A tool whose branches cannot honour an address does not gain one
+        // here, but it does not lose one either: the shared catch-all already
+        // handed `metadataPath` to every native tool, and this bridge removes
+        // nothing. It stays accepted and is filtered out of the published
+        // schema by `unpublished_bridge_args`.
     }
     names.sort_unstable();
     names.dedup();
@@ -4990,6 +5162,222 @@ mod tests {
     }
 
     #[test]
+    fn bridged_readers_publish_two_mutually_exclusive_selector_branches() {
+        for (name, legacy, address) in BRIDGED_SELECTORS {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == *name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            let schema = input_schema_for_tool(&tool);
+            let properties = schema["properties"].as_object().expect("object schema");
+
+            assert!(
+                properties.contains_key("sourceSet"),
+                "{name} must publish `sourceSet`"
+            );
+            assert!(
+                properties.contains_key(*legacy),
+                "{name} must keep `{legacy}` until its own removal slice"
+            );
+            assert_eq!(
+                properties.contains_key("metadataPath"),
+                address.publishes_address(),
+                "{name} publishes `metadataPath` only when it can use one"
+            );
+
+            let mut forbidden_in_legacy = address
+                .required_args()
+                .iter()
+                .map(|argument| json!({"required": [argument]}))
+                .collect::<Vec<_>>();
+            if *address == LogicalAddress::Optional {
+                forbidden_in_legacy.push(json!({"required": ["metadataPath"]}));
+            }
+            assert_eq!(
+                schema["oneOf"],
+                json!([
+                    {
+                        "required": address.required_args(),
+                        "not": {"required": [legacy]}
+                    },
+                    {
+                        "required": [legacy],
+                        "not": {"anyOf": forbidden_in_legacy}
+                    }
+                ]),
+                "{name} must publish its two selector branches as mutually exclusive"
+            );
+            assert_eq!(
+                schema["required"],
+                json!([]),
+                "{name} has no unconditionally required selector"
+            );
+        }
+    }
+
+    #[test]
+    fn bridged_readers_that_have_no_address_do_not_publish_one() {
+        // `unica.cf.*` reads `Configuration.xml` at the root of a source set,
+        // so no branch of its schema can honour an address. Publishing one
+        // would advertise a selector the tool cannot use.
+        for name in ["unica.cf.info", "unica.cf.validate"] {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .expect("tool is registered");
+            let schema = input_schema_for_tool(&tool);
+            assert!(
+                schema["properties"].get("metadataPath").is_none(),
+                "{name} publishes an address it cannot use: {schema}"
+            );
+        }
+    }
+
+    /// The bridged tools whose arguments come from `NATIVE_XML_DSL_ARGS`. The
+    /// rest carry narrow published lists and never saw the catch-all names.
+    const CATCH_ALL_BRIDGED_READERS: &[&str] = &[
+        "unica.cf.validate",
+        "unica.role.validate",
+        "unica.form.validate",
+        "unica.dcs.validate",
+        "unica.mxl.validate",
+        "unica.mxl.decompile",
+        "unica.subsystem.validate",
+    ];
+
+    /// Two arguments differing only in case, with different meanings, is a
+    /// contract no caller can read. The bridge is what made the lowercase name
+    /// meaningful, so it is the bridge's job not to advertise the inherited
+    /// uppercase one beside it — while still accepting it, because it was
+    /// accepted before and no handler ever read it.
+    #[test]
+    fn a_bridged_reader_never_publishes_two_addresses_differing_only_in_case() {
+        for (name, _, address) in BRIDGED_SELECTORS {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == *name)
+                .expect("tool is registered");
+            let schema = input_schema_for_tool(&tool);
+            let properties = schema["properties"].as_object().expect("object schema");
+
+            assert!(
+                properties.get("MetadataPath").is_none(),
+                "{name} publishes `MetadataPath` beside a selector it does not drive: {schema}"
+            );
+            assert_eq!(
+                properties.contains_key("metadataPath"),
+                address.publishes_address(),
+                "{name}"
+            );
+
+            // Only the tools that drew from the shared catch-all ever accepted
+            // it. The six `*.info` readers have carried narrow lists since
+            // ADR-0023, so refusing it there is the contract they already had.
+            if !CATCH_ALL_BRIDGED_READERS.contains(name) {
+                continue;
+            }
+            let mut args = Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("MetadataPath".to_string(), json!("Role.Sales")),
+            ]);
+            if *address == LogicalAddress::Required {
+                args.insert("metadataPath".to_string(), json!("Role.Sales"));
+            }
+            validate_tool_arguments(tool, &args, false).unwrap_or_else(|error| {
+                panic!("{name} must keep tolerating the inherited name: {error}")
+            });
+        }
+    }
+
+    /// `unica.cf.validate` drew `metadataPath` from the shared catch-all before
+    /// this bridge and ignored it. Publishing it would be a lie, but refusing
+    /// it would break a call that used to work — and this bridge removes
+    /// nothing. So it stays accepted and unpublished.
+    ///
+    /// `unica.cf.info` never took it: it has carried a narrow argument list
+    /// since ADR-0023, so refusing it there is the contract it already had.
+    #[test]
+    fn cf_validate_still_tolerates_the_address_the_catch_all_used_to_hand_it() {
+        let args = Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!("Catalog.Items")),
+        ]);
+
+        let validate = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.cf.validate")
+            .expect("tool is registered");
+        validate_tool_arguments(validate, &args, false)
+            .unwrap_or_else(|error| panic!("cf.validate must keep tolerating it: {error}"));
+
+        let info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.cf.info")
+            .expect("tool is registered");
+        let error = validate_tool_arguments(info, &args, false)
+            .expect_err("cf.info never accepted an address");
+        assert!(
+            error.contains("does not accept argument `metadataPath`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn bridged_readers_refuse_two_selectors_at_once() {
+        for (name, legacy, address) in BRIDGED_SELECTORS {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == *name)
+                .expect("tool is registered");
+            let mut args = Map::from_iter([
+                (legacy.to_string(), json!("src/whatever.xml")),
+                ("sourceSet".to_string(), json!("main")),
+            ]);
+            if *address == LogicalAddress::Required {
+                args.insert("metadataPath".to_string(), json!("Role.Sales"));
+            }
+            let error = validate_tool_arguments(tool, &args, false)
+                .expect_err("two selectors must be refused before the handler");
+            assert!(error.contains("selector_conflict"), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn bridged_readers_still_refuse_a_call_with_no_selector() {
+        for (name, _, _) in BRIDGED_SELECTORS {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == *name)
+                .expect("tool is registered");
+            assert!(
+                validate_tool_arguments(tool, &Map::new(), false).is_err(),
+                "{name} must still refuse a call carrying no selector at all"
+            );
+        }
+    }
+
+    #[test]
+    fn bridged_readers_accept_either_selector_on_its_own() {
+        for (name, legacy, address) in BRIDGED_SELECTORS {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == *name)
+                .expect("tool is registered");
+
+            let mut logical = Map::from_iter([("sourceSet".to_string(), json!("main"))]);
+            if *address == LogicalAddress::Required {
+                logical.insert("metadataPath".to_string(), json!("Role.Sales"));
+            }
+            validate_tool_arguments(tool, &logical, false)
+                .unwrap_or_else(|error| panic!("{name} logical call: {error}"));
+
+            let physical = Map::from_iter([(legacy.to_string(), json!("src/whatever.xml"))]);
+            validate_tool_arguments(tool, &physical, false)
+                .unwrap_or_else(|error| panic!("{name} physical call: {error}"));
+        }
+    }
+
+    #[test]
     fn meta_info_rejects_legacy_target_fields_as_unknown_arguments() {
         let tool = tools()
             .into_iter()
@@ -6221,7 +6609,15 @@ mod tests {
                 "{retired} no longer selects anything: {schema}"
             );
         }
-        assert_eq!(schema["required"], json!(["TemplatePath"]));
+        // ADR-0049 moved the requirement into the selector branches: the path
+        // is still required, just not unconditionally — a logical call carries
+        // `sourceSet` + `metadataPath` instead.
+        assert_eq!(schema["required"], json!([]));
+        assert_eq!(
+            schema["oneOf"][1]["required"],
+            json!(["TemplatePath"]),
+            "the physical branch still requires the path: {schema}"
+        );
         assert!(schema.get("allOf").is_none());
 
         let mut args = Map::new();
@@ -6238,58 +6634,112 @@ mod tests {
     /// here, and so does letting a reader fall back to the historical catch-all.
     /// Published names are canonical (ADR-0019 collapses path aliases in
     /// `tools/list`); accepted names include the aliases validation still takes.
+    /// Six of them are also ADR-0049 bridges, so their logical selector belongs
+    /// to the pinned set: losing it would be as invisible as losing the path.
     #[test]
     fn every_narrowed_reader_publishes_its_exact_argument_set() {
         let cases: [(&str, &[&str], &[&str]); 8] = [
             (
                 "unica.cf.info",
-                &["ConfigPath", "confirm", "cwd"],
-                &["ConfigPath", "Path", "configPath", "confirm", "cwd", "path"],
+                &["ConfigPath", "confirm", "cwd", "sourceSet"],
+                &[
+                    "ConfigPath",
+                    "Path",
+                    "configPath",
+                    "confirm",
+                    "cwd",
+                    "path",
+                    "sourceSet",
+                ],
             ),
             (
                 "unica.role.info",
-                &["RightsPath", "confirm", "cwd"],
-                &["Path", "RightsPath", "confirm", "cwd", "path", "rightsPath"],
+                &["RightsPath", "confirm", "cwd", "metadataPath", "sourceSet"],
+                &[
+                    "Path",
+                    "RightsPath",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "path",
+                    "rightsPath",
+                    "sourceSet",
+                ],
             ),
             (
                 "unica.subsystem.info",
-                &["SubsystemPath", "confirm", "cwd"],
+                &[
+                    "SubsystemPath",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "sourceSet",
+                ],
                 &[
                     "Path",
                     "SubsystemPath",
                     "confirm",
                     "cwd",
+                    "metadataPath",
                     "path",
+                    "sourceSet",
                     "subsystemPath",
                 ],
             ),
             (
                 "unica.dcs.info",
-                &["TemplatePath", "confirm", "cwd"],
+                &[
+                    "TemplatePath",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "sourceSet",
+                ],
                 &[
                     "Path",
                     "TemplatePath",
                     "confirm",
                     "cwd",
+                    "metadataPath",
                     "path",
+                    "sourceSet",
                     "templatePath",
                 ],
             ),
             (
                 "unica.form.info",
-                &["FormPath", "confirm", "cwd"],
-                &["FormPath", "Path", "confirm", "cwd", "formPath", "path"],
+                &["FormPath", "confirm", "cwd", "metadataPath", "sourceSet"],
+                &[
+                    "FormPath",
+                    "Path",
+                    "confirm",
+                    "cwd",
+                    "formPath",
+                    "metadataPath",
+                    "path",
+                    "sourceSet",
+                ],
             ),
             (
                 "unica.mxl.info",
-                &["TemplatePath", "WithText", "confirm", "cwd", "withText"],
+                &[
+                    "TemplatePath",
+                    "WithText",
+                    "confirm",
+                    "cwd",
+                    "metadataPath",
+                    "sourceSet",
+                    "withText",
+                ],
                 &[
                     "Path",
                     "TemplatePath",
                     "WithText",
                     "confirm",
                     "cwd",
+                    "metadataPath",
                     "path",
+                    "sourceSet",
                     "templatePath",
                     "withText",
                 ],
@@ -6372,7 +6822,15 @@ mod tests {
             .expect("unica.mxl.info must be registered");
 
         let schema = input_schema_for_tool(&mxl_info);
-        assert_eq!(schema["required"], json!(["TemplatePath"]));
+        // ADR-0049 moved the requirement into the selector branches: the
+        // physical branch still requires the path, and the logical one requires
+        // the address pair instead.
+        assert_eq!(schema["required"], json!([]));
+        assert_eq!(
+            schema["oneOf"][1]["required"],
+            json!(["TemplatePath"]),
+            "the physical branch still requires one reachable address: {schema}"
+        );
         for unreachable in ["SrcDir", "srcDir", "ProcessorName", "TemplateName"] {
             assert!(
                 schema["properties"].get(unreachable).is_none(),

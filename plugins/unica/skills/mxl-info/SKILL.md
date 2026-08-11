@@ -32,7 +32,12 @@ allowed-tools:
 | Параметр | Описание |
 |----------|----------|
 | `TemplatePath` | Путь к `Template.xml` макета или к каталогу макета |
+| `sourceSet`    | Имя набора исходников из `v8project.yaml`          |
+| `metadataPath` | Логический адрес, например `Report.<Отчёт>.Template.<Макет>` |
 | `WithText` | Включить текстовое содержимое ячеек в `texts` и `templates` |
+
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо
+`TemplatePath`. Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
 
 `Format`, `MaxParams`, `Limit` и `Offset` сняты: результат приходит
 типизированным в `data` (ADR-0023), поэтому режим вывода, обрезка списков
@@ -130,3 +135,27 @@ allowed-tools:
 
 Всё, что лежит за пределами именованных областей, собрано в `outside`, а не
 растворено среди областей.
+
+## Логический адрес вместо пути
+
+`unica.mxl.info` принимает либо логический селектор, либо файловый путь —
+ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.mxl.info",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "<имя набора>",
+      "metadataPath": "Report.<Отчёт>.Template.<Макет>"
+    }
+  }
+}
+```
+
+Имя набора даёт `unica.project.map`, адрес — `unica.source.resolve`, а `unica.source.locate` переводит
+в адрес путь, найденный иначе. Файловый селектор сохраняется до
+отдельного среза его снятия (ADR-0049).

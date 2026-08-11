@@ -63,6 +63,63 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         cls.tools = cls.module.read_registry(BINARY)
         cls.review = json.loads(REVIEW.read_text(encoding="utf-8"))
 
+    def test_a_branch_only_argument_is_not_published_as_freely_optional(self) -> None:
+        """ADR-0049: `metadataPath` is valid only alongside `sourceSet`.
+
+        `unica.subsystem.info` forbids it in the path branch, so rendering it
+        as plain `нет` tells a caller it may be sent with `SubsystemPath`.
+        """
+        schema = {
+            "type": "object",
+            "properties": {
+                "SubsystemPath": {"type": "string"},
+                "sourceSet": {"type": "string"},
+                "metadataPath": {"type": "string"},
+                "cwd": {"type": "string"},
+            },
+            "required": [],
+            "oneOf": [
+                {
+                    "required": ["sourceSet"],
+                    "not": {"required": ["SubsystemPath"]},
+                },
+                {
+                    "required": ["SubsystemPath"],
+                    "not": {
+                        "anyOf": [
+                            {"required": ["sourceSet"]},
+                            {"required": ["metadataPath"]},
+                        ]
+                    },
+                },
+            ],
+        }
+        rendered = "\n".join(
+            self.module.render_arguments({"inputSchema": schema})
+        )
+
+        def row(argument: str) -> str:
+            return next(
+                line
+                for line in rendered.splitlines()
+                if line.startswith(f"| `{argument}`")
+            )
+
+        # Assert the exact marker, not merely "not optional": `да` and
+        # `по ветви` are both wrong here and both would pass a negative check.
+        # `metadataPath` is valid only inside the sourceSet branch, while
+        # `sourceSet` is required by one branch and refused by the other.
+        self.assertIn(" только в ветви |", row("metadataPath"), row("metadataPath"))
+        self.assertIn(" по ветви |", row("sourceSet"), row("sourceSet"))
+        self.assertIn(" по ветви |", row("SubsystemPath"), row("SubsystemPath"))
+        # `cwd` is genuinely optional in both branches and must stay that way.
+        self.assertIn(" нет |", row("cwd"), row("cwd"))
+        self.assertIn(
+            "`metadataPath` принимается только вместе с `sourceSet`.",
+            rendered,
+            rendered,
+        )
+
     def test_published_patterns_stay_inside_the_ecmascript_dialect(self) -> None:
         """JSON Schema `pattern` — это ECMA-262.
 

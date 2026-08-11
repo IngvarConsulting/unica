@@ -61,7 +61,6 @@ const CFE_INIT_OUTPUT: &[&str] = &["OutputDir", "outputDir", "ExtensionPath", "e
 pub(crate) const OBJECT_PATH: &[&str] = &["ObjectPath", "objectPath", "Path", "path"];
 const SRC_DIR: &[&str] = &["SrcDir", "srcDir"];
 pub(crate) const FORM_PATH: &[&str] = &["FormPath", "formPath", "Path", "path"];
-const FORM_PATH_REQUIRED: &[&str] = &["FormPath"];
 const CI_PATH: &[&str] = &["CIPath", "ciPath", "path", "Path"];
 const CI_PATH_REQUIRED: &[&str] = &["CIPath"];
 pub(crate) const SUBSYSTEM_PATH: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
@@ -72,7 +71,6 @@ const OUTPUT_PATH: &[&str] = &["OutputPath", "outputPath"];
 pub(crate) const TEMPLATE_PATH: &[&str] = &["TemplatePath", "templatePath", "Path", "path"];
 const TEMPLATE_PATH_REQUIRED: &[&str] = &["TemplatePath"];
 pub(crate) const RIGHTS_PATH: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
-const RIGHTS_PATH_REQUIRED: &[&str] = &["RightsPath"];
 const SUPPORT_PATH: &[&str] = &["Path", "path", "TargetPath", "targetPath"];
 const CFE_DIFF_REQUIRED: &[&str] = &["ExtensionPath", "ConfigPath"];
 const CFE_BORROW_REQUIRED: &[&str] = &["ExtensionPath", "ConfigPath", "Object"];
@@ -232,7 +230,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "cf-info",
-        &["ConfigPath"],
+        EMPTY,
         EMPTY,
         CF_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -249,7 +247,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "cf-validate",
-        &["ConfigPath"],
+        EMPTY,
         EMPTY,
         CF_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -347,7 +345,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "form-info",
-        FORM_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         FORM_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -365,7 +363,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "form-validate",
-        FORM_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         FORM_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -410,20 +408,8 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
             SupportGuardRequirement::Editable,
         )),
     ),
-    descriptor(
-        "subsystem-info",
-        SUBSYSTEM_PATH_REQUIRED,
-        EMPTY,
-        SUBSYSTEM_PATH,
-        None,
-    ),
-    descriptor(
-        "subsystem-validate",
-        SUBSYSTEM_PATH_REQUIRED,
-        EMPTY,
-        SUBSYSTEM_PATH,
-        None,
-    ),
+    descriptor("subsystem-info", EMPTY, EMPTY, SUBSYSTEM_PATH, None),
+    descriptor("subsystem-validate", EMPTY, EMPTY, SUBSYSTEM_PATH, None),
     descriptor_with_paths(
         "template-add",
         EMPTY,
@@ -458,16 +444,10 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         FormatPathPolicy::HandlerResolved,
         Some(path_guard(TEMPLATE_PATH, SupportGuardRequirement::Editable)),
     ),
-    descriptor(
-        "dcs-info",
-        TEMPLATE_PATH_REQUIRED,
-        EMPTY,
-        TEMPLATE_PATH,
-        None,
-    ),
+    descriptor("dcs-info", EMPTY, EMPTY, TEMPLATE_PATH, None),
     descriptor_with_paths(
         "dcs-validate",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -482,23 +462,31 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         FormatGuardPolicy::ExistingDump,
         Some(path_guard(OUTPUT_PATH, SupportGuardRequirement::Editable)),
     ),
-    descriptor(
+    // ADR-0049: a logical call carries no path, so the format
+    // dependency has to come from the handler's own resolution.
+    descriptor_with_paths(
         "mxl-decompile",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
         None,
     ),
-    descriptor(
+    // ADR-0049: a logical call carries no path, so the format
+    // dependency has to come from the handler's own resolution.
+    descriptor_with_paths(
         "mxl-info",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
         None,
     ),
     descriptor_with_paths(
         "mxl-validate",
-        TEMPLATE_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         TEMPLATE_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -523,7 +511,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "role-info",
-        RIGHTS_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         RIGHTS_PATH,
         FormatGuardPolicy::ExistingDump,
@@ -532,7 +520,7 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor_with_paths(
         "role-validate",
-        RIGHTS_PATH_REQUIRED,
+        EMPTY,
         EMPTY,
         RIGHTS_PATH,
         FormatGuardPolicy::ExistingDump,

@@ -48,7 +48,12 @@ allowed-tools:
 
 | Параметр | Обязательный | Описание |
 |----------|:------------:|----------|
-| `RightsPath` | да | Путь к `Rights.xml` роли |
+| `RightsPath` | один из двух | Путь к `Rights.xml` роли |
+| `sourceSet`  | один из двух | Имя набора исходников из `v8project.yaml` |
+| `metadataPath` | один из двух | Логический адрес, например `Role.<ИмяРоли>` |
+
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо `RightsPath`.
+Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
 
 `ShowDenied`, `Limit` и `Offset` сняты: запрещённые права теперь приходят
 всегда, а пагинация резала печатные строки, которых больше нет.
@@ -87,3 +92,27 @@ allowed-tools:
   }
 }
 ```
+
+## Логический адрес вместо пути
+
+`unica.role.info` принимает либо логический селектор, либо файловый путь —
+ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.role.info",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "<имя набора>",
+      "metadataPath": "Role.<ИмяРоли>"
+    }
+  }
+}
+```
+
+Имя набора даёт `unica.project.map`, адрес — `unica.source.resolve`, а `unica.source.locate` переводит
+в адрес путь, найденный иначе. Файловый селектор сохраняется до
+отдельного среза его снятия (ADR-0049).

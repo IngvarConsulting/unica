@@ -2,6 +2,9 @@
 
 use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::logical_selector::{
+    logical_selection, AttachedResource,
+};
 use crate::infrastructure::platform_xml_owner::MXL_ROOT;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -840,14 +843,15 @@ pub(crate) fn decompile_mxl(
     const NS_V8: &str = "http://v8.1c.ru/8.1/data/core";
 
     let result = (|| -> Result<(String, String, PathBuf), String> {
-        let template_path_raw = required_path(
-            args,
-            &["templatePath", "TemplatePath", "path", "Path"],
-            "TemplatePath",
-        )?;
-        let template_path = absolutize(template_path_raw.clone(), &context.cwd);
+        let template_path = resolve_mxl_decompile_path(args, context)?;
         if !template_path.is_file() {
-            return Err(format!("File not found: {}", template_path_raw.display()));
+            // Report the selector the caller gave, not the absolutised path:
+            // a logical call never reaches here — the selector refuses an
+            // absent resource before this point — so the raw argument is the
+            // only thing worth echoing back.
+            let shown = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
+                .unwrap_or_else(|| template_path.clone());
+            return Err(format!("File not found: {}", shown.display()));
         }
         let text = read_utf8_sig(&template_path)?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
@@ -1889,18 +1893,50 @@ pub(crate) fn non_empty_string(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-/// `TemplatePath` is the only address `unica.mxl.info` publishes, and the
-/// schema requires it. The composite `ProcessorName`/`TemplateName`/`SrcDir`
-/// form guessed a physical layout and could never be reached past that
-/// requirement, so it is gone rather than left as an unreachable branch.
+/// The address kinds a template reader accepts. `Report.X.Template.Y` names a
+/// nested template; `CommonTemplate.Y` names a top-level one.
+pub(crate) const TEMPLATE_KINDS: &[&str] = &["Template", "CommonTemplate"];
+
+/// `unica.mxl.decompile` reads its input the way the other template readers do;
+/// only its output is a file it writes.
+pub(crate) fn resolve_mxl_decompile_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::Template, TEMPLATE_KINDS)
+    {
+        return selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+    }
+    let raw = required_path(
+        args,
+        &["templatePath", "TemplatePath", "path", "Path"],
+        "TemplatePath",
+    )?;
+    Ok(absolutize(raw, &context.cwd))
+}
+
+/// `unica.mxl.info` publishes two addresses: the logical selector and
+/// `TemplatePath`. The composite `ProcessorName`/`TemplateName`/`SrcDir` form
+/// guessed a physical layout and could never be reached past the schema, so it
+/// is gone rather than left as an unreachable branch.
 ///
-/// Being the only published address, it must accept both documented forms: the
-/// descriptor file and the layout directory holding it, the way
+/// The physical address must still accept both documented forms — the
+/// descriptor file and the layout directory holding it — the way
 /// `resolve_mxl_validate_path` already does.
 pub(crate) fn resolve_mxl_info_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::Template, TEMPLATE_KINDS)
+    {
+        return selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+    }
     let path = path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
         .ok_or_else(|| "Specify -TemplatePath".to_string())?;
     let path = absolutize(path, &context.cwd);
@@ -1915,6 +1951,13 @@ pub(crate) fn resolve_mxl_validate_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::Template, TEMPLATE_KINDS)
+    {
+        return selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+    }
     let mut template_path = if let Some(path) =
         path_arg(args, &["templatePath", "TemplatePath", "path", "Path"])
     {
@@ -4105,5 +4148,215 @@ mod tests {
             cache_root: cwd.join(".build/unica"),
             workspace_epoch: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod mxl_read_selector_bridge_tests {
+    use super::*;
+    use crate::infrastructure::native_operations::dcs::{analyze_dcs_info_with_data, validate_dcs};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    /// A report template reachable both ways, plus a binary common template
+    /// whose descriptor exists and whose XML body does not.
+    pub(crate) fn workspace(name: &str) -> WorkspaceContext {
+        let root = std::env::temp_dir().join(format!(
+            "unica-template-read-bridge-{name}-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let src = root.join("src");
+        fs::create_dir_all(src.join("Reports/Sales/Templates/Main/Ext")).unwrap();
+        fs::create_dir_all(src.join("CommonTemplates/Logo/Ext")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Report>Sales</Report><CommonTemplate>Logo</CommonTemplate></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Reports/Sales.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Report><Properties><Name>Sales</Name></Properties><ChildObjects><Template>Main</Template><Template>Dcs</Template></ChildObjects></Report></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Reports/Sales/Templates/Main.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template><Properties><Name>Main</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Reports/Sales/Templates/Main/Ext/Template.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:v8="http://v8.1c.ru/8.1/data/core"><columnsID>0</columnsID><format><formatIndex>0</formatIndex></format></document>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("CommonTemplates/Logo.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonTemplate><Properties><Name>Logo</Name><TemplateType>BinaryData</TemplateType></Properties></CommonTemplate></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(src.join("CommonTemplates/Logo/Ext/Template.bin"), [0u8, 1]).unwrap();
+        // The DCS readers parse a composition schema, not a spreadsheet. Giving
+        // them the MXL body would make both sides of a parity test fail the
+        // same way and compare two errors as if they were an answer.
+        fs::create_dir_all(src.join("Reports/Sales/Templates/Dcs/Ext")).unwrap();
+        fs::write(
+            src.join("Reports/Sales/Templates/Dcs.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Reports/Sales/Templates/Dcs/Ext/Template.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dataSource><name>ИсточникДанных1</name><dataSourceType>Local</dataSourceType></dataSource><dataSet xsi:type="DataSetQuery"><name>НаборДанных1</name><field xsi:type="DataSetFieldField"><dataPath>Код</dataPath><field>Код</field></field><dataSource>ИсточникДанных1</dataSource><query>ВЫБРАТЬ Код ИЗ Справочник.Товары</query></dataSet></DataCompositionSchema>"#,
+        )
+        .unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    pub(crate) fn physical_args() -> Map<String, Value> {
+        Map::from_iter([(
+            "TemplatePath".to_string(),
+            json!("src/Reports/Sales/Templates/Main/Ext/Template.xml"),
+        )])
+    }
+
+    pub(crate) fn logical_args() -> Map<String, Value> {
+        Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            (
+                "metadataPath".to_string(),
+                json!("Report.Sales.Template.Main"),
+            ),
+        ])
+    }
+
+    #[test]
+    fn mxl_info_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("mxl-info");
+
+        let physical = analyze_mxl_info(&physical_args(), &context);
+        let logical = analyze_mxl_info(&logical_args(), &context);
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert_eq!(
+            serde_json::to_value(&logical.data).unwrap(),
+            serde_json::to_value(&physical.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn mxl_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("mxl-validate");
+
+        let physical = validate_mxl(&physical_args(), &context);
+        let logical = validate_mxl(&logical_args(), &context);
+
+        assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
+        assert_eq!(logical.errors, physical.errors);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("mxl-decompile");
+
+        let physical = decompile_mxl(&physical_args(), &context);
+        let logical = decompile_mxl(&logical_args(), &context);
+
+        assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
+        assert_eq!(logical.stdout, physical.stdout);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    fn dcs_physical_args() -> Map<String, Value> {
+        Map::from_iter([(
+            "TemplatePath".to_string(),
+            json!("src/Reports/Sales/Templates/Dcs/Ext/Template.xml"),
+        )])
+    }
+
+    fn dcs_logical_args() -> Map<String, Value> {
+        Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            (
+                "metadataPath".to_string(),
+                json!("Report.Sales.Template.Dcs"),
+            ),
+        ])
+    }
+
+    #[test]
+    fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("dcs-info");
+
+        let physical = analyze_dcs_info_with_data(&dcs_physical_args(), &context);
+        let logical = analyze_dcs_info_with_data(&dcs_logical_args(), &context);
+
+        // Both must succeed: comparing two identical failures would pass while
+        // proving nothing about the bridge.
+        assert!(physical.outcome.ok, "{:?}", physical.outcome);
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert!(
+            logical.data.is_some(),
+            "a successful read answers with data"
+        );
+        assert_eq!(
+            serde_json::to_value(&logical.data).unwrap(),
+            serde_json::to_value(&physical.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn dcs_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("dcs-validate");
+
+        let physical = validate_dcs(&dcs_physical_args(), &context);
+        let logical = validate_dcs(&dcs_logical_args(), &context);
+
+        assert!(physical.ok, "{physical:?}");
+        assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
+        assert_eq!(logical.errors, physical.errors);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// A `TemplateType` other than an XML one writes `Template.bin`. The object
+    /// is registered and addressable, so "not found" would be the wrong answer:
+    /// the target exists, this body does not.
+    #[test]
+    fn dcs_info_reports_a_binary_template_as_an_absent_resource_not_a_missing_target() {
+        let context = workspace("dcs-binary");
+
+        let outcome = analyze_dcs_info_with_data(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("CommonTemplate.Logo")),
+            ]),
+            &context,
+        )
+        .outcome;
+
+        assert!(!outcome.ok);
+        let text = outcome
+            .errors
+            .iter()
+            .cloned()
+            .chain(std::iter::once(outcome.summary.clone()))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(text.contains("resource_absent"), "{text}");
+        assert!(!text.contains("target_not_found"), "{text}");
+        let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }

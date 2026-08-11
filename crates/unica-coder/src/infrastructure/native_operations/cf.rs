@@ -5011,3 +5011,102 @@ pub(crate) fn invoke_mutation(
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod cf_read_selector_bridge_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    /// A configuration root reachable both ways: by the `src` path and by the
+    /// name of the source set that declares it.
+    fn workspace(name: &str) -> WorkspaceContext {
+        let root = std::env::temp_dir().join(format!(
+            "unica-cf-read-bridge-{name}-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Demo</Name><Vendor>Unica</Vendor><Version>1.0.0.1</Version></Properties><ChildObjects></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    #[test]
+    fn cf_info_answers_identically_for_a_source_set_and_a_config_path() {
+        let context = workspace("info");
+
+        let physical = analyze_cf_info(
+            &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+            &context,
+        );
+        let logical = analyze_cf_info(
+            &Map::from_iter([("sourceSet".to_string(), json!("main"))]),
+            &context,
+        );
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert!(physical.outcome.ok, "{:?}", physical.outcome);
+        // Compare what the caller actually receives: the serialized
+        // answer, not a struct the wire never carries.
+        assert_eq!(
+            serde_json::to_value(&logical.data).unwrap(),
+            serde_json::to_value(&physical.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn cf_info_reports_an_unknown_source_set_as_such() {
+        let context = workspace("unknown-set");
+
+        let outcome = analyze_cf_info(
+            &Map::from_iter([("sourceSet".to_string(), json!("nope"))]),
+            &context,
+        )
+        .outcome;
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .chain(std::iter::once(&outcome.summary))
+                .any(|message| message.contains("source_set_unknown")),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
+        let context = workspace("validate");
+
+        let physical = validate_cf(
+            &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+            &context,
+        );
+        let logical = validate_cf(
+            &Map::from_iter([("sourceSet".to_string(), json!("main"))]),
+            &context,
+        );
+
+        assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
+        assert_eq!(logical.errors, physical.errors);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+}

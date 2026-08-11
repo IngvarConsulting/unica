@@ -1145,6 +1145,19 @@ def _source_workspace(root: Path) -> None:
         (root / source_set / "CommonModules/Shared/Ext/Module.bsl").write_bytes(
             ("\ufeffProcedure " + module + "()\r\nEndProcedure\r\n").encode("utf-8")
         )
+    # ADR-0049: a subject reader must be reachable by address end to end, so
+    # the smoke workspace carries one registered object with an attached body.
+    (root / "src/Roles/SmokeRole/Ext").mkdir(parents=True)
+    (root / "src/Roles/SmokeRole.xml").write_text(
+        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">"
+        "<Role><Properties><Name>SmokeRole</Name></Properties></Role></MetaDataObject>",
+        encoding="utf-8",
+    )
+    (root / "src/Roles/SmokeRole/Ext/Rights.xml").write_text(
+        "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" setForNewObjects=\"false\" "
+        "setForAttributesByDefault=\"true\" independentRightsOfChildObjects=\"false\"/>",
+        encoding="utf-8",
+    )
     meta_fixture = (
         Path(__file__).resolve().parents[2]
         / "tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware"
@@ -1158,7 +1171,8 @@ def _source_workspace(root: Path) -> None:
     original = configuration.read_text(encoding="utf-8")
     registered = original.replace(
         "\t\t</ChildObjects>",
-        "\t\t\t<CommonModule>Shared</CommonModule>\n\t\t</ChildObjects>",
+        "\t\t\t<CommonModule>Shared</CommonModule>\n"
+        "\t\t\t<Role>SmokeRole</Role>\n\t\t</ChildObjects>",
     )
     if registered == original:
         raise SystemExit(
@@ -1369,17 +1383,38 @@ def _meta_payload(response: dict, *, expected_ok: bool) -> dict:
     return structured
 
 
-def _call(session: McpSession, request_id: int, name: str, arguments: dict) -> dict:
-    return _tool_payload(
-        session.request(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": arguments},
-            }
-        )
+def _call(
+    session: McpSession,
+    request_id: int,
+    name: str,
+    arguments: dict,
+    *,
+    expect_ok: bool = True,
+) -> dict:
+    response = session.request(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }
     )
+    if expect_ok:
+        return _tool_payload(response)
+    # A refusal is the thing under test, so its payload is returned as-is; the
+    # caller asserts the stable code rather than the shape of a success.
+    if "error" in response:
+        return response
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise SystemExit(f"Unica MCP tools/call has no result: {response}")
+    try:
+        payload = json.loads(result["content"][0]["text"])
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        return result
+    if payload.get("ok"):
+        raise SystemExit(f"Unica MCP tools/call unexpectedly succeeded: {payload}")
+    return payload
 
 
 def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None:
@@ -1523,6 +1558,47 @@ def _exercise_source_set(
     return request_id, projection
 
 
+def _exercise_reader_bridge(
+    session: McpSession, request_id: int, workspace: Path
+) -> int:
+    """An address found by `unica.source.resolve` reaches a subject reader.
+
+    This is the whole point of ADR-0049: the caller never has to know that a
+    role's rights live two directories below its descriptor.
+    """
+    resolved = _call(session, request_id, "unica.source.resolve", {
+        "cwd": str(workspace), "sourceSet": "main", "query": "Role.SmokeRole",
+        "mode": "exact", "targetKind": "metadataObject",
+    })
+    request_id += 1
+    candidates = [c.get("metadataPath") for c in resolved["data"]["candidates"]]
+    if candidates != ["Role.SmokeRole"]:
+        raise SystemExit(f"source.resolve did not return the role address: {resolved}")
+
+    logical = _call(session, request_id, "unica.role.info", {
+        "cwd": str(workspace), "sourceSet": "main", "metadataPath": "Role.SmokeRole",
+    })
+    request_id += 1
+    if not logical.get("ok") or logical["data"].get("name") != "SmokeRole":
+        raise SystemExit(f"role.info did not accept the resolved address: {logical}")
+
+    conflict = _call(session, request_id, "unica.role.info", {
+        "cwd": str(workspace), "sourceSet": "main", "metadataPath": "Role.SmokeRole",
+        "RightsPath": "src/Roles/SmokeRole/Ext/Rights.xml",
+    }, expect_ok=False)
+    request_id += 1
+    if "selector_conflict" not in json.dumps(conflict, ensure_ascii=False):
+        raise SystemExit(f"role.info accepted two selectors at once: {conflict}")
+
+    missing = _call(session, request_id, "unica.role.info", {
+        "cwd": str(workspace), "sourceSet": "main", "metadataPath": "Role.Absent",
+    }, expect_ok=False)
+    request_id += 1
+    if "target_not_found" not in json.dumps(missing, ensure_ascii=False):
+        raise SystemExit(f"an unknown address must be a missing target: {missing}")
+    return request_id
+
+
 def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None:
     environment = os.environ.copy()
     environment["UNICA_PLUGIN_ROOT"] = str(plugin_root.resolve())
@@ -1558,6 +1634,7 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             next_id, _ = _exercise_source_set(
                 session, next_id, workspace, cache_root, "extension"
             )
+            next_id = _exercise_reader_bridge(session, next_id, workspace)
             success = _meta_payload(
                 session.request(
                     {

@@ -26,6 +26,10 @@ allowed-tools:
 | Параметр | Описание |
 |----------|----------|
 | `ConfigPath` | Путь к Configuration.xml или каталогу выгрузки |
+| `sourceSet`  | Имя набора исходников из `v8project.yaml`      |
+
+Селектор цели ровно один: либо `sourceSet`, либо `ConfigPath`. Оба сразу
+отклоняются кодом `selector_conflict` (ADR-0049).
 
 ## Поля `data`
 
@@ -152,3 +156,25 @@ allowed-tools:
   }
 }
 ```
+
+## Логический адрес вместо пути
+
+`unica.cf.info` принимает либо логический селектор, либо файловый путь —
+ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.cf.info",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "<имя набора>"
+    }
+  }
+}
+```
+
+Имя набора даёт `unica.project.map`. Файловый селектор сохраняется до
+отдельного среза его снятия (ADR-0049).

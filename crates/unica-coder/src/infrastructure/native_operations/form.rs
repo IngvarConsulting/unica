@@ -5,6 +5,9 @@ use crate::application::AdapterOutcome;
 use crate::domain::form_edit::validate_form_edit_definition;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::logical_selector::{
+    logical_selection, AttachedResource,
+};
 use crate::infrastructure::platform_xml_owner::{root_version_literal, MANAGED_FORM_ROOT};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
@@ -179,8 +182,7 @@ fn validate_form_with_source(
         let form_path = match source_override {
             Some((path, _)) => path.to_path_buf(),
             None => {
-                let raw_path = required_path(args, FORM_PATH, "FormPath")?;
-                let path = resolve_form_info_path(absolutize(raw_path, &context.cwd));
+                let path = resolve_form_read_path(args, context)?;
                 if !path.is_file() {
                     return Err(format!("File not found: {}", path.display()));
                 }
@@ -1673,13 +1675,31 @@ pub(crate) fn analyze_form_info(
     analyze_form_info_with_data(args, context).outcome
 }
 
+/// The address kinds a form reader accepts: a nested `Catalog.X.Form.Y` and a
+/// top-level `CommonForm.Y`.
+pub(crate) const FORM_KINDS: &[&str] = &["Form", "CommonForm"];
+
+/// The single args→path entry point of `form.info` and `form.validate`, and the
+/// one the format guard calls.
+pub(crate) fn resolve_form_read_path(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, String> {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Form, FORM_KINDS) {
+        return selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+    }
+    let raw_path = required_path(args, FORM_PATH, "FormPath")?;
+    Ok(resolve_form_info_path(absolutize(raw_path, &context.cwd)))
+}
+
 pub(crate) fn analyze_form_info_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> FormInfoExecution {
     let result = (|| -> Result<(FormInfoData, PathBuf), String> {
-        let raw_path = required_path(args, FORM_PATH, "FormPath")?;
-        let form_path = resolve_form_info_path(absolutize(raw_path, &context.cwd));
+        let form_path = resolve_form_read_path(args, context)?;
         if !form_path.is_file() {
             return Err(format!("File not found: {}", form_path.display()));
         }
@@ -19034,5 +19054,140 @@ mod tests {
 </Form>
 "#
         }
+    }
+}
+
+#[cfg(test)]
+mod form_read_selector_bridge_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    /// A catalog form and a common form, both registered so both are
+    /// addressable, and both reachable by their `Ext/Form.xml` path.
+    fn workspace(name: &str) -> WorkspaceContext {
+        let root = std::env::temp_dir().join(format!(
+            "unica-form-read-bridge-{name}-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let src = root.join("src");
+        fs::create_dir_all(src.join("Catalogs/Items/Forms/Order/Ext")).unwrap();
+        fs::create_dir_all(src.join("CommonForms/Settings/Ext")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Catalog>Items</Catalog><CommonForm>Settings</CommonForm></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>Order</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Catalogs/Items/Forms/Order.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form><Properties><Name>Order</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("CommonForms/Settings.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonForm><Properties><Name>Settings</Name></Properties></CommonForm></MetaDataObject>"#,
+        )
+        .unwrap();
+        for relative in [
+            "Catalogs/Items/Forms/Order/Ext/Form.xml",
+            "CommonForms/Settings/Ext/Form.xml",
+        ] {
+            fs::write(
+                src.join(relative),
+                r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/></Form>"#,
+            )
+            .unwrap();
+        }
+        WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        }
+    }
+
+    #[test]
+    fn form_info_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("info");
+
+        let physical = analyze_form_info_with_data(
+            &Map::from_iter([(
+                "FormPath".to_string(),
+                json!("src/Catalogs/Items/Forms/Order/Ext/Form.xml"),
+            )]),
+            &context,
+        );
+        let logical = analyze_form_info_with_data(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                (
+                    "metadataPath".to_string(),
+                    json!("Catalog.Items.Form.Order"),
+                ),
+            ]),
+            &context,
+        );
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert_eq!(
+            serde_json::to_value(&logical.data).unwrap(),
+            serde_json::to_value(&physical.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn form_info_reads_a_common_form_by_its_top_level_address() {
+        let context = workspace("common-form");
+
+        let logical = analyze_form_info_with_data(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("CommonForm.Settings")),
+            ]),
+            &context,
+        );
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn form_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = workspace("validate");
+
+        let physical = validate_form(
+            &Map::from_iter([(
+                "FormPath".to_string(),
+                json!("src/Catalogs/Items/Forms/Order/Ext/Form.xml"),
+            )]),
+            &context,
+        );
+        let logical = validate_form(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                (
+                    "metadataPath".to_string(),
+                    json!("Catalog.Items.Form.Order"),
+                ),
+            ]),
+            &context,
+        );
+
+        assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
+        assert_eq!(logical.errors, physical.errors);
+        let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }

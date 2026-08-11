@@ -108,6 +108,34 @@ accepting `Detailed`, which it never read.
 `unica.source.resolve` finds an address by name, and `unica.source.locate`
 converts a path discovered by other means into one.
 
+### Readers that accept either selector
+
+Thirteen readers and validators are in the transitional state ADR-0049
+defines: they accept the logical selector **and** still accept their existing
+path. Nothing is removed here, so no call breaks; removing each path is its own
+later merge request.
+
+| Tool | Logical selector | Path kept for now |
+| --- | --- | --- |
+| `unica.cf.info`, `unica.cf.validate` | `sourceSet` | `ConfigPath` |
+| `unica.subsystem.info` | `sourceSet`, optional `metadataPath` | `SubsystemPath` |
+| `unica.subsystem.validate` | `sourceSet` + `metadataPath` | `SubsystemPath` |
+| `unica.role.info`, `unica.role.validate` | `sourceSet` + `metadataPath` | `RightsPath` |
+| `unica.form.info`, `unica.form.validate` | `sourceSet` + `metadataPath` | `FormPath` |
+| `unica.dcs.info`, `unica.dcs.validate` | `sourceSet` + `metadataPath` | `TemplatePath` |
+| `unica.mxl.info`, `unica.mxl.validate`, `unica.mxl.decompile` | `sourceSet` + `metadataPath` | `TemplatePath` |
+
+Exactly one selector per call. Passing both fails with `selector_conflict`,
+because resolving a conflict silently would hide which selector produced the
+answer. A configuration root has no address, so `unica.cf.*` takes `sourceSet`
+alone and no longer publishes `metadataPath`; `unica.subsystem.info` reads the
+whole registered tree when the address is omitted.
+
+An addressed object whose requested body is missing — a template whose
+`TemplateType` writes `Template.bin` rather than `Template.xml` — fails with
+`resource_absent`, not `target_not_found`: the object exists and is
+addressable, that body does not.
+
 ## Runtime delivery
 
 The marketplace plugin contains skills, references, assets, `launch.sh`, and

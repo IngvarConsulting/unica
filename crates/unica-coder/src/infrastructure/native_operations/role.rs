@@ -12,6 +12,7 @@ use crate::domain::source_target::{
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::logical_selector::prove_attached_resource;
 use crate::infrastructure::native_operations::text_snapshot::{
     resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
 };
@@ -2514,57 +2515,23 @@ fn read_regular_file(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|_| "required role resource is unavailable".to_string())
 }
 
+/// The identity check is role-specific; the proof that `<Roles>/<R>/Ext/Rights.xml`
+/// is a direct regular file inside the selected source set is the general one
+/// every subject reader needs, and lives in `logical_selector` (ADR-0049).
 fn prove_role_rights_path(
     evidence: &PlatformXmlResourceEvidence,
     role_name: &str,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    let stem = evidence
+    if evidence
         .target_path
         .file_stem()
         .and_then(|value| value.to_str())
-        .filter(|value| *value == role_name)
-        .ok_or_else(|| "role descriptor identity does not match metadataPath".to_string())?;
-    let parent = evidence
-        .target_path
-        .parent()
-        .ok_or_else(|| "role descriptor has no containing directory".to_string())?;
-    let candidate = WorkspacePathPolicy::new(context)
-        .resolve_write(parent.join(stem).join("Ext").join("Rights.xml"))
-        .map_err(|_| "role Rights.xml is outside the workspace boundary".to_string())?;
-    ensure_role_no_link_components(&evidence.source_root, &candidate)?;
-    let normalized_root = normalize_path_identity(&evidence.source_root)
-        .map_err(|_| "source root identity is unavailable".to_string())?;
-    let normalized_candidate = normalize_path_identity(&candidate)
-        .map_err(|_| "Rights.xml identity is unavailable".to_string())?;
-    if !normalized_candidate.starts_with(&normalized_root) {
-        return Err("role Rights.xml escaped the selected source set".to_string());
+        != Some(role_name)
+    {
+        return Err("role descriptor identity does not match metadataPath".to_string());
     }
-    Ok(candidate)
-}
-
-fn ensure_role_no_link_components(source_root: &Path, target: &Path) -> Result<(), String> {
-    let relative = target
-        .strip_prefix(source_root)
-        .map_err(|_| "role Rights.xml escaped the selected source set".to_string())?;
-    let mut current = source_root.to_path_buf();
-    for component in relative.components() {
-        let std::path::Component::Normal(component) = component else {
-            return Err("role Rights.xml contains a non-normal path component".to_string());
-        };
-        current.push(component);
-        let metadata = match fs::symlink_metadata(&current) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Err("required role resource is unavailable".to_string());
-            }
-            Err(_) => return Err("required role resource cannot be inspected".to_string()),
-        };
-        if metadata_is_link_or_reparse_point(&metadata) {
-            return Err("role resource path contains a symbolic link or reparse point".to_string());
-        }
-    }
-    Ok(())
+    prove_attached_resource(evidence, "Rights.xml", context).map_err(|failure| failure.to_string())
 }
 
 fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), String> {
@@ -4460,6 +4427,122 @@ mod role_info_typed_result_tests {
         assert!(allowed.rights.iter().any(|right| right.restricted));
         assert!(!data.denied.is_empty(), "denied rights are always reported");
         assert_eq!(data.restricted_objects.len(), 1);
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// The same dump, made addressable: a project map naming the source set and
+    /// a configuration that registers the role.
+    fn addressable_workspace(name: &str) -> WorkspaceContext {
+        let context = workspace(name);
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Role>Reader</Role></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        context
+    }
+
+    #[test]
+    fn role_info_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = addressable_workspace("bridge");
+
+        let physical = analyze_role_info(
+            &Map::from_iter([(
+                "RightsPath".to_string(),
+                json!("src/Roles/Reader/Ext/Rights.xml"),
+            )]),
+            &context,
+        );
+        let logical = analyze_role_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Role.Reader")),
+            ]),
+            &context,
+        );
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert!(physical.outcome.ok, "{:?}", physical.outcome);
+        // Compare what the caller actually receives: the serialized
+        // answer, not a struct the wire never carries.
+        assert_eq!(
+            serde_json::to_value(&logical.data).unwrap(),
+            serde_json::to_value(&physical.data).unwrap()
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn role_info_accepts_the_russian_kind_alias() {
+        let context = addressable_workspace("bridge-alias");
+
+        let logical = analyze_role_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Роль.Reader")),
+            ]),
+            &context,
+        );
+
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert_eq!(
+            logical.data.expect("role info answers with data").name,
+            "Reader"
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn role_info_refuses_an_address_that_is_not_a_role() {
+        let context = addressable_workspace("bridge-wrong-kind");
+
+        let outcome = analyze_role_info(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Catalog.Goods")),
+            ]),
+            &context,
+        )
+        .outcome;
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .chain(std::iter::once(&outcome.summary))
+                .any(|message| message.contains("target_kind_unsupported")),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    #[test]
+    fn role_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+        let context = addressable_workspace("bridge-validate");
+
+        let physical = validate_role(
+            &Map::from_iter([(
+                "RightsPath".to_string(),
+                json!("src/Roles/Reader/Ext/Rights.xml"),
+            )]),
+            &context,
+        );
+        let logical = validate_role(
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), json!("Role.Reader")),
+            ]),
+            &context,
+        );
+
+        assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
+        assert_eq!(logical.errors, physical.errors);
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 }

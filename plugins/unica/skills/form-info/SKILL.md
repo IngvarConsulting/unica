@@ -41,10 +41,39 @@ allowed-tools:
 
 | Параметр | Обязательный | Описание |
 |----------|:------------:|----------|
-| FormPath | да | Путь к файлу Form.xml |
+| FormPath | один из двух | Путь к файлу Form.xml |
+| sourceSet | один из двух | Имя набора исходников из `v8project.yaml` |
+| metadataPath | один из двух | Логический адрес, например `Catalog.<Объект>.Form.<Форма>` |
 
 `Expand`, `Limit` и `Offset` сняты (ADR-0048): дерево элементов приходит
 типизированным в `data` целиком и не сворачивается, поэтому раскрывать и
 листать нечего.
 
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо `FormPath`.
+Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
+
 Вывод самодокументирован. `[Group:AH]`/`[Group:AV]` = AlwaysHorizontal/AlwaysVertical.
+
+## Логический адрес вместо пути
+
+`unica.form.info` принимает либо логический селектор, либо файловый путь —
+ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.form.info",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "<имя набора>",
+      "metadataPath": "Catalog.<Объект>.Form.<Форма>"
+    }
+  }
+}
+```
+
+Имя набора даёт `unica.project.map`, адрес — `unica.source.resolve`, а `unica.source.locate` переводит
+в адрес путь, найденный иначе. Файловый селектор сохраняется до
+отдельного среза его снятия (ADR-0049).

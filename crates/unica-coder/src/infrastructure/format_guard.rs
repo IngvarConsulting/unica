@@ -18,8 +18,7 @@ use crate::infrastructure::native_operations::cfe::{
 use crate::infrastructure::native_operations::common::{
     find_support_config_dir, resolve_cf_edit_config_path, resolve_cf_read_config_path,
     resolve_cfe_validate_config_path, resolve_code_patch_guard_path, resolve_form_add_object_path,
-    resolve_form_info_path, resolve_role_read_rights_path, resolve_subsystem_edit_xml,
-    support_uuid_dependency_paths,
+    resolve_role_read_rights_path, resolve_subsystem_edit_xml, support_uuid_dependency_paths,
 };
 use crate::infrastructure::native_operations::dcs::{
     dcs_info_format_dependency_paths, resolve_dcs_validate_path,
@@ -27,13 +26,15 @@ use crate::infrastructure::native_operations::dcs::{
 use crate::infrastructure::native_operations::external::external_init_planned_xml_paths;
 use crate::infrastructure::native_operations::form::{
     form_compile_infer_from_object_target, form_compile_normalize_from_object_output_label,
-    form_parent_metadata_owner_candidate,
+    form_parent_metadata_owner_candidate, resolve_form_read_path,
 };
 use crate::infrastructure::native_operations::help::resolve_help_object_dir_for_format_guard;
 use crate::infrastructure::native_operations::interface::{
     interface_metadata_owner_path, resolve_interface_validate_path,
 };
-use crate::infrastructure::native_operations::mxl::resolve_mxl_validate_path;
+use crate::infrastructure::native_operations::mxl::{
+    resolve_mxl_decompile_path, resolve_mxl_info_path, resolve_mxl_validate_path,
+};
 use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path;
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
 use crate::infrastructure::native_operations::subsystem::{
@@ -1034,15 +1035,18 @@ fn handler_resolved_format_paths(
         "form-add" => {
             raw.and_then(|path| resolve_form_add_object_path(absolutize(path, &context.cwd)).ok())
         }
-        "form-info" | "form-validate" => {
-            raw.map(|path| resolve_form_info_path(absolutize(path, &context.cwd)))
-        }
+        "form-info" | "form-validate" => resolve_form_read_path(args, context).ok(),
         "interface-validate" => resolve_interface_validate_path(args, context).ok(),
         "subsystem-edit" => {
             raw.and_then(|path| resolve_subsystem_edit_xml(absolutize(path, &context.cwd)).ok())
         }
         "dcs-edit" | "dcs-validate" => resolve_dcs_validate_path(args, context).ok(),
+        // Without these two arms the guard falls back to the raw path
+        // argument, which a logical call does not carry — the format
+        // dependency would silently be empty.
         "mxl-validate" => resolve_mxl_validate_path(args, context).ok(),
+        "mxl-info" => resolve_mxl_info_path(args, context).ok(),
+        "mxl-decompile" => resolve_mxl_decompile_path(args, context).ok(),
         "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
         "role-edit" => {
             Some(resolve_role_edit_guard_path(args, context).map_err(FormatGuardError::internal)?)

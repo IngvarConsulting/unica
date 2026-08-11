@@ -41,8 +41,14 @@ allowed-tools:
 | Параметр | Описание |
 |----------|----------|
 | `TemplatePath` | Путь к Template.xml или каталогу макета (авто-резолв в `Ext/Template.xml`) |
+| `sourceSet`    | Имя набора исходников из `v8project.yaml`                                  |
+| `metadataPath` | Логический адрес, например `Report.<Отчёт>.Template.<Макет>`               |
 
-Других предметных аргументов нет — только общие `cwd` и `confirm`. `Mode`,
+Кроме селектора цели предметных аргументов нет — только общие `cwd` и `confirm`.
+
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо
+`TemplatePath`. Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
+ `Mode`,
 `Name`, `Batch`, `Raw`, `Limit` и `Offset` сняты
 (ADR-0048): схема приходит целиком, сырой текст запроса лежит в
 `dataSets[].query`, а отбор набора, поля или варианта выполняется над `data`.
@@ -295,3 +301,27 @@ allowed-tools:
   }
 }
 ```
+
+## Логический адрес вместо пути
+
+`unica.dcs.info` принимает либо логический селектор, либо файловый путь —
+ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.dcs.info",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "<имя набора>",
+      "metadataPath": "Report.<Отчёт>.Template.<Макет>"
+    }
+  }
+}
+```
+
+Имя набора даёт `unica.project.map`, адрес — `unica.source.resolve`, а
+`unica.source.locate` переводит в адрес путь, найденный иначе. Файловый
+селектор сохраняется до отдельного среза его снятия (ADR-0049).

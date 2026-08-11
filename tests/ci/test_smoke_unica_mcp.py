@@ -243,7 +243,46 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 elif message.get("method") == "tools/call":
                     name = message["params"]["name"]
                     args = message["params"]["arguments"]
-                    if name == "unica.meta.info":
+                    if name == "unica.role.info":
+                        # ADR-0049 bridge: the stub answers the three
+                        # outcomes the smoke asserts and nothing else.
+                        if "sourceSet" in args and "RightsPath" in args:
+                            payload = operation_result(
+                                False,
+                                "selector_conflict: unica.role.info accepts either"
+                                " `sourceSet` + `metadataPath` or `RightsPath`,"
+                                " not both",
+                            )
+                        elif args.get("metadataPath") == "Role.SmokeRole":
+                            payload = operation_result(True, "role inspected")
+                            payload["data"] = {"name": "SmokeRole"}
+                        else:
+                            payload = operation_result(
+                                False, "target_not_found: the logical target was not found"
+                            )
+                        result = {
+                            "content": [{"type": "text", "text": json.dumps(payload)}]
+                        }
+                    elif (
+                        name == "unica.source.resolve"
+                        and args.get("query") == "Role.SmokeRole"
+                    ):
+                        payload = operation_result(True, "source.resolve returned 1 canonical candidate(s)")
+                        payload["data"] = {
+                            "candidates": [
+                                {
+                                    "displayName": "SmokeRole",
+                                    "matchKind": "exact",
+                                    "metadataPath": "Role.SmokeRole",
+                                    "targetKind": "metadataObject",
+                                }
+                            ],
+                            "completeness": "complete",
+                        }
+                        result = {
+                            "content": [{"type": "text", "text": json.dumps(payload)}]
+                        }
+                    elif name == "unica.meta.info":
                         if args:
                             payload = operation_result(True, "metadata information inspected")
                         else:

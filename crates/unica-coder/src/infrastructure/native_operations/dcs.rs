@@ -3,6 +3,10 @@
 use crate::application::operation_descriptors::TEMPLATE_PATH;
 use crate::application::AdapterOutcome;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::logical_selector::{
+    logical_selection, AttachedResource,
+};
+use crate::infrastructure::native_operations::mxl::TEMPLATE_KINDS;
 use crate::infrastructure::platform_xml_owner::DCS_ROOT;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -1720,6 +1724,22 @@ fn inspect_dcs_info_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> DcsInfoPathInspection {
+    // A logical target is already proven down to the file, so none of the
+    // `Ext/Template.xml` probing below applies. The resolved resource is still
+    // a format dependency: leaving the list empty would let a logical call
+    // reach the reader without the guard ever inspecting the file it reads.
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::Template, TEMPLATE_KINDS)
+    {
+        let resolution = selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+        let dependencies = resolution.as_ref().ok().cloned().into_iter().collect();
+        return DcsInfoPathInspection {
+            resolution,
+            dependencies,
+        };
+    }
     let raw_path = match required_path(args, TEMPLATE_PATH, "TemplatePath") {
         Ok(path) => path,
         Err(error) => {
@@ -2997,6 +3017,13 @@ pub(crate) fn resolve_dcs_validate_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::Template, TEMPLATE_KINDS)
+    {
+        return selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+    }
     let raw_path = required_path(args, TEMPLATE_PATH, "TemplatePath")?;
     let mut display_path = raw_path.clone();
     let mut template_path = absolutize(raw_path, &context.cwd);

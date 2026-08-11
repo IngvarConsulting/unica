@@ -30,6 +30,12 @@
 | Снятые селекторы `unica.meta.info` | `ObjectPath` и `Path` отклоняются кодом `legacy_target_removed`; `Detailed`, который инструмент никогда не читал, отклоняется как незнакомый аргумент | `cargo test -p unica-coder meta_info -- --test-threads=1` |
 | Логический адрес в предметном читателе | `unica.meta.info` читает дескриптор по `sourceSet + metadataPath`, принимает русский псевдоним вида, отклоняет терминал модуля по имени и возвращает разрешённую цель типизированными данными | `cargo test -p unica-coder meta_info -- --test-threads=1` |
 | Полный локальный read-профиль объекта | Ответ связывает каждый из 23 `kind` с обязательным вариантом `details`, не выводит свойства чтения из writer allowlist, сохраняет наблюдаемый UUID как `{"kind":"uuid"}` с `mutationCapability: editable`, а вложенные HTTP/WebService-коллекции различают `[]` и недоказанное `null` с диагностикой | `cargo test -p unica-coder meta_info -- --test-threads=1` |
+| Прикреплённый ресурс по логическому адресу | Дескриптор `<…>/<Stem>.xml` даёт ресурс `<…>/<Stem>/Ext/<Имя>`; символическая ссылка, выход за корень набора, чужой вид адреса и отсутствующий ресурс отклоняются раздельно, и ни одно сообщение не содержит разделителя пути | `cargo test -p unica-coder logical_selector -- --test-threads=1` |
+| Мост не меняет ответ | У всех тринадцати переведённых читателей логический и файловый вызов одной цели возвращают одинаковые типизированные данные | `cargo test -p unica-coder answers_identically -- --test-threads=1` |
+| Доказанный объект без ресурса | Макет с двоичным или текстовым телом даёт `resource_absent`, а не `target_not_found`: цель адресуема, запрошенного тела у неё нет | `cargo test -p unica-coder dcs_info_reports_a_binary_template -- --test-threads=1` |
+| Ровно один селектор | Одновременные `metadataPath` и файловое поле отклоняются `selector_conflict` до обработчика, отсутствие обоих сохраняет прежний отказ, а `unica.cf.*` не публикует адрес, которого у корня конфигурации нет | `cargo test -p unica-coder bridged_readers -- --test-threads=1` |
+| Политика вида цели покрывает корень | `ModuleOnly` отклоняет корень набора стабильным `TargetKindMismatch` без раскрытия пути, `Any` его разрешает | `cargo test -p unica-coder platform_xml_target_kind_policy_applies -- --test-threads=1` |
+| Вложенная подсистема не адресуется | `Subsystem.A.B` отклоняется `target_kind_unsupported`, а не разрешается в правдоподобный путь (негранца ADR-0036) | `cargo test -p unica-coder subsystem_info_refuses_a_nested_address -- --test-threads=1` |
 | Частные поля поставщика | `providerRevision`, закрытая ручка, абсолютный путь и строка соединения отсутствуют в MCP-ответе | `cargo test -p unica-coder interfaces::mcp::tests -- --test-threads=1` |
 
 ## Матрица снимка и чтения
@@ -63,6 +69,13 @@ cargo test -p unica-coder source_navigation -- --test-threads=1
 cargo test -p unica-coder source_resources -- --test-threads=1
 cargo test -p unica-coder code_patch_replace -- --test-threads=1
 cargo test -p unica-coder meta_info -- --test-threads=1
+cargo test -p unica-coder logical_selector -- --test-threads=1
+cargo test -p unica-coder answers_identically -- --test-threads=1
+cargo test -p unica-coder bridged_readers -- --test-threads=1
+cargo test -p unica-coder dcs_info_reports_a_binary_template -- --test-threads=1
+cargo test -p unica-coder platform_xml_target_kind_policy_applies -- --test-threads=1
+cargo test -p unica-coder subsystem_info_refuses_a_nested_address -- --test-threads=1
 cargo test -p unica-coder domain::cache::tests -- --test-threads=1
 python3.12 -m unittest tests/ci/test_architecture_registry.py tests/ci/test_design_documents.py tests/ci/test_unica_skills.py tests/ci/test_skill_provenance.py
+python3.12 -m unittest tests/ci/test_unica_mcp_script_parity.py tests/ci/test_smoke_unica_mcp.py
 ```

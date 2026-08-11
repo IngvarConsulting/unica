@@ -23,9 +23,14 @@ allowed-tools:
 
 | Параметр      | Обяз. | Умолч. | Описание                                  |
 |---------------|:-----:|---------|--------------------------------------------|
-| SubsystemPath | да    | —       | Путь к XML-файлу подсистемы                |
+| SubsystemPath | один из двух | —       | Путь к XML-файлу подсистемы                |
+| sourceSet     | один из двух | —       | Имя набора исходников из `v8project.yaml`  |
+| metadataPath  | один из двух | —       | Логический адрес, например `Subsystem.<Подсистема>` |
 | Detailed      | нет   | —       | Подробный вывод (все проверки, включая успешные) |
 | MaxErrors     | нет   | 30      | Остановиться после N ошибок                |
+
+Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо
+`SubsystemPath`. Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
 
 ## MCP вызов
 
@@ -60,3 +65,27 @@ allowed-tools:
   }
 }
 ```
+
+## Логический адрес вместо пути
+
+`unica.subsystem.validate` принимает либо логический селектор, либо файловый путь —
+ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.subsystem.validate",
+    "arguments": {
+      "cwd": "<workspace>",
+      "sourceSet": "<имя набора>",
+      "metadataPath": "Subsystem.<Подсистема>"
+    }
+  }
+}
+```
+
+Имя набора даёт `unica.project.map`, адрес — `unica.source.resolve`, а `unica.source.locate` переводит
+в адрес путь, найденный иначе. Файловый селектор сохраняется до
+отдельного среза его снятия (ADR-0049).

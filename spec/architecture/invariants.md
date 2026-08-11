@@ -969,6 +969,19 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
 - **Scope:** source, runtime
 
+### INV-SOURCE-READER-SELECTOR — Предметный читатель принимает ровно один селектор цели
+
+- **Rule:** Предметный читатель в переходном состоянии публикует логический
+  селектор `sourceSet` с `metadataPath` там, где инструмент его читает, и своё
+  файловое поле двумя взаимоисключающими ветвями схемы, принимает ровно один из
+  них, отклоняет одновременную передачу обоих стабильным `selector_conflict` до
+  вызова обработчика и отвечает на логический вызов теми же типизированными
+  данными, что на файловый.
+- **Decision:** ADR-0049
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs`
+- **Scope:** source, runtime
+
 ### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля
 
 - **Rule:** Разрешение цели выполняется под явной политикой вида: политика
