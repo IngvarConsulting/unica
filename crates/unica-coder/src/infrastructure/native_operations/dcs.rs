@@ -1720,30 +1720,24 @@ struct DcsInfoPathInspection {
     dependencies: Vec<PathBuf>,
 }
 
-/// The format guard needs the same file the handler will read, resolved the
-/// same way.
-pub(crate) fn dcs_info_format_path(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<PathBuf> {
-    inspect_dcs_info_path(args, context).resolution.ok()
-}
-
 fn inspect_dcs_info_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> DcsInfoPathInspection {
     // A logical target is already proven down to the file, so none of the
-    // `Ext/Template.xml` probing below applies and there is nothing to add to
-    // the format dependencies beyond the resolved resource itself.
+    // `Ext/Template.xml` probing below applies. The resolved resource is still
+    // a format dependency: leaving the list empty would let a logical call
+    // reach the reader without the guard ever inspecting the file it reads.
     if let Some(selection) =
         logical_selection(args, context, AttachedResource::Template, TEMPLATE_KINDS)
     {
+        let resolution = selection
+            .map(|selection| selection.resource_path)
+            .map_err(|failure| failure.to_string());
+        let dependencies = resolution.as_ref().ok().cloned().into_iter().collect();
         return DcsInfoPathInspection {
-            resolution: selection
-                .map(|selection| selection.resource_path)
-                .map_err(|failure| failure.to_string()),
-            dependencies: Vec::new(),
+            resolution,
+            dependencies,
         };
     }
     let raw_path = match required_path(args, TEMPLATE_PATH, "TemplatePath") {

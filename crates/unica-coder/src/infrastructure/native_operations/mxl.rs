@@ -4182,7 +4182,7 @@ mod mxl_read_selector_bridge_tests {
         .unwrap();
         fs::write(
             src.join("Reports/Sales.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Report><Properties><Name>Sales</Name></Properties><ChildObjects><Template>Main</Template></ChildObjects></Report></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Report><Properties><Name>Sales</Name></Properties><ChildObjects><Template>Main</Template><Template>Dcs</Template></ChildObjects></Report></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
@@ -4201,6 +4201,20 @@ mod mxl_read_selector_bridge_tests {
         )
         .unwrap();
         fs::write(src.join("CommonTemplates/Logo/Ext/Template.bin"), [0u8, 1]).unwrap();
+        // The DCS readers parse a composition schema, not a spreadsheet. Giving
+        // them the MXL body would make both sides of a parity test fail the
+        // same way and compare two errors as if they were an answer.
+        fs::create_dir_all(src.join("Reports/Sales/Templates/Dcs/Ext")).unwrap();
+        fs::write(
+            src.join("Reports/Sales/Templates/Dcs.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("Reports/Sales/Templates/Dcs/Ext/Template.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dataSource><name>ИсточникДанных1</name><dataSourceType>Local</dataSourceType></dataSource><dataSet xsi:type="DataSetQuery"><name>НаборДанных1</name><field xsi:type="DataSetFieldField"><dataPath>Код</dataPath><field>Код</field></field><dataSource>ИсточникДанных1</dataSource><query>ВЫБРАТЬ Код ИЗ Справочник.Товары</query></dataSet></DataCompositionSchema>"#,
+        )
+        .unwrap();
         WorkspaceContext {
             cwd: root.clone(),
             workspace_root: root.clone(),
@@ -4265,14 +4279,38 @@ mod mxl_read_selector_bridge_tests {
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
+    fn dcs_physical_args() -> Map<String, Value> {
+        Map::from_iter([(
+            "TemplatePath".to_string(),
+            json!("src/Reports/Sales/Templates/Dcs/Ext/Template.xml"),
+        )])
+    }
+
+    fn dcs_logical_args() -> Map<String, Value> {
+        Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            (
+                "metadataPath".to_string(),
+                json!("Report.Sales.Template.Dcs"),
+            ),
+        ])
+    }
+
     #[test]
     fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-info");
 
-        let physical = analyze_dcs_info_with_data(&physical_args(), &context);
-        let logical = analyze_dcs_info_with_data(&logical_args(), &context);
+        let physical = analyze_dcs_info_with_data(&dcs_physical_args(), &context);
+        let logical = analyze_dcs_info_with_data(&dcs_logical_args(), &context);
 
-        assert_eq!(logical.outcome.ok, physical.outcome.ok);
+        // Both must succeed: comparing two identical failures would pass while
+        // proving nothing about the bridge.
+        assert!(physical.outcome.ok, "{:?}", physical.outcome);
+        assert!(logical.outcome.ok, "{:?}", logical.outcome);
+        assert!(
+            logical.data.is_some(),
+            "a successful read answers with data"
+        );
         assert_eq!(
             serde_json::to_value(&logical.data).unwrap(),
             serde_json::to_value(&physical.data).unwrap()
@@ -4284,9 +4322,10 @@ mod mxl_read_selector_bridge_tests {
     fn dcs_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-validate");
 
-        let physical = validate_dcs(&physical_args(), &context);
-        let logical = validate_dcs(&logical_args(), &context);
+        let physical = validate_dcs(&dcs_physical_args(), &context);
+        let logical = validate_dcs(&dcs_logical_args(), &context);
 
+        assert!(physical.ok, "{physical:?}");
         assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
         assert_eq!(logical.errors, physical.errors);
         let _ = fs::remove_dir_all(&context.workspace_root);

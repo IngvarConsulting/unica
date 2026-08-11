@@ -330,14 +330,19 @@ pub(crate) fn resolve_subsystem_read_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    // `metadataPath` is read with `string_arg` everywhere else, so a null or
-    // non-string value is absent. A raw key-presence check here would send such
-    // a call down the object branch and answer `target_kind_unsupported`
-    // instead of the registered tree.
-    if args.contains_key("sourceSet") && string_arg(args, &["metadataPath"]).is_none() {
-        let selection = logical_selection(args, context, AttachedResource::ConfigurationRoot, &[])
-            .expect("sourceSet is present")
-            .map_err(|failure| failure.to_string())?;
+    // Both selectors are read with `string_arg` everywhere else, so an empty,
+    // null or non-string value is absent. Branching on `contains_key` instead
+    // would send such a call down the wrong path — and, for `sourceSet`, into
+    // an `expect` on a value the shared seam had already rejected.
+    if string_arg(args, &["sourceSet"]).is_some() && string_arg(args, &["metadataPath"]).is_none() {
+        let Some(selection) =
+            logical_selection(args, context, AttachedResource::ConfigurationRoot, &[])
+        else {
+            return Err(
+                "source_set_unknown: sourceSet must name an exact project source set".to_string(),
+            );
+        };
+        let selection = selection.map_err(|failure| failure.to_string())?;
         let source_root = selection
             .resource_path
             .parent()
@@ -5163,6 +5168,34 @@ mod subsystem_read_selector_bridge_tests {
             serde_json::to_value(&with_null.data).unwrap(),
             serde_json::to_value(&by_set.data).unwrap()
         );
+        let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+
+    /// `contains_key` says a selector was sent; `string_arg` says whether it
+    /// can be used. An empty or non-string `sourceSet` satisfies the first and
+    /// not the second, and the gap between them was an `expect` — a panic on a
+    /// schema-valid call.
+    #[test]
+    fn subsystem_info_refuses_an_unusable_source_set_instead_of_panicking() {
+        let context = workspace("unusable-source-set");
+
+        for value in [json!(""), json!("   "), json!(7), Value::Null] {
+            let outcome = analyze_subsystem_info(
+                &Map::from_iter([("sourceSet".to_string(), value.clone())]),
+                &context,
+            )
+            .outcome;
+
+            assert!(!outcome.ok, "{value}: {outcome:?}");
+            let text = outcome
+                .errors
+                .iter()
+                .cloned()
+                .chain(std::iter::once(outcome.summary.clone()))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            assert!(text.contains("source_set_unknown"), "{value}: {text}");
+        }
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 

@@ -21,7 +21,7 @@ use crate::infrastructure::native_operations::common::{
     resolve_role_read_rights_path, resolve_subsystem_edit_xml, support_uuid_dependency_paths,
 };
 use crate::infrastructure::native_operations::dcs::{
-    dcs_info_format_dependency_paths, dcs_info_format_path, resolve_dcs_validate_path,
+    dcs_info_format_dependency_paths, resolve_dcs_validate_path,
 };
 use crate::infrastructure::native_operations::external::external_init_planned_xml_paths;
 use crate::infrastructure::native_operations::form::{
@@ -1044,7 +1044,6 @@ fn handler_resolved_format_paths(
         // Without these two arms the guard falls back to the raw path
         // argument, which a logical call does not carry — the format
         // dependency would silently be empty.
-        "dcs-info" => dcs_info_format_path(args, context),
         "mxl-validate" => resolve_mxl_validate_path(args, context).ok(),
         "mxl-info" => resolve_mxl_info_path(args, context).ok(),
         "mxl-decompile" => resolve_mxl_decompile_path(args, context).ok(),

@@ -90,6 +90,17 @@ const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
     ),
 ];
 
+/// Arguments a bridged reader still accepts but must not advertise: no branch
+/// of its schema can honour them, and publishing one would name a selector the
+/// tool cannot use. Refusing them instead would break calls that worked before
+/// the bridge, which it does not do.
+fn unpublished_bridge_args(name: &str) -> &'static [&'static str] {
+    match bridged_selector(name) {
+        Some((_, address)) if !address.publishes_address() => &["metadataPath"],
+        _ => &[],
+    }
+}
+
 fn bridged_selector(name: &str) -> Option<(&'static str, LogicalAddress)> {
     BRIDGED_SELECTORS
         .iter()
@@ -691,6 +702,9 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             });
         }
     }
+    // ADR-0049: still accepted for compatibility, never advertised.
+    let unpublished = unpublished_bridge_args(tool.name);
+    property_names.retain(|name| !unpublished.contains(name));
     let mut properties = Map::new();
     for name in property_names {
         let mut property = property_schema_for_tool(tool, name);
@@ -2331,13 +2345,12 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         names.push("sourceSet");
         if address.publishes_address() {
             names.push("metadataPath");
-        } else {
-            // The shared catch-all list hands `metadataPath` to every native
-            // tool. A configuration root has no address, and no `cf.*` handler
-            // ever read the argument, so publishing it would advertise a
-            // selector the tool cannot honour.
-            names.retain(|name| *name != "metadataPath");
         }
+        // A tool whose branches cannot honour an address does not gain one
+        // here, but it does not lose one either: the shared catch-all already
+        // handed `metadataPath` to every native tool, and this bridge removes
+        // nothing. It stays accepted and is filtered out of the published
+        // schema by `unpublished_bridge_args`.
     }
     names.sort_unstable();
     names.dedup();
@@ -5198,24 +5211,53 @@ mod tests {
 
     #[test]
     fn bridged_readers_that_have_no_address_do_not_publish_one() {
-        // `unica.cf.*` reads `Configuration.xml` at the root of a source set.
-        // The shared catch-all list used to hand it `metadataPath`, which no
-        // handler ever read.
+        // `unica.cf.*` reads `Configuration.xml` at the root of a source set,
+        // so no branch of its schema can honour an address. Publishing one
+        // would advertise a selector the tool cannot use.
         for name in ["unica.cf.info", "unica.cf.validate"] {
             let tool = tools()
                 .into_iter()
                 .find(|tool| tool.name == name)
                 .expect("tool is registered");
-            let args = Map::from_iter([
-                ("sourceSet".to_string(), json!("main")),
-                ("metadataPath".to_string(), json!("Catalog.Items")),
-            ]);
-            let error = validate_tool_arguments(tool, &args, false).unwrap_err();
+            let schema = input_schema_for_tool(&tool);
             assert!(
-                error.contains("does not accept argument `metadataPath`"),
-                "{name}: {error}"
+                schema["properties"].get("metadataPath").is_none(),
+                "{name} publishes an address it cannot use: {schema}"
             );
         }
+    }
+
+    /// `unica.cf.validate` drew `metadataPath` from the shared catch-all before
+    /// this bridge and ignored it. Publishing it would be a lie, but refusing
+    /// it would break a call that used to work — and this bridge removes
+    /// nothing. So it stays accepted and unpublished.
+    ///
+    /// `unica.cf.info` never took it: it has carried a narrow argument list
+    /// since ADR-0023, so refusing it there is the contract it already had.
+    #[test]
+    fn cf_validate_still_tolerates_the_address_the_catch_all_used_to_hand_it() {
+        let args = Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!("Catalog.Items")),
+        ]);
+
+        let validate = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.cf.validate")
+            .expect("tool is registered");
+        validate_tool_arguments(validate, &args, false)
+            .unwrap_or_else(|error| panic!("cf.validate must keep tolerating it: {error}"));
+
+        let info = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.cf.info")
+            .expect("tool is registered");
+        let error = validate_tool_arguments(info, &args, false)
+            .expect_err("cf.info never accepted an address");
+        assert!(
+            error.contains("does not accept argument `metadataPath`"),
+            "{error}"
+        );
     }
 
     #[test]

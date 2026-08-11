@@ -90,13 +90,27 @@ impl std::fmt::Display for LogicalSelectorFailure {
 /// `None` means the caller did not use the logical selector at all, so the
 /// caller resolves its legacy path exactly as before. `Some(Err(_))` means the
 /// caller did use it and it failed — never a reason to fall back to a path.
+///
+/// A `sourceSet` that is present but unusable — empty, blank or not a string —
+/// is the second case, not the first. Treating it as absent would answer a
+/// deliberate logical call with a complaint about a missing path, and any
+/// caller branching on key presence alone would disagree with this function
+/// about which selector was even used.
 pub(crate) fn logical_selection(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     want: AttachedResource,
     accepted_kinds: &[&str],
 ) -> Option<Result<LogicalSelection, LogicalSelectorFailure>> {
-    string_arg(args, &["sourceSet"])?;
+    if string_arg(args, &["sourceSet"]).is_none() {
+        if args.contains_key("sourceSet") {
+            return Some(Err(LogicalSelectorFailure::new(
+                "source_set_unknown",
+                "sourceSet must be a non-empty string naming a project source set",
+            )));
+        }
+        return None;
+    }
     Some(resolve(args, context, want, accepted_kinds))
 }
 
@@ -688,6 +702,28 @@ mod tests {
                 !failure.to_string().contains(std::path::MAIN_SEPARATOR),
                 "refusal disclosed a path: {failure}"
             );
+        }
+        cleanup(&context);
+    }
+
+    /// A caller who sent `sourceSet` meant to select logically, so an unusable
+    /// value is their mistake to hear about — not a silent fall-back to the
+    /// path branch, which would answer with a complaint about a missing path.
+    #[test]
+    fn logical_selector_reports_an_unusable_source_set_rather_than_stepping_aside() {
+        let context = fixture("unusable-source-set");
+
+        for value in [
+            Value::String(String::new()),
+            Value::String("   ".to_string()),
+            Value::from(7),
+            Value::Null,
+        ] {
+            let args = Map::from_iter([("sourceSet".to_string(), value.clone())]);
+            let failure = logical_selection(&args, &context, AttachedResource::Rights, &["Role"])
+                .unwrap_or_else(|| panic!("{value}: an unusable selector is not an absent one"))
+                .expect_err("an unusable source set cannot resolve");
+            assert_eq!(failure.code(), "source_set_unknown", "{value}");
         }
         cleanup(&context);
     }

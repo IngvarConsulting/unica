@@ -462,8 +462,28 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         FormatGuardPolicy::ExistingDump,
         Some(path_guard(OUTPUT_PATH, SupportGuardRequirement::Editable)),
     ),
-    descriptor("mxl-decompile", EMPTY, EMPTY, TEMPLATE_PATH, None),
-    descriptor("mxl-info", EMPTY, EMPTY, TEMPLATE_PATH, None),
+    // ADR-0049: a logical call carries no path, so the format
+    // dependency has to come from the handler's own resolution.
+    descriptor_with_paths(
+        "mxl-decompile",
+        EMPTY,
+        EMPTY,
+        TEMPLATE_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
+        None,
+    ),
+    // ADR-0049: a logical call carries no path, so the format
+    // dependency has to come from the handler's own resolution.
+    descriptor_with_paths(
+        "mxl-info",
+        EMPTY,
+        EMPTY,
+        TEMPLATE_PATH,
+        FormatGuardPolicy::ExistingDump,
+        FormatPathPolicy::HandlerResolved,
+        None,
+    ),
     descriptor_with_paths(
         "mxl-validate",
         EMPTY,
