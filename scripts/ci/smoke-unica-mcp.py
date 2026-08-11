@@ -1621,6 +1621,15 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             }})
             if "result" not in initialize:
                 raise SystemExit("Unica MCP initialize response is missing")
+            # INV-MCP-SERVER-NAME. The smoke runs against the artifact that is
+            # about to ship, so the published identity is checked here and not
+            # only in the runtime unit tests.
+            server_name = initialize["result"].get("serverInfo", {}).get("name")
+            if server_name != "unica":
+                raise SystemExit(
+                    "Unica MCP initialize serverInfo.name must be 'unica', "
+                    f"got {server_name!r}"
+                )
             session.notify({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
             listed = session.request({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
             tools = listed.get("result", {}).get("tools")
