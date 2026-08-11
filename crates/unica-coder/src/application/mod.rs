@@ -12007,15 +12007,26 @@ mod tests {
 
         assert!(borrowed.exists(), "the borrow must have created the object");
         assert!(
-            created.contains(&borrowed.display().to_string()),
+            created
+                .iter()
+                .any(|path| normalized_path(std::path::Path::new(path))
+                    == normalized_path(&borrowed)),
             "{created:?}"
         );
         assert!(
-            updated.contains(&extension_owner.display().to_string()),
+            updated.iter().any(|path| {
+                normalized_path(std::path::Path::new(path)) == normalized_path(&extension_owner)
+            }),
             "{updated:?}"
         );
         for path in &created {
-            assert!(!updated.contains(path), "{path} is created and updated");
+            assert!(
+                !updated.iter().any(|updated_path| {
+                    normalized_path(std::path::Path::new(updated_path))
+                        == normalized_path(std::path::Path::new(path))
+                }),
+                "{path} is created and updated"
+            );
         }
         let expected_changes = created
             .iter()

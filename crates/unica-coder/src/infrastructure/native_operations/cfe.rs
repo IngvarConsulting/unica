@@ -6790,7 +6790,7 @@ mod tests {
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use serde_json::{json, Map, Value};
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_context(name: &str) -> WorkspaceContext {
@@ -6813,6 +6813,28 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, content).unwrap();
+    }
+
+    fn normalized_test_path(path: &Path) -> PathBuf {
+        let canonical = fs::canonicalize(path).expect("test path identity must canonicalize");
+        if std::path::MAIN_SEPARATOR == '\\' {
+            let display = canonical.to_string_lossy();
+            if let Some(path) = display.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{path}"));
+            }
+            if let Some(path) = display.strip_prefix(r"\\?\") {
+                return PathBuf::from(path);
+            }
+        }
+        canonical
+    }
+
+    fn matching_mutation_path<'a>(paths: &'a [String], expected: &Path) -> Option<&'a str> {
+        let expected = normalized_test_path(expected);
+        paths
+            .iter()
+            .find(|path| normalized_test_path(Path::new(path)) == expected)
+            .map(String::as_str)
     }
 
     fn write_minimal_borrow_fixture(
@@ -8274,22 +8296,19 @@ mod tests {
             .expect("cfe.borrow answers with data")
             .mutation;
         assert!(mutation.applied);
-        let target_path = target.display().to_string();
-        let owner_path = extension_owner.display().to_string();
+        let target_path = matching_mutation_path(&mutation.created, &target).unwrap_or_else(|| {
+            panic!("a file that did not exist must be reported as created: {mutation:?}")
+        });
         assert!(
-            mutation.created.contains(&target_path),
-            "a file that did not exist must be reported as created: {mutation:?}"
-        );
-        assert!(
-            !mutation.updated.contains(&target_path),
+            matching_mutation_path(&mutation.updated, &target).is_none(),
             "a created file must not also be reported as updated: {mutation:?}"
         );
+        let owner_path = matching_mutation_path(&mutation.updated, &extension_owner)
+            .unwrap_or_else(|| {
+                panic!("the registered owner is rewritten, not created: {mutation:?}")
+            });
         assert!(
-            mutation.updated.contains(&owner_path),
-            "the registered owner is rewritten, not created: {mutation:?}"
-        );
-        assert!(
-            !mutation.created.contains(&owner_path),
+            matching_mutation_path(&mutation.created, &extension_owner).is_none(),
             "an existing owner must not be reported as created: {mutation:?}"
         );
         assert!(
@@ -8325,18 +8344,15 @@ mod tests {
             .as_ref()
             .expect("cfe.borrow answers with data")
             .mutation;
-        let owner_path = extension_owner.display().to_string();
         assert!(
             mutation.created.is_empty(),
             "nothing is created on a repeated borrow: {mutation:?}"
         );
-        assert!(
-            mutation.updated.contains(&owner_path),
-            "the owner registration is rewritten: {mutation:?}"
-        );
+        matching_mutation_path(&mutation.updated, &extension_owner)
+            .unwrap_or_else(|| panic!("the owner registration is rewritten: {mutation:?}"));
         for path in &mutation.created {
             assert!(
-                !mutation.updated.contains(path),
+                matching_mutation_path(&mutation.updated, Path::new(path)).is_none(),
                 "{path} must not be both created and updated"
             );
         }
