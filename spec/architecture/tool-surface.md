@@ -188,7 +188,7 @@ Apply built configuration changes through the internal build/runtime adapter.
 
 Edit root Configuration.xml properties, ChildObjects, panels, and home page.
 
-Публикует **159** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: каждая операция с признаком применения и причиной пропуска, счётчики, факт перезаписи и валидации (отвечают типизированным `data`)
 
@@ -225,7 +225,7 @@ Inspect root Configuration.xml.
 
 Create empty 1C configuration XML scaffold.
 
-Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: имя конфигурации, корень и созданные файлы заготовки (отвечают типизированным `data`)
 
@@ -244,7 +244,7 @@ Validate root configuration XML structure.
 | `ConfigPath` | string | по ветви | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `ConfigPath`. Ни одной или обе сразу отклоняются.
 
@@ -268,7 +268,7 @@ Borrow configuration objects/forms into an extension.
 | `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
 | `Object` | string | да | On unica.runtime.execute this is one metadata object name for operation dump with mode partial, written in colon form such as Catalog:Номенклатура (use objects for several); on the native XML tools Object is instead the dotted metadata reference the tool acts on, such as Catalog.Контрагенты.Form.ФормаЭлемента for unica.cfe.borrow. |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: перенесённые объекты и формы, что подтянулось автоматически, что оставлено без изменений и почему (отвечают типизированным `data`)
 
@@ -303,7 +303,7 @@ Inspect extension contents and transferred insertion blocks.
 
 Create extension XML scaffold.
 
-Публикует **157** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **131** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: свойства расширения, источник каждого выведенного свойства (база или умолчание) и созданные файлы (отвечают типизированным `data`)
 
@@ -324,7 +324,7 @@ Generate a CFE Before/After interceptor for a caller-verified existing parameter
 | `MethodName` | string | да | `unica.cfe.patch_method` only: name of the existing parameterless procedure to intercept; must match a 1C identifier (Latin or Cyrillic letter or underscore, then letters, digits, underscores) |
 | `ModulePath` | string | да | `unica.cfe.patch_method` only: dotted module reference such as `Catalog.X.ObjectModule`, `CommonModule.X` or `Document.X.Form.Y` — a metadata path, not a filesystem path |
 
-Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: модуль и признак его создания, декоратор, метод, процедура, директива компиляции и переключённый дескриптор (отвечают типизированным `data`)
 
@@ -342,7 +342,7 @@ Validate extension XML structure.
 | --- | --- | --- | --- |
 | `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -510,7 +510,7 @@ Search code concurrently through provider-local RLM, bsl-analyzer, and literal g
 
 Compile Data Composition Schema XML from JSON DSL.
 
-Публикует **161** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **135** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -528,7 +528,7 @@ Edit Data Composition Schema Template.xml.
 | --- | --- | --- | --- |
 | `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: операция, набор данных и вариант, по каждому значению признак применения с причиной, факт перезаписи и валидации (отвечают типизированным `data`)
 
@@ -571,7 +571,7 @@ Validate Data Composition Schema Template.xml.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
@@ -686,7 +686,7 @@ Create a make-ready external report scaffold in a Designer/platform-XML external
 
 Add managed form metadata and files.
 
-Публикует **160** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **134** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: объект, имя формы, дескриптор регистрации, свойство формы по умолчанию и созданные файлы (отвечают типизированным `data`)
 
@@ -704,7 +704,7 @@ Compile managed Form.xml from JSON DSL or metadata.
 | --- | --- | --- | --- |
 | `OutputPath` | string | да | Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile` |
 
-Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -722,7 +722,7 @@ Edit managed Form.xml elements, attributes, commands, and validated events.
 | --- | --- | --- | --- |
 | `FormPath` | string | да | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **134** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: удалённые узлы с причиной, добавленные элементы, реквизиты, команды и обработчики событий, факт изменения и валидации (отвечают типизированным `data`)
 
@@ -760,7 +760,7 @@ Inspect managed Form.xml.
 
 Remove a managed form and registration.
 
-Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: удалённые пути формы и обновлённый дескриптор объекта (ADR-0023) (отвечают типизированным `data`)
 
@@ -780,7 +780,7 @@ Validate managed Form.xml.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `FormPath`. Ни одной или обе сразу отклоняются.
 
@@ -802,7 +802,7 @@ Add built-in help metadata and page to a 1C object.
 | --- | --- | --- | --- |
 | `ObjectName` | string | да | Name of the owning object for `unica.form.remove` and `unica.template.add`/`remove`; for `unica.help.add` it is instead the object's path under `srcDir`, e.g. `Catalogs/МойСправочник` |
 
-Публикует **162** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **136** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: созданные файлы справки и обновлённые дескрипторы (ADR-0023) (отвечают типизированным `data`)
 
@@ -822,7 +822,7 @@ Edit subsystem CommandInterface.xml.
 | --- | --- | --- | --- |
 | `CIPath` | string | да | The `CIPath` spelling of the command-interface path: a subsystem's `Ext/CommandInterface.xml` or its directory, relative to `cwd`, for `unica.interface.edit`/`validate` |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: `added`, `removed`, `modified` и `mutation` с обновлённым файлом (отвечают типизированным `data`)
 
@@ -840,7 +840,7 @@ Validate CommandInterface.xml.
 | --- | --- | --- | --- |
 | `CIPath` | string | да | The `CIPath` spelling of the command-interface path: a subsystem's `Ext/CommandInterface.xml` or its directory, relative to `cwd`, for `unica.interface.edit`/`validate` |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -955,7 +955,7 @@ Compile spreadsheet Template.xml from JSON DSL.
 | `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.mxl.compile` and `unica.role.compile` |
 | `OutputPath` | string | да | Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile` |
 
-Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -975,7 +975,7 @@ Decompile spreadsheet Template.xml to JSON DSL.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **156** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **130** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
@@ -1023,7 +1023,7 @@ Validate spreadsheet Template.xml.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **158** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
@@ -1085,7 +1085,7 @@ Compile role metadata and Rights.xml from JSON DSL.
 | `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.mxl.compile` and `unica.role.compile` |
 | `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
 
-Публикует **161** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -1148,7 +1148,7 @@ Validate role Rights.xml.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `RightsPath`. Ни одной или обе сразу отклоняются.
 
@@ -1480,7 +1480,7 @@ Compile subsystem XML from JSON DSL.
 | --- | --- | --- | --- |
 | `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
 
-Публикует **160** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **134** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -1498,7 +1498,7 @@ Edit subsystem XML content and hierarchy.
 | --- | --- | --- | --- |
 | `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: каждая операция с признаком применения, причиной пропуска и нормализованной ссылкой, счётчики, созданные заготовки и факт валидации (отвечают типизированным `data`)
 
@@ -1545,7 +1545,7 @@ Validate subsystem XML.
 | `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
 | `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
 
-Публикует **159** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
 
@@ -1563,7 +1563,7 @@ Validate subsystem XML.
 
 Toggle 1C vendor support editing capability or per-object support rule.
 
-Публикует **160** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **134** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: вид переключения, применённость с причиной, состояние правки, объект и правило, счётчики записей (отвечают типизированным `data`)
 
@@ -1580,7 +1580,7 @@ Toggle 1C vendor support editing capability or per-object support rule.
 
 Add a template to an object and register it.
 
-Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: созданные и обновлённые файлы макета (ADR-0023) (отвечают типизированным `data`)
 
@@ -1594,7 +1594,7 @@ Add a template to an object and register it.
 
 Remove a template from an object.
 
-Публикует **162** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
+Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
 **Результат сейчас:** `data`: удалённые пути и обновлённый дескриптор объекта (ADR-0023) (отвечают типизированным `data`)
 
