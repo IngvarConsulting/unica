@@ -3914,7 +3914,14 @@ fn add_typed_element(
     let tag = collection_tag(collection);
     ensure_typed_name_free(xml_text, tag, scope, &element.name)?;
     let position = typed_insert_position(element.position.as_ref());
-    let lines = render_typed_element(object_kind, object_name, collection, element)?;
+    let mut lines = render_typed_element(object_kind, object_name, collection, element)?;
+    if matches!(
+        collection,
+        MetaCollection::Dimensions | MetaCollection::Resources
+    ) {
+        inherit_register_field_settings(xml_text, tag, &mut lines);
+    }
+    let lines = lines;
     let result = match scope {
         Some(section) => meta_edit_insert_tabular_child_object_with_position(
             xml_text, section, tag, &position, &lines,
@@ -3968,6 +3975,66 @@ fn ensure_typed_name_free(
             Some("name"),
         )
     })
+}
+
+/// Settings a new register field takes from the fields already in the register.
+///
+/// There is no single platform value to default to: a 8.3.27 vendor dump has
+/// 2169 of 2490 information-register resources on `Use`/`Use`, 139 on
+/// `DontUse`/`Use`, and 42 registers that disagree inside themselves. So the
+/// value is inherited only where every sibling of the same tag already agrees,
+/// and the template default stands otherwise. What #323 reported is the case
+/// where the siblings do agree and the new field silently did not join them.
+const INHERITED_REGISTER_FIELD_SETTINGS: &[&str] = &["Indexing", "FullTextSearch", "DataHistory"];
+
+fn inherit_register_field_settings(xml: &str, tag: &str, rendered: &mut [String]) {
+    for property in INHERITED_REGISTER_FIELD_SETTINGS {
+        let Some(agreed) = agreed_sibling_setting(xml, tag, property) else {
+            continue;
+        };
+        let open = format!("<{property}>");
+        let close = format!("</{property}>");
+        for line in rendered.iter_mut() {
+            let Some(current) = element_text_between(line, &open, &close) else {
+                continue;
+            };
+            if current != agreed {
+                *line = line.replace(
+                    &format!("{open}{current}{close}"),
+                    &format!("{open}{agreed}{close}"),
+                );
+            }
+        }
+    }
+}
+
+/// The value every existing `<tag>` carries for `property`, or `None` when
+/// there is no sibling or the siblings disagree.
+fn agreed_sibling_setting(xml: &str, tag: &str, property: &str) -> Option<String> {
+    let open_tag = format!("<{tag} uuid=");
+    let close_tag = format!("</{tag}>");
+    let open = format!("<{property}>");
+    let close = format!("</{property}>");
+    let mut agreed: Option<String> = None;
+    let mut rest = xml;
+    while let Some(start) = rest.find(&open_tag) {
+        let block = &rest[start..];
+        let end = block.find(&close_tag)?;
+        let value = element_text_between(&block[..end], &open, &close)?;
+        match &agreed {
+            Some(seen) if seen != &value => return None,
+            Some(_) => {}
+            None => agreed = Some(value),
+        }
+        rest = &block[end + close_tag.len()..];
+    }
+    agreed
+}
+
+fn element_text_between(haystack: &str, open: &str, close: &str) -> Option<String> {
+    let start = haystack.find(open)? + open.len();
+    let end = haystack[start..].find(close)? + start;
+    Some(haystack[start..end].to_string())
 }
 
 fn render_typed_element(
@@ -5836,6 +5903,135 @@ mod tests {
         );
     }
 
+    /// #323, first defect. A CRLF descriptor must not grow a literal `&#13;`
+    /// entity: the platform writes none — the 8.3.27 dump has zero occurrences
+    /// across 31 009 structural XML files — so an inserted element carries the
+    /// file's own EOL rather than an escaped carriage return in content.
+    #[test]
+    fn typed_resource_add_does_not_escape_the_carriage_return_of_a_crlf_descriptor() {
+        let mut xml = object_xml("InformationRegister", "PaymentTerms", "").replace('\n', "\r\n");
+
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Resources,
+                None,
+                vec![MetaElementInput::named("СуммаЗакупокЗа30Дней")],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        assert!(!xml.contains("&#13;"), "{xml}");
+        assert!(xml.contains("<Resource uuid="), "{xml}");
+    }
+
+    /// #323, second defect. A new register field must not silently disagree
+    /// with the fields already in the register. The corpus gives no single
+    /// standard value — a 8.3.27 vendor dump has 2169 of 2490 information
+    /// register resources on `Use/Use` and 42 registers mixed inside
+    /// themselves — so the new field takes what its siblings agree on and
+    /// falls back to the template default only when they do not.
+    #[test]
+    fn typed_resource_add_inherits_search_and_history_from_its_siblings() {
+        let existing = rendered_resource("СуммаПродаж")
+            .replace(
+                "<FullTextSearch>Use</FullTextSearch>",
+                "<FullTextSearch>DontUse</FullTextSearch>",
+            )
+            .replace(
+                "<DataHistory>Use</DataHistory>",
+                "<DataHistory>DontUse</DataHistory>",
+            );
+        let mut xml = object_xml("InformationRegister", "PaymentTerms", &existing);
+
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Resources,
+                None,
+                vec![MetaElementInput::named("СуммаЗакупок")],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            xml.matches("<FullTextSearch>DontUse</FullTextSearch>")
+                .count(),
+            2,
+            "the new resource follows its sibling: {xml}"
+        );
+        assert_eq!(
+            xml.matches("<DataHistory>DontUse</DataHistory>").count(),
+            2,
+            "the new resource follows its sibling: {xml}"
+        );
+    }
+
+    /// Review of #444: the change covers three settings and two collections,
+    /// so the regression has to prove `Indexing` and the `Dimension` branch as
+    /// well — otherwise either could break with the suite still green.
+    #[test]
+    fn typed_register_field_add_inherits_indexing_and_covers_dimensions() {
+        let existing = rendered_resource("СуммаПродаж").replace(
+            "<Indexing>DontIndex</Indexing>",
+            "<Indexing>Index</Indexing>",
+        );
+        let mut xml = object_xml("InformationRegister", "PaymentTerms", &existing);
+
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Resources,
+                None,
+                vec![MetaElementInput::named("СуммаЗакупок")],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            xml.matches("<Indexing>Index</Indexing>").count(),
+            2,
+            "the new resource follows its sibling indexing: {xml}"
+        );
+
+        let dimension = rendered_dimension("Организация")
+            .replace(
+                "<FullTextSearch>Use</FullTextSearch>",
+                "<FullTextSearch>DontUse</FullTextSearch>",
+            )
+            .replace(
+                "<Indexing>DontIndex</Indexing>",
+                "<Indexing>Index</Indexing>",
+            );
+        let mut xml = object_xml("InformationRegister", "PaymentTerms", &dimension);
+
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Dimensions,
+                None,
+                vec![MetaElementInput::named("Склад")],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            xml.matches("<FullTextSearch>DontUse</FullTextSearch>")
+                .count(),
+            2,
+            "the dimension branch inherits too: {xml}"
+        );
+        assert_eq!(
+            xml.matches("<Indexing>Index</Indexing>").count(),
+            2,
+            "the dimension branch inherits indexing too: {xml}"
+        );
+    }
+
     #[test]
     fn typed_child_tree_rejects_excessive_depth_before_capture() {
         let root = std::env::temp_dir().join(format!(
@@ -5954,6 +6150,22 @@ mod tests {
             "<InformationRegisterPeriodicity>Nonperiodical</InformationRegisterPeriodicity>",
         )
         .replace("<Comment/>", "<Comment>First&#13;Second</Comment>")
+    }
+
+    fn rendered_dimension(name: &str) -> String {
+        let element = MetaElementDefinition::convert(
+            MetaCollection::Dimensions,
+            MetaElementInput::named(name),
+        )
+        .unwrap();
+        render_typed_element(
+            "InformationRegister",
+            "Sample",
+            MetaCollection::Dimensions,
+            &element,
+        )
+        .unwrap()
+        .join("\n")
     }
 
     fn rendered_resource(name: &str) -> String {
