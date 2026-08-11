@@ -4584,7 +4584,7 @@ pub(crate) fn dcs_compile_emit_settings_variants(
             dcs_compile_emit_output_parameters(lines, output_parameters, "\t\t\t");
         }
         if let Some(structure) = settings.get("structure") {
-            dcs_compile_emit_structure(lines, structure, "\t\t\t");
+            dcs_compile_emit_structure(lines, structure, "\t\t\t")?;
         }
         lines.push("\t\t</dcsset:settings>".to_string());
         lines.push("\t</settingsVariant>".to_string());
@@ -5023,33 +5023,62 @@ pub(crate) fn dcs_compile_emit_data_parameters(
     Ok(())
 }
 
-pub(crate) fn dcs_compile_emit_structure(lines: &mut Vec<String>, structure: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_structure(
+    lines: &mut Vec<String>,
+    structure: &Value,
+    indent: &str,
+) -> Result<(), String> {
     if let Some(text) = structure.as_str() {
         for item in dcs_edit_parse_structure(text) {
             let fragment = dcs_edit_structure_item_fragment(&item, indent);
             lines.extend(fragment.lines().map(ToOwned::to_owned));
         }
-        return;
+        return Ok(());
     }
     if let Some(item) = structure.as_object() {
-        dcs_compile_emit_structure_item(lines, &Value::Object(item.clone()), indent);
-        return;
+        return dcs_compile_emit_structure_item(lines, &Value::Object(item.clone()), indent);
     }
     if let Some(items) = structure.as_array() {
         for item in items {
-            dcs_compile_emit_structure_item(lines, item, indent);
+            dcs_compile_emit_structure_item(lines, item, indent)?;
         }
     }
+    Ok(())
 }
 
-pub(crate) fn dcs_compile_emit_structure_item(lines: &mut Vec<String>, item: &Value, indent: &str) {
+pub(crate) fn dcs_compile_emit_structure_item(
+    lines: &mut Vec<String>,
+    item: &Value,
+    indent: &str,
+) -> Result<(), String> {
+    dcs_compile_emit_structure_item_inner(lines, item, indent, false)
+}
+
+/// A group nested in a table axis is written in the short form, without
+/// `xsi:type` — that is what the platform writes and what the donor emits.
+/// Elsewhere the explicit `dcsset:StructureItemGroup` form is used.
+fn dcs_compile_emit_structure_item_inner(
+    lines: &mut Vec<String>,
+    item: &Value,
+    indent: &str,
+    short_group: bool,
+) -> Result<(), String> {
     let item_type = json_string_field(item, "type").unwrap_or_else(|| "group".to_string());
-    if item_type != "group" {
-        return;
+    if item_type == "table" || item_type == "chart" {
+        return dcs_compile_emit_structure_axes_item(lines, item, indent, &item_type);
     }
-    lines.push(format!(
-        "{indent}<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">"
-    ));
+    if item_type != "group" {
+        // Dropping the item produced a template that validated and reported
+        // nothing, so the caller learned about it only from an empty report.
+        return Err(format!(
+            "structure item type '{item_type}' is not supported by unica.dcs.compile (supported: group, table, chart)"
+        ));
+    }
+    lines.push(if short_group {
+        format!("{indent}<dcsset:item>")
+    } else {
+        format!("{indent}<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">")
+    });
     if item
         .get("use")
         .and_then(Value::as_bool)
@@ -5088,10 +5117,135 @@ pub(crate) fn dcs_compile_emit_structure_item(lines: &mut Vec<String>, item: &Va
     }
     if let Some(children) = item.get("children").and_then(Value::as_array) {
         for child in children {
-            dcs_compile_emit_structure_item(lines, child, &format!("{indent}\t"));
+            dcs_compile_emit_structure_item_inner(lines, child, &format!("{indent}\t"), false)?;
         }
     }
     lines.push(format!("{indent}</dcsset:item>"));
+    Ok(())
+}
+
+/// The two structure items built from axes: `dcsset:StructureItemTable`, whose
+/// axes are `column` and `row`, and `dcsset:StructureItemChart`, whose axes are
+/// `point` and `series`. Both carry the same axis block, so they share one
+/// emitter rather than two that drift apart.
+///
+/// The chart always publishes its own `selection` — the values it plots — and
+/// the platform fills in `Auto` when the caller named none.
+fn dcs_compile_emit_structure_axes_item(
+    lines: &mut Vec<String>,
+    item: &Value,
+    indent: &str,
+    item_type: &str,
+) -> Result<(), String> {
+    let (xsi_type, axes) = if item_type == "table" {
+        (
+            "dcsset:StructureItemTable",
+            [("columns", "column"), ("rows", "row")],
+        )
+    } else {
+        (
+            "dcsset:StructureItemChart",
+            [("points", "point"), ("series", "series")],
+        )
+    };
+    lines.push(format!("{indent}<dcsset:item xsi:type=\"{xsi_type}\">"));
+    if item
+        .get("use")
+        .and_then(Value::as_bool)
+        .is_some_and(|value| !value)
+    {
+        lines.push(format!("{indent}\t<dcsset:use>false</dcsset:use>"));
+    }
+    if let Some(name) = json_string_field(item, "name").filter(|value| !value.is_empty()) {
+        lines.push(format!(
+            "{indent}\t<dcsset:name>{}</dcsset:name>",
+            escape_xml(&name)
+        ));
+    }
+    for (key, tag) in axes {
+        let Some(blocks) = item.get(key) else {
+            continue;
+        };
+        // A chart axis is published as one object or as a list of them.
+        let owned;
+        let blocks = match blocks.as_array() {
+            Some(blocks) => blocks,
+            None if blocks.is_object() => {
+                owned = vec![blocks.clone()];
+                &owned
+            }
+            None => continue,
+        };
+        for block in blocks {
+            lines.push(format!("{indent}\t<dcsset:{tag}>"));
+            dcs_compile_emit_table_axis(lines, block, &format!("{indent}\t\t"))?;
+            lines.push(format!("{indent}\t</dcsset:{tag}>"));
+        }
+    }
+    let auto = json!(["Auto"]);
+    let selection = if item_type == "chart" {
+        item.get("selection").unwrap_or(&auto)
+    } else {
+        item.get("selection").unwrap_or(&Value::Null)
+    };
+    if let Some(selection) = selection.as_array() {
+        dcs_compile_emit_selection(lines, selection, &format!("{indent}\t"));
+    }
+    if let Some(conditional_appearance) =
+        item.get("conditionalAppearance").and_then(Value::as_array)
+    {
+        dcs_compile_emit_conditional_appearance(
+            lines,
+            conditional_appearance,
+            &format!("{indent}\t"),
+        );
+    }
+    if let Some(output_parameters) = item.get("outputParameters").and_then(Value::as_object) {
+        dcs_compile_emit_output_parameters(lines, output_parameters, &format!("{indent}\t"));
+    }
+    lines.push(format!("{indent}</dcsset:item>"));
+    Ok(())
+}
+
+fn dcs_compile_emit_table_axis(
+    lines: &mut Vec<String>,
+    axis: &Value,
+    indent: &str,
+) -> Result<(), String> {
+    if let Some(name) = json_string_field(axis, "name").filter(|value| !value.is_empty()) {
+        lines.push(format!(
+            "{indent}<dcsset:name>{}</dcsset:name>",
+            escape_xml(&name)
+        ));
+    }
+    let group_by = axis.get("groupBy").or_else(|| axis.get("groupFields"));
+    dcs_compile_emit_group_items(lines, group_by, indent);
+    if let Some(filter) = axis.get("filter").and_then(Value::as_array) {
+        dcs_compile_emit_filter(lines, filter, indent);
+    }
+    let auto = json!(["Auto"]);
+    let order = axis.get("order").unwrap_or(&auto);
+    if let Some(order) = order.as_array() {
+        dcs_compile_emit_order(lines, order, indent);
+    }
+    let selection = axis.get("selection").unwrap_or(&auto);
+    if let Some(selection) = selection.as_array() {
+        dcs_compile_emit_selection(lines, selection, indent);
+    }
+    if let Some(conditional_appearance) =
+        axis.get("conditionalAppearance").and_then(Value::as_array)
+    {
+        dcs_compile_emit_conditional_appearance(lines, conditional_appearance, indent);
+    }
+    if let Some(output_parameters) = axis.get("outputParameters").and_then(Value::as_object) {
+        dcs_compile_emit_output_parameters(lines, output_parameters, indent);
+    }
+    if let Some(children) = axis.get("children").and_then(Value::as_array) {
+        for child in children {
+            dcs_compile_emit_structure_item_inner(lines, child, indent, true)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn dcs_compile_emit_group_items(
@@ -11366,6 +11520,73 @@ mod tests {
             dcs_child(item, "viewMode", TEST_DCS_SETTINGS_NS).and_then(|node| node.text()),
             Some("Inaccessible")
         );
+    }
+
+    /// #312. `"type": "table"` was dropped by the structure emitter, so a
+    /// variant built around a cross-table compiled to no structure at all.
+    #[test]
+    fn dcs_compile_structure_emits_a_cross_table_with_its_axes() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "structure": [{
+                        "type": "table",
+                        "name": "Balances",
+                        "columns": [{ "groupFields": ["Period"] }],
+                        "rows": [{
+                            "groupFields": ["Item"],
+                            "children": [{ "groupFields": ["Account"] }]
+                        }],
+                        "selection": ["Amount"]
+                    }]
+                }
+            }]
+        });
+
+        let xml = dcs_compile_xml(&definition, Path::new("."), Path::new(".")).unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let table = document
+            .descendants()
+            .find(|node| {
+                role_info_element(*node, "item", Some(TEST_DCS_SETTINGS_NS))
+                    && attribute_by_local_name(*node, "type") == Some("dcsset:StructureItemTable")
+            })
+            .expect("a table structure item reaches the template");
+
+        assert_eq!(
+            dcs_child(table, "name", TEST_DCS_SETTINGS_NS).and_then(|node| node.text()),
+            Some("Balances")
+        );
+        let column =
+            dcs_child(table, "column", TEST_DCS_SETTINGS_NS).expect("the column axis is published");
+        let row = dcs_child(table, "row", TEST_DCS_SETTINGS_NS).expect("the row axis is published");
+        assert!(dcs_child(column, "groupItems", TEST_DCS_SETTINGS_NS).is_some());
+        assert!(dcs_child(row, "groupItems", TEST_DCS_SETTINGS_NS).is_some());
+        assert!(dcs_child(row, "order", TEST_DCS_SETTINGS_NS).is_some());
+        assert!(dcs_child(row, "selection", TEST_DCS_SETTINGS_NS).is_some());
+        let nested = dcs_children(row, "item", TEST_DCS_SETTINGS_NS);
+        assert_eq!(nested.len(), 1, "the nested row group is published");
+        assert_eq!(attribute_by_local_name(nested[0], "type"), None);
+    }
+
+    /// A structure type the compiler cannot emit must say so.
+    #[test]
+    fn dcs_compile_structure_rejects_a_type_it_cannot_emit() {
+        let definition = json!({
+            "settingsVariants": [{
+                "name": "Main",
+                "settings": {
+                    "structure": [{ "type": "nestedObject", "name": "Nested" }]
+                }
+            }]
+        });
+
+        let error = dcs_compile_xml(&definition, Path::new("."), Path::new("."))
+            .expect_err("an unsupported structure type is reported, not dropped");
+
+        assert!(error.contains("nestedObject"), "{error}");
+        assert!(error.contains("structure"), "{error}");
     }
 
     #[test]

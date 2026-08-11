@@ -3530,6 +3530,7 @@
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
+<<<<<<< HEAD
         "donorOk": true,
         "unicaOk": true,
         "mismatchKind": "stdout_mismatch_snapshot_diff",
@@ -3547,6 +3548,25 @@
         }
       },
       "observationFingerprint": "fc973349266967e5202bc5a2e56b70cf7e7e076898424d16601f356f4ada65d8",
+=======
+        "donorExpectedFiles": {
+          "Template.xml": true
+        },
+        "donorOk": true,
+        "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "donorStdoutSha256": "3463f701454f0a70207a299a238c20667874fb5be546e521cc6e17113065b8d9",
+        "donorWorkspaceSha256": "9fa65cd4fc4b61a772d85a396135646e51d2cf5e8a6f4290af4323bfb44a46bd",
+        "mismatchKind": "stdout_mismatch_snapshot_diff",
+        "unicaExpectedFiles": {
+          "Template.xml": true
+        },
+        "unicaOk": true,
+        "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "unicaStdoutSha256": "120e66b0783b65ad185bb2a26ba51b37ba928510c7bd6a2a7e613098a835afc6",
+        "unicaWorkspaceSha256": "059cb371b6dbae87dac87cd68660eaddb58f5b233f41df4f77405f53bbd27096"
+      },
+      "observationFingerprint": "c108b0d655e25c81d336a3c5ea154c935642400f794230126d8099f893551972",
+>>>>>>> 0fa427d6 (feat(dcs.compile): компилировать таблицу и диаграмму в структуре варианта)
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
@@ -3842,6 +3862,7 @@
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
+<<<<<<< HEAD
         "donorExpectedFiles": {
           "Template.xml": true
         },
@@ -3859,6 +3880,25 @@
         "unicaWorkspaceSha256": "dc8342c8755bae2ec635b5271f827209847ab659470d926166f4ea249a941c72"
       },
       "observationFingerprint": "04911a79334fc9deebfc6f70736246ea0075813cc55fb92ec479448a4444f829",
+=======
+        "donorOk": true,
+        "unicaOk": true,
+        "mismatchKind": "stdout_mismatch_snapshot_diff",
+        "donorStdoutSha256": "ecb07557dae44f35ea0ccfab0702200d2e5ac99a05ac85f223bebbc2fe6214bd",
+        "unicaStdoutSha256": "7c0f17aea656b5cf9dfcaa1ba4cfec9c14edb798e5ec50517e587c348967c778",
+        "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "donorWorkspaceSha256": "5c56d5fd85cb3b87913ca17f39ab453988102b910d1757b836eb21a49fc1f28a",
+        "unicaWorkspaceSha256": "a9dfcb55e4fba74ae796274629d78b694020c2d89fcd76a3bb6ba2ca09957eef",
+        "donorExpectedFiles": {
+          "Template.xml": true
+        },
+        "unicaExpectedFiles": {
+          "Template.xml": true
+        }
+      },
+      "observationFingerprint": "546288fd332fd790e2a36c66b8813750edef9eee892bca35fc825b1afdfafd3a",
+>>>>>>> 0fa427d6 (feat(dcs.compile): компилировать таблицу и диаграмму в структуре варианта)
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
@@ -3929,6 +3969,7 @@
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
+<<<<<<< HEAD
         "donorExpectedFiles": {
           "Template.xml": true
         },
@@ -3946,6 +3987,25 @@
         "unicaWorkspaceSha256": "fb1ab39de4b3c0ac5bc9474216efbe89a4eefc0c93f124f7afa9175effcc0840"
       },
       "observationFingerprint": "10b13b7a83ef962e1ec199d952ba5a08164f347e5a205e93959dbf753475422b",
+=======
+        "donorOk": true,
+        "unicaOk": true,
+        "mismatchKind": "stdout_mismatch_snapshot_diff",
+        "donorStdoutSha256": "5ef340e981026da14e357e219666fffc7e800695aa0e34aadd976c15a9471126",
+        "unicaStdoutSha256": "b7d4ce8eb6281ad56be8894ebcc0fda5949fbb1faa56d68a2e3599cb7c04f5e1",
+        "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "donorWorkspaceSha256": "8ae95f0d44140b8eff83d4bb21aec89f4044761f26489e021cbd39753525332d",
+        "unicaWorkspaceSha256": "bf9b8a7c551235f8a5e0e52cee801f6f4cffe23fecca3880178c1bbbcd079b0f",
+        "donorExpectedFiles": {
+          "Template.xml": true
+        },
+        "unicaExpectedFiles": {
+          "Template.xml": true
+        }
+      },
+      "observationFingerprint": "dd9b64fc223d089352bbd1a4ab8eb23c409927305b167567face9db9acac4763",
+>>>>>>> 0fa427d6 (feat(dcs.compile): компилировать таблицу и диаграмму в структуре варианта)
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
@@ -3987,6 +4047,7 @@
         "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
       ],
       "observation": {
+<<<<<<< HEAD
         "donorOk": true,
         "unicaOk": true,
         "mismatchKind": "stdout_mismatch_snapshot_diff",
@@ -4004,6 +4065,25 @@
         }
       },
       "observationFingerprint": "100a371d4afb386e606d8fdcbc99c818d3bb91c67fe2fc975f108b3ccdf4ce31",
+=======
+        "donorExpectedFiles": {
+          "Template.xml": true
+        },
+        "donorOk": true,
+        "donorStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "donorStdoutSha256": "53b0942592c634f6b1fa7332b82996564b6538b85210b90865d48756596461cc",
+        "donorWorkspaceSha256": "00a88d0904ed0c23a3de5fe1a81e4380f9a867adf1a92a6304cbb77480a4df88",
+        "mismatchKind": "stdout_mismatch_snapshot_diff",
+        "unicaExpectedFiles": {
+          "Template.xml": true
+        },
+        "unicaOk": true,
+        "unicaStderrSha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126",
+        "unicaStdoutSha256": "ccb1cbef767d04027e11750a31c39f620be4daadf232d22062f5b6ac97669bdf",
+        "unicaWorkspaceSha256": "02136881c3522e9959f9064648742791d3d44ce473f35c8cf1c3b70b7f2cfaa2"
+      },
+      "observationFingerprint": "2900a31d2416817697d79ba72f8c6a3a62f41eda85ab5047bc163de51883d7ef",
+>>>>>>> 0fa427d6 (feat(dcs.compile): компилировать таблицу и диаграмму в структуре варианта)
       "reason": "Both implementations complete, but Unica intentionally emits its fixed 8.3.27 / export 2.20 native representation instead of treating donor bytes as the platform oracle; the exact observed difference remains review-bound.",
       "relation": "intentional_divergence"
     },
