@@ -1303,6 +1303,16 @@ pub(crate) fn form_is_data_type_declaration_type_node(node: roxmltree::Node<'_, 
 }
 
 pub(crate) fn form_is_config_context(form_path: &Path) -> bool {
+    // The owner of the form decides its context. Looking only for a
+    // `Configuration.xml` above read an external artifact stored inside a
+    // workspace that also holds a configuration as configuration context, and
+    // then rejected the main attribute `epf.init` had just written (#340).
+    if let Some(owner) = form_owner_artifact_name(form_path) {
+        return !matches!(
+            owner.as_str(),
+            "ExternalDataProcessor" | "ExternalReport" | "ExternalDataProcessorForm"
+        );
+    }
     let mut walk_dir = form_path
         .parent()
         .unwrap_or_else(|| Path::new(""))
@@ -1320,6 +1330,29 @@ pub(crate) fn form_is_config_context(form_path: &Path) -> bool {
         walk_dir = parent.to_path_buf();
     }
     false
+}
+
+/// The artifact tag of the object that owns this form, read from the object's
+/// own descriptor next to its `Forms` directory. `None` when the form is not
+/// stored in the object layout or the descriptor cannot be read, and the
+/// caller falls back to the tree walk.
+fn form_owner_artifact_name(form_path: &Path) -> Option<String> {
+    let mut dir = form_path.parent()?;
+    for _ in 0..15 {
+        if dir.file_name() == Some(std::ffi::OsStr::new("Forms")) {
+            let object_dir = dir.parent()?;
+            let descriptor = object_dir.with_extension("xml");
+            let text = fs::read_to_string(&descriptor).ok()?;
+            let document = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+            return document
+                .root_element()
+                .children()
+                .find(|node| node.is_element())
+                .map(|node| node.tag_name().name().to_string());
+        }
+        dir = dir.parent()?;
+    }
+    None
 }
 
 pub(crate) fn form_invalid_types() -> &'static [&'static str] {
@@ -11106,6 +11139,61 @@ mod tests {
             assert!(forms.join("AddedForm/Ext/Form/Module.bsl").is_file());
             let _ = fs::remove_dir_all(&context.cwd);
         }
+    }
+
+    /// #340. The context of a form is decided by the object that owns it, not
+    /// by whether some `Configuration.xml` happens to sit above it in the
+    /// tree. An external data processor stored under a workspace that also
+    /// holds a configuration was read as configuration context, so the main
+    /// attribute `epf.init` had just written was rejected as invalid there.
+    #[test]
+    fn form_validation_reads_context_from_the_owning_object_not_the_tree_above() {
+        let context = temp_context("external-form-under-configuration");
+        // A configuration lives in the same workspace, above the external
+        // object — the layout the report describes.
+        fs::create_dir_all(&context.cwd).unwrap();
+        fs::write(
+            context.cwd.join("Configuration.xml"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n\
+             \t<Configuration uuid=\"55555555-5555-5555-5555-555555555555\">\n\
+             \t\t<Properties>\n\t\t\t<Name>Sample</Name>\n\t\t\t<NamePrefix/>\n\t\t</Properties>\n\
+             \t\t<ChildObjects/>\n\t</Configuration>\n</MetaDataObject>\n",
+        )
+        .unwrap();
+        let owner = create_external_owner(&context, "ExternalDataProcessor", "ContextProcessor");
+        assert!(owner.is_file());
+        let added = add_form(&add_object_form_args(&owner, "MainForm"), &context);
+        assert!(added.ok, "{added:?}");
+        let form_path = context
+            .cwd
+            .join("external")
+            .join("ContextProcessor")
+            .join("Forms")
+            .join("MainForm/Ext/Form.xml");
+
+        assert!(
+            !form_is_config_context(&form_path),
+            "a form owned by an external object is never configuration context"
+        );
+
+        let outcome = validate_form(
+            &Map::from_iter([(
+                "FormPath".to_string(),
+                json!(form_path.display().to_string()),
+            )]),
+            &context,
+        );
+
+        assert!(
+            !outcome
+                .errors
+                .iter()
+                .chain(outcome.warnings.iter())
+                .any(|line| line.contains("External* type in configuration context")),
+            "{outcome:?}"
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 
     #[test]
