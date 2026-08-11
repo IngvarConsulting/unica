@@ -384,6 +384,10 @@ const BUILD_ARGS: &[&str] = &[
     "user",
 ];
 
+/// `unica.build.make` alone: the destination of the exported artifact and, for
+/// a cfe export, the extension it is exported from.
+const BUILD_MAKE_ARGS: &[&str] = &["extension", "output"];
+
 const RUNTIME_ARGS: &[&str] = &[
     "allExtensions",
     "builder",
@@ -2319,7 +2323,16 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
                 names.push("definition");
             }
         }
-        ToolHandler::BuildRuntime { .. } => names.extend(BUILD_ARGS),
+        ToolHandler::BuildRuntime { command, .. } => {
+            names.extend(BUILD_ARGS);
+            // `make` is the only build command whose CLI takes an artifact
+            // destination, and the adapter already forwards both names. The
+            // schema is closed, so leaving them unpublished made the tool
+            // impossible to call correctly (#318).
+            if command.first() == Some(&"make") {
+                names.extend(BUILD_MAKE_ARGS);
+            }
+        }
         ToolHandler::RuntimeAdapter => names.extend(RUNTIME_ARGS),
         ToolHandler::RuntimeJob { action } => names.extend(runtime_job_args(action)),
         ToolHandler::CodeIntelligence { operation } => {
@@ -2413,6 +2426,11 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             "unica.code.graph" => vec!["mode"],
             _ => Vec::new(),
         },
+        // `v8-runner make` refuses the call without `--output`, so the schema
+        // says so instead of letting every call fail in the adapter.
+        ToolHandler::BuildRuntime { command, .. } if command.first() == Some(&"make") => {
+            vec!["output"]
+        }
         _ => Vec::new(),
     }
 }
@@ -4337,6 +4355,54 @@ mod tests {
         assert!(
             stale.is_empty(),
             "described arguments no longer exist: {stale:?}"
+        );
+    }
+
+    /// #318. `v8-runner make` requires `--output`, and cfe export additionally
+    /// requires `--extension`. The internal mapper already forwards both, but
+    /// the published schema carried neither and is closed, so no MCP caller
+    /// could ever pass them and the tool could not do its one job.
+    #[test]
+    fn build_make_publishes_the_arguments_its_command_requires() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.build.make")
+            .unwrap();
+
+        let schema = input_schema_for_tool(&tool);
+        let properties = sorted_property_names(&schema);
+
+        assert!(properties.contains(&"output"), "{properties:?}");
+        assert!(properties.contains(&"extension"), "{properties:?}");
+        assert_eq!(
+            schema["required"],
+            json!(["output"]),
+            "the CLI refuses the call without it, so the schema says so"
+        );
+
+        let mut args = Map::new();
+        args.insert("output".to_string(), json!("build/Extension.cfe"));
+        args.insert("extension".to_string(), json!("МоёРасширение"));
+        validate_tool_arguments(tool, &args, false).expect("the documented make call is accepted");
+    }
+
+    /// #319. `make` exports an artifact out of an infobase; it does not build
+    /// one from sources. The description read as the latter, so an agent
+    /// reached for `make` where `build` then `make` was needed.
+    #[test]
+    fn build_make_description_says_the_artifact_comes_out_of_the_infobase() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.build.make")
+            .unwrap();
+
+        let description = tool.description.to_lowercase();
+
+        assert!(description.contains("infobase"), "{}", tool.description);
+        assert!(
+            description.contains("export"),
+            "the verb names what the command does: {}",
+            tool.description
         );
     }
 
