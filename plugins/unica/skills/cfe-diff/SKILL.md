@@ -1,7 +1,7 @@
 ---
 name: cfe-diff
 description: Анализ расширения конфигурации 1С (CFE) — состав, заимствованные объекты, перехватчики, проверка переноса. Используй когда нужно понять что содержит расширение или проверить перенесены ли вставки в конфигурацию
-argument-hint: -ExtensionPath <path> -ConfigPath <path> [-Mode A|B]
+argument-hint: -ExtensionPath <path> -ConfigPath <path>
 allowed-tools:
   - Bash
   - Read
@@ -17,7 +17,7 @@ allowed-tools:
 - Execution path: call MCP `unica` tool `unica.cfe.diff`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 
-Анализирует расширение в двух режимах: обзор изменений (Mode A) или проверка переноса (Mode B).
+Анализирует расширение целиком: и обзор его состава, и проверку переноса в конфигурацию.
 
 ## Параметры
 

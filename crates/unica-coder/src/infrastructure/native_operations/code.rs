@@ -2300,6 +2300,66 @@ mod tests {
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
+    /// The public writer refuses an absent address before the resolver is asked,
+    /// and the resolver's `ModuleOnly` policy refuses the source root that such
+    /// an address would name. Neither barrier lets a write plan see the root.
+    #[test]
+    fn code_patch_refuses_a_missing_or_empty_metadata_path_without_touching_the_workspace() {
+        let context = temp_context("absent-address");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+        let module_before = fs::read(&module).unwrap();
+        let root_before = fs::read(context.workspace_root.join("src/Configuration.xml")).unwrap();
+
+        for (label, address) in [
+            ("missing", None),
+            ("empty", Some("")),
+            ("blank", Some("  ")),
+        ] {
+            let mut args = patch_args(
+                "main",
+                "CommonModule.Sample.Module",
+                "Run",
+                "Procedure Added()\nEndProcedure",
+            );
+            match address {
+                Some(value) => {
+                    args.insert("metadataPath".to_string(), json!(value));
+                }
+                None => {
+                    args.remove("metadataPath");
+                }
+            }
+
+            for mode in [PatchMode::Preview, PatchMode::Apply] {
+                let result = patch_inner(&args, &context, mode);
+
+                assert!(!result.outcome.ok, "{label} address must not be accepted");
+                assert!(
+                    result.outcome.errors[0]
+                        .contains("metadataPath must identify one existing module"),
+                    "{label}: {:?}",
+                    result.outcome.errors
+                );
+                assert!(
+                    result.data.is_none(),
+                    "{label} address must publish no plan"
+                );
+            }
+        }
+
+        assert_eq!(fs::read(&module).unwrap(), module_before);
+        assert_eq!(
+            fs::read(context.workspace_root.join("src/Configuration.xml")).unwrap(),
+            root_before
+        );
+
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
     #[test]
     fn code_patch_symlink_module_is_rejected_during_preview() {
         let context = temp_context("symlink-target");

@@ -37,6 +37,14 @@ Expected:
 - Skill-local operation files do not exist. The only execution path is MCP
   `unica`; runtime shell/PowerShell wrappers are not shipped (INV-SKILL-NO-SCRIPT-ROUTE,
   INV-APP-NO-SCRIPT-BACKEND).
+- A tool publishes only arguments its handler reads and a call can reach
+  (INV-MCP-REACHABLE-ARGS). The eight typed readers `unica.cf.info`,
+  `unica.role.info`, `unica.subsystem.info`, `unica.dcs.info`,
+  `unica.form.info`, `unica.mxl.info`, `unica.cfe.diff` and `unica.meta.info`
+  publish the exact sets pinned by
+  `every_narrowed_reader_publishes_its_exact_argument_set`; none of them falls
+  back to the shared native argument list, and `unica.mxl.info` addresses a
+  template by `TemplatePath` alone (ADR-0048).
 
 ## Mandatory MCP Smoke
 

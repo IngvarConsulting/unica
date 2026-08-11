@@ -1,7 +1,7 @@
 ---
 name: mxl-info
 description: Анализ структуры макета табличного документа (MXL) — области, параметры, наборы колонок. Используй при разработке печати — получить области и заполняемые параметры макета
-argument-hint: <TemplatePath> или <ProcessorName> <TemplateName>
+argument-hint: <TemplatePath>
 allowed-tools:
   - Bash
   - Read
@@ -25,7 +25,6 @@ allowed-tools:
 
 ```
 /mxl-info <TemplatePath>
-/mxl-info <ProcessorName> <TemplateName>
 ```
 
 ## Параметры
@@ -33,12 +32,14 @@ allowed-tools:
 | Параметр | Описание |
 |----------|----------|
 | `TemplatePath` | Путь к `Template.xml` макета или к каталогу макета |
-| `SrcDir` | Каталог выгрузки — вместе с именем объекта и макета вместо пути |
 | `WithText` | Включить текстовое содержимое ячеек в `texts` и `templates` |
 
 `Format`, `MaxParams`, `Limit` и `Offset` сняты: результат приходит
 типизированным в `data` (ADR-0023), поэтому режим вывода, обрезка списков
-параметров и постраничная печать больше не нужны.
+параметров и постраничная печать больше не нужны. `SrcDir`,
+`ProcessorName` и `TemplateName` сняты по ADR-0048: составной адрес требовал
+всех трёх, а `TemplatePath` был обязателен всегда, поэтому до этой ветки
+вызов не доходил. Макет адресуется одним `TemplatePath`.
 
 ## Поля `data`
 
@@ -58,7 +59,7 @@ allowed-tools:
 
 ## MCP вызов
 
-### Прямой путь к Template.xml или каталогу макета
+### Прямой путь к Template.xml
 
 ```json
 {
@@ -68,13 +69,16 @@ allowed-tools:
     "name": "unica.mxl.info",
     "arguments": {
       "cwd": "<workspace>",
-      "TemplatePath": "<путь>"
+      "TemplatePath": "<путь>/Ext/Template.xml"
     }
   }
 }
 ```
 
-### По имени обработки и макета
+### Каталог макета вместо файла
+
+Каталог макета сам разрешается в `Ext/Template.xml`, поэтому путь из состава
+объекта можно передать как есть, не дописывая хвост.
 
 ```json
 {
@@ -84,7 +88,7 @@ allowed-tools:
     "name": "unica.mxl.info",
     "arguments": {
       "cwd": "<workspace>",
-      "SrcDir": "<каталог>"
+      "TemplatePath": "<каталог объекта>/Templates/<макет>"
     }
   }
 }

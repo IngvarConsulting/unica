@@ -149,6 +149,9 @@ const DCS_COMPILE_PATH_GROUPS: &[PathAliasGroup] = &[OUTPUT_PATH_GROUP, DEFINITI
 const DCS_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, DEFINITION_FILE_GROUP];
 const DCS_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP];
 const MXL_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, SRC_DIR_GROUP];
+/// `unica.mxl.info` requires `TemplatePath`, so the `SrcDir` half of the
+/// composite address it never reached is not published (#298).
+const MXL_INFO_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP];
 const COMPILE_TO_PATH_GROUPS: &[PathAliasGroup] = &[JSON_PATH_GROUP, OUTPUT_PATH_GROUP];
 const RIGHTS_READ_PATH_GROUPS: &[PathAliasGroup] = &[RIGHTS_PATH_GROUP];
 
@@ -176,7 +179,8 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
         "dcs-compile" => DCS_COMPILE_PATH_GROUPS,
         "dcs-edit" => DCS_EDIT_PATH_GROUPS,
         "dcs-info" | "dcs-validate" => DCS_READ_PATH_GROUPS,
-        "mxl-decompile" | "mxl-info" | "mxl-validate" => MXL_READ_PATH_GROUPS,
+        "mxl-info" => MXL_INFO_PATH_GROUPS,
+        "mxl-decompile" | "mxl-validate" => MXL_READ_PATH_GROUPS,
         "mxl-compile" => COMPILE_TO_PATH_GROUPS,
         "role-info" | "role-validate" => RIGHTS_READ_PATH_GROUPS,
         _ => &[],

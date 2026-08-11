@@ -122,6 +122,8 @@ impl DcsValidationReporter {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DcsInfoData {
+    pub(crate) support: ObjectSupportData,
+    pub(crate) data_sources: Vec<DcsInfoDataSource>,
     pub(crate) data_sets: Vec<DcsInfoDataSet>,
     pub(crate) links: Vec<DcsInfoLink>,
     pub(crate) calculated_fields: Vec<DcsInfoCalculatedField>,
@@ -133,12 +135,24 @@ pub(crate) struct DcsInfoData {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoDataSource {
+    pub(crate) name: String,
+    /// `dataSourceType`, for example `Local`; `null` when the source omits it.
+    pub(crate) kind: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct DcsInfoDataSet {
     pub(crate) name: String,
     /// `Query`, `Object`, `Union` or the raw `xsi:type` when it is none of them.
     pub(crate) kind: String,
     /// The dataset query; `null` for kinds that carry none.
     pub(crate) query: Option<String>,
+    /// The platform object an `Object` dataset reads; `null` for other kinds.
+    pub(crate) object_name: Option<String>,
+    /// The `dataSource` this dataset reads through; `null` when it names none.
+    pub(crate) data_source: Option<String>,
     pub(crate) fields: Vec<DcsInfoField>,
     /// Nested datasets of a union; empty for every other kind.
     pub(crate) items: Vec<DcsInfoDataSet>,
@@ -168,6 +182,11 @@ pub(crate) struct DcsInfoCalculatedField {
     pub(crate) data_path: String,
     pub(crate) expression: Option<String>,
     pub(crate) title: Option<String>,
+    /// Which uses `useRestriction` bars, in schema order: `field`, `condition`,
+    /// `group`, `order`. On a field the element is structured, not a flag, so a
+    /// boolean cannot carry the answer the retired `calculated` report printed.
+    /// `null` when the field declares no restriction at all.
+    pub(crate) restrictions: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -175,6 +194,9 @@ pub(crate) struct DcsInfoCalculatedField {
 pub(crate) struct DcsInfoTotalField {
     pub(crate) data_path: String,
     pub(crate) expression: Option<String>,
+    /// The grouping this total belongs to; `null` is the overall total, and
+    /// without it a per-group total is indistinguishable from an overall one.
+    pub(crate) group: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -187,17 +209,42 @@ pub(crate) struct DcsInfoParameter {
     pub(crate) expression: Option<String>,
     /// True when `useRestriction` hides the parameter from the user.
     pub(crate) restricted: bool,
+    /// `availableAsField`; `null` when the parameter declares none. `false`
+    /// means the parameter cannot be used as a field, which the retired
+    /// `params` report printed as `[noField]`.
+    pub(crate) available_as_field: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+/// The platform writes a variant's own elements in the settings namespace, not
+/// the schema one. Reading them with the schema namespace answered every
+/// variant as an empty shell, so this section is bound to `dcsset` throughout.
 pub(crate) struct DcsInfoVariant {
     pub(crate) name: String,
     pub(crate) presentation: Option<String>,
     pub(crate) selection: Vec<String>,
-    pub(crate) order: Vec<String>,
-    /// Structure item kinds in order: `group`, `table`, `chart`, …
-    pub(crate) structure: Vec<String>,
+    pub(crate) order: Vec<DcsInfoOrderItem>,
+    /// How many filter items the variant declares.
+    pub(crate) filters: usize,
+    pub(crate) structure: Vec<DcsInfoStructureItem>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoOrderItem {
+    pub(crate) field: String,
+    /// `Asc` or `Desc`; `null` when the item declares no direction.
+    pub(crate) direction: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoStructureItem {
+    /// `Group`, `Table`, `Chart` or `Unknown`.
+    pub(crate) kind: String,
+    /// Fields the item groups by; empty for a detail item.
+    pub(crate) group_by: Vec<String>,
 }
 
 pub(crate) struct DcsInfoExecution {
@@ -219,12 +266,67 @@ fn dcs_info_child_text(
         .and_then(dcs_info_opt)
 }
 
+/// A declared boolean, or `null` when the schema declares nothing. ADR-0023
+/// keeps the two apart: an omitted flag is not a proven `false`.
+fn dcs_info_flag(node: roxmltree::Node<'_, '_>, tag: &str, ns_schema: &str) -> Option<bool> {
+    dcs_child(node, tag, ns_schema)
+        .map(dcs_text_of)
+        .and_then(|value| match value.trim() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        })
+}
+
+/// The uses a structured `useRestriction` bars. Each child set to `true` names
+/// one barred use; `None` when the element is absent, so an unrestricted field
+/// and a field that says nothing stay distinguishable.
+fn dcs_info_restrictions(
+    node: roxmltree::Node<'_, '_>,
+    tag: &str,
+    ns_schema: &str,
+) -> Option<Vec<String>> {
+    dcs_child(node, tag, ns_schema).map(|restriction| {
+        restriction
+            .children()
+            .filter(|child| child.is_element())
+            .filter(|child| dcs_text_of(*child).trim() == "true")
+            .map(|child| child.tag_name().name().to_string())
+            .collect()
+    })
+}
+
+/// Order items of one variant: the field and, when declared, its direction.
+fn dcs_info_order_items(
+    settings_node: roxmltree::Node<'_, '_>,
+    ns_settings: &str,
+) -> Vec<DcsInfoOrderItem> {
+    dcs_find_all_path(
+        settings_node,
+        &[("order", ns_settings), ("item", ns_settings)],
+    )
+    .into_iter()
+    .filter_map(|item| {
+        Some(DcsInfoOrderItem {
+            field: dcs_child(item, "field", ns_settings)
+                .map(dcs_text_of)
+                .and_then(dcs_info_opt)?,
+            direction: dcs_child(item, "orderType", ns_settings)
+                .map(dcs_text_of)
+                .and_then(dcs_info_opt),
+        })
+    })
+    .collect()
+}
+
 fn dcs_info_data_set(data_set: roxmltree::Node<'_, '_>, ns_schema: &str) -> DcsInfoDataSet {
     let kind = dcs_info_dataset_type(data_set);
     DcsInfoDataSet {
         name: dcs_child(data_set, "name", ns_schema)
             .map(dcs_text_of)
             .unwrap_or_default(),
+        object_name: dcs_info_child_text(data_set, "objectName", ns_schema),
+        data_source: dcs_info_child_text(data_set, "dataSource", ns_schema),
         // `dcs_inner_text`, not `dcs_all_text`: a 1C query carries meaningful
         // leading whitespace in its `|` continuation lines, and the retired
         // `Raw` mode existed precisely to hand it back untrimmed.
@@ -259,8 +361,19 @@ fn dcs_info_collect(
     root: roxmltree::Node<'_, '_>,
     ns_schema: &str,
     ns_settings: &str,
+    resolved_path: &Path,
 ) -> DcsInfoData {
     DcsInfoData {
+        support: object_support_state(resolved_path),
+        data_sources: dcs_children(root, "dataSource", ns_schema)
+            .into_iter()
+            .map(|source| DcsInfoDataSource {
+                name: dcs_child(source, "name", ns_schema)
+                    .map(dcs_text_of)
+                    .unwrap_or_default(),
+                kind: dcs_info_child_text(source, "dataSourceType", ns_schema),
+            })
+            .collect(),
         data_sets: dcs_children(root, "dataSet", ns_schema)
             .into_iter()
             .map(|data_set| dcs_info_data_set(data_set, ns_schema))
@@ -293,6 +406,7 @@ fn dcs_info_collect(
                     title: dcs_child(field, "title", ns_schema)
                         .map(dcs_info_multilang_or_inner_text)
                         .and_then(dcs_info_opt),
+                    restrictions: dcs_info_restrictions(field, "useRestriction", ns_schema),
                 })
             })
             .collect(),
@@ -304,6 +418,7 @@ fn dcs_info_collect(
                     expression: dcs_child(total, "expression", ns_schema)
                         .map(dcs_all_text)
                         .and_then(dcs_info_opt),
+                    group: dcs_info_child_text(total, "group", ns_schema),
                 })
             })
             .collect(),
@@ -326,32 +441,43 @@ fn dcs_info_collect(
                     .map(dcs_text_of)
                     .as_deref()
                     == Some("true"),
+                available_as_field: dcs_info_flag(param, "availableAsField", ns_schema),
             })
             .collect(),
+        // Every element below `settingsVariant` belongs to the settings
+        // namespace, including the variant's own `name`, `presentation` and
+        // `settings`.
         variants: dcs_children(root, "settingsVariant", ns_schema)
             .into_iter()
             .map(|variant| {
-                let settings = dcs_child(variant, "settings", ns_schema);
+                let settings = dcs_child(variant, "settings", ns_settings);
                 DcsInfoVariant {
-                    name: dcs_child(variant, "name", ns_schema)
+                    name: dcs_child(variant, "name", ns_settings)
                         .map(dcs_text_of)
                         .unwrap_or_default(),
-                    presentation: dcs_child(variant, "presentation", ns_schema)
+                    presentation: dcs_child(variant, "presentation", ns_settings)
                         .map(dcs_info_multilang_or_inner_text)
                         .and_then(dcs_info_opt),
+                    // `dcs_info_selection_fields` descends into `selection`
+                    // itself, so it takes the settings node, not the selection.
                     selection: settings
-                        .and_then(|node| dcs_child(node, "selection", ns_settings))
                         .map(|node| dcs_info_selection_fields(node, ns_settings))
                         .unwrap_or_default(),
                     order: settings
-                        .and_then(|node| dcs_child(node, "order", ns_settings))
-                        .map(|node| dcs_info_group_fields(node, ns_settings))
+                        .map(|node| dcs_info_order_items(node, ns_settings))
+                        .unwrap_or_default(),
+                    filters: settings
+                        .and_then(|node| dcs_child(node, "filter", ns_settings))
+                        .map(|node| dcs_children(node, "item", ns_settings).len())
                         .unwrap_or_default(),
                     structure: settings
                         .map(|node| {
                             dcs_children(node, "item", ns_settings)
                                 .into_iter()
-                                .map(|item| dcs_info_structure_item_type(item).to_string())
+                                .map(|item| DcsInfoStructureItem {
+                                    kind: dcs_info_structure_item_type(item).to_string(),
+                                    group_by: dcs_info_group_fields(item, ns_settings),
+                                })
                                 .collect()
                         })
                         .unwrap_or_default(),
@@ -391,7 +517,7 @@ pub(crate) fn analyze_dcs_info_with_data(
         require_dcs_root(root)?;
         // Eleven modes sliced one schema into eleven reports. Data answers
         // with every section at once; a caller projects what it needs.
-        let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS);
+        let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS, &resolved_path);
         Ok((data, resolved_path))
     })();
 
@@ -10648,6 +10774,101 @@ mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// ADR-0048 removed the eleven `Mode` values on the claim that the typed
+    /// answer is the union of the projections they used to print. That claim is
+    /// only true if every fact those reports carried survives, so this fixture
+    /// puts one of each into a schema and reads them all back out of `data`.
+    #[test]
+    fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
+        let context = temp_context("dcs-info-complete-read-model");
+        let template_path = context.cwd.join("Template.xml");
+        fs::write(&template_path, complete_dcs_xml()).unwrap();
+
+        let execution = analyze_dcs_info_with_data(
+            &Map::from_iter([("TemplatePath".to_string(), json!("Template.xml"))]),
+            &context,
+        );
+
+        assert!(execution.outcome.ok, "{:?}", execution.outcome);
+        let data = execution.data.expect("dcs.info answers with data");
+
+        // `overview` printed the owner's support state and the data sources.
+        assert!(!data.support.state.is_empty(), "{data:?}");
+        assert_eq!(
+            data.data_sources
+                .iter()
+                .map(|source| (source.name.as_str(), source.kind.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![("ИсточникДанных1", Some("Local"))],
+            "{data:?}"
+        );
+
+        // `overview` distinguished an Object dataset by its objectName, and
+        // every dataset named the source it reads.
+        let object_set = data
+            .data_sets
+            .iter()
+            .find(|set| set.kind == "Object")
+            .expect("the fixture declares an Object dataset");
+        assert_eq!(object_set.object_name.as_deref(), Some("Справочник.Товары"));
+        assert_eq!(
+            data.data_sets[0].data_source.as_deref(),
+            Some("ИсточникДанных1")
+        );
+
+        // `resources` printed the grouping a total belongs to; without it an
+        // overall total and a per-group total look identical.
+        assert_eq!(
+            data.total_fields
+                .iter()
+                .map(|total| (total.data_path.as_str(), total.group.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![("Сумма", Some("Товар")), ("Количество", None)],
+            "{data:?}"
+        );
+
+        // `calculated -Name` printed which uses a field is barred from; the
+        // element is structured, so a boolean cannot carry that answer.
+        assert_eq!(
+            data.calculated_fields[0].restrictions.as_deref(),
+            Some(&["condition".to_string(), "order".to_string()][..]),
+            "{data:?}"
+        );
+
+        // `params` marked a parameter that cannot be used as a field.
+        assert_eq!(
+            data.parameters[0].available_as_field,
+            Some(false),
+            "{data:?}"
+        );
+
+        // `variant` printed the name, presentation, selection, filters and the
+        // structure with its grouping fields.
+        let variant = &data.variants[0];
+        assert_eq!(variant.name, "Основной");
+        assert_eq!(variant.presentation.as_deref(), Some("Основной вариант"));
+        assert_eq!(variant.selection, vec!["Товар".to_string()]);
+        assert_eq!(variant.filters, 1);
+        assert_eq!(
+            variant
+                .order
+                .iter()
+                .map(|item| (item.field.as_str(), item.direction.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![("Сумма", Some("Desc"))]
+        );
+        assert_eq!(
+            variant
+                .structure
+                .iter()
+                .map(|item| (item.kind.as_str(), item.group_by.clone()))
+                .collect::<Vec<_>>(),
+            vec![("Group", vec!["Товар".to_string()])]
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
     #[test]
     fn dcs_edit_rejects_wrong_root_namespace_without_write() {
         let context = temp_context("dcs-edit-wrong-root-ns");
@@ -12620,6 +12841,92 @@ mod tests {
             cache_root: cwd.join(".build/unica"),
             workspace_epoch: 0,
         }
+    }
+
+    /// One schema carrying a representative of every fact the retired `Mode`
+    /// reports used to print. The settings elements deliberately sit in the
+    /// `dcsset` namespace, which is where the platform puts them.
+    fn complete_dcs_xml() -> &'static str {
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
+		xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"
+		xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"
+		xmlns:xs="http://www.w3.org/2001/XMLSchema"
+		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<dataSource>
+		<name>ИсточникДанных1</name>
+		<dataSourceType>Local</dataSourceType>
+	</dataSource>
+	<dataSet xsi:type="DataSetQuery">
+		<name>НаборЗапрос</name>
+		<field xsi:type="DataSetFieldField">
+			<dataPath>Товар</dataPath>
+			<field>Товар</field>
+		</field>
+		<dataSource>ИсточникДанных1</dataSource>
+		<query>ВЫБРАТЬ Товар КАК Товар</query>
+	</dataSet>
+	<dataSet xsi:type="DataSetObject">
+		<name>НаборОбъект</name>
+		<objectName>Справочник.Товары</objectName>
+		<field xsi:type="DataSetFieldField">
+			<dataPath>Наименование</dataPath>
+			<field>Наименование</field>
+		</field>
+	</dataSet>
+	<calculatedField>
+		<dataPath>Наценка</dataPath>
+		<expression>Сумма - Себестоимость</expression>
+		<useRestriction>
+			<condition>true</condition>
+			<order>true</order>
+		</useRestriction>
+	</calculatedField>
+	<totalField>
+		<dataPath>Сумма</dataPath>
+		<expression>Сумма(Сумма)</expression>
+		<group>Товар</group>
+	</totalField>
+	<totalField>
+		<dataPath>Количество</dataPath>
+		<expression>Сумма(Количество)</expression>
+	</totalField>
+	<parameter>
+		<name>Период</name>
+		<availableAsField>false</availableAsField>
+	</parameter>
+	<settingsVariant>
+		<dcsset:name>Основной</dcsset:name>
+		<dcsset:presentation xsi:type="xs:string">Основной вариант</dcsset:presentation>
+		<dcsset:settings>
+			<dcsset:selection>
+				<dcsset:item xsi:type="dcsset:SelectedItemField">
+					<dcsset:field>Товар</dcsset:field>
+				</dcsset:item>
+			</dcsset:selection>
+			<dcsset:filter>
+				<dcsset:item xsi:type="dcsset:FilterItemComparison">
+					<dcsset:left xsi:type="dcscor:Field">Товар</dcsset:left>
+					<dcsset:comparisonType>Equal</dcsset:comparisonType>
+				</dcsset:item>
+			</dcsset:filter>
+			<dcsset:order>
+				<dcsset:item xsi:type="dcsset:OrderItemField">
+					<dcsset:field>Сумма</dcsset:field>
+					<dcsset:orderType>Desc</dcsset:orderType>
+				</dcsset:item>
+			</dcsset:order>
+			<dcsset:item xsi:type="dcsset:StructureItemGroup">
+				<dcsset:groupItems>
+					<dcsset:item xsi:type="dcsset:GroupItemField">
+						<dcsset:field>Товар</dcsset:field>
+					</dcsset:item>
+				</dcsset:groupItems>
+			</dcsset:item>
+		</dcsset:settings>
+	</settingsVariant>
+</DataCompositionSchema>
+"#
     }
 
     fn base_dcs_xml() -> &'static str {
