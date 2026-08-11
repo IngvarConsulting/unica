@@ -6,8 +6,6 @@ use crate::infrastructure::platform::{
     short_private_runtime_dir, ManagedChild, ManagedStartupChild,
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
-#[cfg(test)]
-use crate::infrastructure::source_roots::source_generation;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
     ready_index_for_source_generation, IndexReadiness, WorkspaceIndexService,
@@ -1368,13 +1366,32 @@ struct AnalyzerLaneState {
 }
 
 impl AnalyzerLane {
+    #[cfg(test)]
     fn acquire(&self, cancellation: &CancellationToken) -> Result<AnalyzerLanePermit<'_>, String> {
-        self.acquire_with_hook(cancellation, || {})
+        self.acquire_with_hook_before(cancellation, None, || {})
     }
 
+    fn acquire_before(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: &ElapsedBudgetDeadline,
+    ) -> Result<AnalyzerLanePermit<'_>, String> {
+        self.acquire_with_hook_before(cancellation, Some(deadline), || {})
+    }
+
+    #[cfg(test)]
     fn acquire_with_hook(
         &self,
         cancellation: &CancellationToken,
+        queued: impl FnOnce(),
+    ) -> Result<AnalyzerLanePermit<'_>, String> {
+        self.acquire_with_hook_before(cancellation, None, queued)
+    }
+
+    fn acquire_with_hook_before(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: Option<&ElapsedBudgetDeadline>,
         queued: impl FnOnce(),
     ) -> Result<AnalyzerLanePermit<'_>, String> {
         let ticket = {
@@ -1394,14 +1411,28 @@ impl AnalyzerLane {
                 self.wake.notify_all();
                 return Err(cancelled_error("workspace analyzer lane wait stopped"));
             }
+            if let Some(deadline) = deadline {
+                if deadline.remaining().is_none() {
+                    if let Some(index) = state.waiters.iter().position(|waiting| *waiting == ticket)
+                    {
+                        state.waiters.remove(index);
+                    }
+                    self.wake.notify_all();
+                    return Err(workspace_service_request_timeout_error(deadline.budget));
+                }
+            }
             if !state.held && state.waiters.front() == Some(&ticket) {
                 state.waiters.pop_front();
                 state.held = true;
                 return Ok(AnalyzerLanePermit { lane: self });
             }
+            let wait_slice = deadline
+                .and_then(ElapsedBudgetDeadline::remaining)
+                .map(|remaining| remaining.min(Duration::from_millis(10)))
+                .unwrap_or_else(|| Duration::from_millis(10));
             let (next, _) = self
                 .wake
-                .wait_timeout(state, Duration::from_millis(10))
+                .wait_timeout(state, wait_slice)
                 .unwrap_or_else(|error| error.into_inner());
             state = next;
         }
@@ -1678,6 +1709,7 @@ impl WorkspaceServiceRuntime {
         }
     }
 
+    #[cfg(test)]
     fn acquire_analyzer_lane(
         &self,
         cancellation: &CancellationToken,
@@ -1685,11 +1717,28 @@ impl WorkspaceServiceRuntime {
         self.analyzer_lane.acquire(cancellation)
     }
 
+    #[cfg(test)]
     fn acquire_rlm_lane(
         &self,
         cancellation: &CancellationToken,
     ) -> Result<AnalyzerLanePermit<'_>, String> {
         self.rlm_lane.acquire(cancellation)
+    }
+
+    fn acquire_analyzer_lane_before(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: &ElapsedBudgetDeadline,
+    ) -> Result<AnalyzerLanePermit<'_>, String> {
+        self.analyzer_lane.acquire_before(cancellation, deadline)
+    }
+
+    fn acquire_rlm_lane_before(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: &ElapsedBudgetDeadline,
+    ) -> Result<AnalyzerLanePermit<'_>, String> {
+        self.rlm_lane.acquire_before(cancellation, deadline)
     }
 
     fn handle_bsl_mcp(
@@ -1708,7 +1757,7 @@ impl WorkspaceServiceRuntime {
             Err(error) => return ServiceResponse::error(error),
         };
         let deadline = ElapsedBudgetDeadline::new(timeout);
-        let _lane = match self.acquire_analyzer_lane(cancellation) {
+        let _lane = match self.acquire_analyzer_lane_before(cancellation, &deadline) {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
         };
@@ -1843,7 +1892,7 @@ impl WorkspaceServiceRuntime {
             Err(error) => return ServiceResponse::error(error),
         };
         let deadline = ElapsedBudgetDeadline::new(timeout);
-        let _lane = match self.acquire_rlm_lane(cancellation) {
+        let _lane = match self.acquire_rlm_lane_before(cancellation, &deadline) {
             Ok(lane) => lane,
             Err(error) => return ServiceResponse::error(error),
         };
@@ -4019,6 +4068,7 @@ mod tests {
     use super::*;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::testing;
+    use crate::infrastructure::source_roots::source_generation;
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -5110,6 +5160,105 @@ mod tests {
         drop(first);
         acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         waiter.join().unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn bsl_operation_times_out_while_analyzer_lane_remains_held() {
+        let context = test_context("bsl-lane-deadline");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
+        let holder = runtime
+            .analyzer_lane
+            .acquire(&CancellationToken::new())
+            .unwrap();
+        let waiter_runtime = Arc::clone(&runtime);
+        let (response_tx, response_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            response_tx
+                .send(waiter_runtime.handle_bsl_mcp(
+                    "diagnostics_status",
+                    json!({}),
+                    0,
+                    50_000_000,
+                    &CancellationToken::new(),
+                ))
+                .unwrap();
+        });
+
+        let response = match response_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(response) => response,
+            Err(error) => {
+                drop(holder);
+                let late_response = response_rx.recv_timeout(Duration::from_secs(2)).ok();
+                waiter.join().unwrap();
+                drop(runtime);
+                cleanup(&context);
+                panic!("analyzer lane wait exceeded its budget: {error}; {late_response:?}");
+            }
+        };
+
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("timeout:")),
+            "{response:?}"
+        );
+        drop(holder);
+        waiter.join().unwrap();
+        drop(runtime);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_operation_times_out_while_rlm_lane_remains_held() {
+        let context = test_context("rlm-lane-deadline");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
+        let holder = runtime.rlm_lane.acquire(&CancellationToken::new()).unwrap();
+        let waiter_runtime = Arc::clone(&runtime);
+        let (response_tx, response_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            response_tx
+                .send(waiter_runtime.handle_rlm_mcp(
+                    WorkspaceRlmOperation::Search {
+                        query: "Тест".to_string(),
+                        limit: 20,
+                    },
+                    0,
+                    50_000_000,
+                    &CancellationToken::new(),
+                ))
+                .unwrap();
+        });
+
+        let response = match response_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(response) => response,
+            Err(error) => {
+                drop(holder);
+                let late_response = response_rx.recv_timeout(Duration::from_secs(2)).ok();
+                waiter.join().unwrap();
+                drop(runtime);
+                cleanup(&context);
+                panic!("RLM lane wait exceeded its budget: {error}; {late_response:?}");
+            }
+        };
+
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("timeout:")),
+            "{response:?}"
+        );
+        drop(holder);
+        waiter.join().unwrap();
+        drop(runtime);
         cleanup(&context);
     }
 
