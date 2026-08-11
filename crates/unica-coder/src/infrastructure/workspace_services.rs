@@ -3900,6 +3900,7 @@ mod tests {
     use crate::infrastructure::platform::testing;
     use std::fs;
     use std::path::Path;
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -5789,7 +5790,8 @@ fn main() {
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
         write_ready_rlm_status_for_current_source(&context, &source_root);
-        let fixture = compile_blocking_rlm_fixture(&context);
+        let fixture = blocking_rlm_fixture();
+        fs::create_dir_all(&context.cache_root).unwrap();
         let execute_started = context.cache_root.join("blocking-rlm-execute-started.txt");
         let execute_release = context.cache_root.join("blocking-rlm-execute-release.txt");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
@@ -5830,7 +5832,13 @@ fn main() {
             )
         });
 
-        wait_for_file(&execute_started, Duration::from_secs(2));
+        // With the binary already built and validated, this wait measured 12
+        // and 14 ms under the full parallel suite, against 1822 to 2243 ms
+        // before. Five seconds is the bound the sibling terminal-marker wait
+        // already uses, and over that distribution it is headroom of two and a
+        // half orders of magnitude instead of the margin of tens of
+        // milliseconds the previous two seconds left.
+        wait_for_file(&execute_started, Duration::from_secs(5));
         during_execute(&context, &source_root, &module);
         fs::write(&execute_release, "release").unwrap();
         let response = caller.join().unwrap();
@@ -5849,11 +5857,49 @@ fn main() {
         }
     }
 
-    fn compile_blocking_rlm_fixture(context: &WorkspaceContext) -> PathBuf {
-        let source = context.cache_root.join("blocking-rlm-fixture.rs");
-        let executable =
-            testing::fixture_executable_path(&context.cache_root, "blocking-rlm-fixture");
-        fs::create_dir_all(&context.cache_root).unwrap();
+    /// The helper binary is built and first run once per test process, before
+    /// any test starts timing a spawn.
+    ///
+    /// Measured on this fixture under the full parallel suite: `rustc` costs
+    /// ~100 ms, the JSON-RPC handshake to the first marker costs 0-1 ms, and
+    /// everything else — 1.8 to 2.2 s — was the child getting from `spawn` to
+    /// the first line of `main`. That gap is the first execution of a
+    /// freshly written binary: macOS validates its code signature through a
+    /// shared system service, and a suite that writes a new binary per call
+    /// pays that serialized validation every time. Idle, the same binary needs
+    /// ~300 ms on its first run and ~20 ms on every later one.
+    ///
+    /// Building once per process leaves exactly one validation, and running it
+    /// here moves that validation out of the timed section. What a test waits
+    /// on afterwards is the fixture's own progress, which is what the deadline
+    /// is meant to bound.
+    fn blocking_rlm_fixture() -> PathBuf {
+        static FIXTURE: OnceLock<PathBuf> = OnceLock::new();
+        FIXTURE
+            .get_or_init(|| {
+                let directory = std::env::temp_dir()
+                    .join(format!("unica-blocking-rlm-fixture-{}", std::process::id()));
+                let executable = compile_blocking_rlm_fixture(&directory);
+                // The first run pays the code-signature validation; the fixture
+                // exits on its own once stdin closes, so no marker is needed.
+                let mut warmup = Command::new(&executable)
+                    .arg(directory.join("warmup-started.txt"))
+                    .arg(directory.join("warmup-release.txt"))
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                warmup.wait().unwrap();
+                executable
+            })
+            .clone()
+    }
+
+    fn compile_blocking_rlm_fixture(directory: &Path) -> PathBuf {
+        let source = directory.join("blocking-rlm-fixture.rs");
+        let executable = testing::fixture_executable_path(directory, "blocking-rlm-fixture");
+        fs::create_dir_all(directory).unwrap();
         fs::write(
             &source,
             r##"use std::{env, fs, io::{self, BufRead, Write}, thread, time::{Duration, Instant}};
