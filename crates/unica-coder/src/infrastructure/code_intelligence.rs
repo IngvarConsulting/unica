@@ -7,7 +7,7 @@ use crate::domain::code_intelligence::{
 };
 use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
-    system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
+    system_process_runner, ProcessCommand, ProcessLineControl, ProcessRunner, ProcessStreamOutput,
 };
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const SEARCH_CAPABILITIES: &[ProviderCapability] = &[ProviderCapability::Search];
+const MAX_GIT_GREP_LINE_BYTES: usize = 1024 * 1024;
 /// ADR-0020: the outline is built from the current BSL file by the pinned
 /// `bsl-parser`, so it belongs to this provider and not to the index.
 const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] =
@@ -77,20 +78,43 @@ impl<'a> GitGrepProvider<'a> {
             "--untracked".to_string(),
             "-n".to_string(),
             "-F".to_string(),
-            "-m".to_string(),
-            request.limit.to_string(),
             "-e".to_string(),
             request.query.clone(),
             "--".to_string(),
             ".".to_string(),
         ];
-        let output = match self.runner.run(&ProcessCommand {
-            program: PathBuf::from("git"),
-            args,
-            cwd: context.source_root.path.clone(),
-            timeout: Some(timeout),
-            cancellation: cancellation.clone(),
-        }) {
+        let mut hits = Vec::new();
+        let mut diagnostics = Vec::new();
+        let mut saw_nonempty_line = false;
+        let mut consume = |line_number: usize, bytes: &[u8]| {
+            let line = String::from_utf8_lossy(bytes);
+            if line.trim().is_empty() {
+                return ProcessLineControl::Continue;
+            }
+            saw_nonempty_line = true;
+            match parse_git_grep_line(&line) {
+                Some(hit) => hits.push(hit),
+                None => diagnostics.push(format!(
+                    "ignored malformed git-grep result at line {line_number}: {line}"
+                )),
+            }
+            if hits.len() >= request.limit {
+                ProcessLineControl::Stop
+            } else {
+                ProcessLineControl::Continue
+            }
+        };
+        let output = match self.runner.run_streaming(
+            &ProcessCommand {
+                program: PathBuf::from("git"),
+                args,
+                cwd: context.source_root.path.clone(),
+                timeout: Some(timeout),
+                cancellation: cancellation.clone(),
+            },
+            MAX_GIT_GREP_LINE_BYTES,
+            &mut consume,
+        ) {
             Ok(output) => output,
             Err(error) => {
                 return unavailable_section(
@@ -99,7 +123,14 @@ impl<'a> GitGrepProvider<'a> {
                 );
             }
         };
-        git_grep_section(output, request.limit)
+        git_grep_stream_section(
+            output,
+            hits,
+            diagnostics,
+            saw_nonempty_line,
+            request.limit,
+            timeout,
+        )
     }
 }
 
@@ -734,7 +765,14 @@ fn parse_bsl_analyzer_header(line: &str) -> Option<ProviderSearchHit> {
     })
 }
 
-fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSection {
+fn git_grep_stream_section(
+    output: ProcessStreamOutput,
+    mut hits: Vec<ProviderSearchHit>,
+    mut diagnostics: Vec<String>,
+    saw_nonempty_line: bool,
+    limit: usize,
+    timeout: Duration,
+) -> ProviderSearchSection {
     if output.cancelled {
         return failed_section(
             ProviderId::GitGrep,
@@ -744,11 +782,14 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
     if output.timed_out {
         return failed_section(
             ProviderId::GitGrep,
-            "git-grep provider deadline exceeded".to_string(),
+            format!(
+                "git-grep search was too slow and exceeded its {} ms budget before completion",
+                timeout.as_millis()
+            ),
         );
     }
     let no_matches = !output.status_success
-        && output.stdout.trim().is_empty()
+        && !saw_nonempty_line
         && output.stderr.trim().is_empty()
         && process_exit_code_is(&output.status, 1);
     if no_matches {
@@ -760,8 +801,7 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
     {
         return unavailable_section(ProviderId::GitGrep, output.stderr.trim().to_string());
     }
-    let captured_success = output.stdout_truncated && process_exit_code_is(&output.status, 0);
-    if !output.status_success && !captured_success {
+    if !output.status_success {
         let detail = if output.stderr.trim().is_empty() {
             format!("git grep exited with status {}", output.status)
         } else {
@@ -770,50 +810,38 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
         return failed_section(ProviderId::GitGrep, detail);
     }
 
-    let mut diagnostics = Vec::new();
-    let mut hits = Vec::new();
-    let mut rows = output.stdout.lines();
-    if output.stdout_truncated {
-        // The runner keeps the tail of the capture, so the first retained row lost
-        // its leading bytes. Such a fragment still parses as `path:line:snippet`
-        // and would publish a path that does not exist, so drop it. At worst one
-        // whole row is lost when the cut landed on a line boundary.
-        rows.next();
+    if let Some((line_number, reason)) = &output.line_error {
+        diagnostics.push(format!(
+            "ignored unreadable git-grep result at line {line_number}: {reason}"
+        ));
     }
-    for line in rows.filter(|line| !line.trim().is_empty()) {
-        match parse_git_grep_line(line) {
-            Some(hit) => hits.push(hit),
-            None => diagnostics.push(format!("ignored malformed git-grep result: {line}")),
-        }
-    }
-    hits.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.line.cmp(&right.line))
-            .then_with(|| left.snippet.cmp(&right.snippet))
-    });
     hits.truncate(limit);
     for (index, hit) in hits.iter_mut().enumerate() {
         hit.rank = index + 1;
     }
-    if output.stdout_truncated {
-        diagnostics.push("git-grep output was truncated by the process runner".to_string());
+    if output.stopped_by_consumer && hits.len() < limit {
+        diagnostics.insert(
+            0,
+            "git-grep stream stopped before the requested result limit".to_string(),
+        );
+        hits.clear();
+        return ProviderSearchSection {
+            provider: ProviderId::GitGrep,
+            status: ProviderSectionStatus::Failed,
+            hits,
+            diagnostics,
+            artifacts: Vec::new(),
+        };
     }
     let status = if hits.is_empty() {
-        if output.stdout_truncated {
-            diagnostics.insert(
-                0,
-                "git-grep capture contained no complete result after truncation".to_string(),
-            );
-            ProviderSectionStatus::Failed
-        } else if output.stdout.trim().is_empty() {
-            ProviderSectionStatus::Empty
-        } else {
+        if saw_nonempty_line || output.line_error.is_some() {
             diagnostics.insert(
                 0,
                 "git-grep returned non-empty output without any valid results".to_string(),
             );
             ProviderSectionStatus::Failed
+        } else {
+            ProviderSectionStatus::Empty
         }
     } else {
         ProviderSectionStatus::Ok
@@ -915,7 +943,9 @@ mod tests {
     };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
+    use crate::infrastructure::internal_adapters::{
+        ProcessCommand, ProcessLineControl, ProcessOutput, ProcessRunner, ProcessStreamOutput,
+    };
     use crate::infrastructure::workspace_index::IndexReadiness;
     use crate::infrastructure::workspace_services::WorkspaceServiceBslOutput;
     use serde_json::Value;
@@ -957,6 +987,53 @@ mod tests {
         }
     }
 
+    struct StreamingFakeRunner {
+        lines: Vec<Vec<u8>>,
+        output: ProcessStreamOutput,
+        commands: Mutex<Vec<ProcessCommand>>,
+        consumed_lines: Mutex<usize>,
+    }
+
+    impl ProcessRunner for StreamingFakeRunner {
+        fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            panic!("git-grep provider must use bounded streaming output")
+        }
+
+        fn run_streaming(
+            &self,
+            command: &ProcessCommand,
+            _max_line_bytes: usize,
+            on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineControl,
+        ) -> Result<ProcessStreamOutput, String> {
+            self.commands.lock().unwrap().push(command.clone());
+            let mut output = self.output.clone();
+            for (index, line) in self.lines.iter().enumerate() {
+                *self.consumed_lines.lock().unwrap() += 1;
+                if on_line(index + 1, line) == ProcessLineControl::Stop {
+                    output.status_success = true;
+                    output.status = "stopped by consumer".to_string();
+                    output.timed_out = false;
+                    output.cancelled = false;
+                    output.stopped_by_consumer = true;
+                    break;
+                }
+            }
+            Ok(output)
+        }
+    }
+
+    fn streaming_output() -> ProcessStreamOutput {
+        ProcessStreamOutput {
+            status_success: true,
+            status: "exit status: 0".to_string(),
+            stderr: String::new(),
+            timed_out: false,
+            cancelled: false,
+            stopped_by_consumer: false,
+            line_error: None,
+        }
+    }
+
     fn context() -> CodeIntelligenceContext {
         CodeIntelligenceContext::new(
             WorkspaceContext {
@@ -982,6 +1059,79 @@ mod tests {
             cancelled: false,
             stdout_truncated: false,
         }
+    }
+
+    #[test]
+    fn git_grep_stops_stream_after_requested_result_limit() {
+        let runner = StreamingFakeRunner {
+            lines: (1..=7)
+                .map(|line| {
+                    format!("CommonModules/M{line}/Ext/Module.bsl:{line}:Needle").into_bytes()
+                })
+                .collect(),
+            output: streaming_output(),
+            commands: Mutex::new(Vec::new()),
+            consumed_lines: Mutex::new(0),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Needle".to_string(),
+                limit: 6,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_millis(500)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert_eq!(section.hits.len(), 6);
+        assert_eq!(*runner.consumed_lines.lock().unwrap(), 6);
+        assert_eq!(
+            section.hits.iter().map(|hit| hit.rank).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 6]
+        );
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 1);
+        assert!(!commands[0].args.iter().any(|argument| argument == "-m"));
+        let timeout = commands[0].timeout.unwrap();
+        assert!(timeout > Duration::ZERO);
+        assert!(timeout <= Duration::from_millis(500), "{timeout:?}");
+    }
+
+    #[test]
+    fn git_grep_timeout_discards_incomplete_hits_and_reports_slow_search() {
+        let runner = StreamingFakeRunner {
+            lines: vec![b"CommonModules/M1/Ext/Module.bsl:1:Needle".to_vec()],
+            output: ProcessStreamOutput {
+                status_success: false,
+                status: "timeout".to_string(),
+                stderr: String::new(),
+                timed_out: true,
+                cancelled: false,
+                stopped_by_consumer: false,
+                line_error: None,
+            },
+            commands: Mutex::new(Vec::new()),
+            consumed_lines: Mutex::new(0),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Needle".to_string(),
+                limit: 6,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_millis(500)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("too slow")));
     }
 
     #[test]
@@ -1017,8 +1167,6 @@ mod tests {
                 "--untracked",
                 "-n",
                 "-F",
-                "-m",
-                "20",
                 "-e",
                 "Post.*",
                 "--",
@@ -1034,7 +1182,7 @@ mod tests {
     }
 
     #[test]
-    fn git_grep_parses_sorts_and_ranks_hits_locally() {
+    fn git_grep_preserves_stream_order_and_ranks_hits_locally() {
         let runner = FakeRunner {
             output: output(
                 "b/Module.bsl:9:Second\n\
@@ -1057,8 +1205,8 @@ mod tests {
         assert_eq!(section.status, ProviderSectionStatus::Ok);
         assert_eq!(section.hits.len(), 2);
         assert_eq!(section.hits[0].rank, 1);
-        assert_eq!(section.hits[0].path, "a/Module.bsl");
-        assert_eq!(section.hits[0].line, 2);
+        assert_eq!(section.hits[0].path, "b/Module.bsl");
+        assert_eq!(section.hits[0].line, 9);
         assert_eq!(section.hits[1].rank, 2);
         assert_eq!(section.hits[1].path, "a/Module.bsl");
         assert_eq!(section.hits[1].line, 7);
@@ -1087,118 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn git_grep_keeps_valid_hits_when_capture_was_truncated() {
-        let runner = FakeRunner {
-            output: ProcessOutput {
-                status_success: false,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n",
-                    "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n"
-                )
-                .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: true,
-            },
-            commands: Mutex::new(Vec::new()),
-        };
-
-        let section = GitGrepProvider::with_runner(&runner).search(
-            &SearchRequest {
-                query: "Procedure".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Ok);
-        assert_eq!(section.hits.len(), 1);
-        assert!(section
-            .diagnostics
-            .iter()
-            .any(|item| item.contains("truncated")));
-    }
-
-    #[test]
-    fn git_grep_drops_the_partial_first_row_of_a_truncated_capture() {
-        let runner = FakeRunner {
-            output: ProcessOutput {
-                status_success: false,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n",
-                    "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n"
-                )
-                .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: true,
-            },
-            commands: Mutex::new(Vec::new()),
-        };
-
-        let section = GitGrepProvider::with_runner(&runner).search(
-            &SearchRequest {
-                query: "Procedure".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.hits.len(), 1);
-        assert_eq!(section.hits[0].path, "CommonModules/Test/Ext/Module.bsl");
-        assert!(
-            !section
-                .hits
-                .iter()
-                .any(|hit| hit.path == "dules/Broken/Ext/Module.bsl"),
-            "{:?}",
-            section.hits
-        );
-    }
-
-    #[test]
-    fn git_grep_does_not_report_empty_when_truncation_removed_the_only_row() {
-        let runner = FakeRunner {
-            output: ProcessOutput {
-                status_success: false,
-                status: "exit status: 0".to_string(),
-                stdout: "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n".to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: true,
-            },
-            commands: Mutex::new(Vec::new()),
-        };
-
-        let section = GitGrepProvider::with_runner(&runner).search(
-            &SearchRequest {
-                query: "Procedure".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Failed);
-        assert!(section.hits.is_empty());
-        assert!(section
-            .diagnostics
-            .iter()
-            .any(|item| item.contains("truncated")));
-    }
-
-    #[test]
-    fn git_grep_keeps_every_row_when_the_capture_was_not_truncated() {
+    fn git_grep_keeps_every_row_when_process_finishes_before_the_limit() {
         let runner = FakeRunner {
             output: ProcessOutput {
                 status_success: true,

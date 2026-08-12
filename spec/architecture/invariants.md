@@ -462,9 +462,15 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** `unica.code.search` возвращает в фиксированном порядке секции
   `rlm`, `bsl-analyzer` и `git-grep`, не сравнивает их оценки и не скрывает
   отказ секции; результат успешен, когда хотя бы одна секция имеет состояние
-  `ok` или `empty`, а отмена не возвращает частичный успех.
-- **Decision:** ADR-0017
+  `ok` или `empty`, а отмена не возвращает частичный успех. Резервный
+  `git-grep` по умолчанию получает 500 мс, намеренно завершает дерево процесса
+  после `limit` полных попаданий, принимает естественное завершение с меньшей
+  выдачей и при таймауте возвращает `failed` без накопленных попаданий, а не
+  ложный `empty` или частичный успех.
+- **Decision:** ADR-0017, ADR-0055
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/process.rs`
 - **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
 - **Scope:** runtime, packaged
 
@@ -734,7 +740,7 @@ Unica. Каждая запись формулирует одно нормати�
   `operational`, `network`, `providers`, что и сетевая политика; `version`
   считается неизвестным на корне, а недопустимый общий корень отказывает всем
   его потребителям. Все файловые сроки — целые секунды не меньше 1 без верхнего
-  ограничения операционной политики; значения 120, 45, 15, 45 и 120 —
+  ограничения операционной политики; значения 120 с, 45 с, 500 мс, 45 с и 120 с —
   умолчания, а не потолки; сроки `RLM` и `git-grep` не превышают общий срок
   поиска, а публичный явный
   `unica.code.diagnostics.timeoutSeconds` сохраняет отдельный диапазон
@@ -751,7 +757,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0040
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`

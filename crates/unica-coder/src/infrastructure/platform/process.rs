@@ -102,7 +102,14 @@ pub struct ManagedLineOutput {
     pub stderr: String,
     pub timed_out: bool,
     pub cancelled: bool,
+    pub stopped_by_consumer: bool,
     pub line_error: Option<(usize, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineReadControl {
+    Continue,
+    Stop,
 }
 
 pub struct ManagedChild {
@@ -247,7 +254,7 @@ impl ManagedChild {
         mut on_line: F,
     ) -> Result<ManagedLineOutput, String>
     where
-        F: FnMut(usize, &[u8]),
+        F: FnMut(usize, &[u8]) -> LineReadControl,
     {
         drop(self.take_stdin());
         let stdout = start_line_reader(self.take_stdout(), max_line_bytes);
@@ -256,25 +263,59 @@ impl ManagedChild {
         let mut first_line_error = None;
 
         loop {
-            drain_line_messages(&stdout, &mut on_line, &mut first_line_error, false);
-            if self.cancellation.is_cancelled() {
-                self.terminate_gracefully()?;
-                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+            if drain_line_messages(&stdout, &mut on_line, &mut first_line_error, false) {
+                if self.cancellation.is_cancelled() {
+                    self.terminate_gracefully()?;
+                    return Ok(finish_line_output(
+                        None,
+                        stderr,
+                        false,
+                        true,
+                        false,
+                        first_line_error,
+                    ));
+                }
+                if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                    self.terminate()?;
+                    return Ok(finish_line_output(
+                        None,
+                        stderr,
+                        true,
+                        false,
+                        false,
+                        first_line_error,
+                    ));
+                }
+                self.terminate()?;
                 return Ok(finish_line_output(
                     None,
                     stderr,
+                    false,
                     false,
                     true,
                     first_line_error,
                 ));
             }
+            if self.cancellation.is_cancelled() {
+                self.terminate_gracefully()?;
+                let _ = drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                return Ok(finish_line_output(
+                    None,
+                    stderr,
+                    false,
+                    true,
+                    false,
+                    first_line_error,
+                ));
+            }
             if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
                 self.terminate()?;
-                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                let _ = drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
                 return Ok(finish_line_output(
                     None,
                     stderr,
                     true,
+                    false,
                     false,
                     first_line_error,
                 ));
@@ -282,12 +323,14 @@ impl ManagedChild {
             if let Some(status) = self.child.try_wait().map_err(process_error)? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
-                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                let stopped_by_consumer =
+                    drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
                 return Ok(finish_line_output(
                     Some(status),
                     stderr,
                     false,
                     false,
+                    stopped_by_consumer,
                     first_line_error,
                 ));
             }
@@ -922,11 +965,12 @@ fn drain_line_messages<F>(
     on_line: &mut F,
     first_error: &mut Option<(usize, String)>,
     wait_for_end: bool,
-) where
-    F: FnMut(usize, &[u8]),
+) -> bool
+where
+    F: FnMut(usize, &[u8]) -> LineReadControl,
 {
     let Some(receiver) = receiver else {
-        return;
+        return false;
     };
     loop {
         let message = if wait_for_end {
@@ -938,7 +982,11 @@ fn drain_line_messages<F>(
             break;
         };
         match message {
-            LineMessage::Line(number, bytes) => on_line(number, &bytes),
+            LineMessage::Line(number, bytes) => {
+                if on_line(number, &bytes) == LineReadControl::Stop {
+                    return true;
+                }
+            }
             LineMessage::TooLong(number) => {
                 first_error.get_or_insert_with(|| {
                     (number, "line exceeds configured byte limit".to_string())
@@ -951,6 +999,7 @@ fn drain_line_messages<F>(
             }
         }
     }
+    false
 }
 
 fn start_reader<R>(pipe: Option<R>, limit: usize) -> Option<Receiver<CapturedOutput>>
@@ -1009,17 +1058,22 @@ fn finish_line_output(
     stderr: Option<Receiver<CapturedOutput>>,
     timed_out: bool,
     cancelled: bool,
+    stopped_by_consumer: bool,
     line_error: Option<(usize, String)>,
 ) -> ManagedLineOutput {
     let stderr = receive_output(stderr);
     ManagedLineOutput {
-        status_success: status.is_some_and(|status| status.success()) && !timed_out && !cancelled,
+        status_success: (status.is_some_and(|status| status.success()) || stopped_by_consumer)
+            && !timed_out
+            && !cancelled,
         status: status.map_or_else(
             || {
                 if cancelled {
                     "cancelled".to_string()
                 } else if timed_out {
                     "timeout".to_string()
+                } else if stopped_by_consumer {
+                    "stopped by consumer".to_string()
                 } else {
                     "termination pending".to_string()
                 }
@@ -1029,6 +1083,7 @@ fn finish_line_output(
         stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
         timed_out,
         cancelled,
+        stopped_by_consumer,
         line_error,
     }
 }
@@ -1087,7 +1142,10 @@ fn retain_tail(captured: &mut CapturedOutput, chunk: &[u8], limit: usize) {
 mod tests {
     #[cfg(windows)]
     use super::ProcessTree;
-    use super::{ChildState, ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild};
+    use super::{
+        ChildState, LineReadControl, ManagedChild, ManagedCommand, ManagedOutput,
+        ManagedStartupChild,
+    };
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
     use std::io::Read;
@@ -1145,6 +1203,14 @@ mod tests {
                 print!("stdin closed");
             }
             "sleep" => thread::sleep(Duration::from_secs(10)),
+            "stream_lines" => {
+                for line in 1..=20 {
+                    println!("line-{line}");
+                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    thread::sleep(Duration::from_millis(10));
+                }
+                thread::sleep(Duration::from_secs(10));
+            }
             "process_tree_immediate_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
                 let mut child = Command::new(std::env::current_exe().unwrap())
@@ -1506,6 +1572,74 @@ mod tests {
         assert!(output.timed_out);
         assert!(!output.cancelled);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn managed_child_stops_streaming_process_when_consumer_has_enough_lines() {
+        let mut managed = ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
+                "--nocapture".to_string(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_lines"))],
+            timeout: Some(Duration::from_secs(5)),
+            cancellation: CancellationToken::new(),
+        })
+        .unwrap();
+        let process_id = managed.id();
+        let started = Instant::now();
+        let mut lines = Vec::new();
+
+        let output = managed
+            .wait_for_line_output(1024, |_, bytes| {
+                lines.push(String::from_utf8_lossy(bytes).into_owned());
+                if lines.len() == 6 {
+                    LineReadControl::Stop
+                } else {
+                    LineReadControl::Continue
+                }
+            })
+            .unwrap();
+
+        assert_eq!(lines.len(), 6, "{lines:?}");
+        assert!(output.status_success, "status was {}", output.status);
+        assert!(output.stopped_by_consumer);
+        assert!(!output.timed_out);
+        assert!(!output.cancelled);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(wait_until_dead(process_id, Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn streaming_cancellation_wins_over_simultaneous_consumer_stop() {
+        let cancellation = CancellationToken::new();
+        let mut managed = ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
+                "--nocapture".to_string(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_lines"))],
+            timeout: Some(Duration::from_secs(5)),
+            cancellation: cancellation.clone(),
+        })
+        .unwrap();
+
+        let output = managed
+            .wait_for_line_output(1024, |_, _| {
+                cancellation.cancel();
+                LineReadControl::Stop
+            })
+            .unwrap();
+
+        assert!(output.cancelled);
+        assert!(!output.stopped_by_consumer);
+        assert!(!output.status_success);
     }
 
     #[test]

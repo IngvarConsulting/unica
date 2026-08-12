@@ -29,6 +29,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub(crate) use crate::infrastructure::platform::LineReadControl as ProcessLineControl;
+
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 const GIT_TRACKING_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -59,6 +61,7 @@ pub struct ProcessStreamOutput {
     pub stderr: String,
     pub timed_out: bool,
     pub cancelled: bool,
+    pub stopped_by_consumer: bool,
     pub line_error: Option<(usize, String)>,
 }
 
@@ -69,7 +72,7 @@ pub trait ProcessRunner {
         &self,
         command: &ProcessCommand,
         max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]),
+        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineControl,
     ) -> Result<ProcessStreamOutput, String> {
         let output = self.run(command)?;
         let mut line_error = None;
@@ -88,7 +91,21 @@ pub trait ProcessRunner {
                     (index + 1, "line exceeds configured byte limit".to_string())
                 });
             } else {
-                on_line(index + 1, bytes);
+                if on_line(index + 1, bytes) == ProcessLineControl::Stop
+                    && output.status_success
+                    && !output.timed_out
+                    && !output.cancelled
+                {
+                    return Ok(ProcessStreamOutput {
+                        status_success: true,
+                        status: "stopped by consumer".to_string(),
+                        stderr: output.stderr,
+                        timed_out: false,
+                        cancelled: false,
+                        stopped_by_consumer: true,
+                        line_error,
+                    });
+                }
             }
         }
         Ok(ProcessStreamOutput {
@@ -97,6 +114,7 @@ pub trait ProcessRunner {
             stderr: output.stderr,
             timed_out: output.timed_out,
             cancelled: output.cancelled,
+            stopped_by_consumer: false,
             line_error,
         })
     }
@@ -1789,7 +1807,10 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         let mut process_args = vec!["analyze".to_string()];
         process_args.extend(execution_args);
         let mut parser = DiagnosticsJsonlParser::new(&source_dir, args.clone())?;
-        let mut consume = |line_number, bytes: &[u8]| parser.push_line(line_number, bytes);
+        let mut consume = |line_number, bytes: &[u8]| {
+            parser.push_line(line_number, bytes);
+            ProcessLineControl::Continue
+        };
         let output = self.process_runner.run_streaming(
             &ProcessCommand {
                 program: bundled_tool.program,
@@ -2142,7 +2163,7 @@ impl ProcessRunner for SystemProcessRunner {
         &self,
         command: &ProcessCommand,
         max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]),
+        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineControl,
     ) -> Result<ProcessStreamOutput, String> {
         let mut child = ManagedChild::spawn(ManagedCommand {
             program: command.program.clone(),
@@ -2180,6 +2201,7 @@ fn map_managed_line_output(output: ManagedLineOutput) -> ProcessStreamOutput {
         stderr: output.stderr,
         timed_out: output.timed_out,
         cancelled: output.cancelled,
+        stopped_by_consumer: output.stopped_by_consumer,
         line_error: output.line_error,
     }
 }

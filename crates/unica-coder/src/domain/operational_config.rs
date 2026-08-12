@@ -4,7 +4,7 @@ use std::time::Duration;
 
 const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 120;
 const SEARCH_RLM_DEFAULT_SECONDS: u64 = 45;
-const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 15;
+const SEARCH_GIT_GREP_DEFAULT_MILLISECONDS: u64 = 500;
 const PROVIDER_READ_DEFAULT_SECONDS: u64 = 45;
 const DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS: u64 = 120;
 const EXPLICIT_DIAGNOSTICS_ANALYZE_MIN_SECONDS: u64 = 30;
@@ -128,7 +128,7 @@ impl CodeIntelligenceDeadlines {
         Self {
             search_total_timeout: Duration::from_secs(SEARCH_TOTAL_DEFAULT_SECONDS),
             search_rlm_timeout: Duration::from_secs(SEARCH_RLM_DEFAULT_SECONDS),
-            search_git_grep_timeout: Duration::from_secs(SEARCH_GIT_GREP_DEFAULT_SECONDS),
+            search_git_grep_timeout: Duration::from_millis(SEARCH_GIT_GREP_DEFAULT_MILLISECONDS),
             provider_read_timeout: Duration::from_secs(PROVIDER_READ_DEFAULT_SECONDS),
         }
     }
@@ -430,13 +430,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compiled_defaults_preserve_existing_deadlines() {
+    fn compiled_defaults_bound_the_git_grep_fallback() {
         let config = OperationalConfig::compiled_defaults();
         let code = config.code_intelligence();
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(120));
         assert_eq!(code.search_rlm_timeout(), Duration::from_secs(45));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(15));
+        assert_eq!(code.search_git_grep_timeout(), Duration::from_millis(500));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),

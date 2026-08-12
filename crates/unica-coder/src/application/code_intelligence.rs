@@ -565,14 +565,22 @@ pub(crate) fn track_code_search_worker_for_test(handle: thread::JoinHandle<()>) 
 }
 
 fn provider_timeout_section(provider: ProviderId, budget: Duration) -> ProviderSearchSection {
+    let diagnostic = if provider == ProviderId::GitGrep {
+        format!(
+            "git-grep search was too slow and exceeded its {} ms budget before completion",
+            budget.as_millis()
+        )
+    } else {
+        format!(
+            "provider exceeded its {} ms search budget",
+            budget.as_millis()
+        )
+    };
     ProviderSearchSection {
         provider,
         status: ProviderSectionStatus::Failed,
         hits: Vec::new(),
-        diagnostics: vec![format!(
-            "provider exceeded its {} ms search budget",
-            budget.as_millis()
-        )],
+        diagnostics: vec![diagnostic],
         artifacts: Vec::new(),
     }
 }
@@ -959,7 +967,7 @@ mod tests {
         let providers = [
             (ProviderId::Rlm, Duration::from_secs(45)),
             (ProviderId::BslAnalyzer, Duration::from_secs(120)),
-            (ProviderId::GitGrep, Duration::from_secs(15)),
+            (ProviderId::GitGrep, Duration::from_millis(500)),
         ]
         .into_iter()
         .map(|(id, maximum)| {
@@ -1060,11 +1068,11 @@ mod tests {
         assert!(execution.ok, "{execution:?}");
     }
 
-    struct DeadlineIgnoringProvider;
+    struct DeadlineIgnoringProvider(ProviderId);
 
     impl CodeIntelligenceProvider for DeadlineIgnoringProvider {
         fn id(&self) -> ProviderId {
-            ProviderId::BslAnalyzer
+            self.0
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1095,7 +1103,7 @@ mod tests {
         let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
         let coordinator = CodeSearchCoordinator::with_policy(
             CodeIntelligenceRegistry::new(vec![
-                Arc::new(DeadlineIgnoringProvider),
+                Arc::new(DeadlineIgnoringProvider(ProviderId::BslAnalyzer)),
                 static_provider(ProviderId::GitGrep, ProviderSectionStatus::Empty, ""),
             ])
             .unwrap(),
@@ -1131,7 +1139,7 @@ mod tests {
         assert_eq!(lifecycle.pending_count(), 1);
         let second = CodeSearchCoordinator::with_policy(
             CodeIntelligenceRegistry::new(vec![
-                Arc::new(DeadlineIgnoringProvider),
+                Arc::new(DeadlineIgnoringProvider(ProviderId::BslAnalyzer)),
                 static_provider(ProviderId::GitGrep, ProviderSectionStatus::Empty, ""),
             ])
             .unwrap(),
@@ -1157,6 +1165,49 @@ mod tests {
         assert!(lifecycle.drain(Duration::from_secs(2)));
         assert_eq!(lifecycle.pending_count(), 0);
         assert_eq!(admission.active_count(ProviderId::BslAnalyzer), 0);
+    }
+
+    #[test]
+    fn indexed_result_survives_git_grep_timeout_with_a_slow_search_warning() {
+        let admission = Arc::new(ProviderWorkerAdmission::new(1));
+        let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
+        let coordinator = CodeSearchCoordinator::with_policy(
+            CodeIntelligenceRegistry::new(vec![
+                Arc::new(DeadlineIgnoringProvider(ProviderId::GitGrep)),
+                static_provider(ProviderId::Rlm, ProviderSectionStatus::Empty, ""),
+            ])
+            .unwrap(),
+            Duration::from_millis(30),
+            admission,
+            Arc::clone(&lifecycle),
+        );
+
+        let execution = coordinator
+            .search(
+                &SearchRequest {
+                    query: "Post".to_string(),
+                    limit: 6,
+                },
+                &context(),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert!(execution.ok, "{execution:?}");
+        let git_grep = execution
+            .result
+            .sections
+            .iter()
+            .find(|section| section.provider == ProviderId::GitGrep)
+            .unwrap();
+        assert_eq!(git_grep.status, ProviderSectionStatus::Failed);
+        assert!(git_grep.hits.is_empty());
+        assert!(git_grep.diagnostics[0].contains("too slow"));
+        assert!(execution
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("git-grep") && warning.contains("too slow")));
+        assert!(lifecycle.drain(Duration::from_secs(2)));
     }
 
     struct StaticReadProvider;
