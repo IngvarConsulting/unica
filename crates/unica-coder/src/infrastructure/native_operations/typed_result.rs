@@ -48,6 +48,7 @@ impl NativeOperationAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
         mutating: bool,
+        support_reader: &dyn crate::domain::support_state::SupportStateReader,
         control: NativeInvocationControl<'_>,
     ) -> Result<NativeOperationResult, String> {
         if operation == "xdto-info" {
@@ -224,11 +225,11 @@ impl NativeOperationAdapter {
         }
         match operation {
             "cf-info" => {
-                let execution = cf::analyze_cf_info(args, context);
+                let execution = cf::analyze_cf_info(args, context, support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "cf info");
             }
             "role-info" => {
-                let execution = role::analyze_role_info(args, context);
+                let execution = role::analyze_role_info(args, context, support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "role info");
             }
             "cfe-diff" => {
@@ -236,15 +237,16 @@ impl NativeOperationAdapter {
                 return typed_operation_result(execution.outcome, execution.data, "cfe diff");
             }
             "dcs-info" => {
-                let execution = super::dcs::analyze_dcs_info_with_data(args, context);
+                let execution =
+                    super::dcs::analyze_dcs_info_with_data(args, context, support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "dcs info");
             }
             "form-info" => {
-                let execution = form::analyze_form_info_with_data(args, context);
+                let execution = form::analyze_form_info_with_data(args, context, support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "form info");
             }
             "mxl-info" => {
-                let execution = mxl::analyze_mxl_info(args, context);
+                let execution = mxl::analyze_mxl_info(args, context, support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "mxl info");
             }
             "subsystem-info" => {

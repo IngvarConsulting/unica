@@ -137,6 +137,7 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
         &context,
         false,
         false,
+        &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
         NativeInvocationControl::new(
             &cancellation,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),

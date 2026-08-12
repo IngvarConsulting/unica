@@ -12,7 +12,7 @@ use crate::domain::source_target::{
 use crate::domain::support_state::{SupportReadError, SupportReadErrorCode};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, AttachedResource,
+    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
 };
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
@@ -1157,6 +1157,18 @@ pub(crate) fn resolve_role_read_rights_path(
     )))
 }
 
+pub(crate) fn resolve_role_info_target(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<ResolvedReadTarget, String> {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, &["Role"]) {
+        return selection.map_err(|failure| failure.to_string());
+    }
+    let rights_path = resolve_role_read_rights_path(args, context)?;
+    physical_selection(&rights_path, context, AttachedResource::Rights)
+        .map_err(|failure| failure.to_string())
+}
+
 pub(crate) fn is_valid_uuid(value: &str) -> bool {
     let parts = value.split('-').collect::<Vec<_>>();
     let expected = [8usize, 4, 4, 4, 12];
@@ -1231,6 +1243,20 @@ pub(crate) fn resolve_cf_read_config_path(
             .map_err(|failure| failure.to_string());
     }
     resolve_configuration_read_path(args, CF_PATH, "ConfigPath", context)
+}
+
+pub(crate) fn resolve_cf_info_target(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<ResolvedReadTarget, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::ConfigurationRoot, &[])
+    {
+        return selection.map_err(|failure| failure.to_string());
+    }
+    let config_path = resolve_configuration_read_path(args, CF_PATH, "ConfigPath", context)?;
+    physical_selection(&config_path, context, AttachedResource::ConfigurationRoot)
+        .map_err(|failure| failure.to_string())
 }
 
 pub(crate) fn resolve_cfe_validate_config_path(

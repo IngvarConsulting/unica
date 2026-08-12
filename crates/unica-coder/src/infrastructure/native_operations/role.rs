@@ -11,6 +11,9 @@ use crate::domain::source_target::{
     MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
+use crate::domain::support_state::{
+    ObjectSupportData as DomainObjectSupportData, SupportStateReader,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::prove_attached_resource;
 use crate::infrastructure::native_operations::text_snapshot::{
@@ -30,6 +33,7 @@ use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
     ResolvedSupportGuardCheck,
 };
+use crate::infrastructure::support_state::WorkspaceSupportStateReader;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
@@ -282,7 +286,7 @@ pub(crate) fn role_read_format_dependency_paths(
 pub(crate) struct RoleInfoData {
     pub(crate) name: String,
     pub(crate) synonym: Option<String>,
-    pub(crate) support: ObjectSupportData,
+    pub(crate) support: DomainObjectSupportData,
     pub(crate) defaults: RoleDefaultsData,
     pub(crate) allowed: Vec<RoleGroupData>,
     pub(crate) denied: Vec<RoleGroupData>,
@@ -364,9 +368,11 @@ fn role_attribute(value: &str) -> Option<String> {
 pub(crate) fn analyze_role_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    support_reader: &dyn SupportStateReader,
 ) -> RoleInfoExecution {
     let result = (|| -> Result<(RoleInfoData, PathBuf), String> {
-        let rights_path = resolve_role_read_rights_path(args, context)?;
+        let selection = resolve_role_info_target(args, context)?;
+        let rights_path = selection.resource_path;
         if !rights_path.is_file() {
             return Err(format!("[ERROR] File not found: {}", rights_path.display()));
         }
@@ -486,7 +492,9 @@ pub(crate) fn analyze_role_info(
         let data = RoleInfoData {
             name: role_name,
             synonym: (!role_synonym.is_empty()).then_some(role_synonym),
-            support: object_support_state(&rights_path),
+            support: support_reader
+                .object_support(&selection.target)
+                .map_err(|error| error.to_string())?,
             defaults: RoleDefaultsData {
                 set_for_new_objects: role_attribute(set_for_new),
                 set_for_attributes_by_default: role_attribute(set_for_attrs),
@@ -1922,7 +1930,12 @@ pub(crate) fn invoke_read(
     match operation {
         // Typed answer: the registry keeps the prose-shaped signature, and the
         // data reaches the envelope through typed_result.rs.
-        "role-info" => Some(Ok(analyze_role_info(args, context).outcome)),
+        "role-info" => Some(Ok(analyze_role_info(
+            args,
+            context,
+            &WorkspaceSupportStateReader::new(context),
+        )
+        .outcome)),
         "role-validate" => Some(Ok(validate_role(args, context))),
         _ => None,
     }
@@ -4353,6 +4366,11 @@ mod role_info_typed_result_tests {
         ));
         fs::create_dir_all(root.join("src/Roles/Reader/Ext")).unwrap();
         fs::write(
+            root.join("src/Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Role>Reader</Role></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
             root.join("src/Roles/Reader.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>"#,
         )
@@ -4383,7 +4401,7 @@ mod role_info_typed_result_tests {
         let context = workspace("support");
         fs::write(
             context.workspace_root.join("src/Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties></Configuration></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Role>Reader</Role></ChildObjects></Configuration></MetaDataObject>"#,
         )
         .unwrap();
         let args = Map::from_iter([(
@@ -4391,14 +4409,19 @@ mod role_info_typed_result_tests {
             json!("src/Roles/Reader/Ext/Rights.xml"),
         )]);
 
-        let execution = analyze_role_info(&args, &context);
+        let execution =
+            analyze_role_info(&args, &context, &WorkspaceSupportStateReader::new(&context));
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         let data = execution.data.expect("role info answers with data");
         // No ParentConfigurations.bin here, so the honest answer is
         // `notSupported` — but it must come from the resolved configuration
         // root, not from a directory the walk never reached.
-        assert_eq!(data.support.state, "notSupported", "{data:?}");
+        assert_eq!(
+            data.support.state,
+            crate::domain::support_state::ObjectSupportState::NotSupported,
+            "{data:?}"
+        );
         assert_eq!(data.support.direct_edit_safe, None, "{data:?}");
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
@@ -4413,7 +4436,8 @@ mod role_info_typed_result_tests {
             json!("src/Roles/Reader/Ext/Rights.xml"),
         )]);
 
-        let execution = analyze_role_info(&args, &context);
+        let execution =
+            analyze_role_info(&args, &context, &WorkspaceSupportStateReader::new(&context));
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         assert!(execution.outcome.stdout.is_none());
@@ -4457,6 +4481,7 @@ mod role_info_typed_result_tests {
                 json!("src/Roles/Reader/Ext/Rights.xml"),
             )]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
         let logical = analyze_role_info(
             &Map::from_iter([
@@ -4464,6 +4489,7 @@ mod role_info_typed_result_tests {
                 ("metadataPath".to_string(), json!("Role.Reader")),
             ]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
 
         assert!(logical.outcome.ok, "{:?}", logical.outcome);
@@ -4487,6 +4513,7 @@ mod role_info_typed_result_tests {
                 ("metadataPath".to_string(), json!("Роль.Reader")),
             ]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
 
         assert!(logical.outcome.ok, "{:?}", logical.outcome);
@@ -4507,6 +4534,7 @@ mod role_info_typed_result_tests {
                 ("metadataPath".to_string(), json!("Catalog.Goods")),
             ]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         )
         .outcome;
 

@@ -1989,7 +1989,12 @@ mod tests {
             "sorted inspection order must make warning attribution deterministic"
         );
 
-        let outcome = analyze_dcs_info(&args, &context(&root));
+        let context = context(&root);
+        let outcome = analyze_dcs_info(
+            &args,
+            &context,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
+        );
         assert!(!outcome.ok);
         assert_eq!(
             outcome.errors,

@@ -4,12 +4,16 @@ use crate::application::operation_descriptors::{FORM_PATH, OBJECT_PATH};
 use crate::application::AdapterOutcome;
 use crate::domain::form_edit::validate_form_edit_definition;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
+use crate::domain::support_state::{
+    ObjectSupportData as DomainObjectSupportData, SupportStateReader,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, AttachedResource,
+    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
 };
 use crate::infrastructure::platform_xml_owner::{root_version_literal, MANAGED_FORM_ROOT};
 use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::support_state::WorkspaceSupportStateReader;
 use roxmltree::Document;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -1462,7 +1466,7 @@ pub(crate) struct FormInfoData {
     /// `BaseForm` version for an extension form; `null` when the form declares
     /// no base form, empty string when it declares one without a version.
     pub(crate) base_form_version: Option<String>,
-    pub(crate) support: ObjectSupportData,
+    pub(crate) support: DomainObjectSupportData,
     pub(crate) properties: Vec<FormInfoProperty>,
     pub(crate) events: Vec<FormInfoEvent>,
     /// Items of the form's own command bar; empty when it has none or when
@@ -1704,8 +1708,9 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
 pub(crate) fn analyze_form_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    support_reader: &dyn SupportStateReader,
 ) -> AdapterOutcome {
-    analyze_form_info_with_data(args, context).outcome
+    analyze_form_info_with_data(args, context, support_reader).outcome
 }
 
 /// The address kinds a form reader accepts: a nested `Catalog.X.Form.Y` and a
@@ -1727,12 +1732,26 @@ pub(crate) fn resolve_form_read_path(
     Ok(resolve_form_info_path(absolutize(raw_path, &context.cwd)))
 }
 
+pub(crate) fn resolve_form_info_target(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<ResolvedReadTarget, String> {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Form, FORM_KINDS) {
+        return selection.map_err(|failure| failure.to_string());
+    }
+    let form_path = resolve_form_read_path(args, context)?;
+    physical_selection(&form_path, context, AttachedResource::Form)
+        .map_err(|failure| failure.to_string())
+}
+
 pub(crate) fn analyze_form_info_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    support_reader: &dyn SupportStateReader,
 ) -> FormInfoExecution {
     let result = (|| -> Result<(FormInfoData, PathBuf), String> {
-        let form_path = resolve_form_read_path(args, context)?;
+        let selection = resolve_form_info_target(args, context)?;
+        let form_path = selection.resource_path;
         if !form_path.is_file() {
             return Err(format!("File not found: {}", form_path.display()));
         }
@@ -1804,7 +1823,9 @@ pub(crate) fn analyze_form_info_with_data(
             is_extension,
             base_form_version: base_form
                 .map(|node| node.attribute("version").unwrap_or("").to_string()),
-            support: object_support_state(&form_path),
+            support: support_reader
+                .object_support(&selection.target)
+                .map_err(|error| error.to_string())?,
             properties,
             events: form_child(root, "Events")
                 .map(form_info_events_section)
@@ -10775,7 +10796,11 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "form-info" => Some(Ok(analyze_form_info(args, context))),
+        "form-info" => Some(Ok(analyze_form_info(
+            args,
+            context,
+            &WorkspaceSupportStateReader::new(context),
+        ))),
         "form-validate" => Some(Ok(validate_form(args, context))),
         _ => None,
     }
@@ -10836,6 +10861,34 @@ mod tests {
         }
     }
 
+    fn form_info_context(name: &str) -> (WorkspaceContext, PathBuf) {
+        let context = temp_context(name);
+        let source = context.workspace_root.join("src");
+        let form_path = source.join("Catalogs/Items/Forms/Order/Ext/Form.xml");
+        fs::create_dir_all(form_path.parent().unwrap()).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>Order</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            source.join("Catalogs/Items/Forms/Order.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Order</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+        (context, form_path)
+    }
+
     fn write_file(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
@@ -10861,11 +10914,14 @@ mod tests {
 
     #[test]
     fn form_info_rejects_wrong_root_namespace() {
-        let context = temp_context("info-wrong-root-ns");
-        let form_path = context.cwd.join("Form.xml");
+        let (context, form_path) = form_info_context("info-wrong-root-ns");
         write_file(&form_path, &editable_contract_form("urn:not-logform", ""));
 
-        let outcome = analyze_form_info(&form_path_args(&form_path), &context);
+        let outcome = analyze_form_info(
+            &form_path_args(&form_path),
+            &context,
+            &WorkspaceSupportStateReader::new(&context),
+        );
 
         assert!(!outcome.ok, "{outcome:?}");
         assert!(outcome.artifacts.is_empty());
@@ -14944,7 +15000,11 @@ mod tests {
         )]);
         let validation = validate_form(&validate_args, &context);
         assert!(validation.ok, "{validation:?}");
-        let info = analyze_form_info_with_data(&validate_args, &context);
+        let info = analyze_form_info_with_data(
+            &validate_args,
+            &context,
+            &WorkspaceSupportStateReader::new(&context),
+        );
         assert!(info.outcome.ok, "{:?}", info.outcome);
         let info_data = info.data.as_ref().expect("form.info answers with data");
         assert!(
@@ -19037,6 +19097,7 @@ mod tests {
                 &context,
                 true,
                 true,
+                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
                 NativeInvocationControl::new(
                     &cancellation,
                     ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
@@ -19544,6 +19605,7 @@ mod form_read_selector_bridge_tests {
                 json!("src/Catalogs/Items/Forms/Order/Ext/Form.xml"),
             )]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
         let logical = analyze_form_info_with_data(
             &Map::from_iter([
@@ -19554,6 +19616,7 @@ mod form_read_selector_bridge_tests {
                 ),
             ]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
 
         assert!(logical.outcome.ok, "{:?}", logical.outcome);
@@ -19574,6 +19637,7 @@ mod form_read_selector_bridge_tests {
                 ("metadataPath".to_string(), json!("CommonForm.Settings")),
             ]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
 
         assert!(logical.outcome.ok, "{:?}", logical.outcome);

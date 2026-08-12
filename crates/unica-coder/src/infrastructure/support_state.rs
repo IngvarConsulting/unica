@@ -14,6 +14,18 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::source_roots::{resolve_named_source_set, ResolvedNamedSourceSet};
 use std::fs;
 
+pub(crate) trait SupportStateReaderFactory: Send + Sync {
+    fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a>;
+}
+
+pub(crate) struct WorkspaceSupportStateReaderFactory;
+
+impl SupportStateReaderFactory for WorkspaceSupportStateReaderFactory {
+    fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a> {
+        Box::new(WorkspaceSupportStateReader::new(context))
+    }
+}
+
 pub(crate) struct WorkspaceSupportStateReader<'a> {
     context: &'a WorkspaceContext,
 }

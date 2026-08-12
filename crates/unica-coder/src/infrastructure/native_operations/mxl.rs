@@ -1,11 +1,15 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
+use crate::domain::support_state::{
+    ObjectSupportData as DomainObjectSupportData, SupportStateReader,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, AttachedResource,
+    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
 };
 use crate::infrastructure::platform_xml_owner::MXL_ROOT;
+use crate::infrastructure::support_state::WorkspaceSupportStateReader;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -174,7 +178,7 @@ impl MxlValidationReporter {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MxlInfoData {
     pub(crate) name: String,
-    pub(crate) support: ObjectSupportData,
+    pub(crate) support: DomainObjectSupportData,
     pub(crate) rows: i64,
     pub(crate) columns: i64,
     pub(crate) column_sets: Vec<MxlColumnSetData>,
@@ -228,9 +232,11 @@ pub(crate) struct MxlInfoExecution {
 pub(crate) fn analyze_mxl_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    support_reader: &dyn SupportStateReader,
 ) -> MxlInfoExecution {
     let result = (|| -> Result<(MxlInfoData, PathBuf), String> {
-        let template_path = resolve_mxl_info_path(args, context)?;
+        let selection = resolve_mxl_info_target(args, context)?;
+        let template_path = selection.resource_path;
         if !template_path.is_file() {
             return Err(format!("File not found: {}", template_path.display()));
         }
@@ -412,7 +418,9 @@ pub(crate) fn analyze_mxl_info(
 
         let data = MxlInfoData {
             name: template_name,
-            support: object_support_state(&template_path),
+            support: support_reader
+                .object_support(&selection.target)
+                .map_err(|error| error.to_string())?,
             rows: doc_height,
             columns: default_col_count,
             column_sets: column_sets
@@ -1958,6 +1966,20 @@ pub(crate) fn resolve_mxl_info_path(
     Ok(resolve_template_layout_path(&path, &context.cwd))
 }
 
+pub(crate) fn resolve_mxl_info_target(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<ResolvedReadTarget, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::Template, TEMPLATE_KINDS)
+    {
+        return selection.map_err(|failure| failure.to_string());
+    }
+    let template_path = resolve_mxl_info_path(args, context)?;
+    physical_selection(&template_path, context, AttachedResource::Template)
+        .map_err(|failure| failure.to_string())
+}
+
 pub(crate) fn resolve_mxl_validate_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -3153,7 +3175,12 @@ pub(crate) fn invoke_read(
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
         // Typed answer; the data reaches the envelope through typed_result.rs.
-        "mxl-info" => Some(Ok(analyze_mxl_info(args, context).outcome)),
+        "mxl-info" => Some(Ok(analyze_mxl_info(
+            args,
+            context,
+            &WorkspaceSupportStateReader::new(context),
+        )
+        .outcome)),
         "mxl-validate" => Some(Ok(validate_mxl(args, context))),
         "mxl-decompile" => Some(Ok(decompile_mxl(args, context))),
         _ => None,
@@ -3268,10 +3295,12 @@ mod tests {
     #[test]
     fn mxl_info_reports_zero_rows_for_platform_8_3_27_empty_fixture() {
         let context = test_context("info-platform-empty");
-        let fixture = platform_mxl_fixture();
-        let args = path_args(&fixture);
+        let template_path = mxl_info_template_path(&context);
+        fs::copy(platform_mxl_fixture(), &template_path).unwrap();
+        let args = path_args(&template_path);
 
-        let execution = analyze_mxl_info(&args, &context);
+        let execution =
+            analyze_mxl_info(&args, &context, &WorkspaceSupportStateReader::new(&context));
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         // ADR-0023: the template description is data, not a JSON string in stdout.
@@ -3289,7 +3318,8 @@ mod tests {
         let (context, template_path) = write_test_mxl("info-first-empty-row", &xml);
         let args = path_args(&template_path);
 
-        let execution = analyze_mxl_info(&args, &context);
+        let execution =
+            analyze_mxl_info(&args, &context, &WorkspaceSupportStateReader::new(&context));
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         // ADR-0023: the template description is data, not a JSON string in stdout.
@@ -3307,7 +3337,8 @@ mod tests {
         let (context, template_path) = write_test_mxl("info-height-zero-lookalike", &xml);
         let args = path_args(&template_path);
 
-        let execution = analyze_mxl_info(&args, &context);
+        let execution =
+            analyze_mxl_info(&args, &context, &WorkspaceSupportStateReader::new(&context));
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         // ADR-0023: the template description is data, not a JSON string in stdout.
@@ -3322,17 +3353,21 @@ mod tests {
     #[test]
     fn mxl_info_resolves_a_layout_directory_to_its_template() {
         let context = test_context("info-layout-directory");
-        let layout = context.cwd.join("Templates").join("ПФ_MXL_Продажи");
+        let layout = context.cwd.join("src/Reports/Sales/Templates/Main");
         let template_path = layout.join("Ext").join("Template.xml");
         fs::create_dir_all(template_path.parent().unwrap()).unwrap();
         fs::write(&template_path, empty_spreadsheet_document_xml()).unwrap();
 
-        let execution = analyze_mxl_info(&path_args(&layout), &context);
+        let execution = analyze_mxl_info(
+            &path_args(&layout),
+            &context,
+            &WorkspaceSupportStateReader::new(&context),
+        );
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         assert_eq!(
             execution.outcome.artifacts,
-            vec![template_path.display().to_string()]
+            vec![template_path.canonicalize().unwrap().display().to_string()]
         );
         let _ = fs::remove_dir_all(&context.cwd);
     }
@@ -3382,7 +3417,11 @@ mod tests {
         let (context, template_path) =
             write_test_mxl("info-namespace", "<document xmlns=\"urn:not-mxl\"/>");
 
-        let execution = analyze_mxl_info(&path_args(&template_path), &context);
+        let execution = analyze_mxl_info(
+            &path_args(&template_path),
+            &context,
+            &WorkspaceSupportStateReader::new(&context),
+        );
 
         let outcome = execution.outcome;
         assert!(!outcome.ok, "{outcome:?}");
@@ -4181,9 +4220,15 @@ mod tests {
 
     fn write_test_mxl(name: &str, xml: &str) -> (WorkspaceContext, PathBuf) {
         let context = test_context(name);
-        let template_path = context.cwd.join("Template.xml");
+        let template_path = mxl_info_template_path(&context);
         fs::write(&template_path, xml).unwrap();
         (context, template_path)
+    }
+
+    fn mxl_info_template_path(context: &WorkspaceContext) -> PathBuf {
+        context
+            .cwd
+            .join("src/Reports/Sales/Templates/Main/Ext/Template.xml")
     }
 
     fn test_context(name: &str) -> WorkspaceContext {
@@ -4192,7 +4237,28 @@ mod tests {
             .unwrap()
             .as_nanos();
         let cwd = std::env::temp_dir().join(format!("unica-mxl-{name}-{nanos}"));
-        fs::create_dir_all(&cwd).unwrap();
+        let source = cwd.join("src");
+        fs::create_dir_all(source.join("Reports/Sales/Templates/Main/Ext")).unwrap();
+        fs::write(
+            cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Report>Sales</Report></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            source.join("Reports/Sales.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Report><Properties><Name>Sales</Name></Properties><ChildObjects><Template>Main</Template></ChildObjects></Report></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            source.join("Reports/Sales/Templates/Main.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Main</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>"#,
+        )
+        .unwrap();
         WorkspaceContext {
             cwd: cwd.clone(),
             workspace_root: cwd.clone(),
@@ -4295,8 +4361,9 @@ mod mxl_read_selector_bridge_tests {
     fn mxl_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-info");
 
-        let physical = analyze_mxl_info(&physical_args(), &context);
-        let logical = analyze_mxl_info(&logical_args(), &context);
+        let support_reader = WorkspaceSupportStateReader::new(&context);
+        let physical = analyze_mxl_info(&physical_args(), &context, &support_reader);
+        let logical = analyze_mxl_info(&logical_args(), &context, &support_reader);
 
         assert!(logical.outcome.ok, "{:?}", logical.outcome);
         assert_eq!(
@@ -4351,8 +4418,9 @@ mod mxl_read_selector_bridge_tests {
     fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-info");
 
-        let physical = analyze_dcs_info_with_data(&dcs_physical_args(), &context);
-        let logical = analyze_dcs_info_with_data(&dcs_logical_args(), &context);
+        let support_reader = WorkspaceSupportStateReader::new(&context);
+        let physical = analyze_dcs_info_with_data(&dcs_physical_args(), &context, &support_reader);
+        let logical = analyze_dcs_info_with_data(&dcs_logical_args(), &context, &support_reader);
 
         // Both must succeed: comparing two identical failures would pass while
         // proving nothing about the bridge.
@@ -4395,6 +4463,7 @@ mod mxl_read_selector_bridge_tests {
                 ("metadataPath".to_string(), json!("CommonTemplate.Logo")),
             ]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         )
         .outcome;
 

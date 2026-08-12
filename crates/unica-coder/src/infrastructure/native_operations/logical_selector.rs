@@ -167,7 +167,6 @@ fn resolve(
 /// address from directory names. `source.locate` supplies the inverse mapping;
 /// the normal resolver and resource proof then have to reproduce the exact
 /// file the caller supplied.
-#[allow(dead_code)] // Consumed when the subject readers migrate in the next task.
 pub(crate) fn physical_selection(
     resource_path: &Path,
     context: &WorkspaceContext,
