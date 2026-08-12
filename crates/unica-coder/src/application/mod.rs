@@ -10051,6 +10051,7 @@ mod tests {
                 "cccccccc-cccc-cccc-cccc-cccccccccccc",
             ),
         );
+        write_support_test_vendor_payload(&workspace);
         let before = std::fs::read_to_string(&bin_path).unwrap();
         let mut args = Map::new();
         args.insert(
@@ -10072,6 +10073,100 @@ mod tests {
     }
 
     #[test]
+    fn support_edit_missing_vendor_payload_blocks_preview_and_apply_before_side_effects() {
+        let bin = support_test_parent_configurations_bin(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        )
+        .replace("{6,0,", "{6,1,");
+        let (root, workspace, bin_path) =
+            support_test_workspace("unica-support-edit-missing-vendor-payload", bin);
+        let before = std::fs::read(&bin_path).unwrap();
+        let state_path = workspace.join(".build/unica/state.json");
+        let mut args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("Path".to_string(), Value::String("src".to_string())),
+            ("Capability".to_string(), Value::String("on".to_string())),
+        ]);
+        let mut results = Vec::new();
+
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.support.edit", &args)
+                .unwrap();
+
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert!(
+                result.errors.join("\n").contains("VendorConf.cf"),
+                "dryRun={dry_run}: {result:?}"
+            );
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            assert_eq!(std::fs::read(&bin_path).unwrap(), before);
+            assert!(!state_path.exists(), "dryRun={dry_run}");
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn support_edit_unreadable_vendor_payload_blocks_preview_and_apply_before_side_effects() {
+        let bin = support_test_parent_configurations_bin(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        )
+        .replace("{6,0,", "{6,1,");
+        let (root, workspace, bin_path) =
+            support_test_workspace("unica-support-edit-unreadable-vendor-payload", bin);
+        write_support_test_vendor_payload(&workspace);
+        let vendor_payload = workspace.join("src/Ext/ParentConfigurations/VendorConf.cf");
+        let before = std::fs::read(&bin_path).unwrap();
+        let state_path = workspace.join(".build/unica/state.json");
+        if !set_unix_mode_for_test(&vendor_payload, 0o000).unwrap() {
+            eprintln!("[SKIPPED FIXTURE] Unix permission modes are unsupported on this host");
+            std::fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        let mut args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("Path".to_string(), Value::String("src".to_string())),
+            ("Capability".to_string(), Value::String("on".to_string())),
+        ]);
+        let mut results = Vec::new();
+
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), Value::Bool(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.support.edit", &args)
+                .unwrap();
+
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert!(
+                result.errors.join("\n").contains("VendorConf.cf"),
+                "dryRun={dry_run}: {result:?}"
+            );
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            assert_eq!(std::fs::read(&bin_path).unwrap(), before);
+            assert!(!state_path.exists(), "dryRun={dry_run}");
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
+
+        assert!(set_unix_mode_for_test(&vendor_payload, 0o600).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn support_edit_capability_on_enables_global_editing() {
         let bin = support_test_parent_configurations_bin(
             "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -10081,6 +10176,7 @@ mod tests {
         .replace("{6,0,", "{6,1,");
         let (root, workspace, _bin_path) =
             support_test_workspace("unica-support-edit-capability-on", bin);
+        write_support_test_vendor_payload(&workspace);
         let mut args = Map::new();
         args.insert(
             "cwd".to_string(),
@@ -10120,6 +10216,7 @@ mod tests {
                 "cccccccc-cccc-cccc-cccc-cccccccccccc",
             ),
         );
+        write_support_test_vendor_payload(&workspace);
         let mut args = Map::new();
         args.insert(
             "cwd".to_string(),
@@ -11669,6 +11766,12 @@ mod tests {
 </MetaDataObject>"#,
         )
         .unwrap();
+    }
+
+    fn write_support_test_vendor_payload(workspace: &std::path::Path) {
+        let vendor_dir = workspace.join("src/Ext/ParentConfigurations");
+        std::fs::create_dir_all(&vendor_dir).unwrap();
+        std::fs::write(vendor_dir.join("VendorConf.cf"), b"platform vendor payload").unwrap();
     }
 
     fn support_test_catalog_xml(uuid: &str) -> String {

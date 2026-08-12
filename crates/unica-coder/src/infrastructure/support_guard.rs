@@ -10,6 +10,7 @@ use crate::infrastructure::native_operations::common::{
 };
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path;
+use crate::infrastructure::native_operations::support;
 use crate::infrastructure::native_operations::template;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -34,6 +35,27 @@ pub(crate) fn evaluate_support_guard(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<SupportGuardCheck, String> {
+    if matches!(
+        spec.handler,
+        ToolHandler::NativeOperation {
+            operation: "support-edit",
+            ..
+        }
+    ) {
+        if let Err(error) = support::preflight_support_edit_capability(args, context) {
+            return Ok(SupportGuardCheck::Block(AdapterOutcome {
+                ok: false,
+                summary: "support-edit failed".to_string(),
+                changes: Vec::new(),
+                warnings: Vec::new(),
+                errors: vec![error],
+                artifacts: Vec::new(),
+                stdout: None,
+                stderr: None,
+                command: None,
+            }));
+        }
+    }
     let Some((target_path, requirement)) = support_guard_target(spec, args, context) else {
         return Ok(SupportGuardCheck::Allow);
     };
