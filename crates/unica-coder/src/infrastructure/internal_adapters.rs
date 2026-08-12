@@ -4688,6 +4688,58 @@ source-set:
     }
 
     #[test]
+    fn diagnostics_analyze_preserves_cyrillic_paths_through_typed_jsonl() {
+        let context = temp_context("diagnostics-cyrillic-jsonl-path");
+        let expected_path = "CommonModules/РеактивныйКлиент/Ext/Module.bsl";
+        let file = json!({
+            "type": "file",
+            "path": expected_path,
+            "diagnostics": [{
+                "code": "LineLength",
+                "message": "Длина строки превышает максимальную",
+                "severity": "Warning",
+                "start_line": 10,
+                "start_column": 0,
+                "end_line": 10,
+                "end_column": 150,
+                "tags": []
+            }]
+        });
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: analyze_process_output(&format!(
+                concat!(
+                    "{{\"type\":\"start\",\"total_files\":1,\"version\":\"0.2.62\"}}\n",
+                    "{file}\n",
+                    "{{\"type\":\"done\",\"elapsed_secs\":0.1,\"total_files\":1,",
+                    "\"total_diagnostics\":1,\"failed_files\":0}}\n"
+                ),
+                file = file,
+            )),
+        };
+
+        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
+            .invoke("unica.code.diagnostics", &Map::new(), &context, false)
+            .unwrap();
+
+        assert!(analyzer.outcome.ok, "{:?}", analyzer.outcome);
+        assert!(analyzer.outcome.stdout.is_none());
+        assert_eq!(
+            analyzer.data.as_ref().unwrap()["items"][0]["path"],
+            expected_path
+        );
+        assert_eq!(
+            analyzer.data.as_ref().unwrap()["items"][0]["message"],
+            "Длина строки превышает максимальную"
+        );
+        assert!(runner.commands.borrow()[0]
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--format", "jsonl"]));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn diagnostics_analyze_uses_custom_timeout_without_forwarding_cli_argument() {
         let context = temp_context("diagnostics-custom-timeout");
         let runner = RecordingProcessRunner {
