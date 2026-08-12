@@ -6,6 +6,7 @@ use crate::application::ports::{
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode};
+use crate::domain::support_state::SupportStateReader;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::meta::{
     prepare_meta_add, prepare_meta_remove, prepare_typed_edit, read_typed_meta_info,
@@ -21,6 +22,7 @@ impl MetadataOperations {
         request: &MetaInfoRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
+        support_reader: &dyn SupportStateReader,
     ) -> Result<MetadataRead, MetaFailure> {
         let resolved = resolve_typed_metadata_object(
             &request.source_set,
@@ -36,6 +38,7 @@ impl MetadataOperations {
             context,
             ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(5)),
             cancellation,
+            support_reader,
         )?;
         Ok(MetadataRead {
             local,
@@ -759,6 +762,7 @@ mod tests {
             },
             &context,
             &cancellation,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
         )
         .unwrap();
         assert_eq!(
@@ -884,6 +888,9 @@ mod tests {
             },
             &fixture.context,
             &cancellation,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                &fixture.context,
+            ),
         )
         .unwrap();
         let validation = MetadataOperations::validate_read(
@@ -1023,6 +1030,9 @@ mod tests {
             },
             &fixture.context,
             &cancellation,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                &fixture.context,
+            ),
         )
         .unwrap();
         let validation = MetadataOperations::validate_read(
@@ -1102,6 +1112,9 @@ mod tests {
             },
             &fixture.context,
             &cancellation,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                &fixture.context,
+            ),
         )
         .unwrap();
         assert_eq!(
@@ -1196,6 +1209,9 @@ mod tests {
             &fixture.context,
             ProviderDeadline::new(std::time::Instant::now() - std::time::Duration::from_millis(1)),
             &cancellation,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                &fixture.context,
+            ),
         )
         .unwrap();
 
@@ -1290,6 +1306,9 @@ mod tests {
             },
             &fixture.context,
             &cancellation,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                &fixture.context,
+            ),
         )
         .unwrap();
         assert_eq!(read.local.relations.source, sources);

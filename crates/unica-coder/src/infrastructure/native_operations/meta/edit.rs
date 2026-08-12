@@ -17,7 +17,7 @@ use crate::domain::metadata::{
     MetadataKind, MetadataType, RelationEditMode, METADATA_PROPERTY_SPECS,
 };
 use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    MetadataAddress, ResolvedTarget, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_source_targets::{
@@ -640,6 +640,7 @@ pub(super) fn meta_edit_remove_xml_node_range(
 
 pub(crate) struct ResolvedMetadataObject {
     pub(super) handle: ClosedPlatformXmlTarget,
+    pub(super) resolved_target: ResolvedTarget,
     pub(super) metadata_path: MetadataAddress,
     pub(super) descriptor_path: PathBuf,
     pub(super) descriptor_preimage: Vec<u8>,
@@ -2354,6 +2355,7 @@ pub(crate) fn resolve_typed_metadata_object(
     }
     Ok(ResolvedMetadataObject {
         handle: resolution.handle,
+        resolved_target: resolution.resolved,
         metadata_path: resolved_metadata_path,
         descriptor_path: evidence.target_path,
         descriptor_preimage,

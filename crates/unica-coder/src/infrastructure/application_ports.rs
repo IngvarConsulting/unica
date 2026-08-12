@@ -117,7 +117,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
     ) -> Result<MetadataRead, MetaFailure> {
-        MetadataOperations::read_local(request, context, cancellation)
+        let support_reader = self.support_state_readers.create(context);
+        MetadataOperations::read_local(request, context, cancellation, support_reader.as_ref())
     }
 
     fn read_metadata_related(
@@ -1184,6 +1185,7 @@ mod tests {
         project_platform_version, select_installation_root, select_platform_version,
         verified_full_dump_invocation,
     };
+    use crate::application::metadata::MetaInfoRequest;
     use crate::application::{InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
@@ -1233,6 +1235,11 @@ mod tests {
     struct FailingSupportStateReaderFactory;
 
     struct FailingSupportStateReader;
+
+    #[derive(Clone, Copy)]
+    struct StaticObjectSupportStateReaderFactory(ObjectSupportState);
+
+    struct StaticObjectSupportStateReader(ObjectSupportState);
 
     impl SupportStateReaderFactory for RecordingSupportStateReaderFactory {
         fn create<'a>(
@@ -1323,6 +1330,41 @@ mod tests {
                 crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
                 "support-state provider is unavailable",
             ))
+        }
+    }
+
+    impl SupportStateReaderFactory for StaticObjectSupportStateReaderFactory {
+        fn create<'a>(
+            &'a self,
+            _context: &'a WorkspaceContext,
+        ) -> Box<dyn SupportStateReader + 'a> {
+            Box::new(StaticObjectSupportStateReader(self.0))
+        }
+    }
+
+    impl SupportStateReader for StaticObjectSupportStateReader {
+        fn configuration_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ConfigurationSupportData, SupportReadError> {
+            unreachable!("meta.info reads object support")
+        }
+
+        fn object_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            Ok(ObjectSupportData {
+                state: self.0,
+                direct_edit_safe: None,
+            })
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &ResolvedSubsystemTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            unreachable!("meta.info reads object support")
         }
     }
 
@@ -1542,6 +1584,120 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    fn meta_info_request() -> MetaInfoRequest {
+        MetaInfoRequest {
+            source_set: "main".to_string(),
+            metadata_path: metadata_address("Catalog.Items"),
+            sections: Vec::new(),
+            limit: 20,
+        }
+    }
+
+    #[test]
+    fn meta_info_passes_its_resolved_target_to_support_reader() {
+        use crate::application::ports::ApplicationPorts;
+
+        let (_root, context) = support_reader_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::new(Mutex::new(Vec::new())),
+            },
+        ));
+
+        let read = ports
+            .read_metadata_local(&meta_info_request(), &context, &CancellationToken::new())
+            .unwrap();
+
+        assert_eq!(
+            read.local.support,
+            crate::domain::metadata::MetaSupportStatus::Locked
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(
+                "object",
+                ResolvedTarget {
+                    source_set: "main".to_string(),
+                    metadata_path: Some(metadata_address("Catalog.Items")),
+                    target_kind: TargetKind::MetadataObject,
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn meta_info_maps_support_provider_failure_to_logical_diagnostic() {
+        use crate::application::ports::ApplicationPorts;
+
+        let (_root, context) = support_reader_fixture();
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            FailingSupportStateReaderFactory,
+        ));
+
+        let failure = match ports.read_metadata_local(
+            &meta_info_request(),
+            &context,
+            &CancellationToken::new(),
+        ) {
+            Ok(_) => panic!("support provider failure must fail the local read"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(failure.diagnostics.len(), 1);
+        let diagnostic = &failure.diagnostics[0];
+        assert_eq!(
+            diagnostic.code,
+            crate::domain::metadata::MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert_eq!(
+            diagnostic.metadata_path.as_ref(),
+            Some(&metadata_address("Catalog.Items"))
+        );
+        assert!(diagnostic.message.contains("provider_unavailable"));
+        assert!(!diagnostic
+            .message
+            .contains(&context.workspace_root.display().to_string()));
+        assert!(!diagnostic.message.contains('/'));
+        assert!(!diagnostic.message.contains('\\'));
+    }
+
+    #[test]
+    fn meta_info_preserves_the_existing_support_projection() {
+        use crate::application::ports::ApplicationPorts;
+        use crate::domain::metadata::MetaSupportStatus;
+
+        let (_root, context) = support_reader_fixture();
+        for (state, expected) in [
+            (ObjectSupportState::Locked, MetaSupportStatus::Locked),
+            (
+                ObjectSupportState::ConfigurationReadOnly,
+                MetaSupportStatus::Locked,
+            ),
+            (
+                ObjectSupportState::RemovedFromSupport,
+                MetaSupportStatus::Unsupported,
+            ),
+            (
+                ObjectSupportState::EditableWithSupport,
+                MetaSupportStatus::Supported,
+            ),
+            (
+                ObjectSupportState::NotSupported,
+                MetaSupportStatus::Supported,
+            ),
+        ] {
+            let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(
+                Arc::new(StaticObjectSupportStateReaderFactory(state)),
+            );
+            let read = ports
+                .read_metadata_local(&meta_info_request(), &context, &CancellationToken::new())
+                .unwrap();
+            assert_eq!(read.local.support, expected, "state {state:?}");
+        }
     }
 
     fn prepared_subsystem_fixture() -> (
