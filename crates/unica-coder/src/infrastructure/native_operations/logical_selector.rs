@@ -23,6 +23,7 @@ use crate::infrastructure::native_operations::common::string_arg;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::{
     metadata_is_link_or_reparse_point, path_starts_with_host_root,
+    strip_windows_extended_length_prefix,
 };
 use crate::infrastructure::platform_xml_source_targets::{
     locate_platform_xml_reader_path, platform_xml_resource_evidence, resolve_platform_xml_target,
@@ -309,9 +310,15 @@ pub(crate) fn physical_selection(
             "the physical selector did not reproduce the proven target resource",
         ));
     }
+    let resource_path = fs::canonicalize(&proven).map_err(|_| {
+        LogicalSelectorFailure::new(
+            "provider_unavailable",
+            "the proven physical resource identity is unavailable",
+        )
+    })?;
     Ok(ResolvedReadTarget {
         target: resolution.resolved,
-        resource_path: proven,
+        resource_path,
     })
 }
 
@@ -478,7 +485,7 @@ fn prove_regular_file(
     let normalized = normalize_path_identity(&candidate).map_err(|_| {
         LogicalSelectorFailure::new("resource_absent", "the requested resource is not present")
     })?;
-    if !normalized.starts_with(&normalized_root) {
+    if !path_starts_with_host_root(&normalized, &normalized_root) {
         return Err(LogicalSelectorFailure::new(
             "containment_denied",
             "the resource escaped the selected source set",
@@ -500,14 +507,21 @@ fn ensure_no_link_components(
     source_root: &Path,
     target: &Path,
 ) -> Result<(), LogicalSelectorFailure> {
-    let relative = target.strip_prefix(source_root).map_err(|_| {
-        LogicalSelectorFailure::new(
+    // Keep the lexical components and remove only Windows' equivalent verbatim
+    // spelling. Canonicalizing here would erase a linked parent before it can
+    // be rejected by the component walk.
+    let source_root = strip_windows_extended_length_prefix(source_root);
+    let target = strip_windows_extended_length_prefix(target);
+    if !path_starts_with_host_root(&target, &source_root) {
+        return Err(LogicalSelectorFailure::new(
             "containment_denied",
             "the resource escaped the selected source set",
-        )
-    })?;
-    let mut current = source_root.to_path_buf();
-    for component in relative.components() {
+        ));
+    }
+    let root_component_count = source_root.components().count();
+    let relative = target.components().skip(root_component_count);
+    let mut current = source_root;
+    for component in relative {
         let std::path::Component::Normal(component) = component else {
             return Err(LogicalSelectorFailure::new(
                 "containment_denied",

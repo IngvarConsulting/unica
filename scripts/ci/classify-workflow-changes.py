@@ -57,7 +57,12 @@ PLATFORM_CONTRACT_PATHS = {
     "tests/ci/test_rust_platform_boundary.py",
 }
 PLATFORM_SOURCE_PATHS = {
+    "crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs",
+    "crates/unica-coder/src/infrastructure/path_policy.rs",
     "crates/unica-coder/src/infrastructure/platform_xml_owner.rs",
+    "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
+    "crates/unica-coder/src/infrastructure/source_roots.rs",
+    "crates/unica-coder/src/infrastructure/support_state.rs",
 }
 PLATFORM_PREFIXES = (
     "crates/unica-coder/src/infrastructure/platform/",
