@@ -1494,21 +1494,74 @@ def _exercise_bsl_search(
         time.sleep(min(0.5, remaining))
 
 
-def _wait_for_workspace_services(cache_root: Path, timeout_seconds: float) -> None:
+def _process_is_running(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes
+
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        open_process.restype = ctypes.c_void_p
+        wait_for_single_object = kernel32.WaitForSingleObject
+        wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        wait_for_single_object.restype = ctypes.c_uint32
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [ctypes.c_void_p]
+        close_handle.restype = ctypes.c_int
+        handle = open_process(synchronize, False, pid)
+        if not handle:
+            # Access denied still proves that a process owns the PID. Other
+            # failures mean there is no process left for this smoke to await.
+            return ctypes.get_last_error() == 5
+        try:
+            return wait_for_single_object(handle, 0) == wait_timeout
+        finally:
+            close_handle(handle)
+
+    try:
+        completed, _ = os.waitpid(pid, os.WNOHANG)
+        if completed == pid:
+            return False
+    except ChildProcessError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_workspace_services(
+    cache_root: Path,
+    timeout_seconds: float,
+    service_pids: set[int] | None = None,
+) -> None:
     deadline = time.monotonic() + timeout_seconds
     services_root = cache_root / "services"
-    while any(services_root.glob("*/service.json")):
+    service_pids = service_pids or set()
+    while True:
+        records_remain = any(services_root.glob("*/service.json"))
+        running_pids = {pid for pid in service_pids if _process_is_running(pid)}
+        if not records_remain and not running_pids:
+            return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SystemExit(
-                "Unica MCP workspace service did not stop before smoke cleanup"
+                "Unica MCP workspace service did not exit before smoke cleanup"
             )
         time.sleep(min(0.05, remaining))
 
 
-def _shutdown_workspace_services(cache_root: Path, timeout_seconds: float) -> None:
+def _shutdown_workspace_services(
+    cache_root: Path, timeout_seconds: float
+) -> set[int]:
     deadline = time.monotonic() + timeout_seconds
     services_root = cache_root / "services"
+    service_pids: set[int] = set()
     for record_path in sorted(services_root.glob("*/service.json")):
         try:
             record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -1523,17 +1576,23 @@ def _shutdown_workspace_services(cache_root: Path, timeout_seconds: float) -> No
                 f"Unica MCP workspace service record is not an object: {record_path}"
             )
         port = record.get("port")
+        pid = record.get("pid")
         token = record.get("token")
         if (
-            isinstance(port, bool)
+            isinstance(pid, bool)
+            or not isinstance(pid, int)
+            or not 1 <= pid <= 0xFFFFFFFF
+            or isinstance(port, bool)
             or not isinstance(port, int)
             or not 1 <= port <= 65535
             or not isinstance(token, str)
             or not token
         ):
             raise SystemExit(
-                f"Unica MCP workspace service record has no valid port and token: {record_path}"
+                "Unica MCP workspace service record has no valid pid, port, and token: "
+                f"{record_path}"
             )
+        service_pids.add(pid)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SystemExit(
@@ -1580,6 +1639,7 @@ def _shutdown_workspace_services(cache_root: Path, timeout_seconds: float) -> No
             raise SystemExit(
                 f"Unica MCP workspace service did not confirm shutdown: {response!r}"
             )
+    return service_pids
 
 
 def _call(
@@ -1879,10 +1939,13 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
                 raise SystemExit(f"invalid Meta smoke returned unstable diagnostics: {invalid}")
         finally:
             session.close()
-            _shutdown_workspace_services(cache_root, max(5.0, timeout_seconds))
+            service_pids = _shutdown_workspace_services(
+                cache_root, max(5.0, timeout_seconds)
+            )
             _wait_for_workspace_services(
                 cache_root,
                 max(5.0, timeout_seconds),
+                service_pids,
             )
         after = _workspace_snapshot(workspace)
         # The whole public source surface is read-only, so the packaged smoke

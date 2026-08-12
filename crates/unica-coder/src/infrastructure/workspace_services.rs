@@ -2761,17 +2761,42 @@ impl Drop for PersistentMcpSession {
 
 /// bsl-analyzer otherwise defaults its cache below the indexed source tree.
 /// The resulting filesystem events keep invalidating the index that produced
-/// them, so each source gets a cache below its existing service identity and
-/// outside the source tree.
+/// them. Prefer the existing service identity, but move the analyzer cache to
+/// the private runtime root when the configured Unica cache is itself below
+/// the selected source root (for example `sourceDir = "."`).
 fn configure_bsl_analyzer_cache_dir(
     command: &mut Command,
     context: &WorkspaceContext,
     source_root: &Path,
 ) -> Result<(), String> {
     let identity = WorkspaceServiceIdentity::new(context, source_root)?;
-    command
-        .arg("--cache-dir")
-        .arg(identity.service_dir.join("bsl-analyzer"));
+    let preferred = identity.service_dir.join("bsl-analyzer");
+    let source_root = PathBuf::from(&identity.source_root);
+    let preferred_identity = normalize_path_identity(&preferred)?;
+    let cache_dir = if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+        &preferred_identity,
+        &source_root,
+    ) {
+        let external_root = short_private_runtime_dir()
+            .map_err(|error| {
+                format!("failed to prepare external bsl-analyzer cache directory: {error}")
+            })?
+            .unwrap_or_else(|| std::env::temp_dir().join("unica-bsl"));
+        let external = external_root.join("cache").join(&identity.key);
+        let external_identity = normalize_path_identity(&external)?;
+        if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+            &external_identity,
+            &source_root,
+        ) {
+            return Err(
+                "failed to place bsl-analyzer cache outside the indexed source tree".to_string(),
+            );
+        }
+        external
+    } else {
+        preferred
+    };
+    command.arg("--cache-dir").arg(cache_dir);
     Ok(())
 }
 
@@ -4346,6 +4371,24 @@ mod tests {
         assert!(first_cache.starts_with(&context.cache_root));
         assert!(!first_cache.starts_with(&first_source));
         assert_ne!(first_cache, second_cache);
+    }
+
+    #[test]
+    fn bsl_analyzer_cache_stays_outside_a_workspace_wide_source_root() {
+        let mut context = test_context("bsl-analyzer-workspace-cache");
+        context.cache_root = context.workspace_root.join(".build/unica");
+
+        let mut command = Command::new("bsl-analyzer");
+        configure_bsl_analyzer_cache_dir(&mut command, &context, &context.workspace_root).unwrap();
+
+        let arguments = command.get_args().collect::<Vec<_>>();
+        let position = arguments
+            .iter()
+            .position(|argument| *argument == "--cache-dir")
+            .expect("cache argument");
+        let cache = PathBuf::from(arguments[position + 1]);
+
+        assert!(!cache.starts_with(&context.workspace_root));
     }
 
     #[test]

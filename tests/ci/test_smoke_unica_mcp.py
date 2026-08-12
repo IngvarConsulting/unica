@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -80,6 +81,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             record.write_text(
                 json.dumps(
                     {
+                        "pid": os.getpid(),
                         "port": listener.getsockname()[1],
                         "token": "smoke-secret",
                     }
@@ -105,13 +107,14 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             worker = threading.Thread(target=serve_shutdown)
             worker.start()
             try:
-                module._shutdown_workspace_services(cache_root, 1.0)
+                service_pids = module._shutdown_workspace_services(cache_root, 1.0)
                 module._wait_for_workspace_services(cache_root, 1.0)
             finally:
                 listener.close()
                 worker.join(timeout=2.0)
 
             self.assertFalse(worker.is_alive())
+            self.assertEqual(service_pids, {os.getpid()})
 
             self.assertEqual(
                 received,
@@ -122,6 +125,25 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_waits_for_workspace_service_process_after_record_is_removed(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            cache_root = Path(directory) / "cache"
+            process = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(0.15)"]
+            )
+            try:
+                module._wait_for_workspace_services(
+                    cache_root,
+                    1.0,
+                    {process.pid},
+                )
+                self.assertFalse(module._process_is_running(process.pid))
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=1.0)
 
     def test_expected_tools_are_the_canonical_review_ledger_exact_set(self) -> None:
         review = json.loads(
