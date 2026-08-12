@@ -25,7 +25,7 @@ use crate::infrastructure::platform::filesystem::{
     metadata_is_link_or_reparse_point, path_starts_with_host_root,
 };
 use crate::infrastructure::platform_xml_source_targets::{
-    locate_platform_xml_source_path, platform_xml_resource_evidence, resolve_platform_xml_target,
+    locate_platform_xml_reader_path, platform_xml_resource_evidence, resolve_platform_xml_target,
     PlatformXmlResourceEvidence, TargetKindPolicy,
 };
 use crate::infrastructure::project_sources::discover_project_source_map;
@@ -261,7 +261,7 @@ pub(crate) fn physical_selection(
         }
         None
     } else {
-        let located = locate_platform_xml_source_path(
+        let located = locate_platform_xml_reader_path(
             context,
             &SourceLocateRequest {
                 source_set: source_set.name.clone(),

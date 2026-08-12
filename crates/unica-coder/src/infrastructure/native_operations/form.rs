@@ -14956,8 +14956,7 @@ mod tests {
 
     #[test]
     fn edit_form_adds_supported_inline_form_and_element_events() {
-        let context = temp_context("edit-events-inline");
-        let form_path = context.cwd.join("Form.xml");
+        let (context, form_path) = form_info_context("edit-events-inline");
         let original = event_form_xml(
             Some("CatalogObject.Goods"),
             "",

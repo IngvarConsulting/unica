@@ -315,6 +315,38 @@ pub(crate) fn locate_platform_xml_source_path(
     request: &SourceLocateRequest,
     cancellation: &CancellationToken,
 ) -> Result<SourceLocateResult, String> {
+    locate_platform_xml_source_path_with_policy(
+        context,
+        request,
+        cancellation,
+        DescriptorVersionPolicy::ActiveProfile,
+    )
+}
+
+/// The temporary subject-reader bridge needs the same exact inverse mapping as
+/// `source.locate`, but it runs before the format guard has classified an old
+/// or new dump. The resolver after this locator still proves registration and
+/// exact owner/target version equality; this policy only avoids misreporting a
+/// coherent non-active version as an unknown physical owner.
+pub(crate) fn locate_platform_xml_reader_path(
+    context: &WorkspaceContext,
+    request: &SourceLocateRequest,
+    cancellation: &CancellationToken,
+) -> Result<SourceLocateResult, String> {
+    locate_platform_xml_source_path_with_policy(
+        context,
+        request,
+        cancellation,
+        DescriptorVersionPolicy::AnyExact,
+    )
+}
+
+fn locate_platform_xml_source_path_with_policy(
+    context: &WorkspaceContext,
+    request: &SourceLocateRequest,
+    cancellation: &CancellationToken,
+    version_policy: DescriptorVersionPolicy,
+) -> Result<SourceLocateResult, String> {
     check_navigation_cancellation(cancellation)?;
     let selected = resolve_named_source_set(context, &request.source_set)
         .map_err(|error| public_source_set_error(&request.source_set, error).to_string())?;
@@ -400,8 +432,12 @@ pub(crate) fn locate_platform_xml_source_path(
     ) else {
         return Ok(reject(relative_text, LocateRejection::NotAddressable));
     };
-    if exact_object_outcome(&selected.path, &object_address, cancellation)?
-        != ExactCandidate::Proven
+    if exact_object_outcome_with_policy(
+        &selected.path,
+        &object_address,
+        cancellation,
+        version_policy,
+    )? != ExactCandidate::Proven
     {
         return Ok(reject(relative_text, LocateRejection::OwnerUnproven));
     }
@@ -427,8 +463,12 @@ pub(crate) fn locate_platform_xml_source_path(
             crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
             &nested,
         ) {
-            if exact_object_outcome(&selected.path, &nested_address, cancellation)?
-                == ExactCandidate::Proven
+            if exact_object_outcome_with_policy(
+                &selected.path,
+                &nested_address,
+                cancellation,
+                version_policy,
+            )? == ExactCandidate::Proven
             {
                 let is_own_descriptor = parts.len() == 4 && parts[3].ends_with(".xml");
                 return Ok(SourceLocateResult {
@@ -1060,6 +1100,12 @@ enum ExactCandidate {
     Absent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DescriptorVersionPolicy {
+    ActiveProfile,
+    AnyExact,
+}
+
 /// Proves a module address through the same resolver `unica.source.resources`
 /// uses, so navigation and access agree on what exists. A containment denial is
 /// surfaced rather than reported as a plain absence.
@@ -1102,6 +1148,20 @@ fn exact_object_outcome(
     address: &MetadataAddress,
     cancellation: &CancellationToken,
 ) -> Result<ExactCandidate, String> {
+    exact_object_outcome_with_policy(
+        source_root,
+        address,
+        cancellation,
+        DescriptorVersionPolicy::ActiveProfile,
+    )
+}
+
+fn exact_object_outcome_with_policy(
+    source_root: &Path,
+    address: &MetadataAddress,
+    cancellation: &CancellationToken,
+    version_policy: DescriptorVersionPolicy,
+) -> Result<ExactCandidate, String> {
     check_navigation_cancellation(cancellation)?;
     let parts = address.segments().collect::<Vec<_>>();
     // A nested child is only as real as the owner that declares it, so the
@@ -1110,7 +1170,13 @@ fn exact_object_outcome(
         let Some(owner) = object_descriptor_evidence(&parts[..2]) else {
             return Ok(ExactCandidate::Absent);
         };
-        let outcome = descriptor_outcome(source_root, &owner.path, &owner.kind, &owner.name);
+        let outcome = descriptor_outcome_with_policy(
+            source_root,
+            &owner.path,
+            &owner.kind,
+            &owner.name,
+            version_policy,
+        );
         if outcome != ExactCandidate::Proven {
             return Ok(outcome);
         }
@@ -1119,12 +1185,34 @@ fn exact_object_outcome(
     let Some(evidence) = object_descriptor_evidence(&parts) else {
         return Ok(ExactCandidate::Absent);
     };
-    Ok(descriptor_outcome(
+    Ok(descriptor_outcome_with_policy(
         source_root,
         &evidence.path,
         &evidence.kind,
         &evidence.name,
+        version_policy,
     ))
+}
+
+fn descriptor_outcome_with_policy(
+    source_root: &Path,
+    descriptor: &Path,
+    expected_kind: &str,
+    expected_name: &str,
+    version_policy: DescriptorVersionPolicy,
+) -> ExactCandidate {
+    if version_policy == DescriptorVersionPolicy::ActiveProfile {
+        return descriptor_outcome(source_root, descriptor, expected_kind, expected_name);
+    }
+    let path = source_root.join(descriptor);
+    match read_navigation_descriptor(&path)
+        .and_then(|raw| descriptor_version_and_name_from_bytes(&raw, expected_kind))
+    {
+        Ok((_version, name)) if name == expected_name => ExactCandidate::Proven,
+        Ok(_) => ExactCandidate::Unproven,
+        Err(()) if fs::symlink_metadata(&path).is_ok() => ExactCandidate::Unproven,
+        Err(()) => ExactCandidate::Absent,
+    }
 }
 
 struct ObjectDescriptorEvidence {
@@ -5098,6 +5186,48 @@ mod tests {
             outside.relative_path, "",
             "a path outside the source set has no relative form to echo"
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn reader_locator_preserves_old_format_identity_without_widening_public_locate() {
+        let context = fixture(
+            "reader-locate-consistent-old-format",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        fs::create_dir_all(root.join("Catalogs")).unwrap();
+        fs::write(
+            root.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        let request = crate::application::source_navigation::SourceLocateRequest {
+            source_set: "main".to_string(),
+            path: "src/Catalogs/Items.xml".to_string(),
+        };
+
+        let public =
+            super::locate_platform_xml_source_path(&context, &request, &CancellationToken::new())
+                .unwrap();
+        assert_eq!(
+            public.rejection,
+            Some(crate::application::source_navigation::LocateRejection::OwnerUnproven)
+        );
+
+        let reader =
+            super::locate_platform_xml_reader_path(&context, &request, &CancellationToken::new())
+                .unwrap();
+        assert_eq!(
+            reader.metadata_path.as_ref().map(MetadataAddress::as_str),
+            Some("Catalog.Items")
+        );
+        assert!(reader.rejection.is_none());
         cleanup(&context);
     }
 
