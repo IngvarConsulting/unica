@@ -2810,17 +2810,7 @@ mod tests {
     use std::time::Duration;
 
     fn normalized_path(path: &std::path::Path) -> std::path::PathBuf {
-        let canonical = std::fs::canonicalize(path).expect("test path identity must canonicalize");
-        if std::path::MAIN_SEPARATOR == '\\' {
-            let display = canonical.to_string_lossy();
-            if let Some(path) = display.strip_prefix(r"\\?\UNC\") {
-                return std::path::PathBuf::from(format!(r"\\{path}"));
-            }
-            if let Some(path) = display.strip_prefix(r"\\?\") {
-                return std::path::PathBuf::from(path);
-            }
-        }
-        canonical
+        crate::test_support::canonical_path(path)
     }
 
     fn call_public_tool_from_workspace(
@@ -12007,15 +11997,26 @@ mod tests {
 
         assert!(borrowed.exists(), "the borrow must have created the object");
         assert!(
-            created.contains(&borrowed.display().to_string()),
+            created
+                .iter()
+                .any(|path| normalized_path(std::path::Path::new(path))
+                    == normalized_path(&borrowed)),
             "{created:?}"
         );
         assert!(
-            updated.contains(&extension_owner.display().to_string()),
+            updated.iter().any(|path| {
+                normalized_path(std::path::Path::new(path)) == normalized_path(&extension_owner)
+            }),
             "{updated:?}"
         );
         for path in &created {
-            assert!(!updated.contains(path), "{path} is created and updated");
+            assert!(
+                !updated.iter().any(|updated_path| {
+                    normalized_path(std::path::Path::new(updated_path))
+                        == normalized_path(std::path::Path::new(path))
+                }),
+                "{path} is created and updated"
+            );
         }
         let expected_changes = created
             .iter()
