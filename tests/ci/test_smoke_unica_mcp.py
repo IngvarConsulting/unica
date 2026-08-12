@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import socket
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -41,6 +44,84 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         # The bounded resource surface is read-only; BSL mutation belongs to
         # unica.code.patch, so the smoke must not demand a writer.
         self.assertNotIn("unica.source.apply", expected)
+
+    def test_waits_for_short_lived_workspace_service_before_temp_cleanup(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            cache_root = Path(directory) / "cache"
+            record = cache_root / "services" / "svc-test" / "service.json"
+            record.parent.mkdir(parents=True)
+            record.write_text("{}\n", encoding="utf-8")
+
+            def retire_service() -> None:
+                time.sleep(0.05)
+                record.unlink()
+
+            worker = threading.Thread(target=retire_service)
+            worker.start()
+            try:
+                module._wait_for_workspace_services(cache_root, 1.0)
+            finally:
+                worker.join(timeout=2.0)
+
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(record.exists())
+
+    def test_requests_workspace_service_shutdown_before_temp_cleanup(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            cache_root = Path(directory) / "cache"
+            record = cache_root / "services" / "svc-test" / "service.json"
+            record.parent.mkdir(parents=True)
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(1.0)
+            record.write_text(
+                json.dumps(
+                    {
+                        "port": listener.getsockname()[1],
+                        "token": "smoke-secret",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            received: list[dict] = []
+
+            def serve_shutdown() -> None:
+                try:
+                    connection, _ = listener.accept()
+                except (OSError, TimeoutError):
+                    return
+                with listener, connection:
+                    payload = connection.makefile("rb").readline()
+                    received.append(json.loads(payload))
+                    connection.sendall(
+                        b'{"ok":true,"status":"shutdown","shutdown":true}\n'
+                    )
+                record.unlink()
+
+            worker = threading.Thread(target=serve_shutdown)
+            worker.start()
+            try:
+                module._shutdown_workspace_services(cache_root, 1.0)
+                module._wait_for_workspace_services(cache_root, 1.0)
+            finally:
+                listener.close()
+                worker.join(timeout=2.0)
+
+            self.assertFalse(worker.is_alive())
+
+            self.assertEqual(
+                received,
+                [
+                    {
+                        "token": "smoke-secret",
+                        "kind": {"type": "shutdown"},
+                    }
+                ],
+            )
 
     def test_expected_tools_are_the_canonical_review_ledger_exact_set(self) -> None:
         review = json.loads(
@@ -667,6 +748,39 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("bsl-analyzer", result.stderr)
+
+    def test_retries_bsl_analyzer_while_search_index_is_being_built(self) -> None:
+        payload = {
+            "data": {
+                "sections": [
+                    {
+                        "provider": "rlm",
+                        "status": "empty",
+                        "hits": [],
+                        "diagnostics": [],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "bsl-analyzer",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": [
+                            "Search index is being built, please try again in a moment."
+                        ],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "git-grep",
+                        "status": "empty",
+                        "hits": [],
+                        "diagnostics": [],
+                        "artifacts": [],
+                    },
+                ]
+            }
+        }
+
+        self.assertFalse(load_module()._bsl_search_is_ready(payload))
 
     def test_rejects_upstream_root_identity_leaking_from_packaged_search(self) -> None:
         result = self.run_smoke(

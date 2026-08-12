@@ -236,14 +236,6 @@ jobs:
           python scripts/ci/check-tool-contracts.py
           --target "${{ matrix.target }}"
           --tools-dir ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}"
-      - name: Smoke packaged Unica MCP
-        shell: bash
-        run: |
-          executable=".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}/unica"
-          if [ "${{ matrix.target }}" = "win-x64" ]; then executable="${executable}.exe"; fi
-          python scripts/ci/smoke-unica-mcp.py \
-            --binary "$executable" \
-            --plugin-root ".build/tool-bundles/${{ matrix.target }}"
       - name: Package deterministic runtime
         run: >
           python scripts/ci/package-unica-runtime.py
@@ -254,6 +246,23 @@ jobs:
           python scripts/ci/verify-release-assets.py
           --asset-dir ".build/runtime-assets/${{ matrix.target }}"
           --target "${{ matrix.target }}"
+      - name: Extract deterministic runtime for MCP smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_root=".build/runtime-smoke/${{ matrix.target }}"
+          mkdir -p "$runtime_root"
+          tar -xzf ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz" \
+            -C "$runtime_root"
+      - name: Smoke packaged Unica MCP
+        shell: bash
+        run: |
+          runtime_root=".build/runtime-smoke/${{ matrix.target }}"
+          executable="$runtime_root/bin/${{ matrix.target }}/unica"
+          if [ "${{ matrix.target }}" = "win-x64" ]; then executable="${executable}.exe"; fi
+          python scripts/ci/smoke-unica-mcp.py \
+            --binary "$executable" \
+            --plugin-root "$runtime_root"
       - name: Stage exact bootstrap payload
         shell: bash
         run: |

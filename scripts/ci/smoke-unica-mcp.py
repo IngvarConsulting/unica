@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import queue
+import socket
 import subprocess
 import tempfile
 import threading
@@ -1437,7 +1438,11 @@ def _bsl_search_is_ready(payload: dict) -> bool:
     diagnostics = bsl.get("diagnostics")
     if status == "unavailable":
         detail = json.dumps(diagnostics, ensure_ascii=False).lower()
-        if "not_ready" in detail or "not ready" in detail:
+        if (
+            "not_ready" in detail
+            or "not ready" in detail
+            or "search index is being built" in detail
+        ):
             return False
         raise SystemExit(f"Unica MCP bsl-analyzer is unavailable: {bsl}")
     if status != "ok":
@@ -1487,6 +1492,94 @@ def _exercise_bsl_search(
                 "Unica MCP bsl-analyzer stayed not_ready until the smoke deadline"
             )
         time.sleep(min(0.5, remaining))
+
+
+def _wait_for_workspace_services(cache_root: Path, timeout_seconds: float) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    services_root = cache_root / "services"
+    while any(services_root.glob("*/service.json")):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(
+                "Unica MCP workspace service did not stop before smoke cleanup"
+            )
+        time.sleep(min(0.05, remaining))
+
+
+def _shutdown_workspace_services(cache_root: Path, timeout_seconds: float) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    services_root = cache_root / "services"
+    for record_path in sorted(services_root.glob("*/service.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError) as error:
+            raise SystemExit(
+                f"Unica MCP workspace service record is unreadable: {record_path}"
+            ) from error
+        if not isinstance(record, dict):
+            raise SystemExit(
+                f"Unica MCP workspace service record is not an object: {record_path}"
+            )
+        port = record.get("port")
+        token = record.get("token")
+        if (
+            isinstance(port, bool)
+            or not isinstance(port, int)
+            or not 1 <= port <= 65535
+            or not isinstance(token, str)
+            or not token
+        ):
+            raise SystemExit(
+                f"Unica MCP workspace service record has no valid port and token: {record_path}"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(
+                "Unica MCP workspace service shutdown exceeded the smoke deadline"
+            )
+        connection_timeout = min(2.0, remaining)
+        request = {
+            "token": token,
+            "kind": {"type": "shutdown"},
+        }
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", port), timeout=connection_timeout
+            ) as connection:
+                connection.settimeout(connection_timeout)
+                connection.sendall(
+                    (
+                        json.dumps(request, separators=(",", ":")) + "\n"
+                    ).encode("utf-8")
+                )
+                with connection.makefile("rb") as response_stream:
+                    response_line = response_stream.readline(65537)
+        except OSError as error:
+            if not record_path.exists():
+                continue
+            raise SystemExit(
+                f"Unica MCP workspace service rejected shutdown: {record_path}"
+            ) from error
+        if len(response_line) > 65536 or not response_line.endswith(b"\n"):
+            raise SystemExit(
+                f"Unica MCP workspace service returned an invalid shutdown frame: {record_path}"
+            )
+        try:
+            response = json.loads(response_line)
+        except json.JSONDecodeError as error:
+            raise SystemExit(
+                f"Unica MCP workspace service returned invalid shutdown JSON: {record_path}"
+            ) from error
+        if (
+            not isinstance(response, dict)
+            or response.get("ok") is not True
+            or response.get("shutdown") is not True
+        ):
+            raise SystemExit(
+                f"Unica MCP workspace service did not confirm shutdown: {response!r}"
+            )
 
 
 def _call(
@@ -1713,7 +1806,8 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
         root = Path(temporary)
         workspace = root / "workspace"
         workspace.mkdir()
-        environment["UNICA_CACHE_DIR"] = str(root / "cache")
+        cache_root = root / "cache"
+        environment["UNICA_CACHE_DIR"] = str(cache_root)
         _source_workspace(workspace)
         before = _workspace_snapshot(workspace)
         executable = Path(command[0])
@@ -1742,7 +1836,6 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             if not isinstance(tools, list):
                 raise SystemExit("Unica MCP tools/list response is missing")
             _stable_tool_contract(tools, expected_names)
-            cache_root = root / "cache"
             next_id, _ = _exercise_source_set(
                 session, 3, workspace, cache_root, "main"
             )
@@ -1786,6 +1879,11 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
                 raise SystemExit(f"invalid Meta smoke returned unstable diagnostics: {invalid}")
         finally:
             session.close()
+            _shutdown_workspace_services(cache_root, max(5.0, timeout_seconds))
+            _wait_for_workspace_services(
+                cache_root,
+                max(5.0, timeout_seconds),
+            )
         after = _workspace_snapshot(workspace)
         # The whole public source surface is read-only, so the packaged smoke
         # must end with the byte map it started from.

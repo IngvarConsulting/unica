@@ -2497,6 +2497,7 @@ impl PersistentMcpSession {
                 "stdio",
             ])
             .current_dir(&context.cwd);
+        configure_bsl_analyzer_cache_dir(&mut command, context, source_root)?;
         configure_bsl_analyzer_runtime_dir(&mut command)?;
         Self::start_with_command(command, cancellation)
     }
@@ -2756,6 +2757,22 @@ impl Drop for PersistentMcpSession {
     fn drop(&mut self) {
         self.invalidate();
     }
+}
+
+/// bsl-analyzer otherwise defaults its cache below the indexed source tree.
+/// The resulting filesystem events keep invalidating the index that produced
+/// them, so each source gets a cache below its existing service identity and
+/// outside the source tree.
+fn configure_bsl_analyzer_cache_dir(
+    command: &mut Command,
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<(), String> {
+    let identity = WorkspaceServiceIdentity::new(context, source_root)?;
+    command
+        .arg("--cache-dir")
+        .arg(identity.service_dir.join("bsl-analyzer"));
+    Ok(())
 }
 
 /// A persistent session outlives the tool call that started it, by design
@@ -4300,6 +4317,35 @@ mod tests {
 
         assert_eq!(runtime_dir.parent(), Some(Path::new("/tmp")));
         assert!(socket.as_os_str().as_encoded_bytes().len() < 104);
+    }
+
+    #[test]
+    fn bsl_analyzer_child_uses_source_specific_cache_outside_the_source_tree() {
+        let context = test_context("bsl-analyzer-cache");
+        let first_source = context.workspace_root.join("src/main");
+        let second_source = context.workspace_root.join("src/extension");
+        fs::create_dir_all(&first_source).unwrap();
+        fs::create_dir_all(&second_source).unwrap();
+
+        let mut first = Command::new("bsl-analyzer");
+        configure_bsl_analyzer_cache_dir(&mut first, &context, &first_source).unwrap();
+        let mut second = Command::new("bsl-analyzer");
+        configure_bsl_analyzer_cache_dir(&mut second, &context, &second_source).unwrap();
+
+        let cache_arg = |command: &Command| {
+            let arguments = command.get_args().collect::<Vec<_>>();
+            let position = arguments
+                .iter()
+                .position(|argument| *argument == "--cache-dir")
+                .expect("cache argument");
+            PathBuf::from(arguments[position + 1])
+        };
+        let first_cache = cache_arg(&first);
+        let second_cache = cache_arg(&second);
+
+        assert!(first_cache.starts_with(&context.cache_root));
+        assert!(!first_cache.starts_with(&first_source));
+        assert_ne!(first_cache, second_cache);
     }
 
     #[test]
