@@ -12,8 +12,9 @@ use crate::domain::metadata::{
     MetaSupportStatus, MetadataKind, META_INFO_PROPERTY_PROFILE,
 };
 use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    MetadataAddress, ResolvedTarget, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
+use crate::domain::support_state::{ObjectSupportState, SupportStateReader};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_source_targets::{
     platform_xml_resource_evidence, resolve_platform_xml_target, TargetKindPolicy,
@@ -164,7 +165,6 @@ fn emit_subsystem_evidence_processing_phase(phase: SubsystemEvidenceProcessingPh
     let _ = phase;
 }
 
-use super::super::common::object_support_state;
 use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
     meta_event_subscription_source_node, meta_info_child_text, meta_info_inner_text,
@@ -182,6 +182,7 @@ pub(crate) fn read_typed_meta_info(
     context: &WorkspaceContext,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
+    support_reader: &dyn SupportStateReader,
 ) -> Result<(MetaLocalInfo, MetadataValidationSubject), MetaFailure> {
     #[cfg(test)]
     let test_descriptor_image = meta_info_descriptor_image_for_test(&resolved.descriptor_preimage);
@@ -340,13 +341,14 @@ pub(crate) fn read_typed_meta_info(
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
     };
+    let support = typed_support_status(support_reader, &resolved.resolved_target)?;
     let mut local = MetaLocalInfo {
         metadata_path: target.clone(),
         kind,
         details,
         name,
         synonym,
-        support: typed_support_status(&resolved.descriptor_path),
+        support,
         properties: typed_properties(properties, kind),
         declarations,
         predefined_code_type: predefined_code_type_for_info(properties, kind),
@@ -925,12 +927,27 @@ fn typed_registered_language_images(
         .collect()
 }
 
-fn typed_support_status(path: &Path) -> MetaSupportStatus {
-    match object_support_state(path).state {
-        "locked" | "configurationReadOnly" => MetaSupportStatus::Locked,
-        "removedFromSupport" => MetaSupportStatus::Unsupported,
-        _ => MetaSupportStatus::Supported,
-    }
+fn typed_support_status(
+    support_reader: &dyn SupportStateReader,
+    target: &ResolvedTarget,
+) -> Result<MetaSupportStatus, MetaFailure> {
+    let support = support_reader.object_support(target).map_err(|error| {
+        let mut diagnostic =
+            MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error.to_string());
+        if let Some(metadata_path) = target.metadata_path.clone() {
+            diagnostic = diagnostic.with_metadata_path(metadata_path);
+        }
+        MetaFailure::from(diagnostic)
+    })?;
+    Ok(match support.state {
+        ObjectSupportState::Locked | ObjectSupportState::ConfigurationReadOnly => {
+            MetaSupportStatus::Locked
+        }
+        ObjectSupportState::RemovedFromSupport => MetaSupportStatus::Unsupported,
+        ObjectSupportState::EditableWithSupport | ObjectSupportState::NotSupported => {
+            MetaSupportStatus::Supported
+        }
+    })
 }
 
 pub(super) fn typed_properties(

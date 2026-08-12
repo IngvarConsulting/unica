@@ -1989,7 +1989,12 @@ mod tests {
             "sorted inspection order must make warning attribution deterministic"
         );
 
-        let outcome = analyze_dcs_info(&args, &context(&root));
+        let context = context(&root);
+        let outcome = analyze_dcs_info(
+            &args,
+            &context,
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
+        );
         assert!(!outcome.ok);
         assert_eq!(
             outcome.errors,
@@ -2765,6 +2770,11 @@ mod tests {
         let config_path = config(&root, Some("2.19"));
         let src = config_path.parent().unwrap().canonicalize().unwrap();
         std::fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
             src.join("Configuration.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
         )
@@ -2809,11 +2819,17 @@ mod tests {
                     tool_spec, &args,
                 )
                 .unwrap();
+                let workspace_context = context(&root);
+                let support_reader =
+                    crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                        &workspace_context,
+                    );
                 let prepared = prepare_subsystem_info(
                     &normalized,
-                    &context(&root),
+                    &workspace_context,
                     &CancellationToken::new(),
                     ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+                    &support_reader,
                 )
                 .unwrap();
                 evaluate_prepared_subsystem_info_format_guard(tool_spec, &prepared.format_documents)
@@ -3666,11 +3682,16 @@ mod tests {
         ]);
 
         let tool = spec("unica.subsystem.info");
+        let workspace_context = context(&root);
+        let support_reader = crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+            &workspace_context,
+        );
         let prepared = prepare_subsystem_info(
             &args,
-            &context(&root),
+            &workspace_context,
             &CancellationToken::new(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+            &support_reader,
         )
         .unwrap();
         let check = evaluate_prepared_subsystem_info_format_guard(tool, &prepared.format_documents)

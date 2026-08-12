@@ -3041,6 +3041,26 @@ LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
     "unica.cf.validate": {"address": None},
 }
 
+# ADR-0054: path-form examples of support-aware readers must still resolve to
+# registered logical owners. Keep the public selector form under test while
+# routing the synthetic execution through the same objects as logical examples.
+REGISTERED_SUPPORT_READER_PATHS: dict[str, tuple[str, str]] = {
+    "unica.cf.info": ("ConfigPath", "src/cf/Configuration.xml"),
+    "unica.dcs.info": (
+        "TemplatePath",
+        "src/cf/Reports/ParityReport/Templates/ParityDcs/Ext/Template.xml",
+    ),
+    "unica.form.info": (
+        "FormPath",
+        "src/cf/Catalogs/ParityCatalog/Forms/ParityForm/Ext/Form.xml",
+    ),
+    "unica.mxl.info": (
+        "TemplatePath",
+        "src/cf/Reports/ParityReport/Templates/ParityMxl/Ext/Template.xml",
+    ),
+    "unica.role.info": ("RightsPath", "src/cf/Roles/ParityRole/Ext/Rights.xml"),
+}
+
 
 def descriptor_image(kind: str, name: str, children: str = "") -> str:
     # A validator reads the descriptor, so the identity fields it checks — the
@@ -3201,6 +3221,11 @@ EndProcedure
         # path substitution below has nothing to work on.
         if "sourceSet" in arguments and tool_name in LOGICAL_READER_TARGETS:
             prepare_logical_reader_example(arguments, tool_name)
+            continue
+
+        if tool_name in REGISTERED_SUPPORT_READER_PATHS:
+            path_argument, registered_path = REGISTERED_SUPPORT_READER_PATHS[tool_name]
+            arguments[path_argument] = registered_path
             continue
 
         if tool_name in {"unica.cf.info", "unica.cf.validate", "unica.cfe.diff"}:

@@ -2,12 +2,16 @@
 
 use crate::application::operation_descriptors::TEMPLATE_PATH;
 use crate::application::AdapterOutcome;
+use crate::domain::support_state::{
+    ObjectSupportData as DomainObjectSupportData, SupportStateReader,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, AttachedResource,
+    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
 };
 use crate::infrastructure::native_operations::mxl::TEMPLATE_KINDS;
 use crate::infrastructure::platform_xml_owner::DCS_ROOT;
+use crate::infrastructure::support_state::WorkspaceSupportStateReader;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -126,7 +130,7 @@ impl DcsValidationReporter {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DcsInfoData {
-    pub(crate) support: ObjectSupportData,
+    pub(crate) support: DomainObjectSupportData,
     pub(crate) data_sources: Vec<DcsInfoDataSource>,
     pub(crate) data_sets: Vec<DcsInfoDataSet>,
     pub(crate) links: Vec<DcsInfoLink>,
@@ -365,10 +369,10 @@ fn dcs_info_collect(
     root: roxmltree::Node<'_, '_>,
     ns_schema: &str,
     ns_settings: &str,
-    resolved_path: &Path,
+    support: DomainObjectSupportData,
 ) -> DcsInfoData {
     DcsInfoData {
-        support: object_support_state(resolved_path),
+        support,
         data_sources: dcs_children(root, "dataSource", ns_schema)
             .into_iter()
             .map(|source| DcsInfoDataSource {
@@ -498,19 +502,22 @@ fn dcs_info_collect(
 pub(crate) fn analyze_dcs_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    support_reader: &dyn SupportStateReader,
 ) -> AdapterOutcome {
-    analyze_dcs_info_with_data(args, context).outcome
+    analyze_dcs_info_with_data(args, context, support_reader).outcome
 }
 
 pub(crate) fn analyze_dcs_info_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    support_reader: &dyn SupportStateReader,
 ) -> DcsInfoExecution {
     const NS_SCHEMA: &str = DCS_SCHEMA_NS;
     const NS_SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
 
     let result = (|| -> Result<(DcsInfoData, PathBuf), String> {
-        let template_path = resolve_dcs_info_path_for_script(args, context)?;
+        let selection = resolve_dcs_info_target(args, context)?;
+        let template_path = selection.resource_path;
         let resolved_path = template_path
             .canonicalize()
             .unwrap_or_else(|_| template_path.clone());
@@ -521,7 +528,10 @@ pub(crate) fn analyze_dcs_info_with_data(
         require_dcs_root(root)?;
         // Eleven modes sliced one schema into eleven reports. Data answers
         // with every section at once; a caller projects what it needs.
-        let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS, &resolved_path);
+        let support = support_reader
+            .object_support(&selection.target)
+            .map_err(|error| error.to_string())?;
+        let data = dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS, support);
         Ok((data, resolved_path))
     })();
 
@@ -573,10 +583,6 @@ pub(crate) fn dcs_info_overview(
     let total_xml_lines = text.lines().count();
     lines.push(format!(
         "=== DCS: {template_name} ({total_xml_lines} lines) ==="
-    ));
-    lines.push(format!(
-        "Поддержка: {}",
-        support_status_for_path(resolved_path)
     ));
     lines.push(String::new());
 
@@ -1873,6 +1879,20 @@ pub(crate) fn resolve_dcs_info_path_for_script(
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     inspect_dcs_info_path(args, context).resolution
+}
+
+pub(crate) fn resolve_dcs_info_target(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<ResolvedReadTarget, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::Template, TEMPLATE_KINDS)
+    {
+        return selection.map_err(|failure| failure.to_string());
+    }
+    let template_path = resolve_dcs_info_path_for_script(args, context)?;
+    physical_selection(&template_path, context, AttachedResource::Template)
+        .map_err(|failure| failure.to_string())
 }
 
 pub(crate) fn dcs_info_format_dependency_paths(
@@ -10603,7 +10623,11 @@ pub(crate) fn invoke_read(
     context: &WorkspaceContext,
 ) -> Option<Result<AdapterOutcome, String>> {
     match operation {
-        "dcs-info" => Some(Ok(analyze_dcs_info(args, context))),
+        "dcs-info" => Some(Ok(analyze_dcs_info(
+            args,
+            context,
+            &WorkspaceSupportStateReader::new(context),
+        ))),
         "dcs-validate" => Some(Ok(validate_dcs(args, context))),
         _ => None,
     }
@@ -10668,6 +10692,34 @@ mod tests {
                 "fields": ["Value"]
             }]
         })
+    }
+
+    fn dcs_info_context(name: &str) -> (WorkspaceContext, PathBuf) {
+        let context = temp_context(name);
+        let source = context.workspace_root.join("src");
+        let template_path = source.join("Reports/Sales/Templates/Dcs/Ext/Template.xml");
+        fs::create_dir_all(template_path.parent().unwrap()).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Report>Sales</Report></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            source.join("Reports/Sales.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Report><Properties><Name>Sales</Name></Properties><ChildObjects><Template>Dcs</Template></ChildObjects></Report></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            source.join("Reports/Sales/Templates/Dcs.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template></MetaDataObject>"#,
+        )
+        .unwrap();
+        (context, template_path)
     }
 
     #[test]
@@ -10998,8 +11050,7 @@ mod tests {
 
     #[test]
     fn dcs_info_rejects_wrong_root_namespace_without_output() {
-        let context = temp_context("dcs-info-wrong-root-ns");
-        let template_path = context.cwd.join("Template.xml");
+        let (context, template_path) = dcs_info_context("dcs-info-wrong-root-ns");
         let out_file = context.cwd.join("info.txt");
         fs::write(
             &template_path,
@@ -11010,11 +11061,12 @@ mod tests {
         )
         .unwrap();
         let args = Map::from_iter([
-            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("TemplatePath".to_string(), json!(template_path)),
             ("OutFile".to_string(), json!("info.txt")),
         ]);
 
-        let outcome = analyze_dcs_info(&args, &context);
+        let outcome =
+            analyze_dcs_info(&args, &context, &WorkspaceSupportStateReader::new(&context));
 
         assert!(!outcome.ok, "{outcome:?}");
         assert!(!out_file.exists());
@@ -11027,8 +11079,7 @@ mod tests {
 
     #[test]
     fn dcs_info_raw_returns_exact_unpaginated_query_text() {
-        let context = temp_context("dcs-info-raw-query");
-        let template_path = context.cwd.join("Template.xml");
+        let (context, template_path) = dcs_info_context("dcs-info-raw-query");
         let query = "  ВЫБРАТЬ 1 КАК Значение  \n|ОБЪЕДИНИТЬ ВСЕ\n|ВЫБРАТЬ 2  ";
         fs::write(
             &template_path,
@@ -11039,7 +11090,7 @@ mod tests {
         )
         .unwrap();
         let args = Map::from_iter([
-            ("TemplatePath".to_string(), json!("Template.xml")),
+            ("TemplatePath".to_string(), json!(template_path)),
             ("Mode".to_string(), json!("query")),
             ("Name".to_string(), json!("НаборДанных1")),
             ("Raw".to_string(), json!(true)),
@@ -11047,7 +11098,11 @@ mod tests {
             ("Offset".to_string(), json!(100)),
         ]);
 
-        let execution = analyze_dcs_info_with_data(&args, &context);
+        let execution = analyze_dcs_info_with_data(
+            &args,
+            &context,
+            &WorkspaceSupportStateReader::new(&context),
+        );
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         // `Raw` existed because pagination mangled the query; data carries the
@@ -11068,21 +11123,46 @@ mod tests {
     /// only true if every fact those reports carried survives, so this fixture
     /// puts one of each into a schema and reads them all back out of `data`.
     #[test]
+    fn dcs_info_overview_does_not_duplicate_structured_support() {
+        let xml = complete_dcs_xml();
+        let doc = Document::parse(xml).unwrap();
+        let mut lines = Vec::new();
+
+        dcs_info_overview(
+            doc.root_element(),
+            Path::new("Template.xml"),
+            xml,
+            &mut lines,
+            DCS_SCHEMA_NS,
+            TEST_DCS_SETTINGS_NS,
+        );
+
+        assert!(
+            lines.iter().all(|line| !line.starts_with("Поддержка:")),
+            "support belongs to the typed `support` field, not overview prose: {lines:?}"
+        );
+    }
+
+    #[test]
     fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
-        let context = temp_context("dcs-info-complete-read-model");
-        let template_path = context.cwd.join("Template.xml");
+        let (context, template_path) = dcs_info_context("dcs-info-complete-read-model");
         fs::write(&template_path, complete_dcs_xml()).unwrap();
 
         let execution = analyze_dcs_info_with_data(
-            &Map::from_iter([("TemplatePath".to_string(), json!("Template.xml"))]),
+            &Map::from_iter([("TemplatePath".to_string(), json!(template_path))]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
 
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         let data = execution.data.expect("dcs.info answers with data");
 
         // `overview` printed the owner's support state and the data sources.
-        assert!(!data.support.state.is_empty(), "{data:?}");
+        assert_eq!(
+            data.support.state,
+            crate::domain::support_state::ObjectSupportState::NotSupported,
+            "{data:?}"
+        );
         assert_eq!(
             data.data_sources
                 .iter()

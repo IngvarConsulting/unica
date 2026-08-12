@@ -9,10 +9,12 @@ use crate::domain::source_target::{
     MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
     TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
+use crate::domain::support_state::{SupportReadError, SupportReadErrorCode};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, AttachedResource,
+    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
 };
+use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
     TargetKindPolicy,
@@ -1155,6 +1157,18 @@ pub(crate) fn resolve_role_read_rights_path(
     )))
 }
 
+pub(crate) fn resolve_role_info_target(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<ResolvedReadTarget, String> {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, &["Role"]) {
+        return selection.map_err(|failure| failure.to_string());
+    }
+    let rights_path = resolve_role_read_rights_path(args, context)?;
+    physical_selection(&rights_path, context, AttachedResource::Rights)
+        .map_err(|failure| failure.to_string())
+}
+
 pub(crate) fn is_valid_uuid(value: &str) -> bool {
     let parts = value.split('-').collect::<Vec<_>>();
     let expected = [8usize, 4, 4, 4, 12];
@@ -1229,6 +1243,20 @@ pub(crate) fn resolve_cf_read_config_path(
             .map_err(|failure| failure.to_string());
     }
     resolve_configuration_read_path(args, CF_PATH, "ConfigPath", context)
+}
+
+pub(crate) fn resolve_cf_info_target(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<ResolvedReadTarget, String> {
+    if let Some(selection) =
+        logical_selection(args, context, AttachedResource::ConfigurationRoot, &[])
+    {
+        return selection.map_err(|failure| failure.to_string());
+    }
+    let config_path = resolve_configuration_read_path(args, CF_PATH, "ConfigPath", context)?;
+    physical_selection(&config_path, context, AttachedResource::ConfigurationRoot)
+        .map_err(|failure| failure.to_string())
 }
 
 pub(crate) fn resolve_cfe_validate_config_path(
@@ -2275,62 +2303,6 @@ impl MutationData {
     }
 }
 
-/// Typed support state for ADR-0023 readers. It lives beside `SupportState`
-/// because the counts are private there, and every reader needs the same
-/// four-state answer rather than its own rendering of it.
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SupportData {
-    /// `notSupported`, `extension`, `removed` or `supported`.
-    pub(crate) state: &'static str,
-    pub(crate) editing_enabled: Option<bool>,
-    pub(crate) objects: Option<SupportCounts>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SupportCounts {
-    pub(crate) locked: u64,
-    pub(crate) editable: u64,
-    pub(crate) removed: u64,
-}
-
-pub(crate) fn support_state_data(config_path: &Path, is_extension: bool) -> SupportData {
-    let config_dir = if config_path.is_dir() {
-        config_path
-    } else {
-        config_path.parent().unwrap_or_else(|| Path::new(""))
-    };
-    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let Some(state) = read_support_state(&bin_path) else {
-        return SupportData {
-            state: if is_extension {
-                "extension"
-            } else {
-                "notSupported"
-            },
-            editing_enabled: None,
-            objects: None,
-        };
-    };
-    if state.removed {
-        return SupportData {
-            state: "removed",
-            editing_enabled: None,
-            objects: None,
-        };
-    }
-    SupportData {
-        state: "supported",
-        editing_enabled: Some(state.global_editing_enabled),
-        objects: Some(SupportCounts {
-            locked: state.counts[0] as u64,
-            editable: state.counts[1] as u64,
-            removed: state.counts[2] as u64,
-        }),
-    }
-}
-
 pub(crate) fn support_state_lines_for_configuration(
     config_path: &Path,
     is_extension: bool,
@@ -2375,78 +2347,6 @@ pub(crate) fn support_state_lines_for_configuration(
         }
     }
     lines
-}
-
-/// Per-object support state (ADR-0023). The configuration-level [`SupportData`]
-/// cannot answer this: a supported configuration still holds one rule per
-/// object, and "locked" versus "editable while supported" is the fact that
-/// decides whether a direct edit breaks vendor updates.
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ObjectSupportData {
-    /// `notSupported`, `removedFromSupport`, `configurationReadOnly`, `locked`
-    /// or `editableWithSupport`.
-    pub(crate) state: &'static str,
-    /// Whether editing this object directly is safe for vendor updates.
-    /// `null` when the object is not on support at all.
-    pub(crate) direct_edit_safe: Option<bool>,
-}
-
-pub(crate) fn object_support_state(target_path: &Path) -> ObjectSupportData {
-    fn data(state: &'static str, direct_edit_safe: Option<bool>) -> ObjectSupportData {
-        ObjectSupportData {
-            state,
-            direct_edit_safe,
-        }
-    }
-    let Some(config_dir) = find_support_config_dir(target_path) else {
-        return data("notSupported", None);
-    };
-    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let Some(state) = read_support_state(&bin_path) else {
-        return data("notSupported", None);
-    };
-    if state.removed {
-        return data("removedFromSupport", Some(true));
-    }
-    if !state.global_editing_enabled {
-        return data("configurationReadOnly", Some(false));
-    }
-    let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
-        return data("notSupported", None);
-    };
-    match state.object_rule(&object_uuid) {
-        Some(0) => data("locked", Some(false)),
-        Some(1) => data("editableWithSupport", Some(true)),
-        Some(2) => data("removedFromSupport", Some(true)),
-        _ => data("notSupported", None),
-    }
-}
-
-pub(crate) fn support_status_for_path(target_path: &Path) -> String {
-    let Some(config_dir) = find_support_config_dir(target_path) else {
-        return "не на поддержке".to_string();
-    };
-    let bin_path = config_dir.join("Ext").join("ParentConfigurations.bin");
-    let Some(state) = read_support_state(&bin_path) else {
-        return "не на поддержке".to_string();
-    };
-    if state.removed {
-        return "снято с поддержки (правки свободны)".to_string();
-    }
-    if !state.global_editing_enabled {
-        return "конфигурация read-only (возможность изменения выключена) — правки невозможны без включения"
-            .to_string();
-    }
-    let Some(object_uuid) = support_object_uuid_for_path(target_path) else {
-        return "не на поддержке".to_string();
-    };
-    match state.object_rule(&object_uuid) {
-        Some(0) => "на замке — прямая правка сломает обновления; дорабатывай через cfe-* либо включи редактирование объекта".to_string(),
-        Some(1) => "редактируется с сохранением поддержки".to_string(),
-        Some(2) => "снято с поддержки (правки свободны)".to_string(),
-        _ => "не на поддержке".to_string(),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2516,7 +2416,7 @@ pub(crate) struct SupportState {
 }
 
 impl SupportState {
-    fn object_rule(&self, object_uuid: &str) -> Option<u8> {
+    pub(crate) fn object_rule(&self, object_uuid: &str) -> Option<u8> {
         self.object_rules
             .get(&object_uuid.to_ascii_lowercase())
             .copied()
@@ -2528,6 +2428,10 @@ impl SupportState {
 
     pub(crate) fn removed(&self) -> bool {
         self.removed
+    }
+
+    pub(crate) fn counts(&self) -> [usize; 3] {
+        self.counts
     }
 }
 
@@ -2574,6 +2478,103 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
         object_rules,
         vendors: parse_support_vendors(&text),
     })
+}
+
+/// Strict read semantics for subject readers (ADR-0054).
+///
+/// The mutating guard deliberately keeps using [`read_support_state`] until its
+/// pre-image and atomicity contract is migrated separately. Subject readers
+/// must distinguish an absent marker from evidence that exists but cannot be
+/// trusted.
+pub(crate) fn read_support_state_strict(
+    bin_path: &Path,
+) -> Result<Option<SupportState>, SupportReadError> {
+    let marker_parent = bin_path.parent().ok_or_else(|| {
+        SupportReadError::new(
+            SupportReadErrorCode::StateUnreadable,
+            "support-state marker parent is unavailable",
+        )
+    })?;
+    let parent_metadata = match fs::symlink_metadata(marker_parent) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(SupportReadError::new(
+                SupportReadErrorCode::StateUnreadable,
+                "support-state marker parent metadata is unreadable",
+            ))
+        }
+    };
+    if metadata_is_link_or_reparse_point(&parent_metadata) || !parent_metadata.is_dir() {
+        return Err(SupportReadError::new(
+            SupportReadErrorCode::StateUnreadable,
+            "support-state marker parent is not a direct directory",
+        ));
+    }
+    let metadata = match fs::symlink_metadata(bin_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(SupportReadError::new(
+                SupportReadErrorCode::StateUnreadable,
+                "support-state marker metadata is unreadable",
+            ))
+        }
+    };
+    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+        return Err(SupportReadError::new(
+            SupportReadErrorCode::StateUnreadable,
+            "support-state marker is not a direct regular file",
+        ));
+    }
+    let data = fs::read(bin_path).map_err(|_| {
+        SupportReadError::new(
+            SupportReadErrorCode::StateUnreadable,
+            "support-state marker bytes are unreadable",
+        )
+    })?;
+    if data.is_empty() {
+        return Ok(Some(SupportState {
+            global_editing_enabled: true,
+            vendor_count: 0,
+            removed: true,
+            counts: [0, 0, 0],
+            object_rules: HashMap::new(),
+            vendors: Vec::new(),
+        }));
+    }
+    let text = std::str::from_utf8(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data))
+        .map_err(|_| {
+            SupportReadError::new(
+                SupportReadErrorCode::StateInvalid,
+                "support-state marker is not valid UTF-8",
+            )
+        })?;
+    let (global_flag, vendor_count) = parse_support_header(text).ok_or_else(|| {
+        SupportReadError::new(
+            SupportReadErrorCode::StateInvalid,
+            "support-state marker has an unsupported header",
+        )
+    })?;
+    if vendor_count == 0 {
+        return Ok(Some(SupportState {
+            global_editing_enabled: true,
+            vendor_count,
+            removed: true,
+            counts: [0, 0, 0],
+            object_rules: HashMap::new(),
+            vendors: Vec::new(),
+        }));
+    }
+    let (counts, object_rules) = parse_support_object_rules(text);
+    Ok(Some(SupportState {
+        global_editing_enabled: global_flag == 0,
+        vendor_count,
+        removed: false,
+        counts,
+        object_rules,
+        vendors: parse_support_vendors(text),
+    }))
 }
 
 pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {

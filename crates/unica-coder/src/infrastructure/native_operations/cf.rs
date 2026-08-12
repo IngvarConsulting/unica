@@ -5,11 +5,13 @@ use crate::domain::format_profile::{
     classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
 use crate::domain::metadata::MetadataKind;
+use crate::domain::support_state::{ConfigurationSupportData, SupportStateReader};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::metadata_kinds::{
     metadata_kind, metadata_kind_by_directory, metadata_kind_index, METADATA_KIND_TAGS,
 };
 use crate::infrastructure::platform_xml_owner::root_version_literal;
+use crate::infrastructure::support_state::WorkspaceSupportStateReader;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -879,7 +881,7 @@ pub(crate) struct CfInfoData {
     pub(crate) version: Option<String>,
     pub(crate) vendor: Option<String>,
     pub(crate) extension_purpose: Option<String>,
-    pub(crate) support: SupportData,
+    pub(crate) support: ConfigurationSupportData,
     pub(crate) properties: CfInfoProperties,
     pub(crate) child_objects: Vec<CfChildObjectCount>,
     pub(crate) total_objects: usize,
@@ -963,11 +965,13 @@ fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemData> {
 pub(crate) fn analyze_cf_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    support_reader: &dyn SupportStateReader,
 ) -> CfInfoExecution {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let result = (|| -> Result<(CfInfoData, PathBuf), String> {
-        let config_path = resolve_cf_read_config_path(args, context)?;
+        let selection = resolve_cf_info_target(args, context)?;
+        let config_path = selection.resource_path;
 
         let text = fs::read_to_string(&config_path)
             .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
@@ -1005,7 +1009,9 @@ pub(crate) fn analyze_cf_info(
             synonym: optional(cf_prop_ml(props, "Synonym")),
             version: optional(cf_prop_text(props, "Version")),
             vendor: optional(cf_prop_text(props, "Vendor")),
-            support: support_state_data(&config_path, extension_purpose.is_some()),
+            support: support_reader
+                .configuration_support(&selection.target)
+                .map_err(|error| error.to_string())?,
             extension_purpose,
             properties: CfInfoProperties {
                 compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
@@ -4993,7 +4999,12 @@ pub(crate) fn invoke_read(
     match operation {
         // `cf-info` answers with typed data; the registry keeps only the
         // prose-shaped path, so the typed route reaches it in typed_result.rs.
-        "cf-info" => Some(Ok(analyze_cf_info(args, context).outcome)),
+        "cf-info" => Some(Ok(analyze_cf_info(
+            args,
+            context,
+            &WorkspaceSupportStateReader::new(context),
+        )
+        .outcome)),
         "cf-validate" => Some(Ok(validate_cf(args, context))),
         _ => None,
     }
@@ -5053,10 +5064,12 @@ mod cf_read_selector_bridge_tests {
         let physical = analyze_cf_info(
             &Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
         let logical = analyze_cf_info(
             &Map::from_iter([("sourceSet".to_string(), json!("main"))]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         );
 
         assert!(logical.outcome.ok, "{:?}", logical.outcome);
@@ -5077,6 +5090,7 @@ mod cf_read_selector_bridge_tests {
         let outcome = analyze_cf_info(
             &Map::from_iter([("sourceSet".to_string(), json!("nope"))]),
             &context,
+            &WorkspaceSupportStateReader::new(&context),
         )
         .outcome;
 

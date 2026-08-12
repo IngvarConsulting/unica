@@ -122,6 +122,9 @@ runtime для операций платформы, поставляемый а�
   (INV-SOURCE-SINGLE-RESOLVED-ROOT).
 - `source_target` — `SourceTarget`, `MetadataAddress`, `ResolvedTarget` и
   профиль канонических адресов Platform XML (INV-SOURCE-LOGICAL-IDENTITY).
+- `support_state` — провайдер-нейтральные состояния конфигурации и объекта,
+  стабильные ошибки, логическая цель вложенной подсистемы и малый
+  `SupportStateReader` без файловых путей (INV-APP-SUPPORT-STATE).
 - `subsystem` — отдельный от `MetadataAddress` тип `SubsystemAddress` в плоском
   диалекте БСП, эффективная роль узла и закрытая идентичность
   `ContentReference` как `MetadataAddress | UUID` (INV-SOURCE-SUBSYSTEM-TOPOLOGY).
@@ -277,6 +280,10 @@ runtime для операций платформы, поставляемый а�
   путей внутри рабочего пространства.
 - `support_guard` — `evaluate_support_guard` блокирует мутирующую операцию или
   предупреждает о ней по состоянию поддержки целевого объекта.
+- `support_state` — workspace-bound реализация `SupportStateReader`: разрешает
+  логическую цель, выбирает поставщика по формату источника и скрывает
+  Platform XML marker, descriptor UUID и физическую раскладку
+  (INV-APP-SUPPORT-STATE).
 - `format_guard` — `evaluate_format_guard` сравнивает формат выгрузки
   затронутого источника с активным профилем формата.
 - `project_sources` — `discover_project_source_map` строит карту наборов

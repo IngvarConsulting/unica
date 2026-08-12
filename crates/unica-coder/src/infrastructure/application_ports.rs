@@ -32,10 +32,13 @@ use crate::infrastructure::internal_adapters::{
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
 use crate::infrastructure::native_operations::subsystem;
-use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
+use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::full_dump_publication::{
     FullDumpInvocation, VerifiedFullDumpAdapter,
+};
+use crate::infrastructure::support_state::{
+    SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
 };
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
@@ -58,6 +61,7 @@ fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String>
 
 pub(crate) struct InfrastructureApplicationPorts {
     source_resources: crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider,
+    support_state_readers: Arc<dyn SupportStateReaderFactory>,
 }
 
 impl InfrastructureApplicationPorts {
@@ -65,6 +69,18 @@ impl InfrastructureApplicationPorts {
         Self {
             source_resources:
                 crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
+            support_state_readers: Arc::new(WorkspaceSupportStateReaderFactory),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_support_reader_factory(
+        support_state_readers: Arc<dyn SupportStateReaderFactory>,
+    ) -> Self {
+        Self {
+            source_resources:
+                crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
+            support_state_readers,
         }
     }
 }
@@ -101,7 +117,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
     ) -> Result<MetadataRead, MetaFailure> {
-        MetadataOperations::read_local(request, context, cancellation)
+        let support_reader = self.support_state_readers.create(context);
+        MetadataOperations::read_local(request, context, cancellation, support_reader.as_ref())
     }
 
     fn read_metadata_related(
@@ -281,14 +298,20 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
             return prepared_subsystem_info_failure(error.to_string(), false);
         }
-        let prepared =
-            match subsystem::prepare_subsystem_info(args, context, cancellation, deadline) {
-                Ok(prepared) => prepared,
-                Err(error) if error.is_control() => {
-                    return prepared_subsystem_info_failure(error.to_string(), false);
-                }
-                Err(error) => return prepared_subsystem_info_failure(error.to_string(), true),
-            };
+        let support_reader = self.support_state_readers.create(context);
+        let prepared = match subsystem::prepare_subsystem_info(
+            args,
+            context,
+            cancellation,
+            deadline,
+            support_reader.as_ref(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) if error.is_control() => {
+                return prepared_subsystem_info_failure(error.to_string(), false);
+            }
+            Err(error) => return prepared_subsystem_info_failure(error.to_string(), true),
+        };
         let format_guard =
             crate::infrastructure::format_guard::evaluate_prepared_subsystem_info_format_guard(
                 spec,
@@ -351,6 +374,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         spec.name
                     ));
                 }
+                let support_reader = self.support_state_readers.create(context);
                 NativeOperationAdapter::invoke_with_data(
                     operation,
                     spec.name,
@@ -358,7 +382,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     context,
                     dry_run,
                     spec.execution.is_mutating(),
-                    NativeInvocationControl::new(
+                    NativeInvocationContext::new(
+                        support_reader.as_ref(),
                         cancellation,
                         ProviderDeadline::new(Instant::now() + NATIVE_TYPED_INVOCATION_DEADLINE),
                     ),
@@ -1160,21 +1185,31 @@ mod tests {
         project_platform_version, select_installation_root, select_platform_version,
         verified_full_dump_invocation,
     };
+    use crate::application::metadata::MetaInfoRequest;
     use crate::application::{InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
     };
     use crate::domain::source_roots::ResolvedSourceRoot;
+    use crate::domain::source_target::{
+        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    };
+    use crate::domain::support_state::{
+        ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
+        ResolvedSubsystemTarget, SupportReadError, SupportStateReader,
+    };
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
+    use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
     use crate::infrastructure::native_operations::NativeOperationAdapter;
     use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
     use crate::infrastructure::platform::secure_read::{
         with_secure_tree_test_hook, SecureTreePhase,
     };
+    use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     fn spec(name: &'static str, handler: ToolHandler) -> ToolSpec {
@@ -1184,6 +1219,747 @@ mod tests {
             .unwrap_or_else(|| panic!("{name} must be registered"));
         spec.handler = handler;
         spec
+    }
+
+    #[derive(Clone)]
+    struct RecordingSupportStateReaderFactory {
+        calls: Arc<Mutex<Vec<(&'static str, ResolvedTarget)>>>,
+        subsystem_calls: Arc<Mutex<Vec<ResolvedSubsystemTarget>>>,
+    }
+
+    struct RecordingSupportStateReader {
+        calls: Arc<Mutex<Vec<(&'static str, ResolvedTarget)>>>,
+        subsystem_calls: Arc<Mutex<Vec<ResolvedSubsystemTarget>>>,
+    }
+
+    struct FailingSupportStateReaderFactory;
+
+    struct FailingSupportStateReader;
+
+    #[derive(Clone, Copy)]
+    struct StaticObjectSupportStateReaderFactory(ObjectSupportState);
+
+    struct StaticObjectSupportStateReader(ObjectSupportState);
+
+    impl SupportStateReaderFactory for RecordingSupportStateReaderFactory {
+        fn create<'a>(
+            &'a self,
+            _context: &'a WorkspaceContext,
+        ) -> Box<dyn SupportStateReader + 'a> {
+            Box::new(RecordingSupportStateReader {
+                calls: Arc::clone(&self.calls),
+                subsystem_calls: Arc::clone(&self.subsystem_calls),
+            })
+        }
+    }
+
+    impl SupportStateReader for RecordingSupportStateReader {
+        fn configuration_support(
+            &self,
+            target: &ResolvedTarget,
+        ) -> Result<ConfigurationSupportData, SupportReadError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("configuration", target.clone()));
+            Ok(ConfigurationSupportData {
+                state: ConfigurationSupportState::Removed,
+                editing_enabled: None,
+                objects: None,
+            })
+        }
+
+        fn object_support(
+            &self,
+            target: &ResolvedTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            self.calls.lock().unwrap().push(("object", target.clone()));
+            Ok(ObjectSupportData {
+                state: ObjectSupportState::Locked,
+                direct_edit_safe: Some(false),
+            })
+        }
+
+        fn subsystem_support(
+            &self,
+            target: &ResolvedSubsystemTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            self.subsystem_calls.lock().unwrap().push(target.clone());
+            Ok(ObjectSupportData {
+                state: ObjectSupportState::Locked,
+                direct_edit_safe: Some(false),
+            })
+        }
+    }
+
+    impl SupportStateReaderFactory for FailingSupportStateReaderFactory {
+        fn create<'a>(
+            &'a self,
+            _context: &'a WorkspaceContext,
+        ) -> Box<dyn SupportStateReader + 'a> {
+            Box::new(FailingSupportStateReader)
+        }
+    }
+
+    impl SupportStateReader for FailingSupportStateReader {
+        fn configuration_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ConfigurationSupportData, SupportReadError> {
+            Err(SupportReadError::new(
+                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                "support-state provider is unavailable",
+            ))
+        }
+
+        fn object_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            Err(SupportReadError::new(
+                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                "support-state provider is unavailable",
+            ))
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &crate::domain::support_state::ResolvedSubsystemTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            Err(SupportReadError::new(
+                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                "support-state provider is unavailable",
+            ))
+        }
+    }
+
+    impl SupportStateReaderFactory for StaticObjectSupportStateReaderFactory {
+        fn create<'a>(
+            &'a self,
+            _context: &'a WorkspaceContext,
+        ) -> Box<dyn SupportStateReader + 'a> {
+            Box::new(StaticObjectSupportStateReader(self.0))
+        }
+    }
+
+    impl SupportStateReader for StaticObjectSupportStateReader {
+        fn configuration_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ConfigurationSupportData, SupportReadError> {
+            unreachable!("meta.info reads object support")
+        }
+
+        fn object_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            Ok(ObjectSupportData {
+                state: self.0,
+                direct_edit_safe: None,
+            })
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &ResolvedSubsystemTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            unreachable!("meta.info reads object support")
+        }
+    }
+
+    fn support_reader_fixture() -> (tempfile::TempDir, WorkspaceContext) {
+        let root = tempfile::Builder::new()
+            .prefix("unica-support-reader-routes")
+            .tempdir()
+            .unwrap();
+        let workspace = root.path().canonicalize().unwrap();
+        let source = workspace.join("src");
+        for directory in [
+            "Roles/Reader/Ext",
+            "Catalogs/Items/Forms/Order/Ext",
+            "Reports/Sales/Templates/Sheet/Ext",
+            "Reports/Sales/Templates/Dcs/Ext",
+        ] {
+            std::fs::create_dir_all(source.join(directory)).unwrap();
+        }
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="11111111-1111-1111-1111-111111111111"><Properties><Name>Demo</Name></Properties><ChildObjects><Role>Reader</Role><Catalog>Items</Catalog><Report>Sales</Report></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Roles/Reader.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role uuid="22222222-2222-2222-2222-222222222222"><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Roles/Reader/Ext/Rights.xml"),
+            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" setForNewObjects="false" setForAttributesByDefault="true" independentRightsOfChildObjects="false"/>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="33333333-3333-3333-3333-333333333333"><Properties><Name>Items</Name></Properties><ChildObjects><Form>Order</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Forms/Order.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="44444444-4444-4444-4444-444444444444"><Properties><Name>Order</Name></Properties></Form></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Forms/Order/Ext/Form.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/></Form>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Reports/Sales.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Report uuid="55555555-5555-5555-5555-555555555555"><Properties><Name>Sales</Name></Properties><ChildObjects><Template>Sheet</Template><Template>Dcs</Template></ChildObjects></Report></MetaDataObject>"#,
+        )
+        .unwrap();
+        for (name, uuid, template_type) in [
+            (
+                "Sheet",
+                "66666666-6666-6666-6666-666666666666",
+                "SpreadsheetDocument",
+            ),
+            (
+                "Dcs",
+                "77777777-7777-7777-7777-777777777777",
+                "DataCompositionSchema",
+            ),
+        ] {
+            std::fs::write(
+                source.join(format!("Reports/Sales/Templates/{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="{uuid}"><Properties><Name>{name}</Name><TemplateType>{template_type}</TemplateType></Properties></Template></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            source.join("Reports/Sales/Templates/Sheet/Ext/Template.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:v8="http://v8.1c.ru/8.1/data/core"><columnsID>0</columnsID><format><formatIndex>0</formatIndex></format></document>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Reports/Sales/Templates/Dcs/Ext/Template.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?><DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dataSource><name>Source</name><dataSourceType>Local</dataSourceType></dataSource></DataCompositionSchema>"#,
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        (root, context)
+    }
+
+    fn metadata_address(raw: &str) -> MetadataAddress {
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap()
+    }
+
+    #[test]
+    fn native_typed_readers_receive_logical_support_targets() {
+        use crate::application::ports::ApplicationPorts;
+
+        let (_root, context) = support_reader_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::new(Mutex::new(Vec::new())),
+            },
+        ));
+        let cases = [
+            (
+                "unica.cf.info",
+                Map::from_iter([("ConfigPath".to_string(), json!("src"))]),
+                "removed",
+            ),
+            (
+                "unica.role.info",
+                Map::from_iter([(
+                    "RightsPath".to_string(),
+                    json!("src/Roles/Reader/Ext/Rights.xml"),
+                )]),
+                "locked",
+            ),
+            (
+                "unica.mxl.info",
+                Map::from_iter([(
+                    "TemplatePath".to_string(),
+                    json!("src/Reports/Sales/Templates/Sheet/Ext/Template.xml"),
+                )]),
+                "locked",
+            ),
+            (
+                "unica.dcs.info",
+                Map::from_iter([(
+                    "TemplatePath".to_string(),
+                    json!("src/Reports/Sales/Templates/Dcs/Ext/Template.xml"),
+                )]),
+                "locked",
+            ),
+            (
+                "unica.form.info",
+                Map::from_iter([(
+                    "FormPath".to_string(),
+                    json!("src/Catalogs/Items/Forms/Order/Ext/Form.xml"),
+                )]),
+                "locked",
+            ),
+        ];
+        for (name, args, expected_state) in cases {
+            let tool = crate::application::tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .unwrap();
+            let outcome = ports
+                .invoke_handler(
+                    tool,
+                    &args,
+                    &context,
+                    InvocationMode::Read,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert!(outcome.adapter.ok, "{name}: {:?}", outcome.adapter);
+            assert_eq!(
+                outcome.data.as_ref().unwrap()["support"]["state"],
+                expected_state,
+                "{name} must publish the value returned by the injected reader"
+            );
+        }
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (
+                    "configuration",
+                    ResolvedTarget {
+                        source_set: "main".to_string(),
+                        metadata_path: None,
+                        target_kind: TargetKind::SourceRoot,
+                    },
+                ),
+                (
+                    "object",
+                    ResolvedTarget {
+                        source_set: "main".to_string(),
+                        metadata_path: Some(metadata_address("Role.Reader")),
+                        target_kind: TargetKind::MetadataObject,
+                    },
+                ),
+                (
+                    "object",
+                    ResolvedTarget {
+                        source_set: "main".to_string(),
+                        metadata_path: Some(metadata_address("Report.Sales.Template.Sheet")),
+                        target_kind: TargetKind::MetadataObject,
+                    },
+                ),
+                (
+                    "object",
+                    ResolvedTarget {
+                        source_set: "main".to_string(),
+                        metadata_path: Some(metadata_address("Report.Sales.Template.Dcs")),
+                        target_kind: TargetKind::MetadataObject,
+                    },
+                ),
+                (
+                    "object",
+                    ResolvedTarget {
+                        source_set: "main".to_string(),
+                        metadata_path: Some(metadata_address("Catalog.Items.Form.Order")),
+                        target_kind: TargetKind::MetadataObject,
+                    },
+                ),
+            ]
+        );
+    }
+
+    fn meta_info_request() -> MetaInfoRequest {
+        MetaInfoRequest {
+            source_set: "main".to_string(),
+            metadata_path: metadata_address("Catalog.Items"),
+            sections: Vec::new(),
+            limit: 20,
+        }
+    }
+
+    #[test]
+    fn meta_info_passes_its_resolved_target_to_support_reader() {
+        use crate::application::ports::ApplicationPorts;
+
+        let (_root, context) = support_reader_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::new(Mutex::new(Vec::new())),
+            },
+        ));
+
+        let read = ports
+            .read_metadata_local(&meta_info_request(), &context, &CancellationToken::new())
+            .unwrap();
+
+        assert_eq!(
+            read.local.support,
+            crate::domain::metadata::MetaSupportStatus::Locked
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(
+                "object",
+                ResolvedTarget {
+                    source_set: "main".to_string(),
+                    metadata_path: Some(metadata_address("Catalog.Items")),
+                    target_kind: TargetKind::MetadataObject,
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn meta_info_maps_support_provider_failure_to_logical_diagnostic() {
+        use crate::application::ports::ApplicationPorts;
+
+        let (_root, context) = support_reader_fixture();
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            FailingSupportStateReaderFactory,
+        ));
+
+        let failure = match ports.read_metadata_local(
+            &meta_info_request(),
+            &context,
+            &CancellationToken::new(),
+        ) {
+            Ok(_) => panic!("support provider failure must fail the local read"),
+            Err(failure) => failure,
+        };
+
+        assert_eq!(failure.diagnostics.len(), 1);
+        let diagnostic = &failure.diagnostics[0];
+        assert_eq!(
+            diagnostic.code,
+            crate::domain::metadata::MetaDiagnosticCode::ProviderUnavailable
+        );
+        assert_eq!(
+            diagnostic.metadata_path.as_ref(),
+            Some(&metadata_address("Catalog.Items"))
+        );
+        assert!(diagnostic.message.contains("provider_unavailable"));
+        assert!(!diagnostic
+            .message
+            .contains(&context.workspace_root.display().to_string()));
+        assert!(!diagnostic.message.contains('/'));
+        assert!(!diagnostic.message.contains('\\'));
+    }
+
+    #[test]
+    fn meta_info_preserves_the_existing_support_projection() {
+        use crate::application::ports::ApplicationPorts;
+        use crate::domain::metadata::MetaSupportStatus;
+
+        let (_root, context) = support_reader_fixture();
+        for (state, expected) in [
+            (ObjectSupportState::Locked, MetaSupportStatus::Locked),
+            (
+                ObjectSupportState::ConfigurationReadOnly,
+                MetaSupportStatus::Locked,
+            ),
+            (
+                ObjectSupportState::RemovedFromSupport,
+                MetaSupportStatus::Unsupported,
+            ),
+            (
+                ObjectSupportState::EditableWithSupport,
+                MetaSupportStatus::Supported,
+            ),
+            (
+                ObjectSupportState::NotSupported,
+                MetaSupportStatus::Supported,
+            ),
+        ] {
+            let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(
+                Arc::new(StaticObjectSupportStateReaderFactory(state)),
+            );
+            let read = ports
+                .read_metadata_local(&meta_info_request(), &context, &CancellationToken::new())
+                .unwrap();
+            assert_eq!(read.local.support, expected, "state {state:?}");
+        }
+    }
+
+    #[test]
+    fn support_readers_cannot_bypass_the_logical_port() {
+        const READERS: &[(&str, &str, &[&str])] = &[
+            (
+                "cf",
+                include_str!("native_operations/cf.rs"),
+                &[".configuration_support("],
+            ),
+            (
+                "role",
+                include_str!("native_operations/role.rs"),
+                &[".object_support("],
+            ),
+            (
+                "mxl",
+                include_str!("native_operations/mxl.rs"),
+                &[".object_support("],
+            ),
+            (
+                "dcs",
+                include_str!("native_operations/dcs.rs"),
+                &[".object_support("],
+            ),
+            (
+                "form",
+                include_str!("native_operations/form.rs"),
+                &[".object_support("],
+            ),
+            (
+                "subsystem",
+                include_str!("native_operations/subsystem.rs"),
+                &[".object_support(", ".subsystem_support("],
+            ),
+            (
+                "meta",
+                include_str!("native_operations/meta/info.rs"),
+                &[".object_support("],
+            ),
+        ];
+        const COORDINATOR: &str = include_str!("metadata_operations.rs");
+        const FORBIDDEN: &[&str] = &[
+            "object_support_state(",
+            "support_state_data(",
+            "support_status_for_path(",
+        ];
+
+        for (name, source, required_calls) in READERS {
+            for forbidden in FORBIDDEN {
+                assert!(
+                    !source.contains(forbidden),
+                    "{name} bypasses SupportStateReader through {forbidden}"
+                );
+            }
+            for required_call in *required_calls {
+                assert!(
+                    source.contains(required_call),
+                    "{name} must route support through {required_call}"
+                );
+            }
+        }
+        for forbidden in FORBIDDEN {
+            assert!(
+                !COORDINATOR.contains(forbidden),
+                "metadata coordinator bypasses SupportStateReader through {forbidden}"
+            );
+        }
+
+        let domain_port = include_str!("../domain/support_state.rs");
+        assert!(!domain_port.contains("std::path"));
+        assert!(!domain_port.contains("&Path"));
+        assert!(!domain_port.contains("PathBuf"));
+    }
+
+    fn prepared_subsystem_fixture() -> (
+        tempfile::TempDir,
+        WorkspaceContext,
+        Map<String, serde_json::Value>,
+        Map<String, serde_json::Value>,
+    ) {
+        let root = tempfile::Builder::new()
+            .prefix("unica-prepared-subsystem-support")
+            .tempdir()
+            .unwrap();
+        let workspace = root.path().canonicalize().unwrap();
+        let source = workspace.join("src");
+        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Subsystems/Sales.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Sales", "2.20",
+            ),
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        (
+            root,
+            context,
+            Map::from_iter([(
+                "SubsystemPath".to_string(),
+                json!("src/Subsystems/Sales.xml"),
+            )]),
+            Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems"))]),
+        )
+    }
+
+    fn prepare_subsystem(
+        ports: &super::InfrastructureApplicationPorts,
+        args: &Map<String, serde_json::Value>,
+        context: &WorkspaceContext,
+    ) -> crate::application::ports::PreparedToolInvocation {
+        use crate::application::ports::ApplicationPorts;
+
+        let tool = crate::application::tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.subsystem.info")
+            .unwrap();
+        ports
+            .prepare_tool_invocation(
+                tool,
+                args,
+                context,
+                InvocationMode::Read,
+                &CancellationToken::new(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn prepared_subsystem_info_records_the_descriptor_target() {
+        let (_root, context, object_args, _tree_args) = prepared_subsystem_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::clone(&subsystem_calls),
+            },
+        ));
+
+        let prepared = prepare_subsystem(&ports, &object_args, &context);
+        let handler = prepared.handler.expect("prepared handler");
+
+        assert!(handler.adapter.ok, "{:?}", handler.adapter);
+        assert_eq!(handler.data.unwrap()["support"]["state"], "locked");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(
+                "object",
+                ResolvedTarget {
+                    source_set: "main".to_string(),
+                    metadata_path: Some(metadata_address("Subsystem.Sales")),
+                    target_kind: TargetKind::MetadataObject,
+                },
+            )]
+        );
+        assert!(subsystem_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepared_nested_subsystem_keeps_the_dedicated_subsystem_address() {
+        let (_root, context, _object_args, _tree_args) = prepared_subsystem_fixture();
+        let source = context.workspace_root.join("src");
+        std::fs::write(
+            source.join("Subsystems/Sales.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Sales", "2.20",
+            )
+            .replace(
+                "<ChildObjects/>",
+                "<ChildObjects><Subsystem>Online</Subsystem></ChildObjects>",
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Subsystems/Sales/Subsystems")).unwrap();
+        std::fs::write(
+            source.join("Subsystems/Sales/Subsystems/Online.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Online", "2.20",
+            ),
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Sales/Subsystems/Online.xml"),
+        )]);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::clone(&subsystem_calls),
+            },
+        ));
+
+        let prepared = prepare_subsystem(&ports, &args, &context);
+        let handler = prepared.handler.expect("prepared handler");
+
+        assert!(handler.adapter.ok, "{:?}", handler.adapter);
+        assert_eq!(handler.data.unwrap()["support"]["state"], "locked");
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(
+            *subsystem_calls.lock().unwrap(),
+            vec![ResolvedSubsystemTarget {
+                source_set: "main".to_string(),
+                address: crate::domain::subsystem::SubsystemAddress::parse("Sales.Online").unwrap(),
+            }]
+        );
+    }
+
+    #[test]
+    fn subsystem_tree_does_not_invent_object_support() {
+        let (_root, context, _object_args, tree_args) = prepared_subsystem_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::clone(&subsystem_calls),
+            },
+        ));
+
+        let prepared = prepare_subsystem(&ports, &tree_args, &context);
+
+        assert!(prepared.handler.unwrap().adapter.ok);
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(subsystem_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn subsystem_support_failure_publishes_no_partial_data() {
+        let (_root, context, object_args, _tree_args) = prepared_subsystem_fixture();
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            FailingSupportStateReaderFactory,
+        ));
+
+        let prepared = prepare_subsystem(&ports, &object_args, &context);
+        let handler = prepared.handler.expect("prepared failure handler");
+
+        assert!(!handler.adapter.ok, "{:?}", handler.adapter);
+        assert_eq!(
+            handler.adapter.errors,
+            vec!["provider_unavailable: support-state provider is unavailable"]
+        );
+        assert!(handler.data.is_none());
     }
 
     #[test]
@@ -1290,7 +2066,10 @@ mod tests {
                     &context,
                     false,
                     false,
-                    NativeInvocationControl::new(
+                    NativeInvocationContext::new(
+                        &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                            &context,
+                        ),
                         &cancellation,
                         ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
                     ),
@@ -1335,7 +2114,10 @@ mod tests {
                     &context,
                     false,
                     false,
-                    NativeInvocationControl::new(
+                    NativeInvocationContext::new(
+                        &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                            &context,
+                        ),
                         &cancellation,
                         ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
                     ),
@@ -1369,7 +2151,8 @@ mod tests {
             &context,
             false,
             false,
-            NativeInvocationControl::new(
+            NativeInvocationContext::new(
+                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
                 &cancellation,
                 ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
             ),
@@ -1407,7 +2190,8 @@ mod tests {
             &context,
             false,
             false,
-            NativeInvocationControl::new(
+            NativeInvocationContext::new(
+                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
                 &cancellation,
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
             ),
@@ -1444,7 +2228,8 @@ mod tests {
             &context,
             false,
             false,
-            NativeInvocationControl::new(
+            NativeInvocationContext::new(
+                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
                 &cancellation,
                 ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
             ),

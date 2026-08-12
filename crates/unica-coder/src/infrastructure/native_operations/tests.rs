@@ -1,7 +1,7 @@
 use super::NativeOperationAdapter;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
-use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
+use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map};
 use std::fs;
@@ -137,7 +137,8 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
         &context,
         false,
         false,
-        NativeInvocationControl::new(
+        NativeInvocationContext::new(
+            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
             &cancellation,
             ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
         ),
