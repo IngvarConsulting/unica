@@ -149,6 +149,8 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         result_drift: bool = False,
         provider_revision: bool = False,
         read_writes: bool = False,
+        code_search_status: str = "ok",
+        code_search_root_field: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         expected_tools = self.expected_tools()
         module = load_module()
@@ -171,6 +173,8 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             tools = json.loads(r'''__TOOLS__''')
             source_flows = json.loads(r'''__SOURCE_FLOWS__''')
             read_writes = __READ_WRITES__
+            code_search_status = __CODE_SEARCH_STATUS__
+            code_search_root_field = __CODE_SEARCH_ROOT_FIELD__
 
             def materialize(value, cwd):
                 if isinstance(value, dict):
@@ -298,6 +302,46 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                             "structuredContent": payload,
                             "isError": not payload["ok"],
                         }
+                    elif name == "unica.code.search":
+                        payload = operation_result(True, "code search completed")
+                        bsl_section = {
+                            "provider": "bsl-analyzer",
+                            "status": code_search_status,
+                            "hits": [] if code_search_status != "ok" else [
+                                {
+                                    "rank": 1,
+                                    "path": "CommonModules/Shared/Ext/Module.bsl",
+                                    "line": 1,
+                                    "symbol": "Run",
+                                    "snippet": "Procedure Run()",
+                                    "attributes": {},
+                                }
+                            ],
+                            "diagnostics": (
+                                ["provider failed"]
+                                if code_search_status == "failed"
+                                else []
+                            ),
+                            "artifacts": [],
+                        }
+                        if code_search_root_field is not None:
+                            bsl_section[code_search_root_field] = "private-root"
+                        payload["data"] = {
+                            "sections": [
+                                {
+                                    "provider": "rlm", "status": "empty", "hits": [],
+                                    "diagnostics": [], "artifacts": [],
+                                },
+                                bsl_section,
+                                {
+                                    "provider": "git-grep", "status": "empty", "hits": [],
+                                    "diagnostics": [], "artifacts": [],
+                                },
+                            ]
+                        }
+                        result = {
+                            "content": [{"type": "text", "text": json.dumps(payload)}]
+                        }
                     else:
                         payload = source_payload(name, args)
                         result = {"content": [{"type": "text", "text": json.dumps(payload)}]}
@@ -313,6 +357,8 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 json.dumps(source_flows, ensure_ascii=False),
             )
             .replace("__READ_WRITES__", repr(read_writes))
+            .replace("__CODE_SEARCH_STATUS__", repr(code_search_status))
+            .replace("__CODE_SEARCH_ROOT_FIELD__", repr(code_search_root_field))
             .replace("__NAME__", repr(server_name))
             .replace("__INSTRUCTIONS__", repr(instructions))
         )
@@ -612,6 +658,24 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("read-only", result.stderr)
+
+    def test_rejects_failed_bsl_analyzer_section_in_packaged_search(self) -> None:
+        result = self.run_smoke(
+            self.tool_entries(),
+            code_search_status="failed",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bsl-analyzer", result.stderr)
+
+    def test_rejects_upstream_root_identity_leaking_from_packaged_search(self) -> None:
+        result = self.run_smoke(
+            self.tool_entries(),
+            code_search_root_field="rootId",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("rootId", result.stderr)
 
 
 if __name__ == "__main__":

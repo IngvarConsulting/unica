@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "id": "2026-08-12-product-update-backlog",
+  "generatedAt": "2026-08-12",
+  "purpose": "Product and dependency update backlog snapshot after the provider-neutral code-intelligence integration.",
+  "products": [
+    {
+      "id": "bsl-analyzer",
+      "kind": "bundled-tool",
+      "locked": "v0.2.67",
+      "latest": "v0.2.67",
+      "risk": "high",
+      "batch": "bsl-analyzer-contract",
+      "status": "applied",
+      "contractGate": true,
+      "notes": "Updated to v0.2.67 after reviewing v0.2.63 through v0.2.67. The refresh brings machine-readable MCP readiness/contract envelopes, supplier-diff analysis, parser recovery, SDBL, diagnostics, type-inference, metadata module-path and Linux compatibility fixes; v0.2.67 also adds multi-root indexing, root_id, global unresolved-name search and an explicit cache directory. Unica continues to consume only its existing typed graph, diagnostics and single-root search boundaries over the hidden stdio provider. HTTP transport, ignored_authors, supplier-diff scope, multi-root/root_id/cache controls and other upstream commands are not exposed as unica.* tools; dependency-aware CFE topology remains outside this update."
+    },
+    {
+      "id": "rlm-tools-bsl",
+      "kind": "bundled-tool",
+      "locked": "v1.29.1",
+      "latest": "v1.29.1",
+      "risk": "medium",
+      "batch": "rlm-index-contract",
+      "status": "applied",
+      "contractGate": true,
+      "notes": "Updated together with rlm-bsl-index to unmodified upstream v1.29.1. The reviewed delta keeps helper and index schema contracts compatible while adding process-isolated persistent sandboxes, hard execution timeout, session teardown fixes, and the Linux spawn-broker hotfix. Unica uses only rlm_start/rlm_execute/rlm_end with fixed helper templates; raw RLM helper guidance remains hidden from skills."
+    },
+    {
+      "id": "rlm-bsl-index",
+      "kind": "bundled-tool",
+      "locked": "v1.29.1",
+      "latest": "v1.29.1",
+      "risk": "medium",
+      "batch": "rlm-index-contract",
+      "status": "applied",
+      "contractGate": true,
+      "notes": "v1.29.1 keeps index schema and BUILDER_VERSION 14, so existing worktree-local indexes remain reusable without destructive migration. Contract gates verify the supported build/info/update CLI lifecycle and generated package launchers; Unica no longer reads or validates private SQLite tables."
+    },
+    {
+      "id": "v8-runner",
+      "kind": "bundled-tool",
+      "locked": "v0.5.1",
+      "latest": "v0.5.1",
+      "risk": "low-medium",
+      "batch": "v8-runner-runtime",
+      "status": "applied",
+      "contractGate": true,
+      "notes": "Updated tools.lock.json to v0.5.1 after reviewing the version command and partial-load/build changes; Unica MCP contract remains typed and unchanged."
+    },
+    {
+      "id": "lxml",
+      "kind": "python-test-dependency",
+      "locked": "tests/ci/requirements.txt:6.1.1",
+      "latest": "6.1.1",
+      "risk": "low",
+      "batch": "low-risk-dependencies",
+      "status": "applied",
+      "contractGate": false,
+      "notes": "Source pin is current; local interpreter may still have 6.1.0 until test requirements are installed."
+    },
+    {
+      "id": "rust-compatible-lock-updates",
+      "kind": "cargo-lock",
+      "locked": "current-compatible",
+      "latest": "cargo-update-dry-run-2026-06-26",
+      "updateCount": 4,
+      "risk": "low",
+      "batch": "low-risk-dependencies",
+      "status": "applied",
+      "contractGate": false,
+      "notes": "Applied compatible lock-only updates: cc 1.2.64 -> 1.2.65, log 0.4.32 -> 0.4.33, quote 1.0.45 -> 1.0.46, and rustls 0.23.40 -> 0.23.41; direct major updates stay out of this batch."
+    },
+    {
+      "id": "serde-yaml-replacement",
+      "kind": "rust-direct-dependency",
+      "locked": "serde_yaml 0.9.34+deprecated",
+      "latest": "replace-with-yaml_serde-0.10.4",
+      "risk": "medium",
+      "batch": "rust-direct-dependencies",
+      "status": "deferred",
+      "contractGate": false,
+      "notes": "serde_yaml is deprecated, but replacing the YAML parser is a direct dependency migration rather than a lock refresh; defer to a separate focused PR with v8project.yaml fixture coverage."
+    },
+    {
+      "id": "ureq-3",
+      "kind": "rust-direct-dependency",
+      "locked": "2.12.1",
+      "latest": "3.3.0",
+      "risk": "medium",
+      "batch": "rust-msrv-decision",
+      "status": "deferred",
+      "contractGate": false,
+      "notes": "ureq 3.3.0 requires Rust 1.85. The repo does not currently publish an MSRV, so the dependency stays on ureq 2.12.1 until Rust 1.85 support is an explicit release-policy decision."
+    }
+  ]
+}

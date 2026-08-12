@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a packaged Unica binary through its public MCP source-resource flow."""
+"""Run a packaged Unica binary through source and analyzer MCP flows."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import queue
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 
@@ -31,6 +32,8 @@ META_TOOL_NAMES = {
     "unica.meta.remove",
 }
 ROLE_TYPED_TOOL_NAME = "unica.role.edit"
+CODE_SEARCH_PROVIDERS = ["rlm", "bsl-analyzer", "git-grep"]
+UPSTREAM_SEARCH_FIELDS = {"root_id", "rootId", "roots", "cacheDir"}
 EXPECTED_META_OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -1383,6 +1386,109 @@ def _meta_payload(response: dict, *, expected_ok: bool) -> dict:
     return structured
 
 
+def _assert_no_upstream_search_fields(value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in UPSTREAM_SEARCH_FIELDS:
+                raise SystemExit(
+                    f"Unica MCP code search leaks upstream field {key}"
+                )
+            _assert_no_upstream_search_fields(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_no_upstream_search_fields(child)
+
+
+def _code_search_payload(response: dict) -> dict:
+    if "error" in response:
+        raise SystemExit(f"Unica MCP code search failed as JSON-RPC: {response['error']}")
+    try:
+        payload = json.loads(response["result"]["content"][0]["text"])
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+        raise SystemExit(
+            f"Unica MCP code search has no JSON operation payload: {response}"
+        ) from error
+    if not isinstance(payload, dict):
+        raise SystemExit(f"Unica MCP code search payload is not an object: {payload!r}")
+    _assert_no_upstream_search_fields(payload)
+    return payload
+
+
+def _bsl_search_is_ready(payload: dict) -> bool:
+    try:
+        sections = payload["data"]["sections"]
+    except (KeyError, TypeError) as error:
+        raise SystemExit(
+            f"Unica MCP code search has no provider sections: {payload}"
+        ) from error
+    if not isinstance(sections, list):
+        raise SystemExit(f"Unica MCP code search sections are not a list: {payload}")
+    providers = [
+        section.get("provider") if isinstance(section, dict) else None
+        for section in sections
+    ]
+    if providers != CODE_SEARCH_PROVIDERS or len(set(providers)) != len(providers):
+        raise SystemExit(
+            "Unica MCP code search provider sections differ from "
+            f"{CODE_SEARCH_PROVIDERS}: {providers}"
+        )
+    bsl = sections[1]
+    status = bsl.get("status")
+    diagnostics = bsl.get("diagnostics")
+    if status == "unavailable":
+        detail = json.dumps(diagnostics, ensure_ascii=False).lower()
+        if "not_ready" in detail or "not ready" in detail:
+            return False
+        raise SystemExit(f"Unica MCP bsl-analyzer is unavailable: {bsl}")
+    if status != "ok":
+        raise SystemExit(
+            f"Unica MCP bsl-analyzer section must be ok, got {status!r}: {bsl}"
+        )
+    hits = bsl.get("hits")
+    if not isinstance(hits, list) or not any(
+        "Run" in json.dumps(hit, ensure_ascii=False) for hit in hits
+    ):
+        raise SystemExit(
+            f"Unica MCP bsl-analyzer did not find fixture symbol Run: {bsl}"
+        )
+    return True
+
+
+def _exercise_bsl_search(
+    session: McpSession,
+    request_id: int,
+    timeout_seconds: float,
+) -> int:
+    deadline = time.monotonic() + max(10.0, timeout_seconds * 3)
+    while True:
+        payload = _code_search_payload(
+            session.request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "unica.code.search",
+                        "arguments": {
+                            "sourceDir": "src",
+                            "query": "Run",
+                            "limit": 10,
+                        },
+                    },
+                }
+            )
+        )
+        request_id += 1
+        if _bsl_search_is_ready(payload):
+            return request_id
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(
+                "Unica MCP bsl-analyzer stayed not_ready until the smoke deadline"
+            )
+        time.sleep(min(0.5, remaining))
+
+
 def _call(
     session: McpSession,
     request_id: int,
@@ -1643,6 +1749,7 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             next_id, _ = _exercise_source_set(
                 session, next_id, workspace, cache_root, "extension"
             )
+            next_id = _exercise_bsl_search(session, next_id, timeout_seconds)
             next_id = _exercise_reader_bridge(session, next_id, workspace)
             success = _meta_payload(
                 session.request(
@@ -1703,7 +1810,7 @@ def main() -> None:
     parser.add_argument("--timeout-seconds", type=float, default=20)
     args = parser.parse_args()
     smoke([args.binary, *args.binary_arg], args.plugin_root, args.timeout_seconds)
-    print("verified packaged Unica MCP source-resource flow")
+    print("verified packaged Unica MCP source-resource flow and bsl-analyzer search")
 
 
 if __name__ == "__main__":
