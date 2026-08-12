@@ -292,6 +292,123 @@ def validate_v8_runner_bounded_external_epf_result(
     return errors
 
 
+def validate_v8_runner_windows_external_publication_result(
+    envelope: object,
+    output_dir: Path,
+    expected_epf: Path,
+    expected_bytes: bytes,
+    fixture_root: Path,
+) -> list[str]:
+    errors: list[str] = []
+    data = envelope.get("data") if isinstance(envelope, dict) else None
+
+    if not isinstance(envelope, dict) or envelope.get("ok") is not True:
+        errors.append("runner JSON envelope is not successful")
+    if isinstance(envelope, dict) and envelope.get("command") != "make":
+        errors.append(
+            f"runner JSON command is not make: {envelope.get('command')!r}"
+        )
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        errors.append("runner JSON data is not successful")
+
+    if isinstance(data, dict):
+        if data.get("mode") != "external_data_processor_epf":
+            errors.append(
+                "runner JSON mode is not external_data_processor_epf: "
+                f"{data.get('mode')!r}"
+            )
+        if data.get("source_set") != "external-processors":
+            errors.append(
+                "runner JSON source_set is not external-processors: "
+                f"{data.get('source_set')!r}"
+            )
+
+        actual_output = data.get("output_path")
+        if not isinstance(actual_output, str):
+            errors.append("runner JSON output_path is not a path string")
+        else:
+            try:
+                output_matches = Path(actual_output).resolve() == output_dir.resolve()
+            except OSError as error:
+                errors.append(f"runner JSON output_path could not be resolved: {error}")
+            else:
+                if not output_matches:
+                    errors.append(
+                        "runner JSON output_path does not resolve to "
+                        f"{output_dir.resolve()}"
+                    )
+
+        artifacts = data.get("artifacts")
+        items = artifacts.get("items") if isinstance(artifacts, dict) else None
+        package_paths: list[Path] = []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict) or item.get("role") != "package_file":
+                    continue
+                path = item.get("path")
+                if isinstance(path, str):
+                    package_paths.append(Path(path))
+        try:
+            expected_resolved = expected_epf.resolve()
+            package_matches = any(
+                path.resolve() == expected_resolved for path in package_paths
+            )
+        except OSError as error:
+            errors.append(f"runner JSON package artifact path could not be resolved: {error}")
+        else:
+            if not package_matches:
+                errors.append(
+                    "runner JSON artifacts do not contain the expected package_file: "
+                    f"{expected_epf}"
+                )
+
+        execution = data.get("execution")
+        if not isinstance(execution, dict) or execution.get("status") != "succeeded":
+            errors.append("runner execution status is not succeeded")
+        payload = execution.get("payload") if isinstance(execution, dict) else None
+        if not isinstance(payload, dict) or payload.get("published") is not True:
+            errors.append("runner execution payload is not published")
+        if isinstance(payload, dict):
+            if payload.get("artifact_type") != "external_data_processor_epf":
+                errors.append(
+                    "runner execution artifact_type is not external_data_processor_epf"
+                )
+            if payload.get("file_names") != [expected_epf.name]:
+                errors.append(
+                    "runner execution file_names do not match the published EPF: "
+                    f"{payload.get('file_names')!r}"
+                )
+
+    if not expected_epf.is_file():
+        errors.append(f"published EPF was not created: {expected_epf}")
+    else:
+        try:
+            actual_bytes = expected_epf.read_bytes()
+        except OSError as error:
+            errors.append(f"published EPF could not be read: {error}")
+        else:
+            if actual_bytes != expected_bytes:
+                errors.append(f"published EPF has unexpected bytes: {expected_epf}")
+
+    try:
+        retained = sorted(
+            path.name
+            for path in fixture_root.iterdir()
+            if path.name.startswith((".artifacts-stage-", ".artifacts-backup-"))
+            or (
+                path.name.startswith(".artifacts-")
+                and path.name.endswith(".meta.json")
+            )
+        )
+    except OSError as error:
+        errors.append(f"publication temporary state could not be inspected: {error}")
+    else:
+        if retained:
+            errors.append(f"publication temporary state was retained: {retained}")
+
+    return errors
+
+
 def check_v8_runner_bounded_external_epf_contract(
     runner: Path,
     target: str,

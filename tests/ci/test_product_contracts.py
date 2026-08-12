@@ -222,6 +222,94 @@ class ProductContractTests(unittest.TestCase):
                 errors,
             )
 
+    def test_v8_runner_windows_external_publication_result_accepts_clean_epf(
+        self,
+    ) -> None:
+        module = load_contract_module()
+        validator = getattr(
+            module,
+            "validate_v8_runner_windows_external_publication_result",
+            None,
+        )
+        self.assertIsNotNone(validator)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "Deploy"
+            epf = output / "Alpha.epf"
+            output.mkdir()
+            epf.write_bytes(b"issue-310-current")
+            envelope = {
+                "ok": True,
+                "command": "make",
+                "data": {
+                    "ok": True,
+                    "mode": "external_data_processor_epf",
+                    "source_set": "external-processors",
+                    "output_path": str(output),
+                    "artifacts": {
+                        "root_dir": str(output),
+                        "items": [
+                            {
+                                "kind": "package",
+                                "path": str(epf),
+                                "role": "package_file",
+                            }
+                        ],
+                    },
+                    "execution": {
+                        "status": "succeeded",
+                        "payload": {
+                            "artifact_type": "external_data_processor_epf",
+                            "output_path": str(output),
+                            "file_names": ["Alpha.epf"],
+                            "published": True,
+                        },
+                    },
+                },
+            }
+
+            self.assertEqual(
+                validator(envelope, output, epf, b"issue-310-current", root),
+                [],
+            )
+
+    def test_v8_runner_windows_external_publication_result_rejects_failed_or_dirty_publish(
+        self,
+    ) -> None:
+        module = load_contract_module()
+        validator = module.validate_v8_runner_windows_external_publication_result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "Deploy"
+            epf = output / "Alpha.epf"
+            output.mkdir()
+            epf.write_bytes(b"issue-310-stale")
+            (root / ".artifacts-stage-leftover").mkdir()
+            envelope = {
+                "ok": False,
+                "data": {
+                    "ok": False,
+                    "mode": "external_data_processor_epf",
+                    "source_set": "external-processors",
+                    "output_path": str(output),
+                    "execution": {"status": "failed"},
+                },
+            }
+
+            errors = validator(
+                envelope,
+                output,
+                epf,
+                b"issue-310-current",
+                root,
+            )
+
+        self.assertTrue(any("envelope" in error for error in errors), errors)
+        self.assertTrue(any("unexpected bytes" in error for error in errors), errors)
+        self.assertTrue(any("temporary state" in error for error in errors), errors)
+
     def test_targeted_tool_contracts_run_both_v8_runner_behavioral_smokes(self) -> None:
         module = load_contract_module()
 
