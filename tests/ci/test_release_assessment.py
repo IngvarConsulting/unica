@@ -693,7 +693,7 @@ for raw in sys.stdin:
             now[0] += seconds
 
         scenario, payload = module.wait_for_indexed_code_search(
-            lambda: next(attempts),
+            lambda _remaining_seconds: next(attempts),
             timeout_seconds=10,
             poll_interval_seconds=1,
             monotonic=lambda: now[0],
@@ -740,7 +740,7 @@ for raw in sys.stdin:
         now = [0.0]
         attempts = [0]
 
-        def run_attempt():
+        def run_attempt(_remaining_seconds: float):
             attempts[0] += 1
             if attempts[0] > 1:
                 self.fail("the readiness deadline must stop a second MCP attempt")
@@ -773,6 +773,69 @@ for raw in sys.stdin:
             any("did not become ready within 1 seconds" in error for error in scenario["errors"]),
             scenario,
         )
+
+    def test_indexed_code_search_caps_each_attempt_to_remaining_deadline(self) -> None:
+        module = load_assessment_module()
+        pending_payload = {
+            "ok": False,
+            "errors": ["no provider served the request"],
+            "data": {
+                "sections": [
+                    {
+                        "provider": provider,
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": [f"{provider} index building"],
+                        "artifacts": [],
+                    }
+                    for provider in ("rlm", "bsl-analyzer")
+                ]
+            },
+        }
+        now = [0.0]
+        attempt_budgets: list[float] = []
+
+        def run_attempt(remaining_seconds: float):
+            attempt_budgets.append(remaining_seconds)
+            if len(attempt_budgets) == 1:
+                return (
+                    module.scenario_result(
+                        scenario_id="code-search",
+                        title="search",
+                        tool="unica.code.search",
+                        arguments={},
+                        status="failed",
+                        duration_ms=7,
+                        blocking=True,
+                        errors=["no provider served the request"],
+                    ),
+                    pending_payload,
+                )
+            return (
+                module.scenario_result(
+                    scenario_id="code-search",
+                    title="search",
+                    tool="unica.code.search",
+                    arguments={},
+                    status="passed",
+                    duration_ms=5,
+                    blocking=True,
+                ),
+                {"ok": True, "data": {"sections": []}},
+            )
+
+        scenario, _ = module.wait_for_indexed_code_search(
+            run_attempt,
+            timeout_seconds=1,
+            poll_interval_seconds=0.75,
+            monotonic=lambda: now[0],
+            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        )
+
+        self.assertEqual("passed", scenario["status"])
+        self.assertEqual(2, len(attempt_budgets))
+        self.assertAlmostEqual(1.0, attempt_budgets[0])
+        self.assertAlmostEqual(0.25, attempt_budgets[1])
 
     def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:
         module = load_assessment_module()

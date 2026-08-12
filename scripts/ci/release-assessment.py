@@ -166,7 +166,7 @@ def call_mcp(
     *,
     cwd: Path,
     cache_dir: Path,
-    timeout_seconds: int,
+    timeout_seconds: float,
 ) -> tuple[list[dict[str, Any]], int, str, str, int]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     # The rmcp-based server requires the MCP handshake before requests; prepend
@@ -505,7 +505,7 @@ def run_tool_scenario(
     title: str,
     tool: str,
     arguments: dict[str, Any],
-    timeout_seconds: int,
+    timeout_seconds: float,
     blocking: bool,
     require_payload_ok: bool,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -638,7 +638,7 @@ def indexed_code_search_state(payload: dict[str, Any] | None) -> str:
 
 
 def wait_for_indexed_code_search(
-    run_attempt: Callable[[], tuple[dict[str, Any], dict[str, Any] | None]],
+    run_attempt: Callable[[float], tuple[dict[str, Any], dict[str, Any] | None]],
     *,
     timeout_seconds: float,
     poll_interval_seconds: float = INDEX_POLL_INTERVAL_SECONDS,
@@ -651,7 +651,10 @@ def wait_for_indexed_code_search(
     last: tuple[dict[str, Any], dict[str, Any] | None] | None = None
 
     while True:
-        if last is not None and monotonic() >= deadline:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            if last is None:
+                raise ValueError("indexed code search timeout must be positive")
             scenario, payload = last
             scenario["status"] = "failed"
             scenario["errors"].append(
@@ -661,7 +664,7 @@ def wait_for_indexed_code_search(
             scenario["metrics"] = {**scenario["metrics"], "indexAttempts": attempts}
             return scenario, payload
 
-        scenario, payload = run_attempt()
+        scenario, payload = run_attempt(remaining)
         attempts += 1
         total_duration_ms += int(scenario.get("durationMs", 0))
         last = scenario, payload
@@ -671,10 +674,10 @@ def wait_for_indexed_code_search(
             scenario["metrics"] = {**scenario["metrics"], "indexAttempts": attempts}
             return scenario, payload
 
-        remaining = deadline - monotonic()
-        if remaining <= 0:
+        sleep_budget = deadline - monotonic()
+        if sleep_budget <= 0:
             continue
-        sleep(min(poll_interval_seconds, remaining))
+        sleep(min(poll_interval_seconds, sleep_budget))
 
 
 def relpath(path: Path, root: Path) -> str:
@@ -880,7 +883,7 @@ def build_assessment_report(
     scenarios.append(run_tools_list_scenario(run_unica, bsp_root, cache_dir, timeout_seconds))
 
     for scenario_id, title, tool, arguments, blocking, require_payload_ok in base_tool_scenarios(bsp_root):
-        def run_attempt() -> tuple[dict[str, Any], dict[str, Any] | None]:
+        def run_attempt(attempt_timeout_seconds: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
             return run_tool_scenario(
                 run_unica,
                 bsp_root=bsp_root,
@@ -889,7 +892,7 @@ def build_assessment_report(
                 title=title,
                 tool=tool,
                 arguments=arguments,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=attempt_timeout_seconds,
                 blocking=blocking,
                 require_payload_ok=require_payload_ok,
             )
@@ -900,7 +903,7 @@ def build_assessment_report(
                 timeout_seconds=min(timeout_seconds, INDEX_WAIT_TIMEOUT_SECONDS),
             )
         else:
-            scenario, payload = run_attempt()
+            scenario, payload = run_attempt(float(timeout_seconds))
         if scenario_id == "project-map":
             validate_project_map(scenario, payload)
         if scenario_id == "code-search":
