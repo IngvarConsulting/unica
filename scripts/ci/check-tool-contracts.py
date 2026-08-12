@@ -552,6 +552,206 @@ fn main() {{
         ]
 
 
+def check_v8_runner_windows_external_publication_contract(
+    runner: Path,
+    target: str,
+) -> list[str]:
+    label = "v8-runner Windows external publication contract"
+    if target != "win-x64":
+        return []
+    if not runner.is_file():
+        return [f"{label}: binary not found: {runner}"]
+
+    with tempfile.TemporaryDirectory(prefix="unica-v8-runner-310-") as directory:
+        root = Path(directory)
+        source_root = root / "src" / "external-processors"
+        work_path = root / "work"
+        infobase_path = root / "ib"
+        platform_root = root / "platform"
+        platform_bin = platform_root / "bin"
+        platform_marker = root / "platform-stub.marker"
+        source_root.mkdir(parents=True)
+        work_path.mkdir()
+        infobase_path.mkdir()
+        platform_bin.mkdir(parents=True)
+        (source_root / "Alpha.xml").write_text(
+            "<ExternalDataProcessor><Properties><Name>Alpha</Name>"
+            "</Properties></ExternalDataProcessor>",
+            encoding="utf-8",
+        )
+
+        stub_source = root / "platform-stub.rs"
+        stub_source.write_text(
+            r'''
+use std::{env, error::Error, fs};
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let arguments: Vec<_> = env::args_os().skip(1).collect();
+    if let Some(marker) = env::var_os("UNICA_V8_RUNNER_310_PLATFORM_MARKER") {
+        fs::write(marker, b"issue-310-platform-ok\n")?;
+    }
+    for (index, argument) in arguments.iter().enumerate() {
+        let argument = argument.to_string_lossy();
+        if argument.eq_ignore_ascii_case("/LoadExternalDataProcessorOrReportFromFiles") {
+            fs::write(&arguments[index + 2], b"issue-310-current")?;
+        }
+        if argument.eq_ignore_ascii_case("/DumpExternalDataProcessorOrReportToFiles") {
+            fs::write(
+                &arguments[index + 1],
+                b"<ExternalDataProcessor><Properties><Name>Alpha</Name></Properties></ExternalDataProcessor>",
+            )?;
+        }
+        if argument.eq_ignore_ascii_case("/Out") {
+            fs::write(&arguments[index + 1], b"issue-310-platform-ok\n")?;
+        }
+    }
+    Ok(())
+}
+'''.lstrip(),
+            encoding="utf-8",
+        )
+        client_platform = platform_bin / "1cv8c.exe"
+        gui_platform = platform_bin / "1cv8.exe"
+        compiled = subprocess.run(
+            ["rustc", "--edition=2021", str(stub_source), "-o", str(client_platform)],
+            cwd=root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if compiled.returncode != 0:
+            return [
+                f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"
+            ]
+        shutil.copy2(client_platform, gui_platform)
+
+        def yaml_path(path: Path) -> str:
+            return str(path).replace("'", "''")
+
+        config = root / "v8project.yaml"
+        config.write_text(
+            "\n".join(
+                [
+                    f"workPath: '{yaml_path(work_path)}'",
+                    "execution_timeout: 30000",
+                    "format: DESIGNER",
+                    "builder: DESIGNER",
+                    "infobase:",
+                    f"  connection: 'File={yaml_path(infobase_path)}'",
+                    "source-set:",
+                    "  - name: external-processors",
+                    "    type: EXTERNAL_DATA_PROCESSORS",
+                    f"    path: '{yaml_path(source_root)}'",
+                    "tools:",
+                    "  platform:",
+                    f"    path: '{yaml_path(platform_root)}'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        output_dir = root / "Deploy"
+        expected_epf = output_dir / "Alpha.epf"
+        command = [
+            str(runner),
+            "--config",
+            str(config),
+            "--json-message",
+            "make",
+            "--source-set",
+            "external-processors",
+            "--output",
+            "Deploy",
+        ]
+
+        def run_make() -> tuple[object | None, list[str]]:
+            try:
+                platform_marker.unlink(missing_ok=True)
+            except OSError as error:
+                return None, [f"{label}: failed to reset platform marker: {error}"]
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=root,
+                    env={
+                        **os.environ,
+                        "UNICA_V8_RUNNER_310_PLATFORM_MARKER": str(platform_marker),
+                    },
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=60,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return None, [f"{label}: runner did not exit within 60 seconds"]
+
+            marker_state = "present" if platform_marker.is_file() else "missing"
+            if result.returncode != 0:
+                detail = "\n".join(
+                    part.strip()
+                    for part in (result.stdout, result.stderr)
+                    if part.strip()
+                )
+                return None, [
+                    f"{label}: runner OS process exited with {result.returncode}; "
+                    f"platform stub marker={marker_state}: {detail}"
+                ]
+            if marker_state != "present":
+                return None, [
+                    f"{label}: runner succeeded without invoking the platform stub"
+                ]
+            try:
+                return json.loads(result.stdout), []
+            except json.JSONDecodeError as error:
+                return None, [f"{label}: runner returned invalid JSON: {error}"]
+
+        first_envelope, first_errors = run_make()
+        if first_errors:
+            return first_errors
+        first_result_errors = validate_v8_runner_windows_external_publication_result(
+            first_envelope,
+            output_dir,
+            expected_epf,
+            b"issue-310-current",
+            root,
+        )
+        if first_result_errors:
+            return [f"{label}: first publish: {error}" for error in first_result_errors]
+
+        try:
+            (output_dir / "stale.epf").write_bytes(b"issue-310-stale")
+            expected_epf.write_bytes(b"issue-310-stale")
+        except OSError as error:
+            return [f"{label}: failed to prepare replacement target: {error}"]
+
+        second_envelope, second_errors = run_make()
+        if second_errors:
+            return second_errors
+        result_errors = validate_v8_runner_windows_external_publication_result(
+            second_envelope,
+            output_dir,
+            expected_epf,
+            b"issue-310-current",
+            root,
+        )
+        if result_errors:
+            return [f"{label}: replacement publish: {error}" for error in result_errors]
+        try:
+            output_entries = sorted(path.name for path in output_dir.iterdir())
+        except OSError as error:
+            return [f"{label}: published directory could not be inspected: {error}"]
+        if output_entries != ["Alpha.epf"]:
+            return [
+                f"{label}: replacement publish retained unexpected files: "
+                f"{output_entries}"
+            ]
+        return []
+
+
 def run_command(
     command: list[str],
     cwd: Path,
@@ -634,6 +834,12 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
         )
         errors.extend(
             check_v8_runner_bounded_external_epf_contract(
+                tool_executable(tools_dir, "v8-runner", target),
+                target,
+            )
+        )
+        errors.extend(
+            check_v8_runner_windows_external_publication_contract(
                 tool_executable(tools_dir, "v8-runner", target),
                 target,
             )

@@ -336,6 +336,38 @@ class ProductContractTests(unittest.TestCase):
         behavioral_check.assert_called_once_with(runner.resolve(), "linux-x64")
         bounded_check.assert_called_once_with(runner.resolve(), "linux-x64")
 
+    def test_targeted_tool_contracts_run_windows_external_publication_smoke(
+        self,
+    ) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            runner = tools_dir / "v8-runner.exe"
+            runner.write_bytes(b"runner")
+            with (
+                patch.object(module, "TOOL_HELP_CHECKS", []),
+                patch.object(
+                    module,
+                    "check_v8_runner_partial_load_contract",
+                    return_value=[],
+                ),
+                patch.object(
+                    module,
+                    "check_v8_runner_bounded_external_epf_contract",
+                    return_value=[],
+                ),
+                patch.object(
+                    module,
+                    "check_v8_runner_windows_external_publication_contract",
+                    return_value=["windows publication failure"],
+                ) as publication_check,
+            ):
+                errors = module.check_tool_contracts(tools_dir, "win-x64")
+
+        self.assertEqual(errors, ["windows publication failure"])
+        publication_check.assert_called_once_with(runner.resolve(), "win-x64")
+
     BSL_ANALYZER_HELP = (
         "#!/usr/bin/env sh\n"
         "case \"$*\" in\n"
