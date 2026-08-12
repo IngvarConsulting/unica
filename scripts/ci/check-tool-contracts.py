@@ -302,6 +302,10 @@ def validate_v8_runner_windows_external_publication_result(
     errors: list[str] = []
     data = envelope.get("data") if isinstance(envelope, dict) else None
 
+    def resolve_result_path(value: str) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() else fixture_root / path
+
     if not isinstance(envelope, dict) or envelope.get("ok") is not True:
         errors.append("runner JSON envelope is not successful")
     if isinstance(envelope, dict) and envelope.get("command") != "make":
@@ -328,7 +332,9 @@ def validate_v8_runner_windows_external_publication_result(
             errors.append("runner JSON output_path is not a path string")
         else:
             try:
-                output_matches = Path(actual_output).resolve() == output_dir.resolve()
+                output_matches = (
+                    resolve_result_path(actual_output).resolve() == output_dir.resolve()
+                )
             except OSError as error:
                 errors.append(f"runner JSON output_path could not be resolved: {error}")
             else:
@@ -347,7 +353,7 @@ def validate_v8_runner_windows_external_publication_result(
                     continue
                 path = item.get("path")
                 if isinstance(path, str):
-                    package_paths.append(Path(path))
+                    package_paths.append(resolve_result_path(path))
         try:
             expected_resolved = expected_epf.resolve()
             package_matches = any(
@@ -392,8 +398,8 @@ def validate_v8_runner_windows_external_publication_result(
 
     try:
         retained = sorted(
-            path.name
-            for path in fixture_root.iterdir()
+            str(path.relative_to(fixture_root))
+            for path in fixture_root.rglob("*")
             if path.name.startswith((".artifacts-stage-", ".artifacts-backup-"))
             or (
                 path.name.startswith(".artifacts-")
@@ -741,13 +747,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         if result_errors:
             return [f"{label}: replacement publish: {error}" for error in result_errors]
         try:
-            output_entries = sorted(path.name for path in output_dir.iterdir())
+            output_packages = sorted(
+                path.name
+                for path in output_dir.iterdir()
+                if path.suffix.lower() == ".epf"
+            )
         except OSError as error:
             return [f"{label}: published directory could not be inspected: {error}"]
-        if output_entries != ["Alpha.epf"]:
+        if output_packages != ["Alpha.epf"]:
             return [
-                f"{label}: replacement publish retained unexpected files: "
-                f"{output_entries}"
+                f"{label}: replacement publish retained unexpected EPF files: "
+                f"{output_packages}"
             ]
         return []
 

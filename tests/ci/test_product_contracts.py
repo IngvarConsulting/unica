@@ -246,13 +246,13 @@ class ProductContractTests(unittest.TestCase):
                     "ok": True,
                     "mode": "external_data_processor_epf",
                     "source_set": "external-processors",
-                    "output_path": str(output),
+                    "output_path": "Deploy",
                     "artifacts": {
-                        "root_dir": str(output),
+                        "root_dir": "Deploy",
                         "items": [
                             {
                                 "kind": "package",
-                                "path": str(epf),
+                                "path": str(Path("Deploy") / "Alpha.epf"),
                                 "role": "package_file",
                             }
                         ],
@@ -261,7 +261,7 @@ class ProductContractTests(unittest.TestCase):
                         "status": "succeeded",
                         "payload": {
                             "artifact_type": "external_data_processor_epf",
-                            "output_path": str(output),
+                            "output_path": "Deploy",
                             "file_names": ["Alpha.epf"],
                             "published": True,
                         },

@@ -167,8 +167,8 @@ def validate_v8_runner_windows_external_publication_result(
     elif expected_epf.read_bytes() != expected_bytes:
         errors.append(f"published EPF has unexpected bytes: {expected_epf}")
     retained = sorted(
-        path.name
-        for path in fixture_root.iterdir()
+        str(path.relative_to(fixture_root))
+        for path in fixture_root.rglob("*")
         if path.name.startswith((".artifacts-stage-", ".artifacts-backup-"))
         or (
             path.name.startswith(".artifacts-")
@@ -310,7 +310,7 @@ command = [
 ]
 ```
 
-Run from the temporary fixture root with a 60-second process timeout. Parse stdout as JSON. Validate the first result, then write `Deploy/stale.epf` and overwrite `Deploy/Alpha.epf` with `b"issue-310-stale"`; run the same command again and validate that only `Alpha.epf` remains with `b"issue-310-current"`. The process branch is exact:
+Run from the temporary fixture root with a 60-second process timeout. Parse stdout as JSON. Validate the first result, then write `Deploy/stale.epf` and overwrite `Deploy/Alpha.epf` with `b"issue-310-stale"`; run the same command again and validate that the only published EPF is `Alpha.epf` with `b"issue-310-current"`. The current upstream runner also publishes an unreported `Alpha.epf.meta.json` sidecar; that pre-existing cross-platform behavior is outside #310 and is neither required nor fixed by this PR. The process branch is exact:
 
 ```python
 def run_make() -> tuple[object | None, list[str]]:
@@ -337,7 +337,7 @@ def run_make() -> tuple[object | None, list[str]]:
         return None, [f"{label}: runner returned invalid JSON: {error}"]
 ```
 
-Prefix compile and result errors with `label`. After the second validation, require `sorted(path.name for path in output.iterdir()) == ["Alpha.epf"]` so replacement cannot leave `stale.epf` behind.
+Prefix compile and result errors with `label`. After the second validation, require `sorted(path.name for path in output.iterdir() if path.suffix.lower() == ".epf") == ["Alpha.epf"]` so replacement cannot leave `stale.epf` behind without making the upstream metadata sidecar part of Unica's required contract.
 
 Finally append the check in `check_tool_contracts` after the two existing v8-runner behavioral checks.
 
@@ -413,7 +413,7 @@ Resolve and validate the absolute temporary path before any cleanup.
 
 Invoke the same helper with the downloaded binary and `win-x64`.
 
-Expected: `[]`; both new-target and replacement publication pass, no stage/backup/metadata residue remains.
+Expected: `[]`; both new-target and replacement publication pass, the only EPF is `Alpha.epf`, and no `.artifacts-stage-*`/backup metadata residue remains.
 
 - [ ] **Step 5: Retain only the verified ignored download through final verification**
 
