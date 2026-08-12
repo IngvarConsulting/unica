@@ -42,6 +42,33 @@ TOOL_HELP_CHECKS = [
 
 V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
 V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
+V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS = 60
+
+
+def compile_rust_platform_stub(
+    source: Path,
+    output: Path,
+    cwd: Path,
+    label: str,
+) -> list[str]:
+    try:
+        compiled = subprocess.run(
+            ["rustc", "--edition=2021", str(source), "-o", str(output)],
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return [
+            f"{label}: platform stub compilation timed out after "
+            f"{V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS} seconds"
+        ]
+    if compiled.returncode != 0:
+        return [f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"]
+    return []
 
 
 def validate_v8_runner_partial_load_list(payload: bytes, expected_path: str) -> list[str]:
@@ -115,16 +142,14 @@ fn main() {
             encoding="utf-8",
         )
         platform = root / ("1cv8.exe" if target == "win-x64" else "1cv8")
-        compiled = subprocess.run(
-            ["rustc", "--edition=2021", str(stub_source), "-o", str(platform)],
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        compile_errors = compile_rust_platform_stub(
+            stub_source,
+            platform,
+            root,
+            label,
         )
-        if compiled.returncode != 0:
-            return [f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"]
+        if compile_errors:
+            return compile_errors
 
         def yaml_path(path: Path) -> str:
             return str(path).replace("'", "''")
@@ -292,6 +317,129 @@ def validate_v8_runner_bounded_external_epf_result(
     return errors
 
 
+def validate_v8_runner_windows_external_publication_result(
+    envelope: object,
+    output_dir: Path,
+    expected_epf: Path,
+    expected_bytes: bytes,
+    fixture_root: Path,
+) -> list[str]:
+    errors: list[str] = []
+    data = envelope.get("data") if isinstance(envelope, dict) else None
+
+    def resolve_result_path(value: str) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() else fixture_root / path
+
+    if not isinstance(envelope, dict) or envelope.get("ok") is not True:
+        errors.append("runner JSON envelope is not successful")
+    if isinstance(envelope, dict) and envelope.get("command") != "make":
+        errors.append(
+            f"runner JSON command is not make: {envelope.get('command')!r}"
+        )
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        errors.append("runner JSON data is not successful")
+
+    if isinstance(data, dict):
+        if data.get("mode") != "external_data_processor_epf":
+            errors.append(
+                "runner JSON mode is not external_data_processor_epf: "
+                f"{data.get('mode')!r}"
+            )
+        if data.get("source_set") != "external-processors":
+            errors.append(
+                "runner JSON source_set is not external-processors: "
+                f"{data.get('source_set')!r}"
+            )
+
+        actual_output = data.get("output_path")
+        if not isinstance(actual_output, str):
+            errors.append("runner JSON output_path is not a path string")
+        else:
+            try:
+                output_matches = (
+                    resolve_result_path(actual_output).resolve() == output_dir.resolve()
+                )
+            except OSError as error:
+                errors.append(f"runner JSON output_path could not be resolved: {error}")
+            else:
+                if not output_matches:
+                    errors.append(
+                        "runner JSON output_path does not resolve to "
+                        f"{output_dir.resolve()}"
+                    )
+
+        artifacts = data.get("artifacts")
+        items = artifacts.get("items") if isinstance(artifacts, dict) else None
+        package_paths: list[Path] = []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict) or item.get("role") != "package_file":
+                    continue
+                path = item.get("path")
+                if isinstance(path, str):
+                    package_paths.append(resolve_result_path(path))
+        try:
+            expected_resolved = expected_epf.resolve()
+            package_matches = any(
+                path.resolve() == expected_resolved for path in package_paths
+            )
+        except OSError as error:
+            errors.append(f"runner JSON package artifact path could not be resolved: {error}")
+        else:
+            if not package_matches:
+                errors.append(
+                    "runner JSON artifacts do not contain the expected package_file: "
+                    f"{expected_epf}"
+                )
+
+        execution = data.get("execution")
+        if not isinstance(execution, dict) or execution.get("status") != "succeeded":
+            errors.append("runner execution status is not succeeded")
+        payload = execution.get("payload") if isinstance(execution, dict) else None
+        if not isinstance(payload, dict) or payload.get("published") is not True:
+            errors.append("runner execution payload is not published")
+        if isinstance(payload, dict):
+            if payload.get("artifact_type") != "external_data_processor_epf":
+                errors.append(
+                    "runner execution artifact_type is not external_data_processor_epf"
+                )
+            if payload.get("file_names") != [expected_epf.name]:
+                errors.append(
+                    "runner execution file_names do not match the published EPF: "
+                    f"{payload.get('file_names')!r}"
+                )
+
+    if not expected_epf.is_file():
+        errors.append(f"published EPF was not created: {expected_epf}")
+    else:
+        try:
+            actual_bytes = expected_epf.read_bytes()
+        except OSError as error:
+            errors.append(f"published EPF could not be read: {error}")
+        else:
+            if actual_bytes != expected_bytes:
+                errors.append(f"published EPF has unexpected bytes: {expected_epf}")
+
+    try:
+        retained = sorted(
+            str(path.relative_to(fixture_root))
+            for path in fixture_root.rglob("*")
+            if path.name.startswith((".artifacts-stage-", ".artifacts-backup-"))
+            or (
+                path.name.startswith(".artifacts-")
+                and path.name.endswith(".meta.json")
+            )
+        )
+    except OSError as error:
+        errors.append(f"publication temporary state could not be inspected: {error}")
+    else:
+        if retained:
+            errors.append(f"publication temporary state was retained: {retained}")
+
+    return errors
+
+
 def check_v8_runner_bounded_external_epf_contract(
     runner: Path,
     target: str,
@@ -347,16 +495,14 @@ fn main() {{
         suffix = ".exe" if target == "win-x64" else ""
         client_platform = platform_bin / f"1cv8c{suffix}"
         gui_platform = platform_bin / f"1cv8{suffix}"
-        compiled = subprocess.run(
-            ["rustc", "--edition=2021", str(stub_source), "-o", str(client_platform)],
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        compile_errors = compile_rust_platform_stub(
+            stub_source,
+            client_platform,
+            root,
+            label,
         )
-        if compiled.returncode != 0:
-            return [f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"]
+        if compile_errors:
+            return compile_errors
         shutil.copy2(client_platform, gui_platform)
 
         def yaml_path(path: Path) -> str:
@@ -433,6 +579,206 @@ fn main() {{
                 V8_RUNNER_BOUNDED_STDERR_MARKER,
             )
         ]
+
+
+def check_v8_runner_windows_external_publication_contract(
+    runner: Path,
+    target: str,
+) -> list[str]:
+    label = "v8-runner Windows external publication contract"
+    if target != "win-x64":
+        return []
+    if not runner.is_file():
+        return [f"{label}: binary not found: {runner}"]
+
+    with tempfile.TemporaryDirectory(prefix="unica-v8-runner-310-") as directory:
+        root = Path(directory)
+        source_root = root / "src" / "external-processors"
+        work_path = root / "work"
+        infobase_path = root / "ib"
+        platform_root = root / "platform"
+        platform_bin = platform_root / "bin"
+        platform_marker = root / "platform-stub.marker"
+        source_root.mkdir(parents=True)
+        work_path.mkdir()
+        infobase_path.mkdir()
+        platform_bin.mkdir(parents=True)
+        (source_root / "Alpha.xml").write_text(
+            "<ExternalDataProcessor><Properties><Name>Alpha</Name>"
+            "</Properties></ExternalDataProcessor>",
+            encoding="utf-8",
+        )
+
+        stub_source = root / "platform-stub.rs"
+        stub_source.write_text(
+            r'''
+use std::{env, error::Error, fs};
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let arguments: Vec<_> = env::args_os().skip(1).collect();
+    if let Some(marker) = env::var_os("UNICA_V8_RUNNER_310_PLATFORM_MARKER") {
+        fs::write(marker, b"issue-310-platform-ok\n")?;
+    }
+    for (index, argument) in arguments.iter().enumerate() {
+        let argument = argument.to_string_lossy();
+        if argument.eq_ignore_ascii_case("/LoadExternalDataProcessorOrReportFromFiles") {
+            fs::write(&arguments[index + 2], b"issue-310-current")?;
+        }
+        if argument.eq_ignore_ascii_case("/DumpExternalDataProcessorOrReportToFiles") {
+            fs::write(
+                &arguments[index + 1],
+                b"<ExternalDataProcessor><Properties><Name>Alpha</Name></Properties></ExternalDataProcessor>",
+            )?;
+        }
+        if argument.eq_ignore_ascii_case("/Out") {
+            fs::write(&arguments[index + 1], b"issue-310-platform-ok\n")?;
+        }
+    }
+    Ok(())
+}
+'''.lstrip(),
+            encoding="utf-8",
+        )
+        client_platform = platform_bin / "1cv8c.exe"
+        gui_platform = platform_bin / "1cv8.exe"
+        compile_errors = compile_rust_platform_stub(
+            stub_source,
+            client_platform,
+            root,
+            label,
+        )
+        if compile_errors:
+            return compile_errors
+        shutil.copy2(client_platform, gui_platform)
+
+        def yaml_path(path: Path) -> str:
+            return str(path).replace("'", "''")
+
+        config = root / "v8project.yaml"
+        config.write_text(
+            "\n".join(
+                [
+                    f"workPath: '{yaml_path(work_path)}'",
+                    "execution_timeout: 30000",
+                    "format: DESIGNER",
+                    "builder: DESIGNER",
+                    "infobase:",
+                    f"  connection: 'File={yaml_path(infobase_path)}'",
+                    "source-set:",
+                    "  - name: external-processors",
+                    "    type: EXTERNAL_DATA_PROCESSORS",
+                    f"    path: '{yaml_path(source_root)}'",
+                    "tools:",
+                    "  platform:",
+                    f"    path: '{yaml_path(platform_root)}'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        output_dir = root / "Deploy"
+        expected_epf = output_dir / "Alpha.epf"
+        command = [
+            str(runner),
+            "--config",
+            str(config),
+            "--json-message",
+            "make",
+            "--source-set",
+            "external-processors",
+            "--output",
+            "Deploy",
+        ]
+
+        def run_make() -> tuple[object | None, list[str]]:
+            try:
+                platform_marker.unlink(missing_ok=True)
+            except OSError as error:
+                return None, [f"{label}: failed to reset platform marker: {error}"]
+            try:
+                result = subprocess.run(
+                    command,
+                    cwd=root,
+                    env={
+                        **os.environ,
+                        "UNICA_V8_RUNNER_310_PLATFORM_MARKER": str(platform_marker),
+                    },
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=60,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return None, [f"{label}: runner did not exit within 60 seconds"]
+
+            marker_state = "present" if platform_marker.is_file() else "missing"
+            if result.returncode != 0:
+                detail = "\n".join(
+                    part.strip()
+                    for part in (result.stdout, result.stderr)
+                    if part.strip()
+                )
+                return None, [
+                    f"{label}: runner OS process exited with {result.returncode}; "
+                    f"platform stub marker={marker_state}: {detail}"
+                ]
+            if marker_state != "present":
+                return None, [
+                    f"{label}: runner succeeded without invoking the platform stub"
+                ]
+            try:
+                return json.loads(result.stdout), []
+            except json.JSONDecodeError as error:
+                return None, [f"{label}: runner returned invalid JSON: {error}"]
+
+        first_envelope, first_errors = run_make()
+        if first_errors:
+            return first_errors
+        first_result_errors = validate_v8_runner_windows_external_publication_result(
+            first_envelope,
+            output_dir,
+            expected_epf,
+            b"issue-310-current",
+            root,
+        )
+        if first_result_errors:
+            return [f"{label}: first publish: {error}" for error in first_result_errors]
+
+        try:
+            (output_dir / "stale.epf").write_bytes(b"issue-310-stale")
+            expected_epf.write_bytes(b"issue-310-stale")
+        except OSError as error:
+            return [f"{label}: failed to prepare replacement target: {error}"]
+
+        second_envelope, second_errors = run_make()
+        if second_errors:
+            return second_errors
+        result_errors = validate_v8_runner_windows_external_publication_result(
+            second_envelope,
+            output_dir,
+            expected_epf,
+            b"issue-310-current",
+            root,
+        )
+        if result_errors:
+            return [f"{label}: replacement publish: {error}" for error in result_errors]
+        try:
+            output_packages = sorted(
+                path.name
+                for path in output_dir.iterdir()
+                if path.suffix.lower() == ".epf"
+            )
+        except OSError as error:
+            return [f"{label}: published directory could not be inspected: {error}"]
+        if output_packages != ["Alpha.epf"]:
+            return [
+                f"{label}: replacement publish retained unexpected EPF files: "
+                f"{output_packages}"
+            ]
+        return []
 
 
 def run_command(
@@ -517,6 +863,12 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
         )
         errors.extend(
             check_v8_runner_bounded_external_epf_contract(
+                tool_executable(tools_dir, "v8-runner", target),
+                target,
+            )
+        )
+        errors.extend(
+            check_v8_runner_windows_external_publication_contract(
                 tool_executable(tools_dir, "v8-runner", target),
                 target,
             )

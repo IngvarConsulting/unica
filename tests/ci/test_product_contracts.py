@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -68,6 +69,35 @@ class ProductContractTests(unittest.TestCase):
                 )
             ),
         )
+
+    def test_v8_runner_platform_stub_compilation_timeout_is_bounded(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "platform-stub.rs"
+            output = root / "platform-stub.exe"
+            source.write_text("fn main() {}\n", encoding="utf-8")
+            with patch.object(
+                module.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["rustc"], 60),
+            ) as compile_run:
+                errors = module.compile_rust_platform_stub(
+                    source,
+                    output,
+                    root,
+                    "v8-runner fixture",
+                )
+
+        self.assertEqual(
+            errors,
+            [
+                "v8-runner fixture: platform stub compilation timed out "
+                "after 60 seconds"
+            ],
+        )
+        self.assertEqual(compile_run.call_args.kwargs["timeout"], 60)
 
     def test_v8_runner_partial_load_smoke_rejects_missing_binary(self) -> None:
         module = load_contract_module()
@@ -222,6 +252,94 @@ class ProductContractTests(unittest.TestCase):
                 errors,
             )
 
+    def test_v8_runner_windows_external_publication_result_accepts_clean_epf(
+        self,
+    ) -> None:
+        module = load_contract_module()
+        validator = getattr(
+            module,
+            "validate_v8_runner_windows_external_publication_result",
+            None,
+        )
+        self.assertIsNotNone(validator)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "Deploy"
+            epf = output / "Alpha.epf"
+            output.mkdir()
+            epf.write_bytes(b"issue-310-current")
+            envelope = {
+                "ok": True,
+                "command": "make",
+                "data": {
+                    "ok": True,
+                    "mode": "external_data_processor_epf",
+                    "source_set": "external-processors",
+                    "output_path": "Deploy",
+                    "artifacts": {
+                        "root_dir": "Deploy",
+                        "items": [
+                            {
+                                "kind": "package",
+                                "path": str(Path("Deploy") / "Alpha.epf"),
+                                "role": "package_file",
+                            }
+                        ],
+                    },
+                    "execution": {
+                        "status": "succeeded",
+                        "payload": {
+                            "artifact_type": "external_data_processor_epf",
+                            "output_path": "Deploy",
+                            "file_names": ["Alpha.epf"],
+                            "published": True,
+                        },
+                    },
+                },
+            }
+
+            self.assertEqual(
+                validator(envelope, output, epf, b"issue-310-current", root),
+                [],
+            )
+
+    def test_v8_runner_windows_external_publication_result_rejects_failed_or_dirty_publish(
+        self,
+    ) -> None:
+        module = load_contract_module()
+        validator = module.validate_v8_runner_windows_external_publication_result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "Deploy"
+            epf = output / "Alpha.epf"
+            output.mkdir()
+            epf.write_bytes(b"issue-310-stale")
+            (root / ".artifacts-stage-leftover").mkdir()
+            envelope = {
+                "ok": False,
+                "data": {
+                    "ok": False,
+                    "mode": "external_data_processor_epf",
+                    "source_set": "external-processors",
+                    "output_path": str(output),
+                    "execution": {"status": "failed"},
+                },
+            }
+
+            errors = validator(
+                envelope,
+                output,
+                epf,
+                b"issue-310-current",
+                root,
+            )
+
+        self.assertTrue(any("envelope" in error for error in errors), errors)
+        self.assertTrue(any("unexpected bytes" in error for error in errors), errors)
+        self.assertTrue(any("temporary state" in error for error in errors), errors)
+
     def test_targeted_tool_contracts_run_both_v8_runner_behavioral_smokes(self) -> None:
         module = load_contract_module()
 
@@ -247,6 +365,38 @@ class ProductContractTests(unittest.TestCase):
         self.assertEqual(errors, ["behavioral failure", "bounded failure"])
         behavioral_check.assert_called_once_with(runner.resolve(), "linux-x64")
         bounded_check.assert_called_once_with(runner.resolve(), "linux-x64")
+
+    def test_targeted_tool_contracts_run_windows_external_publication_smoke(
+        self,
+    ) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            runner = tools_dir / "v8-runner.exe"
+            runner.write_bytes(b"runner")
+            with (
+                patch.object(module, "TOOL_HELP_CHECKS", []),
+                patch.object(
+                    module,
+                    "check_v8_runner_partial_load_contract",
+                    return_value=[],
+                ),
+                patch.object(
+                    module,
+                    "check_v8_runner_bounded_external_epf_contract",
+                    return_value=[],
+                ),
+                patch.object(
+                    module,
+                    "check_v8_runner_windows_external_publication_contract",
+                    return_value=["windows publication failure"],
+                ) as publication_check,
+            ):
+                errors = module.check_tool_contracts(tools_dir, "win-x64")
+
+        self.assertEqual(errors, ["windows publication failure"])
+        publication_check.assert_called_once_with(runner.resolve(), "win-x64")
 
     BSL_ANALYZER_HELP = (
         "#!/usr/bin/env sh\n"
