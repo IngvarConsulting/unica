@@ -212,8 +212,9 @@ fn manifest_edge_fixtures_keep_the_canonical_platform_wrapper() {
         {
             let path = fixture_root.join(relative.as_str().unwrap());
             let xml = std::fs::read_to_string(&path).unwrap();
-            assert!(
-                xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"),
+            assert_eq!(
+                xml.lines().next(),
+                Some("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
                 "{} must preserve the canonical XML declaration",
                 path.display()
             );

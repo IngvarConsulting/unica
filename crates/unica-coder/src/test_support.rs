@@ -9,6 +9,20 @@ fn process_cwd_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+pub(crate) fn canonical_path(path: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(path).expect("test path identity must canonicalize");
+    if std::path::MAIN_SEPARATOR == '\\' {
+        let display = canonical.to_string_lossy();
+        if let Some(path) = display.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{path}"));
+        }
+        if let Some(path) = display.strip_prefix(r"\\?\") {
+            return PathBuf::from(path);
+        }
+    }
+    canonical
+}
+
 pub(crate) struct ProcessCwdGuard {
     previous: PathBuf,
     _lock: MutexGuard<'static, ()>,
