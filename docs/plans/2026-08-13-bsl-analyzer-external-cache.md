@@ -48,7 +48,8 @@ fn bsl_analyzer_cache_is_stable_and_separated_by_workspace_and_source() {
     let dotted = bsl_analyzer_cache_dir(&context, &source_root.join(".")).unwrap();
     let other_source = bsl_analyzer_cache_dir(&context, &context.workspace_root.join("extension"))
         .unwrap();
-    let other_workspace = test_context("bsl-provider-cache-other");
+    let mut other_workspace = test_context("bsl-provider-cache-other");
+    other_workspace.cache_root = context.cache_root.clone();
     let other_workspace_cache =
         bsl_analyzer_cache_dir(&other_workspace, &other_workspace.workspace_root.join("src"))
             .unwrap();
