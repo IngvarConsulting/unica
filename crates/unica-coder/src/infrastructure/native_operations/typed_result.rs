@@ -6,7 +6,7 @@ use crate::{
     application::AdapterOutcome,
     domain::{
         cache::CacheReport, cancellation::CancellationToken, code_intelligence::ProviderDeadline,
-        events::DomainEvent, workspace::WorkspaceContext,
+        events::DomainEvent, support_state::SupportStateReader, workspace::WorkspaceContext,
     },
 };
 use serde::Serialize;
@@ -20,14 +20,20 @@ pub(crate) struct NativeOperationResult {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct NativeInvocationControl<'a> {
+pub(crate) struct NativeInvocationContext<'a> {
+    pub(crate) support_reader: &'a dyn SupportStateReader,
     pub(crate) cancellation: &'a CancellationToken,
     pub(crate) deadline: ProviderDeadline,
 }
 
-impl<'a> NativeInvocationControl<'a> {
-    pub(crate) fn new(cancellation: &'a CancellationToken, deadline: ProviderDeadline) -> Self {
+impl<'a> NativeInvocationContext<'a> {
+    pub(crate) fn new(
+        support_reader: &'a dyn SupportStateReader,
+        cancellation: &'a CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Self {
         Self {
+            support_reader,
             cancellation,
             deadline,
         }
@@ -48,8 +54,7 @@ impl NativeOperationAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
         mutating: bool,
-        support_reader: &dyn crate::domain::support_state::SupportStateReader,
-        control: NativeInvocationControl<'_>,
+        invocation: NativeInvocationContext<'_>,
     ) -> Result<NativeOperationResult, String> {
         if operation == "xdto-info" {
             let execution = xdto::info_with_data(args, context)?;
@@ -225,11 +230,11 @@ impl NativeOperationAdapter {
         }
         match operation {
             "cf-info" => {
-                let execution = cf::analyze_cf_info(args, context, support_reader);
+                let execution = cf::analyze_cf_info(args, context, invocation.support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "cf info");
             }
             "role-info" => {
-                let execution = role::analyze_role_info(args, context, support_reader);
+                let execution = role::analyze_role_info(args, context, invocation.support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "role info");
             }
             "cfe-diff" => {
@@ -237,25 +242,29 @@ impl NativeOperationAdapter {
                 return typed_operation_result(execution.outcome, execution.data, "cfe diff");
             }
             "dcs-info" => {
-                let execution =
-                    super::dcs::analyze_dcs_info_with_data(args, context, support_reader);
+                let execution = super::dcs::analyze_dcs_info_with_data(
+                    args,
+                    context,
+                    invocation.support_reader,
+                );
                 return typed_operation_result(execution.outcome, execution.data, "dcs info");
             }
             "form-info" => {
-                let execution = form::analyze_form_info_with_data(args, context, support_reader);
+                let execution =
+                    form::analyze_form_info_with_data(args, context, invocation.support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "form info");
             }
             "mxl-info" => {
-                let execution = mxl::analyze_mxl_info(args, context, support_reader);
+                let execution = mxl::analyze_mxl_info(args, context, invocation.support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "mxl info");
             }
             "subsystem-info" => {
                 let execution = subsystem::analyze_subsystem_info_cancellable(
                     args,
                     context,
-                    control.cancellation,
-                    control.deadline,
-                    support_reader,
+                    invocation.cancellation,
+                    invocation.deadline,
+                    invocation.support_reader,
                 );
                 return typed_operation_result(execution.outcome, execution.data, "subsystem info");
             }

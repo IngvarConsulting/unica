@@ -11125,13 +11125,13 @@ mod tests {
     #[test]
     fn dcs_info_overview_does_not_duplicate_structured_support() {
         let xml = complete_dcs_xml();
-        let doc = Document::parse(&xml).unwrap();
+        let doc = Document::parse(xml).unwrap();
         let mut lines = Vec::new();
 
         dcs_info_overview(
             doc.root_element(),
             Path::new("Template.xml"),
-            &xml,
+            xml,
             &mut lines,
             DCS_SCHEMA_NS,
             TEST_DCS_SETTINGS_NS,

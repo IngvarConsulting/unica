@@ -32,7 +32,7 @@ use crate::infrastructure::internal_adapters::{
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
 use crate::infrastructure::native_operations::subsystem;
-use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
+use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
 use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::full_dump_publication::{
     FullDumpInvocation, VerifiedFullDumpAdapter,
@@ -382,8 +382,8 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     context,
                     dry_run,
                     spec.execution.is_mutating(),
-                    support_reader.as_ref(),
-                    NativeInvocationControl::new(
+                    NativeInvocationContext::new(
+                        support_reader.as_ref(),
                         cancellation,
                         ProviderDeadline::new(Instant::now() + NATIVE_TYPED_INVOCATION_DEADLINE),
                     ),
@@ -1200,7 +1200,7 @@ mod tests {
         ResolvedSubsystemTarget, SupportReadError, SupportStateReader,
     };
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
+    use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
     use crate::infrastructure::native_operations::NativeOperationAdapter;
     use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
     use crate::infrastructure::platform::secure_read::{
@@ -2066,10 +2066,10 @@ mod tests {
                     &context,
                     false,
                     false,
-                    &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
-                        &context,
-                    ),
-                    NativeInvocationControl::new(
+                    NativeInvocationContext::new(
+                        &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                            &context,
+                        ),
                         &cancellation,
                         ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
                     ),
@@ -2114,10 +2114,10 @@ mod tests {
                     &context,
                     false,
                     false,
-                    &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
-                        &context,
-                    ),
-                    NativeInvocationControl::new(
+                    NativeInvocationContext::new(
+                        &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                            &context,
+                        ),
                         &cancellation,
                         ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
                     ),
@@ -2151,8 +2151,8 @@ mod tests {
             &context,
             false,
             false,
-            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
-            NativeInvocationControl::new(
+            NativeInvocationContext::new(
+                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
                 &cancellation,
                 ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
             ),
@@ -2190,8 +2190,8 @@ mod tests {
             &context,
             false,
             false,
-            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
-            NativeInvocationControl::new(
+            NativeInvocationContext::new(
+                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
                 &cancellation,
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
             ),
@@ -2228,8 +2228,8 @@ mod tests {
             &context,
             false,
             false,
-            &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
-            NativeInvocationControl::new(
+            NativeInvocationContext::new(
+                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
                 &cancellation,
                 ProviderDeadline::new(Instant::now() - Duration::from_millis(1)),
             ),

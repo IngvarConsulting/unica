@@ -10834,7 +10834,7 @@ mod tests {
     use crate::infrastructure::native_operations::single_file_publisher::{
         with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
     };
-    use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
+    use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
     use crate::infrastructure::native_operations::NativeOperationAdapter;
     use serde_json::{json, Map};
     use std::fs;
@@ -19096,8 +19096,10 @@ mod tests {
                 &context,
                 true,
                 true,
-                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
-                NativeInvocationControl::new(
+                NativeInvocationContext::new(
+                    &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                        &context,
+                    ),
                     &cancellation,
                     ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
                 ),
