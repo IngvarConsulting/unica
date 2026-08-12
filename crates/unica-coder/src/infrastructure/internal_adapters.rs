@@ -4728,6 +4728,10 @@ source-set:
             analyzer.data.as_ref().unwrap()["items"][0]["path"],
             expected_path
         );
+        assert_eq!(
+            analyzer.data.as_ref().unwrap()["items"][0]["message"],
+            "Длина строки превышает максимальную"
+        );
         assert!(runner.commands.borrow()[0]
             .args
             .windows(2)
