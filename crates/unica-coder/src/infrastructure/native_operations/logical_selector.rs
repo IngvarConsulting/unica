@@ -315,7 +315,6 @@ pub(crate) fn physical_selection(
     })
 }
 
-#[allow(dead_code)] // Consumed through `physical_selection` in the next task.
 fn locate_failure(rejection: Option<LocateRejection>) -> LogicalSelectorFailure {
     match rejection {
         Some(LocateRejection::OutsideSourceSet) => LogicalSelectorFailure::new(
