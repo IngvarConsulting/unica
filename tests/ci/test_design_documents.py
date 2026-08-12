@@ -68,8 +68,10 @@ TITLE_FIRST_LEGACY = {
     "2026-07-30-structured-bsl-outline-result-design.md",
     "2026-07-30-windows-applied-full-dump-design.md",
     "2026-08-02-xdto-package-domain-review-fixes-design.md",
+    "2026-08-03-issue-186-research-slicing-design.md",
     "2026-08-03-issue-286-rlm-source-generation-design.md",
     "2026-08-03-meta-surface-design.md",
+    "2026-08-04-issue-186-russian-screening-design.md",
     "2026-08-08-meta-object-integrity-design.md",
     "2026-08-08-platform-help-documentation-provider-design.md",
 }
