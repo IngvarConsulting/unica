@@ -18,6 +18,7 @@ import tarfile
 import threading
 import time
 import zipfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,8 @@ EXPECTED_PUBLIC_TOOLS = {
     "unica.meta.remove",
     "unica.standards.explain",
 }
+INDEX_WAIT_TIMEOUT_SECONDS = 300
+INDEX_POLL_INTERVAL_SECONDS = 1
 
 
 def utc_now() -> str:
@@ -606,6 +609,74 @@ def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | Non
         scenario["errors"].extend(errors)
 
 
+def indexed_code_search_state(payload: dict[str, Any] | None) -> str:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    sections = data.get("sections") if isinstance(data, dict) else None
+    if not isinstance(sections, list):
+        return "terminal"
+    indexed = {
+        section.get("provider"): section
+        for section in sections
+        if isinstance(section, dict) and section.get("provider") in {"rlm", "bsl-analyzer"}
+    }
+    if set(indexed) != {"rlm", "bsl-analyzer"}:
+        return "terminal"
+    if any(section.get("status") in {"ok", "empty"} for section in indexed.values()):
+        return "ready"
+    building_markers = ("index building", "index is being built", "indexing")
+    if all(
+        section.get("status") == "unavailable"
+        and any(
+            marker in str(diagnostic).lower()
+            for diagnostic in section.get("diagnostics", [])
+            for marker in building_markers
+        )
+        for section in indexed.values()
+    ):
+        return "building"
+    return "terminal"
+
+
+def wait_for_indexed_code_search(
+    run_attempt: Callable[[], tuple[dict[str, Any], dict[str, Any] | None]],
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float = INDEX_POLL_INTERVAL_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    deadline = monotonic() + timeout_seconds
+    attempts = 0
+    total_duration_ms = 0
+    last: tuple[dict[str, Any], dict[str, Any] | None] | None = None
+
+    while True:
+        if last is not None and monotonic() >= deadline:
+            scenario, payload = last
+            scenario["status"] = "failed"
+            scenario["errors"].append(
+                f"indexed code search did not become ready within {timeout_seconds:g} seconds"
+            )
+            scenario["durationMs"] = total_duration_ms
+            scenario["metrics"] = {**scenario["metrics"], "indexAttempts": attempts}
+            return scenario, payload
+
+        scenario, payload = run_attempt()
+        attempts += 1
+        total_duration_ms += int(scenario.get("durationMs", 0))
+        last = scenario, payload
+        state = indexed_code_search_state(payload)
+        if state != "building":
+            scenario["durationMs"] = total_duration_ms
+            scenario["metrics"] = {**scenario["metrics"], "indexAttempts": attempts}
+            return scenario, payload
+
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            continue
+        sleep(min(poll_interval_seconds, remaining))
+
+
 def relpath(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
@@ -809,18 +880,27 @@ def build_assessment_report(
     scenarios.append(run_tools_list_scenario(run_unica, bsp_root, cache_dir, timeout_seconds))
 
     for scenario_id, title, tool, arguments, blocking, require_payload_ok in base_tool_scenarios(bsp_root):
-        scenario, payload = run_tool_scenario(
-            run_unica,
-            bsp_root=bsp_root,
-            cache_dir=cache_dir,
-            scenario_id=scenario_id,
-            title=title,
-            tool=tool,
-            arguments=arguments,
-            timeout_seconds=timeout_seconds,
-            blocking=blocking,
-            require_payload_ok=require_payload_ok,
-        )
+        def run_attempt() -> tuple[dict[str, Any], dict[str, Any] | None]:
+            return run_tool_scenario(
+                run_unica,
+                bsp_root=bsp_root,
+                cache_dir=cache_dir,
+                scenario_id=scenario_id,
+                title=title,
+                tool=tool,
+                arguments=arguments,
+                timeout_seconds=timeout_seconds,
+                blocking=blocking,
+                require_payload_ok=require_payload_ok,
+            )
+
+        if scenario_id == "code-search":
+            scenario, payload = wait_for_indexed_code_search(
+                run_attempt,
+                timeout_seconds=min(timeout_seconds, INDEX_WAIT_TIMEOUT_SECONDS),
+            )
+        else:
+            scenario, payload = run_attempt()
         if scenario_id == "project-map":
             validate_project_map(scenario, payload)
         if scenario_id == "code-search":

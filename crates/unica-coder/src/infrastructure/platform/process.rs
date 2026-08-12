@@ -135,6 +135,12 @@ enum ChildState {
     Reaped,
 }
 
+enum ConsumerStopOutcome {
+    Exited(ExitStatus),
+    Stopped,
+    Pending,
+}
+
 impl ManagedChild {
     pub fn spawn(command: ManagedCommand) -> Result<Self, String> {
         let mut process = Command::new(&command.program);
@@ -286,15 +292,32 @@ impl ManagedChild {
                         first_line_error,
                     ));
                 }
-                self.terminate()?;
-                return Ok(finish_line_output(
-                    None,
-                    stderr,
-                    false,
-                    false,
-                    true,
-                    first_line_error,
-                ));
+                return match self.terminate_for_consumer_stop()? {
+                    ConsumerStopOutcome::Exited(status) => Ok(finish_line_output(
+                        Some(status),
+                        stderr,
+                        false,
+                        false,
+                        false,
+                        first_line_error,
+                    )),
+                    ConsumerStopOutcome::Stopped => Ok(finish_line_output(
+                        None,
+                        stderr,
+                        false,
+                        false,
+                        true,
+                        first_line_error,
+                    )),
+                    ConsumerStopOutcome::Pending => Ok(finish_line_output(
+                        None,
+                        stderr,
+                        false,
+                        false,
+                        false,
+                        first_line_error,
+                    )),
+                };
             }
             if self.cancellation.is_cancelled() {
                 self.terminate_gracefully()?;
@@ -323,14 +346,14 @@ impl ManagedChild {
             if let Some(status) = self.child.try_wait().map_err(process_error)? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
-                let stopped_by_consumer =
+                let _consumer_stopped_reading =
                     drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
                 return Ok(finish_line_output(
                     Some(status),
                     stderr,
                     false,
                     false,
-                    stopped_by_consumer,
+                    false,
                     first_line_error,
                 ));
             }
@@ -339,26 +362,40 @@ impl ManagedChild {
     }
 
     pub fn terminate(&mut self) -> Result<(), String> {
+        self.terminate_with_observed_exit().map(|_| ())
+    }
+
+    fn terminate_with_observed_exit(&mut self) -> Result<Option<ExitStatus>, String> {
         if self.state == ChildState::Reaped {
             self.process_tree.cleanup_after_leader_exit(&mut self.child);
-            return Ok(());
+            return Ok(None);
         }
         if self.state == ChildState::Running {
-            if self.child.try_wait().map_err(process_error)?.is_some() {
+            if let Some(status) = self.child.try_wait().map_err(process_error)? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
-                return Ok(());
+                return Ok(Some(status));
             }
             if let Err(error) = self.process_tree.terminate(&mut self.child) {
-                if self.child.try_wait().map_err(process_error)?.is_some() {
+                if let Some(status) = self.child.try_wait().map_err(process_error)? {
+                    self.process_tree.cleanup_after_leader_exit(&mut self.child);
                     self.state = ChildState::Reaped;
-                    return Ok(());
+                    return Ok(Some(status));
                 }
                 return Err(process_error(error));
             }
             self.state = ChildState::Terminating;
         }
-        self.reap_bounded()
+        self.reap_bounded()?;
+        Ok(None)
+    }
+
+    fn terminate_for_consumer_stop(&mut self) -> Result<ConsumerStopOutcome, String> {
+        match self.terminate_with_observed_exit()? {
+            Some(status) => Ok(ConsumerStopOutcome::Exited(status)),
+            None if self.state == ChildState::Reaped => Ok(ConsumerStopOutcome::Stopped),
+            None => Ok(ConsumerStopOutcome::Pending),
+        }
     }
 
     fn terminate_gracefully(&mut self) -> Result<(), String> {
@@ -1211,6 +1248,13 @@ mod tests {
                 }
                 thread::sleep(Duration::from_secs(10));
             }
+            "stream_six_then_exit_nonzero" => {
+                for line in 1..=6 {
+                    println!("line-{line}");
+                }
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                std::process::exit(7);
+            }
             "process_tree_immediate_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
                 let mut child = Command::new(std::env::current_exe().unwrap())
@@ -1611,6 +1655,85 @@ mod tests {
         assert!(!output.cancelled);
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(wait_until_dead(process_id, Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn streaming_consumer_stop_preserves_an_already_observed_nonzero_exit() {
+        let mut managed = ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
+                "--nocapture".to_string(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(
+                OsString::from(HELPER_ENV),
+                OsString::from("stream_six_then_exit_nonzero"),
+            )],
+            timeout: Some(Duration::from_secs(5)),
+            cancellation: CancellationToken::new(),
+        })
+        .unwrap();
+        let mut lines = Vec::new();
+
+        let output = managed
+            .wait_for_line_output(1024, |_, bytes| {
+                lines.push(String::from_utf8_lossy(bytes).into_owned());
+                if lines.len() == 6 {
+                    LineReadControl::Stop
+                } else {
+                    LineReadControl::Continue
+                }
+            })
+            .unwrap();
+
+        assert_eq!(lines.len(), 6, "{lines:?}");
+        assert!(!output.status_success, "status was {}", output.status);
+        assert!(output.status.contains('7'), "status was {}", output.status);
+        assert!(!output.stopped_by_consumer);
+        assert!(!output.timed_out);
+        assert!(!output.cancelled);
+    }
+
+    #[test]
+    fn streaming_consumer_stop_is_not_success_until_termination_is_reaped() {
+        let mut managed = ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
+                "--nocapture".to_string(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_lines"))],
+            timeout: Some(Duration::from_secs(5)),
+            cancellation: CancellationToken::new(),
+        })
+        .unwrap();
+        managed.state = ChildState::Terminating;
+        let mut lines = 0;
+
+        let output = managed
+            .wait_for_line_output(1024, |_, _| {
+                lines += 1;
+                if lines == 6 {
+                    LineReadControl::Stop
+                } else {
+                    LineReadControl::Continue
+                }
+            })
+            .unwrap();
+        assert_eq!(managed.state, ChildState::Terminating);
+        managed.state = ChildState::Running;
+        managed.terminate().unwrap();
+
+        assert_eq!(lines, 6);
+        assert!(!output.status_success, "status was {}", output.status);
+        assert_eq!(output.status, "termination pending");
+        assert!(!output.stopped_by_consumer);
+        assert!(!output.timed_out);
+        assert!(!output.cancelled);
     }
 
     #[test]

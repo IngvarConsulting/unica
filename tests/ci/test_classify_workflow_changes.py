@@ -24,6 +24,7 @@ OUTPUT_NAMES = (
     "plugin_content_changed",
     "ci_changed",
     "release_required",
+    "assessment_required",
 )
 
 
@@ -94,6 +95,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     toolchain_changed=True,
                     package_changed=True,
                     release_required=True,
+                    assessment_required=True,
                 )
 
     def test_package_contract_changes_require_package_contour(self) -> None:
@@ -108,13 +110,26 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     package_changed=True,
                     plugin_content_changed=path.startswith("plugins/unica/"),
                     release_required=True,
+                    assessment_required=path in {
+                        "plugins/unica/third-party/tools.lock.json",
+                        "scripts/ci/package-unica-runtime.py",
+                    },
                 )
 
     def test_classifier_workflow_and_platform_guard_changes_fail_closed(self) -> None:
         cases = {
-            ".github/workflows/unica-plugin-release.yml": {"ci_changed": True},
-            "scripts/ci/classify-workflow-changes.py": {"ci_changed": True},
-            "tests/ci/test_classify_workflow_changes.py": {"ci_changed": True},
+            ".github/workflows/unica-plugin-release.yml": {
+                "ci_changed": True,
+                "assessment_required": True,
+            },
+            "scripts/ci/classify-workflow-changes.py": {
+                "ci_changed": True,
+                "assessment_required": True,
+            },
+            "tests/ci/test_classify_workflow_changes.py": {
+                "ci_changed": True,
+                "assessment_required": True,
+            },
             "scripts/ci/check-rust-platform-boundary.py": {
                 "rust_changed": True,
                 "platform_changed": True,
@@ -150,6 +165,29 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             package_changed=True,
             plugin_content_changed=True,
             release_required=True,
+            assessment_required=True,
+        )
+
+    def test_release_assessment_routes_only_affected_mechanism(self) -> None:
+        for path in (
+            "crates/unica-coder/src/application/code_intelligence.rs",
+            "crates/unica-coder/src/infrastructure/code_intelligence.rs",
+            "crates/unica-coder/src/infrastructure/platform/process.rs",
+            "crates/unica-coder/src/infrastructure/workspace_index.rs",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification(
+                    [path],
+                    rust_changed=True,
+                    platform_changed=path.endswith("platform/process.rs"),
+                    release_required=True,
+                    assessment_required=True,
+                )
+
+        self.assert_classification(
+            ["crates/unica-coder/src/domain/cache.rs"],
+            rust_changed=True,
+            release_required=True,
         )
 
     def test_forced_full_contour_enables_every_output(self) -> None:
@@ -176,6 +214,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                 "plugin_content_changed=true",
                 "ci_changed=false",
                 "release_required=true",
+                "assessment_required=false",
             },
             set(output.splitlines()),
         )

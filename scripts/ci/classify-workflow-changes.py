@@ -18,6 +18,7 @@ OUTPUT_NAMES = (
     "plugin_content_changed",
     "ci_changed",
     "release_required",
+    "assessment_required",
 )
 
 TOOLCHAIN_PATHS = {
@@ -68,6 +69,34 @@ PLATFORM_PREFIXES = (
     "crates/unica-coder/src/infrastructure/platform/",
     "crates/unica-bootstrap/src/platform/",
 )
+ASSESSMENT_PATHS = {
+    ".github/workflows/unica-plugin-release.yml",
+    "plugins/unica/third-party/tools.lock.json",
+    "scripts/ci/build-unica-tools.py",
+    "scripts/ci/classify-workflow-changes.py",
+    "scripts/ci/evaluate-ci-gate.py",
+    "scripts/ci/package-unica-runtime.py",
+    "scripts/ci/release-assessment.py",
+    "tests/ci/test_classify_workflow_changes.py",
+    "tests/ci/test_evaluate_ci_gate.py",
+    "tests/ci/test_release_assessment.py",
+    "tests/ci/test_unica_workflow.py",
+    "crates/unica-coder/src/application/code_intelligence.rs",
+    "crates/unica-coder/src/application/mod.rs",
+    "crates/unica-coder/src/domain/code_intelligence.rs",
+    "crates/unica-coder/src/domain/operational_config.rs",
+    "crates/unica-coder/src/infrastructure/application_ports.rs",
+    "crates/unica-coder/src/infrastructure/code_intelligence.rs",
+    "crates/unica-coder/src/infrastructure/internal_adapters.rs",
+    "crates/unica-coder/src/infrastructure/operational_config.rs",
+    "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
+    "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
+    "crates/unica-coder/src/infrastructure/workspace_index.rs",
+    "crates/unica-coder/src/infrastructure/workspace_services.rs",
+    "crates/unica-coder/src/infrastructure/platform/mod.rs",
+    "crates/unica-coder/src/infrastructure/platform/process.rs",
+    "crates/unica-coder/src/interfaces/mcp.rs",
+}
 
 
 class Classification(NamedTuple):
@@ -78,6 +107,7 @@ class Classification(NamedTuple):
     plugin_content_changed: bool = False
     ci_changed: bool = False
     release_required: bool = False
+    assessment_required: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return dict(zip(OUTPUT_NAMES, self, strict=True))
@@ -136,6 +166,10 @@ def _is_ci_contract_path(path: str) -> bool:
     return path.startswith(".github/workflows/") or path in CI_CONTRACT_PATHS or path in PLATFORM_CONTRACT_PATHS
 
 
+def _is_assessment_path(path: str) -> bool:
+    return path in ASSESSMENT_PATHS or _is_toolchain_path(path)
+
+
 def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classification:
     if force_full:
         return Classification(*([True] * len(OUTPUT_NAMES)))
@@ -146,6 +180,7 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
     package_changed = False
     plugin_content_changed = False
     ci_changed = False
+    assessment_required = False
 
     for raw_path in paths:
         path = normalize_path(raw_path)
@@ -157,6 +192,7 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
         package_changed |= path in PACKAGE_PATHS or _is_toolchain_path(path)
         plugin_content_changed |= path.startswith("plugins/unica/")
         ci_changed |= _is_ci_contract_path(path)
+        assessment_required |= _is_assessment_path(path)
 
     # The platform boundary is the source of truth. Unknown files inside it
     # must route conservatively even when their extension is not yet known.
@@ -170,6 +206,7 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
         plugin_content_changed=plugin_content_changed,
         ci_changed=ci_changed,
         release_required=release_required,
+        assessment_required=assessment_required,
     )
 
 

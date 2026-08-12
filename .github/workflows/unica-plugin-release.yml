@@ -27,6 +27,7 @@ jobs:
       plugin_content_changed: ${{ steps.scope.outputs.plugin_content_changed }}
       ci_changed: ${{ steps.scope.outputs.ci_changed }}
       release_required: ${{ steps.scope.outputs.release_required }}
+      assessment_required: ${{ steps.scope.outputs.assessment_required }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -394,8 +395,14 @@ jobs:
     name: Assess Linux runtime on BSP
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: build-tools
-    if: ${{ always() && needs.build-tools.result == 'success' }}
+    needs: [classify-changes, build-tools]
+    if: >-
+      ${{
+        always() &&
+        needs.classify-changes.result == 'success' &&
+        needs.build-tools.result == 'success' &&
+        needs.classify-changes.outputs.assessment_required == 'true'
+      }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

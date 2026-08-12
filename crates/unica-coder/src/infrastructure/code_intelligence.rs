@@ -87,12 +87,21 @@ impl<'a> GitGrepProvider<'a> {
         let mut diagnostics = Vec::new();
         let mut saw_nonempty_line = false;
         let mut consume = |line_number: usize, bytes: &[u8]| {
-            let line = String::from_utf8_lossy(bytes);
+            let line = match std::str::from_utf8(bytes) {
+                Ok(line) => line,
+                Err(_) => {
+                    saw_nonempty_line = true;
+                    diagnostics.push(format!(
+                        "ignored non-UTF-8 git-grep result at line {line_number}"
+                    ));
+                    return ProcessLineControl::Continue;
+                }
+            };
             if line.trim().is_empty() {
                 return ProcessLineControl::Continue;
             }
             saw_nonempty_line = true;
-            match parse_git_grep_line(&line) {
+            match parse_git_grep_line(line) {
                 Some(hit) => hits.push(hit),
                 None => diagnostics.push(format!(
                     "ignored malformed git-grep result at line {line_number}: {line}"
@@ -1232,6 +1241,37 @@ mod tests {
 
         assert_eq!(section.status, ProviderSectionStatus::Ok);
         assert_eq!(section.hits[0].path, "Catalogs/Номенклатура.xml");
+    }
+
+    #[test]
+    fn git_grep_rejects_non_utf8_rows_without_publishing_corrupted_hits() {
+        let runner = StreamingFakeRunner {
+            lines: vec![b"Catalogs/Invalid\xff.xml:7:Needle".to_vec()],
+            output: streaming_output(),
+            commands: Mutex::new(Vec::new()),
+            consumed_lines: Mutex::new(0),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Needle".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty(), "{:?}", section.hits);
+        assert!(
+            section
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("non-UTF-8")),
+            "{:?}",
+            section.diagnostics
+        );
     }
 
     #[test]

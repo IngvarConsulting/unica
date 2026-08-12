@@ -596,6 +596,184 @@ for raw in sys.stdin:
             scenario,
         )
 
+    def test_indexed_code_search_waits_for_building_provider_to_become_ready(self) -> None:
+        module = load_assessment_module()
+        pending_payload = {
+            "ok": False,
+            "errors": ["no provider served the request"],
+            "data": {
+                "sections": [
+                    {
+                        "provider": "rlm",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": ["rlm index building"],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "bsl-analyzer",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": ["Search index is being built, please try again in a moment."],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "git-grep",
+                        "status": "failed",
+                        "hits": [],
+                        "diagnostics": ["git-grep search was too slow"],
+                        "artifacts": [],
+                    },
+                ]
+            },
+        }
+        ready_payload = {
+            "ok": True,
+            "errors": [],
+            "data": {
+                "sections": [
+                    {
+                        "provider": "rlm",
+                        "status": "empty",
+                        "hits": [],
+                        "diagnostics": [],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "bsl-analyzer",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": ["Search index is being built"],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "git-grep",
+                        "status": "failed",
+                        "hits": [],
+                        "diagnostics": ["git-grep search was too slow"],
+                        "artifacts": [],
+                    },
+                ]
+            },
+        }
+        attempts = iter(
+            [
+                (
+                    module.scenario_result(
+                        scenario_id="code-search",
+                        title="search",
+                        tool="unica.code.search",
+                        arguments={},
+                        status="failed",
+                        duration_ms=7,
+                        blocking=True,
+                        errors=["no provider served the request"],
+                    ),
+                    pending_payload,
+                ),
+                (
+                    module.scenario_result(
+                        scenario_id="code-search",
+                        title="search",
+                        tool="unica.code.search",
+                        arguments={},
+                        status="passed",
+                        duration_ms=5,
+                        blocking=True,
+                    ),
+                    ready_payload,
+                ),
+            ]
+        )
+        now = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        scenario, payload = module.wait_for_indexed_code_search(
+            lambda: next(attempts),
+            timeout_seconds=10,
+            poll_interval_seconds=1,
+            monotonic=lambda: now[0],
+            sleep=sleep,
+        )
+
+        self.assertEqual("passed", scenario["status"])
+        self.assertIs(payload, ready_payload)
+        self.assertEqual(12, scenario["durationMs"])
+        self.assertEqual(2, scenario["metrics"]["indexAttempts"])
+        self.assertEqual([1], sleeps)
+
+    def test_indexed_code_search_fails_when_readiness_deadline_expires(self) -> None:
+        module = load_assessment_module()
+        payload = {
+            "ok": False,
+            "errors": ["no provider served the request"],
+            "data": {
+                "sections": [
+                    {
+                        "provider": "rlm",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": ["rlm index building"],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "bsl-analyzer",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": ["Search index is being built"],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "git-grep",
+                        "status": "failed",
+                        "hits": [],
+                        "diagnostics": ["git-grep search was too slow"],
+                        "artifacts": [],
+                    },
+                ]
+            },
+        }
+        now = [0.0]
+        attempts = [0]
+
+        def run_attempt():
+            attempts[0] += 1
+            if attempts[0] > 1:
+                self.fail("the readiness deadline must stop a second MCP attempt")
+            return (
+                module.scenario_result(
+                    scenario_id="code-search",
+                    title="search",
+                    tool="unica.code.search",
+                    arguments={},
+                    status="failed",
+                    duration_ms=7,
+                    blocking=True,
+                    errors=["no provider served the request"],
+                ),
+                payload,
+            )
+
+        scenario, returned_payload = module.wait_for_indexed_code_search(
+            run_attempt,
+            timeout_seconds=1,
+            poll_interval_seconds=1,
+            monotonic=lambda: now[0],
+            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        )
+
+        self.assertEqual("failed", scenario["status"])
+        self.assertIs(returned_payload, payload)
+        self.assertEqual(1, scenario["metrics"]["indexAttempts"])
+        self.assertTrue(
+            any("did not become ready within 1 seconds" in error for error in scenario["errors"]),
+            scenario,
+        )
+
     def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:
         module = load_assessment_module()
 

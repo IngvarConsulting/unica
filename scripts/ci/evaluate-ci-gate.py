@@ -19,6 +19,7 @@ CLASSIFICATION_OUTPUTS = (
     "plugin_content_changed",
     "ci_changed",
     "release_required",
+    "assessment_required",
 )
 ALWAYS_JOBS = (
     "classify-changes",
@@ -27,8 +28,8 @@ ALWAYS_JOBS = (
 PACKAGE_JOBS = (
     "build-tools",
     "package-thin",
-    "release-assessment",
 )
+ASSESSMENT_JOB = "release-assessment"
 PUBLISH_JOBS = (
     "publish-release-assets",
     "smoke-thin-plugin",
@@ -72,6 +73,10 @@ def _validated_classification(
         contradictions.append("toolchain_changed requires rust/package/release contours")
     if values["package_changed"] and not values["release_required"]:
         contradictions.append("package_changed requires release_required")
+    if values["assessment_required"] and not (
+        values["release_required"] or values["ci_changed"]
+    ):
+        contradictions.append("assessment_required requires release or CI contours")
     if contradictions:
         return values, ("; ".join(contradictions), "a consistent classification")
     return values, None
@@ -109,6 +114,7 @@ def expected_results(
     expected["test-rust-primary"] = "success" if primary_rust else "skipped"
     expected["test-rust-platforms"] = "success" if full_matrix else "skipped"
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
+    expected[ASSESSMENT_JOB] = "success" if values["assessment_required"] else "skipped"
     expected["probe-thin-bootstrap"] = (
         "success" if package_pipeline and (is_pr or is_manual) else "skipped"
     )
