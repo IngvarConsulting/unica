@@ -14,6 +14,7 @@ use crate::infrastructure::workspace_index::{
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -51,6 +52,7 @@ const SERVICE_SPAWN_CLEANUP_WAIT: Duration = Duration::from_secs(2);
 const SERVICE_STARTUP_STDERR_TAIL_LIMIT: u64 = 16 * 1024;
 const BSL_STDERR_TAIL_LIMIT: usize = 64 * 1024;
 const SERVICE_RECORD_LOCK_FILE: &str = "service.record.lock";
+const PROVIDER_STATE_KEY_DOMAIN: &[u8] = b"unica-provider-state-v1\0";
 
 static SYSTEM_SERVICE_CONNECTOR: SystemServiceConnector = SystemServiceConnector;
 static SYSTEM_SERVICE_SPAWNER: SystemServiceSpawner = SystemServiceSpawner;
@@ -2534,22 +2536,7 @@ impl PersistentMcpSession {
             "could not locate Unica plugin root for workspace bsl-analyzer service".to_string()
         })?;
         let program = resolve_bundled_tool(&plugin_root, "bsl-analyzer", true)?.program;
-        let source_arg = source_root.display().to_string();
-        let mut command = Command::new(&program);
-        command
-            .args([
-                "mcp",
-                "serve",
-                "--profile",
-                "workspace",
-                "--source-dir",
-                &source_arg,
-                "--mode",
-                "stdio",
-            ])
-            .current_dir(&context.cwd);
-        configure_bsl_analyzer_cache_dir(&mut command, context, source_root)?;
-        configure_bsl_analyzer_runtime_dir(&mut command)?;
+        let command = bsl_analyzer_command(&program, context, source_root)?;
         Self::start_with_command(command, cancellation)
     }
 
@@ -2808,47 +2795,6 @@ impl Drop for PersistentMcpSession {
     fn drop(&mut self) {
         self.invalidate();
     }
-}
-
-/// bsl-analyzer otherwise defaults its cache below the indexed source tree.
-/// The resulting filesystem events keep invalidating the index that produced
-/// them. Prefer the existing service identity, but move the analyzer cache to
-/// the private runtime root when the configured Unica cache is itself below
-/// the selected source root (for example `sourceDir = "."`).
-fn configure_bsl_analyzer_cache_dir(
-    command: &mut Command,
-    context: &WorkspaceContext,
-    source_root: &Path,
-) -> Result<(), String> {
-    let identity = WorkspaceServiceIdentity::new(context, source_root)?;
-    let preferred = identity.service_dir.join("bsl-analyzer");
-    let source_root = PathBuf::from(&identity.source_root);
-    let preferred_identity = normalize_path_identity(&preferred)?;
-    let cache_dir = if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
-        &preferred_identity,
-        &source_root,
-    ) {
-        let external_root = short_private_runtime_dir()
-            .map_err(|error| {
-                format!("failed to prepare external bsl-analyzer cache directory: {error}")
-            })?
-            .unwrap_or_else(|| std::env::temp_dir().join("unica-bsl"));
-        let external = external_root.join("cache").join(&identity.key);
-        let external_identity = normalize_path_identity(&external)?;
-        if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
-            &external_identity,
-            &source_root,
-        ) {
-            return Err(
-                "failed to place bsl-analyzer cache outside the indexed source tree".to_string(),
-            );
-        }
-        external
-    } else {
-        preferred
-    };
-    command.arg("--cache-dir").arg(cache_dir);
-    Ok(())
 }
 
 /// A persistent session outlives the tool call that started it, by design
@@ -4165,6 +4111,87 @@ fn service_key(workspace_root: &str, source_root: &str) -> String {
     format!("svc-{:016x}", hasher.finish())
 }
 
+fn bsl_analyzer_command(
+    program: &Path,
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<Command, String> {
+    let source_root = normalize_path_identity(source_root)?;
+    let cache_dir = bsl_analyzer_cache_dir(context, &source_root)?;
+    let mut command = Command::new(program);
+    command
+        .arg("mcp")
+        .arg("serve")
+        .arg("--profile")
+        .arg("workspace")
+        .arg("--source-dir")
+        .arg(&source_root)
+        .arg("--cache-dir")
+        .arg(cache_dir)
+        .arg("--mode")
+        .arg("stdio")
+        .current_dir(&context.cwd);
+    configure_bsl_analyzer_runtime_dir(&mut command)?;
+    Ok(command)
+}
+
+fn provider_state_key(workspace_root: &str, source_root: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(PROVIDER_STATE_KEY_DOMAIN);
+    digest.update(workspace_root.as_bytes());
+    digest.update([0]);
+    digest.update(source_root.as_bytes());
+    format!("source-{:x}", digest.finalize())
+}
+
+fn bsl_analyzer_cache_dir(
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<PathBuf, String> {
+    let workspace_root = normalize_path_identity(&context.workspace_root)?;
+    let source_root = normalize_path_identity(source_root)?;
+    let cache_root = normalize_path_identity(&context.cache_root)?;
+    let key = provider_state_key(
+        &workspace_root.display().to_string(),
+        &source_root.display().to_string(),
+    );
+    let preferred = cache_root
+        .join("providers")
+        .join("bsl-analyzer")
+        .join(&key);
+    let preferred = normalize_path_identity(&preferred)?;
+    if !crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+        &preferred,
+        &source_root,
+    ) {
+        return Ok(preferred);
+    }
+
+    // The default cache root lives below the workspace. For sourceDir = "."
+    // that would put analyzer databases back inside the indexed source tree,
+    // recreating the defect this path is meant to prevent. Preserve the same
+    // stable provider key, but place this exceptional case under the private
+    // runtime root already used by the analyzer transport.
+    let external_root = short_private_runtime_dir()
+        .map_err(|error| {
+            format!("failed to prepare external bsl-analyzer cache directory: {error}")
+        })?
+        .unwrap_or_else(|| std::env::temp_dir().join("unica-bsl"));
+    let external = external_root
+        .join("cache")
+        .join("providers")
+        .join("bsl-analyzer")
+        .join(key);
+    let external = normalize_path_identity(&external)?;
+    if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+        &external,
+        &source_root,
+    ) {
+        return Err("failed to place bsl-analyzer cache outside the indexed source tree".to_string());
+    }
+    Ok(external)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4403,21 +4430,8 @@ mod tests {
         fs::create_dir_all(&first_source).unwrap();
         fs::create_dir_all(&second_source).unwrap();
 
-        let mut first = Command::new("bsl-analyzer");
-        configure_bsl_analyzer_cache_dir(&mut first, &context, &first_source).unwrap();
-        let mut second = Command::new("bsl-analyzer");
-        configure_bsl_analyzer_cache_dir(&mut second, &context, &second_source).unwrap();
-
-        let cache_arg = |command: &Command| {
-            let arguments = command.get_args().collect::<Vec<_>>();
-            let position = arguments
-                .iter()
-                .position(|argument| *argument == "--cache-dir")
-                .expect("cache argument");
-            PathBuf::from(arguments[position + 1])
-        };
-        let first_cache = cache_arg(&first);
-        let second_cache = cache_arg(&second);
+        let first_cache = bsl_analyzer_cache_dir(&context, &first_source).unwrap();
+        let second_cache = bsl_analyzer_cache_dir(&context, &second_source).unwrap();
 
         assert!(first_cache.starts_with(&context.cache_root));
         assert!(!first_cache.starts_with(&first_source));
@@ -4429,17 +4443,42 @@ mod tests {
         let mut context = test_context("bsl-analyzer-workspace-cache");
         context.cache_root = context.workspace_root.join(".build/unica");
 
-        let mut command = Command::new("bsl-analyzer");
-        configure_bsl_analyzer_cache_dir(&mut command, &context, &context.workspace_root).unwrap();
+        let cache = bsl_analyzer_cache_dir(&context, &context.workspace_root).unwrap();
+        let workspace_root = normalize_path_identity(&context.workspace_root).unwrap();
 
-        let arguments = command.get_args().collect::<Vec<_>>();
-        let position = arguments
-            .iter()
-            .position(|argument| *argument == "--cache-dir")
-            .expect("cache argument");
-        let cache = PathBuf::from(arguments[position + 1]);
+        assert!(!cache.starts_with(workspace_root));
+    }
 
-        assert!(!cache.starts_with(&context.workspace_root));
+    #[test]
+    fn bsl_analyzer_command_passes_external_provider_cache() {
+        use std::ffi::OsString;
+
+        let context = test_context("bsl-provider-command");
+        let source_root = context.workspace_root.join("src");
+        let expected_cache = bsl_analyzer_cache_dir(&context, &source_root).unwrap();
+        let command =
+            bsl_analyzer_command(Path::new("bsl-analyzer"), &context, &source_root).unwrap();
+        let args = command.get_args().map(OsString::from).collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            vec![
+                "mcp".into(),
+                "serve".into(),
+                "--profile".into(),
+                "workspace".into(),
+                "--source-dir".into(),
+                normalize_path_identity(&source_root)
+                    .unwrap()
+                    .into_os_string(),
+                "--cache-dir".into(),
+                expected_cache.into_os_string(),
+                "--mode".into(),
+                "stdio".into(),
+            ]
+        );
+
+        cleanup(&context);
     }
 
     #[test]
@@ -7912,6 +7951,70 @@ fn main() {
             observation.teardown_drained,
             "retired fake RLM session teardown exceeded the shutdown grace"
         );
+    }
+
+    #[test]
+    fn bsl_analyzer_cache_is_stable_and_separated_by_workspace_and_source() {
+        let context = test_context("bsl-provider-cache");
+        let source_root = context.workspace_root.join("src");
+        let repeated = bsl_analyzer_cache_dir(&context, &source_root).unwrap();
+        let dotted = bsl_analyzer_cache_dir(&context, &source_root.join(".")).unwrap();
+        let other_source =
+            bsl_analyzer_cache_dir(&context, &context.workspace_root.join("extension")).unwrap();
+        let mut other_workspace = test_context("bsl-provider-cache-other");
+        let other_workspace_cleanup = other_workspace.clone();
+        other_workspace.cache_root = context.cache_root.clone();
+        let other_workspace_cache = bsl_analyzer_cache_dir(
+            &other_workspace,
+            &other_workspace.workspace_root.join("src"),
+        )
+        .unwrap();
+
+        assert_eq!(repeated, dotted);
+        assert_ne!(repeated, other_source);
+        assert_ne!(repeated, other_workspace_cache);
+        assert!(repeated.starts_with(
+            normalize_path_identity(&context.cache_root)
+                .unwrap()
+                .join("providers/bsl-analyzer")
+        ));
+        assert!(!repeated.starts_with(&source_root));
+        assert!(!repeated.starts_with(context.cache_root.join("services")));
+        assert_eq!(
+            repeated.file_name().unwrap().to_string_lossy().len(),
+            "source-".len() + 64
+        );
+
+        cleanup(&context);
+        cleanup(&other_workspace_cleanup);
+    }
+
+    #[test]
+    fn provider_state_key_has_a_stable_domain_separated_sha256_contract() {
+        assert_eq!(
+            provider_state_key("/workspace", "/workspace/src/cf"),
+            "source-156ee86cec5364248d3b62f5fd5ba2ddf820f63e50dabeef868d5cb18600d790"
+        );
+    }
+
+    #[test]
+    fn bsl_analyzer_cache_absolutizes_a_relative_unica_cache_root() {
+        let mut context = test_context("bsl-provider-relative-cache");
+        let cleanup_context = context.clone();
+        context.cache_root = PathBuf::from("relative-unica-cache");
+        let source_root = context.workspace_root.join("src");
+
+        let cache_dir = bsl_analyzer_cache_dir(&context, &source_root).unwrap();
+
+        assert!(cache_dir.is_absolute(), "{cache_dir:?}");
+        assert!(cache_dir.ends_with(
+            Path::new("relative-unica-cache")
+                .join("providers")
+                .join("bsl-analyzer")
+                .join(cache_dir.file_name().unwrap())
+        ));
+
+        cleanup(&cleanup_context);
     }
 
     #[test]
