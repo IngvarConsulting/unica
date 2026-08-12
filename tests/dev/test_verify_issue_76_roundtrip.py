@@ -678,17 +678,17 @@ class Issue76RoundTripTests(unittest.TestCase):
             temporary = mock.Mock()
             temporary.name = str(automatic_evidence)
             original_digest = verifier._stat_tree_digest
-            calls = 0
+            session_started = False
 
             def flaky_digest(path):
-                nonlocal calls
-                calls += 1
-                if calls >= 3:
+                if session_started:
                     raise RuntimeError("synthetic integrity probe failure")
                 return original_digest(path)
 
             class StartFailingSession(ScriptedSession):
                 def start(self, _required_tools) -> None:
+                    nonlocal session_started
+                    session_started = True
                     raise verifier.SourceError("synthetic MCP start failure")
 
             with mock.patch.object(
@@ -1001,8 +1001,13 @@ class Issue76RoundTripTests(unittest.TestCase):
         self.assertEqual(exit_code, 1, report)
         self.assertEqual(report["status"], "failed")
         self.assertIn("support", report["summary"]["failures"][0])
-        self.assertNotIn("unica.meta.edit", [name for name, _args in client.calls])
-        self.assertNotIn("unica.meta.edit", [name for name, _args in client.calls])
+        called = [name for name, _args in client.calls]
+        for downstream_tool in (
+            "unica.meta.edit",
+            "unica.code.patch",
+            "unica.runtime.execute",
+        ):
+            self.assertNotIn(downstream_tool, called)
 
     def test_report_path_cannot_write_into_executable_or_runtime_inputs(self):
         verifier = load_verifier()
@@ -1153,6 +1158,35 @@ class Issue76RoundTripTests(unittest.TestCase):
         self.assertIs(
             report["evidence"]["containsProprietaryParentConfiguration"],
             True,
+        )
+
+    def test_automatic_evidence_cleanup_reports_parent_configuration_absent(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            inputs = write_gate_inputs(Path(tmp))
+            evidence_roots = []
+
+            def session_factory(_command, _environment, _timeout, *, cwd):
+                evidence_roots.append(Path(cwd).parent)
+                return ScriptedSession(cwd)
+
+            exit_code, report = verifier.execute_gate(
+                **inputs,
+                evidence_dir=None,
+                session_factory=session_factory,
+            )
+            persisted = json.loads(
+                inputs["report_path"].read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(exit_code, 0, report)
+        self.assertEqual(len(evidence_roots), 1)
+        self.assertFalse(evidence_roots[0].exists())
+        self.assertIs(persisted["evidence"]["retained"], False)
+        self.assertIs(persisted["evidence"]["cleanupSucceeded"], True)
+        self.assertIs(
+            persisted["evidence"]["containsProprietaryParentConfiguration"],
+            False,
         )
 
     def test_session_factory_failure_does_not_claim_private_binary_execution(self):

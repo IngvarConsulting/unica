@@ -2538,6 +2538,7 @@ def execute_gate(
             evidence_report = report.setdefault("evidence", {})
             evidence_report["retained"] = False
             evidence_report["cleanupSucceeded"] = True
+            evidence_report["containsProprietaryParentConfiguration"] = False
     report = _sanitize_value(report, redactions, redact_tokens=False)
     _atomic_write_report(report_target, report)
     return exit_code, report
