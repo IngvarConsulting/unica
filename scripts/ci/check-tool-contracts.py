@@ -42,6 +42,33 @@ TOOL_HELP_CHECKS = [
 
 V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
 V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
+V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS = 60
+
+
+def compile_rust_platform_stub(
+    source: Path,
+    output: Path,
+    cwd: Path,
+    label: str,
+) -> list[str]:
+    try:
+        compiled = subprocess.run(
+            ["rustc", "--edition=2021", str(source), "-o", str(output)],
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return [
+            f"{label}: platform stub compilation timed out after "
+            f"{V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS} seconds"
+        ]
+    if compiled.returncode != 0:
+        return [f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"]
+    return []
 
 
 def validate_v8_runner_partial_load_list(payload: bytes, expected_path: str) -> list[str]:
@@ -115,16 +142,14 @@ fn main() {
             encoding="utf-8",
         )
         platform = root / ("1cv8.exe" if target == "win-x64" else "1cv8")
-        compiled = subprocess.run(
-            ["rustc", "--edition=2021", str(stub_source), "-o", str(platform)],
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        compile_errors = compile_rust_platform_stub(
+            stub_source,
+            platform,
+            root,
+            label,
         )
-        if compiled.returncode != 0:
-            return [f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"]
+        if compile_errors:
+            return compile_errors
 
         def yaml_path(path: Path) -> str:
             return str(path).replace("'", "''")
@@ -470,16 +495,14 @@ fn main() {{
         suffix = ".exe" if target == "win-x64" else ""
         client_platform = platform_bin / f"1cv8c{suffix}"
         gui_platform = platform_bin / f"1cv8{suffix}"
-        compiled = subprocess.run(
-            ["rustc", "--edition=2021", str(stub_source), "-o", str(client_platform)],
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        compile_errors = compile_rust_platform_stub(
+            stub_source,
+            client_platform,
+            root,
+            label,
         )
-        if compiled.returncode != 0:
-            return [f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"]
+        if compile_errors:
+            return compile_errors
         shutil.copy2(client_platform, gui_platform)
 
         def yaml_path(path: Path) -> str:
@@ -618,18 +641,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         client_platform = platform_bin / "1cv8c.exe"
         gui_platform = platform_bin / "1cv8.exe"
-        compiled = subprocess.run(
-            ["rustc", "--edition=2021", str(stub_source), "-o", str(client_platform)],
-            cwd=root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+        compile_errors = compile_rust_platform_stub(
+            stub_source,
+            client_platform,
+            root,
+            label,
         )
-        if compiled.returncode != 0:
-            return [
-                f"{label}: failed to compile platform stub: {compiled.stderr.strip()}"
-            ]
+        if compile_errors:
+            return compile_errors
         shutil.copy2(client_platform, gui_platform)
 
         def yaml_path(path: Path) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -68,6 +69,35 @@ class ProductContractTests(unittest.TestCase):
                 )
             ),
         )
+
+    def test_v8_runner_platform_stub_compilation_timeout_is_bounded(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "platform-stub.rs"
+            output = root / "platform-stub.exe"
+            source.write_text("fn main() {}\n", encoding="utf-8")
+            with patch.object(
+                module.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["rustc"], 60),
+            ) as compile_run:
+                errors = module.compile_rust_platform_stub(
+                    source,
+                    output,
+                    root,
+                    "v8-runner fixture",
+                )
+
+        self.assertEqual(
+            errors,
+            [
+                "v8-runner fixture: platform stub compilation timed out "
+                "after 60 seconds"
+            ],
+        )
+        self.assertEqual(compile_run.call_args.kwargs["timeout"], 60)
 
     def test_v8_runner_partial_load_smoke_rejects_missing_binary(self) -> None:
         module = load_contract_module()

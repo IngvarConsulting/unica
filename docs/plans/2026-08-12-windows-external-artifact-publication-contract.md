@@ -279,7 +279,7 @@ if argument.eq_ignore_ascii_case("/Out") {
 }
 ```
 
-Compile the same executable to `platform/bin/1cv8c.exe` and copy it to `platform/bin/1cv8.exe`. The config contains:
+Compile the same executable to `platform/bin/1cv8c.exe` and copy it to `platform/bin/1cv8.exe`. Route all three contract-fixture `rustc` calls through one helper with a 60-second timeout and a labeled `TimeoutExpired` diagnostic. The config contains:
 
 ```yaml
 workPath: '<absolute work path>'
