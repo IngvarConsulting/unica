@@ -9,10 +9,12 @@ use crate::domain::source_target::{
     MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
     TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
+use crate::domain::support_state::{SupportReadError, SupportReadErrorCode};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
     logical_selection, AttachedResource,
 };
+use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
     TargetKindPolicy,
@@ -2516,7 +2518,7 @@ pub(crate) struct SupportState {
 }
 
 impl SupportState {
-    fn object_rule(&self, object_uuid: &str) -> Option<u8> {
+    pub(crate) fn object_rule(&self, object_uuid: &str) -> Option<u8> {
         self.object_rules
             .get(&object_uuid.to_ascii_lowercase())
             .copied()
@@ -2528,6 +2530,10 @@ impl SupportState {
 
     pub(crate) fn removed(&self) -> bool {
         self.removed
+    }
+
+    pub(crate) fn counts(&self) -> [usize; 3] {
+        self.counts
     }
 }
 
@@ -2574,6 +2580,81 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
         object_rules,
         vendors: parse_support_vendors(&text),
     })
+}
+
+/// Strict read semantics for subject readers (ADR-0054).
+///
+/// The mutating guard deliberately keeps using [`read_support_state`] until its
+/// pre-image and atomicity contract is migrated separately. Subject readers
+/// must distinguish an absent marker from evidence that exists but cannot be
+/// trusted.
+pub(crate) fn read_support_state_strict(
+    bin_path: &Path,
+) -> Result<Option<SupportState>, SupportReadError> {
+    let metadata = match fs::symlink_metadata(bin_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(SupportReadError::new(
+                SupportReadErrorCode::StateUnreadable,
+                "support-state marker metadata is unreadable",
+            ))
+        }
+    };
+    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+        return Err(SupportReadError::new(
+            SupportReadErrorCode::StateUnreadable,
+            "support-state marker is not a direct regular file",
+        ));
+    }
+    let data = fs::read(bin_path).map_err(|_| {
+        SupportReadError::new(
+            SupportReadErrorCode::StateUnreadable,
+            "support-state marker bytes are unreadable",
+        )
+    })?;
+    if data.is_empty() {
+        return Ok(Some(SupportState {
+            global_editing_enabled: true,
+            vendor_count: 0,
+            removed: true,
+            counts: [0, 0, 0],
+            object_rules: HashMap::new(),
+            vendors: Vec::new(),
+        }));
+    }
+    let text = std::str::from_utf8(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data))
+        .map_err(|_| {
+            SupportReadError::new(
+                SupportReadErrorCode::StateInvalid,
+                "support-state marker is not valid UTF-8",
+            )
+        })?;
+    let (global_flag, vendor_count) = parse_support_header(text).ok_or_else(|| {
+        SupportReadError::new(
+            SupportReadErrorCode::StateInvalid,
+            "support-state marker has an unsupported header",
+        )
+    })?;
+    if vendor_count == 0 {
+        return Ok(Some(SupportState {
+            global_editing_enabled: true,
+            vendor_count,
+            removed: true,
+            counts: [0, 0, 0],
+            object_rules: HashMap::new(),
+            vendors: Vec::new(),
+        }));
+    }
+    let (counts, object_rules) = parse_support_object_rules(text);
+    Ok(Some(SupportState {
+        global_editing_enabled: global_flag == 0,
+        vendor_count,
+        removed: false,
+        counts,
+        object_rules,
+        vendors: parse_support_vendors(text),
+    }))
 }
 
 pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
