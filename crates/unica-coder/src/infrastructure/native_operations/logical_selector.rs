@@ -11,19 +11,28 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use crate::application::source_navigation::{LocateRejection, SourceLocateRequest};
+use crate::domain::cancellation::CancellationToken;
+use crate::domain::project_sources::SourceFormat;
 use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
+    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetErrorCode, TargetKind,
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::string_arg;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
-use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_resource_evidence, resolve_platform_xml_target, PlatformXmlResourceEvidence,
-    TargetKindPolicy,
+use crate::infrastructure::platform::filesystem::{
+    metadata_is_link_or_reparse_point, path_starts_with_host_root,
 };
-use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::platform_xml_source_targets::{
+    locate_platform_xml_source_path, platform_xml_resource_evidence, resolve_platform_xml_target,
+    PlatformXmlResourceEvidence, TargetKindPolicy,
+};
+use crate::infrastructure::project_sources::discover_project_source_map;
+use crate::infrastructure::source_roots::{
+    normalize_contained_source_root, normalize_path_identity,
+    select_unique_deepest_source_set_match,
+};
 
 /// What a subject reader opens once its logical target is resolved. The kind of
 /// resource belongs to the tool, not to the address: `Report.X.Template.Y`
@@ -57,9 +66,8 @@ impl AttachedResource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LogicalSelection {
-    pub(crate) source_set: String,
-    pub(crate) metadata_path: Option<MetadataAddress>,
+pub(crate) struct ResolvedReadTarget {
+    pub(crate) target: ResolvedTarget,
     pub(crate) resource_path: PathBuf,
 }
 
@@ -101,7 +109,7 @@ pub(crate) fn logical_selection(
     context: &WorkspaceContext,
     want: AttachedResource,
     accepted_kinds: &[&str],
-) -> Option<Result<LogicalSelection, LogicalSelectorFailure>> {
+) -> Option<Result<ResolvedReadTarget, LogicalSelectorFailure>> {
     if string_arg(args, &["sourceSet"]).is_none() {
         if args.contains_key("sourceSet") {
             return Some(Err(LogicalSelectorFailure::new(
@@ -119,7 +127,7 @@ fn resolve(
     context: &WorkspaceContext,
     want: AttachedResource,
     accepted_kinds: &[&str],
-) -> Result<LogicalSelection, LogicalSelectorFailure> {
+) -> Result<ResolvedReadTarget, LogicalSelectorFailure> {
     let source_set = string_arg(args, &["sourceSet"])
         .ok_or_else(|| {
             LogicalSelectorFailure::new("source_set_unknown", "sourceSet must name a source set")
@@ -146,14 +154,200 @@ fn resolve(
         LogicalSelectorFailure::new("provider_unavailable", "the target evidence is unavailable")
     })?;
 
-    let resource_path = match (resolution.resolved.target_kind, want) {
+    let resource_path =
+        resource_for_target(resolution.resolved.target_kind, &evidence, want, context)?;
+
+    Ok(ResolvedReadTarget {
+        target: resolution.resolved,
+        resource_path,
+    })
+}
+
+/// Recovers the logical owner of a temporary path selector without deriving an
+/// address from directory names. `source.locate` supplies the inverse mapping;
+/// the normal resolver and resource proof then have to reproduce the exact
+/// file the caller supplied.
+#[allow(dead_code)] // Consumed when the subject readers migrate in the next task.
+pub(crate) fn physical_selection(
+    resource_path: &Path,
+    context: &WorkspaceContext,
+    want: AttachedResource,
+) -> Result<ResolvedReadTarget, LogicalSelectorFailure> {
+    let lexical_resource = WorkspacePathPolicy::new(context)
+        .resolve_write(resource_path.to_path_buf())
+        .map_err(|_| {
+            LogicalSelectorFailure::new(
+                "containment_denied",
+                "the physical selector is outside the workspace boundary",
+            )
+        })?;
+    let resource_identity = normalize_path_identity(&lexical_resource).map_err(|_| {
+        LogicalSelectorFailure::new(
+            "provider_unavailable",
+            "the physical selector identity is unavailable",
+        )
+    })?;
+    let source_map = discover_project_source_map(&context.workspace_root).map_err(|_| {
+        LogicalSelectorFailure::new(
+            "provider_unavailable",
+            "the project source map is unavailable",
+        )
+    })?;
+    let mut containing = Vec::new();
+    for source_set in &source_map.source_sets {
+        let root = normalize_contained_source_root(&context.workspace_root, &source_set.path)
+            .map_err(|_| {
+                LogicalSelectorFailure::new(
+                    "provider_unavailable",
+                    "a project source root identity is unavailable",
+                )
+            })?;
+        if path_starts_with_host_root(&resource_identity, &root) {
+            containing.push((source_set, root));
+        }
+    }
+    let (source_set, source_root) =
+        select_unique_deepest_source_set_match(&resource_identity, containing)
+            .map_err(|_| {
+                LogicalSelectorFailure::new(
+                    "provider_unavailable",
+                    "the physical selector has ambiguous source-set ownership",
+                )
+            })?
+            .ok_or_else(|| {
+                LogicalSelectorFailure::new(
+                    "target_not_found",
+                    "the physical selector is outside every registered source set",
+                )
+            })?;
+    if source_set.source_format != SourceFormat::PlatformXml {
+        return Err(LogicalSelectorFailure::new(
+            "provider_unavailable",
+            "the selected source format has no physical target locator",
+        ));
+    }
+    let lexical_source_root = WorkspacePathPolicy::new(context)
+        .resolve_write(context.workspace_root.join(&source_set.path))
+        .map_err(|_| {
+            LogicalSelectorFailure::new(
+                "provider_unavailable",
+                "the lexical source root is unavailable",
+            )
+        })?;
+    let component_root = if path_starts_with_host_root(&lexical_resource, &lexical_source_root) {
+        &lexical_source_root
+    } else if path_starts_with_host_root(&resource_identity, &source_root) {
+        &source_root
+    } else {
+        return Err(LogicalSelectorFailure::new(
+            "containment_denied",
+            "the physical selector escaped the selected source set",
+        ));
+    };
+    ensure_no_link_components(component_root, &lexical_resource)?;
+
+    let metadata_path = if want == AttachedResource::ConfigurationRoot {
+        let configuration = normalize_path_identity(&source_root.join("Configuration.xml"))
+            .map_err(|_| {
+                LogicalSelectorFailure::new(
+                    "provider_unavailable",
+                    "the configuration descriptor identity is unavailable",
+                )
+            })?;
+        if resource_identity != configuration {
+            return Err(LogicalSelectorFailure::new(
+                "target_not_found",
+                "the physical selector is not the source-root descriptor",
+            ));
+        }
+        None
+    } else {
+        let located = locate_platform_xml_source_path(
+            context,
+            &SourceLocateRequest {
+                source_set: source_set.name.clone(),
+                path: lexical_resource.display().to_string(),
+            },
+            &CancellationToken::new(),
+        )
+        .map_err(|_| {
+            LogicalSelectorFailure::new(
+                "provider_unavailable",
+                "the physical target locator is unavailable",
+            )
+        })?;
+        match want {
+            AttachedResource::Descriptor if located.rejection.is_none() => located.metadata_path,
+            AttachedResource::Rights | AttachedResource::Form | AttachedResource::Template
+                if located.rejection == Some(LocateRejection::NotAddressable) =>
+            {
+                located.owner_metadata_path
+            }
+            _ => None,
+        }
+        .ok_or_else(|| locate_failure(located.rejection))?
+        .into()
+    };
+    let source_target = SourceTarget {
+        source_set: source_set.name.clone(),
+        metadata_path,
+    };
+    let resolution = resolve_platform_xml_target(context, &source_target, TargetKindPolicy::Any)
+        .map_err(|error| selector_failure(error.code))?;
+    let evidence = platform_xml_resource_evidence(context, &resolution.handle).map_err(|_| {
+        LogicalSelectorFailure::new("provider_unavailable", "the target evidence is unavailable")
+    })?;
+    let proven = resource_for_target(resolution.resolved.target_kind, &evidence, want, context)?;
+    let proven_identity = normalize_path_identity(&proven).map_err(|_| {
+        LogicalSelectorFailure::new(
+            "provider_unavailable",
+            "the proven resource identity is unavailable",
+        )
+    })?;
+    if proven_identity != resource_identity {
+        return Err(LogicalSelectorFailure::new(
+            "containment_denied",
+            "the physical selector did not reproduce the proven target resource",
+        ));
+    }
+    Ok(ResolvedReadTarget {
+        target: resolution.resolved,
+        resource_path: proven,
+    })
+}
+
+#[allow(dead_code)] // Consumed through `physical_selection` in the next task.
+fn locate_failure(rejection: Option<LocateRejection>) -> LogicalSelectorFailure {
+    match rejection {
+        Some(LocateRejection::OutsideSourceSet) => LogicalSelectorFailure::new(
+            "containment_denied",
+            "the physical selector escaped the selected source set",
+        ),
+        Some(LocateRejection::OwnerUnproven) => LogicalSelectorFailure::new(
+            "target_not_found",
+            "the physical selector owner could not be proven",
+        ),
+        Some(LocateRejection::NotAddressable) | None => LogicalSelectorFailure::new(
+            "target_not_found",
+            "the physical selector has no logical owner",
+        ),
+    }
+}
+
+fn resource_for_target(
+    target_kind: TargetKind,
+    evidence: &PlatformXmlResourceEvidence,
+    want: AttachedResource,
+    context: &WorkspaceContext,
+) -> Result<PathBuf, LogicalSelectorFailure> {
+    Ok(match (target_kind, want) {
         (TargetKind::SourceRoot, AttachedResource::ConfigurationRoot) => prove_regular_file(
-            &evidence,
+            evidence,
             evidence.target_path.join("Configuration.xml"),
             context,
         )?,
         (TargetKind::MetadataObject, AttachedResource::Descriptor) => {
-            prove_regular_file(&evidence, evidence.target_path.clone(), context)?
+            prove_regular_file(evidence, evidence.target_path.clone(), context)?
         }
         // A configuration root is not an object, so asking for one by address
         // is a caller mistake. Matching it here keeps `file_name` total for
@@ -172,7 +366,7 @@ fn resolve(
                     "metadataPath does not identify what this tool reads",
                 ));
             };
-            prove_attached_resource(&evidence, file_name, context)?
+            prove_attached_resource(evidence, file_name, context)?
         }
         _ => {
             return Err(LogicalSelectorFailure::new(
@@ -180,12 +374,6 @@ fn resolve(
                 "metadataPath does not identify what this tool reads",
             ))
         }
-    };
-
-    Ok(LogicalSelection {
-        source_set: resolution.resolved.source_set,
-        metadata_path: resolution.resolved.metadata_path,
-        resource_path,
     })
 }
 
@@ -420,6 +608,8 @@ mod tests {
         write_descriptor(&src, "CommonTemplates", "CommonTemplate", "Logo");
         write_body(&src, "CommonTemplates/Logo/Ext/Template.bin", "\u{0}\u{1}");
 
+        write_descriptor(&src, "Subsystems", "Subsystem", "SalesOps");
+
         context
     }
 
@@ -509,7 +699,7 @@ mod tests {
         address: &str,
         want: AttachedResource,
         kinds: &[&str],
-    ) -> Result<LogicalSelection, LogicalSelectorFailure> {
+    ) -> Result<ResolvedReadTarget, LogicalSelectorFailure> {
         let args = Map::from_iter([
             ("sourceSet".to_string(), Value::String("main".to_string())),
             (
@@ -569,8 +759,9 @@ mod tests {
                 .unwrap();
 
         assert!(selection.resource_path.ends_with("src/Configuration.xml"));
-        assert_eq!(selection.metadata_path, None);
-        assert_eq!(selection.source_set, "main");
+        assert_eq!(selection.target.metadata_path, None);
+        assert_eq!(selection.target.source_set, "main");
+        assert_eq!(selection.target.target_kind, TargetKind::SourceRoot);
         cleanup(&context);
     }
 
@@ -580,9 +771,100 @@ mod tests {
         let selection = selection(&context, "Роль.Sales", AttachedResource::Rights, &["Role"])
             .expect("a Russian kind alias resolves to the same target");
         assert_eq!(
-            selection.metadata_path.as_ref().map(|path| path.as_str()),
+            selection
+                .target
+                .metadata_path
+                .as_ref()
+                .map(|path| path.as_str()),
             Some("Role.Sales")
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn physical_support_target_uses_the_owner_of_an_attached_resource() {
+        let context = fixture("physical-owners");
+        for (address, want, kinds) in [
+            ("Role.Sales", AttachedResource::Rights, &["Role"][..]),
+            (
+                "Catalog.Items.Form.Order",
+                AttachedResource::Form,
+                &["Form"][..],
+            ),
+            (
+                "Report.Sales.Template.Main",
+                AttachedResource::Template,
+                &["Template"][..],
+            ),
+        ] {
+            let logical = selection(&context, address, want, kinds).unwrap();
+            let physical = physical_selection(&logical.resource_path, &context, want).unwrap();
+            assert_eq!(physical.target, logical.target, "{address}");
+            assert_eq!(physical.resource_path, logical.resource_path, "{address}");
+        }
+        cleanup(&context);
+    }
+
+    #[test]
+    fn physical_support_target_rejects_unregistered_and_ambiguous_paths() {
+        let context = fixture("physical-refusals");
+        let unregistered = context.workspace_root.join("unregistered.xml");
+        fs::write(&unregistered, "<MetaDataObject/>").unwrap();
+        assert_eq!(
+            physical_selection(&unregistered, &context, AttachedResource::Descriptor)
+                .expect_err("a path outside every source set has no logical target")
+                .code(),
+            "target_not_found"
+        );
+
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: duplicate\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let descriptor = context.workspace_root.join("src/Subsystems/SalesOps.xml");
+        assert_eq!(
+            physical_selection(&descriptor, &context, AttachedResource::Descriptor)
+                .expect_err("equally specific source sets cannot choose an identity")
+                .code(),
+            "provider_unavailable"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn configuration_xml_maps_to_the_source_root() {
+        let context = fixture("physical-root");
+        let resource = context.workspace_root.join("src/Configuration.xml");
+
+        let selection =
+            physical_selection(&resource, &context, AttachedResource::ConfigurationRoot).unwrap();
+
+        assert_eq!(selection.target.source_set, "main");
+        assert_eq!(selection.target.metadata_path, None);
+        assert_eq!(selection.target.target_kind, TargetKind::SourceRoot);
+        assert_eq!(selection.resource_path, fs::canonicalize(resource).unwrap());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn descriptor_maps_to_its_own_metadata_address() {
+        let context = fixture("physical-descriptor");
+        let resource = context.workspace_root.join("src/Subsystems/SalesOps.xml");
+
+        let selection =
+            physical_selection(&resource, &context, AttachedResource::Descriptor).unwrap();
+
+        assert_eq!(
+            selection
+                .target
+                .metadata_path
+                .as_ref()
+                .map(MetadataAddress::as_str),
+            Some("Subsystem.SalesOps")
+        );
+        assert_eq!(selection.target.target_kind, TargetKind::MetadataObject);
+        assert_eq!(selection.resource_path, fs::canonicalize(resource).unwrap());
         cleanup(&context);
     }
 
