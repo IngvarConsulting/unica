@@ -312,7 +312,7 @@ pub(crate) fn physical_selection(
     }
     Ok(ResolvedReadTarget {
         target: resolution.resolved,
-        resource_path: proven,
+        resource_path: proven_identity,
     })
 }
 
@@ -849,7 +849,10 @@ mod tests {
         assert_eq!(selection.target.source_set, "main");
         assert_eq!(selection.target.metadata_path, None);
         assert_eq!(selection.target.target_kind, TargetKind::SourceRoot);
-        assert_eq!(selection.resource_path, fs::canonicalize(resource).unwrap());
+        assert_eq!(
+            selection.resource_path,
+            normalize_path_identity(&resource).unwrap()
+        );
         cleanup(&context);
     }
 
@@ -870,7 +873,10 @@ mod tests {
             Some("Subsystem.SalesOps")
         );
         assert_eq!(selection.target.target_kind, TargetKind::MetadataObject);
-        assert_eq!(selection.resource_path, fs::canonicalize(resource).unwrap());
+        assert_eq!(
+            selection.resource_path,
+            normalize_path_identity(&resource).unwrap()
+        );
         cleanup(&context);
     }
 
