@@ -234,12 +234,15 @@ git commit -m "fix(workspace): route analyzer cache outside source roots"
 ### Task 2: Обновление bundled bsl-analyzer до 0.2.67
 
 **Files:**
+- Modify: `Cargo.toml:14-15`
+- Modify: `Cargo.lock`
 - Modify: `tests/ci/test_skill_provenance.py:539-562`
 - Modify: `plugins/unica/third-party/tools.lock.json:34-58`
 
 **Interfaces:**
 - Consumes: release `itrous/bsl-analyzer@v0.2.67` and toolchain release `IngvarConsulting/unica-toolchain@bsl-analyzer-v0.2.67-build.1`.
 - Produces: package contract pin for version, source commit, release assets and SHA-256 values listed in Global Constraints.
+- Produces: `parser` and `syntax` workspace dependencies from the same source commit as the bundled analyzer.
 
 - [ ] **Step 1: Обновить контрактный тест на 0.2.67**
 
@@ -314,12 +317,31 @@ python -m unittest discover -s tests/ci -p test_attributions.py
 
 Expected: все тесты PASS.
 
-- [ ] **Step 5: Проверить JSON и закоммитить обновление**
+- [ ] **Step 5: Обновить parser-library до source commit 0.2.67**
+
+Обновить `rev` зависимостей `bsl-parser` и `bsl-syntax` в корневом
+`Cargo.toml` до `9a92766691bbd0191a5ff02c34fa9058e4570b85`, затем механически обновить
+lock-файл:
+
+```powershell
+cargo update -p parser
+```
+
+Проверить существующий контракт синхронизации parser-library:
+
+```powershell
+cargo test -p unica-coder --lib parser_library_commit_matches_the_bundled_analyzer_contract
+```
+
+Expected: PASS; блоки `parser` и `syntax` в `Cargo.lock` содержат source commit
+0.2.67.
+
+- [ ] **Step 6: Проверить JSON и закоммитить обновление**
 
 ```powershell
 Get-Content -Raw plugins/unica/third-party/tools.lock.json | ConvertFrom-Json | Out-Null
 git diff --check
-git add -- plugins/unica/third-party/tools.lock.json tests/ci/test_skill_provenance.py
+git add -- Cargo.toml Cargo.lock plugins/unica/third-party/tools.lock.json tests/ci/test_skill_provenance.py docs/provenance/reviews/2026-07-29-product-update-backlog.json plugins/unica/ATTRIBUTIONS.md
 git commit -m "build: update bsl-analyzer to 0.2.67"
 ```
 
