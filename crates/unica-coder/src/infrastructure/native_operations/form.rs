@@ -10861,7 +10861,7 @@ mod tests {
         }
     }
 
-    fn form_info_context(name: &str) -> (WorkspaceContext, PathBuf) {
+    fn form_info_workspace(name: &str) -> (WorkspaceContext, PathBuf) {
         let context = temp_context(name);
         let source = context.workspace_root.join("src");
         let form_path = source.join("Catalogs/Items/Forms/Order/Ext/Form.xml");
@@ -10914,7 +10914,7 @@ mod tests {
 
     #[test]
     fn form_info_rejects_wrong_root_namespace() {
-        let (context, form_path) = form_info_context("info-wrong-root-ns");
+        let (context, form_path) = form_info_workspace("info-wrong-root-ns");
         write_file(&form_path, &editable_contract_form("urn:not-logform", ""));
 
         let outcome = analyze_form_info(
@@ -14956,7 +14956,7 @@ mod tests {
 
     #[test]
     fn edit_form_adds_supported_inline_form_and_element_events() {
-        let (context, form_path) = form_info_context("edit-events-inline");
+        let (context, form_path) = form_info_workspace("edit-events-inline");
         let original = event_form_xml(
             Some("CatalogObject.Goods"),
             "",

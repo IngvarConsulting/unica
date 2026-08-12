@@ -199,6 +199,16 @@ impl SupportStateReader for UnavailableReader {
             "support-state provider is unavailable",
         ))
     }
+
+    fn subsystem_support(
+        &self,
+        _target: &ResolvedSubsystemTarget,
+    ) -> Result<ObjectSupportData, SupportReadError> {
+        Err(SupportReadError::new(
+            SupportReadErrorCode::ProviderUnavailable,
+            "support-state provider is unavailable",
+        ))
+    }
 }
 ```
 

@@ -2489,6 +2489,28 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
 pub(crate) fn read_support_state_strict(
     bin_path: &Path,
 ) -> Result<Option<SupportState>, SupportReadError> {
+    let marker_parent = bin_path.parent().ok_or_else(|| {
+        SupportReadError::new(
+            SupportReadErrorCode::StateUnreadable,
+            "support-state marker parent is unavailable",
+        )
+    })?;
+    let parent_metadata = match fs::symlink_metadata(marker_parent) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(SupportReadError::new(
+                SupportReadErrorCode::StateUnreadable,
+                "support-state marker parent metadata is unreadable",
+            ))
+        }
+    };
+    if metadata_is_link_or_reparse_point(&parent_metadata) || !parent_metadata.is_dir() {
+        return Err(SupportReadError::new(
+            SupportReadErrorCode::StateUnreadable,
+            "support-state marker parent is not a direct directory",
+        ));
+    }
     let metadata = match fs::symlink_metadata(bin_path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),

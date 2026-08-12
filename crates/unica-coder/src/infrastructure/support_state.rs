@@ -306,6 +306,9 @@ mod tests {
         ConfigurationSupportState, ObjectSupportState, SupportReadErrorCode, SupportStateReader,
     };
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::testing::{
+        create_directory_link_fixture_for_test, remove_dir_symlink_for_test, FileLinkFixtureOutcome,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -431,6 +434,31 @@ mod tests {
             .configuration_support(&root_target())
             .expect_err("an unknown non-empty marker is not removed support");
         assert_eq!(invalid.code, SupportReadErrorCode::StateInvalid);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn platform_xml_support_reader_rejects_marker_below_linked_ext_directory() {
+        let context = fixture("linked-ext", "DESIGNER", "CONFIGURATION");
+        let outside_ext = context.workspace_root.join("outside-ext");
+        fs::create_dir_all(&outside_ext).unwrap();
+        fs::write(outside_ext.join("ParentConfigurations.bin"), b"").unwrap();
+        let linked_ext = context.workspace_root.join("src/Ext");
+        match create_directory_link_fixture_for_test(&outside_ext, &linked_ext).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                cleanup(&context);
+                return;
+            }
+        }
+
+        let error = WorkspaceSupportStateReader::new(&context)
+            .configuration_support(&root_target())
+            .expect_err("support evidence below a linked Ext directory is unreadable");
+
+        assert_eq!(error.code, SupportReadErrorCode::StateUnreadable);
+        remove_dir_symlink_for_test(&linked_ext).unwrap();
         cleanup(&context);
     }
 
