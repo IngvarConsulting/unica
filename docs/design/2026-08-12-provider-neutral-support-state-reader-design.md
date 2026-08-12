@@ -34,9 +34,10 @@ Platform XML, но не EDT. Поэтому отсутствие Platform XML-ф
 ## Цель
 
 Сделать состояние поддержки результатом провайдер-нейтрального чтения по
-`ResolvedTarget`, сохранить текущие типизированные wire-ответы Platform XML и
-явно отказывать, когда поставщик или его свидетельство не позволяют прочитать
-состояние.
+логической цели (`ResolvedTarget`, а для вложенной подсистемы — по
+`ResolvedSubsystemTarget` согласно ADR-0036), сохранить текущие типизированные
+wire-ответы Platform XML и явно отказывать, когда поставщик или его
+свидетельство не позволяют прочитать состояние.
 
 ## Выбранный подход
 
@@ -55,8 +56,20 @@ pub trait SupportStateReader: Send + Sync {
         &self,
         target: &ResolvedTarget,
     ) -> Result<ObjectSupportData, SupportReadError>;
+
+    fn subsystem_support(
+        &self,
+        target: &ResolvedSubsystemTarget,
+    ) -> Result<ObjectSupportData, SupportReadError>;
 }
 ```
+
+`ResolvedSubsystemTarget` несёт `sourceSet` и отдельный
+`SubsystemAddress`. Он нужен только для вложенных подсистем: ADR-0036 запрещает
+выдавать их за `MetadataAddress`, тогда как `ResolvedTarget` требует именно
+такой адрес для `TargetKind::MetadataObject`. Верхнеуровневая подсистема,
+зарегистрированная непосредственно в `Configuration.xml`, остаётся обычной
+целью `ResolvedTarget`.
 
 `ConfigurationSupportData`, `SupportCounts` и `ObjectSupportData` переезжают
 из `native_operations/common.rs` в домен. Их сериализация сохраняет текущие
@@ -80,8 +93,8 @@ marker больше не превращается в это состояние.
 
 `InfrastructureApplicationPorts` создаёт на каждый вызов workspace-bound
 реализацию `SupportStateReader`. Она удерживает только ссылку на текущий
-`WorkspaceContext` и закрытый реестр реализаций, поэтому публичный метод порта
-принимает только `ResolvedTarget`.
+`WorkspaceContext` и закрытый реестр реализаций, поэтому методы порта принимают
+только логические цели, а не пути.
 
 Reader разрешает `target.source_set` через действующую карту проекта и выбирает
 реализацию по `SourceFormat`. В первом срезе зарегистрирован только адаптер
@@ -136,7 +149,8 @@ descriptor path.
 | `form.info` | `object_support` | владелец `Form.xml` |
 | `role.info` | `object_support` | владелец `Rights.xml` |
 | `mxl.info` | `object_support` | владелец `Template.xml` |
-| `subsystem.info` | `object_support` | descriptor подсистемы |
+| `subsystem.info` | `object_support` | descriptor верхнеуровневой подсистемы |
+| `subsystem.info` | `subsystem_support` | зарегистрированный `SubsystemAddress` вложенной подсистемы |
 | `dcs.info` | `object_support` | владелец `Template.xml` |
 
 Существующее поле `DcsInfoData.support` сохраняется. Функция
@@ -161,8 +175,9 @@ descriptor path.
 ### Один метод с enum-запросом и enum-ответом
 
 Отклонён. Он позволил бы `cf.info` случайно принять объектный ответ, а
-предметному читателю — конфигурационный. Два метода выражают разные операции в
-типах и сохраняют узкий интерфейс.
+предметному читателю — конфигурационный. Раздельные методы выражают разные
+операции и два действующих типа логического адреса в типах, сохраняя узкий
+интерфейс.
 
 ### Методы непосредственно в `ApplicationPorts`
 
@@ -199,8 +214,9 @@ descriptor path.
 5. `dcs.info` сохраняет `data.support`, а текстовый построитель не создаёт
    второго представления.
 6. Тест в `infrastructure/application_ports.rs` внедряет recording reader и
-   доказывает, что семь маршрутов передают логическую цель; отдельный guard
-   запрещает прямые упоминания удалённых path-функций в обработчиках.
+   доказывает, что семь читателей передают логическую цель, включая отдельный
+   адрес вложенной подсистемы; отдельный guard запрещает прямые упоминания
+   удалённых path-функций в обработчиках.
 7. Фильтры `cargo test -p unica-coder support_state`,
    `cargo test -p unica-coder answers_identically`, полный
    `cargo test -p unica-coder -- --test-threads=1`, архитектурные CI-тесты и
@@ -212,4 +228,3 @@ descriptor path.
 читается только через провайдер-нейтральный порт по логической цели, а
 неспособность поставщика становится ошибкой. Выбор принадлежит ADR-0054; его
 проверяемое следствие добавляется в реестр как `INV-APP-SUPPORT-STATE`.
-

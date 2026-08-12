@@ -10,16 +10,17 @@
 **Goal:** Закрыть
 [#289](https://github.com/IngvarConsulting/unica/issues/289): семь предметных
 читателей получают состояние поддержки через провайдер-нейтральный
-`SupportStateReader` по `ResolvedTarget`; неспособность EDT/неизвестного
+`SupportStateReader` по логической цели; неспособность EDT/неизвестного
 поставщика становится явной ошибкой, а не выдуманным `notSupported`.
 
-**Architecture:** Домен владеет двумя типизированными операциями порта — для
-конфигурации и объекта. Workspace-bound реализация выбирает адаптер по
-`SourceFormat`; первый срез реализует только Platform XML. Общий мост предметных
-читателей возвращает одновременно логическую цель и закрытый путь XML:
-предметный файл читается по пути, состояние поддержки — только по цели. В
-композиционном корне reader внедряется в обычные typed-readers, подготовленный
-`subsystem.info` и `meta.info`; три старые path-функции после миграции удаляются.
+**Architecture:** Домен владеет типизированными операциями порта для
+конфигурации, адресуемого объекта и вложенной подсистемы. Workspace-bound
+реализация выбирает адаптер по `SourceFormat`; первый срез реализует только
+Platform XML. Общий мост предметных читателей возвращает одновременно
+логическую цель и закрытый путь XML: предметный файл читается по пути, состояние
+поддержки — только по цели. В композиционном корне reader внедряется в обычные
+typed-readers, подготовленный `subsystem.info` и `meta.info`; три старые
+path-функции после миграции удаляются.
 
 **Tech Stack:** Rust 2021, `serde`, `serde_json`, `roxmltree`, существующие
 `domain/source_target.rs`, `project_sources`, `platform_xml_source_targets` и
@@ -37,6 +38,9 @@ corpus.
 - `configuration_support` принимает только `TargetKind::SourceRoot`,
   `object_support` — только `TargetKind::MetadataObject`. Неподходящая цель даёт
   `target_unsupported`; порт никогда не принимает `Path`.
+- Вложенная подсистема по ADR-0036 не является `MetadataAddress` и передаётся в
+  `subsystem_support` как `ResolvedSubsystemTarget { sourceSet,
+  SubsystemAddress }`; верхнеуровневая подсистема остаётся `ResolvedTarget`.
 - Только доказанный Platform XML-набор без marker-а означает `notSupported` (для
   расширения — `extension`). EDT, `Unknown` и `Invalid` дают
   `provider_unavailable`. Нерегулярный marker даёт `state_unreadable`,
@@ -125,7 +129,8 @@ Expected: PASS. Это отделяет регрессию реализации 
 
 **Interfaces:**
 
-- Consumes: `domain::source_target::ResolvedTarget`.
+- Consumes: `domain::source_target::ResolvedTarget` и
+  `domain::subsystem::SubsystemAddress`.
 - Produces for Tasks 2–6:
 
 ```rust
@@ -138,6 +143,11 @@ pub trait SupportStateReader: Send + Sync {
     fn object_support(
         &self,
         target: &ResolvedTarget,
+    ) -> Result<ObjectSupportData, SupportReadError>;
+
+    fn subsystem_support(
+        &self,
+        target: &ResolvedSubsystemTarget,
     ) -> Result<ObjectSupportData, SupportReadError>;
 }
 
@@ -580,8 +590,10 @@ git commit -m "refactor(readers): inject logical support state reader"
 **Interfaces:**
 
 - Consumes: Task 4 factory; `ResolvedReadTarget` from Task 3.
-- Produces: prepared subsystem object read invokes `object_support` before
-  building `PreparedSubsystemInfo`; tree read remains without object support.
+- Produces: prepared subsystem object read invokes `object_support` for a
+  top-level descriptor or `subsystem_support` for a nested registered address
+  before building `PreparedSubsystemInfo`; tree read remains without object
+  support.
 
 - [ ] **Step 1: Write the failing prepared-route tests.**
 
@@ -590,6 +602,9 @@ git commit -m "refactor(readers): inject logical support state reader"
 - `prepared_subsystem_info_records_the_descriptor_target` — через публичный
   `prepare_tool_invocation` и recording factory проверяет
   `Subsystem.Sales`/`MetadataObject`;
+- `prepared_nested_subsystem_keeps_the_dedicated_subsystem_address` —
+  зарегистрированный `Sales.Online` остаётся `SubsystemAddress` и не
+  притворяется `MetadataAddress`;
 - `subsystem_tree_does_not_invent_object_support` — каталог `Subsystems/`
   возвращает tree и не вызывает ни один метод reader-а;
 - `subsystem_support_failure_publishes_no_partial_data` — reader возвращает
@@ -607,17 +622,20 @@ Expected: FAIL — подготовленный путь по-прежнему �
 - [ ] **Step 3: Thread the reader through preparation, not after it.**
 
 Передать `&dyn SupportStateReader` в `prepare_subsystem_info`, cancellable
-wrapper и `prepare_subsystem_info_with_checkpoint`. `resolve_subsystem_read_path`
-для exact XML заменить info-only функцией, возвращающей `ResolvedReadTarget`;
-tree branch сохраняет существующий path-only scope. После capture/parse и перед
-сборкой `SubsystemInfoResult` вызвать `object_support(&target)` с контрольной
-точкой до и после. Ошибку вернуть как preparation failure без typed data.
+wrapper и `prepare_subsystem_info_with_checkpoint`. Для верхнеуровневой
+подсистемы доказать `ResolvedTarget` через существующий physical bridge; для
+вложенной сохранить адрес из зарегистрированной топологии как
+`ResolvedSubsystemTarget`, не расширяя `MetadataAddress` вопреки ADR-0036.
+Tree branch сохраняет path-only scope. После capture/parse и перед сборкой
+`SubsystemInfoResult` вызвать соответствующий метод порта с контрольной точкой
+до и после. Ошибку вернуть как preparation failure без typed data.
 
 - [ ] **Step 4: Run narrow green and deadline/cancellation regressions.**
 
 ```bash
 cargo fmt --all
 cargo test -p unica-coder prepared_subsystem_info -- --test-threads=1
+cargo test -p unica-coder prepared_nested_subsystem -- --test-threads=1
 cargo test -p unica-coder subsystem_tree_does_not_invent_object_support -- --test-threads=1
 cargo test -p unica-coder subsystem_info_cancellation -- --test-threads=1
 cargo test -p unica-coder subsystem_info_deadline -- --test-threads=1
@@ -757,8 +775,8 @@ git commit -m "refactor(meta): read support by resolved metadata target"
 
 1. отвергать строки `object_support_state(`, `support_state_data(` и
    `support_status_for_path(`;
-2. видеть семь route-specific вызовов `configuration_support(` /
-   `object_support(`;
+2. видеть семь route-specific маршрутов `configuration_support(` /
+   `object_support(` и отдельный `subsystem_support(` для вложенного адреса;
 3. подтверждать, что объявление trait в `domain/support_state.rs` не содержит
    `Path`/`PathBuf`.
 
@@ -778,20 +796,14 @@ Expected: PASS. Если guard находит старое имя, миграц�
 
 - [ ] **Step 3: Add the invariant and architectural map.**
 
-В APP-области `invariants.md` добавить:
-
-```markdown
-### INV-APP-SUPPORT-STATE — Состояние поддержки читается по логической цели
-
-- **Rule:** Предметные читатели получают состояние поддержки только через
-  доменный `SupportStateReader` по `ResolvedTarget`; отсутствие реализации
-  поставщика и недоступность свидетельства являются ошибками, а не состоянием
-  `notSupported`, и физическая раскладка marker-а остаётся внутри
-  provider-specific инфраструктуры.
-- **Decision:** ADR-0054
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
-- **Scope:** source, runtime
-```
+В APP-области `invariants.md` добавить запись `INV-APP-SUPPORT-STATE`: предметные
+читатели получают состояние поддержки только через доменный
+`SupportStateReader` по логической цели (`ResolvedTarget` либо
+`ResolvedSubsystemTarget`); отсутствие реализации поставщика и недоступность
+свидетельства являются ошибками, а не состоянием `notSupported`, и физическая
+раскладка marker-а остаётся внутри инфраструктуры конкретного поставщика.
+Владельцем записи является ADR-0054, исполняемой проверкой — тест в
+`crates/unica-coder/src/infrastructure/application_ports.rs`.
 
 В `building-blocks.md` добавить `domain::support_state` и
 `infrastructure::support_state`. В `concepts.md` разделить два контракта:

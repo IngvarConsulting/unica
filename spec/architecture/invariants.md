@@ -710,6 +710,18 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_product_contracts.py`
 - **Scope:** source
 
+### INV-APP-SUPPORT-STATE — Состояние поддержки читается по логической цели
+
+- **Rule:** Предметные читатели получают состояние поддержки только через
+  доменный `SupportStateReader` по логической цели (`ResolvedTarget` либо
+  `ResolvedSubsystemTarget`); отсутствие реализации поставщика и недоступность
+  свидетельства являются ошибками, а не состоянием `notSupported`, и
+  физическая раскладка marker-а остаётся внутри инфраструктуры конкретного
+  поставщика.
+- **Decision:** ADR-0054
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
+- **Scope:** source, runtime
+
 ### INV-APP-CONFIG-SNAPSHOT — Конфигурация вызова изолирована рабочим пространством
 
 - **Rule:** Для `unica.code.search`, `unica.code.definition`,

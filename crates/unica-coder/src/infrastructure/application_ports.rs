@@ -1700,6 +1700,79 @@ mod tests {
         }
     }
 
+    #[test]
+    fn support_readers_cannot_bypass_the_logical_port() {
+        const READERS: &[(&str, &str, &[&str])] = &[
+            (
+                "cf",
+                include_str!("native_operations/cf.rs"),
+                &[".configuration_support("],
+            ),
+            (
+                "role",
+                include_str!("native_operations/role.rs"),
+                &[".object_support("],
+            ),
+            (
+                "mxl",
+                include_str!("native_operations/mxl.rs"),
+                &[".object_support("],
+            ),
+            (
+                "dcs",
+                include_str!("native_operations/dcs.rs"),
+                &[".object_support("],
+            ),
+            (
+                "form",
+                include_str!("native_operations/form.rs"),
+                &[".object_support("],
+            ),
+            (
+                "subsystem",
+                include_str!("native_operations/subsystem.rs"),
+                &[".object_support(", ".subsystem_support("],
+            ),
+            (
+                "meta",
+                include_str!("native_operations/meta/info.rs"),
+                &[".object_support("],
+            ),
+        ];
+        const COORDINATOR: &str = include_str!("metadata_operations.rs");
+        const FORBIDDEN: &[&str] = &[
+            "object_support_state(",
+            "support_state_data(",
+            "support_status_for_path(",
+        ];
+
+        for (name, source, required_calls) in READERS {
+            for forbidden in FORBIDDEN {
+                assert!(
+                    !source.contains(forbidden),
+                    "{name} bypasses SupportStateReader through {forbidden}"
+                );
+            }
+            for required_call in *required_calls {
+                assert!(
+                    source.contains(required_call),
+                    "{name} must route support through {required_call}"
+                );
+            }
+        }
+        for forbidden in FORBIDDEN {
+            assert!(
+                !COORDINATOR.contains(forbidden),
+                "metadata coordinator bypasses SupportStateReader through {forbidden}"
+            );
+        }
+
+        let domain_port = include_str!("../domain/support_state.rs");
+        assert!(!domain_port.contains("std::path"));
+        assert!(!domain_port.contains("&Path"));
+        assert!(!domain_port.contains("PathBuf"));
+    }
+
     fn prepared_subsystem_fixture() -> (
         tempfile::TempDir,
         WorkspaceContext,
