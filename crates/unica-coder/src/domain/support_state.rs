@@ -1,4 +1,5 @@
 use crate::domain::source_target::ResolvedTarget;
+use crate::domain::subsystem::SubsystemAddress;
 use serde::Serialize;
 use std::fmt;
 
@@ -42,6 +43,12 @@ pub enum ObjectSupportState {
 pub struct ObjectSupportData {
     pub state: ObjectSupportState,
     pub direct_edit_safe: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSubsystemTarget {
+    pub source_set: String,
+    pub address: SubsystemAddress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -100,6 +107,11 @@ pub trait SupportStateReader: Send + Sync {
         &self,
         target: &ResolvedTarget,
     ) -> Result<ObjectSupportData, SupportReadError>;
+
+    fn subsystem_support(
+        &self,
+        target: &ResolvedSubsystemTarget,
+    ) -> Result<ObjectSupportData, SupportReadError>;
 }
 
 #[cfg(test)]
@@ -124,6 +136,16 @@ mod tests {
         fn object_support(
             &self,
             _target: &ResolvedTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            Err(SupportReadError::new(
+                SupportReadErrorCode::ProviderUnavailable,
+                "support-state provider is unavailable",
+            ))
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &ResolvedSubsystemTarget,
         ) -> Result<ObjectSupportData, SupportReadError> {
             Err(SupportReadError::new(
                 SupportReadErrorCode::ProviderUnavailable,

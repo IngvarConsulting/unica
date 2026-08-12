@@ -2,7 +2,8 @@ use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::source_target::{ResolvedTarget, SourceTarget, TargetKind};
 use crate::domain::support_state::{
     ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
-    SupportCounts, SupportReadError, SupportReadErrorCode, SupportStateReader,
+    ResolvedSubsystemTarget, SupportCounts, SupportReadError, SupportReadErrorCode,
+    SupportStateReader,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
@@ -12,7 +13,11 @@ use crate::infrastructure::platform_xml_source_targets::{
     platform_xml_resource_evidence, resolve_platform_xml_target_in, TargetKindPolicy,
 };
 use crate::infrastructure::source_roots::{resolve_named_source_set, ResolvedNamedSourceSet};
+use crate::infrastructure::subsystem_topology::{
+    capture_registered_subsystem_topology, SubsystemTopologyNode,
+};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub(crate) trait SupportStateReaderFactory: Send + Sync {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a>;
@@ -39,13 +44,19 @@ impl<'a> WorkspaceSupportStateReader<'a> {
         &self,
         target: &ResolvedTarget,
     ) -> Result<ResolvedNamedSourceSet, SupportReadError> {
-        let selected =
-            resolve_named_source_set(self.context, &target.source_set).map_err(|_| {
-                SupportReadError::new(
-                    SupportReadErrorCode::EvidenceUnavailable,
-                    "support-state source set evidence is unavailable",
-                )
-            })?;
+        self.selected_source_set_by_name(&target.source_set)
+    }
+
+    fn selected_source_set_by_name(
+        &self,
+        source_set: &str,
+    ) -> Result<ResolvedNamedSourceSet, SupportReadError> {
+        let selected = resolve_named_source_set(self.context, source_set).map_err(|_| {
+            SupportReadError::new(
+                SupportReadErrorCode::EvidenceUnavailable,
+                "support-state source set evidence is unavailable",
+            )
+        })?;
         if selected.source_set.source_format != SourceFormat::PlatformXml {
             return Err(SupportReadError::new(
                 SupportReadErrorCode::ProviderUnavailable,
@@ -92,13 +103,37 @@ impl<'a> WorkspaceSupportStateReader<'a> {
         &self,
         evidence: &crate::infrastructure::platform_xml_source_targets::PlatformXmlResourceEvidence,
     ) -> Result<Option<SupportState>, SupportReadError> {
-        read_support_state_strict(
-            &evidence
-                .source_root
-                .join("Ext")
-                .join("ParentConfigurations.bin"),
-        )
+        self.support_state_at(&evidence.source_root)
     }
+
+    fn support_state_at(
+        &self,
+        source_root: &Path,
+    ) -> Result<Option<SupportState>, SupportReadError> {
+        read_support_state_strict(&source_root.join("Ext").join("ParentConfigurations.bin"))
+    }
+}
+
+fn subsystem_node_is_registered(
+    nodes: &[SubsystemTopologyNode],
+    target: &ResolvedSubsystemTarget,
+) -> bool {
+    nodes.iter().any(|node| {
+        node.address == target.address || subsystem_node_is_registered(&node.children, target)
+    })
+}
+
+fn subsystem_descriptor_path(target: &ResolvedSubsystemTarget) -> PathBuf {
+    let mut names = target.address.as_str().split('.');
+    let first = names
+        .next()
+        .expect("a resolved subsystem address has at least one name");
+    let mut path = PathBuf::from("Subsystems").join(first);
+    for name in names {
+        path = path.join("Subsystems").join(name);
+    }
+    path.set_extension("xml");
+    path
 }
 
 impl SupportStateReader for WorkspaceSupportStateReader<'_> {
@@ -194,6 +229,62 @@ impl SupportStateReader for WorkspaceSupportStateReader<'_> {
             SupportReadError::new(
                 SupportReadErrorCode::EvidenceUnavailable,
                 "metadata descriptor has no support-state UUID evidence",
+            )
+        })?;
+        Ok(match state.object_rule(&object_uuid) {
+            Some(0) => data(ObjectSupportState::Locked, Some(false)),
+            Some(1) => data(ObjectSupportState::EditableWithSupport, Some(true)),
+            Some(2) => data(ObjectSupportState::RemovedFromSupport, Some(true)),
+            _ => data(ObjectSupportState::NotSupported, None),
+        })
+    }
+
+    fn subsystem_support(
+        &self,
+        target: &ResolvedSubsystemTarget,
+    ) -> Result<ObjectSupportData, SupportReadError> {
+        let selected = self.selected_source_set_by_name(&target.source_set)?;
+        let topology =
+            capture_registered_subsystem_topology(&selected.path, || Ok(())).map_err(|_| {
+                SupportReadError::new(
+                    SupportReadErrorCode::EvidenceUnavailable,
+                    "registered subsystem support-state evidence is unavailable",
+                )
+            })?;
+        if !subsystem_node_is_registered(&topology.roots, target) {
+            return Err(SupportReadError::new(
+                SupportReadErrorCode::EvidenceUnavailable,
+                "the subsystem support-state target is not registered",
+            ));
+        }
+        let descriptor_path = subsystem_descriptor_path(target);
+        let descriptor = topology
+            .dependency_documents()
+            .iter()
+            .find(|document| document.path == descriptor_path)
+            .ok_or_else(|| {
+                SupportReadError::new(
+                    SupportReadErrorCode::EvidenceUnavailable,
+                    "registered subsystem descriptor evidence is unavailable",
+                )
+            })?;
+        let data = |state, direct_edit_safe| ObjectSupportData {
+            state,
+            direct_edit_safe,
+        };
+        let Some(state) = self.support_state_at(&selected.path)? else {
+            return Ok(data(ObjectSupportState::NotSupported, None));
+        };
+        if state.removed() {
+            return Ok(data(ObjectSupportState::RemovedFromSupport, Some(true)));
+        }
+        if !state.global_editing_enabled() {
+            return Ok(data(ObjectSupportState::ConfigurationReadOnly, Some(false)));
+        }
+        let object_uuid = support_root_uuid_from_bytes(&descriptor.bytes).ok_or_else(|| {
+            SupportReadError::new(
+                SupportReadErrorCode::EvidenceUnavailable,
+                "registered subsystem descriptor has no support-state UUID evidence",
             )
         })?;
         Ok(match state.object_rule(&object_uuid) {

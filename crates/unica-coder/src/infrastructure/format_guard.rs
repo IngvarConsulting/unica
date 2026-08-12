@@ -2814,11 +2814,17 @@ mod tests {
                     tool_spec, &args,
                 )
                 .unwrap();
+                let workspace_context = context(&root);
+                let support_reader =
+                    crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+                        &workspace_context,
+                    );
                 let prepared = prepare_subsystem_info(
                     &normalized,
-                    &context(&root),
+                    &workspace_context,
                     &CancellationToken::new(),
                     ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+                    &support_reader,
                 )
                 .unwrap();
                 evaluate_prepared_subsystem_info_format_guard(tool_spec, &prepared.format_documents)
@@ -3671,11 +3677,16 @@ mod tests {
         ]);
 
         let tool = spec("unica.subsystem.info");
+        let workspace_context = context(&root);
+        let support_reader = crate::infrastructure::support_state::WorkspaceSupportStateReader::new(
+            &workspace_context,
+        );
         let prepared = prepare_subsystem_info(
             &args,
-            &context(&root),
+            &workspace_context,
             &CancellationToken::new(),
             ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+            &support_reader,
         )
         .unwrap();
         let check = evaluate_prepared_subsystem_info_format_guard(tool, &prepared.format_documents)

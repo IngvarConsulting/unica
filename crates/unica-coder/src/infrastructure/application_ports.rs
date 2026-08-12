@@ -297,14 +297,20 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
             return prepared_subsystem_info_failure(error.to_string(), false);
         }
-        let prepared =
-            match subsystem::prepare_subsystem_info(args, context, cancellation, deadline) {
-                Ok(prepared) => prepared,
-                Err(error) if error.is_control() => {
-                    return prepared_subsystem_info_failure(error.to_string(), false);
-                }
-                Err(error) => return prepared_subsystem_info_failure(error.to_string(), true),
-            };
+        let support_reader = self.support_state_readers.create(context);
+        let prepared = match subsystem::prepare_subsystem_info(
+            args,
+            context,
+            cancellation,
+            deadline,
+            support_reader.as_ref(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) if error.is_control() => {
+                return prepared_subsystem_info_failure(error.to_string(), false);
+            }
+            Err(error) => return prepared_subsystem_info_failure(error.to_string(), true),
+        };
         let format_guard =
             crate::infrastructure::format_guard::evaluate_prepared_subsystem_info_format_guard(
                 spec,
@@ -1189,7 +1195,7 @@ mod tests {
     };
     use crate::domain::support_state::{
         ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
-        SupportReadError, SupportStateReader,
+        ResolvedSubsystemTarget, SupportReadError, SupportStateReader,
     };
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::native_operations::typed_result::NativeInvocationControl;
@@ -1216,11 +1222,17 @@ mod tests {
     #[derive(Clone)]
     struct RecordingSupportStateReaderFactory {
         calls: Arc<Mutex<Vec<(&'static str, ResolvedTarget)>>>,
+        subsystem_calls: Arc<Mutex<Vec<ResolvedSubsystemTarget>>>,
     }
 
     struct RecordingSupportStateReader {
         calls: Arc<Mutex<Vec<(&'static str, ResolvedTarget)>>>,
+        subsystem_calls: Arc<Mutex<Vec<ResolvedSubsystemTarget>>>,
     }
+
+    struct FailingSupportStateReaderFactory;
+
+    struct FailingSupportStateReader;
 
     impl SupportStateReaderFactory for RecordingSupportStateReaderFactory {
         fn create<'a>(
@@ -1229,6 +1241,7 @@ mod tests {
         ) -> Box<dyn SupportStateReader + 'a> {
             Box::new(RecordingSupportStateReader {
                 calls: Arc::clone(&self.calls),
+                subsystem_calls: Arc::clone(&self.subsystem_calls),
             })
         }
     }
@@ -1258,6 +1271,58 @@ mod tests {
                 state: ObjectSupportState::Locked,
                 direct_edit_safe: Some(false),
             })
+        }
+
+        fn subsystem_support(
+            &self,
+            target: &ResolvedSubsystemTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            self.subsystem_calls.lock().unwrap().push(target.clone());
+            Ok(ObjectSupportData {
+                state: ObjectSupportState::Locked,
+                direct_edit_safe: Some(false),
+            })
+        }
+    }
+
+    impl SupportStateReaderFactory for FailingSupportStateReaderFactory {
+        fn create<'a>(
+            &'a self,
+            _context: &'a WorkspaceContext,
+        ) -> Box<dyn SupportStateReader + 'a> {
+            Box::new(FailingSupportStateReader)
+        }
+    }
+
+    impl SupportStateReader for FailingSupportStateReader {
+        fn configuration_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ConfigurationSupportData, SupportReadError> {
+            Err(SupportReadError::new(
+                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                "support-state provider is unavailable",
+            ))
+        }
+
+        fn object_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            Err(SupportReadError::new(
+                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                "support-state provider is unavailable",
+            ))
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &crate::domain::support_state::ResolvedSubsystemTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            Err(SupportReadError::new(
+                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                "support-state provider is unavailable",
+            ))
         }
     }
 
@@ -1368,6 +1433,7 @@ mod tests {
         let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
             RecordingSupportStateReaderFactory {
                 calls: Arc::clone(&calls),
+                subsystem_calls: Arc::new(Mutex::new(Vec::new())),
             },
         ));
         let cases = [
@@ -1476,6 +1542,195 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    fn prepared_subsystem_fixture() -> (
+        tempfile::TempDir,
+        WorkspaceContext,
+        Map<String, serde_json::Value>,
+        Map<String, serde_json::Value>,
+    ) {
+        let root = tempfile::Builder::new()
+            .prefix("unica-prepared-subsystem-support")
+            .tempdir()
+            .unwrap();
+        let workspace = root.path().canonicalize().unwrap();
+        let source = workspace.join("src");
+        std::fs::create_dir_all(source.join("Subsystems")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Subsystems/Sales.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Sales", "2.20",
+            ),
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        (
+            root,
+            context,
+            Map::from_iter([(
+                "SubsystemPath".to_string(),
+                json!("src/Subsystems/Sales.xml"),
+            )]),
+            Map::from_iter([("SubsystemPath".to_string(), json!("src/Subsystems"))]),
+        )
+    }
+
+    fn prepare_subsystem(
+        ports: &super::InfrastructureApplicationPorts,
+        args: &Map<String, serde_json::Value>,
+        context: &WorkspaceContext,
+    ) -> crate::application::ports::PreparedToolInvocation {
+        use crate::application::ports::ApplicationPorts;
+
+        let tool = crate::application::tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.subsystem.info")
+            .unwrap();
+        ports
+            .prepare_tool_invocation(
+                tool,
+                args,
+                context,
+                InvocationMode::Read,
+                &CancellationToken::new(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn prepared_subsystem_info_records_the_descriptor_target() {
+        let (_root, context, object_args, _tree_args) = prepared_subsystem_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::clone(&subsystem_calls),
+            },
+        ));
+
+        let prepared = prepare_subsystem(&ports, &object_args, &context);
+        let handler = prepared.handler.expect("prepared handler");
+
+        assert!(handler.adapter.ok, "{:?}", handler.adapter);
+        assert_eq!(handler.data.unwrap()["support"]["state"], "locked");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(
+                "object",
+                ResolvedTarget {
+                    source_set: "main".to_string(),
+                    metadata_path: Some(metadata_address("Subsystem.Sales")),
+                    target_kind: TargetKind::MetadataObject,
+                },
+            )]
+        );
+        assert!(subsystem_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepared_nested_subsystem_keeps_the_dedicated_subsystem_address() {
+        let (_root, context, _object_args, _tree_args) = prepared_subsystem_fixture();
+        let source = context.workspace_root.join("src");
+        std::fs::write(
+            source.join("Subsystems/Sales.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Sales", "2.20",
+            )
+            .replace(
+                "<ChildObjects/>",
+                "<ChildObjects><Subsystem>Online</Subsystem></ChildObjects>",
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Subsystems/Sales/Subsystems")).unwrap();
+        std::fs::write(
+            source.join("Subsystems/Sales/Subsystems/Online.xml"),
+            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
+                "Online", "2.20",
+            ),
+        )
+        .unwrap();
+        let args = Map::from_iter([(
+            "SubsystemPath".to_string(),
+            json!("src/Subsystems/Sales/Subsystems/Online.xml"),
+        )]);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::clone(&subsystem_calls),
+            },
+        ));
+
+        let prepared = prepare_subsystem(&ports, &args, &context);
+        let handler = prepared.handler.expect("prepared handler");
+
+        assert!(handler.adapter.ok, "{:?}", handler.adapter);
+        assert_eq!(handler.data.unwrap()["support"]["state"], "locked");
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(
+            *subsystem_calls.lock().unwrap(),
+            vec![ResolvedSubsystemTarget {
+                source_set: "main".to_string(),
+                address: crate::domain::subsystem::SubsystemAddress::parse("Sales.Online").unwrap(),
+            }]
+        );
+    }
+
+    #[test]
+    fn subsystem_tree_does_not_invent_object_support() {
+        let (_root, context, _object_args, tree_args) = prepared_subsystem_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let subsystem_calls = Arc::new(Mutex::new(Vec::new()));
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            RecordingSupportStateReaderFactory {
+                calls: Arc::clone(&calls),
+                subsystem_calls: Arc::clone(&subsystem_calls),
+            },
+        ));
+
+        let prepared = prepare_subsystem(&ports, &tree_args, &context);
+
+        assert!(prepared.handler.unwrap().adapter.ok);
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(subsystem_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn subsystem_support_failure_publishes_no_partial_data() {
+        let (_root, context, object_args, _tree_args) = prepared_subsystem_fixture();
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            FailingSupportStateReaderFactory,
+        ));
+
+        let prepared = prepare_subsystem(&ports, &object_args, &context);
+        let handler = prepared.handler.expect("prepared failure handler");
+
+        assert!(!handler.adapter.ok, "{:?}", handler.adapter);
+        assert_eq!(
+            handler.adapter.errors,
+            vec!["provider_unavailable: support-state provider is unavailable"]
+        );
+        assert!(handler.data.is_none());
     }
 
     #[test]

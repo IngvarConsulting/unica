@@ -7,9 +7,13 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::subsystem::SubsystemAddress;
+use crate::domain::support_state::{
+    ObjectSupportData as DomainObjectSupportData, ObjectSupportState, ResolvedSubsystemTarget,
+    SupportStateReader,
+};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, AttachedResource,
+    logical_selection, physical_selection, AttachedResource,
 };
 use crate::infrastructure::platform::secure_read::{
     RetainedRootSecureRead, SecureTreeCaptureLimits,
@@ -2187,7 +2191,9 @@ pub(crate) fn analyze_subsystem_info(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> SubsystemInfoExecution {
-    prepare_subsystem_info_with_checkpoint(args, context, || Ok(()))
+    let support_reader =
+        crate::infrastructure::support_state::WorkspaceSupportStateReader::new(context);
+    prepare_subsystem_info_with_checkpoint(args, context, &support_reader, || Ok(()))
         .map(|prepared| prepared.execution)
         .unwrap_or_else(subsystem_info_failure)
 }
@@ -2197,8 +2203,9 @@ pub(crate) fn analyze_subsystem_info_cancellable(
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
+    support_reader: &dyn SupportStateReader,
 ) -> SubsystemInfoExecution {
-    prepare_subsystem_info(args, context, cancellation, deadline)
+    prepare_subsystem_info(args, context, cancellation, deadline, support_reader)
         .map(|prepared| prepared.execution)
         .unwrap_or_else(|error| subsystem_info_failure(error.to_string()))
 }
@@ -2230,9 +2237,10 @@ pub(crate) fn prepare_subsystem_info(
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
+    support_reader: &dyn SupportStateReader,
 ) -> Result<PreparedSubsystemInfo, SubsystemInfoPreparationError> {
     let control_error = std::cell::RefCell::new(None);
-    let prepared = prepare_subsystem_info_with_checkpoint(args, context, || {
+    let prepared = prepare_subsystem_info_with_checkpoint(args, context, support_reader, || {
         let checkpoint = subsystem_info_checkpoint(cancellation, deadline);
         if let Err(error) = &checkpoint {
             if let Some(error) = subsystem_info_control_error(error) {
@@ -2296,6 +2304,7 @@ fn subsystem_info_control_error(error: &io::Error) -> Option<SubsystemInfoPrepar
 fn prepare_subsystem_info_with_checkpoint(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+    support_reader: &dyn SupportStateReader,
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> Result<PreparedSubsystemInfo, String> {
     checkpoint().map_err(subsystem_info_checkpoint_message)?;
@@ -2360,11 +2369,13 @@ fn prepare_subsystem_info_with_checkpoint(
     let xml_path = path;
     let scope = subsystem_descriptor_scope(&xml_path, context)?;
     let mut format_documents = Vec::new();
+    let mut registered_support_target = None;
     let (descriptor_bytes, tree) = if let Some((source_root, address_names, address)) = scope {
         let topology = capture_registered_subsystem_topology(&source_root, &mut checkpoint)
             .map_err(|error| error.to_string())?;
         format_documents = topology_format_documents(&source_root, &topology);
         if let Some(registered) = subsystem_node_by_address(&topology.roots, &address) {
+            registered_support_target = Some((source_root.clone(), address.clone()));
             let relative = xml_path.strip_prefix(&source_root).map_err(|_| {
                 "registered subsystem descriptor escaped its lexical source root".to_string()
             })?;
@@ -2439,7 +2450,28 @@ fn prepare_subsystem_info_with_checkpoint(
 
     // Overview, content, ci and full were slices of one subsystem chosen to
     // keep a printed report short. Data carries all of them at once.
-    let support = object_support_state(&xml_path);
+    let support = match registered_support_target {
+        Some((_source_root, address)) if !address.as_str().contains('.') => {
+            let selection = physical_selection(&xml_path, context, AttachedResource::Descriptor)
+                .map_err(|failure| failure.to_string())?;
+            support_reader
+                .object_support(&selection.target)
+                .map_err(|error| error.to_string())?
+        }
+        Some((source_root, address)) => {
+            let source_set = subsystem_source_set_name(context, &source_root)?;
+            support_reader
+                .subsystem_support(&ResolvedSubsystemTarget {
+                    source_set,
+                    address,
+                })
+                .map_err(|error| error.to_string())?
+        }
+        None => DomainObjectSupportData {
+            state: ObjectSupportState::NotSupported,
+            direct_edit_safe: None,
+        },
+    };
     checkpoint().map_err(subsystem_info_checkpoint_message)?;
     let result = SubsystemInfoResult {
         name: data.name,
@@ -2590,7 +2622,7 @@ pub(crate) struct SubsystemInfoResult {
     pub(crate) picture: Option<String>,
     pub(crate) include_in_command_interface: Option<String>,
     pub(crate) use_one_command: Option<String>,
-    pub(crate) support: ObjectSupportData,
+    pub(crate) support: DomainObjectSupportData,
     pub(crate) content: Vec<String>,
     pub(crate) groups: Vec<SubsystemGroupData>,
     pub(crate) children: Vec<String>,
@@ -2744,6 +2776,42 @@ fn subsystem_descriptor_scope(
     let address = SubsystemAddress::from_names(address_names.iter().map(String::as_str))
         .map_err(|error| error.to_string())?;
     Ok(Some((source_root, address_names, address)))
+}
+
+fn subsystem_source_set_name(
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<String, String> {
+    let source_root = normalize_path_identity(source_root)?;
+    let mut matches = discover_project_source_map(&context.workspace_root)?
+        .source_sets
+        .into_iter()
+        .filter(|source_set| {
+            matches!(
+                source_set.kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+        })
+        .filter_map(|source_set| {
+            let configured = PathBuf::from(&source_set.path);
+            let configured = if configured.is_absolute() {
+                configured
+            } else {
+                context.workspace_root.join(configured)
+            };
+            normalize_path_identity(&configured)
+                .ok()
+                .filter(|configured| configured == &source_root)
+                .map(|_| source_set.name)
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    match matches.as_slice() {
+        [source_set] => Ok(source_set.clone()),
+        [] => Err("provider_unavailable: the subsystem source set is unavailable".to_string()),
+        _ => Err("provider_unavailable: the subsystem source set is ambiguous".to_string()),
+    }
 }
 
 fn focused_subsystem_tree_node(

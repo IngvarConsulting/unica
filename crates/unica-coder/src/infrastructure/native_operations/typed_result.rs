@@ -255,6 +255,7 @@ impl NativeOperationAdapter {
                     context,
                     control.cancellation,
                     control.deadline,
+                    support_reader,
                 );
                 return typed_operation_result(execution.outcome, execution.data, "subsystem info");
             }
