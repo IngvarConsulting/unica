@@ -310,15 +310,9 @@ pub(crate) fn physical_selection(
             "the physical selector did not reproduce the proven target resource",
         ));
     }
-    let resource_path = fs::canonicalize(&proven).map_err(|_| {
-        LogicalSelectorFailure::new(
-            "provider_unavailable",
-            "the proven physical resource identity is unavailable",
-        )
-    })?;
     Ok(ResolvedReadTarget {
         target: resolution.resolved,
-        resource_path,
+        resource_path: proven,
     })
 }
 
