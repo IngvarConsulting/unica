@@ -1,6 +1,7 @@
 use super::ports::{ApplicationPorts, HandlerOutcome};
 use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
+pub(crate) use crate::domain::source_location::{LocateRejection, SourceLocation};
 use crate::domain::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
 use serde::Serialize;
@@ -66,27 +67,6 @@ pub(crate) enum SourceNodeAddressability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub(crate) enum SourceLocation {
-    Addressed {
-        source_set: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        metadata_path: Option<MetadataAddress>,
-        target_kind: TargetKind,
-    },
-    Unaddressable {
-        source_set: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        owner_metadata_path: Option<MetadataAddress>,
-        path: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceResolveCandidate {
     pub(crate) metadata_path: MetadataAddress,
@@ -137,19 +117,6 @@ pub(crate) struct SourceResolveRequest {
     pub(crate) target_kind: Option<TargetKind>,
     pub(crate) limit: usize,
     pub(crate) cursor: Option<String>,
-}
-
-/// Why a source path carries no logical address, so a caller can tell a file
-/// the provider does not model from one it could not classify.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum LocateRejection {
-    /// The path is not part of the named source set.
-    OutsideSourceSet,
-    /// The layout is known but nothing addressable owns this file.
-    NotAddressable,
-    /// The layout matches, but the owning descriptors do not prove it.
-    OwnerUnproven,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

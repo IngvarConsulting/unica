@@ -36,6 +36,7 @@ META_TOOL_NAMES = {
     "unica.meta.remove",
 }
 ROLE_TYPED_TOOL_NAME = "unica.role.edit"
+CODE_SEARCH_TYPED_TOOL_NAME = "unica.code.search"
 CODE_SEARCH_PROVIDERS = ["rlm", "bsl-analyzer", "git-grep"]
 DEFAULT_TOTAL_TIMEOUT_SECONDS = 120.0
 UPSTREAM_SEARCH_FIELDS = {"root_id", "rootId", "roots", "cacheDir"}
@@ -130,6 +131,121 @@ def _input_schema_shape_error(value: object) -> str | None:
         return "must not repeat required property names"
     if value.get("additionalProperties") is not False:
         return "must reject additional properties"
+    return None
+
+
+def _code_search_output_schema_shape_error(value: object) -> str | None:
+    if not isinstance(value, dict) or value.get("type") != "object":
+        return "must declare an object envelope"
+    # ADR-0023: typed provider-neutral payload is carried by OperationResult.data.
+    required = value.get("required")
+    if not isinstance(required, list) or "data" not in required:
+        return "must require data"
+    properties = value.get("properties")
+    if not isinstance(properties, dict):
+        return "must declare envelope properties"
+    data = properties.get("data")
+    if not isinstance(data, dict) or data.get("type") != "object":
+        return "must declare object data"
+    data_properties = data.get("properties")
+    required_data = {"coverage", "elapsedMs", "sections"}
+    if not isinstance(data_properties, dict) or not required_data.issubset(data_properties):
+        return "must declare coverage, elapsedMs, and sections"
+    if set(data.get("required", [])) != required_data:
+        return "must require coverage, elapsedMs, and sections"
+    sections = data_properties["sections"]
+    if (
+        not isinstance(sections, dict)
+        or sections.get("type") != "array"
+        or sections.get("minItems") != 3
+        or sections.get("maxItems") != 3
+    ):
+        return "must declare exactly three role sections"
+    section = sections.get("items")
+    section_fields = {
+        "role",
+        "provider",
+        "status",
+        "termination",
+        "searchComplete",
+        "ranking",
+        "ordering",
+        "matches",
+        "hits",
+        "diagnostics",
+    }
+    if not isinstance(section, dict) or section.get("type") != "object":
+        return "must declare role-section objects"
+    section_properties = section.get("properties")
+    if not isinstance(section_properties, dict) or not section_fields.issubset(
+        section_properties
+    ):
+        return "must declare the provider-neutral role-section fields"
+    if not section_fields.issubset(set(section.get("required", []))):
+        return "must require the provider-neutral role-section fields"
+    termination = section_properties["termination"]
+    termination_variants = (
+        termination.get("oneOf") if isinstance(termination, dict) else None
+    )
+    if not isinstance(termination_variants, list) or len(termination_variants) != 2:
+        return "must declare a nullable machine-readable termination reason"
+    null_variant, terminal_variant = termination_variants
+    terminal_properties = (
+        terminal_variant.get("properties")
+        if isinstance(terminal_variant, dict)
+        else None
+    )
+    terminal_code = (
+        terminal_properties.get("code")
+        if isinstance(terminal_properties, dict)
+        else None
+    )
+    retryable = (
+        terminal_properties.get("retryable")
+        if isinstance(terminal_properties, dict)
+        else None
+    )
+    detail_code = (
+        terminal_properties.get("detailCode")
+        if isinstance(terminal_properties, dict)
+        else None
+    )
+    expected_codes = {
+        "limitReached",
+        "deadlineExceeded",
+        "dependencyPending",
+        "unsupportedScope",
+        "capacityExhausted",
+        "providerUnavailable",
+        "providerFailed",
+    }
+    if (
+        null_variant != {"type": "null"}
+        or not isinstance(terminal_variant, dict)
+        or terminal_variant.get("type") != "object"
+        or terminal_variant.get("additionalProperties") is not False
+        or not isinstance(terminal_code, dict)
+        or terminal_code.get("type") != "string"
+        or set(terminal_code.get("enum", [])) != expected_codes
+        or retryable != {"type": "boolean"}
+        or not isinstance(detail_code, dict)
+        or detail_code.get("type") != "string"
+        or detail_code.get("minLength") != 1
+        or set(terminal_variant.get("required", [])) != {"code", "retryable"}
+    ):
+        return "must close the machine-readable termination reason contract"
+    matches = section_properties["matches"]
+    if not isinstance(matches, dict) or matches.get("type") != "object":
+        return "must declare matches as an object"
+    match_properties = matches.get("properties")
+    if not isinstance(match_properties, dict) or not {
+        "returned",
+        "total",
+        "relation",
+    }.issubset(match_properties):
+        return "must declare returned, total, and relation counts"
+    if not {"returned", "relation"}.issubset(set(matches.get("required", []))):
+        return "must require returned and relation counts"
     return None
 
 
@@ -242,7 +358,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "limit": {
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
+        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -277,7 +393,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "limit": {
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
+        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
         "maximum": 65536,
         "minimum": 1,
         "type": "integer"
@@ -324,7 +440,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "limit": {
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
+        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -428,7 +544,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "limit": {
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
+        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
@@ -494,7 +610,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         "type": "integer",
         "minimum": 1,
         "maximum": 50,
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048)."
+        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048)."
       },
       "metadataPath": {
         "type": "string",
@@ -1648,7 +1764,13 @@ def _code_search_payload(response: dict) -> dict:
         ) from error
     if not isinstance(payload, dict):
         raise SystemExit(f"Unica MCP code search payload is not an object: {payload!r}")
-    if not isinstance(payload.get("ok"), bool) or result.get("isError") is True:
+    ok = payload.get("ok")
+    is_error = result.get("isError")
+    if (
+        not isinstance(ok, bool)
+        or not isinstance(is_error, bool)
+        or is_error is not (not ok)
+    ):
         raise SystemExit(
             f"Unica MCP code search has inconsistent success state: {response}"
         )
@@ -1793,6 +1915,46 @@ def _wait_for_process_pids(pids: set[int], timeout_seconds: float) -> None:
         time.sleep(min(0.05, remaining))
 
 
+def _capture_posix_owned_process_pids(
+    session: McpSession, service_pids: set[int]
+) -> set[int]:
+    if os.name != "posix":
+        return set()
+    process = getattr(session, "process", None)
+    if process is None:
+        return set()
+    return _posix_owned_process_pids(
+        process.pid,
+        service_pids,
+        public_running=process.poll() is None,
+    )
+
+
+def _quiesce_posix_owned_process_pids(
+    owned_pids: set[int], timeout_seconds: float
+) -> None:
+    if not owned_pids:
+        return
+    wait_limit = min(1.0, timeout_seconds)
+    _wait_for_process_pids(owned_pids, wait_limit)
+    survivors = {pid for pid in owned_pids if _process_is_running(pid)}
+    if not survivors:
+        return
+    _signal_processes(survivors, signal.SIGTERM)
+    _wait_for_process_pids(survivors, wait_limit)
+    survivors = {pid for pid in survivors if _process_is_running(pid)}
+    if survivors:
+        _signal_processes(survivors, signal.SIGKILL)
+        _wait_for_process_pids(survivors, wait_limit)
+    survivors = {pid for pid in survivors if _process_is_running(pid)}
+    if survivors:
+        rendered = ", ".join(str(pid) for pid in sorted(survivors))
+        raise SystemExit(
+            "Unica MCP owned provider processes survived smoke cleanup: "
+            f"{rendered}"
+        )
+
+
 def _wait_for_workspace_services(
     cache_root: Path,
     timeout_seconds: float,
@@ -1910,6 +2072,7 @@ def _close_session_and_workspace_services(
     # TemporaryDirectory cleanup may remove the record that makes an orphan
     # reachable for emergency cleanup.
     service_pids = _workspace_service_pids(cache_root)
+    owned_pids = _capture_posix_owned_process_pids(session, service_pids)
     try:
         try:
             # On Windows, a detached workspace service may inherit extra copies of
@@ -1931,6 +2094,10 @@ def _close_session_and_workspace_services(
                     cache_root,
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                     service_pids,
+                )
+                _quiesce_posix_owned_process_pids(
+                    owned_pids,
+                    _remaining_smoke_timeout(deadline, timeout_seconds),
                 )
     except BaseException:
         session.terminate_tree(cache_root, service_pids)
@@ -2064,6 +2231,11 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
                 error = _role_output_schema_shape_error(tool["outputSchema"])
                 if error is not None:
                     raise SystemExit(f"Unica MCP role.edit output schema {error}")
+        elif name == CODE_SEARCH_TYPED_TOOL_NAME:
+            if "outputSchema" in tool:
+                error = _code_search_output_schema_shape_error(tool["outputSchema"])
+                if error is not None:
+                    raise SystemExit(f"Unica MCP code.search output schema {error}")
         elif "outputSchema" in tool:
             raise SystemExit(f"non-Meta tool unexpectedly publishes outputSchema: {name}")
 

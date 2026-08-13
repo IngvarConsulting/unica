@@ -12,6 +12,7 @@ artifact instead of being forgotten.
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -118,6 +119,30 @@ class LayoutTests(unittest.TestCase):
             path.relative_to(REPO_ROOT).as_posix() for path in retired if path.exists()
         ]
         self.assertEqual(existing, [])
+
+    def test_search_result_examples_have_consistent_match_counts(self) -> None:
+        offenders = []
+        for path in design_documents():
+            text = path.read_text(encoding="utf-8")
+            for index, block in enumerate(
+                re.findall(r"```json\s*\n(.*?)\n```", text, re.DOTALL), start=1
+            ):
+                try:
+                    payload = json.loads(block)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                matches = payload.get("matches")
+                hits = payload.get("hits")
+                if isinstance(matches, dict) and isinstance(hits, list):
+                    returned = matches.get("returned")
+                    if returned != len(hits):
+                        offenders.append(
+                            f"{path.name}: JSON example {index} returns {returned} "
+                            f"but contains {len(hits)} hits"
+                        )
+        self.assertEqual(offenders, [])
 
     def test_session_scratch_is_never_tracked(self) -> None:
         """`.superpowers/` is ignored on purpose; `git add -f` defeats that."""

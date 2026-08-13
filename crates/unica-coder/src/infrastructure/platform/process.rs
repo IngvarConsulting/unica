@@ -102,7 +102,14 @@ pub struct ManagedLineOutput {
     pub stderr: String,
     pub timed_out: bool,
     pub cancelled: bool,
+    pub stopped_by_consumer: bool,
     pub line_error: Option<(usize, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamControl {
+    Continue,
+    Stop,
 }
 
 pub struct ManagedChild {
@@ -247,7 +254,7 @@ impl ManagedChild {
         mut on_line: F,
     ) -> Result<ManagedLineOutput, String>
     where
-        F: FnMut(usize, &[u8]),
+        F: FnMut(usize, &[u8]) -> StreamControl,
     {
         drop(self.take_stdin());
         let stdout = start_line_reader(self.take_stdout(), max_line_bytes);
@@ -256,7 +263,42 @@ impl ManagedChild {
         let mut first_line_error = None;
 
         loop {
-            drain_line_messages(&stdout, &mut on_line, &mut first_line_error, false);
+            if drain_line_messages(&stdout, &mut on_line, &mut first_line_error, false)
+                == StreamControl::Stop
+            {
+                if self.cancellation.is_cancelled() {
+                    self.terminate_gracefully()?;
+                    drain_line_messages(
+                        &stdout,
+                        &mut |_, _| StreamControl::Continue,
+                        &mut first_line_error,
+                        true,
+                    );
+                    return Ok(finish_line_output(
+                        None,
+                        stderr,
+                        false,
+                        true,
+                        false,
+                        first_line_error,
+                    ));
+                }
+                self.terminate()?;
+                drain_line_messages(
+                    &stdout,
+                    &mut |_, _| StreamControl::Continue,
+                    &mut first_line_error,
+                    true,
+                );
+                return Ok(finish_line_output(
+                    None,
+                    stderr,
+                    false,
+                    false,
+                    true,
+                    first_line_error,
+                ));
+            }
             if self.cancellation.is_cancelled() {
                 self.terminate_gracefully()?;
                 drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
@@ -265,6 +307,7 @@ impl ManagedChild {
                     stderr,
                     false,
                     true,
+                    false,
                     first_line_error,
                 ));
             }
@@ -276,6 +319,7 @@ impl ManagedChild {
                     stderr,
                     true,
                     false,
+                    false,
                     first_line_error,
                 ));
             }
@@ -286,6 +330,7 @@ impl ManagedChild {
                 return Ok(finish_line_output(
                     Some(status),
                     stderr,
+                    false,
                     false,
                     false,
                     first_line_error,
@@ -922,11 +967,12 @@ fn drain_line_messages<F>(
     on_line: &mut F,
     first_error: &mut Option<(usize, String)>,
     wait_for_end: bool,
-) where
-    F: FnMut(usize, &[u8]),
+) -> StreamControl
+where
+    F: FnMut(usize, &[u8]) -> StreamControl,
 {
     let Some(receiver) = receiver else {
-        return;
+        return StreamControl::Continue;
     };
     loop {
         let message = if wait_for_end {
@@ -938,7 +984,11 @@ fn drain_line_messages<F>(
             break;
         };
         match message {
-            LineMessage::Line(number, bytes) => on_line(number, &bytes),
+            LineMessage::Line(number, bytes) => {
+                if on_line(number, &bytes) == StreamControl::Stop {
+                    return StreamControl::Stop;
+                }
+            }
             LineMessage::TooLong(number) => {
                 first_error.get_or_insert_with(|| {
                     (number, "line exceeds configured byte limit".to_string())
@@ -951,6 +1001,7 @@ fn drain_line_messages<F>(
             }
         }
     }
+    StreamControl::Continue
 }
 
 fn start_reader<R>(pipe: Option<R>, limit: usize) -> Option<Receiver<CapturedOutput>>
@@ -1009,17 +1060,23 @@ fn finish_line_output(
     stderr: Option<Receiver<CapturedOutput>>,
     timed_out: bool,
     cancelled: bool,
+    stopped_by_consumer: bool,
     line_error: Option<(usize, String)>,
 ) -> ManagedLineOutput {
     let stderr = receive_output(stderr);
     ManagedLineOutput {
-        status_success: status.is_some_and(|status| status.success()) && !timed_out && !cancelled,
+        status_success: status.is_some_and(|status| status.success())
+            && !timed_out
+            && !cancelled
+            && !stopped_by_consumer,
         status: status.map_or_else(
             || {
                 if cancelled {
                     "cancelled".to_string()
                 } else if timed_out {
                     "timeout".to_string()
+                } else if stopped_by_consumer {
+                    "stopped by consumer".to_string()
                 } else {
                     "termination pending".to_string()
                 }
@@ -1029,6 +1086,7 @@ fn finish_line_output(
         stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
         timed_out,
         cancelled,
+        stopped_by_consumer,
         line_error,
     }
 }
@@ -1087,7 +1145,9 @@ fn retain_tail(captured: &mut CapturedOutput, chunk: &[u8], limit: usize) {
 mod tests {
     #[cfg(windows)]
     use super::ProcessTree;
-    use super::{ChildState, ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild};
+    use super::{
+        ChildState, ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild, StreamControl,
+    };
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
     use std::io::Read;
@@ -1145,6 +1205,11 @@ mod tests {
                 print!("stdin closed");
             }
             "sleep" => thread::sleep(Duration::from_secs(10)),
+            "stream_forever" => loop {
+                println!("streamed line");
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                thread::sleep(Duration::from_millis(5));
+            },
             "process_tree_immediate_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
                 let mut child = Command::new(std::env::current_exe().unwrap())
@@ -1646,6 +1711,43 @@ mod tests {
         let second = Instant::now();
         managed.terminate().unwrap();
         assert!(second.elapsed() < Duration::from_millis(100));
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn line_consumer_can_stop_and_reap_the_process_before_timeout() {
+        let mut managed = ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".to_string(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
+                "--nocapture".to_string(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_forever"))],
+            timeout: Some(Duration::from_secs(5)),
+            cancellation: CancellationToken::new(),
+        })
+        .unwrap();
+        let mut lines = 0;
+        let started = Instant::now();
+
+        let output = managed
+            .wait_for_line_output(1024, |_, _| {
+                lines += 1;
+                if lines == 3 {
+                    StreamControl::Stop
+                } else {
+                    StreamControl::Continue
+                }
+            })
+            .unwrap();
+
+        assert_eq!(lines, 3);
+        assert!(output.stopped_by_consumer);
+        assert!(!output.timed_out);
+        assert!(!output.cancelled);
+        assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(managed.state, ChildState::Reaped);
     }
 

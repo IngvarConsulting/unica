@@ -15,6 +15,21 @@ pub(crate) fn path_text_for_test(path: &Path) -> String {
     normalize_path_text_for_test(&path.display().to_string())
 }
 
+#[cfg(unix)]
+pub(crate) fn non_utf8_relative_path_for_test() -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    Some(PathBuf::from(OsString::from_vec(
+        b"Module-\xff.bsl".to_vec(),
+    )))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn non_utf8_relative_path_for_test() -> Option<PathBuf> {
+    None
+}
+
 #[cfg(windows)]
 pub(crate) fn windows_extended_length_path_for_test(path: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(format!(r"\\?\{}", path.display())))

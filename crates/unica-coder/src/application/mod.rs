@@ -1,7 +1,8 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
-    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
+    CodeIntelligenceReadRequest, NoopSearchProgressSink, ProviderDeadline, SearchProgressSink,
+    SearchRequest,
 };
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
@@ -333,6 +334,148 @@ pub fn role_edit_output_schema() -> Value {
     schema
 }
 
+/// Closed MCP schema for the provider-neutral code-search result.
+///
+/// Provider-specific attributes remain an intentionally open JSON object, but
+/// the envelope, role sections, terminal reasons, completeness claims, counts,
+/// hits, and logical location algebra are all machine-checkable. Once a search reaches the tool
+/// result boundary it always carries `data`, including the three failed or
+/// unavailable role sections when no provider served the request. Failures
+/// before that boundary remain JSON-RPC errors and do not use this schema.
+pub fn code_search_output_schema() -> Value {
+    let string_array = || json!({"type": "array", "items": {"type": "string"}});
+    let logical_location = json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "addressed"},
+                    "sourceSet": {"type": "string", "minLength": 1},
+                    "metadataPath": {"type": "string", "minLength": 1},
+                    "targetKind": {
+                        "type": "string",
+                        "enum": ["sourceRoot", "metadataObject", "module"]
+                    }
+                },
+                "required": ["kind", "sourceSet", "targetKind"]
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "unaddressable"},
+                    "sourceSet": {"type": "string", "minLength": 1},
+                    "ownerMetadataPath": {"type": "string", "minLength": 1},
+                    "path": {"type": "string", "minLength": 1}
+                },
+                "required": ["kind", "sourceSet", "path"]
+            }
+        ]
+    });
+    let hit = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "rank": {"type": "integer", "minimum": 1},
+            "providerScore": {"type": "number"},
+            "location": logical_location,
+            "line": {"type": "integer", "minimum": 1},
+            "endLine": {"type": ["integer", "null"], "minimum": 1},
+            "symbol": {"type": ["string", "null"]},
+            "kind": {"type": ["string", "null"]},
+            "snippet": {"type": "string"},
+            "attributes": {
+                "type": "object",
+                "description": "Provider-specific evidence; consumers must not branch on it."
+            }
+        },
+        "required": [
+            "location", "line", "endLine", "symbol", "kind", "snippet", "attributes"
+        ]
+    });
+    let section = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "role": {"type": "string", "enum": ["semantic", "symbol", "lexical"]},
+            "provider": {"type": "string", "minLength": 1},
+            "status": {
+                "type": "string",
+                "enum": ["ok", "empty", "limitReached", "timedOut", "unavailable", "failed"]
+            },
+            "termination": {
+                "oneOf": [
+                    {"type": "null"},
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "enum": [
+                                    "limitReached", "deadlineExceeded", "dependencyPending",
+                                    "unsupportedScope", "capacityExhausted",
+                                    "providerUnavailable", "providerFailed"
+                                ]
+                            },
+                            "retryable": {"type": "boolean"},
+                            "detailCode": {"type": "string", "minLength": 1}
+                        },
+                        "required": ["code", "retryable"]
+                    }
+                ]
+            },
+            "searchComplete": {"type": "boolean"},
+            "ranking": {"type": "string", "enum": ["provider", "none"]},
+            "ordering": {"type": "string", "enum": ["provider", "providerTraversal"]},
+            "matches": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "returned": {"type": "integer", "minimum": 0},
+                    "total": {"type": "integer", "minimum": 0},
+                    "relation": {"type": "string", "enum": ["exact", "lowerBound", "unknown"]}
+                },
+                "required": ["returned", "relation"]
+            },
+            "hits": {"type": "array", "items": hit},
+            "diagnostics": string_array(),
+            "artifacts": string_array()
+        },
+        "required": [
+            "role", "provider", "status", "termination", "searchComplete", "ranking", "ordering",
+            "matches", "hits", "diagnostics"
+        ]
+    });
+    let mut schema = operation_result_output_schema();
+    if let Some(properties) = schema["properties"].as_object_mut() {
+        for forbidden in ["stdout", "stderr", "command", "job"] {
+            properties.remove(forbidden);
+        }
+    }
+    schema["properties"]["data"] = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "coverage": {"type": "string", "enum": ["complete", "partial", "none"]},
+            "elapsedMs": {"type": "integer", "minimum": 0},
+            "sections": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": section
+            }
+        },
+        "required": ["coverage", "elapsedMs", "sections"]
+    });
+    schema["required"]
+        .as_array_mut()
+        .expect("OperationResult required fields are an array")
+        .push(json!("data"));
+    schema
+}
+
 /// Project invalid Meta arguments into the stable operation envelope for an
 /// MCP adapter without changing the direct application-call error contract.
 pub fn metadata_argument_failure_result(
@@ -431,6 +574,16 @@ impl UnicaApplication {
         args: &Map<String, Value>,
         cancellation: CancellationToken,
     ) -> Result<OperationResult, String> {
+        self.call_tool_observed(name, args, cancellation, Arc::new(NoopSearchProgressSink))
+    }
+
+    pub fn call_tool_observed(
+        &self,
+        name: &str,
+        args: &Map<String, Value>,
+        cancellation: CancellationToken,
+        progress: Arc<dyn SearchProgressSink>,
+    ) -> Result<OperationResult, String> {
         let deadline = ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE);
         let spec = tools()
             .into_iter()
@@ -443,7 +596,14 @@ impl UnicaApplication {
                     format!("unknown unica tool: {name}")
                 }
             })?;
-        call_tool(spec, args, self.ports.as_ref(), &cancellation, deadline)
+        call_tool_observed(
+            spec,
+            args,
+            self.ports.as_ref(),
+            &cancellation,
+            deadline,
+            progress.as_ref(),
+        )
     }
 }
 
@@ -682,7 +842,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.search",
-            description: "Search code concurrently through provider-local RLM, bsl-analyzer, and literal git-grep sections. Migration: use sourceDir instead of the former path/config fields and a per-provider limit from 1 to 50.",
+            description: "Search one logical code scope concurrently through semantic, symbol, and lexical roles. Results preserve role-local ranking, explicit completeness and retryability, logical locations, and observable progress; sourceDir remains a mutually exclusive migration selector.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
@@ -820,12 +980,31 @@ pub fn tools() -> Vec<ToolSpec> {
     specs
 }
 
+#[cfg(test)]
 fn call_tool(
     spec: ToolSpec,
     args: &Map<String, Value>,
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
+) -> Result<OperationResult, String> {
+    call_tool_observed(
+        spec,
+        args,
+        ports,
+        cancellation,
+        deadline,
+        &NoopSearchProgressSink,
+    )
+}
+
+fn call_tool_observed(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    ports: &dyn ApplicationPorts,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+    progress: &dyn SearchProgressSink,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
@@ -1125,6 +1304,7 @@ fn call_tool(
                     "code intelligence call is missing operational config".to_string()
                 })?,
                 cancellation,
+                progress,
             )?,
             ToolHandler::CodeIntelligence { operation } => {
                 invoke_code_intelligence_read(CodeIntelligenceReadInvocation {
@@ -1570,8 +1750,9 @@ fn invoke_code_intelligence_search(
     workspace: &WorkspaceContext,
     operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
+    progress: &dyn SearchProgressSink,
 ) -> Result<ports::HandlerOutcome, String> {
-    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    let (context, _scope) = ports.resolve_code_search_context(workspace, args)?;
     let request = SearchRequest {
         query: args
             .get("query")
@@ -1588,7 +1769,7 @@ fn invoke_code_intelligence_search(
         ports.code_intelligence_registry()?,
         operational_config.code_intelligence(),
     )
-    .search(&request, &context, cancellation)?;
+    .search_observed(&request, &context, cancellation, progress)?;
     let artifacts = execution
         .result
         .sections
@@ -1654,7 +1835,7 @@ fn invoke_code_intelligence_read(
             request.capability()
         )
     })?;
-    let provider_id = provider.id();
+    let provider_identity = provider.identity();
     let mut outcome = code_intelligence::execute_provider_read(
         provider,
         request,
@@ -1664,13 +1845,12 @@ fn invoke_code_intelligence_read(
             .provider_read_timeout(),
         cancellation,
     )?;
-    if outcome.provider != provider_id {
+    if outcome.provider != provider_identity {
         outcome.warnings.insert(
             0,
             format!(
                 "provider registry selected {}, but the response identified {}",
-                provider_id.as_str(),
-                outcome.provider.as_str()
+                provider_identity.provider, outcome.provider.provider
             ),
         );
     }
@@ -2826,6 +3006,32 @@ mod tests {
         path.display().to_string().replace('\\', "/")
     }
 
+    #[test]
+    fn code_search_schema_requires_a_machine_readable_section_termination() {
+        let schema = code_search_output_schema();
+        let section = &schema["properties"]["data"]["properties"]["sections"]["items"];
+
+        assert!(section["required"]
+            .as_array()
+            .is_some_and(|required| required.iter().any(|field| field == "termination")));
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["code"]["enum"],
+            json!([
+                "limitReached",
+                "deadlineExceeded",
+                "dependencyPending",
+                "unsupportedScope",
+                "capacityExhausted",
+                "providerUnavailable",
+                "providerFailed"
+            ])
+        );
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["retryable"]["type"],
+            "boolean"
+        );
+    }
+
     #[derive(Default)]
     struct RejectDiscoveryPorts {
         discovery_calls: AtomicUsize,
@@ -2997,8 +3203,8 @@ mod tests {
     struct FullRangeReadProvider;
 
     impl crate::domain::code_intelligence::CodeIntelligenceProvider for FullRangeReadProvider {
-        fn id(&self) -> crate::domain::code_intelligence::ProviderId {
-            crate::domain::code_intelligence::ProviderId::Rlm
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            crate::domain::code_intelligence::ProviderId::Rlm.identity()
         }
 
         fn capabilities(&self) -> &[crate::domain::code_intelligence::ProviderCapability] {
@@ -3052,7 +3258,7 @@ mod tests {
                 }
             };
             Ok(crate::domain::code_intelligence::ProviderReadOutcome {
-                provider: crate::domain::code_intelligence::ProviderId::Rlm,
+                provider: crate::domain::code_intelligence::ProviderId::Rlm.identity(),
                 ok: true,
                 summary: "read".to_string(),
                 warnings: Vec::new(),
@@ -3180,6 +3386,26 @@ mod tests {
             Err("code intelligence context should not be resolved in this test".to_string())
         }
 
+        fn resolve_code_search_context(
+            &self,
+            context: &WorkspaceContext,
+            args: &Map<String, Value>,
+        ) -> Result<
+            (
+                crate::domain::code_intelligence::CodeIntelligenceContext,
+                crate::domain::code_intelligence::CodeSearchScope,
+            ),
+            String,
+        > {
+            let provider_context = self.resolve_code_intelligence_context(context, args)?;
+            let scope = crate::domain::code_intelligence::CodeSearchScope::all(
+                "main".to_string(),
+                provider_context.source_root.path.clone(),
+                false,
+            );
+            Ok((provider_context.with_search_scope(scope.clone()), scope))
+        }
+
         fn normalize_code_intelligence_read_request(
             &self,
             request: CodeIntelligenceReadRequest,
@@ -3295,7 +3521,10 @@ mod tests {
         assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 3);
 
         for (tool_name, args) in [
-            ("unica.code.search", json!({"query": "needle"})),
+            (
+                "unica.code.search",
+                json!({"query": "needle", "sourceDir": "."}),
+            ),
             ("unica.code.definition", json!({"name": "Needle"})),
             ("unica.code.outline", json!({"path": "Module.bsl"})),
         ] {
@@ -3316,7 +3545,9 @@ mod tests {
         let result = app
             .call_tool(
                 "unica.code.search",
-                json!({"query": "needle"}).as_object().unwrap(),
+                json!({"query": "needle", "sourceDir": "."})
+                    .as_object()
+                    .unwrap(),
             )
             .expect("prepared handler must serve code search");
 
@@ -3331,7 +3562,10 @@ mod tests {
     #[test]
     fn invalid_operational_config_stops_before_handler_execution() {
         let cases = [
-            ("unica.code.search", json!({"query": "needle"})),
+            (
+                "unica.code.search",
+                json!({"query": "needle", "sourceDir": "."}),
+            ),
             ("unica.code.definition", json!({"name": "Needle"})),
             ("unica.code.outline", json!({"path": "Module.bsl"})),
             ("unica.code.diagnostics", json!({"timeoutSeconds": 900})),
@@ -3367,7 +3601,9 @@ mod tests {
         let error = app
             .call_tool_cancellable(
                 "unica.code.search",
-                json!({"query": "needle"}).as_object().unwrap(),
+                json!({"query": "needle", "sourceDir": "."})
+                    .as_object()
+                    .unwrap(),
                 token,
             )
             .expect_err("cancellation must win over invalid config");
