@@ -6660,7 +6660,8 @@ fn main() {
             updated_at: now_secs_for_test(),
             last_run: None,
         };
-        let status_path = crate::infrastructure::workspace_index::status_path(context);
+        let status_path =
+            crate::infrastructure::workspace_index::status_path(context, source_root).unwrap();
         fs::create_dir_all(status_path.parent().unwrap()).unwrap();
         fs::write(
             status_path,
@@ -6671,7 +6672,10 @@ fn main() {
     }
 
     fn write_active_rlm_index_lock(context: &WorkspaceContext, source_root: &Path) {
-        let lock_path = context.cache_root.join("locks/bsl_index.lock");
+        let lock_path =
+            crate::infrastructure::workspace_index::rlm_provider_state_root(context, source_root)
+                .unwrap()
+                .join("locks/bsl_index.lock");
         fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         let now = now_secs_for_test();
         fs::write(

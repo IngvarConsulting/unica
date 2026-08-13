@@ -787,11 +787,27 @@ impl Fixture {
     }
 
     fn wait_for_index_ready(&self, timeout: Duration) {
-        let status_path = self.cache.join("caches/bsl_index_status.json");
         let deadline = Instant::now() + timeout;
+        let mut status_path = None;
         let mut last_status = "status file was not observed".to_string();
         while Instant::now() < deadline {
-            let ready = match fs::read_to_string(&status_path) {
+            if status_path.is_none() {
+                status_path = self
+                    .try_log_records()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|record| record.kind == "rlm-index")
+                    .and_then(|record| {
+                        PathBuf::from(record.rlm_index_dir)
+                            .parent()
+                            .map(|root| root.join("caches/bsl_index_status.json"))
+                    });
+            }
+            let Some(current_status_path) = status_path.as_ref() else {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            let ready = match fs::read_to_string(current_status_path) {
                 Ok(text) => {
                     last_status = text.clone();
                     serde_json::from_str::<Value>(&text)
@@ -816,7 +832,10 @@ impl Fixture {
         }
         panic!(
             "timed out waiting for generation-bound RLM index status at {}; last status: {last_status}",
-            status_path.display(),
+            status_path
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unreported pair root>".to_string()),
         );
     }
 

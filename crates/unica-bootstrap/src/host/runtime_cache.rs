@@ -73,7 +73,7 @@ fn resolve_runtime_cache_root(read_env: ReadEnv<'_>) -> Result<PathBuf> {
 }
 
 fn resolve_provider_state_root(read_env: ReadEnv<'_>) -> Result<PathBuf> {
-    if let Some(value) = read_env(PROVIDER_STATE_OVERRIDE_ENV) {
+    if let Some(value) = non_empty_env(read_env, PROVIDER_STATE_OVERRIDE_ENV) {
         let value = PathBuf::from(value);
         if !value.to_string_lossy().contains(UNEXPANDED_TOKEN) {
             return Ok(value);
@@ -118,22 +118,28 @@ fn user_home_root(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
 
 fn published_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
     let data_dir = host.data_dir?;
-    let value = read_env(data_dir.env)?;
+    let value = non_empty_env(read_env, data_dir.env)?;
     Some(provider_state_subdirectory(PathBuf::from(value)))
 }
 
 fn declared_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
     let home_root = host.home_root?;
-    let value = read_env(home_root.env)?;
+    let value = non_empty_env(read_env, home_root.env)?;
     Some(provider_state_subdirectory(PathBuf::from(value)))
 }
 
 fn user_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
     let home_root = host.home_root?;
-    let value = USER_HOME_ENVS.iter().find_map(|name| read_env(name))?;
+    let value = USER_HOME_ENVS
+        .iter()
+        .find_map(|name| non_empty_env(read_env, name))?;
     Some(provider_state_subdirectory(
         PathBuf::from(value).join(home_root.user_home_segment),
     ))
+}
+
+fn non_empty_env(read_env: ReadEnv<'_>, name: &str) -> Option<OsString> {
+    read_env(name).filter(|value| !value.is_empty())
 }
 
 fn provider_state_subdirectory(root: PathBuf) -> PathBuf {
@@ -287,6 +293,69 @@ mod tests {
             PathBuf::from("/data/claude")
                 .join("unica")
                 .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_empty_override_falls_through_to_host_roots() {
+        let root = resolve_provider_state(&[
+            ("UNICA_PROVIDER_STATE_DIR", ""),
+            ("CLAUDE_PLUGIN_DATA", "/data/claude"),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            root,
+            PathBuf::from("/data/claude")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_empty_first_host_root_falls_through_to_next_host() {
+        let root = resolve_provider_state(&[
+            ("CLAUDE_PLUGIN_DATA", ""),
+            ("CODEX_HOME", "/elsewhere/.codex"),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            root,
+            PathBuf::from("/elsewhere/.codex")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_empty_home_falls_through_to_userprofile() {
+        let root =
+            resolve_provider_state(&[("HOME", ""), ("USERPROFILE", "C:/Users/user")]).unwrap();
+
+        assert_eq!(
+            root,
+            PathBuf::from("C:/Users/user")
+                .join(".codex")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_all_empty_values_report_missing_root() {
+        let error = resolve_provider_state(&[
+            ("UNICA_PROVIDER_STATE_DIR", ""),
+            ("CLAUDE_PLUGIN_DATA", ""),
+            ("CODEX_HOME", ""),
+            ("HOME", ""),
+            ("USERPROFILE", ""),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "CLAUDE_PLUGIN_DATA, CODEX_HOME, HOME, or USERPROFILE is required for persistent provider state"
         );
     }
 
