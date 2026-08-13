@@ -2106,7 +2106,7 @@ impl WorkspaceServiceRuntime {
                         self.retire_session(stale_session);
                     }
                     let warnings = self.request_rlm_index_maintenance(
-                        pre_execution_revision.clone(),
+                        post_execution_revision,
                         Arc::clone(&revisions),
                         cancellation,
                     );
@@ -6626,7 +6626,10 @@ fn main() {
         testing::wait_for_process_exit(pid, timeout)
     }
 
-    fn write_ready_rlm_status_for_current_source(context: &WorkspaceContext, source_root: &Path) {
+    fn write_ready_rlm_status_for_current_source(
+        context: &WorkspaceContext,
+        source_root: &Path,
+    ) -> SourceRevision {
         let revision = SourceRevisionService::new(context, source_root)
             .unwrap()
             .snapshot(
@@ -6644,7 +6647,7 @@ fn main() {
             message: None,
             failure_class: None,
             source_generation: Some(revision.generation),
-            indexed_revision: Some(revision),
+            indexed_revision: Some(revision.clone()),
             observed_revision: None,
             next_action: None,
             updated_at: now_secs_for_test(),
@@ -6657,6 +6660,7 @@ fn main() {
             serde_json::to_string_pretty(&status).unwrap() + "\n",
         )
         .unwrap();
+        revision
     }
 
     fn write_active_rlm_index_lock(context: &WorkspaceContext, source_root: &Path) {
@@ -6685,6 +6689,8 @@ fn main() {
         response: ServiceResponse,
         session_retired: bool,
         maintenance_requests: usize,
+        pre_execution_revision: SourceRevision,
+        maintenance_revisions: Vec<SourceRevision>,
         teardown_drained: bool,
     }
 
@@ -6696,7 +6702,8 @@ fn main() {
         let source_root = context.workspace_root.join("src");
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let pre_execution_revision =
+            write_ready_rlm_status_for_current_source(&context, &source_root);
         let fixture = blocking_rlm_fixture();
         fs::create_dir_all(&context.cache_root).unwrap();
         let execute_started = context.cache_root.join("blocking-rlm-execute-started.txt");
@@ -6705,9 +6712,12 @@ fn main() {
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
+        let maintenance_revisions = Arc::new(Mutex::new(Vec::new()));
         runtime.rlm_maintenance_requester = Arc::new({
             let maintenance_requests = Arc::clone(&maintenance_requests);
-            move |_context, _source_root, _generation, _revision_service, _cancellation| {
+            let maintenance_revisions = Arc::clone(&maintenance_revisions);
+            move |_context, _source_root, revision, _revision_service, _cancellation| {
+                maintenance_revisions.lock().unwrap().push(revision);
                 maintenance_requests.fetch_add(1, Ordering::AcqRel);
             }
         });
@@ -6752,6 +6762,7 @@ fn main() {
         let session_retired = runtime.rlm.lock().unwrap().is_none();
         wait_for_atomic_value(&maintenance_requests, 1, Duration::from_secs(2));
         let maintenance_requests = maintenance_requests.load(Ordering::Acquire);
+        let maintenance_revisions = maintenance_revisions.lock().unwrap().clone();
         let teardown_drained = runtime.session_teardowns.drain(SESSION_TEARDOWN_GRACE);
         drop(runtime);
         cleanup(&context);
@@ -6760,6 +6771,8 @@ fn main() {
             response,
             session_retired,
             maintenance_requests,
+            pre_execution_revision,
+            maintenance_revisions,
             teardown_drained,
         }
     }
@@ -8070,6 +8083,11 @@ fn main() {
             "stale logical RLM session was retained"
         );
         assert_eq!(observation.maintenance_requests, 1);
+        assert_eq!(observation.maintenance_revisions.len(), 1);
+        assert_ne!(
+            observation.maintenance_revisions[0], observation.pre_execution_revision,
+            "maintenance was scheduled for the already stale pre-execution revision"
+        );
         assert!(
             observation.teardown_drained,
             "retired fake RLM session teardown exceeded the shutdown grace"
