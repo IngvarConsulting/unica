@@ -372,13 +372,41 @@ MCP_INITIALIZE_PARAMS = {
 }
 
 
-def tool_call_message(message_id: int, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def tool_call_message(
+    message_id: int,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    progress_token: str | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"name": name, "arguments": arguments}
+    if progress_token is not None:
+        params["_meta"] = {"progressToken": progress_token}
     return {
         "jsonrpc": "2.0",
         "id": message_id,
         "method": "tools/call",
-        "params": {"name": name, "arguments": arguments},
+        "params": params,
     }
+
+
+def search_progress_snapshots(stdout: str, progress_token: str) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(message, dict) or message.get("method") != "notifications/progress":
+            continue
+        params = message.get("params")
+        if not isinstance(params, dict) or params.get("progressToken") != progress_token:
+            continue
+        meta = params.get("_meta")
+        snapshot = meta.get("io.unica/searchProgress") if isinstance(meta, dict) else None
+        if isinstance(snapshot, dict):
+            snapshots.append(snapshot)
+    return snapshots
 
 
 def parse_tool_payload(response: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
@@ -508,7 +536,8 @@ def run_tool_scenario(
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     args = dict(arguments)
     args.setdefault("cwd", str(bsp_root))
-    message = tool_call_message(1, tool, args)
+    progress_token = "release-assessment-code-search" if tool == "unica.code.search" else None
+    message = tool_call_message(1, tool, args, progress_token=progress_token)
     responses, duration_ms, stdout, stderr, returncode = call_mcp(
         run_unica,
         [message],
@@ -531,11 +560,39 @@ def run_tool_scenario(
         if payload.get("ok") is False and require_payload_ok:
             errors.extend(payload_errors or [str(payload.get("summary", f"{tool} reported ok=false"))])
 
+    progress_snapshots = (
+        search_progress_snapshots(stdout, progress_token)
+        if progress_token is not None
+        else []
+    )
+    if progress_token is not None:
+        if not progress_snapshots:
+            errors.append("code search did not publish typed MCP progress")
+        else:
+            terminal = progress_snapshots[-1].get("providers")
+            roles = (
+                [provider.get("role") for provider in terminal if isinstance(provider, dict)]
+                if isinstance(terminal, list)
+                else []
+            )
+            states = (
+                [provider.get("state") for provider in terminal if isinstance(provider, dict)]
+                if isinstance(terminal, list)
+                else []
+            )
+            if roles != ["semantic", "symbol", "lexical"] or any(
+                state not in {"completed", "unavailable", "failed", "timedOut", "cancelled"}
+                for state in states
+            ):
+                errors.append("code search progress did not reach all three terminal roles")
+
     metrics = {
         "outputBytes": response_output_size(stdout, stderr, payload),
         "warningsCount": len(payload.get("warnings", [])) if payload else 0,
         "errorsCount": len(payload.get("errors", [])) if payload else len(errors),
     }
+    if progress_token is not None:
+        metrics["progressNotifications"] = len(progress_snapshots)
     source_sets = project_source_sets(payload)
     if source_sets:
         metrics["sourceSetsCount"] = len(source_sets)
@@ -580,27 +637,34 @@ def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | Non
         return
     data = payload.get("data")
     sections = data.get("sections") if isinstance(data, dict) else None
-    expected = ["rlm", "bsl-analyzer", "git-grep"]
-    providers = (
-        [section.get("provider") for section in sections if isinstance(section, dict)]
+    expected = ["semantic", "symbol", "lexical"]
+    roles = (
+        [section.get("role") for section in sections if isinstance(section, dict)]
         if isinstance(sections, list)
         else []
     )
     errors: list[str] = []
-    if providers != expected:
+    if roles != expected:
         errors.append(
-            "code search data.sections must contain exactly rlm, bsl-analyzer, git-grep in that order"
+            "code search data.sections must contain exactly semantic, symbol, lexical in that order"
         )
     elif any(
-        section.get("status") not in {"ok", "empty", "unavailable", "failed"}
+        section.get("status")
+        not in {"ok", "empty", "limitReached", "timedOut", "unavailable", "failed"}
+        or not isinstance(section.get("provider"), str)
+        or not isinstance(section.get("searchComplete"), bool)
+        or section.get("ranking") not in {"provider", "none"}
+        or section.get("ordering") not in {"provider", "providerTraversal"}
+        or not isinstance(section.get("matches"), dict)
         or not isinstance(section.get("hits"), list)
         or not isinstance(section.get("diagnostics"), list)
-        or not isinstance(section.get("artifacts"), list)
         for section in sections
     ):
         errors.append(
-            "code search sections must expose a valid status plus hits, diagnostics, and artifacts arrays"
+            "code search role sections must expose status, completeness, ranking, count, hits, and diagnostics"
         )
+    elif sections[2].get("ranking") != "none" or sections[2].get("ordering") != "providerTraversal":
+        errors.append("code search lexical role must be unranked in provider traversal order")
     if errors:
         scenario["status"] = "failed"
         scenario["errors"].extend(errors)
@@ -677,10 +741,10 @@ def sample_bsl_search(bsp_root: Path) -> tuple[str, str] | None:
 
 def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, Any], bool, bool]]:
     bsl_search = sample_bsl_search(bsp_root)
-    code_search_args = {"sourceDir": SOURCE_DIR, "query": "Процедура", "limit": 20}
+    code_search_args = {"sourceSet": "main", "query": "Процедура", "limit": 20}
     if bsl_search:
         _, query = bsl_search
-        code_search_args = {"sourceDir": SOURCE_DIR, "query": query, "limit": 20}
+        code_search_args = {"sourceSet": "main", "query": query, "limit": 20}
 
     scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
         ("project-status", "Workspace status", "unica.project.status", {}, True, True),

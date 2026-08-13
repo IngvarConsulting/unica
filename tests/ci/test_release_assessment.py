@@ -226,11 +226,30 @@ for raw in sys.stdin:
                 {"code": "UnusedLocalVariable", "file": "CommonModules/Test/Ext/Module.bsl"}
             ]
         elif name == "unica.code.search":
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {
+                    "progressToken": "release-assessment-code-search",
+                    "progress": 3,
+                    "total": 3,
+                    "_meta": {"io.unica/searchProgress": {
+                        "schemaVersion": 1,
+                        "providers": [
+                            {"role": "semantic", "provider": "rlm", "state": "completed", "phase": "searching", "resultsFound": 0},
+                            {"role": "symbol", "provider": "bsl-analyzer", "state": "completed", "phase": "searching", "resultsFound": 0},
+                            {"role": "lexical", "provider": "git-grep", "state": "completed", "phase": "searching", "resultsFound": 0},
+                        ],
+                    }},
+                },
+            }), flush=True)
             payload["data"] = {
+                "coverage": "complete",
+                "elapsedMs": 1,
                 "sections": [
-                    {"provider": "rlm", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
-                    {"provider": "bsl-analyzer", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
-                    {"provider": "git-grep", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
+                    {"role": "semantic", "provider": "rlm", "status": "empty", "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
+                    {"role": "symbol", "provider": "bsl-analyzer", "status": "empty", "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
+                    {"role": "lexical", "provider": "git-grep", "status": "empty", "searchComplete": True, "ranking": "none", "ordering": "providerTraversal", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
                 ]
             }
         elif name == "unica.standards.explain":
@@ -558,15 +577,17 @@ for raw in sys.stdin:
         self.assertEqual(summary["blockingFailures"], 0)
         self.assertEqual(summary["qualityFindings"]["nonBlockingFailures"], 1)
 
-    def test_code_search_is_blocking_and_requires_fixed_provider_sections(self) -> None:
+    def test_code_search_is_blocking_and_requires_fixed_role_sections(self) -> None:
         module = load_assessment_module()
         scenarios = {
-            scenario_id: (blocking, require_payload_ok)
-            for scenario_id, _title, _tool, _arguments, blocking, require_payload_ok
+            scenario_id: (arguments, blocking, require_payload_ok)
+            for scenario_id, _title, _tool, arguments, blocking, require_payload_ok
             in module.base_tool_scenarios(Path("/missing-bsp"))
         }
 
-        self.assertEqual(scenarios["code-search"], (True, True))
+        self.assertEqual(scenarios["code-search"][1:], (True, True))
+        self.assertEqual(scenarios["code-search"][0]["sourceSet"], "main")
+        self.assertNotIn("sourceDir", scenarios["code-search"][0])
 
         scenario = module.scenario_result(
             scenario_id="code-search",
@@ -592,8 +613,23 @@ for raw in sys.stdin:
 
         self.assertEqual(scenario["status"], "failed")
         self.assertTrue(
-            any("rlm, bsl-analyzer, git-grep" in error for error in scenario["errors"]),
+            any("semantic, symbol, lexical" in error for error in scenario["errors"]),
             scenario,
+        )
+
+    def test_code_search_call_requests_and_records_typed_progress(self) -> None:
+        module = load_assessment_module()
+
+        message = module.tool_call_message(
+            1,
+            "unica.code.search",
+            {"sourceSet": "main", "query": "Procedure"},
+            progress_token="release-assessment-code-search",
+        )
+
+        self.assertEqual(
+            message["params"]["_meta"]["progressToken"],
+            "release-assessment-code-search",
         )
 
     def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:

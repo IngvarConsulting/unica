@@ -606,7 +606,7 @@ const CODE_ARGS: &[&str] = &[
 
 const CODE_DEFINITION_ARGS: &[&str] = &["limit", "moduleHint", "name", "sourceDir"];
 const CODE_OUTLINE_ARGS: &[&str] = &["includeMethods", "path", "sourceDir"];
-const CODE_SEARCH_ARGS: &[&str] = &["limit", "query", "sourceDir"];
+const CODE_SEARCH_ARGS: &[&str] = &["limit", "metadataPath", "query", "sourceDir", "sourceSet"];
 const CODE_GRAPH_ARGS: &[&str] = &[
     "detail",
     "dir",
@@ -757,6 +757,21 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
                 "properties": {"operation": {"const": "replace"}},
                 "required": ["selector"],
                 "not": {"required": ["position"]}
+            }
+        ]);
+    }
+    if tool.name == "unica.code.search" {
+        schema["oneOf"] = json!([
+            {
+                "required": ["sourceSet"],
+                "not": {"required": ["sourceDir"]}
+            },
+            {
+                "required": ["sourceDir"],
+                "not": {"anyOf": [
+                    {"required": ["sourceSet"]},
+                    {"required": ["metadataPath"]}
+                ]}
             }
         ]);
     }
@@ -1782,6 +1797,32 @@ fn validate_code_arguments(
                 ));
             }
             validate_integer_bound(tool.name, args, "limit", 1, 50)?;
+            let source_set = args.get("sourceSet").and_then(Value::as_str);
+            let source_dir = args.get("sourceDir").and_then(Value::as_str);
+            if source_set.is_some() == source_dir.is_some() {
+                return Err(format!(
+                    "{} requires exactly one of `sourceSet` or migration `sourceDir`",
+                    tool.name
+                ));
+            }
+            if args.contains_key("metadataPath") && source_set.is_none() {
+                return Err(format!(
+                    "{} argument `metadataPath` requires `sourceSet`",
+                    tool.name
+                ));
+            }
+            for name in ["sourceSet", "sourceDir", "metadataPath"] {
+                if args
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.trim().is_empty())
+                {
+                    return Err(format!(
+                        "{} argument `{name}` must be a non-empty string",
+                        tool.name
+                    ));
+                }
+            }
         }
         "unica.code.graph" => {
             validate_enum_argument(tool.name, args, "mode", CODE_GRAPH_MODES)?;
@@ -2886,7 +2927,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "limit",
-        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
+        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
     ),
     (
         "maxErrors",
@@ -3394,6 +3435,18 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         return match name {
             "query" => json!({ "type": "string", "minLength": 1, "pattern": r"\S" }),
             "limit" => json!({ "type": "integer", "minimum": 1, "maximum": 50 }),
+            "sourceSet" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"^\S(?:.*\S)?$",
+                "description": "Canonical configured source-set name that scopes every search role."
+            }),
+            "metadataPath" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
+                "description": "Optional canonical logical address inside sourceSet; every role is restricted to the resolved module or metadata-object subtree."
+            }),
             _ => property_schema(name),
         };
     }
@@ -6603,6 +6656,25 @@ mod tests {
         assert_eq!(search_schema["properties"]["query"]["minLength"], 1);
         assert_eq!(search_schema["properties"]["limit"]["minimum"], 1);
         assert_eq!(search_schema["properties"]["limit"]["maximum"], 50);
+        assert!(search_schema["properties"].get("sourceSet").is_some());
+        assert!(search_schema["properties"].get("metadataPath").is_some());
+        assert!(search_schema["properties"].get("sourceDir").is_some());
+        assert_eq!(
+            search_schema["oneOf"],
+            json!([
+                {
+                    "required": ["sourceSet"],
+                    "not": {"required": ["sourceDir"]}
+                },
+                {
+                    "required": ["sourceDir"],
+                    "not": {"anyOf": [
+                        {"required": ["sourceSet"]},
+                        {"required": ["metadataPath"]}
+                    ]}
+                }
+            ])
+        );
         for removed in [
             "excludePath",
             "fileTypes",
@@ -6627,13 +6699,13 @@ mod tests {
             .unwrap();
 
         for args in [
-            json!({"query": "   "}),
-            json!({"query": 42}),
-            json!({"query": null}),
-            json!({"query": true}),
-            json!({"query": {}}),
-            json!({"query": "Post", "limit": 0}),
-            json!({"query": "Post", "limit": 51}),
+            json!({"sourceSet":"main", "query": "   "}),
+            json!({"sourceSet":"main", "query": 42}),
+            json!({"sourceSet":"main", "query": null}),
+            json!({"sourceSet":"main", "query": true}),
+            json!({"sourceSet":"main", "query": {}}),
+            json!({"sourceSet":"main", "query": "Post", "limit": 0}),
+            json!({"sourceSet":"main", "query": "Post", "limit": 51}),
         ] {
             assert!(
                 validate_tool_arguments(search, args.as_object().unwrap(), false).is_err(),
@@ -6642,10 +6714,41 @@ mod tests {
         }
         validate_tool_arguments(
             search,
-            json!({"query": "Post", "limit": 50}).as_object().unwrap(),
+            json!({"sourceSet":"main", "query": "Post", "limit": 50})
+                .as_object()
+                .unwrap(),
             false,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn code_search_requires_one_fail_closed_logical_or_migration_selector() {
+        let search = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.search")
+            .unwrap();
+
+        for rejected in [
+            json!({"query":"Post"}),
+            json!({"query":"Post", "metadataPath":"CommonModule.X.Module"}),
+            json!({"query":"Post", "sourceSet":"main", "sourceDir":"src"}),
+            json!({"query":"Post", "sourceDir":"src", "metadataPath":"CommonModule.X.Module"}),
+        ] {
+            assert!(
+                validate_tool_arguments(search, rejected.as_object().unwrap(), false).is_err(),
+                "payload must fail closed: {rejected}"
+            );
+        }
+
+        for accepted in [
+            json!({"query":"Post", "sourceSet":"main"}),
+            json!({"query":"Post", "sourceSet":"main", "metadataPath":"CommonModule.X.Module"}),
+            json!({"query":"Post", "sourceDir":"src"}),
+        ] {
+            validate_tool_arguments(search, accepted.as_object().unwrap(), false)
+                .unwrap_or_else(|error| panic!("valid selector rejected: {accepted}: {error}"));
+        }
     }
 
     #[test]
