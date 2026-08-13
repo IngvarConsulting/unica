@@ -9,7 +9,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
 use crate::infrastructure::diagnostics_jsonl::{
-    DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
+    AnalyzerDiagnosticsBatch, DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
 };
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
@@ -1747,6 +1747,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 command: Some(reported_command),
             },
             data,
+            diagnostics: None,
         })
     }
 
@@ -1788,7 +1789,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
 
         let mut process_args = vec!["analyze".to_string()];
         process_args.extend(execution_args);
-        let mut parser = DiagnosticsJsonlParser::new(&source_dir, args.clone())?;
+        let mut parser = DiagnosticsJsonlParser::new(&source_dir)?;
         let mut consume = |line_number, bytes: &[u8]| parser.push_line(line_number, bytes);
         let output = self.process_runner.run_streaming(
             &ProcessCommand {
@@ -1845,8 +1846,8 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             }));
         }
 
-        let projection = parser.finish();
-        let protocol_error = projection.error.as_ref();
+        let batch = parser.finish();
+        let protocol_error = batch.outcome.error.as_ref();
         let outcome = AdapterOutcome {
             ok: protocol_error.is_none(),
             summary: if let Some(error) = protocol_error {
@@ -1874,7 +1875,8 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         };
         Ok(BslAnalyzerOutcome {
             outcome,
-            data: Some(projection.data),
+            data: None,
+            diagnostics: Some(batch),
         })
     }
 }
@@ -1885,6 +1887,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
 pub struct BslAnalyzerOutcome {
     pub outcome: AdapterOutcome,
     pub data: Option<Value>,
+    pub(crate) diagnostics: Option<AnalyzerDiagnosticsBatch>,
 }
 
 impl BslAnalyzerOutcome {
@@ -1892,6 +1895,7 @@ impl BslAnalyzerOutcome {
         Self {
             outcome,
             data: None,
+            diagnostics: None,
         }
     }
 }
@@ -4678,8 +4682,12 @@ source-set:
 
         assert!(analyzer.outcome.ok, "{:?}", analyzer.outcome);
         assert!(analyzer.outcome.stdout.is_none());
-        assert_eq!(analyzer.data.as_ref().unwrap()["state"], "completed");
-        assert_eq!(analyzer.data.as_ref().unwrap()["items"], json!([]));
+        let batch = analyzer.diagnostics.as_ref().expect("typed diagnostics");
+        assert_eq!(
+            batch.outcome.status,
+            crate::domain::diagnostics::DiagnosticProviderStatus::Empty
+        );
+        assert!(batch.outcome.observations.is_empty());
         assert!(runner.commands.borrow()[0]
             .args
             .windows(2)
@@ -4724,14 +4732,20 @@ source-set:
 
         assert!(analyzer.outcome.ok, "{:?}", analyzer.outcome);
         assert!(analyzer.outcome.stdout.is_none());
-        assert_eq!(
-            analyzer.data.as_ref().unwrap()["items"][0]["path"],
-            expected_path
-        );
-        assert_eq!(
-            analyzer.data.as_ref().unwrap()["items"][0]["message"],
-            "Длина строки превышает максимальную"
-        );
+        let observation = &analyzer
+            .diagnostics
+            .as_ref()
+            .expect("typed diagnostics")
+            .outcome
+            .observations[0];
+        assert!(matches!(
+            observation,
+            crate::domain::diagnostics::DiagnosticObservation::Diagnostic {
+                location: crate::domain::diagnostics::DiagnosticObservationLocation::Resource { handle },
+                message,
+                ..
+            } if handle == expected_path && message == "Длина строки превышает максимальную"
+        ));
         assert!(runner.commands.borrow()[0]
             .args
             .windows(2)
@@ -5312,13 +5326,21 @@ analyze_timeout_seconds = 900
         );
 
         assert!(!outcome.outcome.ok);
-        assert_eq!(outcome.data.as_ref().unwrap()["state"], "pending");
+        assert_eq!(
+            outcome
+                .diagnostics
+                .as_ref()
+                .expect("typed diagnostics")
+                .outcome
+                .status,
+            crate::domain::diagnostics::DiagnosticProviderStatus::Unavailable
+        );
         assert!(outcome.outcome.stdout.is_none());
         assert!(outcome
             .outcome
             .errors
             .iter()
-            .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)
+            .any(|error| error.starts_with("diagnostics_pending")
                 && error.contains("did not report files")));
     }
 
@@ -5345,7 +5367,16 @@ analyze_timeout_seconds = 900
         assert!(outcome.outcome.ok, "{:?}", outcome.outcome);
         assert!(outcome.outcome.errors.is_empty());
         assert!(outcome.outcome.stdout.is_none());
-        assert_eq!(outcome.data.as_ref().unwrap()["itemsTotal"], 1);
+        assert_eq!(
+            outcome
+                .diagnostics
+                .as_ref()
+                .expect("typed diagnostics")
+                .outcome
+                .observations
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -5365,8 +5396,8 @@ analyze_timeout_seconds = 900
             assert!(result.outcome.ok, "{:?}", result.outcome);
             assert!(result.outcome.stdout.is_none());
         }
-        assert_eq!(results[0].data, results[1].data);
-        assert_eq!(results[1].data, results[2].data);
+        assert_eq!(results[0].diagnostics, results[1].diagnostics);
+        assert_eq!(results[1].diagnostics, results[2].diagnostics);
     }
 
     #[test]
@@ -5388,10 +5419,10 @@ analyze_timeout_seconds = 900
 
         assert!(result.outcome.ok, "{:?}", result.outcome);
         assert!(result.outcome.stdout.is_none());
-        let data = result.data.unwrap();
-        assert_eq!(data["itemsTotal"], files);
-        assert_eq!(data["itemsReturned"], 200);
-        assert_eq!(data["truncated"], true);
+        let batch = result.diagnostics.unwrap();
+        assert_eq!(batch.files.discovered, Some(files));
+        assert_eq!(batch.files.failed, Some(files));
+        assert_eq!(batch.outcome.observations.len(), files);
     }
 
     #[test]
@@ -5402,8 +5433,11 @@ analyze_timeout_seconds = 900
 
         assert!(!result.outcome.ok);
         assert!(result.outcome.stdout.is_none());
-        assert!(result.outcome.errors[0].starts_with("diagnostics_invalid:"));
-        assert_eq!(result.data.unwrap()["state"], "invalid");
+        assert!(result.outcome.errors[0].starts_with("diagnostics_invalid"));
+        assert_eq!(
+            result.diagnostics.unwrap().outcome.error.unwrap().code,
+            "diagnostics_invalid"
+        );
     }
 
     #[test]
