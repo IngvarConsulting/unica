@@ -842,6 +842,12 @@ fn item_matches_request(
             return false;
         }
     }
+    if request.action == DiagnosticAction::Findings
+        && !item_location(item)
+            .is_some_and(|location| location_within_findings_target(location, &context.target))
+    {
+        return false;
+    }
     let Some(requested_range) = request.range else {
         return true;
     };
@@ -865,6 +871,25 @@ fn item_matches_request(
         }
         | DiagnosticItem::DiagnosticRule { .. } => false,
     }
+}
+
+fn location_within_findings_target(
+    location: &DiagnosticLocation,
+    target: &crate::domain::source_target::ResolvedTarget,
+) -> bool {
+    if location_matches_target(location, target) {
+        return true;
+    }
+    matches!(
+        location,
+        DiagnosticLocation::Unaddressable {
+            source_set,
+            owner_metadata_path,
+            ..
+        } if target.target_kind == TargetKind::MetadataObject
+            && source_set == &target.source_set
+            && owner_metadata_path == &target.metadata_path
+    )
 }
 
 fn severity_rank(severity: DiagnosticSeverity) -> u8 {
@@ -1164,7 +1189,9 @@ mod tests {
         MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use serde_json::{json, Map, Value};
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -1332,6 +1359,14 @@ mod tests {
             DiagnosticObservationLocation::Resource { handle } if handle == "selected" => {
                 context.target.metadata_path.clone()
             }
+            DiagnosticObservationLocation::Resource { handle } if handle == "inner" => {
+                return Ok(DiagnosticLocation::Unaddressable {
+                    source_set: context.target.source_set.clone(),
+                    owner_metadata_path: context.target.metadata_path.clone(),
+                    observed_path: "Catalogs/Selected/Ext/Unknown.xml".to_string(),
+                    reason: UnaddressableReason::ResourceNotAddressable,
+                });
+            }
             DiagnosticObservationLocation::Resource { handle } => {
                 Some(address(&format!("CommonModule.{handle}.Module")))
             }
@@ -1400,6 +1435,95 @@ mod tests {
             workspace_root: PathBuf::from("workspace"),
             cache_root: PathBuf::from("workspace/.build/unica"),
             workspace_epoch: 1,
+        }
+    }
+
+    struct LogicalFixture {
+        _temp: tempfile::TempDir,
+        workspace: WorkspaceContext,
+        module: PathBuf,
+    }
+
+    fn logical_fixture() -> LogicalFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let source = root.join("src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Diagnostics</Name></Properties><ChildObjects><CommonModule>Документы Обмена</CommonModule><Catalog>Номенклатура</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        let common_modules = source.join("CommonModules");
+        fs::create_dir_all(common_modules.join("Документы Обмена/Ext")).unwrap();
+        fs::write(
+            common_modules.join("Документы Обмена.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Документы Обмена</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        let module = common_modules.join("Документы Обмена/Ext/Module.bsl");
+        fs::write(&module, "Procedure Обмен()\nEndProcedure\n").unwrap();
+        let catalogs = source.join("Catalogs");
+        fs::create_dir_all(&catalogs).unwrap();
+        fs::write(
+            catalogs.join("Номенклатура.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Номенклатура</Name></Properties><ChildObjects><TabularSection><Properties><Name>Товары</Name></Properties><ChildObjects><Attribute><Properties><Name>Цена</Name><Type>number</Type></Properties></Attribute></ChildObjects></TabularSection></ChildObjects></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        LogicalFixture {
+            workspace: WorkspaceContext {
+                cwd: root.to_path_buf(),
+                workspace_root: root.to_path_buf(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            module,
+            _temp: temp,
+        }
+    }
+
+    fn run_with_real_mapping(
+        descriptor: &'static DiagnosticProviderDescriptor,
+        outcome: DiagnosticProviderOutcome,
+        request: &DiagnosticRequest,
+        workspace: &WorkspaceContext,
+    ) -> DiagnosticResult {
+        let (provider, _) = provider(descriptor, outcome);
+        let registry = DiagnosticProviderRegistry::new(vec![provider]).unwrap();
+        DiagnosticCoordinator::new(registry, &InfrastructureApplicationPorts::new())
+            .execute(request, workspace, &CancellationToken::new())
+            .unwrap()
+    }
+
+    fn assert_no_physical_transport(value: &Value, workspace_root: &str) {
+        match value {
+            Value::Object(object) => {
+                for (key, value) in object {
+                    assert!(
+                        !matches!(
+                            key.as_str(),
+                            "path" | "uri" | "sourceDir" | "stdout" | "stderr" | "command"
+                        ),
+                        "physical transport key leaked: {key}"
+                    );
+                    assert_no_physical_transport(value, workspace_root);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_no_physical_transport(item, workspace_root);
+                }
+            }
+            Value::String(text) => assert!(
+                !text.contains(workspace_root),
+                "workspace root leaked into diagnostics data: {text}"
+            ),
+            _ => {}
         }
     }
 
@@ -2126,5 +2250,188 @@ mod tests {
             analyze.providers[0].error.as_ref().unwrap().code,
             "provider_contract_invalid"
         );
+    }
+
+    #[test]
+    fn diagnostics_metadata_object_scope_excludes_separately_addressable_children() {
+        let outcome = successful(vec![
+            diagnostic(
+                METADATA_VALIDATOR,
+                "selected",
+                "OBJECT",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::Target,
+            ),
+            diagnostic(
+                METADATA_VALIDATOR,
+                "inner",
+                "INNER",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::Target,
+            ),
+            diagnostic(
+                METADATA_VALIDATOR,
+                "Child",
+                "CHILD",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::Target,
+            ),
+        ]);
+        let (registry, _) =
+            fake_registry([successful(Vec::new()), successful(Vec::new()), outcome]);
+        let mut request = findings_request();
+        request.metadata_path = Some(address("Catalog.Selected"));
+        request.requested_providers = Some(vec!["metadata-validator".to_string()]);
+
+        let result = run(registry, &request).unwrap();
+        let codes = result
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DiagnosticItem::Diagnostic { code, .. } => Some(code.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(codes, vec!["OBJECT", "INNER"]);
+    }
+
+    #[test]
+    fn diagnostics_logical_end_to_end_maps_cyrillic_module_without_physical_transport() {
+        let fixture = logical_fixture();
+        let request = DiagnosticRequest {
+            action: DiagnosticAction::Findings,
+            source_set: "main".to_string(),
+            metadata_path: Some(address("CommonModule.Документы Обмена.Module")),
+            requested_providers: Some(vec!["bsl-analyzer".to_string()]),
+            filter: DiagnosticFilter::default(),
+            range: None,
+            limit: 200,
+            timeout: None,
+        };
+        let result = run_with_real_mapping(
+            &ANALYZER_DESCRIPTOR,
+            successful(vec![diagnostic(
+                ANALYZER,
+                &fixture.module.to_string_lossy(),
+                "LineLength",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::SourceRange(DiagnosticRange {
+                    start_line: 2,
+                    start_column: 1,
+                    end_line: 2,
+                    end_column: 8,
+                }),
+            )]),
+            &request,
+            &fixture.workspace,
+        );
+        let data = serde_json::to_value(result).unwrap();
+
+        assert_eq!(data["items"][0]["location"]["kind"], "addressed");
+        assert_eq!(data["items"][0]["location"]["sourceSet"], "main");
+        assert_eq!(
+            data["items"][0]["location"]["metadataPath"],
+            "CommonModule.Документы Обмена.Module"
+        );
+        assert_eq!(data["items"][0]["location"]["targetKind"], "module");
+        assert_eq!(data["items"][0]["focus"]["kind"], "sourceRange");
+        assert_no_physical_transport(&data, &fixture.workspace.workspace_root.to_string_lossy());
+    }
+
+    #[test]
+    fn diagnostics_future_provider_contract_accepts_bsl_ls_and_metadata_focus() {
+        let fixture = logical_fixture();
+        let module_request = DiagnosticRequest {
+            action: DiagnosticAction::Findings,
+            source_set: "main".to_string(),
+            metadata_path: Some(address("CommonModule.Документы Обмена.Module")),
+            requested_providers: Some(vec!["bsl-language-server".to_string()]),
+            filter: DiagnosticFilter::default(),
+            range: None,
+            limit: 200,
+            timeout: None,
+        };
+        let module_uri = url::Url::from_file_path(&fixture.module)
+            .unwrap()
+            .to_string();
+        let bsl_ls = run_with_real_mapping(
+            &LANGUAGE_SERVER_DESCRIPTOR,
+            successful(vec![diagnostic(
+                LANGUAGE_SERVER,
+                &module_uri,
+                "UnusedVariable",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::SourceRange(DiagnosticRange {
+                    start_line: 0,
+                    start_column: 0,
+                    end_line: 0,
+                    end_column: 1,
+                }),
+            )]),
+            &module_request,
+            &fixture.workspace,
+        );
+        let bsl_ls = serde_json::to_value(bsl_ls).unwrap();
+        assert_eq!(bsl_ls["selection"]["providers"][0], "bsl-language-server");
+        assert_eq!(bsl_ls["items"][0]["location"]["targetKind"], "module");
+        assert_eq!(bsl_ls["items"][0]["focus"]["kind"], "sourceRange");
+
+        let metadata_request = DiagnosticRequest {
+            action: DiagnosticAction::Findings,
+            source_set: "main".to_string(),
+            metadata_path: Some(address("Catalog.Номенклатура")),
+            requested_providers: Some(vec!["metadata-validator".to_string()]),
+            filter: DiagnosticFilter::default(),
+            range: None,
+            limit: 200,
+            timeout: None,
+        };
+        let metadata = run_with_real_mapping(
+            &METADATA_DESCRIPTOR,
+            successful(vec![DiagnosticObservation::Diagnostic {
+                provider: METADATA_VALIDATOR,
+                location: DiagnosticObservationLocation::Logical {
+                    metadata_path: Some(address("Catalog.Номенклатура")),
+                },
+                focus: DiagnosticObservationFocus::Metadata(MetadataFocus {
+                    element_path: vec![
+                        MetadataElement {
+                            collection: "tabularSections".to_string(),
+                            name: "Товары".to_string(),
+                        },
+                        MetadataElement {
+                            collection: "attributes".to_string(),
+                            name: "Цена".to_string(),
+                        },
+                    ],
+                    property: Some("Type".to_string()),
+                    language: None,
+                }),
+                code: "MetadataType".to_string(),
+                severity: DiagnosticSeverity::Warning,
+                message: "invalid metadata type".to_string(),
+                tags: Vec::new(),
+            }]),
+            &metadata_request,
+            &fixture.workspace,
+        );
+        let metadata = serde_json::to_value(metadata).unwrap();
+        assert_eq!(
+            metadata["items"][0]["location"]["targetKind"],
+            "metadataObject"
+        );
+        assert_eq!(metadata["items"][0]["focus"]["kind"], "metadata");
+        assert_eq!(metadata["items"][0]["focus"]["property"], "Type");
+
+        let diagnostics_spec = crate::application::tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.diagnostics")
+            .unwrap();
+        let schema = crate::application::input_schema_for_tool(&diagnostics_spec);
+        let schema_text = serde_json::to_string(&schema).unwrap();
+        assert!(schema_text.contains("bsl-analyzer"));
+        assert!(!schema_text.contains("bsl-language-server"));
+        assert!(!schema_text.contains("metadata-validator"));
     }
 }
