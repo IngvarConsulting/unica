@@ -205,12 +205,12 @@ MCP имеет приоритет, отменяет всех работнико�
 {
   "role": "lexical",
   "provider": "git-grep",
-  "status": "limitReached",
+  "status": "timedOut",
   "searchComplete": false,
   "elapsedMs": 310,
   "ranking": "none",
   "ordering": "providerTraversal",
-  "matches": {"returned": 20, "total": 20, "relation": "lowerBound"},
+  "matches": {"returned": 0, "total": 0, "relation": "lowerBound"},
   "hits": []
 }
 ```
