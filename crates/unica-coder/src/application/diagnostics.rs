@@ -4,9 +4,14 @@ use crate::domain::diagnostics::*;
 use crate::domain::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Duration;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const MAX_CONCURRENT_DIAGNOSTIC_WORKERS_PER_PROVIDER: usize = 32;
 
 pub(crate) trait DiagnosticMapping: Send + Sync {
     fn resolve_context(
@@ -63,6 +68,11 @@ impl<'a> DiagnosticCoordinator<'a> {
         workspace: &WorkspaceContext,
         cancellation: &CancellationToken,
     ) -> Result<DiagnosticResult, DiagnosticRequestError> {
+        if cancellation.is_cancelled() {
+            return Err(cancelled_request_error(
+                "diagnostics stopped before providers started",
+            ));
+        }
         let context = self
             .mapping
             .resolve_context(request, workspace, cancellation)?;
@@ -88,24 +98,23 @@ impl<'a> DiagnosticCoordinator<'a> {
             filter: request.filter.clone(),
             range: request.range,
         };
+        let executions = execute_selected_providers(
+            &selected,
+            &provider_request,
+            &context,
+            request.timeout.unwrap_or(Duration::from_secs(120)),
+            cancellation,
+        )?;
         let mut sections = Vec::with_capacity(selected.len());
         let mut all_items = Vec::new();
-        for selected_provider in &selected {
-            if !selected_provider.applicable {
+        for (selected_provider, execution) in selected.iter().zip(executions) {
+            let ProviderExecution::Outcome(outcome) = execution else {
                 sections.push(unsupported_section(
                     selected_provider.descriptor,
                     request.action,
                 ));
                 continue;
-            }
-            let deadline =
-                ProviderDeadline::from_budget(request.timeout.unwrap_or(Duration::from_secs(120)));
-            let outcome = selected_provider.provider.execute(
-                &provider_request,
-                &context,
-                deadline,
-                cancellation,
-            );
+            };
             let mut provider_items = Vec::new();
             let mut mapping_error = None;
             for observation in outcome.observations {
@@ -165,6 +174,12 @@ impl<'a> DiagnosticCoordinator<'a> {
             });
         }
 
+        if cancellation.is_cancelled() {
+            return Err(cancelled_request_error(
+                "diagnostics stopped before result assembly",
+            ));
+        }
+
         all_items.sort_by(|left, right| {
             diagnostic_sort_key(left, &provider_order)
                 .cmp(&diagnostic_sort_key(right, &provider_order))
@@ -222,6 +237,377 @@ struct SelectedProvider {
     descriptor: &'static DiagnosticProviderDescriptor,
     provider: Arc<dyn DiagnosticProvider>,
     applicable: bool,
+}
+
+enum ProviderExecution {
+    Unsupported,
+    Outcome(DiagnosticProviderOutcome),
+}
+
+fn execute_selected_providers(
+    selected: &[SelectedProvider],
+    request: &DiagnosticProviderRequest,
+    context: &DiagnosticContext,
+    total_budget: Duration,
+    cancellation: &CancellationToken,
+) -> Result<Vec<ProviderExecution>, DiagnosticRequestError> {
+    let started_at = Instant::now();
+    let (sender, receiver) = mpsc::channel();
+    let mut slots = (0..selected.len())
+        .map(|_| None)
+        .collect::<Vec<Option<ProviderExecution>>>();
+    let child_cancellations = selected
+        .iter()
+        .map(|provider| provider.applicable.then(|| cancellation.linked_child()))
+        .collect::<Vec<_>>();
+    let admission = diagnostic_worker_admission();
+    let lifecycle = diagnostic_worker_lifecycle();
+
+    for (index, selected_provider) in selected.iter().enumerate() {
+        if !selected_provider.applicable {
+            slots[index] = Some(ProviderExecution::Unsupported);
+            continue;
+        }
+        let provider_id = selected_provider.descriptor.id;
+        let Some(permit) = admission.try_acquire(provider_id) else {
+            slots[index] = Some(ProviderExecution::Outcome(provider_failure_outcome(
+                "provider_busy",
+                "diagnostic provider worker capacity is exhausted",
+                true,
+            )));
+            continue;
+        };
+        let provider = Arc::clone(&selected_provider.provider);
+        let sender = sender.clone();
+        let request = request.clone();
+        let context = context.clone();
+        let worker_cancellation = child_cancellations[index]
+            .as_ref()
+            .expect("applicable provider has a child cancellation token")
+            .clone();
+        let spawn = thread::Builder::new()
+            .name(format!("unica-diagnostics-{}", provider_id.as_str()))
+            .spawn(move || {
+                let _permit = permit;
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    provider.execute(
+                        &request,
+                        &context,
+                        ProviderDeadline::from_started_at(started_at, total_budget),
+                        &worker_cancellation,
+                    )
+                }))
+                .map(|outcome| normalize_provider_outcome(provider_id, request.action, outcome))
+                .unwrap_or_else(|panic| provider_panic_outcome(provider_id, panic));
+                let _ = sender.send((index, outcome));
+            });
+        match spawn {
+            Ok(handle) => lifecycle.track(handle),
+            Err(_) => {
+                slots[index] = Some(ProviderExecution::Outcome(provider_failure_outcome(
+                    "provider_start_failed",
+                    "diagnostic provider worker could not be started",
+                    true,
+                )));
+            }
+        }
+    }
+    drop(sender);
+
+    while slots.iter().any(Option::is_none) {
+        if cancellation.is_cancelled() {
+            cancel_diagnostic_children(&child_cancellations);
+            return Err(cancelled_request_error(
+                "diagnostics stopped while providers were running",
+            ));
+        }
+        let remaining = total_budget
+            .checked_sub(started_at.elapsed())
+            .unwrap_or(Duration::ZERO);
+        if remaining.is_zero() {
+            for (index, slot) in slots.iter_mut().enumerate() {
+                if slot.is_none() {
+                    if let Some(token) = &child_cancellations[index] {
+                        token.cancel();
+                    }
+                    *slot = Some(ProviderExecution::Outcome(provider_failure_outcome(
+                        "provider_timeout",
+                        "diagnostic provider exceeded the invocation deadline",
+                        true,
+                    )));
+                }
+            }
+            break;
+        }
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
+            Ok((index, outcome)) if slots[index].is_none() => {
+                slots[index] = Some(ProviderExecution::Outcome(outcome));
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    if cancellation.is_cancelled() {
+        cancel_diagnostic_children(&child_cancellations);
+        return Err(cancelled_request_error(
+            "diagnostics stopped while providers were completing",
+        ));
+    }
+    cancel_diagnostic_children(&child_cancellations);
+    lifecycle.reap();
+    Ok(slots
+        .into_iter()
+        .zip(selected)
+        .map(|(execution, provider)| {
+            execution.unwrap_or_else(|| {
+                ProviderExecution::Outcome(provider_failure_outcome(
+                    "provider_ended_without_result",
+                    format!(
+                        "diagnostic provider {} ended without a result",
+                        provider.descriptor.id.as_str()
+                    ),
+                    true,
+                ))
+            })
+        })
+        .collect())
+}
+
+fn cancel_diagnostic_children(children: &[Option<CancellationToken>]) {
+    for child in children.iter().flatten() {
+        child.cancel();
+    }
+}
+
+fn normalize_provider_outcome(
+    provider_id: DiagnosticProviderId,
+    action: DiagnosticAction,
+    mut outcome: DiagnosticProviderOutcome,
+) -> DiagnosticProviderOutcome {
+    for observation in &mut outcome.observations {
+        match observation {
+            DiagnosticObservation::Diagnostic { provider, .. }
+            | DiagnosticObservation::ResourceFailure { provider, .. } => *provider = provider_id,
+        }
+    }
+    for rule in &mut outcome.rules {
+        rule.provider = provider_id;
+    }
+    if outcome.status == DiagnosticProviderStatus::Failed && outcome.error.is_none() {
+        return provider_contract_failure(
+            outcome.version,
+            "failed provider outcome omitted its typed error",
+        );
+    }
+    if matches!(
+        outcome.status,
+        DiagnosticProviderStatus::Completed | DiagnosticProviderStatus::Empty
+    ) && outcome.error.is_some()
+    {
+        return provider_contract_failure(
+            outcome.version,
+            "successful provider outcome included an error",
+        );
+    }
+    match action {
+        DiagnosticAction::Status => {
+            if !outcome.observations.is_empty() || !outcome.rules.is_empty() {
+                return provider_contract_failure(
+                    outcome.version,
+                    "status provider returned findings or rules",
+                );
+            }
+        }
+        DiagnosticAction::Catalog => {
+            if !outcome.observations.is_empty() || outcome.readiness.is_some() {
+                return provider_contract_failure(
+                    outcome.version,
+                    "catalog provider returned findings or readiness",
+                );
+            }
+        }
+        DiagnosticAction::Analyze => {
+            if !outcome.rules.is_empty() || outcome.readiness.is_some() {
+                return provider_contract_failure(
+                    outcome.version,
+                    "analyze provider returned rules or readiness",
+                );
+            }
+        }
+        DiagnosticAction::Findings => {
+            if !outcome.rules.is_empty() {
+                return provider_contract_failure(
+                    outcome.version,
+                    "findings provider returned catalog rules",
+                );
+            }
+            if let Some(readiness) = outcome.readiness.take() {
+                if readiness.state != DiagnosticReadinessState::Ready {
+                    return DiagnosticProviderOutcome {
+                        status: DiagnosticProviderStatus::Unavailable,
+                        complete: false,
+                        version: outcome.version,
+                        observations: Vec::new(),
+                        rules: Vec::new(),
+                        readiness: None,
+                        error: Some(DiagnosticError {
+                            code: "provider_not_ready".to_string(),
+                            message: "diagnostic provider findings are not ready".to_string(),
+                            retryable: true,
+                        }),
+                    };
+                }
+                return provider_contract_failure(
+                    outcome.version,
+                    "findings provider returned readiness instead of findings",
+                );
+            }
+        }
+    }
+    outcome
+}
+
+fn provider_contract_failure(
+    version: Option<String>,
+    message: impl Into<String>,
+) -> DiagnosticProviderOutcome {
+    let mut outcome = provider_failure_outcome("provider_contract_invalid", message, false);
+    outcome.version = version;
+    outcome
+}
+
+fn provider_failure_outcome(
+    code: &str,
+    message: impl Into<String>,
+    retryable: bool,
+) -> DiagnosticProviderOutcome {
+    DiagnosticProviderOutcome {
+        status: DiagnosticProviderStatus::Failed,
+        complete: false,
+        version: None,
+        observations: Vec::new(),
+        rules: Vec::new(),
+        readiness: None,
+        error: Some(DiagnosticError {
+            code: code.to_string(),
+            message: message.into(),
+            retryable,
+        }),
+    }
+}
+
+fn provider_panic_outcome(
+    _provider_id: DiagnosticProviderId,
+    _panic: Box<dyn Any + Send>,
+) -> DiagnosticProviderOutcome {
+    provider_failure_outcome(
+        "provider_panicked",
+        "diagnostic provider terminated unexpectedly",
+        false,
+    )
+}
+
+struct DiagnosticWorkerAdmission {
+    counts: Mutex<HashMap<DiagnosticProviderId, usize>>,
+    per_provider_limit: usize,
+}
+
+impl DiagnosticWorkerAdmission {
+    fn try_acquire(
+        self: &Arc<Self>,
+        provider_id: DiagnosticProviderId,
+    ) -> Option<DiagnosticWorkerPermit> {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let count = counts.entry(provider_id).or_default();
+        if *count >= self.per_provider_limit {
+            return None;
+        }
+        *count += 1;
+        Some(DiagnosticWorkerPermit {
+            admission: Arc::clone(self),
+            provider_id,
+        })
+    }
+}
+
+struct DiagnosticWorkerPermit {
+    admission: Arc<DiagnosticWorkerAdmission>,
+    provider_id: DiagnosticProviderId,
+}
+
+impl Drop for DiagnosticWorkerPermit {
+    fn drop(&mut self) {
+        let mut counts = self
+            .admission
+            .counts
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some(count) = counts.get_mut(&self.provider_id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.provider_id);
+            }
+        }
+    }
+}
+
+fn diagnostic_worker_admission() -> Arc<DiagnosticWorkerAdmission> {
+    static ADMISSION: OnceLock<Arc<DiagnosticWorkerAdmission>> = OnceLock::new();
+    Arc::clone(ADMISSION.get_or_init(|| {
+        Arc::new(DiagnosticWorkerAdmission {
+            counts: Mutex::new(HashMap::new()),
+            per_provider_limit: MAX_CONCURRENT_DIAGNOSTIC_WORKERS_PER_PROVIDER,
+        })
+    }))
+}
+
+struct DiagnosticWorkerLifecycle {
+    handles: Mutex<Vec<thread::JoinHandle<()>>>,
+}
+
+impl DiagnosticWorkerLifecycle {
+    fn track(&self, handle: thread::JoinHandle<()>) {
+        self.reap();
+        self.handles
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(handle);
+    }
+
+    fn reap(&self) {
+        let finished = {
+            let mut handles = self
+                .handles
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let mut finished = Vec::new();
+            let mut index = 0;
+            while index < handles.len() {
+                if handles[index].is_finished() {
+                    finished.push(handles.swap_remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            finished
+        };
+        for handle in finished {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn diagnostic_worker_lifecycle() -> Arc<DiagnosticWorkerLifecycle> {
+    static LIFECYCLE: OnceLock<Arc<DiagnosticWorkerLifecycle>> = OnceLock::new();
+    Arc::clone(LIFECYCLE.get_or_init(|| {
+        Arc::new(DiagnosticWorkerLifecycle {
+            handles: Mutex::new(Vec::new()),
+        })
+    }))
 }
 
 fn select_providers(
@@ -698,6 +1084,15 @@ fn request_error(
     }
 }
 
+fn cancelled_request_error(message: impl Into<String>) -> DiagnosticRequestError {
+    DiagnosticRequestError {
+        code: "cancelled",
+        field: None,
+        message: message.into(),
+        retryable: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_diagnostic_request, DiagnosticCoordinator, DiagnosticMapping};
@@ -712,7 +1107,9 @@ mod tests {
     use serde_json::{json, Map, Value};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc, Condvar, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     const ANALYZER: DiagnosticProviderId = DiagnosticProviderId::new_const("bsl-analyzer");
     const LANGUAGE_SERVER: DiagnosticProviderId =
@@ -770,6 +1167,8 @@ mod tests {
 
     #[derive(Default)]
     struct FakeMapping;
+
+    static FAKE_MAPPING: FakeMapping = FakeMapping;
 
     impl DiagnosticMapping for FakeMapping {
         fn resolve_context(
@@ -981,7 +1380,7 @@ mod tests {
         registry: DiagnosticProviderRegistry,
         request: &DiagnosticRequest,
     ) -> Result<DiagnosticResult, DiagnosticRequestError> {
-        DiagnosticCoordinator::new(registry, &FakeMapping).execute(
+        DiagnosticCoordinator::new(registry, &FAKE_MAPPING).execute(
             request,
             &workspace(),
             &CancellationToken::new(),
@@ -1249,5 +1648,423 @@ mod tests {
         assert_eq!(error.code, "metadata_address_invalid");
         assert_eq!(error.field, Some("metadataPath"));
         assert!(!error.retryable);
+    }
+
+    fn failed(code: &str) -> DiagnosticProviderOutcome {
+        DiagnosticProviderOutcome {
+            status: DiagnosticProviderStatus::Failed,
+            complete: false,
+            version: None,
+            observations: Vec::new(),
+            rules: Vec::new(),
+            readiness: None,
+            error: Some(DiagnosticError {
+                code: code.to_string(),
+                message: "provider failed".to_string(),
+                retryable: true,
+            }),
+        }
+    }
+
+    fn building() -> DiagnosticProviderOutcome {
+        DiagnosticProviderOutcome {
+            status: DiagnosticProviderStatus::Completed,
+            complete: true,
+            version: Some("test".to_string()),
+            observations: Vec::new(),
+            rules: Vec::new(),
+            readiness: Some(DiagnosticReadiness {
+                state: DiagnosticReadinessState::Building,
+                retryable: true,
+            }),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn diagnostics_outcome_matrix_distinguishes_complete_partial_and_failed() {
+        let useful = successful(vec![diagnostic(
+            ANALYZER,
+            "selected",
+            "A001",
+            DiagnosticSeverity::Warning,
+            DiagnosticObservationFocus::Target,
+        )]);
+        let (registry, _) = fake_registry([
+            useful,
+            failed("language_server_failed"),
+            successful(Vec::new()),
+        ]);
+        let partial = run(registry, &findings_request()).unwrap();
+        assert!(partial.ok);
+        assert_eq!(partial.state, DiagnosticResultState::Partial);
+        assert!(!partial.complete);
+
+        let (registry, _) = fake_registry([
+            failed("analyzer_failed"),
+            failed("language_server_failed"),
+            successful(Vec::new()),
+        ]);
+        let failed_result = run(registry, &findings_request()).unwrap();
+        assert!(!failed_result.ok);
+        assert_eq!(failed_result.state, DiagnosticResultState::Failed);
+        assert!(!failed_result.complete);
+
+        let empty = successful(Vec::new());
+        let (registry, _) = fake_registry([empty.clone(), empty.clone(), empty]);
+        let complete = run(registry, &findings_request()).unwrap();
+        assert!(complete.ok);
+        assert_eq!(complete.state, DiagnosticResultState::Completed);
+        assert!(complete.complete);
+    }
+
+    #[test]
+    fn diagnostics_outcome_matrix_treats_building_as_status_success_but_not_findings() {
+        let (registry, _) = fake_registry([building(), building(), successful(Vec::new())]);
+        let mut status_request = findings_request();
+        status_request.action = DiagnosticAction::Status;
+        status_request.metadata_path = None;
+        status_request.filter = DiagnosticFilter {
+            min_severity: None,
+            codes: Vec::new(),
+        };
+        let status = run(registry, &status_request).unwrap();
+        assert_eq!(status.state, DiagnosticResultState::Completed);
+        assert!(status.complete);
+        assert!(status.providers.iter().all(|section| {
+            section.status == DiagnosticProviderStatus::Completed
+                && section
+                    .readiness
+                    .as_ref()
+                    .is_some_and(|readiness| readiness.state == DiagnosticReadinessState::Building)
+        }));
+
+        let (registry, _) = fake_registry([building(), building(), successful(Vec::new())]);
+        let findings = run(registry, &findings_request()).unwrap();
+        assert_eq!(findings.state, DiagnosticResultState::Failed);
+        assert!(findings.providers.iter().all(|section| {
+            section.status == DiagnosticProviderStatus::Unavailable
+                && section
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == "provider_not_ready" && error.retryable)
+        }));
+    }
+
+    enum ProviderBehavior {
+        Outcome(DiagnosticProviderOutcome),
+        WaitForRelease {
+            started: mpsc::Sender<DiagnosticProviderId>,
+            gate: Arc<(Mutex<bool>, Condvar)>,
+        },
+        Panic,
+        SleepUntilCancelledOrElapsed {
+            duration: Duration,
+            saw_cancellation: Arc<std::sync::atomic::AtomicBool>,
+        },
+        WaitForCancellation {
+            started: mpsc::Sender<DiagnosticProviderId>,
+        },
+    }
+
+    struct BehaviorProvider {
+        descriptor: &'static DiagnosticProviderDescriptor,
+        behavior: ProviderBehavior,
+    }
+
+    impl DiagnosticProvider for BehaviorProvider {
+        fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
+            self.descriptor
+        }
+
+        fn execute(
+            &self,
+            _request: &DiagnosticProviderRequest,
+            _context: &DiagnosticContext,
+            _deadline: ProviderDeadline,
+            cancellation: &CancellationToken,
+        ) -> DiagnosticProviderOutcome {
+            match &self.behavior {
+                ProviderBehavior::Outcome(outcome) => outcome.clone(),
+                ProviderBehavior::WaitForRelease { started, gate } => {
+                    started.send(self.descriptor.id).unwrap();
+                    let (lock, condition) = &**gate;
+                    let mut released = lock.lock().unwrap();
+                    while !*released {
+                        let (next, _) = condition
+                            .wait_timeout(released, Duration::from_millis(250))
+                            .unwrap();
+                        released = next;
+                    }
+                    successful(Vec::new())
+                }
+                ProviderBehavior::Panic => panic!("fake diagnostic provider panic"),
+                ProviderBehavior::SleepUntilCancelledOrElapsed {
+                    duration,
+                    saw_cancellation,
+                } => {
+                    let started = Instant::now();
+                    while started.elapsed() < *duration && !cancellation.is_cancelled() {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    saw_cancellation.store(cancellation.is_cancelled(), Ordering::SeqCst);
+                    successful(Vec::new())
+                }
+                ProviderBehavior::WaitForCancellation { started } => {
+                    started.send(self.descriptor.id).unwrap();
+                    while !cancellation.is_cancelled() {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    successful(Vec::new())
+                }
+            }
+        }
+    }
+
+    fn behavior_registry(
+        providers: Vec<(&'static DiagnosticProviderDescriptor, ProviderBehavior)>,
+    ) -> DiagnosticProviderRegistry {
+        DiagnosticProviderRegistry::new(
+            providers
+                .into_iter()
+                .map(|(descriptor, behavior)| {
+                    Arc::new(BehaviorProvider {
+                        descriptor,
+                        behavior,
+                    }) as Arc<dyn DiagnosticProvider>
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn diagnostics_concurrency_starts_providers_independently() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let registry = behavior_registry(vec![
+            (
+                &ANALYZER_DESCRIPTOR,
+                ProviderBehavior::WaitForRelease {
+                    started: started_tx.clone(),
+                    gate: Arc::clone(&gate),
+                },
+            ),
+            (
+                &LANGUAGE_SERVER_DESCRIPTOR,
+                ProviderBehavior::WaitForRelease {
+                    started: started_tx,
+                    gate: Arc::clone(&gate),
+                },
+            ),
+        ]);
+        let execution = thread::spawn(move || {
+            DiagnosticCoordinator::new(registry, &FAKE_MAPPING).execute(
+                &findings_request(),
+                &workspace(),
+                &CancellationToken::new(),
+            )
+        });
+        let first = started_rx.recv_timeout(Duration::from_millis(300));
+        let second = started_rx.recv_timeout(Duration::from_millis(300));
+        {
+            let (lock, condition) = &*gate;
+            *lock.lock().unwrap() = true;
+            condition.notify_all();
+        }
+        execution.join().unwrap().unwrap();
+        assert!(first.is_ok(), "the first provider did not start");
+        assert!(
+            second.is_ok(),
+            "the second provider waited for the first one"
+        );
+    }
+
+    #[test]
+    fn diagnostics_concurrency_contains_provider_panic_and_keeps_sibling_items() {
+        let registry = behavior_registry(vec![
+            (&ANALYZER_DESCRIPTOR, ProviderBehavior::Panic),
+            (
+                &LANGUAGE_SERVER_DESCRIPTOR,
+                ProviderBehavior::Outcome(successful(vec![diagnostic(
+                    LANGUAGE_SERVER,
+                    "selected",
+                    "LS001",
+                    DiagnosticSeverity::Warning,
+                    DiagnosticObservationFocus::Target,
+                )])),
+            ),
+        ]);
+        let result = run(registry, &findings_request()).unwrap();
+        assert_eq!(result.state, DiagnosticResultState::Partial);
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.providers[0].status, DiagnosticProviderStatus::Failed);
+        assert_eq!(
+            result.providers[0].error.as_ref().unwrap().code,
+            "provider_panicked"
+        );
+    }
+
+    #[test]
+    fn diagnostics_concurrency_timeout_cancels_provider_without_waiting_for_it() {
+        let saw_cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let registry = behavior_registry(vec![(
+            &ANALYZER_DESCRIPTOR,
+            ProviderBehavior::SleepUntilCancelledOrElapsed {
+                duration: Duration::from_millis(150),
+                saw_cancellation: Arc::clone(&saw_cancellation),
+            },
+        )]);
+        let mut request = findings_request();
+        request.timeout = Some(Duration::from_millis(30));
+        request.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
+        let started = Instant::now();
+        let result = run(registry, &request).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(120));
+        assert_eq!(result.providers[0].status, DiagnosticProviderStatus::Failed);
+        assert_eq!(
+            result.providers[0].error.as_ref().unwrap().code,
+            "provider_timeout"
+        );
+        for _ in 0..50 {
+            if saw_cancellation.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(saw_cancellation.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn diagnostics_cancellation_discards_partial_items() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let registry = behavior_registry(vec![
+            (
+                &ANALYZER_DESCRIPTOR,
+                ProviderBehavior::Outcome(successful(vec![diagnostic(
+                    ANALYZER,
+                    "selected",
+                    "READY",
+                    DiagnosticSeverity::Warning,
+                    DiagnosticObservationFocus::Target,
+                )])),
+            ),
+            (
+                &LANGUAGE_SERVER_DESCRIPTOR,
+                ProviderBehavior::WaitForCancellation {
+                    started: started_tx,
+                },
+            ),
+        ]);
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let execution = thread::spawn(move || {
+            DiagnosticCoordinator::new(registry, &FAKE_MAPPING).execute(
+                &findings_request(),
+                &workspace(),
+                &worker_cancellation,
+            )
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        cancellation.cancel();
+        let error = execution.join().unwrap().unwrap_err();
+        assert_eq!(error.code, "cancelled");
+    }
+
+    #[test]
+    fn diagnostics_provider_contract_normalizes_identity_and_rejects_malformed_payloads() {
+        let mismatched = successful(vec![diagnostic(
+            LANGUAGE_SERVER,
+            "selected",
+            "MISMATCHED",
+            DiagnosticSeverity::Warning,
+            DiagnosticObservationFocus::Target,
+        )]);
+        let (registry, _) =
+            fake_registry([mismatched, successful(Vec::new()), successful(Vec::new())]);
+        let mut request = findings_request();
+        request.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
+        let normalized = run(registry, &request).unwrap();
+        assert!(matches!(
+            &normalized.items[0],
+            DiagnosticItem::Diagnostic {
+                provider: "bsl-analyzer",
+                ..
+            }
+        ));
+
+        let malformed_failed = DiagnosticProviderOutcome {
+            status: DiagnosticProviderStatus::Failed,
+            complete: false,
+            version: None,
+            observations: Vec::new(),
+            rules: Vec::new(),
+            readiness: None,
+            error: None,
+        };
+        let (registry, _) = fake_registry([
+            malformed_failed,
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+        let failed_result = run(registry, &request).unwrap();
+        assert_eq!(
+            failed_result.providers[0].error.as_ref().unwrap().code,
+            "provider_contract_invalid"
+        );
+
+        let status_with_finding = successful(vec![diagnostic(
+            ANALYZER,
+            "selected",
+            "WRONG-ACTION",
+            DiagnosticSeverity::Warning,
+            DiagnosticObservationFocus::Target,
+        )]);
+        let (registry, _) = fake_registry([
+            status_with_finding,
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+        let mut status_request = findings_request();
+        status_request.action = DiagnosticAction::Status;
+        status_request.metadata_path = None;
+        status_request.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
+        status_request.filter.min_severity = None;
+        let status = run(registry, &status_request).unwrap();
+        assert_eq!(
+            status.providers[0].error.as_ref().unwrap().code,
+            "provider_contract_invalid"
+        );
+
+        let analyze_with_rule = DiagnosticProviderOutcome {
+            status: DiagnosticProviderStatus::Completed,
+            complete: true,
+            version: None,
+            observations: Vec::new(),
+            rules: vec![DiagnosticRuleObservation {
+                provider: ANALYZER,
+                code: "RULE".to_string(),
+                default_severity: DiagnosticSeverity::Warning,
+                title: "Rule".to_string(),
+                description: None,
+                tags: Vec::new(),
+            }],
+            readiness: None,
+            error: None,
+        };
+        let (registry, _) = fake_registry([
+            analyze_with_rule,
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+        let mut analyze_request = findings_request();
+        analyze_request.action = DiagnosticAction::Analyze;
+        analyze_request.metadata_path = None;
+        analyze_request.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
+        let analyze = run(registry, &analyze_request).unwrap();
+        assert_eq!(
+            analyze.providers[0].error.as_ref().unwrap().code,
+            "provider_contract_invalid"
+        );
     }
 }
