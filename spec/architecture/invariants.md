@@ -984,7 +984,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0055
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/layout.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform_project_health.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
 - **Scope:** source, runtime
 
 ### INV-SOURCE-PORTABLE-GIT — Переносимость Git доказывается содержимым репозитория
@@ -999,7 +999,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/project_health.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/git.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/resources.rs`
-- **Check:** `ci-test` — `crates/unica-coder/tests/platform_project_health.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
 - **Scope:** source, runtime
 
 ### INV-SOURCE-PER-SET-FORMAT — Формат — свойство набора исходников

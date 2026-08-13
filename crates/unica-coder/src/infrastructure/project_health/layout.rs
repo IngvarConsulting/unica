@@ -232,6 +232,9 @@ mod tests {
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::project_health::ProjectHealthFact;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::testing::{
+        create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use std::fs;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -363,17 +366,17 @@ mod tests {
             .any(|fact| matches!(fact, ProjectHealthFact::GeneratedBuildPresent { .. })));
     }
 
-    #[cfg(unix)]
     #[test]
     fn linked_alias_to_workspace_reports_the_primary_identity_cause_with_evidence() {
-        use std::os::unix::fs::symlink;
-
         let fixture = layout_fixture("alias");
-        symlink(
+        let outcome = create_directory_link_fixture_for_test(
             &fixture.context.workspace_root,
             fixture.context.workspace_root.join("alias"),
         )
         .unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
 
         let inspection = inspect(&fixture);
 
@@ -384,15 +387,19 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[test]
     fn linked_route_to_another_nested_root_is_unsafe() {
-        use std::os::unix::fs::symlink;
-
         let fixture = layout_fixture("alias");
         let nested = fixture.context.workspace_root.join("actual");
         fs::create_dir_all(&nested).unwrap();
-        symlink(&nested, fixture.context.workspace_root.join("alias")).unwrap();
+        let outcome = create_directory_link_fixture_for_test(
+            &nested,
+            fixture.context.workspace_root.join("alias"),
+        )
+        .unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
 
         let inspection = inspect(&fixture);
 
