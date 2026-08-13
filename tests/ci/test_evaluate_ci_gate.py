@@ -119,6 +119,25 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("full", evaluation.contour)
         self.assertEqual({"test-rust-primary", *PUBLISH_SKIPPED}, set(evaluation.skipped_jobs))
 
+    def test_ci_change_requires_the_search_integration_job(self) -> None:
+        module = load_gate_module()
+        outputs = classification(ci_changed=True)
+        results = {
+            **source_results(),
+            "test-rust-platforms": "success",
+            "test-search-integration": "success",
+            **PACKAGE_SUCCESS,
+            "probe-thin-bootstrap": "success",
+        }
+
+        evaluation = module.evaluate_gate(
+            "pull_request", "refs/pull/155/merge", outputs, results
+        )
+
+        self.assertTrue(evaluation.ok)
+        self.assertEqual("full", evaluation.contour)
+        self.assertEqual("success", evaluation.expected["test-search-integration"])
+
     def test_manual_full_contour_runs_probe_but_tag_publishes_instead(self) -> None:
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})

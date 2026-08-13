@@ -131,7 +131,11 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 30
     needs: classify-changes
-    if: ${{ needs.classify-changes.outputs.search_integration_changed == 'true' }}
+    if: >-
+      ${{
+        needs.classify-changes.outputs.search_integration_changed == 'true' ||
+        needs.classify-changes.outputs.ci_changed == 'true'
+      }}
     steps:
       - uses: actions/checkout@v7
         with:
