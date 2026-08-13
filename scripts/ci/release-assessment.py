@@ -632,6 +632,47 @@ def validate_project_map(scenario: dict[str, Any], payload: dict[str, Any] | Non
         scenario["errors"].append(f"project map did not detect {SOURCE_DIR} as platform XML")
 
 
+def is_non_negative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def valid_code_search_match_count(section: dict[str, Any]) -> bool:
+    matches = section.get("matches")
+    hits = section.get("hits")
+    if not isinstance(matches, dict) or not isinstance(hits, list):
+        return False
+    returned = matches.get("returned")
+    relation = matches.get("relation")
+    if (
+        not is_non_negative_integer(returned)
+        or returned != len(hits)
+        or relation not in {"exact", "lowerBound", "unknown"}
+    ):
+        return False
+    total_present = "total" in matches
+    total = matches.get("total")
+    if total_present and not is_non_negative_integer(total):
+        return False
+    if relation == "exact" and total != returned:
+        return False
+    if relation == "lowerBound" and (not total_present or total < returned):
+        return False
+    if relation == "unknown" and total_present:
+        return False
+
+    status = section.get("status")
+    search_complete = section.get("searchComplete")
+    if status == "ok":
+        return search_complete is True and returned > 0 and relation == "exact"
+    if status == "empty":
+        return search_complete is True and returned == 0 and relation == "exact"
+    if status in {"limitReached", "timedOut"}:
+        return search_complete is False and relation == "lowerBound"
+    if status in {"unavailable", "failed"}:
+        return search_complete is False and returned == 0 and relation == "unknown"
+    return False
+
+
 def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | None) -> None:
     if payload is None:
         return
@@ -662,6 +703,10 @@ def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | Non
     ):
         errors.append(
             "code search role sections must expose status, completeness, ranking, count, hits, and diagnostics"
+        )
+    elif any(not valid_code_search_match_count(section) for section in sections):
+        errors.append(
+            "code search role section count must match status, hits, and exact/lowerBound/unknown relation"
         )
     elif sections[2].get("ranking") != "none" or sections[2].get("ordering") != "providerTraversal":
         errors.append("code search lexical role must be unranked in provider traversal order")
