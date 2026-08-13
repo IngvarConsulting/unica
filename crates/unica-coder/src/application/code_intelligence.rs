@@ -977,9 +977,9 @@ mod tests {
     #[test]
     fn coordinator_applies_provider_budgets_and_renders_from_canonical_sections() {
         let providers = [
-            (ProviderId::Rlm, Duration::from_secs(45)),
-            (ProviderId::BslAnalyzer, Duration::from_secs(120)),
-            (ProviderId::GitGrep, Duration::from_secs(15)),
+            (ProviderId::Rlm, Duration::from_secs(300)),
+            (ProviderId::BslAnalyzer, Duration::from_secs(300)),
+            (ProviderId::GitGrep, Duration::from_secs(2)),
         ]
         .into_iter()
         .map(|(id, maximum)| {

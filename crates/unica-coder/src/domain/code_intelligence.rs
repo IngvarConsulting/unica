@@ -125,6 +125,7 @@ impl CodeIntelligenceReadRequest {
 pub struct CodeIntelligenceContext {
     pub workspace: WorkspaceContext,
     pub source_root: ResolvedSourceRoot,
+    pub search_scope: Option<CodeSearchScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +178,13 @@ impl CodeIntelligenceContext {
         Self {
             workspace,
             source_root,
+            search_scope: None,
         }
+    }
+
+    pub fn with_search_scope(mut self, scope: CodeSearchScope) -> Self {
+        self.search_scope = Some(scope);
+        self
     }
 }
 

@@ -242,7 +242,11 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 filters,
                 legacy_selector: false,
             };
-            return Ok((CodeIntelligenceContext::new(workspace, source_root), scope));
+            return Ok((
+                CodeIntelligenceContext::new(workspace, source_root)
+                    .with_search_scope(scope.clone()),
+                scope,
+            ));
         }
 
         let provider_context = self.resolve_code_intelligence_context(context, args)?;
@@ -255,7 +259,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             provider_context.source_root.path.clone(),
             true,
         );
-        Ok((provider_context, scope))
+        Ok((provider_context.with_search_scope(scope.clone()), scope))
     }
 
     fn normalize_code_intelligence_read_request(

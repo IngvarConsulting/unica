@@ -3180,6 +3180,26 @@ mod tests {
             Err("code intelligence context should not be resolved in this test".to_string())
         }
 
+        fn resolve_code_search_context(
+            &self,
+            context: &WorkspaceContext,
+            args: &Map<String, Value>,
+        ) -> Result<
+            (
+                crate::domain::code_intelligence::CodeIntelligenceContext,
+                crate::domain::code_intelligence::CodeSearchScope,
+            ),
+            String,
+        > {
+            let provider_context = self.resolve_code_intelligence_context(context, args)?;
+            let scope = crate::domain::code_intelligence::CodeSearchScope::all(
+                "main".to_string(),
+                provider_context.source_root.path.clone(),
+                false,
+            );
+            Ok((provider_context.with_search_scope(scope.clone()), scope))
+        }
+
         fn normalize_code_intelligence_read_request(
             &self,
             request: CodeIntelligenceReadRequest,

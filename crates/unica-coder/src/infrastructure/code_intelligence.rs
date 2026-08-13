@@ -8,8 +8,9 @@ use crate::domain::code_intelligence::{
 use crate::domain::source_location::SourceLocation;
 use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
-    system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
+    system_process_runner, ProcessCommand, ProcessRunner, ProcessStreamOutput,
 };
+use crate::infrastructure::platform::StreamControl;
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
 use crate::infrastructure::workspace_index::IndexReadiness;
@@ -70,28 +71,62 @@ impl<'a> GitGrepProvider<'a> {
                 "git-grep provider deadline exceeded".to_string(),
             );
         }
-        let args = vec![
+        let mut args = vec![
             "-c".to_string(),
             "core.quotepath=false".to_string(),
             "grep".to_string(),
             "--no-color".to_string(),
             "--untracked".to_string(),
+            "--null".to_string(),
             "-n".to_string(),
             "-F".to_string(),
-            "-m".to_string(),
-            request.limit.to_string(),
             "-e".to_string(),
             request.query.clone(),
             "--".to_string(),
-            ".".to_string(),
         ];
-        let output = match self.runner.run(&ProcessCommand {
+        let scope = context.search_scope.as_ref();
+        if let Some(scope) = scope.filter(|scope| !scope.filters.is_empty()) {
+            for filter in &scope.filters {
+                let path = match filter {
+                    crate::domain::code_intelligence::RelativeSearchFilter::Exact(path)
+                    | crate::domain::code_intelligence::RelativeSearchFilter::Subtree(path) => path,
+                };
+                args.push(path.to_string_lossy().replace('\\', "/"));
+            }
+        } else {
+            args.push(".".to_string());
+        }
+        let command = ProcessCommand {
             program: PathBuf::from("git"),
             args,
             cwd: context.source_root.path.clone(),
             timeout: Some(timeout),
             cancellation: cancellation.clone(),
-        }) {
+        };
+        let mut hits = Vec::new();
+        let mut diagnostics = Vec::new();
+        let mut fatal = None;
+        let mut consume =
+            |line_number: usize, bytes: &[u8]| match parse_git_grep_record(bytes, context) {
+                Ok(hit) => {
+                    hits.push(hit);
+                    if hits.len() >= request.limit {
+                        StreamControl::Stop
+                    } else {
+                        StreamControl::Continue
+                    }
+                }
+                Err(error) => {
+                    diagnostics.push(format!(
+                        "ignored malformed git-grep record #{line_number}: {error}"
+                    ));
+                    StreamControl::Continue
+                }
+            };
+        let output = match self
+            .runner
+            .run_streaming(&command, 1024 * 1024, &mut consume)
+        {
             Ok(output) => output,
             Err(error) => {
                 return unavailable_section(
@@ -100,7 +135,10 @@ impl<'a> GitGrepProvider<'a> {
                 );
             }
         };
-        git_grep_section(output, request.limit)
+        if let Some((line, error)) = &output.line_error {
+            fatal = Some(format!("git-grep record #{line}: {error}"));
+        }
+        git_grep_stream_section(output, hits, diagnostics, fatal)
     }
 }
 
@@ -747,21 +785,44 @@ fn parse_bsl_analyzer_header(
     })
 }
 
-fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSection {
+fn git_grep_stream_section(
+    output: ProcessStreamOutput,
+    hits: Vec<ProviderSearchHit>,
+    mut diagnostics: Vec<String>,
+    fatal: Option<String>,
+) -> ProviderSearchSection {
     if output.cancelled {
         return failed_section(
             ProviderId::GitGrep,
             cancelled_error("git-grep search process stopped"),
         );
     }
+    if let Some(fatal) = fatal {
+        return failed_section(ProviderId::GitGrep, fatal);
+    }
+    if output.stopped_by_consumer {
+        return ProviderSearchSection::limit_reached(
+            ProviderId::GitGrep.identity(),
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            hits,
+            diagnostics,
+        )
+        .expect("bounded git-grep section is valid");
+    }
     if output.timed_out {
-        return failed_section(
-            ProviderId::GitGrep,
-            "git-grep provider deadline exceeded".to_string(),
-        );
+        diagnostics.push("git-grep provider deadline exceeded".to_string());
+        return ProviderSearchSection::timed_out(
+            ProviderId::GitGrep.identity(),
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            hits,
+            diagnostics,
+        )
+        .expect("timed-out git-grep section is valid");
     }
     let no_matches = !output.status_success
-        && output.stdout.trim().is_empty()
+        && hits.is_empty()
         && output.stderr.trim().is_empty()
         && process_exit_code_is(&output.status, 1);
     if no_matches {
@@ -773,8 +834,7 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
     {
         return unavailable_section(ProviderId::GitGrep, output.stderr.trim().to_string());
     }
-    let captured_success = output.stdout_truncated && process_exit_code_is(&output.status, 0);
-    if !output.status_success && !captured_success {
+    if !output.status_success {
         let detail = if output.stderr.trim().is_empty() {
             format!("git grep exited with status {}", output.status)
         } else {
@@ -783,43 +843,8 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
         return failed_section(ProviderId::GitGrep, detail);
     }
 
-    let mut diagnostics = Vec::new();
-    let mut hits = Vec::new();
-    let mut rows = output.stdout.lines();
-    if output.stdout_truncated {
-        // The runner keeps the tail of the capture, so the first retained row lost
-        // its leading bytes. Such a fragment still parses as `path:line:snippet`
-        // and would publish a path that does not exist, so drop it. At worst one
-        // whole row is lost when the cut landed on a line boundary.
-        rows.next();
-    }
-    for line in rows.filter(|line| !line.trim().is_empty()) {
-        match parse_git_grep_line(line) {
-            Some(hit) => hits.push(hit),
-            None => diagnostics.push(format!("ignored malformed git-grep result: {line}")),
-        }
-    }
-    hits.sort_by(|left, right| {
-        location_path(&left.location)
-            .cmp(location_path(&right.location))
-            .then_with(|| left.line.cmp(&right.line))
-            .then_with(|| left.snippet.cmp(&right.snippet))
-    });
-    hits.truncate(limit);
-    for hit in &mut hits {
-        hit.rank = None;
-    }
-    if output.stdout_truncated {
-        diagnostics.push("git-grep output was truncated by the process runner".to_string());
-    }
     let status = if hits.is_empty() {
-        if output.stdout_truncated {
-            diagnostics.insert(
-                0,
-                "git-grep capture contained no complete result after truncation".to_string(),
-            );
-            ProviderSectionStatus::Failed
-        } else if output.stdout.trim().is_empty() {
+        if diagnostics.is_empty() {
             ProviderSectionStatus::Empty
         } else {
             diagnostics.insert(
@@ -848,22 +873,36 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
     }
 }
 
-fn parse_git_grep_line(line: &str) -> Option<ProviderSearchHit> {
-    let mut parts = line.splitn(3, ':');
-    let path = parts.next()?.trim();
-    let line_number = parts.next()?.parse::<usize>().ok()?;
-    let snippet = parts.next()?.trim();
+fn parse_git_grep_record(
+    record: &[u8],
+    context: &CodeIntelligenceContext,
+) -> Result<ProviderSearchHit, String> {
+    let mut parts = record.splitn(3, |byte| *byte == 0);
+    let path = std::str::from_utf8(parts.next().ok_or("path is missing")?)
+        .map_err(|_| "path is not UTF-8")?
+        .trim();
+    let line_number = std::str::from_utf8(parts.next().ok_or("line is missing")?)
+        .map_err(|_| "line is not UTF-8")?
+        .parse::<usize>()
+        .map_err(|_| "line is not a positive integer")?;
+    let snippet = std::str::from_utf8(parts.next().ok_or("snippet is missing")?)
+        .map_err(|_| "snippet is not UTF-8")?
+        .trim_end();
     if path.is_empty() {
-        return None;
+        return Err("path is empty".to_string());
     }
-    Some(ProviderSearchHit {
+    let relative = PathBuf::from(path.replace('\\', "/"));
+    if context
+        .search_scope
+        .as_ref()
+        .is_some_and(|scope| !scope.accepts(&relative))
+    {
+        return Err("path is outside the logical search scope".to_string());
+    }
+    Ok(ProviderSearchHit {
         rank: None,
         provider_score: None,
-        location: SourceLocation::Unaddressable {
-            source_set: "legacy".to_string(),
-            owner_metadata_path: None,
-            path: path.replace('\\', "/"),
-        },
+        location: project_search_location(context, &relative),
         line: line_number,
         end_line: None,
         symbol: None,
@@ -871,6 +910,44 @@ fn parse_git_grep_line(line: &str) -> Option<ProviderSearchHit> {
         snippet: snippet.to_string(),
         attributes: Map::new(),
     })
+}
+
+fn project_search_location(
+    context: &CodeIntelligenceContext,
+    relative_path: &std::path::Path,
+) -> SourceLocation {
+    let source_set = context
+        .source_root
+        .source_set
+        .clone()
+        .unwrap_or_else(|| "legacy".to_string());
+    let request = crate::application::source_navigation::SourceLocateRequest {
+        source_set: source_set.clone(),
+        path: relative_path.to_string_lossy().replace('\\', "/"),
+    };
+    match crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
+        &context.workspace,
+        &request,
+        &CancellationToken::new(),
+    ) {
+        Ok(located) if located.rejection.is_none() => SourceLocation::Addressed {
+            source_set,
+            metadata_path: located.metadata_path,
+            target_kind: located
+                .target_kind
+                .unwrap_or(crate::domain::source_target::TargetKind::SourceRoot),
+        },
+        Ok(located) => SourceLocation::Unaddressable {
+            source_set,
+            owner_metadata_path: located.owner_metadata_path,
+            path: located.relative_path,
+        },
+        Err(_) => SourceLocation::Unaddressable {
+            source_set,
+            owner_metadata_path: None,
+            path: relative_path.to_string_lossy().replace('\\', "/"),
+        },
+    }
 }
 
 /// Causes that mean "this provider is not present here", as opposed to "this
@@ -930,6 +1007,7 @@ fn unaddressable_location(context: &CodeIntelligenceContext, path: &str) -> Sour
     }
 }
 
+#[cfg(test)]
 fn location_path(location: &SourceLocation) -> &str {
     match location {
         SourceLocation::Unaddressable { path, .. } => path,
@@ -1024,7 +1102,7 @@ mod tests {
     #[test]
     fn git_grep_is_literal_source_scoped_and_uses_the_upstream_deadline() {
         let runner = FakeRunner {
-            output: output("CommonModules/Sales/Ext/Module.bsl:4:Post();\n"),
+            output: output("CommonModules/Sales/Ext/Module.bsl\04\0Post();\n"),
             commands: Mutex::new(Vec::new()),
         };
         let provider = GitGrepProvider::with_runner(&runner);
@@ -1052,10 +1130,9 @@ mod tests {
                 "grep",
                 "--no-color",
                 "--untracked",
+                "--null",
                 "-n",
                 "-F",
-                "-m",
-                "20",
                 "-e",
                 "Post.*",
                 "--",
@@ -1071,12 +1148,12 @@ mod tests {
     }
 
     #[test]
-    fn git_grep_parses_sorts_and_ranks_hits_locally() {
+    fn git_grep_returns_the_first_unranked_provider_traversal_prefix() {
         let runner = FakeRunner {
             output: output(
-                "b/Module.bsl:9:Second\n\
-                 a/Module.bsl:7:Later\n\
-                 a/Module.bsl:2:First\n",
+                "b/Module.bsl\09\0Second\n\
+                 a/Module.bsl\07\0Later\n\
+                 a/Module.bsl\02\0First\n",
             ),
             commands: Mutex::new(Vec::new()),
         };
@@ -1091,11 +1168,11 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
         assert_eq!(section.hits.len(), 2);
         assert_eq!(section.hits[0].rank, None);
-        assert_eq!(location_path(&section.hits[0].location), "a/Module.bsl");
-        assert_eq!(section.hits[0].line, 2);
+        assert_eq!(location_path(&section.hits[0].location), "b/Module.bsl");
+        assert_eq!(section.hits[0].line, 9);
         assert_eq!(section.hits[1].rank, None);
         assert_eq!(location_path(&section.hits[1].location), "a/Module.bsl");
         assert_eq!(section.hits[1].line, 7);
@@ -1105,7 +1182,7 @@ mod tests {
     #[test]
     fn git_grep_preserves_utf8_paths() {
         let runner = FakeRunner {
-            output: output("Catalogs/Номенклатура.xml:7:<Name>Номенклатура</Name>\n"),
+            output: output("Catalogs/Номенклатура.xml\07\0<Name>Номенклатура</Name>\n"),
             commands: Mutex::new(Vec::new()),
         };
 
@@ -1127,27 +1204,23 @@ mod tests {
     }
 
     #[test]
-    fn git_grep_keeps_valid_hits_when_capture_was_truncated() {
+    fn git_grep_timeout_preserves_already_streamed_hits_as_a_lower_bound() {
         let runner = FakeRunner {
             output: ProcessOutput {
                 status_success: false,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n",
-                    "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n"
-                )
-                .to_string(),
+                status: "timeout".to_string(),
+                stdout: "a/Module.bsl\02\0First\nb/Module.bsl\09\0Second\n".to_string(),
                 stderr: String::new(),
-                timed_out: false,
+                timed_out: true,
                 cancelled: false,
-                stdout_truncated: true,
+                stdout_truncated: false,
             },
             commands: Mutex::new(Vec::new()),
         };
 
         let section = GitGrepProvider::with_runner(&runner).search(
             &SearchRequest {
-                query: "Procedure".to_string(),
+                query: "needle".to_string(),
                 limit: 20,
             },
             &context(),
@@ -1155,89 +1228,13 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(section.status, ProviderSectionStatus::Ok);
-        assert_eq!(section.hits.len(), 1);
-        assert!(section
-            .diagnostics
-            .iter()
-            .any(|item| item.contains("truncated")));
-    }
-
-    #[test]
-    fn git_grep_drops_the_partial_first_row_of_a_truncated_capture() {
-        let runner = FakeRunner {
-            output: ProcessOutput {
-                status_success: false,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n",
-                    "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n"
-                )
-                .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: true,
-            },
-            commands: Mutex::new(Vec::new()),
-        };
-
-        let section = GitGrepProvider::with_runner(&runner).search(
-            &SearchRequest {
-                query: "Procedure".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+        assert_eq!(section.hits.len(), 2);
+        assert!(!section.search_complete);
         assert_eq!(
-            location_path(&section.hits[0].location),
-            "CommonModules/Test/Ext/Module.bsl"
+            section.matches.relation,
+            crate::domain::code_intelligence::SearchCountRelation::LowerBound
         );
-        assert!(
-            !section
-                .hits
-                .iter()
-                .any(|hit| location_path(&hit.location) == "dules/Broken/Ext/Module.bsl"),
-            "{:?}",
-            section.hits
-        );
-    }
-
-    #[test]
-    fn git_grep_does_not_report_empty_when_truncation_removed_the_only_row() {
-        let runner = FakeRunner {
-            output: ProcessOutput {
-                status_success: false,
-                status: "exit status: 0".to_string(),
-                stdout: "dules/Broken/Ext/Module.bsl:12:Procedure Broken()\n".to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: true,
-            },
-            commands: Mutex::new(Vec::new()),
-        };
-
-        let section = GitGrepProvider::with_runner(&runner).search(
-            &SearchRequest {
-                query: "Procedure".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Failed);
-        assert!(section.hits.is_empty());
-        assert!(section
-            .diagnostics
-            .iter()
-            .any(|item| item.contains("truncated")));
     }
 
     #[test]
@@ -1247,8 +1244,8 @@ mod tests {
                 status_success: true,
                 status: "exit status: 0".to_string(),
                 stdout: concat!(
-                    "CommonModules/Other/Ext/Module.bsl:12:Procedure Other()\n",
-                    "CommonModules/Test/Ext/Module.bsl:1:Procedure Test()\n"
+                    "CommonModules/Other/Ext/Module.bsl\012\0Procedure Other()\n",
+                    "CommonModules/Test/Ext/Module.bsl\01\0Procedure Test()\n"
                 )
                 .to_string(),
                 stderr: String::new(),
