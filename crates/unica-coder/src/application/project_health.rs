@@ -14,26 +14,40 @@ pub(crate) fn invoke(
     let snapshot = match ports.inspect_project_health(context, cancellation, deadline) {
         Ok(snapshot) => snapshot,
         Err(ProjectHealthInspectionError::Cancelled) => {
-            return HandlerOutcome::plain(AdapterOutcome::cancelled(
-                "project health inspection stopped",
-            ));
+            return cancelled();
         }
         Err(ProjectHealthInspectionError::Fatal(reason)) => return failed(reason),
     };
+    if cancellation.is_cancelled() {
+        return cancelled();
+    }
     let report = match evaluate_project_health(snapshot) {
         Ok(report) => report,
         Err(reason) => return failed(reason),
     };
+    if cancellation.is_cancelled() {
+        return cancelled();
+    }
     let mut outcome = AdapterOutcome::ok(format!(
         "project health inspected: ready={}; repositoryReady={}",
         report.ready, report.repository_ready
     ));
     outcome.artifacts.push(report.workspace_root.clone());
     outcome.artifacts.push(report.cache_root.clone());
-    HandlerOutcome::with_data(
+    let result = HandlerOutcome::with_data(
         outcome,
         serde_json::to_value(report).expect("project health report is always serializable"),
-    )
+    );
+    if cancellation.is_cancelled() {
+        return cancelled();
+    }
+    result
+}
+
+fn cancelled() -> HandlerOutcome {
+    HandlerOutcome::plain(AdapterOutcome::cancelled(
+        "project health inspection stopped",
+    ))
 }
 
 fn failed(reason: String) -> HandlerOutcome {
@@ -67,6 +81,7 @@ mod tests {
 
     enum ResultKind {
         Cancelled,
+        CancelledAfterSnapshot,
         InvalidSnapshot,
     }
 
@@ -100,15 +115,20 @@ mod tests {
         ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
             match self.0 {
                 ResultKind::Cancelled => Err(ProjectHealthInspectionError::Cancelled),
-                ResultKind::InvalidSnapshot => Ok(ProjectHealthSnapshot {
-                    workspace_root: "/workspace".into(),
-                    cache_root: "/workspace/.build/unica".into(),
-                    repository_root: None,
-                    source_sets: None,
-                    source_targets_complete: true,
-                    observations: Vec::new(),
-                    facts: Vec::new(),
-                }),
+                ResultKind::CancelledAfterSnapshot | ResultKind::InvalidSnapshot => {
+                    if matches!(self.0, ResultKind::CancelledAfterSnapshot) {
+                        _cancellation.cancel();
+                    }
+                    Ok(ProjectHealthSnapshot {
+                        workspace_root: "/workspace".into(),
+                        cache_root: "/workspace/.build/unica".into(),
+                        repository_root: None,
+                        source_sets: None,
+                        source_targets_complete: true,
+                        observations: Vec::new(),
+                        facts: Vec::new(),
+                    })
+                }
             }
         }
 
@@ -162,6 +182,21 @@ mod tests {
             &FakePorts(ResultKind::Cancelled),
             &context(PathBuf::from("/workspace")),
             &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        );
+
+        assert!(!outcome.adapter.ok);
+        assert!(outcome.data.is_none());
+        assert!(outcome.adapter.summary.contains("cancelled"));
+    }
+
+    #[test]
+    fn cancellation_after_inspection_wins_over_snapshot_publication() {
+        let cancellation = CancellationToken::new();
+        let outcome = invoke(
+            &FakePorts(ResultKind::CancelledAfterSnapshot),
+            &context(PathBuf::from("/workspace")),
+            &cancellation,
             ProviderDeadline::from_budget(Duration::from_secs(1)),
         );
 

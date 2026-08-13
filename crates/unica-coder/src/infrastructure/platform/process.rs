@@ -1,4 +1,6 @@
 use crate::domain::cancellation::CancellationToken;
+#[cfg(test)]
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -12,6 +14,11 @@ const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
 pub(crate) const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
 pub(crate) const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static INJECT_WAIT_ERROR: Cell<bool> = const { Cell::new(false) };
+}
 
 #[cfg(unix)]
 pub(crate) fn configure_runtime_job_command(command: &mut Command) {
@@ -208,6 +215,10 @@ impl ManagedChild {
             .ok_or_else(|| "process_failed: process stdin is unavailable".to_string())?;
         let writer = thread::spawn(move || stdin.write_all(&input));
         let output = child.wait_for_output();
+        if output.is_err() && !child.terminate_after_wait_error() {
+            drop(writer);
+            return output;
+        }
         let write_result = writer
             .join()
             .map_err(|_| "process_failed: process stdin writer panicked".to_string())?;
@@ -270,6 +281,10 @@ impl ManagedChild {
             .unwrap_or((STDOUT_CAPTURE_LIMIT, STDERR_CAPTURE_LIMIT));
         let stdout = start_reader(self.take_stdout(), stdout_limit);
         let stderr = start_reader(self.take_stderr(), stderr_limit);
+        #[cfg(test)]
+        if INJECT_WAIT_ERROR.with(|slot| slot.replace(false)) {
+            return Err("process_failed: injected process wait failure".to_string());
+        }
         let started = Instant::now();
         let mut last_callback = Instant::now();
 
@@ -409,6 +424,17 @@ impl ManagedChild {
             self.state = ChildState::Terminating;
         }
         self.reap_bounded()
+    }
+
+    fn terminate_after_wait_error(&mut self) -> bool {
+        if self.state == ChildState::Reaped {
+            return true;
+        }
+        let tree_terminated = self.process_tree.terminate(&mut self.child).is_ok();
+        let leader_terminated = self.child.kill().is_ok();
+        self.state = ChildState::Terminating;
+        let reaped = self.reap_bounded().is_ok() && self.state == ChildState::Reaped;
+        tree_terminated || leader_terminated || reaped
     }
 
     fn terminate_gracefully(&mut self) -> Result<(), String> {
@@ -1226,6 +1252,20 @@ mod tests {
     const HELPER_ENV: &str = "UNICA_MANAGED_CHILD_HELPER";
     const HELPER_PID_FILE_ENV: &str = "UNICA_MANAGED_CHILD_PID_FILE";
 
+    fn with_wait_error<T>(action: impl FnOnce() -> T) -> T {
+        struct Reset(bool);
+
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::INJECT_WAIT_ERROR.with(|slot| slot.set(self.0));
+            }
+        }
+
+        let previous = super::INJECT_WAIT_ERROR.with(|slot| slot.replace(true));
+        let _reset = Reset(previous);
+        action()
+    }
+
     #[cfg(unix)]
     static HELPER_SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -1651,6 +1691,27 @@ mod tests {
             output.stdout
         );
         assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
+    }
+
+    #[test]
+    fn managed_child_input_wait_error_terminates_before_joining_writer() {
+        let started = Instant::now();
+        let error = with_wait_error(|| {
+            run_helper_with_input(
+                "sleep",
+                vec![b'x'; 8 * 1024 * 1024],
+                Duration::from_secs(20),
+                CancellationToken::new(),
+            )
+        })
+        .expect_err("injected wait failure must remain an error");
+
+        assert!(error.contains("injected process wait failure"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stdin writer was joined before terminating the child: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

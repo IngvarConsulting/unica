@@ -14,8 +14,15 @@ use crate::infrastructure::internal_adapters::{system_process_runner, ProcessRun
 use git::GitRepositoryInspector;
 use layout::SourceLayoutInspector;
 use resources::{resource_observations, SourceResourcePolicyInspector};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::Path;
+
+#[cfg(test)]
+thread_local! {
+    static CANCEL_BEFORE_SNAPSHOT: Cell<bool> = const { Cell::new(false) };
+}
 
 #[derive(Default)]
 struct SourceRootOwnerNode<'a> {
@@ -248,6 +255,13 @@ fn inspect_project_health_with(
             }
         }
     }
+    #[cfg(test)]
+    if CANCEL_BEFORE_SNAPSHOT.with(|slot| slot.replace(false)) {
+        cancellation.cancel();
+    }
+    if cancellation.is_cancelled() {
+        return Err(ProjectHealthInspectionError::Cancelled);
+    }
     Ok(ProjectHealthSnapshot {
         workspace_root: context.workspace_root.display().to_string(),
         cache_root: context.cache_root.display().to_string(),
@@ -316,6 +330,61 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
     use tempfile::TempDir;
+
+    fn cancel_before_snapshot<T>(action: impl FnOnce() -> T) -> T {
+        struct Reset(bool);
+
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::CANCEL_BEFORE_SNAPSHOT.with(|slot| slot.set(self.0));
+            }
+        }
+
+        let previous = super::CANCEL_BEFORE_SNAPSHOT.with(|slot| slot.replace(true));
+        let _reset = Reset(previous);
+        action()
+    }
+
+    #[test]
+    fn final_infrastructure_cancellation_wins_before_snapshot_return() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(
+            temp.path().join("src/Configuration.xml"),
+            "<MetaDataObject/>",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: temp.path().to_path_buf(),
+            workspace_root: temp.path().to_path_buf(),
+            cache_root: temp.path().join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let cancellation = CancellationToken::new();
+        let runner = RecordingRunner {
+            repository_root: temp.path().to_path_buf(),
+            commands: RefCell::new(Vec::new()),
+        };
+
+        let result = cancel_before_snapshot(|| {
+            inspect_project_health_with_runner(
+                &context,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(2)),
+                &runner,
+            )
+        });
+
+        assert!(matches!(
+            result,
+            Err(crate::domain::project_health::ProjectHealthInspectionError::Cancelled)
+        ));
+    }
 
     #[test]
     fn source_owner_index_keeps_repository_root_and_equal_root_ambiguity() {
