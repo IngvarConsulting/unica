@@ -1268,10 +1268,7 @@ mod tests {
         let ports = super::InfrastructureApplicationPorts::new();
         let registry = ApplicationPorts::diagnostic_provider_registry(&ports).unwrap();
         let registered = registry.ids().collect::<Vec<_>>();
-        let published = LIVE_DIAGNOSTIC_PROVIDERS
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
+        let published = LIVE_DIAGNOSTIC_PROVIDERS.to_vec();
 
         assert_eq!(registered, published);
     }

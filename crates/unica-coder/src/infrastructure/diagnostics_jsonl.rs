@@ -811,8 +811,8 @@ mod tests {
         );
         assert!(!error
             .message
-            .contains(&source_root.to_string_lossy().as_ref()));
-        assert!(!error.message.contains(&outside.to_string_lossy().as_ref()));
+            .contains(source_root.to_string_lossy().as_ref()));
+        assert!(!error.message.contains(outside.to_string_lossy().as_ref()));
     }
 
     #[test]

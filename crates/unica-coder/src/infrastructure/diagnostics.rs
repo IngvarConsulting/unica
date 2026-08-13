@@ -1949,6 +1949,7 @@ mod tests {
         ));
     }
 
+    #[cfg(windows)]
     mod platform_tests {
         use super::*;
 
