@@ -1114,7 +1114,9 @@ fn contained_provider_relative_path(
     provider_path: &Path,
 ) -> Result<PathBuf, String> {
     let raw_text = provider_path.to_string_lossy().replace('\\', "/");
-    if raw_text.is_empty() || foreign_absolute_path(&raw_text) {
+    if raw_text.is_empty()
+        || crate::infrastructure::platform::filesystem::is_foreign_absolute_path(&raw_text)
+    {
         return Err("provider path is outside sourceSet".to_string());
     }
     let normalized_root =
@@ -1148,20 +1150,6 @@ fn contained_provider_relative_path(
         return Ok(relative.to_path_buf());
     }
     Err("provider path is outside sourceSet".to_string())
-}
-
-fn foreign_absolute_path(path: &str) -> bool {
-    #[cfg(windows)]
-    {
-        let _ = path;
-        false
-    }
-    #[cfg(not(windows))]
-    {
-        let bytes = path.as_bytes();
-        (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/')
-            || path.starts_with("//")
-    }
 }
 
 /// Causes that mean "this provider is not present here", as opposed to "this

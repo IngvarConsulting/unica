@@ -2759,6 +2759,18 @@ pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> std::path::Pa
 }
 
 #[cfg(windows)]
+pub(crate) fn is_foreign_absolute_path(_path: &str) -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub(crate) fn is_foreign_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/')
+        || path.starts_with("//")
+}
+
+#[cfg(windows)]
 pub(crate) fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
     let path = strip_windows_extended_length_prefix(path);
     let root = strip_windows_extended_length_prefix(root);
