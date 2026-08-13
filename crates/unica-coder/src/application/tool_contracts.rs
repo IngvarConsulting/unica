@@ -919,7 +919,35 @@ fn diagnostics_input_schema() -> Value {
             })
         })
         .collect::<Vec<_>>();
-    json!({"oneOf": branches})
+    let mut properties = Map::new();
+    for branch in &branches {
+        for (name, schema) in branch["properties"]
+            .as_object()
+            .expect("diagnostics action branch properties are an object")
+        {
+            properties
+                .entry(name.clone())
+                .or_insert_with(|| schema.clone());
+        }
+    }
+    properties.insert(
+        "action".to_string(),
+        json!({
+            "type": "string",
+            "enum": DIAGNOSTIC_ACTION_DESCRIPTORS
+                .iter()
+                .map(|descriptor| descriptor.action.as_str())
+                .collect::<Vec<_>>(),
+            "description": "Closed diagnostics action selecting analyze, findings, status, or catalog behavior."
+        }),
+    );
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": [],
+        "oneOf": branches
+    })
 }
 
 fn xdto_edit_schema_branch(operation: &str, required: &[&str], forbidden: &[&str]) -> Value {

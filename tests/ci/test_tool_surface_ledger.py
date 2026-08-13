@@ -122,6 +122,15 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
 
     def test_discriminated_object_branches_render_their_argument_union(self) -> None:
         schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "action": {"type": "string"},
+                "sourceSet": {"type": "string"},
+                "timeoutSeconds": {"type": "integer"},
+                "metadataPath": {"type": "string"},
+            },
+            "required": [],
             "oneOf": [
                 {
                     "type": "object",

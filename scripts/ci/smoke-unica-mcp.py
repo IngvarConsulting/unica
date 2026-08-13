@@ -330,7 +330,7 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "integer"
       },
       "mode": {
-        "description": "Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full|incremental|partial for dump, load|merge for load, designer-config|designer-modules|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze|status|catalog|file|workspace on unica.code.diagnostics) \u2014 always use the enum published in that tool's own schema.",
+        "description": "Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full|incremental|partial for dump, load|merge for load, designer-config|designer-modules|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum.",
         "enum": [
           "exact",
           "prefix"

@@ -172,13 +172,13 @@ def discriminated_object_surface(
     show the union while distinguishing universally required, branch-required,
     and branch-only optional arguments.
     """
-    if schema.get("properties"):
-        return None
     variants = schema.get("oneOf")
     if not isinstance(variants, list) or not variants:
         return None
     if any(
         not isinstance(variant, dict)
+        or variant.get("type") != "object"
+        or variant.get("additionalProperties") is not False
         or not isinstance(variant.get("properties"), dict)
         for variant in variants
     ):
