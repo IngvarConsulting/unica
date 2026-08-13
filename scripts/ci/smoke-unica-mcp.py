@@ -1915,6 +1915,46 @@ def _wait_for_process_pids(pids: set[int], timeout_seconds: float) -> None:
         time.sleep(min(0.05, remaining))
 
 
+def _capture_posix_owned_process_pids(
+    session: McpSession, service_pids: set[int]
+) -> set[int]:
+    if os.name != "posix":
+        return set()
+    process = getattr(session, "process", None)
+    if process is None:
+        return set()
+    return _posix_owned_process_pids(
+        process.pid,
+        service_pids,
+        public_running=process.poll() is None,
+    )
+
+
+def _quiesce_posix_owned_process_pids(
+    owned_pids: set[int], timeout_seconds: float
+) -> None:
+    if not owned_pids:
+        return
+    wait_limit = min(1.0, timeout_seconds)
+    _wait_for_process_pids(owned_pids, wait_limit)
+    survivors = {pid for pid in owned_pids if _process_is_running(pid)}
+    if not survivors:
+        return
+    _signal_processes(survivors, signal.SIGTERM)
+    _wait_for_process_pids(survivors, wait_limit)
+    survivors = {pid for pid in survivors if _process_is_running(pid)}
+    if survivors:
+        _signal_processes(survivors, signal.SIGKILL)
+        _wait_for_process_pids(survivors, wait_limit)
+    survivors = {pid for pid in survivors if _process_is_running(pid)}
+    if survivors:
+        rendered = ", ".join(str(pid) for pid in sorted(survivors))
+        raise SystemExit(
+            "Unica MCP owned provider processes survived smoke cleanup: "
+            f"{rendered}"
+        )
+
+
 def _wait_for_workspace_services(
     cache_root: Path,
     timeout_seconds: float,
@@ -2032,6 +2072,7 @@ def _close_session_and_workspace_services(
     # TemporaryDirectory cleanup may remove the record that makes an orphan
     # reachable for emergency cleanup.
     service_pids = _workspace_service_pids(cache_root)
+    owned_pids = _capture_posix_owned_process_pids(session, service_pids)
     try:
         try:
             # On Windows, a detached workspace service may inherit extra copies of
@@ -2053,6 +2094,10 @@ def _close_session_and_workspace_services(
                     cache_root,
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                     service_pids,
+                )
+                _quiesce_posix_owned_process_pids(
+                    owned_pids,
+                    _remaining_smoke_timeout(deadline, timeout_seconds),
                 )
     except BaseException:
         session.terminate_tree(cache_root, service_pids)

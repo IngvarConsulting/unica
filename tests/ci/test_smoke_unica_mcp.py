@@ -736,6 +736,71 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             ],
         )
 
+    def test_successful_close_reaps_captured_provider_descendants(self) -> None:
+        module = load_module()
+        events: list[object] = []
+        running = {42}
+
+        class Process:
+            pid = 99
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        class Session:
+            process = Process()
+
+            @staticmethod
+            def close() -> None:
+                events.append("close")
+
+        cache_root = Path("cache")
+
+        def capture(public_pid: int, service_pids: set[int], *, public_running: bool):
+            events.append(("capture", public_pid, service_pids, public_running))
+            return {99, 41, 42}
+
+        def signal_processes(pids: set[int], signal_number: int) -> None:
+            events.append(("signal", pids, signal_number))
+            running.difference_update(pids)
+
+        with mock.patch.object(module.os, "name", "posix"), mock.patch.object(
+            module, "_workspace_service_pids", return_value={41}
+        ), mock.patch.object(
+            module, "_posix_owned_process_pids", side_effect=capture
+        ), mock.patch.object(
+            module,
+            "_shutdown_workspace_services",
+            side_effect=lambda root, timeout: events.append(
+                ("shutdown", root, timeout)
+            )
+            or {41},
+        ), mock.patch.object(
+            module,
+            "_wait_for_workspace_services",
+            side_effect=lambda root, timeout, pids: events.append(
+                ("wait-services", root, timeout, pids)
+            ),
+        ), mock.patch.object(
+            module,
+            "_wait_for_process_pids",
+            side_effect=lambda pids, timeout: events.append(
+                ("wait-owned", pids, timeout)
+            ),
+        ), mock.patch.object(
+            module, "_process_is_running", side_effect=lambda pid: pid in running
+        ), mock.patch.object(
+            module, "_signal_processes", side_effect=signal_processes
+        ):
+            module._close_session_and_workspace_services(
+                Session(), cache_root, 7.0
+            )
+
+        self.assertEqual(events[0], ("capture", 99, {41}, True))
+        self.assertIn(("signal", {42}, module.signal.SIGTERM), events)
+        self.assertEqual(events[-1], ("wait-owned", {42}, 1.0))
+
     def test_shutdown_failure_emergency_cleanup_kills_recorded_service_pid(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
