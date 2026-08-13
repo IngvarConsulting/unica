@@ -231,7 +231,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         &target,
                         crate::infrastructure::platform_xml_source_targets::TargetKindPolicy::Any,
                     )
-                    .map(|resolution| resolution.handle.search_filters())
+                    .and_then(|resolution| resolution.handle.search_filters())
                     .map_err(|error| error.to_string())
                 })
                 .transpose()?

@@ -2164,30 +2164,23 @@ impl ClosedPlatformXmlTarget {
 
     pub(crate) fn search_filters(
         &self,
-    ) -> Vec<crate::domain::code_intelligence::RelativeSearchFilter> {
+    ) -> Result<Vec<crate::domain::code_intelligence::RelativeSearchFilter>, SourceTargetError>
+    {
         use crate::domain::code_intelligence::RelativeSearchFilter;
+        if self.target_kind == TargetKind::SourceRoot {
+            return Ok(Vec::new());
+        }
+        let relative = self
+            .target_path
+            .strip_prefix(&self.source_root)
+            .map_err(|_| target_containment_error(&self.source_target.source_set))?;
         match self.target_kind {
-            TargetKind::Module => self
-                .target_path
-                .strip_prefix(&self.source_root)
-                .ok()
-                .map(|path| vec![RelativeSearchFilter::Exact(path.to_path_buf())])
-                .unwrap_or_default(),
-            TargetKind::MetadataObject => {
-                let mut filters = self
-                    .target_path
-                    .strip_prefix(&self.source_root)
-                    .ok()
-                    .map(|path| vec![RelativeSearchFilter::Exact(path.to_path_buf())])
-                    .unwrap_or_default();
-                if let Some(parent) = self.target_path.parent() {
-                    if let Ok(relative) = parent.strip_prefix(&self.source_root) {
-                        filters.push(RelativeSearchFilter::Subtree(relative.to_path_buf()));
-                    }
-                }
-                filters
-            }
-            TargetKind::SourceRoot => Vec::new(),
+            TargetKind::Module => Ok(vec![RelativeSearchFilter::Exact(relative.to_path_buf())]),
+            TargetKind::MetadataObject => Ok(vec![
+                RelativeSearchFilter::Exact(relative.to_path_buf()),
+                RelativeSearchFilter::Subtree(relative.with_extension("")),
+            ]),
+            TargetKind::SourceRoot => unreachable!("source roots return before path projection"),
         }
     }
 }
@@ -3536,6 +3529,7 @@ mod tests {
         SourceNavigationMode, SourceNodeAddressability, SourceNodeKind, SourceResolveRequest,
     };
     use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+    use crate::domain::code_intelligence::RelativeSearchFilter;
     use crate::domain::source_target::{
         MetadataAddress, SourceTarget, SourceTargetErrorCode, SourceTargetErrorReason,
         PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -6236,6 +6230,48 @@ mod tests {
                 "ManagerModule.bsl".to_string()
             ]
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn metadata_object_search_filters_exclude_sibling_objects() {
+        let context = fixture(
+            "object-search-filters",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+
+        assert_eq!(
+            resolution.handle.search_filters().unwrap(),
+            vec![
+                RelativeSearchFilter::Exact(PathBuf::from("Catalogs/Items.xml")),
+                RelativeSearchFilter::Subtree(PathBuf::from("Catalogs/Items")),
+            ]
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn search_filters_reject_a_target_outside_its_source_root() {
+        let context = fixture(
+            "outside-root-search-filters",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(&root, "Catalogs", "Catalog", "Items", "Items");
+        let resolution =
+            resolve_platform_xml_object_target(&context, &target("main", "Catalog.Items")).unwrap();
+        let mut inconsistent_handle = resolution.handle;
+        inconsistent_handle.source_root = context.workspace_root.join("another-source-root");
+
+        let error = inconsistent_handle
+            .search_filters()
+            .expect_err("an uncontained target must not become an empty all-source filter");
+
+        assert_eq!(error.code, SourceTargetErrorCode::ContainmentDenied);
         cleanup(&context);
     }
 
