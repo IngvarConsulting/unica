@@ -1350,6 +1350,31 @@ class OperationalConfigDecisionOwnershipTests(unittest.TestCase):
         self.assertIn("ADR-0055, уточняющий ADR-0040", plan)
         self.assertNotIn("ADR-0040/ADR-0054", plan)
 
+    def test_config_snapshot_separates_file_defaults_from_compiled_fallback(self) -> None:
+        records = {record.id: record for record in all_records()}
+        rule = records["INV-APP-CONFIG-SNAPSHOT"].one("Rule") or ""
+
+        self.assertIn("скомпилированное умолчание `git-grep` равно 500 мс", rule)
+        self.assertNotIn("120 с, 45 с, 500 мс, 45 с и 120 с", rule)
+
+    def test_fallback_decision_limits_the_diagnostics_non_goal(self) -> None:
+        fallback = (
+            DECISIONS_DIR / "0055-ogranichennyy-rezervnyy-poisk-git-grep.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("диагностику других поставщиков", fallback)
+        self.assertIn("Диагностика таймаута `git-grep`", fallback)
+
+    def test_fallback_plan_names_the_whole_execution_policy_amendment(self) -> None:
+        plan = (
+            REPO_ROOT / "docs" / "plans" / "2026-08-12-bounded-git-grep-fallback.md"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(plan.split())
+
+        self.assertIn("ограниченного потокового чтения", normalized)
+        self.assertIn("остановки дерева процесса", normalized)
+        self.assertIn("исходов таймаута и отмены", normalized)
+
 
 class LogicalSourceContractTests(unittest.TestCase):
     """The accepted source contract stays tied to executable evidence."""
