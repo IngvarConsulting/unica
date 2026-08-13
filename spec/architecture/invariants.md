@@ -722,6 +722,21 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
 - **Scope:** source, runtime
 
+### INV-APP-SUPPORT-SAFE-BUILD — Runtime-сборка учитывает поддержку до запуска поставщика
+
+- **Rule:** Общая предпроверка `unica.runtime.execute` и
+  `unica.runtime.job.start` для инкрементальной операции `build` читает через
+  доменный `SupportStateReader` только выбранные `CONFIGURATION` формата
+  платформенного XML; состояние `Supported` нормализует показываемый и исполняемый
+  вызов в один `fullRebuild`, а нечитаемое свидетельство или неосновной файл конфигурации
+  завершаются до запуска объяснимым отказом с рекомендацией явной полной
+  пересборки. Явный `fullRebuild` обходит чтение поддержки, и предпроверка не читает
+  частное состояние `v8-runner`.
+- **Decision:** ADR-0055, ADR-0054, ADR-0003
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/internal_adapters.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
+- **Scope:** source, runtime
+
 ### INV-APP-CONFIG-SNAPSHOT — Конфигурация вызова изолирована рабочим пространством
 
 - **Rule:** Для `unica.code.search`, `unica.code.definition`,

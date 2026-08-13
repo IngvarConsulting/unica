@@ -137,6 +137,11 @@ impl RuntimeJobRequest {
         self.timeout_reason = Some(timeout_reason.into());
         self
     }
+
+    #[cfg(test)]
+    pub(crate) fn raw_argv(&self) -> &[String] {
+        &self.raw_argv
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

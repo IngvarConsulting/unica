@@ -28,7 +28,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
 use crate::infrastructure::internal_adapters::{
     BslAnalyzerMcpAdapter, CliAdapter, ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter,
-    RuntimeJobAdapter, StandardsAdapter,
+    RuntimeInvocation, RuntimeJobAdapter, RuntimeSupportPreflight, StandardsAdapter,
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
 use crate::infrastructure::native_operations::subsystem;
@@ -454,31 +454,47 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     )
                     .map(HandlerOutcome::plain)
             }
-            ToolHandler::RuntimeAdapter => RuntimeAdapter::new()
-                .invoke_cancellable_with_data(
+            ToolHandler::RuntimeAdapter => {
+                let support_reader = self.support_state_readers.create(context);
+                RuntimeAdapter::new()
+                    .invoke_cancellable_with_support_state(
+                        RuntimeInvocation {
+                            tool_name: spec.name,
+                            args,
+                            context,
+                            dry_run,
+                            mutating: spec.execution.is_mutating(),
+                        },
+                        cancellation,
+                        RuntimeSupportPreflight {
+                            reader: support_reader.as_ref(),
+                        },
+                    )
+                    .map(|outcome| match outcome.data {
+                        Some(data) => HandlerOutcome::with_data(outcome.outcome, data),
+                        None => HandlerOutcome::plain(outcome.outcome),
+                    })
+            }
+            ToolHandler::RuntimeJob { action } => {
+                let support_reader = self.support_state_readers.create(context);
+                RuntimeJobAdapter::invoke_with_support_state(
+                    action,
                     spec.name,
                     args,
                     context,
                     dry_run,
-                    spec.execution.is_mutating(),
-                    cancellation,
+                    support_reader.as_ref(),
                 )
-                .map(|outcome| match outcome.data {
-                    Some(data) => HandlerOutcome::with_data(outcome.outcome, data),
-                    None => HandlerOutcome::plain(outcome.outcome),
-                }),
-            ToolHandler::RuntimeJob { action } => RuntimeJobAdapter::invoke(
-                action, spec.name, args, context, dry_run,
-            )
-            .map(|outcome| HandlerOutcome {
-                adapter: outcome.outcome,
-                data: None,
-                job: outcome.job,
-                events: Vec::new(),
-                projected_events: Vec::new(),
-                recorded_cache: None,
-                diagnostics: None,
-            }),
+                .map(|outcome| HandlerOutcome {
+                    adapter: outcome.outcome,
+                    data: None,
+                    job: outcome.job,
+                    events: Vec::new(),
+                    projected_events: Vec::new(),
+                    recorded_cache: None,
+                    diagnostics: None,
+                })
+            }
             ToolHandler::CodeIntelligence { .. } => Err(format!(
                 "{} must be dispatched through the provider-neutral code intelligence registry",
                 spec.name
@@ -1241,6 +1257,11 @@ mod tests {
 
     struct StaticObjectSupportStateReader(ObjectSupportState);
 
+    #[derive(Clone, Copy)]
+    struct StaticConfigurationSupportStateReaderFactory(ConfigurationSupportState);
+
+    struct StaticConfigurationSupportStateReader(ConfigurationSupportState);
+
     impl SupportStateReaderFactory for RecordingSupportStateReaderFactory {
         fn create<'a>(
             &'a self,
@@ -1365,6 +1386,42 @@ mod tests {
             _target: &ResolvedSubsystemTarget,
         ) -> Result<ObjectSupportData, SupportReadError> {
             unreachable!("meta.info reads object support")
+        }
+    }
+
+    impl SupportStateReaderFactory for StaticConfigurationSupportStateReaderFactory {
+        fn create<'a>(
+            &'a self,
+            _context: &'a WorkspaceContext,
+        ) -> Box<dyn SupportStateReader + 'a> {
+            Box::new(StaticConfigurationSupportStateReader(self.0))
+        }
+    }
+
+    impl SupportStateReader for StaticConfigurationSupportStateReader {
+        fn configuration_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ConfigurationSupportData, SupportReadError> {
+            Ok(ConfigurationSupportData {
+                state: self.0,
+                editing_enabled: None,
+                objects: None,
+            })
+        }
+
+        fn object_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            unreachable!("runtime build preflight reads configuration support")
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &ResolvedSubsystemTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            unreachable!("runtime build preflight reads configuration support")
         }
     }
 
@@ -1584,6 +1641,80 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn runtime_build_entry_points_use_the_injected_support_reader() {
+        use crate::application::ports::ApplicationPorts;
+
+        let root = tempfile::Builder::new()
+            .prefix("unica-runtime-support-preflight")
+            .tempdir()
+            .unwrap();
+        let workspace = root.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration.xml"),
+            include_bytes!(
+                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+            ),
+        )
+        .unwrap();
+        let plugin_root = workspace.join("plugins/unica");
+        std::fs::create_dir_all(plugin_root.join("skills")).unwrap();
+        std::fs::create_dir_all(plugin_root.join("third-party")).unwrap();
+        std::fs::write(
+            plugin_root.join("third-party/tools.lock.json"),
+            include_bytes!("../../../../plugins/unica/third-party/tools.lock.json"),
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            StaticConfigurationSupportStateReaderFactory(ConfigurationSupportState::Supported),
+        ));
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        for (name, handler) in [
+            ("unica.runtime.execute", ToolHandler::RuntimeAdapter),
+            (
+                "unica.runtime.job.start",
+                ToolHandler::RuntimeJob {
+                    action: RuntimeJobAction::Start,
+                },
+            ),
+        ] {
+            let outcome = ports
+                .invoke_handler(
+                    spec(name, handler),
+                    &args,
+                    &context,
+                    InvocationMode::Preview,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let command = outcome.adapter.command.unwrap();
+            assert_eq!(
+                command[1..],
+                ["build", "--full-rebuild"],
+                "{name} must plan with the reader injected through application ports"
+            );
+        }
     }
 
     fn meta_info_request() -> MetaInfoRequest {

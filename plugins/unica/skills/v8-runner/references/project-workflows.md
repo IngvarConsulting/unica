@@ -15,7 +15,7 @@ Async full dump and external source-set dump remain preview-only. Applied
 `LoadConfigFromFiles` are fail-closed until they share the verified publication
 boundary.
 
-`build` also prepares configured client MCP tool extensions when the project has `tools.client_mcp.extension`. Use `fullRebuild=true` if that generated state may be stale.
+`build` also prepares configured client MCP tool extensions when the project has `tools.client_mcp.extension`. Use `fullRebuild=true` if that generated state may be stale. Before synchronous or durable-job builds, Unica reads support state for selected Platform XML configuration source-sets. Active vendor support selects the full path before v8-runner starts; unreadable support evidence or a non-primary project config requires an explicit `fullRebuild=true`.
 
 Use `extensions` when only extension properties need synchronization.
 
