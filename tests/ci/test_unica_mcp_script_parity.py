@@ -1949,8 +1949,22 @@ network = "allow"
                         {"provider_unavailable"},
                         json.dumps(result, ensure_ascii=False, indent=2),
                     )
+                elif tool_name == "unica.code.definition" and sys.platform != "darwin":
+                    # The example is still a valid MCP call, but the RLM reader
+                    # must fail closed on platforms where the runtime cannot
+                    # prove source freshness. The assertions above also prove
+                    # that no rlm_execute stand-in was invoked in this state.
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(len(result["errors"]), 1)
+                    self.assertTrue(
+                        result["errors"][0].startswith("index_unavailable:"),
+                        json.dumps(result, ensure_ascii=False, indent=2),
+                    )
+                    self.assertNotIn("data", result)
                 else:
                     self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
+                if tool_name == "unica.code.definition" and sys.platform != "darwin":
+                    continue
                 if tool_name == "unica.xdto.info":
                     self.assertEqual(
                         result["summary"],
