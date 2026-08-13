@@ -1,6 +1,6 @@
 # ADR-0057: `git-grep` возвращает ограниченный неранжируемый префикс
 
-- Статус: `proposed`
+- Статус: `accepted`
 - Дата: `2026-08-13`
 - Задача: [#467](https://github.com/IngvarConsulting/unica/issues/467)
 

@@ -97,6 +97,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "verify-source",
             "test-rust-primary",
             "test-rust-platforms",
+            "test-search-integration",
             "build-tools",
             "package-thin",
             "probe-thin-bootstrap",
@@ -116,6 +117,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "rust_changed",
             "platform_changed",
             "toolchain_changed",
+            "search_integration_changed",
             "package_changed",
             "plugin_content_changed",
             "ci_changed",
@@ -176,8 +178,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         source = job_block(text, "verify-source")
         primary = job_block(text, "test-rust-primary")
         platforms = job_block(text, "test-rust-platforms")
+        search_integration = job_block(text, "test-search-integration")
 
         self.assertNotIn("cargo test", source)
+        self.assertIn("search_integration_changed == 'true'", search_integration)
+        self.assertIn("--test issue_89_workspace_service -- --ignored", search_integration)
         self.assertNotIn("dtolnay/rust-toolchain", source)
         self.assertIn("runs-on: macos-14", primary)
         self.assertIn("rust_changed == 'true'", primary)

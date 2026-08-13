@@ -227,7 +227,7 @@ with `claude --plugin-dir ./plugins/unica`.
 ## Workspace Service Acceptance
 
 This section exercises INV-APP-CODE-PROVIDER-BOUNDARY (provider-neutral
-orchestration), INV-MCP-CODE-SEARCH-SECTIONS (public search semantics),
+orchestration), INV-MCP-CODE-SEARCH-ROLES (public search semantics),
 INV-APP-LAZY-HIDDEN-SERVICES (hidden, workspace-scoped services),
 INV-SOURCE-SINGLE-RESOLVED-ROOT (source-root selection),
 INV-CACHE-WORKTREE-ISOLATION (independent provider state),
@@ -238,11 +238,18 @@ ownership).
 
 - `initialize`, `tools/list`, `project.status`, and `project.map` must not create
   `.build/unica/services`.
-- `unica.code.search` returns fixed `rlm`, `bsl-analyzer`, and `git-grep`
-  sections in that order and may start the workspace service. One failed or
-  unavailable section remains visible while another successful or empty
-  section makes the overall search successful; cancellation returns no partial
-  success.
+- `unica.code.search` returns fixed `semantic`, `symbol`, and `lexical` role
+  sections in that order, with the current implementation named separately as
+  `provider`, and may start the workspace service. A section exposes typed
+  completeness, count relation, ranking, and ordering; one failed or
+  unavailable role remains visible while another successful or empty role
+  makes the overall search successful. Cancellation returns no partial success.
+- A search carrying an MCP progress token publishes a typed initial snapshot,
+  role phase changes, a heartbeat at least every two seconds while work remains,
+  and a terminal snapshot before its final response. A cold RLM index is waited
+  for inside the same call and reported as `reconcilingSources`,
+  `buildingIndex`, or `updatingIndex`; the client does not poll with another
+  search.
 - Analyzer-backed tools may create `.build/unica/services/<service-key>`.
 - Repeated provider calls through one matching live service reuse independent
   `bsl-analyzer` and RLM transports. RLM reuses one logical `rlm_start` session
@@ -252,11 +259,18 @@ ownership).
   session, and index identity. No cross-chat reuse is part of the public
   contract, and no main-branch index is combined with a worktree delta.
 - Stale or version-mismatched `service.json` records must be replaced.
-- With no `sourceDir`, a source set named `main` is the effective source root;
-  otherwise the sole `CONFIGURATION` source set is used. Multiple configuration
-  source sets without `main` must fail with `invalid_source_root:`. An explicit
-  `sourceDir` is resolved relative to request `cwd`, normalized, and rejected if
-  it escapes the workspace (INV-SOURCE-SINGLE-RESOLVED-ROOT).
+- The canonical search call requires a non-empty `sourceSet` and optionally
+  narrows it with `metadataPath`; a migration call may use only `sourceDir`.
+  The selectors are mutually exclusive and logical resolution never falls back
+  to the physical selector. Other path-based code readers preserve their
+  existing source-root selection rules. Every effective physical root is
+  normalized and rejected if it escapes the workspace
+  (INV-SOURCE-SINGLE-RESOLVED-ROOT).
+- RLM readiness records the complete trusted source revision. A warm unchanged
+  APFS workspace does not rescan the corpus; an external write changes the
+  generation before the next RLM admission, and a build that races a source
+  write cannot publish `ready` for the captured revision
+  (INV-CACHE-RLM-REVISION).
 - `project.status` and `project.map`, analyzer commands, RLM commands, and the
   workspace-service identity must agree on that effective source root.
 - Analyzer and RLM work requests carry unique internal operation IDs. A public

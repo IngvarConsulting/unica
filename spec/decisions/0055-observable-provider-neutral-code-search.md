@@ -1,6 +1,6 @@
 # ADR-0055: Поиск кода наблюдаем и опирается на роли поставщиков
 
-- Статус: `proposed`
+- Статус: `accepted`
 - Дата: `2026-08-13`
 - Задача: [#275](https://github.com/IngvarConsulting/unica/issues/275)
 

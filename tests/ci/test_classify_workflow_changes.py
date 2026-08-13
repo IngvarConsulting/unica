@@ -20,6 +20,7 @@ OUTPUT_NAMES = (
     "rust_changed",
     "platform_changed",
     "toolchain_changed",
+    "search_integration_changed",
     "package_changed",
     "plugin_content_changed",
     "ci_changed",
@@ -92,7 +93,30 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     [path],
                     rust_changed=True,
                     toolchain_changed=True,
+                    search_integration_changed=True,
                     package_changed=True,
+                    release_required=True,
+                )
+
+    def test_search_and_rlm_mechanism_changes_route_the_long_integration_test(self) -> None:
+        for path in (
+            "crates/unica-coder/src/application/code_intelligence.rs",
+            "crates/unica-coder/src/domain/code_intelligence.rs",
+            "crates/unica-coder/src/domain/source_revision.rs",
+            "crates/unica-coder/src/infrastructure/code_intelligence.rs",
+            "crates/unica-coder/src/infrastructure/source_revision.rs",
+            "crates/unica-coder/src/infrastructure/workspace_index.rs",
+            "crates/unica-coder/src/infrastructure/workspace_services.rs",
+            "crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs",
+            "crates/unica-coder/tests/issue_89_workspace_service.rs",
+            "crates/unica-coder/tests/platform/issue_89_workspace_service.rs",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification(
+                    [path],
+                    rust_changed=True,
+                    platform_changed="/platform/" in path or "/tests/platform/" in path,
+                    search_integration_changed=True,
                     release_required=True,
                 )
 
@@ -172,6 +196,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                 "rust_changed=true",
                 "platform_changed=false",
                 "toolchain_changed=false",
+                "search_integration_changed=false",
                 "package_changed=false",
                 "plugin_content_changed=true",
                 "ci_changed=false",

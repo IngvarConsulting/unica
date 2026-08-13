@@ -21,6 +21,7 @@ OUTPUT_NAMES = (
     "rust_changed",
     "platform_changed",
     "toolchain_changed",
+    "search_integration_changed",
     "package_changed",
     "plugin_content_changed",
     "ci_changed",
@@ -48,6 +49,7 @@ def source_results() -> dict[str, str]:
         **ALWAYS_SUCCESS,
         "test-rust-primary": "skipped",
         "test-rust-platforms": "skipped",
+        "test-search-integration": "skipped",
         "build-tools": "skipped",
         "package-thin": "skipped",
         "probe-thin-bootstrap": "skipped",
@@ -106,6 +108,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
+            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
@@ -122,6 +125,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         manual = {
             **source_results(),
             "test-rust-platforms": "success",
+            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
@@ -147,6 +151,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         results = {
             **source_results(),
             "test-rust-platforms": "success",
+            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
@@ -186,6 +191,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             **source_results(),
             "verify-source": "cancelled",
             "test-rust-platforms": "failure",
+            "test-search-integration": "success",
             **PACKAGE_SUCCESS,
             "package-thin": "skipped",
             "probe-thin-bootstrap": "success",
