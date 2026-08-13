@@ -73,11 +73,19 @@ fn rlm_provider_state_root_with(
 }
 
 fn neutral_provider_state_root() -> Option<PathBuf> {
-    std::env::var_os("UNICA_PROVIDER_STATE_DIR")
+    neutral_provider_state_root_with(|name| std::env::var_os(name))
+}
+
+fn neutral_provider_state_root_with(
+    read_env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    read_env("UNICA_PROVIDER_STATE_DIR")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
+            read_env("HOME")
+                .filter(|value| !value.is_empty())
+                .or_else(|| read_env("USERPROFILE").filter(|value| !value.is_empty()))
                 .map(PathBuf::from)
                 .map(|home| home.join(".unica").join("provider-state"))
         })
@@ -1881,7 +1889,17 @@ mod tests {
     use crate::infrastructure::platform::{filesystem::path_starts_with_host_root, testing};
     use crate::infrastructure::source_revision::SourceRevisionService;
     use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
     use std::sync::Arc;
+
+    fn environment(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
+        let entries: BTreeMap<String, OsString> = pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), OsString::from(*value)))
+            .collect();
+        move |name: &str| entries.get(name).cloned()
+    }
 
     fn default_source_root(context: &WorkspaceContext) -> PathBuf {
         context.workspace_root.join("src")
@@ -1901,6 +1919,70 @@ mod tests {
 
     fn write_status(context: &WorkspaceContext, status: BslIndexStatus) -> Result<(), String> {
         super::write_status(context, &default_source_root(context), status)
+    }
+
+    #[test]
+    fn neutral_provider_state_root_valid_override_wins() {
+        let root = neutral_provider_state_root_with(environment(&[
+            ("UNICA_PROVIDER_STATE_DIR", "/state/unica"),
+            ("HOME", "/home/user"),
+        ]));
+
+        assert_eq!(root, Some(PathBuf::from("/state/unica")));
+    }
+
+    #[test]
+    fn neutral_provider_state_root_empty_override_falls_through_to_home() {
+        let root = neutral_provider_state_root_with(environment(&[
+            ("UNICA_PROVIDER_STATE_DIR", ""),
+            ("HOME", "/home/user"),
+        ]));
+
+        assert_eq!(
+            root,
+            Some(
+                PathBuf::from("/home/user")
+                    .join(".unica")
+                    .join("provider-state")
+            )
+        );
+    }
+
+    #[test]
+    fn neutral_provider_state_root_empty_home_falls_through_to_userprofile() {
+        let root = neutral_provider_state_root_with(environment(&[
+            ("HOME", ""),
+            ("USERPROFILE", "C:/Users/user"),
+        ]));
+
+        assert_eq!(
+            root,
+            Some(
+                PathBuf::from("C:/Users/user")
+                    .join(".unica")
+                    .join("provider-state")
+            )
+        );
+    }
+
+    #[test]
+    fn neutral_provider_state_root_all_empty_values_report_missing_root() {
+        let mut context = test_context("empty-direct-runtime-environment");
+        context.cache_root = context.workspace_root.join(".build/unica");
+        let external_base = neutral_provider_state_root_with(environment(&[
+            ("UNICA_PROVIDER_STATE_DIR", ""),
+            ("HOME", ""),
+            ("USERPROFILE", ""),
+        ]));
+
+        assert_eq!(external_base, None);
+        let error = rlm_provider_state_root_with(&context, &context.workspace_root, external_base)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "UNICA_PROVIDER_STATE_DIR, HOME, or USERPROFILE is required for RLM state outside sourceRoot"
+        );
+        cleanup(&context);
     }
 
     #[test]
