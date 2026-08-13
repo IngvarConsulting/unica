@@ -1209,6 +1209,10 @@ mod tests {
 
         assert_eq!(output["type"], "object");
         assert_eq!(output["additionalProperties"], false);
+        assert!(output["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("data")));
         for forbidden in ["stdout", "stderr", "command", "job"] {
             assert!(output["properties"].get(forbidden).is_none());
         }

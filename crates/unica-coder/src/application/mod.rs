@@ -338,9 +338,10 @@ pub fn role_edit_output_schema() -> Value {
 ///
 /// Provider-specific attributes remain an intentionally open JSON object, but
 /// the envelope, role sections, completeness claims, counts, hits, and logical
-/// location algebra are all machine-checkable. `data` remains optional because
-/// failures before provider admission (for example an invalid operational
-/// configuration) use the common error envelope and have no search result.
+/// location algebra are all machine-checkable. Once a search reaches the tool
+/// result boundary it always carries `data`, including the three failed or
+/// unavailable role sections when no provider served the request. Failures
+/// before that boundary remain JSON-RPC errors and do not use this schema.
 pub fn code_search_output_schema() -> Value {
     let string_array = || json!({"type": "array", "items": {"type": "string"}});
     let logical_location = json!({
@@ -446,6 +447,10 @@ pub fn code_search_output_schema() -> Value {
         },
         "required": ["coverage", "elapsedMs", "sections"]
     });
+    schema["required"]
+        .as_array_mut()
+        .expect("OperationResult required fields are an array")
+        .push(json!("data"));
     schema
 }
 
