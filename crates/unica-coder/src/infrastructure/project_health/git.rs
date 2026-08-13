@@ -278,6 +278,11 @@ impl<'a> GitRepositoryInspector<'a> {
         observations.push(completed(ProjectCheckId::RepositoryIndex));
 
         observations.push(completed(ProjectCheckId::RepositoryGeneratedPaths));
+        append_completed_for_roots(
+            &mut observations,
+            ProjectCheckId::RepositoryGeneratedPaths,
+            &layout.roots,
+        );
         append_tracked_generated_facts(
             &mut facts,
             &entries,
@@ -287,6 +292,11 @@ impl<'a> GitRepositoryInspector<'a> {
         );
 
         observations.push(completed(ProjectCheckId::RepositoryConfigDumpInfo));
+        append_completed_for_roots(
+            &mut observations,
+            ProjectCheckId::RepositoryConfigDumpInfo,
+            &layout.roots,
+        );
         self.append_config_dump_info_facts(
             &mut facts,
             &entries,
@@ -341,6 +351,11 @@ impl<'a> GitRepositoryInspector<'a> {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
         observations.push(completed(ProjectCheckId::RepositoryIgnore));
+        append_completed_for_roots(
+            &mut observations,
+            ProjectCheckId::RepositoryIgnore,
+            &layout.roots,
+        );
         if ignore.timed_out {
             facts.push(ProjectHealthFact::GitInspectionTimeout {
                 check: ProjectCheckId::RepositoryIgnore,
@@ -602,6 +617,29 @@ fn completed(id: ProjectCheckId) -> ProjectCheckObservation {
         source_set: None,
         outcome: ProjectCheckOutcome::Completed,
     }
+}
+
+fn append_completed_for_roots(
+    observations: &mut Vec<ProjectCheckObservation>,
+    id: ProjectCheckId,
+    roots: &[InspectedSourceRoot],
+) {
+    let mut source_sets = roots
+        .iter()
+        .map(|root| root.source_set.name.clone())
+        .collect::<Vec<_>>();
+    source_sets.sort();
+    source_sets.dedup();
+    observations.extend(
+        source_sets
+            .into_iter()
+            .map(|source_set| ProjectCheckObservation {
+                id,
+                scope: id.scope(),
+                source_set: Some(source_set),
+                outcome: ProjectCheckOutcome::Completed,
+            }),
+    );
 }
 
 fn not_run(id: ProjectCheckId, reason: &str) -> ProjectCheckObservation {
