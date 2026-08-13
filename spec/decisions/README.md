@@ -85,7 +85,7 @@
 - [ADR-0041: `unica.meta.info` имеет отдельную полную read-model](0041-meta-info-complete-read-model.md)
 - [ADR-0055: Поиск кода наблюдаем и опирается на роли поставщиков](0055-observable-provider-neutral-code-search.md)
 - [ADR-0056: Свежесть RLM доказывается доверенным поколением исходников](0056-rlm-source-revision-freshness.md)
-- [ADR-0057: `git-grep` полностью обходит корпус и ограничивает только ответ](0057-complete-git-grep-search.md)
+- [ADR-0057: `git-grep` возвращает ограниченный неранжируемый префикс](0057-bounded-unranked-git-grep-search.md)
 
 Запись в статусе `proposed` ещё не действует и не заменяет принятые решения;
 после ревью она либо переводится в `accepted` вместе с реализацией и
