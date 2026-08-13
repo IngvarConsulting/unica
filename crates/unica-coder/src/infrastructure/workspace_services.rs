@@ -4135,13 +4135,17 @@ fn bsl_analyzer_command(
     Ok(command)
 }
 
-fn provider_state_key(workspace_root: &str, source_root: &str) -> String {
+fn provider_state_key(workspace_root: &Path, source_root: &Path) -> Result<String, String> {
     let mut digest = Sha256::new();
     digest.update(PROVIDER_STATE_KEY_DOMAIN);
-    digest.update(workspace_root.as_bytes());
+    digest.update(
+        crate::infrastructure::platform::filesystem::stable_path_identity_bytes(workspace_root)?,
+    );
     digest.update([0]);
-    digest.update(source_root.as_bytes());
-    format!("source-{:x}", digest.finalize())
+    digest.update(
+        crate::infrastructure::platform::filesystem::stable_path_identity_bytes(source_root)?,
+    );
+    Ok(format!("source-{:x}", digest.finalize()))
 }
 
 fn bsl_analyzer_cache_dir(
@@ -4151,14 +4155,8 @@ fn bsl_analyzer_cache_dir(
     let workspace_root = normalize_path_identity(&context.workspace_root)?;
     let source_root = normalize_path_identity(source_root)?;
     let cache_root = normalize_path_identity(&context.cache_root)?;
-    let key = provider_state_key(
-        &workspace_root.display().to_string(),
-        &source_root.display().to_string(),
-    );
-    let preferred = cache_root
-        .join("providers")
-        .join("bsl-analyzer")
-        .join(&key);
+    let key = provider_state_key(&workspace_root, &source_root)?;
+    let preferred = cache_root.join("providers").join("bsl-analyzer").join(&key);
     let preferred = normalize_path_identity(&preferred)?;
     if !crate::infrastructure::platform::filesystem::path_starts_with_host_root(
         &preferred,
@@ -4187,7 +4185,9 @@ fn bsl_analyzer_cache_dir(
         &external,
         &source_root,
     ) {
-        return Err("failed to place bsl-analyzer cache outside the indexed source tree".to_string());
+        return Err(
+            "failed to place bsl-analyzer cache outside the indexed source tree".to_string(),
+        );
     }
     Ok(external)
 }
@@ -4432,8 +4432,10 @@ mod tests {
 
         let first_cache = bsl_analyzer_cache_dir(&context, &first_source).unwrap();
         let second_cache = bsl_analyzer_cache_dir(&context, &second_source).unwrap();
+        let cache_root = normalize_path_identity(&context.cache_root).unwrap();
+        let first_source = normalize_path_identity(&first_source).unwrap();
 
-        assert!(first_cache.starts_with(&context.cache_root));
+        assert!(first_cache.starts_with(cache_root));
         assert!(!first_cache.starts_with(&first_source));
         assert_ne!(first_cache, second_cache);
     }
@@ -4445,8 +4447,16 @@ mod tests {
 
         let cache = bsl_analyzer_cache_dir(&context, &context.workspace_root).unwrap();
         let workspace_root = normalize_path_identity(&context.workspace_root).unwrap();
+        let expected_key = provider_state_key(&workspace_root, &workspace_root).unwrap();
 
-        assert!(!cache.starts_with(workspace_root));
+        assert!(!cache.starts_with(&workspace_root));
+        assert_eq!(
+            cache.file_name(),
+            Some(std::ffi::OsStr::new(&expected_key)),
+            "the fallback must preserve the normalized source identity"
+        );
+
+        cleanup(&context);
     }
 
     #[test]
@@ -7992,8 +8002,31 @@ fn main() {
     #[test]
     fn provider_state_key_has_a_stable_domain_separated_sha256_contract() {
         assert_eq!(
-            provider_state_key("/workspace", "/workspace/src/cf"),
+            provider_state_key(Path::new("/workspace"), Path::new("/workspace/src/cf")).unwrap(),
             "source-156ee86cec5364248d3b62f5fd5ba2ddf820f63e50dabeef868d5cb18600d790"
+        );
+    }
+
+    #[test]
+    fn provider_state_key_keeps_distinct_non_utf8_path_identities_separate() {
+        let Some((first, second)) =
+            crate::infrastructure::platform::filesystem::distinct_non_unicode_paths_for_test()
+        else {
+            return;
+        };
+        let workspace = Path::new("/workspace");
+
+        assert_ne!(first, second);
+        assert!(first.to_str().is_none());
+        assert!(second.to_str().is_none());
+        assert_eq!(
+            first.display().to_string(),
+            second.display().to_string(),
+            "the reproducer requires lossy display collision"
+        );
+        assert_ne!(
+            provider_state_key(workspace, &first).unwrap(),
+            provider_state_key(workspace, &second).unwrap()
         );
     }
 

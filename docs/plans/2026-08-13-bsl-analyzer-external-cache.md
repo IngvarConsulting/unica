@@ -4,14 +4,14 @@
 
 **Goal:** Обновить поставляемый `bsl-analyzer` до 0.2.67 и всегда направлять его workspace-кеш в стабильный каталог Unica вне корней исходников.
 
-**Architecture:** Unica вычисляет полный SHA-256 от домен-разделённой пары нормализованных `workspaceRoot + sourceRoot` и передаёт `<cacheRoot>/providers/bsl-analyzer/source-<digest>` через `mcp serve --cache-dir`. Путь не зависит от `services/<service-id>`, но сохраняет изоляцию наборов исходников, проектов и git worktree по ADR-0018.
+**Architecture:** Unica вычисляет полный SHA-256 от домен-разделённой пары нормализованных `workspaceRoot + sourceRoot` и обычно передаёт `<cacheRoot>/providers/bsl-analyzer/source-<digest>` через `mcp serve --cache-dir`. Если этот путь лежал бы внутри выбранного source root, тот же ключ переносится под частный runtime-корень вне дерева. Путь не зависит от `services/<service-id>`, но сохраняет изоляцию наборов исходников, проектов и git worktree по ADR-0018.
 
 **Tech Stack:** Rust, `sha2`, std `Command`, Python `unittest`, JSON tool lock, GitHub CLI/API.
 
 ## Global Constraints
 
-- Кеш располагается только как `<cacheRoot>/providers/bsl-analyzer/source-<full-sha256>`.
-- Digest вычисляется из `b"unica-provider-state-v1\0"`, UTF-8 нормализованного `workspaceRoot`, байта `NUL` и UTF-8 нормализованного `sourceRoot`.
+- Кеш обычно располагается как `<cacheRoot>/providers/bsl-analyzer/source-<full-sha256>`; вложенный в source root `cacheRoot` переключается на частный runtime-корень с тем же ключом.
+- Digest вычисляется из `b"unica-provider-state-v1\0"`, байтов файловой идентичности нормализованного `workspaceRoot`, байта `NUL` и байтов файловой идентичности нормализованного `sourceRoot`; lossy-преобразование путей в UTF-8 не допускается.
 - Корни нормализуются существующей `normalize_path_identity`; отдельная пользовательская настройка не добавляется.
 - Путь должен быть одинаковым после пересоздания workspace-service и различным для другого source root, workspace и git worktree.
 - Unica назначает каталог, но не читает, не мигрирует и не удаляет частные базы `bsl-analyzer`.
@@ -32,8 +32,8 @@
 - Test: `crates/unica-coder/src/infrastructure/workspace_services.rs:7499-7535`
 
 **Interfaces:**
-- Consumes: `WorkspaceContext.cache_root`, `WorkspaceContext.workspace_root`, `normalize_path_identity(&Path) -> Result<PathBuf, String>`, `configure_bsl_analyzer_runtime_dir(&mut Command) -> Result<(), String>`.
-- Produces: `provider_state_key(workspace_root: &str, source_root: &str) -> String`, `bsl_analyzer_cache_dir(context: &WorkspaceContext, source_root: &Path) -> Result<PathBuf, String>`, `bsl_analyzer_command(program: &Path, context: &WorkspaceContext, source_root: &Path) -> Result<Command, String>`.
+- Consumes: `WorkspaceContext.cache_root`, `WorkspaceContext.workspace_root`, `normalize_path_identity(&Path) -> Result<PathBuf, String>`, платформенные фасады `stable_path_identity_bytes(&Path) -> Result<Vec<u8>, String>` и `path_starts_with_host_root(&Path, &Path) -> bool`, `short_private_runtime_dir()`, `configure_bsl_analyzer_runtime_dir(&mut Command) -> Result<(), String>`.
+- Produces: `provider_state_key(workspace_root: &Path, source_root: &Path) -> Result<String, String>`, `bsl_analyzer_cache_dir(context: &WorkspaceContext, source_root: &Path) -> Result<PathBuf, String>`, `bsl_analyzer_command(program: &Path, context: &WorkspaceContext, source_root: &Path) -> Result<Command, String>`.
 
 - [ ] **Step 1: Написать падающие тесты стабильной идентичности**
 
@@ -89,13 +89,13 @@ use sha2::{Digest, Sha256};
 
 const PROVIDER_STATE_KEY_DOMAIN: &[u8] = b"unica-provider-state-v1\0";
 
-fn provider_state_key(workspace_root: &str, source_root: &str) -> String {
+fn provider_state_key(workspace_root: &Path, source_root: &Path) -> Result<String, String> {
     let mut digest = Sha256::new();
     digest.update(PROVIDER_STATE_KEY_DOMAIN);
-    digest.update(workspace_root.as_bytes());
+    digest.update(stable_path_identity_bytes(workspace_root)?);
     digest.update([0]);
-    digest.update(source_root.as_bytes());
-    format!("source-{:x}", digest.finalize())
+    digest.update(stable_path_identity_bytes(source_root)?);
+    Ok(format!("source-{:x}", digest.finalize()))
 }
 
 fn bsl_analyzer_cache_dir(
@@ -104,15 +104,37 @@ fn bsl_analyzer_cache_dir(
 ) -> Result<PathBuf, String> {
     let workspace_root = normalize_path_identity(&context.workspace_root)?;
     let source_root = normalize_path_identity(source_root)?;
-    let key = provider_state_key(
-        &workspace_root.display().to_string(),
-        &source_root.display().to_string(),
-    );
-    Ok(context
-        .cache_root
+    let cache_root = normalize_path_identity(&context.cache_root)?;
+    let key = provider_state_key(&workspace_root, &source_root)?;
+    let preferred = cache_root.join("providers").join("bsl-analyzer").join(&key);
+    let preferred = normalize_path_identity(&preferred)?;
+    if !crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+        &preferred,
+        &source_root,
+    ) {
+        return Ok(preferred);
+    }
+
+    let external_root = short_private_runtime_dir()
+        .map_err(|error| {
+            format!("failed to prepare external bsl-analyzer cache directory: {error}")
+        })?
+        .unwrap_or_else(|| std::env::temp_dir().join("unica-bsl"));
+    let external = external_root
+        .join("cache")
         .join("providers")
         .join("bsl-analyzer")
-        .join(key))
+        .join(key);
+    let external = normalize_path_identity(&external)?;
+    if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+        &external,
+        &source_root,
+    ) {
+        return Err(
+            "failed to place bsl-analyzer cache outside the indexed source tree".to_string(),
+        );
+    }
+    Ok(external)
 }
 ```
 
@@ -359,11 +381,12 @@ git commit -m "build: update bsl-analyzer to 0.2.67"
 Дополнить пункт о постоянных дочерних процессах текстом:
 
 ```markdown
-Частный кеш `bsl-analyzer` располагается под
-`<cacheRoot>/providers/bsl-analyzer/source-<identity-digest>` вне корня
-исходников и каталога процесса-сервиса. Digest выводится из нормализованной
-пары `workspaceRoot + sourceRoot`, поэтому кеш переживает пересоздание сервиса,
-но не разделяется между наборами исходников и связанными рабочими деревьями
+Частный кеш `bsl-analyzer` обычно располагается под
+`<cacheRoot>/providers/bsl-analyzer/source-<identity-digest>`. Если этот путь
+оказался бы внутри выбранного корня исходников, тот же ключ размещается под
+частным runtime-корнем вне дерева. Digest выводится из нормализованной пары
+`workspaceRoot + sourceRoot`, поэтому кеш переживает пересоздание сервиса, но
+не разделяется между наборами исходников и связанными рабочими деревьями
 (INV-CACHE-ORCHESTRATOR-OWNED, INV-CACHE-WORKTREE-ISOLATION, ADR-0018).
 ```
 
@@ -465,8 +488,9 @@ runtime-загрузка приняла файлы кеша за часть XML-
 
 - Unica поставляет `bsl-analyzer` 0.2.67.
 - Workspace-service всегда передаёт внешний `--cache-dir`.
-- Кеш располагается под
-  `<cacheRoot>/providers/bsl-analyzer/source-<identity-digest>`.
+- Кеш обычно располагается под
+  `<cacheRoot>/providers/bsl-analyzer/source-<identity-digest>`, а при вложенном
+  `cacheRoot` использует внешний частный runtime-корень с тем же ключом.
 - Identity выводится из нормализованной пары `workspaceRoot + sourceRoot`.
 - Кеши `cf`, каждого `cfe` и git worktree изолированы.
 - Кеш переживает пересоздание workspace-service и не зависит от `services/`.

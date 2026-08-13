@@ -7,13 +7,13 @@
     {
       "id": "bsl-analyzer",
       "kind": "bundled-tool",
-      "locked": "v0.2.67",
-      "latest": "v0.2.67",
+      "locked": "v0.2.62",
+      "latest": "v0.2.62",
       "risk": "high",
       "batch": "bsl-analyzer-contract",
       "status": "applied",
       "contractGate": true,
-      "notes": "Updated to v0.2.67 after reviewing the configurable workspace cache added in itrous/bsl-analyzer#14. Unica consumes the supported mcp serve --cache-dir contract to keep provider state outside configuration source roots; the public unica.code.* surface remains unchanged. It does not expose connection, event-log, execute, debug, rename, or fix-all capabilities. Dependency-aware CFE topology remains deferred until v8-runner #32 provides its shared configuration contract."
+      "notes": "Updated to v0.2.62 after reviewing v0.2.56 through v0.2.62, including the issue #7 extension-analysis implementation. The refresh brings extension-topology and diagnostics fixes plus named-connection metadata work; Unica continues to consume only typed unica.code.* graph/diagnostics gates. It does not expose connection, event-log, execute, debug, rename, or fix-all capabilities. Dependency-aware CFE topology remains deferred until v8-runner #32 provides its shared configuration contract."
     },
     {
       "id": "rlm-tools-bsl",

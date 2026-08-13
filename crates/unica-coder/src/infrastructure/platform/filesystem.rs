@@ -2732,6 +2732,80 @@ pub(crate) fn host_path_text(path: String) -> String {
     path
 }
 
+/// Returns a version-stable byte representation for persistent path identity.
+/// Valid Unicode paths retain their UTF-8 contract on every supported host;
+/// non-Unicode paths use an explicit, platform-tagged native encoding instead
+/// of `OsStr::as_encoded_bytes`, whose representation may change between Rust
+/// versions.
+pub(crate) fn stable_path_identity_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    if let Some(path) = path.to_str() {
+        return Ok(path.as_bytes().to_vec());
+    }
+    stable_non_utf8_path_identity_bytes(path)
+}
+
+#[cfg(unix)]
+fn stable_non_utf8_path_identity_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut encoded = b"\xffunica-path-unix-v1\0".to_vec();
+    encoded.extend_from_slice(path.as_os_str().as_bytes());
+    Ok(encoded)
+}
+
+#[cfg(windows)]
+fn stable_non_utf8_path_identity_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut encoded = b"\xffunica-path-utf16le-v1\0".to_vec();
+    for unit in path.as_os_str().encode_wide() {
+        encoded.extend_from_slice(&unit.to_le_bytes());
+    }
+    Ok(encoded)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn stable_non_utf8_path_identity_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    Err(format!(
+        "stable non-Unicode path identity is unsupported on this platform: {}",
+        path.display()
+    ))
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn distinct_non_unicode_paths_for_test() -> Option<(PathBuf, PathBuf)> {
+    use std::os::unix::ffi::OsStringExt;
+
+    Some((
+        PathBuf::from(std::ffi::OsString::from_vec(
+            b"/workspace/source-\x80".to_vec(),
+        )),
+        PathBuf::from(std::ffi::OsString::from_vec(
+            b"/workspace/source-\x81".to_vec(),
+        )),
+    ))
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn distinct_non_unicode_paths_for_test() -> Option<(PathBuf, PathBuf)> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let prefix = "/workspace/source-".encode_utf16().collect::<Vec<_>>();
+    let mut first = prefix.clone();
+    first.push(0xd800);
+    let mut second = prefix;
+    second.push(0xd801);
+    Some((
+        PathBuf::from(std::ffi::OsString::from_wide(&first)),
+        PathBuf::from(std::ffi::OsString::from_wide(&second)),
+    ))
+}
+
+#[cfg(all(test, not(any(unix, windows))))]
+pub(crate) fn distinct_non_unicode_paths_for_test() -> Option<(PathBuf, PathBuf)> {
+    None
+}
+
 #[cfg(windows)]
 pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> std::path::PathBuf {
     use std::path::PathBuf;
@@ -3314,7 +3388,10 @@ fn path_lock_identity_text(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_lock_identity_text, path_starts_with_host_root, windows_api_path_from_utf16};
+    use super::{
+        path_lock_identity_text, path_starts_with_host_root, stable_path_identity_bytes,
+        windows_api_path_from_utf16,
+    };
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
@@ -4928,6 +5005,24 @@ mod tests {
         let verbatim = PathBuf::from(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\source");
 
         assert_eq!(verbatim, normalize_path_identity(&verbatim).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_path_identity_bytes_are_explicit_for_non_utf8_unix_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        assert_eq!(
+            stable_path_identity_bytes(Path::new("/workspace")).unwrap(),
+            b"/workspace"
+        );
+        let path = PathBuf::from(std::ffi::OsString::from_vec(
+            b"/workspace/source-\x80".to_vec(),
+        ));
+        let mut expected = b"\xffunica-path-unix-v1\0".to_vec();
+        expected.extend_from_slice(b"/workspace/source-\x80");
+
+        assert_eq!(stable_path_identity_bytes(&path).unwrap(), expected);
     }
 
     #[cfg(unix)]
