@@ -84,10 +84,10 @@
 ## Предложенные решения
 
 - [ADR-0041: `unica.meta.info` имеет отдельную полную read-model](0041-meta-info-complete-read-model.md)
-- [ADR-0054: Готовность RLM является типизированным состоянием](0054-tipizirovannaya-gotovnost-rlm.md)
-- [ADR-0055: Публичная диагностика адресует логические цели](0055-logicheskie-nablyudeniya-diagnostiki.md)
-- [ADR-0056: Поставщики диагностик сохраняют происхождение и отказывают независимо](0056-neytralnaya-kompoziciya-diagnostik.md)
-- [ADR-0057: Миграция читателя выбирает мост или прямое переключение явно](0057-yavnyy-rezhim-migracii-chitatelya.md)
+- [ADR-0055: Готовность RLM является типизированным состоянием](0055-tipizirovannaya-gotovnost-rlm.md)
+- [ADR-0056: Публичная диагностика адресует логические цели](0056-logicheskie-nablyudeniya-diagnostiki.md)
+- [ADR-0057: Поставщики диагностик сохраняют происхождение и отказывают независимо](0057-neytralnaya-kompoziciya-diagnostik.md)
+- [ADR-0058: Миграция читателя выбирает мост или прямое переключение явно](0058-yavnyy-rezhim-migracii-chitatelya.md)
 
 Запись в статусе `proposed` ещё не действует и не заменяет принятые решения;
 после ревью она либо переводится в `accepted` вместе с реализацией и

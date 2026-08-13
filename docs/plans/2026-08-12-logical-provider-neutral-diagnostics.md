@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Implement the approved contract in `docs/design/2026-08-12-logical-provider-neutral-diagnostics-design.md` and proposed ADR-0054 through ADR-0057; do not re-open the design while executing the plan.
+- Implement the approved contract in `docs/design/2026-08-12-logical-provider-neutral-diagnostics-design.md` and proposed ADR-0055 through ADR-0058; do not re-open the design while executing the plan.
 - Work on one branch based directly on current `main`; do not base the PR on another open PR.
 - Follow strict TDD for every task: add the named failing test, run it and confirm the expected failure, then write production code and rerun it.
 - Keep one public MCP server named `unica` and one public tool named `unica.code.diagnostics`; BSL LS and metadata-validator implementations are test doubles only in this PR.
@@ -20,7 +20,7 @@
 - Cancellation wins over all partial outcomes and publishes no collected items.
 - Keep the current closed JSONL grammar, 8 MiB line bound, UTF-8 validation, secret redaction, and terminal-counter checks.
 - The existing CI already runs `cargo test --workspace -- --test-threads=1` on `windows-latest`; add portable unit coverage and Windows-only drive/URI cases without adding a workflow.
-- Before accepting ADR-0054 through ADR-0057, update from the actual target branch and renumber the proposed ADR files if another ADR number landed first.
+- Before accepting ADR-0055 through ADR-0058, update from the actual target branch and renumber the proposed ADR files if another ADR number landed first.
 
 ---
 
@@ -927,10 +927,10 @@ git commit -m "docs(diagnostics): описать логический публи
 
 **Files:**
 
-- Modify: `spec/decisions/0054-tipizirovannaya-gotovnost-rlm.md`
-- Modify: `spec/decisions/0055-logicheskie-nablyudeniya-diagnostiki.md`
-- Modify: `spec/decisions/0056-neytralnaya-kompoziciya-diagnostik.md`
-- Modify: `spec/decisions/0057-yavnyy-rezhim-migracii-chitatelya.md`
+- Modify: `spec/decisions/0055-tipizirovannaya-gotovnost-rlm.md`
+- Modify: `spec/decisions/0056-logicheskie-nablyudeniya-diagnostiki.md`
+- Modify: `spec/decisions/0057-neytralnaya-kompoziciya-diagnostik.md`
+- Modify: `spec/decisions/0058-yavnyy-rezhim-migracii-chitatelya.md`
 - Modify: `spec/decisions/0045-typed-reader-completion-contract.md`
 - Modify: `spec/decisions/0049-most-logicheskoy-adresacii-predmetnyh-chitateley.md`
 - Modify: `spec/decisions/README.md`
@@ -944,11 +944,11 @@ git commit -m "docs(diagnostics): описать логический публи
 
 Require three new atomic registry rules:
 
-- `INV-MCP-DIAGNOSTIC-TARGET` owned only by ADR-0055 for logical location/focus and absence of public absolute paths;
-- `INV-APP-DIAGNOSTIC-PROVIDERS` owned only by ADR-0056 for registry order, provenance, independent failure, and no cross-provider deduplication;
-- `INV-SOURCE-READER-MIGRATION` owned only by ADR-0057 for explicit `bridge|directSwitch`, with diagnostics named as the sole direct switch.
+- `INV-MCP-DIAGNOSTIC-TARGET` owned only by ADR-0056 for logical location/focus and absence of public absolute paths;
+- `INV-APP-DIAGNOSTIC-PROVIDERS` owned only by ADR-0057 for registry order, provenance, independent failure, and no cross-provider deduplication;
+- `INV-SOURCE-READER-MIGRATION` owned only by ADR-0058 for explicit `bridge|directSwitch`, with diagnostics named as the sole direct switch.
 
-Keep RLM readiness in the existing typed-result/application rule but replace ADR-0045 ownership with ADR-0054. Do not merge these concerns into one new invariant.
+Keep RLM readiness in the existing typed-result/application rule but replace ADR-0045 ownership with ADR-0055. Do not merge these concerns into one new invariant.
 
 Run:
 
@@ -969,7 +969,7 @@ If `0054..0057` conflict with decisions now present on `origin/main`, renumber t
 
 - [ ] **Step 3: Accept the four decisions and supersede historical owners**
 
-Set ADR-0054 through ADR-0057 to `accepted`. On historical ADR-0045 change only the lifecycle metadata and add a resolvable replacement note naming ADR-0054, ADR-0055, and ADR-0056; do not rewrite its accepted decision text. Do the same minimal lifecycle update on ADR-0049 with ADR-0057. Update the decision index sections.
+Set ADR-0055 through ADR-0058 to `accepted`. On historical ADR-0045 change only the lifecycle metadata and add a resolvable replacement note naming ADR-0055, ADR-0056, and ADR-0057; do not rewrite its accepted decision text. Do the same minimal lifecycle update on ADR-0049 with ADR-0058. Update the decision index sections.
 
 - [ ] **Step 4: Update derived architecture without broadening an ADR**
 
@@ -979,7 +979,7 @@ Add the three rules above with direct checks:
 - `tests/ci/test_unica_skills.py` for model-facing calls;
 - `tests/ci/test_architecture_registry.py` for migration mode ownership.
 
-Update `INV-MCP-TYPED-RESULT`, `INV-APP-CONFIG-SNAPSHOT`, and relevant runtime prose from diagnostics `mode=analyze` to `action=analyze`. Keep ADR-0054 references limited to RLM readiness.
+Update `INV-MCP-TYPED-RESULT`, `INV-APP-CONFIG-SNAPSHOT`, and relevant runtime prose from diagnostics `mode=analyze` to `action=analyze`. Keep ADR-0055 references limited to RLM readiness.
 
 Add the diagnostics direct-switch checklist to `change-checklist.md`: schema, handler, skill, examples, ledger, migration guide, release probe, and executable tests must land together.
 
@@ -1067,7 +1067,7 @@ Use the repository's publishing workflow after all checks are green. The PR desc
 - provider partial-success/cancellation semantics;
 - Windows path/URI cases tested;
 - exact local commands and results;
-- ADR-0054 through ADR-0057 atomic ownership;
+- ADR-0055 through ADR-0058 atomic ownership;
 - explicit statement that BSL LS and metadata diagnostics are future providers, not part of this PR.
 
 Wait for the existing Rust matrix, especially `windows-latest`, before merge. Address introduced review/CI defects on the same head branch with a failing regression test first.
