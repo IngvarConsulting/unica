@@ -704,7 +704,68 @@ for raw in sys.stdin:
         self.assertIs(payload, ready_payload)
         self.assertEqual(12, scenario["durationMs"])
         self.assertEqual(2, scenario["metrics"]["indexAttempts"])
+        self.assertEqual("ready", scenario["metrics"]["indexedState"])
         self.assertEqual([1], sleeps)
+
+    def test_indexed_code_search_fails_when_no_indexed_provider_can_become_ready(self) -> None:
+        module = load_assessment_module()
+        terminal_payload = {
+            "ok": True,
+            "errors": [],
+            "data": {
+                "sections": [
+                    {
+                        "provider": "rlm",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": ["rlm is not installed"],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "bsl-analyzer",
+                        "status": "failed",
+                        "hits": [],
+                        "diagnostics": ["index build failed"],
+                        "artifacts": [],
+                    },
+                    {
+                        "provider": "git-grep",
+                        "status": "ok",
+                        "hits": [{"path": "Module.bsl", "line": 1}],
+                        "diagnostics": [],
+                        "artifacts": [],
+                    },
+                ]
+            },
+        }
+        sleeps: list[float] = []
+
+        scenario, payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: (
+                module.scenario_result(
+                    scenario_id="code-search",
+                    title="search",
+                    tool="unica.code.search",
+                    arguments={},
+                    status="passed",
+                    duration_ms=5,
+                    blocking=True,
+                ),
+                terminal_payload,
+            ),
+            timeout_seconds=10,
+            sleep=sleeps.append,
+        )
+
+        self.assertEqual("failed", scenario["status"])
+        self.assertIs(payload, terminal_payload)
+        self.assertEqual(1, scenario["metrics"]["indexAttempts"])
+        self.assertEqual("terminal", scenario["metrics"]["indexedState"])
+        self.assertTrue(
+            any("no indexed provider became ready" in error for error in scenario["errors"]),
+            scenario,
+        )
+        self.assertEqual([], sleeps)
 
     def test_indexed_code_search_fails_when_readiness_deadline_expires(self) -> None:
         module = load_assessment_module()
@@ -821,7 +882,27 @@ for raw in sys.stdin:
                     duration_ms=5,
                     blocking=True,
                 ),
-                {"ok": True, "data": {"sections": []}},
+                {
+                    "ok": True,
+                    "data": {
+                        "sections": [
+                            {
+                                "provider": "rlm",
+                                "status": "empty",
+                                "hits": [],
+                                "diagnostics": [],
+                                "artifacts": [],
+                            },
+                            {
+                                "provider": "bsl-analyzer",
+                                "status": "unavailable",
+                                "hits": [],
+                                "diagnostics": ["index building"],
+                                "artifacts": [],
+                            },
+                        ]
+                    },
+                },
             )
 
         scenario, _ = module.wait_for_indexed_code_search(
@@ -834,6 +915,7 @@ for raw in sys.stdin:
 
         self.assertEqual("passed", scenario["status"])
         self.assertEqual(2, len(attempt_budgets))
+        self.assertEqual("ready", scenario["metrics"]["indexedState"])
         self.assertAlmostEqual(1.0, attempt_budgets[0])
         self.assertAlmostEqual(0.25, attempt_budgets[1])
 

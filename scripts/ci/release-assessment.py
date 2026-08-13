@@ -661,7 +661,11 @@ def wait_for_indexed_code_search(
                 f"indexed code search did not become ready within {timeout_seconds:g} seconds"
             )
             scenario["durationMs"] = total_duration_ms
-            scenario["metrics"] = {**scenario["metrics"], "indexAttempts": attempts}
+            scenario["metrics"] = {
+                **scenario["metrics"],
+                "indexAttempts": attempts,
+                "indexedState": "building",
+            }
             return scenario, payload
 
         scenario, payload = run_attempt(remaining)
@@ -669,9 +673,25 @@ def wait_for_indexed_code_search(
         total_duration_ms += int(scenario.get("durationMs", 0))
         last = scenario, payload
         state = indexed_code_search_state(payload)
-        if state != "building":
+        if state == "ready":
             scenario["durationMs"] = total_duration_ms
-            scenario["metrics"] = {**scenario["metrics"], "indexAttempts": attempts}
+            scenario["metrics"] = {
+                **scenario["metrics"],
+                "indexAttempts": attempts,
+                "indexedState": state,
+            }
+            return scenario, payload
+        if state == "terminal":
+            scenario["status"] = "failed"
+            scenario["errors"].append(
+                "indexed code search terminated; no indexed provider became ready"
+            )
+            scenario["durationMs"] = total_duration_ms
+            scenario["metrics"] = {
+                **scenario["metrics"],
+                "indexAttempts": attempts,
+                "indexedState": state,
+            }
             return scenario, payload
 
         sleep_budget = deadline - monotonic()
