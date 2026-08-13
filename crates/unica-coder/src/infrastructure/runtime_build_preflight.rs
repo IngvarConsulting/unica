@@ -109,7 +109,7 @@ impl RuntimeBuildPreflight {
 /// configuration. v8-runner owns the incremental baseline, so this boundary
 /// deliberately makes only the decision it can prove from source evidence:
 /// any selected supported Platform XML configuration takes the runner's full
-/// build path before a platform process is started (#404, ADR-0055).
+/// build path before a platform process is started (#404, ADR-0056).
 pub(crate) fn plan_runtime_invocation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,

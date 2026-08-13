@@ -1638,17 +1638,9 @@ fn enqueue_cancellable_runtime_job(
     request: &RuntimeJobRequest,
     cancellation: &CancellationToken,
 ) -> JobResult<RuntimeJobSnapshot> {
-    let queued = RuntimeJobService::enqueue(cache_root.to_path_buf(), request)?;
-    if cancellation.is_cancelled() {
-        cancel_queued_job(cache_root, &queued.id)?;
-        return Err(cancelled_error(
-            "runtime job start stopped before detached worker launch",
-        ));
-    }
-    Ok(queued)
+    enqueue_cancellable_runtime_job_after_hook(cache_root, request, cancellation, || {})
 }
 
-#[cfg(test)]
 fn enqueue_cancellable_runtime_job_after_hook(
     cache_root: &Path,
     request: &RuntimeJobRequest,

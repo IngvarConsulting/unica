@@ -738,7 +738,7 @@ Unica. Каждая запись формулирует одно нормати�
   включая фоновый обработчик; отмена во время предпроверки не запускает процесс
   и не оставляет активного задания. Предпроверка не читает частное состояние
   `v8-runner`.
-- **Decision:** ADR-0055, ADR-0054, ADR-0003
+- **Decision:** ADR-0056, ADR-0054, ADR-0003
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/internal_adapters.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_jobs.rs`
