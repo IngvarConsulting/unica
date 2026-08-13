@@ -880,6 +880,54 @@ mod tests {
         cleanup(&context);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn physical_support_target_accepts_regular_and_verbatim_windows_paths() {
+        let context = fixture("physical-windows-verbatim");
+        let resource = context.workspace_root.join("src/Configuration.xml");
+        let verbatim = PathBuf::from(format!(r"\\?\{}", resource.display()));
+
+        let regular = physical_selection(&resource, &context, AttachedResource::ConfigurationRoot)
+            .expect("the regular Windows spelling resolves");
+        let extended = physical_selection(&verbatim, &context, AttachedResource::ConfigurationRoot)
+            .expect("the equivalent verbatim Windows spelling resolves");
+
+        assert_eq!(extended.target, regular.target);
+        assert_eq!(extended.resource_path, regular.resource_path);
+        assert!(
+            !extended
+                .resource_path
+                .as_os_str()
+                .to_string_lossy()
+                .starts_with(r"\\?\"),
+            "the public resource identity must not expose a Windows service prefix"
+        );
+        cleanup(&context);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn physical_support_target_rejects_a_parent_directory_reparse_point() {
+        let context = fixture("physical-windows-parent-reparse");
+        let src = context.workspace_root.join("src");
+        let linked_parent = src.join("Roles/Sales");
+        let referent = src.join("linked-sales");
+        fs::rename(&linked_parent, &referent).unwrap();
+        std::os::windows::fs::symlink_dir(&referent, &linked_parent).unwrap();
+
+        let failure = physical_selection(
+            &linked_parent.join("Ext/Rights.xml"),
+            &context,
+            AttachedResource::Rights,
+        )
+        .expect_err("a resource below a reparse-point parent must be refused");
+
+        assert_eq!(failure.code(), "containment_denied");
+        crate::infrastructure::platform::filesystem::remove_dir_symlink_for_test(&linked_parent)
+            .unwrap();
+        cleanup(&context);
+    }
+
     #[test]
     fn logical_selector_reports_a_proven_object_without_the_resource_as_absent() {
         let context = fixture("binary-template");
