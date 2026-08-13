@@ -1,7 +1,7 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::source_revision::SourceRevisionTrustLoss;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,9 +10,9 @@ pub(crate) enum FenceCapability {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FenceOutcome {
-    Proven { dirty: bool },
+    Proven { changed_paths: Vec<PathBuf> },
     TrustLost(SourceRevisionTrustLoss),
 }
 
@@ -99,13 +99,15 @@ mod macos {
     use dispatch2::{DispatchQueue, DispatchRetained};
     use objc2_core_foundation::{CFArray, CFString};
     use objc2_core_services::*;
-    use std::ffi::{c_void, CStr};
+    use std::collections::BTreeSet;
+    use std::ffi::{c_void, CStr, OsString};
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStringExt;
     use std::path::PathBuf;
     use std::ptr::NonNull;
-    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
     use std::sync::{Condvar, Mutex};
 
     const TRUSTED: u8 = 0;
@@ -114,10 +116,10 @@ mod macos {
     const ROOT_CHANGED: u8 = 3;
 
     struct WatcherState {
-        dirty: AtomicBool,
         trust_loss: AtomicU8,
         source_root: Vec<u8>,
         marker_root: Vec<u8>,
+        changed_paths: Mutex<BTreeSet<PathBuf>>,
         marker_event_id: Mutex<FSEventStreamEventId>,
         marker_changed: Condvar,
     }
@@ -165,10 +167,10 @@ mod macos {
             let erased_paths: &CFArray =
                 unsafe { &*((paths.as_ref() as *const CFArray<CFString>).cast::<CFArray>()) };
             let mut state = Box::new(WatcherState {
-                dirty: AtomicBool::new(false),
                 trust_loss: AtomicU8::new(TRUSTED),
                 source_root: source_root_bytes,
                 marker_root: marker_root_bytes,
+                changed_paths: Mutex::new(BTreeSet::new()),
                 marker_event_id: Mutex::new(0),
                 marker_changed: Condvar::new(),
             });
@@ -300,13 +302,20 @@ mod macos {
                 return Err("source revision fence deadline exceeded".to_string());
             }
             let trust_loss = self.state.trust_loss.swap(TRUSTED, Ordering::AcqRel);
+            let changed_paths = std::mem::take(
+                &mut *self
+                    .state
+                    .changed_paths
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            )
+            .into_iter()
+            .collect();
             let outcome = match trust_loss {
                 WATCHER_GAP => FenceOutcome::TrustLost(SourceRevisionTrustLoss::WatcherGap),
                 OVERFLOW => FenceOutcome::TrustLost(SourceRevisionTrustLoss::Overflow),
                 ROOT_CHANGED => FenceOutcome::TrustLost(SourceRevisionTrustLoss::RootChanged),
-                _ => FenceOutcome::Proven {
-                    dirty: self.state.dirty.swap(false, Ordering::AcqRel),
-                },
+                _ => FenceOutcome::Proven { changed_paths },
             };
             Ok(outcome)
         }
@@ -377,9 +386,31 @@ mod macos {
                 if !path_is_within(path, &state.source_root) {
                     continue;
                 }
-                state.dirty.store(true, Ordering::Release);
+                if flags & kFSEventStreamEventFlagItemIsDir != 0
+                    || flags
+                        & (kFSEventStreamEventFlagItemIsFile | kFSEventStreamEventFlagItemIsSymlink)
+                        == 0
+                {
+                    state.trust_loss.store(WATCHER_GAP, Ordering::Release);
+                    continue;
+                }
+                let Some(relative) = relative_path_bytes(path, &state.source_root) else {
+                    state.trust_loss.store(WATCHER_GAP, Ordering::Release);
+                    continue;
+                };
+                state
+                    .changed_paths
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(PathBuf::from(OsString::from_vec(relative.to_vec())));
             }
         });
+    }
+
+    fn relative_path_bytes<'a>(path: &'a [u8], root: &[u8]) -> Option<&'a [u8]> {
+        let relative = path.strip_prefix(root)?;
+        let relative = relative.strip_prefix(b"/").unwrap_or(relative);
+        (!relative.is_empty()).then_some(relative)
     }
 
     fn path_bytes(path: &Path, label: &str) -> Result<Vec<u8>, String> {
@@ -467,6 +498,11 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap();
-        assert_eq!(outcome, FenceOutcome::Proven { dirty: true });
+        assert_eq!(
+            outcome,
+            FenceOutcome::Proven {
+                changed_paths: vec![PathBuf::from("Module.bsl")]
+            }
+        );
     }
 }

@@ -9,9 +9,11 @@ use crate::infrastructure::platform::source_revision_fence::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -19,15 +21,26 @@ const GENERATED_DIR_NAME: &str = ".build";
 const MAX_SOURCE_DEPTH: usize = 64;
 const REVISION_RECORD_SCHEMA_VERSION: u32 = 1;
 
-type SourceDigestScanner =
-    dyn Fn(&Path, &(dyn Fn() -> bool + Sync)) -> Result<String, String> + Send + Sync;
+#[derive(Clone)]
+struct SourceEntryDigest {
+    kind: u8,
+    digest: [u8; 32],
+}
+
+type SourceManifest = BTreeMap<PathBuf, SourceEntryDigest>;
+type SourceManifestScanner =
+    dyn Fn(&Path, &(dyn Fn() -> bool + Sync)) -> Result<SourceManifest, String> + Send + Sync;
+type SourceFileReader = dyn Fn(&Path) -> Result<Vec<u8>, String> + Send + Sync;
 
 pub(crate) struct SourceRevisionService {
     source_root: PathBuf,
     record_path: PathBuf,
     machine: Mutex<SourceRevisionMachine>,
+    manifest: Mutex<Option<SourceManifest>>,
+    operation: Mutex<()>,
     fence: Arc<dyn SourceRevisionFence>,
-    scanner: Arc<SourceDigestScanner>,
+    scanner: Arc<SourceManifestScanner>,
+    file_reader: Arc<SourceFileReader>,
 }
 
 impl fmt::Debug for SourceRevisionService {
@@ -68,8 +81,11 @@ impl SourceRevisionService {
             source_root,
             record_path,
             machine: Mutex::new(machine),
+            manifest: Mutex::new(None),
+            operation: Mutex::new(()),
             fence,
-            scanner: Arc::new(scan_source_digest),
+            scanner: Arc::new(scan_source_manifest),
+            file_reader: Arc::new(read_source_file),
         })
     }
 
@@ -78,6 +94,10 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<SourceRevision, String> {
+        let _operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if self.fence.capability() == FenceCapability::Unsupported {
             self.machine
                 .lock()
@@ -94,15 +114,19 @@ impl SourceRevisionService {
                 .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
         })?;
         let needs_reconcile = match fence_outcome {
-            FenceOutcome::Proven { dirty } => {
-                dirty
-                    || !matches!(
-                        self.machine
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner())
-                            .state(),
-                        SourceRevisionState::Trusted(_)
-                    )
+            FenceOutcome::Proven { changed_paths } => {
+                let trusted = matches!(
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .state(),
+                    SourceRevisionState::Trusted(_)
+                );
+                if changed_paths.is_empty() {
+                    !trusted
+                } else {
+                    !(trusted && self.apply_incremental(changed_paths, deadline, cancellation)?)
+                }
             }
             FenceOutcome::TrustLost(reason) => {
                 self.machine
@@ -136,6 +160,140 @@ impl SourceRevisionService {
             .lose_trust(SourceRevisionTrustLoss::WatcherGap);
     }
 
+    fn apply_incremental(
+        &self,
+        mut changed_paths: Vec<PathBuf>,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, String> {
+        let Some(mut manifest) = self
+            .manifest
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+        else {
+            return Ok(false);
+        };
+        for _ in 0..3 {
+            self.machine
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .begin_reconcile();
+            for relative_path in changed_paths {
+                if cancellation.is_cancelled() || deadline.remaining().is_zero() {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                    return Err("source revision reconcile cancelled".to_string());
+                }
+                if !self.apply_changed_path(&mut manifest, &relative_path)? {
+                    return Ok(false);
+                }
+            }
+            match self.fence.flush(deadline, cancellation).inspect_err(|_| {
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+            })? {
+                FenceOutcome::Proven {
+                    changed_paths: additional,
+                } if !additional.is_empty() => {
+                    changed_paths = additional;
+                }
+                FenceOutcome::Proven { .. } => {
+                    let digest = digest_source_manifest(&manifest)?;
+                    self.publish_revision(&manifest, digest)?;
+                    return Ok(true);
+                }
+                FenceOutcome::TrustLost(reason) => {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(reason);
+                    return Ok(false);
+                }
+            }
+        }
+        self.machine
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+        Ok(false)
+    }
+
+    fn apply_changed_path(
+        &self,
+        manifest: &mut SourceManifest,
+        relative_path: &Path,
+    ) -> Result<bool, String> {
+        if relative_path.is_absolute()
+            || relative_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            self.lose_incremental_trust();
+            return Err("source revision event escaped its root".to_string());
+        }
+        let path = self.source_root.join(relative_path);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                manifest.remove(relative_path);
+                return Ok(true);
+            }
+            Err(error) => {
+                self.lose_incremental_trust();
+                return Err(format!("source revision file cannot be inspected: {error}"));
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            if is_source_file(&path) {
+                self.lose_incremental_trust();
+                return Err(format!(
+                    "source revision corpus contains an indexed symbolic link: {}",
+                    relative_path.display()
+                ));
+            }
+            manifest.remove(relative_path);
+            return Ok(true);
+        }
+        if metadata.is_dir() {
+            return Ok(false);
+        }
+        if !metadata.is_file() || !is_source_file(&path) {
+            manifest.remove(relative_path);
+            return Ok(true);
+        }
+        let canonical = fs::canonicalize(&path)
+            .map_err(|error| format!("source revision file cannot be normalized: {error}"))?;
+        if canonical != path {
+            return Ok(false);
+        }
+        let bytes = (self.file_reader)(&path).inspect_err(|_| self.lose_incremental_trust())?;
+        manifest.insert(
+            relative_path.to_path_buf(),
+            SourceEntryDigest {
+                kind: 2,
+                digest: Sha256::digest(bytes).into(),
+            },
+        );
+        Ok(true)
+    }
+
+    fn lose_incremental_trust(&self) {
+        self.machine
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+    }
+
     fn reconcile(
         &self,
         deadline: ProviderDeadline,
@@ -148,7 +306,7 @@ impl SourceRevisionService {
                     .unwrap_or_else(|error| error.into_inner())
                     .begin_reconcile();
             }
-            let digest = (self.scanner)(&self.source_root, &|| {
+            let manifest = (self.scanner)(&self.source_root, &|| {
                 cancellation.is_cancelled() || deadline.remaining().is_zero()
             })
             .inspect_err(|_| {
@@ -164,7 +322,7 @@ impl SourceRevisionService {
                     .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
             })?;
             match fence_outcome {
-                FenceOutcome::Proven { dirty: true } => continue,
+                FenceOutcome::Proven { changed_paths } if !changed_paths.is_empty() => continue,
                 FenceOutcome::TrustLost(reason) => {
                     self.machine
                         .lock()
@@ -172,24 +330,34 @@ impl SourceRevisionService {
                         .lose_trust(reason);
                     continue;
                 }
-                FenceOutcome::Proven { dirty: false } => {}
+                FenceOutcome::Proven { .. } => {}
             }
-            let revision = self
-                .machine
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .finish_reconcile(digest)?;
-            persist_revision_record(&self.record_path, &self.source_root, &revision).inspect_err(
-                |_| {
-                    self.machine
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-                },
-            )?;
+            let digest = digest_source_manifest(&manifest)?;
+            self.publish_revision(&manifest, digest)?;
             return Ok(());
         }
         Err("source revision did not stabilize during reconcile".to_string())
+    }
+
+    fn publish_revision(&self, manifest: &SourceManifest, digest: String) -> Result<(), String> {
+        let revision = self
+            .machine
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .finish_reconcile(digest)?;
+        persist_revision_record(&self.record_path, &self.source_root, &revision).inspect_err(
+            |_| {
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+            },
+        )?;
+        *self
+            .manifest
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(manifest.clone());
+        Ok(())
     }
 }
 
@@ -223,28 +391,44 @@ fn persist_revision_record(
         .map_err(|error| format!("source revision record cannot be published: {error}"))
 }
 
-pub(crate) fn scan_source_digest(
+#[cfg(test)]
+fn scan_source_digest(
     source_root: &Path,
     should_stop: &(dyn Fn() -> bool + Sync),
 ) -> Result<String, String> {
+    let manifest = scan_source_manifest(source_root, should_stop)?;
+    digest_source_manifest(&manifest)
+}
+
+fn scan_source_manifest(
+    source_root: &Path,
+    should_stop: &(dyn Fn() -> bool + Sync),
+) -> Result<SourceManifest, String> {
     if should_stop() {
         return Err("source revision reconcile cancelled".to_string());
     }
-    let mut entries = Vec::new();
-    scan_directory(source_root, source_root, 0, should_stop, &mut entries)?;
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut manifest = BTreeMap::new();
+    scan_directory(source_root, source_root, 0, should_stop, &mut manifest)?;
+    Ok(manifest)
+}
+
+fn digest_source_manifest(manifest: &SourceManifest) -> Result<String, String> {
     let mut corpus = Sha256::new();
     corpus.update(b"unica-source-sha256-v1\0");
-    for (relative, kind, digest) in entries {
+    for (relative, entry) in manifest {
         let path = relative
             .to_str()
             .ok_or_else(|| "source revision contains a non-UTF-8 relative path".to_string())?;
-        corpus.update([kind]);
+        corpus.update([entry.kind]);
         corpus.update((path.len() as u64).to_le_bytes());
         corpus.update(path.as_bytes());
-        corpus.update(digest);
+        corpus.update(entry.digest);
     }
     Ok(format!("{:x}", corpus.finalize()))
+}
+
+fn read_source_file(path: &Path) -> Result<Vec<u8>, String> {
+    fs::read(path).map_err(|error| format!("source revision file cannot be read: {error}"))
 }
 
 fn scan_directory(
@@ -252,7 +436,7 @@ fn scan_directory(
     directory: &Path,
     depth: usize,
     should_stop: &(dyn Fn() -> bool + Sync),
-    entries: &mut Vec<(PathBuf, u8, [u8; 32])>,
+    manifest: &mut SourceManifest,
 ) -> Result<(), String> {
     if should_stop() {
         return Err("source revision reconcile cancelled".to_string());
@@ -290,13 +474,18 @@ fn scan_directory(
             if child.file_name() == OsStr::new(GENERATED_DIR_NAME) {
                 continue;
             }
-            entries.push((relative, 1, [0; 32]));
-            scan_directory(root, &path, depth + 1, should_stop, entries)?;
+            manifest.insert(
+                relative,
+                SourceEntryDigest {
+                    kind: 1,
+                    digest: [0; 32],
+                },
+            );
+            scan_directory(root, &path, depth + 1, should_stop, manifest)?;
         } else if file_type.is_file() && is_source_file(&path) {
-            let bytes = fs::read(&path)
-                .map_err(|error| format!("source revision file cannot be read: {error}"))?;
+            let bytes = read_source_file(&path)?;
             let digest: [u8; 32] = Sha256::digest(bytes).into();
-            entries.push((relative, 2, digest));
+            manifest.insert(relative, SourceEntryDigest { kind: 2, digest });
         }
     }
     Ok(())
@@ -319,6 +508,7 @@ mod tests {
     use crate::infrastructure::platform::testing::{
         create_dir_symlink_for_test, create_file_symlink_for_test,
     };
+    use std::collections::VecDeque;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
@@ -353,7 +543,9 @@ mod tests {
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> Result<FenceOutcome, String> {
-            Ok(FenceOutcome::Proven { dirty: false })
+            Ok(FenceOutcome::Proven {
+                changed_paths: Vec::new(),
+            })
         }
     }
 
@@ -374,8 +566,35 @@ mod tests {
             if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
                 Err("synthetic fence failure".to_string())
             } else {
-                Ok(FenceOutcome::Proven { dirty: false })
+                Ok(FenceOutcome::Proven {
+                    changed_paths: Vec::new(),
+                })
             }
+        }
+    }
+
+    struct ScriptedFence {
+        outcomes: Mutex<VecDeque<FenceOutcome>>,
+    }
+
+    impl SourceRevisionFence for ScriptedFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::ProvenFast
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, String> {
+            Ok(self
+                .outcomes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front()
+                .unwrap_or(FenceOutcome::Proven {
+                    changed_paths: Vec::new(),
+                }))
         }
     }
 
@@ -390,14 +609,17 @@ mod tests {
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
             machine: Mutex::new(SourceRevisionMachine::default()),
+            manifest: Mutex::new(None),
+            operation: Mutex::new(()),
             fence: Arc::new(UnsupportedFence),
             scanner: Arc::new({
                 let full_scans = Arc::clone(&full_scans);
                 move |root, should_stop| {
                     full_scans.fetch_add(1, Ordering::AcqRel);
-                    scan_source_digest(root, should_stop)
+                    scan_source_manifest(root, should_stop)
                 }
             }),
+            file_reader: Arc::new(read_source_file),
         };
 
         let error = service
@@ -423,8 +645,11 @@ mod tests {
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: record_parent.join("revision.json"),
             machine: Mutex::new(SourceRevisionMachine::default()),
+            manifest: Mutex::new(None),
+            operation: Mutex::new(()),
             fence: Arc::new(ProvenCleanFence),
-            scanner: Arc::new(scan_source_digest),
+            scanner: Arc::new(scan_source_manifest),
+            file_reader: Arc::new(read_source_file),
         };
         let snapshot = || {
             service.snapshot(
@@ -454,10 +679,13 @@ mod tests {
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
             machine: Mutex::new(machine),
+            manifest: Mutex::new(None),
+            operation: Mutex::new(()),
             fence: Arc::new(FailOnceFence {
                 calls: AtomicUsize::new(0),
             }),
-            scanner: Arc::new(scan_source_digest),
+            scanner: Arc::new(scan_source_manifest),
+            file_reader: Arc::new(read_source_file),
         };
 
         let first_error = service
@@ -480,30 +708,60 @@ mod tests {
     }
 
     #[test]
-    fn warm_snapshot_uses_fences_and_external_change_reconciles_once() {
+    fn external_file_edit_does_not_repeat_the_full_corpus_scan() {
         let workspace = tempdir().unwrap();
         let source_root = workspace.path().join("src");
-        let cache_root = workspace.path().join(".cache");
         fs::create_dir_all(&source_root).unwrap();
         fs::write(source_root.join("Module.bsl"), "Процедура A()\n").unwrap();
-        let context = WorkspaceContext {
-            cwd: workspace.path().to_path_buf(),
-            workspace_root: workspace.path().to_path_buf(),
-            cache_root,
-            workspace_epoch: 0,
-        };
-        let mut service = SourceRevisionService::new(&context, &source_root).unwrap();
-        if service.fence.capability() != FenceCapability::ProvenFast {
-            return;
-        }
+        fs::write(source_root.join("Unchanged.bsl"), "Процедура B()\n").unwrap();
         let full_scans = Arc::new(AtomicUsize::new(0));
-        service.scanner = Arc::new({
-            let full_scans = Arc::clone(&full_scans);
-            move |root, should_stop| {
-                full_scans.fetch_add(1, Ordering::AcqRel);
-                scan_source_digest(root, should_stop)
-            }
-        });
+        let incremental_reads = Arc::new(AtomicUsize::new(0));
+        let service = SourceRevisionService {
+            source_root: fs::canonicalize(&source_root).unwrap(),
+            record_path: workspace.path().join("revision.json"),
+            machine: Mutex::new(SourceRevisionMachine::default()),
+            manifest: Mutex::new(None),
+            operation: Mutex::new(()),
+            fence: Arc::new(ScriptedFence {
+                outcomes: Mutex::new(VecDeque::from([
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: vec![PathBuf::from("Module.bsl")],
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: vec![PathBuf::from("Module.bsl")],
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                ])),
+            }),
+            scanner: Arc::new({
+                let full_scans = Arc::clone(&full_scans);
+                move |root, should_stop| {
+                    full_scans.fetch_add(1, Ordering::AcqRel);
+                    scan_source_manifest(root, should_stop)
+                }
+            }),
+            file_reader: Arc::new({
+                let incremental_reads = Arc::clone(&incremental_reads);
+                move |path| {
+                    incremental_reads.fetch_add(1, Ordering::AcqRel);
+                    read_source_file(path)
+                }
+            }),
+        };
         let cancellation = CancellationToken::new();
         let snapshot = || {
             service
@@ -529,7 +787,30 @@ mod tests {
         fs::write(source_root.join("Module.bsl"), "Процедура B()\n").unwrap();
         let changed = snapshot();
         assert!(changed.generation > first.generation);
-        assert!(full_scans.load(Ordering::Acquire) > scans_after_cold);
+        assert_eq!(
+            full_scans.load(Ordering::Acquire),
+            scans_after_cold,
+            "a precise external file event must not reread the whole corpus"
+        );
+        assert_eq!(
+            incremental_reads.load(Ordering::Acquire),
+            1,
+            "only the changed file must be read"
+        );
+
+        fs::remove_file(source_root.join("Module.bsl")).unwrap();
+        let removed = snapshot();
+        assert!(removed.generation > changed.generation);
+        assert_eq!(
+            full_scans.load(Ordering::Acquire),
+            scans_after_cold,
+            "a precise file removal must update the manifest without a full scan"
+        );
+        assert_eq!(
+            incremental_reads.load(Ordering::Acquire),
+            1,
+            "a removed file must not be read"
+        );
     }
 
     #[test]
