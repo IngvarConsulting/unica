@@ -100,6 +100,28 @@ class AttributionTests(unittest.TestCase):
             sections.get(("upstream", "1c-design-guide"), ""),
         )
 
+    def test_bsl_analyzer_attribution_and_notice_match_current_contract(self) -> None:
+        root = self.repo_root()
+        lock = json.loads(
+            (root / "plugins/unica/third-party/tools.lock.json").read_text(encoding="utf-8")
+        )
+        analyzer = next(tool for tool in lock["tools"] if tool["name"] == "bsl-analyzer")
+        attribution = (root / "plugins/unica/ATTRIBUTIONS.md").read_text(encoding="utf-8")
+        section = load_attribution_module().parse_sections(attribution)[("tool", "bsl-analyzer")]
+        notice = (
+            root / "plugins/unica/third-party/licenses/bsl-analyzer/NOTICE"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(f"`{analyzer['version']}`", section)
+        self.assertIn(analyzer["sourceCommit"], section)
+        for disclosure in (
+            "Derivation notice for the SDBL and BSL grammar layers",
+            "Notice for crates written with a copyleft reference open",
+            "crates/bsl-metadata",
+            "mdclasses",
+        ):
+            self.assertIn(disclosure, notice)
+
     def test_parse_sections_maps_grouped_markers_to_one_section(self) -> None:
         module = load_attribution_module()
 
