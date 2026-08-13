@@ -354,6 +354,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         package = build.index("name: Package deterministic runtime")
         extract = build.index("name: Extract deterministic runtime for MCP smoke")
         smoke = build.index("name: Smoke packaged Unica MCP")
+        stage = build.index("name: Stage exact bootstrap payload", smoke)
+        smoke_step = build[smoke:stage]
         self.assertLess(package, extract)
         self.assertLess(extract, smoke)
         self.assertIn('runtime_root=".build/runtime-smoke/${{ matrix.target }}"', build)
@@ -363,6 +365,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         )
         self.assertIn('--plugin-root "$runtime_root"', build)
         self.assertIn('executable="$runtime_root/bin/${{ matrix.target }}/unica"', build)
+        self.assertIn("timeout-minutes: 3", smoke_step)
+        self.assertIn("--total-timeout-seconds 120", smoke_step)
 
     def test_thin_payload_downloads_only_metadata_and_bootstrap(self) -> None:
         text = self.release_text()

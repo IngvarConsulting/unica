@@ -256,13 +256,15 @@ jobs:
             -C "$runtime_root"
       - name: Smoke packaged Unica MCP
         shell: bash
+        timeout-minutes: 3
         run: |
           runtime_root=".build/runtime-smoke/${{ matrix.target }}"
           executable="$runtime_root/bin/${{ matrix.target }}/unica"
           if [ "${{ matrix.target }}" = "win-x64" ]; then executable="${executable}.exe"; fi
           python scripts/ci/smoke-unica-mcp.py \
             --binary "$executable" \
-            --plugin-root "$runtime_root"
+            --plugin-root "$runtime_root" \
+            --total-timeout-seconds 120
       - name: Stage exact bootstrap payload
         shell: bash
         run: |
