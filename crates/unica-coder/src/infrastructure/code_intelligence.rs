@@ -20,6 +20,7 @@ use crate::infrastructure::workspace_services::{
     WorkspaceServiceManager, WorkspaceServiceRlmCall,
 };
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -107,26 +108,24 @@ impl<'a> GitGrepProvider<'a> {
         let mut hits = Vec::new();
         let mut diagnostics = Vec::new();
         let mut fatal = None;
-        let mut consume = |line_number: usize, bytes: &[u8]| match parse_git_grep_record(
-            bytes,
-            context,
-            cancellation,
-        ) {
-            Ok(hit) => {
-                hits.push(hit);
-                if hits.len() >= request.limit {
-                    StreamControl::Stop
-                } else {
+        let mut locations = SearchLocationProjector::new(context, cancellation);
+        let mut consume =
+            |line_number: usize, bytes: &[u8]| match parse_git_grep_record(bytes, &mut locations) {
+                Ok(hit) => {
+                    hits.push(hit);
+                    if hits.len() >= request.limit {
+                        StreamControl::Stop
+                    } else {
+                        StreamControl::Continue
+                    }
+                }
+                Err(error) => {
+                    diagnostics.push(format!(
+                        "ignored malformed git-grep record #{line_number}: {error}"
+                    ));
                     StreamControl::Continue
                 }
-            }
-            Err(error) => {
-                diagnostics.push(format!(
-                    "ignored malformed git-grep record #{line_number}: {error}"
-                ));
-                StreamControl::Continue
-            }
-        };
+            };
         let output = match self
             .runner
             .run_streaming(&command, 1024 * 1024, &mut consume)
@@ -622,8 +621,9 @@ fn parse_rlm_search(
     };
     let mut hits = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut locations = SearchLocationProjector::new(context, cancellation);
     for (index, row) in rows.iter().enumerate() {
-        match parse_rlm_search_row(row, hits.len() + 1, context, cancellation) {
+        match parse_rlm_search_row(row, hits.len() + 1, &mut locations) {
             Ok(hit) => hits.push(hit),
             Err(error) => {
                 diagnostics.push(format!("ignored malformed RLM result #{index}: {error}"))
@@ -650,8 +650,7 @@ fn parse_rlm_search(
 fn parse_rlm_search_row(
     row: &Value,
     rank: usize,
-    context: &CodeIntelligenceContext,
-    cancellation: &CancellationToken,
+    locations: &mut SearchLocationProjector<'_>,
 ) -> Result<ProviderSearchHit, String> {
     let object = row
         .as_object()
@@ -706,7 +705,7 @@ fn parse_rlm_search_row(
     Ok(ProviderSearchHit {
         rank: Some(rank),
         provider_score: detail.get("rank").and_then(Value::as_f64),
-        location: project_search_location(context, Path::new(&path), cancellation)?,
+        location: locations.project(Path::new(&path))?,
         line,
         end_line,
         symbol,
@@ -742,6 +741,7 @@ fn parse_bsl_analyzer_search(
     let mut hits = Vec::new();
     let mut diagnostics = Vec::new();
     let mut current: Option<ProviderSearchHit> = None;
+    let mut locations = SearchLocationProjector::new(context, cancellation);
     for raw_line in text.lines() {
         let structural = raw_line.trim_start();
         let line = structural.trim_end();
@@ -749,7 +749,7 @@ fn parse_bsl_analyzer_search(
             if let Some(hit) = current.take() {
                 hits.push(hit);
             }
-            match parse_bsl_analyzer_header(line, context, cancellation) {
+            match parse_bsl_analyzer_header(line, &mut locations) {
                 Ok(hit) => current = Some(hit),
                 Err(error) => diagnostics.push(format!(
                     "ignored malformed bsl-analyzer search header: {error}"
@@ -814,8 +814,7 @@ fn parse_bsl_analyzer_search(
 
 fn parse_bsl_analyzer_header(
     line: &str,
-    context: &CodeIntelligenceContext,
-    cancellation: &CancellationToken,
+    locations: &mut SearchLocationProjector<'_>,
 ) -> Result<ProviderSearchHit, String> {
     let after_hash = line
         .strip_prefix('#')
@@ -868,7 +867,7 @@ fn parse_bsl_analyzer_header(
     Ok(ProviderSearchHit {
         rank: Some(rank),
         provider_score: None,
-        location: project_search_location(context, Path::new(path), cancellation)?,
+        location: locations.project(Path::new(path))?,
         line: line_start,
         end_line,
         symbol: Some(symbol.to_string()),
@@ -968,8 +967,7 @@ fn git_grep_stream_section(
 
 fn parse_git_grep_record(
     record: &[u8],
-    context: &CodeIntelligenceContext,
-    cancellation: &CancellationToken,
+    locations: &mut SearchLocationProjector<'_>,
 ) -> Result<ProviderSearchHit, String> {
     let mut parts = record.splitn(3, |byte| *byte == 0);
     let path = std::str::from_utf8(parts.next().ok_or("path is missing")?)
@@ -989,7 +987,7 @@ fn parse_git_grep_record(
     Ok(ProviderSearchHit {
         rank: None,
         provider_score: None,
-        location: project_search_location(context, &relative, cancellation)?,
+        location: locations.project(&relative)?,
         line: line_number,
         end_line: None,
         symbol: None,
@@ -999,60 +997,98 @@ fn parse_git_grep_record(
     })
 }
 
-fn project_search_location(
-    context: &CodeIntelligenceContext,
-    provider_path: &Path,
-    cancellation: &CancellationToken,
-) -> Result<SourceLocation, String> {
-    if cancellation.is_cancelled() {
-        return Err(cancelled_error("search result location projection stopped"));
+type SearchLocationResolver =
+    fn(
+        &WorkspaceContext,
+        &crate::application::source_navigation::SourceLocateRequest,
+        &CancellationToken,
+    ) -> Result<crate::application::source_navigation::SourceLocateResult, String>;
+
+struct SearchLocationProjector<'a> {
+    context: &'a CodeIntelligenceContext,
+    cancellation: &'a CancellationToken,
+    resolver: SearchLocationResolver,
+    cache: HashMap<PathBuf, SourceLocation>,
+}
+
+impl<'a> SearchLocationProjector<'a> {
+    fn new(context: &'a CodeIntelligenceContext, cancellation: &'a CancellationToken) -> Self {
+        Self::with_resolver(
+            context,
+            cancellation,
+            crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path,
+        )
     }
-    let relative_path = contained_provider_relative_path(context, provider_path)?;
-    if context
-        .search_scope
-        .as_ref()
-        .is_some_and(|scope| !scope.accepts(&relative_path))
-    {
-        return Err("provider path is outside the logical search scope".to_string());
-    }
-    let source_set = context
-        .source_root
-        .source_set
-        .clone()
-        .unwrap_or_else(|| "legacy".to_string());
-    let request = crate::application::source_navigation::SourceLocateRequest {
-        source_set: source_set.clone(),
-        path: relative_path.to_string_lossy().replace('\\', "/"),
-    };
-    match crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
-        &context.workspace,
-        &request,
-        cancellation,
-    ) {
-        Ok(located) if located.rejection.is_none() => Ok(SourceLocation::Addressed {
-            source_set,
-            metadata_path: located.metadata_path,
-            target_kind: located
-                .target_kind
-                .unwrap_or(crate::domain::source_target::TargetKind::SourceRoot),
-        }),
-        Ok(located)
-            if located.rejection
-                == Some(crate::domain::source_location::LocateRejection::OutsideSourceSet) =>
-        {
-            Err("provider path is outside sourceSet".to_string())
+
+    fn with_resolver(
+        context: &'a CodeIntelligenceContext,
+        cancellation: &'a CancellationToken,
+        resolver: SearchLocationResolver,
+    ) -> Self {
+        Self {
+            context,
+            cancellation,
+            resolver,
+            cache: HashMap::new(),
         }
-        Ok(located) => Ok(SourceLocation::Unaddressable {
-            source_set,
-            owner_metadata_path: located.owner_metadata_path,
-            path: located.relative_path,
-        }),
-        Err(error) if error.starts_with(CANCELLED_PREFIX) => Err(error),
-        Err(_) => Ok(SourceLocation::Unaddressable {
-            source_set,
-            owner_metadata_path: None,
-            path: relative_path.to_string_lossy().replace('\\', "/"),
-        }),
+    }
+
+    fn project(&mut self, provider_path: &Path) -> Result<SourceLocation, String> {
+        if self.cancellation.is_cancelled() {
+            return Err(cancelled_error("search result location projection stopped"));
+        }
+        let relative_path = contained_provider_relative_path(self.context, provider_path)?;
+        if self
+            .context
+            .search_scope
+            .as_ref()
+            .is_some_and(|scope| !scope.accepts(&relative_path))
+        {
+            return Err("provider path is outside the logical search scope".to_string());
+        }
+        if let Some(location) = self.cache.get(&relative_path) {
+            return Ok(location.clone());
+        }
+
+        let source_set = self
+            .context
+            .source_root
+            .source_set
+            .clone()
+            .unwrap_or_else(|| "legacy".to_string());
+        let relative_text = relative_path.to_string_lossy().replace('\\', "/");
+        let request = crate::application::source_navigation::SourceLocateRequest {
+            source_set: source_set.clone(),
+            path: relative_text.clone(),
+        };
+        let location = match (self.resolver)(&self.context.workspace, &request, self.cancellation) {
+            Ok(located) if located.rejection.is_none() => SourceLocation::Addressed {
+                source_set,
+                metadata_path: located.metadata_path,
+                target_kind: located
+                    .target_kind
+                    .unwrap_or(crate::domain::source_target::TargetKind::SourceRoot),
+            },
+            Ok(located)
+                if located.rejection
+                    == Some(crate::domain::source_location::LocateRejection::OutsideSourceSet) =>
+            {
+                return Err("provider path is outside sourceSet".to_string());
+            }
+            Ok(located) => SourceLocation::Unaddressable {
+                source_set,
+                owner_metadata_path: located.owner_metadata_path,
+                path: located.relative_path,
+            },
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => return Err(error),
+            Err(_) => SourceLocation::Unaddressable {
+                source_set,
+                owner_metadata_path: None,
+                path: relative_text,
+            },
+        };
+        self.cache.insert(relative_path, location.clone());
+        Ok(location)
     }
 }
 
@@ -1190,7 +1226,7 @@ mod tests {
     use crate::infrastructure::workspace_services::WorkspaceServiceBslOutput;
     use serde_json::Value;
     use std::cell::RefCell;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -1348,6 +1384,81 @@ mod tests {
             assert_eq!(section.status, ProviderSectionStatus::Ok);
             assert_sales_module_location(&section.hits[0].location);
         }
+    }
+
+    #[test]
+    fn search_location_projection_is_cached_per_source_file() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static RESOLUTIONS: AtomicUsize = AtomicUsize::new(0);
+
+        fn resolve_for_test(
+            _workspace: &WorkspaceContext,
+            request: &crate::application::source_navigation::SourceLocateRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<crate::application::source_navigation::SourceLocateResult, String> {
+            RESOLUTIONS.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::application::source_navigation::SourceLocateResult {
+                source_set: request.source_set.clone(),
+                relative_path: request.path.clone(),
+                metadata_path: None,
+                target_kind: None,
+                owner_metadata_path: None,
+                rejection: Some(crate::domain::source_location::LocateRejection::NotAddressable),
+            })
+        }
+
+        RESOLUTIONS.store(0, Ordering::SeqCst);
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace_root = temporary.path().join("workspace");
+        let source_root = workspace_root.join("src");
+        let first = source_root.join("Catalogs/Items/Ext/ObjectModule.bsl");
+        let second = source_root.join("Catalogs/Items/Ext/ManagerModule.bsl");
+        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: workspace_root.clone(),
+                workspace_root: workspace_root.clone(),
+                cache_root: workspace_root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+        let cancellation = CancellationToken::new();
+        let mut locations = super::SearchLocationProjector::with_resolver(
+            &context,
+            &cancellation,
+            resolve_for_test,
+        );
+
+        locations
+            .project(Path::new("Catalogs/Items/Ext/ObjectModule.bsl"))
+            .unwrap();
+        locations
+            .project(Path::new("Catalogs/Items/Ext/ObjectModule.bsl"))
+            .unwrap();
+        assert_eq!(RESOLUTIONS.load(Ordering::SeqCst), 1);
+
+        locations
+            .project(Path::new("Catalogs/Items/Ext/ManagerModule.bsl"))
+            .unwrap();
+        assert_eq!(
+            RESOLUTIONS.load(Ordering::SeqCst),
+            2,
+            "different modules in one parent directory must not share an address"
+        );
+
+        cancellation.cancel();
+        let error = locations
+            .project(Path::new("Catalogs/Items/Ext/ObjectModule.bsl"))
+            .expect_err("cancellation must win even over a cached location");
+        assert!(error.starts_with(CANCELLED_PREFIX), "{error}");
+        assert_eq!(RESOLUTIONS.load(Ordering::SeqCst), 2);
     }
 
     #[test]
