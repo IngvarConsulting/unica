@@ -3237,7 +3237,10 @@ EndProcedure
             elif extension_path == "src/Configuration.xml":
                 arguments["ExtensionPath"] = "src/cfe/Configuration.xml"
             continue
-        if tool_name in {"unica.code.search", "unica.code.graph", "unica.code.definition"}:
+        if tool_name == "unica.code.search":
+            replace_reader_placeholder(arguments, "sourceSet", example, "main")
+            continue
+        if tool_name in {"unica.code.graph", "unica.code.definition"}:
             continue
         if tool_name in {"unica.meta.info", "unica.xdto.info"}:
             continue
