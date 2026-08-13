@@ -614,8 +614,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::thread;
-    #[cfg(unix)]
-    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     use tempfile::tempdir;
 
     struct UnsupportedFence;
@@ -1065,12 +1063,16 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn corpus_digest_accepts_a_non_utf8_relative_path() {
+        let Some(path) =
+            crate::infrastructure::platform::testing::non_utf8_relative_path_for_test()
+        else {
+            return;
+        };
         let mut manifest = SourceManifest::new();
         manifest.insert(
-            PathBuf::from(OsString::from_vec(b"Module-\xff.bsl".to_vec())),
+            path,
             SourceEntryDigest {
                 kind: 2,
                 digest: [7; 32],
