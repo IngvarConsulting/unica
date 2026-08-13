@@ -126,8 +126,9 @@ mod tests {
     #[test]
     fn runtime_command_passes_provider_state_root_to_child() {
         let args = vec![
+            "/D".to_string(),
             "/C".to_string(),
-            "<nul set /p=%UNICA_PROVIDER_STATE_DIR%".to_string(),
+            "echo(%UNICA_PROVIDER_STATE_DIR%".to_string(),
         ];
         let output = runtime_command(
             Path::new("cmd.exe"),
@@ -138,6 +139,6 @@ mod tests {
         .unwrap();
 
         assert!(output.status.success());
-        assert_eq!(output.stdout, br"C:\private\provider-state");
+        assert_eq!(output.stdout, b"C:\\private\\provider-state\r\n");
     }
 }
