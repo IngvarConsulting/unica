@@ -13,21 +13,21 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 const GENERATED_DIR_NAME: &str = ".build";
 const MAX_SOURCE_DEPTH: usize = 64;
 const REVISION_RECORD_SCHEMA_VERSION: u32 = 1;
-#[cfg(test)]
-static FULL_RECONCILE_SCANS: AtomicUsize = AtomicUsize::new(0);
+
+type SourceDigestScanner =
+    dyn Fn(&Path, &(dyn Fn() -> bool + Sync)) -> Result<String, String> + Send + Sync;
 
 pub(crate) struct SourceRevisionService {
     source_root: PathBuf,
     record_path: PathBuf,
     machine: Mutex<SourceRevisionMachine>,
     fence: Arc<dyn SourceRevisionFence>,
+    scanner: Arc<SourceDigestScanner>,
 }
 
 impl fmt::Debug for SourceRevisionService {
@@ -69,6 +69,7 @@ impl SourceRevisionService {
             record_path,
             machine: Mutex::new(machine),
             fence,
+            scanner: Arc::new(scan_source_digest),
         })
     }
 
@@ -141,7 +142,7 @@ impl SourceRevisionService {
                     .unwrap_or_else(|error| error.into_inner())
                     .begin_reconcile();
             }
-            let digest = scan_source_digest(&self.source_root, &|| {
+            let digest = (self.scanner)(&self.source_root, &|| {
                 cancellation.is_cancelled() || deadline.remaining().is_zero()
             })
             .inspect_err(|_| {
@@ -166,7 +167,14 @@ impl SourceRevisionService {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .finish_reconcile(digest)?;
-            persist_revision_record(&self.record_path, &self.source_root, &revision)?;
+            persist_revision_record(&self.record_path, &self.source_root, &revision).inspect_err(
+                |_| {
+                    self.machine
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+                },
+            )?;
             return Ok(());
         }
         Err("source revision did not stabilize during reconcile".to_string())
@@ -207,8 +215,6 @@ pub(crate) fn scan_source_digest(
     source_root: &Path,
     should_stop: &(dyn Fn() -> bool + Sync),
 ) -> Result<String, String> {
-    #[cfg(test)]
-    FULL_RECONCILE_SCANS.fetch_add(1, Ordering::AcqRel);
     if should_stop() {
         return Err("source revision reconcile cancelled".to_string());
     }
@@ -288,6 +294,7 @@ fn is_source_file(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     struct UnsupportedFence;
@@ -308,19 +315,42 @@ mod tests {
         }
     }
 
+    struct ProvenCleanFence;
+
+    impl SourceRevisionFence for ProvenCleanFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::ProvenFast
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, String> {
+            Ok(FenceOutcome::Proven { dirty: false })
+        }
+    }
+
     #[test]
     fn unsupported_fence_never_promotes_repeated_scans_to_trusted() {
         let workspace = tempdir().unwrap();
         let source_root = workspace.path().join("src");
         fs::create_dir_all(&source_root).unwrap();
         fs::write(source_root.join("Module.bsl"), "Процедура A()\n").unwrap();
+        let full_scans = Arc::new(AtomicUsize::new(0));
         let service = SourceRevisionService {
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
             machine: Mutex::new(SourceRevisionMachine::default()),
             fence: Arc::new(UnsupportedFence),
+            scanner: Arc::new({
+                let full_scans = Arc::clone(&full_scans);
+                move |root, should_stop| {
+                    full_scans.fetch_add(1, Ordering::AcqRel);
+                    scan_source_digest(root, should_stop)
+                }
+            }),
         };
-        let scans_before = FULL_RECONCILE_SCANS.load(Ordering::Acquire);
 
         let error = service
             .snapshot(
@@ -330,11 +360,36 @@ mod tests {
             .expect_err("an unsupported fence cannot prove a trusted revision");
 
         assert!(error.contains("unsupported"), "{error}");
-        assert_eq!(
-            FULL_RECONCILE_SCANS.load(Ordering::Acquire),
-            scans_before,
-            "repeated scans are not a replacement for a freshness fence"
-        );
+        assert_eq!(full_scans.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn failed_revision_record_publication_does_not_leave_a_trusted_snapshot() {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(source_root.join("Module.bsl"), "Процедура A()\n").unwrap();
+        let record_parent = workspace.path().join("record-parent");
+        fs::write(&record_parent, "not a directory").unwrap();
+        let service = SourceRevisionService {
+            source_root: fs::canonicalize(&source_root).unwrap(),
+            record_path: record_parent.join("revision.json"),
+            machine: Mutex::new(SourceRevisionMachine::default()),
+            fence: Arc::new(ProvenCleanFence),
+            scanner: Arc::new(scan_source_digest),
+        };
+        let snapshot = || {
+            service.snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+        };
+
+        let first_error = snapshot().expect_err("publishing the revision must fail");
+        assert!(first_error.contains("cannot be created"), "{first_error}");
+        let second_error =
+            snapshot().expect_err("a revision that was not published must remain untrusted");
+        assert!(second_error.contains("cannot be created"), "{second_error}");
     }
 
     #[test]
@@ -350,10 +405,18 @@ mod tests {
             cache_root,
             workspace_epoch: 0,
         };
-        let service = SourceRevisionService::new(&context, &source_root).unwrap();
+        let mut service = SourceRevisionService::new(&context, &source_root).unwrap();
         if service.fence.capability() != FenceCapability::ProvenFast {
             return;
         }
+        let full_scans = Arc::new(AtomicUsize::new(0));
+        service.scanner = Arc::new({
+            let full_scans = Arc::clone(&full_scans);
+            move |root, should_stop| {
+                full_scans.fetch_add(1, Ordering::AcqRel);
+                scan_source_digest(root, should_stop)
+            }
+        });
         let cancellation = CancellationToken::new();
         let snapshot = || {
             service
@@ -364,14 +427,14 @@ mod tests {
                 .unwrap()
         };
 
-        let scans_before = FULL_RECONCILE_SCANS.load(Ordering::Acquire);
+        let scans_before = full_scans.load(Ordering::Acquire);
         let first = snapshot();
-        let scans_after_cold = FULL_RECONCILE_SCANS.load(Ordering::Acquire);
+        let scans_after_cold = full_scans.load(Ordering::Acquire);
         assert!(scans_after_cold > scans_before);
         let warm = snapshot();
         assert_eq!(warm, first);
         assert_eq!(
-            FULL_RECONCILE_SCANS.load(Ordering::Acquire),
+            full_scans.load(Ordering::Acquire),
             scans_after_cold,
             "a warm trusted snapshot must not walk the source tree"
         );
@@ -379,7 +442,7 @@ mod tests {
         fs::write(source_root.join("Module.bsl"), "Процедура B()\n").unwrap();
         let changed = snapshot();
         assert!(changed.generation > first.generation);
-        assert!(FULL_RECONCILE_SCANS.load(Ordering::Acquire) > scans_after_cold);
+        assert!(full_scans.load(Ordering::Acquire) > scans_after_cold);
     }
 
     #[test]
