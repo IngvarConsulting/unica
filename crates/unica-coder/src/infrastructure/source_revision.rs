@@ -272,14 +272,20 @@ fn scan_directory(
         let file_type = child
             .file_type()
             .map_err(|error| format!("source revision entry type cannot be read: {error}"))?;
-        if file_type.is_symlink() {
-            return Err("source revision corpus contains a symbolic link".to_string());
-        }
         let path = child.path();
         let relative = path
             .strip_prefix(root)
             .map_err(|_| "source revision entry escaped its root".to_string())?
             .to_path_buf();
+        if file_type.is_symlink() {
+            if is_source_file(&path) {
+                return Err(format!(
+                    "source revision corpus contains an indexed symbolic link: {}",
+                    relative.display()
+                ));
+            }
+            continue;
+        }
         if file_type.is_dir() {
             if child.file_name() == OsStr::new(GENERATED_DIR_NAME) {
                 continue;
@@ -299,12 +305,20 @@ fn scan_directory(
 fn is_source_file(path: &Path) -> bool {
     path.extension()
         .and_then(OsStr::to_str)
-        .is_some_and(|extension| matches!(extension, "bsl" | "xml" | "yaml" | "yml"))
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "bsl" | "xml" | "mdo" | "form" | "rights" | "xdto" | "command" | "yaml" | "yml"
+            )
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::platform::testing::{
+        create_dir_symlink_for_test, create_file_symlink_for_test,
+    };
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
@@ -551,6 +565,81 @@ mod tests {
         assert_ne!(
             baseline,
             scan_source_digest(first.path(), &|| false).unwrap()
+        );
+    }
+
+    #[test]
+    fn corpus_digest_ignores_a_symlink_outside_the_rlm_corpus() {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(source_root.join("Module.bsl"), "Процедура A()\n").unwrap();
+        let baseline = scan_source_digest(&source_root, &|| false).unwrap();
+        let outside = workspace.path().join("README.txt");
+        fs::write(&outside, "not indexed by RLM").unwrap();
+        let Some(link) = create_file_symlink_for_test(&outside, source_root.join("README.txt"))
+        else {
+            return;
+        };
+        link.unwrap();
+
+        assert_eq!(
+            baseline,
+            scan_source_digest(&source_root, &|| false).unwrap()
+        );
+    }
+
+    #[test]
+    fn corpus_digest_does_not_follow_a_symlinked_directory() {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        let outside = workspace.path().join("outside");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("External.bsl"), "Процедура A()\n").unwrap();
+        let baseline = scan_source_digest(&source_root, &|| false).unwrap();
+        let Some(link) = create_dir_symlink_for_test(&outside, source_root.join("vendor")) else {
+            return;
+        };
+        link.unwrap();
+
+        assert_eq!(
+            baseline,
+            scan_source_digest(&source_root, &|| false).unwrap()
+        );
+    }
+
+    #[test]
+    fn corpus_digest_rejects_an_indexed_symlink_with_its_relative_path() {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let outside = workspace.path().join("Module.bsl");
+        fs::write(&outside, "Процедура A()\n").unwrap();
+        let Some(link) = create_file_symlink_for_test(&outside, source_root.join("Linked.bsl"))
+        else {
+            return;
+        };
+        link.unwrap();
+
+        let error = scan_source_digest(&source_root, &|| false)
+            .expect_err("an RLM-indexed symlink cannot produce a trusted revision");
+
+        assert!(error.contains("Linked.bsl"), "{error}");
+    }
+
+    #[test]
+    fn corpus_digest_tracks_edt_metadata() {
+        let source_root = tempdir().unwrap();
+        let metadata = source_root.path().join("Catalog.mdo");
+        fs::write(&metadata, "<mdclass:Catalog uuid=\"first\"/>").unwrap();
+        let baseline = scan_source_digest(source_root.path(), &|| false).unwrap();
+
+        fs::write(&metadata, "<mdclass:Catalog uuid=\"second\"/>").unwrap();
+
+        assert_ne!(
+            baseline,
+            scan_source_digest(source_root.path(), &|| false).unwrap()
         );
     }
 }

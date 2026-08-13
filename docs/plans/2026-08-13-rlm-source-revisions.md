@@ -50,7 +50,9 @@ post fence -> Trusted(G, D, V)
 - изменение содержимого при сохранённых size/mtime меняет digest;
 - rename отличается от delete+не связанного create только финальным manifest, но итоговый digest соответствует финальному корпусу;
 - `.build` и другие исключения текущего corpus policy не меняют digest;
-- unreadable/symlink/reparse entry переводит reconcile в `Untrusted`, а не хешируется как отсутствие;
+- unreadable/reparse entry и symlink на индексируемый RLM-файл переводят
+  reconcile в `Untrusted`; symlink вне корпуса пропускается, а symlink-каталог
+  не обходится, как и в закреплённом RLM runtime;
 - cancellation/deadline оставляет последнее поколение untrusted и не публикует частичный digest;
 - рестарт с тем же нормализованным root и digest сохраняет generation, с другим digest увеличивает его;
 - отсутствующая, повреждённая или неизвестной версии запись не делает старый ready marker доверенным;
