@@ -27,6 +27,7 @@ use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -38,6 +39,7 @@ pub struct ProcessCommand {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    pub env: Vec<(OsString, OsString)>,
     pub timeout: Option<Duration>,
     pub cancellation: CancellationToken,
 }
@@ -51,6 +53,9 @@ pub struct ProcessOutput {
     pub timed_out: bool,
     pub cancelled: bool,
     pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_had_invalid_utf8: bool,
+    pub stderr_had_invalid_utf8: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +71,18 @@ pub struct ProcessStreamOutput {
 
 pub trait ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
+
+    fn run_with_input(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+    ) -> Result<ProcessOutput, String> {
+        if input.is_empty() {
+            self.run(command)
+        } else {
+            Err("process_failed: process runner does not support stdin".to_string())
+        }
+    }
 
     fn run_streaming(
         &self,
@@ -314,6 +331,7 @@ impl<'a> CliAdapter<'a> {
             program: bundled_tool.program.clone(),
             args: process_args,
             cwd: context.cwd.clone(),
+            env: Vec::new(),
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         })?;
@@ -408,6 +426,7 @@ impl<'a> GitTrackingAdapter<'a> {
             .map(str::to_string)
             .collect(),
             cwd: context.workspace_root.clone(),
+            env: Vec::new(),
             timeout: Some(self.timeout),
             cancellation: cancellation.clone(),
         }) {
@@ -520,6 +539,7 @@ impl<'a> GitTrackingAdapter<'a> {
                 .map(str::to_string)
                 .collect(),
             cwd: context.workspace_root.clone(),
+            env: Vec::new(),
             timeout: Some(timeout),
             cancellation: cancellation.clone(),
         }) {
@@ -724,6 +744,7 @@ impl<'a> RuntimeAdapter<'a> {
             program: bundled_tool.program.clone(),
             args: execution_args,
             cwd: context.cwd.clone(),
+            env: Vec::new(),
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
@@ -1811,6 +1832,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 program: bundled_tool.program,
                 args: process_args,
                 cwd: context.cwd.clone(),
+                env: Vec::new(),
                 timeout: Some(process_timeout),
                 cancellation: cancellation.clone(),
             },
@@ -2147,10 +2169,29 @@ impl ProcessRunner for SystemProcessRunner {
             program: command.program.clone(),
             args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
-            env: Vec::new(),
+            env: command.env.clone(),
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
         })?;
+        Ok(map_managed_process_output(output))
+    }
+
+    fn run_with_input(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+    ) -> Result<ProcessOutput, String> {
+        let output = ManagedChild::run_with_input(
+            ManagedCommand {
+                program: command.program.clone(),
+                args: command.args.clone(),
+                cwd: command.cwd.clone(),
+                env: command.env.clone(),
+                timeout: command.timeout,
+                cancellation: command.cancellation.clone(),
+            },
+            input.to_vec(),
+        )?;
         Ok(map_managed_process_output(output))
     }
 
@@ -2164,7 +2205,7 @@ impl ProcessRunner for SystemProcessRunner {
             program: command.program.clone(),
             args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
-            env: Vec::new(),
+            env: command.env.clone(),
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
         })?;
@@ -2175,6 +2216,9 @@ impl ProcessRunner for SystemProcessRunner {
 
 fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
     let stdout_truncated = output.stdout_truncated;
+    let stderr_truncated = output.stderr_truncated;
+    let stdout_had_invalid_utf8 = output.stdout_had_invalid_utf8;
+    let stderr_had_invalid_utf8 = output.stderr_had_invalid_utf8;
     ensure_truncation_diagnostics(&mut output);
     let output = ProcessOutput {
         status_success: output.status_success,
@@ -2184,6 +2228,9 @@ fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
         timed_out: output.timed_out,
         cancelled: output.cancelled,
         stdout_truncated,
+        stderr_truncated,
+        stdout_had_invalid_utf8,
+        stderr_had_invalid_utf8,
     };
     debug_assert!(!(output.timed_out && output.cancelled));
     output
@@ -3253,6 +3300,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let cancellation = CancellationToken::new();
@@ -3306,6 +3356,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: true,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -3348,6 +3401,9 @@ mod tests {
                     timed_out: false,
                     cancelled: false,
                     stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
                 },
                 ProcessOutput {
                     status_success: false,
@@ -3357,6 +3413,9 @@ mod tests {
                     timed_out: false,
                     cancelled: false,
                     stdout_truncated: true,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
                 },
             ]),
         };
@@ -3395,6 +3454,9 @@ mod tests {
                     timed_out: false,
                     cancelled: false,
                     stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
                 },
                 ProcessOutput {
                     status_success: true,
@@ -3405,6 +3467,9 @@ mod tests {
                     timed_out: false,
                     cancelled: false,
                     stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
                 },
             ]),
         };
@@ -3490,6 +3555,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -3521,6 +3589,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -3549,6 +3620,9 @@ mod tests {
                 timed_out: false,
                 cancelled: true,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -3577,6 +3651,9 @@ mod tests {
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -3648,6 +3725,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3688,6 +3768,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3828,6 +3911,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3877,6 +3963,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3973,6 +4062,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -4167,6 +4259,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = json!({
@@ -4229,6 +4324,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = json!({
@@ -4288,6 +4386,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = bounded_external_epf_args();
@@ -4333,6 +4434,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = bounded_external_epf_args();
@@ -4873,6 +4977,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5296,6 +5403,9 @@ analyze_timeout_seconds = 900
             timed_out: false,
             cancelled: false,
             stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
         }
     }
 
@@ -5489,6 +5599,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5519,6 +5632,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let cancellation = CancellationToken::new();
@@ -5551,6 +5667,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: true,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5574,6 +5693,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: true,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5600,6 +5722,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5631,6 +5756,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5662,6 +5790,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5689,6 +5820,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5721,6 +5855,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5762,6 +5899,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5850,6 +5990,7 @@ analyze_timeout_seconds = 900
                     "--nocapture".to_string(),
                 ],
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: CancellationToken::new(),
             })
@@ -5897,6 +6038,7 @@ analyze_timeout_seconds = 900
                     "--nocapture".to_string(),
                 ],
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: CancellationToken::new(),
             })
@@ -5929,6 +6071,7 @@ analyze_timeout_seconds = 900
                 program: command.program,
                 args: command.args,
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
                 timeout: None,
                 cancellation: CancellationToken::new(),
             })
@@ -5950,6 +6093,7 @@ analyze_timeout_seconds = 900
                 program: command.program,
                 args: command.args,
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: token,
             })
@@ -6049,6 +6193,39 @@ analyze_timeout_seconds = 900
         fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
             Ok(self.output.clone())
         }
+    }
+
+    #[test]
+    fn default_process_runner_rejects_nonempty_stdin_without_running_command() {
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let command = ProcessCommand {
+            program: PathBuf::from("unused"),
+            args: Vec::new(),
+            cwd: PathBuf::from("."),
+            env: Vec::new(),
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        };
+
+        let error = runner.run_with_input(&command, b"nonempty").unwrap_err();
+
+        assert_eq!(
+            error,
+            "process_failed: process runner does not support stdin"
+        );
     }
 
     struct FailingProcessRunner {
@@ -6233,7 +6410,13 @@ fn managed_truncation_is_visible_at_process_adapter_boundary() {
         cancelled: false,
         stdout_truncated: true,
         stderr_truncated: true,
+        stdout_had_invalid_utf8: true,
+        stderr_had_invalid_utf8: true,
     });
     assert!(output.stderr.contains("stdout capture truncated"));
     assert!(output.stderr.contains("earlier stderr diagnostics omitted"));
+    assert!(output.stdout_truncated);
+    assert!(output.stderr_truncated);
+    assert!(output.stdout_had_invalid_utf8);
+    assert!(output.stderr_had_invalid_utf8);
 }

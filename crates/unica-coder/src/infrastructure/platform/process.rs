@@ -1,6 +1,6 @@
 use crate::domain::cancellation::CancellationToken;
 use std::ffi::OsString;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -93,6 +93,8 @@ pub struct ManagedOutput {
     pub cancelled: bool,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    pub stdout_had_invalid_utf8: bool,
+    pub stderr_had_invalid_utf8: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +177,30 @@ impl ManagedChild {
     pub fn run(command: ManagedCommand) -> Result<ManagedOutput, String> {
         let mut child = Self::spawn(command)?;
         child.wait_for_output()
+    }
+
+    pub fn run_with_input(
+        command: ManagedCommand,
+        input: Vec<u8>,
+    ) -> Result<ManagedOutput, String> {
+        let mut child = Self::spawn(command)?;
+        let mut stdin = child
+            .take_stdin()
+            .ok_or_else(|| "process_failed: process stdin is unavailable".to_string())?;
+        let writer = thread::spawn(move || stdin.write_all(&input));
+        let output = child.wait_for_output();
+        let write_result = writer
+            .join()
+            .map_err(|_| "process_failed: process stdin writer panicked".to_string())?;
+
+        match output {
+            Ok(output) if output.timed_out || output.cancelled => Ok(output),
+            Ok(output) => {
+                write_result.map_err(process_error)?;
+                Ok(output)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn take_stdin(&mut self) -> Option<ChildStdin> {
@@ -438,15 +464,19 @@ impl ManagedChild {
 
         let stdout = receive_output(stdout);
         let stderr = receive_output(stderr);
+        let (stdout_text, stdout_had_invalid_utf8) = decode_captured_text(&stdout.bytes);
+        let (stderr_text, stderr_had_invalid_utf8) = decode_captured_text(&stderr.bytes);
         let mut output = ManagedOutput {
             status_success: false,
             status: "termination pending".to_string(),
-            stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
+            stdout: stdout_text,
+            stderr: stderr_text,
             timed_out,
             cancelled,
             stdout_truncated: stdout.truncated,
             stderr_truncated: stderr.truncated,
+            stdout_had_invalid_utf8,
+            stderr_had_invalid_utf8,
         };
         ensure_truncation_diagnostics(&mut output);
         Ok(output)
@@ -1041,18 +1071,29 @@ fn finish_output(
             STDERR_CAPTURE_LIMIT,
         );
     }
+    let (stdout_text, stdout_had_invalid_utf8) = decode_captured_text(&stdout.bytes);
+    let (stderr_text, stderr_had_invalid_utf8) = decode_captured_text(&stderr.bytes);
     let mut output = ManagedOutput {
         status_success: status.success() && !stdout.truncated && !cancelled && !timed_out,
         status: status.to_string(),
-        stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
+        stdout: stdout_text,
+        stderr: stderr_text,
         timed_out,
         cancelled,
         stdout_truncated: stdout.truncated,
         stderr_truncated: stderr.truncated,
+        stdout_had_invalid_utf8,
+        stderr_had_invalid_utf8,
     };
     ensure_truncation_diagnostics(&mut output);
     output
+}
+
+fn decode_captured_text(bytes: &[u8]) -> (String, bool) {
+    match String::from_utf8(bytes.to_vec()) {
+        Ok(text) => (text, false),
+        Err(error) => (String::from_utf8_lossy(error.as_bytes()).into_owned(), true),
+    }
 }
 
 fn finish_line_output(
@@ -1150,7 +1191,7 @@ mod tests {
     };
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
     #[cfg(windows)]
     use std::process::Child;
@@ -1204,6 +1245,20 @@ mod tests {
                 std::io::stdin().read_to_string(&mut input).unwrap();
                 print!("stdin closed");
             }
+            "echo_stdin_len" => {
+                let mut input = Vec::new();
+                std::io::stdin().read_to_end(&mut input).unwrap();
+                print!(
+                    "bytes={} nul={}",
+                    input.len(),
+                    input.iter().filter(|byte| **byte == 0).count()
+                );
+            }
+            "write_invalid_utf8" => {
+                std::io::stdout().write_all(b"ok\xffend").unwrap();
+                std::io::stderr().write_all(b"err\xffend").unwrap();
+            }
+            "write_literal_replacement" => print!("ok\u{fffd}end"),
             "sleep" => thread::sleep(Duration::from_secs(10)),
             "stream_forever" => loop {
                 println!("streamed line");
@@ -1520,6 +1575,149 @@ mod tests {
             timeout: Some(timeout),
             cancellation,
         })
+    }
+
+    fn run_helper_with_input(
+        mode: &str,
+        input: Vec<u8>,
+        timeout: Duration,
+        cancellation: CancellationToken,
+    ) -> Result<ManagedOutput, String> {
+        ManagedChild::run_with_input(
+            ManagedCommand {
+                program: std::env::current_exe().map_err(|error| error.to_string())?,
+                args: vec![
+                    "--exact".to_string(),
+                    "infrastructure::platform::process::tests::managed_child_test_helper"
+                        .to_string(),
+                    "--nocapture".to_string(),
+                ],
+                cwd: std::env::current_dir().map_err(|error| error.to_string())?,
+                env: vec![(OsString::from(HELPER_ENV), OsString::from(mode))],
+                timeout: Some(timeout),
+                cancellation,
+            },
+            input,
+        )
+    }
+
+    #[test]
+    fn managed_child_writes_binary_stdin_and_closes_it() {
+        let input = b"src/.build/probe\0src/ConfigDumpInfo.xml\0".to_vec();
+        let expected_bytes = input.len();
+
+        let output = run_helper_with_input(
+            "echo_stdin_len",
+            input,
+            Duration::from_secs(2),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(output.status_success, "{}", output.status);
+        assert!(
+            output.stdout.contains(&format!("bytes={expected_bytes}")),
+            "{}",
+            output.stdout
+        );
+        assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
+    }
+
+    #[test]
+    fn managed_child_drains_output_while_writing_more_than_a_pipe_buffer() {
+        let input = vec![b'x'; 2 * 1024 * 1024];
+        let expected_bytes = input.len();
+
+        let output = run_helper_with_input(
+            "echo_stdin_len",
+            input,
+            Duration::from_secs(5),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(
+            output.status_success,
+            "{}: {}",
+            output.status, output.stderr
+        );
+        assert!(
+            output.stdout.contains(&format!("bytes={expected_bytes}")),
+            "{}",
+            output.stdout
+        );
+    }
+
+    #[test]
+    fn managed_child_input_writer_stops_after_timeout() {
+        let started = Instant::now();
+        let output = run_helper_with_input(
+            "sleep",
+            vec![b'x'; 2 * 1024 * 1024],
+            Duration::from_millis(50),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(output.timed_out);
+        assert!(!output.cancelled);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn managed_child_input_writer_stops_after_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let started = Instant::now();
+        let output = run_helper_with_input(
+            "sleep",
+            vec![b'x'; 2 * 1024 * 1024],
+            Duration::from_secs(5),
+            cancellation,
+        )
+        .unwrap();
+
+        assert!(output.cancelled);
+        assert!(!output.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn managed_child_reports_early_stdin_close_as_bounded_process_failure() {
+        let started = Instant::now();
+        let error = run_helper_with_input(
+            "success",
+            vec![b'x'; 2 * 1024 * 1024],
+            Duration::from_secs(2),
+            CancellationToken::new(),
+        )
+        .expect_err("early stdin close must not be reported as a successful write");
+
+        assert!(error.starts_with("process_failed:"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn managed_child_reports_invalid_utf8_without_misclassifying_literal_replacement() {
+        let invalid = run_helper(
+            "write_invalid_utf8",
+            Duration::from_secs(2),
+            CancellationToken::new(),
+        )
+        .unwrap();
+        let literal = run_helper(
+            "write_literal_replacement",
+            Duration::from_secs(2),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(invalid.stdout_had_invalid_utf8);
+        assert!(invalid.stderr_had_invalid_utf8);
+        assert!(invalid.stdout.contains('\u{fffd}'));
+        assert!(!literal.stdout_had_invalid_utf8);
+        assert!(!literal.stderr_had_invalid_utf8);
+        assert!(literal.stdout.contains('\u{fffd}'));
     }
 
     #[test]

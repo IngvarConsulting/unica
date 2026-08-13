@@ -4697,6 +4697,8 @@ source-set:
                 cancelled: true,
                 stdout_truncated: false,
                 stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             Duration::from_millis(1),
         );
@@ -4718,6 +4720,8 @@ source-set:
                 cancelled: false,
                 stdout_truncated: false,
                 stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             Duration::from_millis(1),
         );
@@ -4739,6 +4743,8 @@ source-set:
                 cancelled: false,
                 stdout_truncated: true,
                 stderr_truncated: true,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             Duration::from_millis(1),
         );

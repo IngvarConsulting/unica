@@ -102,6 +102,7 @@ impl<'a> GitGrepProvider<'a> {
             program: PathBuf::from("git"),
             args,
             cwd: context.source_root.path.clone(),
+            env: Vec::new(),
             timeout: Some(timeout),
             cancellation: cancellation.clone(),
         };
@@ -1329,6 +1330,9 @@ mod tests {
             timed_out: false,
             cancelled: false,
             stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
         }
     }
 
@@ -1602,6 +1606,9 @@ mod tests {
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             commands: Mutex::new(Vec::new()),
         };
@@ -1640,6 +1647,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             commands: Mutex::new(Vec::new()),
         };
@@ -1669,6 +1679,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             commands: Mutex::new(Vec::new()),
         };
@@ -1698,6 +1711,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             commands: Mutex::new(Vec::new()),
         };
