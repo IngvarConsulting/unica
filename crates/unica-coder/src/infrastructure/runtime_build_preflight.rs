@@ -18,6 +18,12 @@ pub(crate) struct RuntimeInvocationPlan {
     pub(crate) build_preflight: Option<RuntimeBuildPreflight>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerProjectFormat {
+    Designer,
+    Edt,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RuntimeBuildPreflight {
@@ -175,17 +181,14 @@ pub(crate) fn plan_runtime_invocation(
             ));
         }
     }
-    let runner_uses_edt = source_map
-        .configured_format_raw
-        .as_deref()
-        .is_some_and(|format| format.trim().eq_ignore_ascii_case("EDT"));
+    let runner_format = runner_project_format(source_map.configured_format_raw.as_deref())?;
 
     let mut supported_source_sets = Vec::new();
     for source_set in selected_source_sets {
         if source_set.kind != SourceSetKind::Configuration {
             continue;
         }
-        if runner_uses_edt {
+        if runner_format == RunnerProjectFormat::Edt {
             continue;
         }
         match source_set.source_format {
@@ -251,6 +254,18 @@ pub(crate) fn plan_runtime_invocation(
         )],
         build_preflight: None,
     })
+}
+
+fn runner_project_format(raw: Option<&str>) -> Result<RunnerProjectFormat, String> {
+    match raw {
+        None | Some("DESIGNER") => Ok(RunnerProjectFormat::Designer),
+        Some("EDT") => Ok(RunnerProjectFormat::Edt),
+        Some(value) => Err(format!(
+            "incremental build preflight cannot use project `format` {value:?}: the pinned \
+             v8-runner accepts only exact `DESIGNER` or `EDT`; correct `v8project.yaml` before \
+             retrying"
+        )),
+    }
 }
 
 fn ensure_primary_runtime_config(

@@ -4628,6 +4628,143 @@ mod tests {
     }
 
     #[test]
+    fn runtime_build_preflight_rejects_noncanonical_runner_format_values() {
+        for (index, format) in [
+            "edt",
+            "designer",
+            "XML",
+            "PLATFORM_XML",
+            "FUTURE",
+            " EDT ",
+            "",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let context = temp_context(&format!("runtime-noncanonical-format-{index}"));
+            let source_root = context.workspace_root.join("src");
+            fs::create_dir_all(&source_root).unwrap();
+            fs::write(
+                context.workspace_root.join("v8project.yaml"),
+                format!(
+                    "format: {format:?}\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
+                ),
+            )
+            .unwrap();
+            fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+            let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+            let error = match plan_runtime_invocation(
+                &args,
+                &context,
+                &PanickingConfigurationSupportReader,
+            ) {
+                Ok(_) => panic!("format {format:?} must be rejected before runner launch"),
+                Err(error) => error,
+            };
+
+            assert!(error.contains("format"), "{format:?}: {error}");
+            assert!(error.contains("DESIGNER"), "{format:?}: {error}");
+            assert!(error.contains("EDT"), "{format:?}: {error}");
+            cleanup_context(&context);
+        }
+    }
+
+    #[test]
+    fn runtime_build_preflight_defaults_missing_format_to_designer() {
+        let context = temp_context("runtime-missing-format-defaults-designer");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let invocation = plan_runtime_invocation(
+            &args,
+            &context,
+            &StaticConfigurationSupportReader(ConfigurationSupportState::Supported),
+        )
+        .expect("missing format must use the runner Designer default");
+
+        assert_eq!(
+            runtime_args(&invocation.args, false).unwrap(),
+            ["build", "--full-rebuild"]
+        );
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_build_preflight_entrypoints_reject_noncanonical_format_in_preview_and_apply() {
+        for (index, format) in ["edt", "designer", "XML", "PLATFORM_XML", "FUTURE"]
+            .into_iter()
+            .enumerate()
+        {
+            let context = temp_context(&format!("runtime-entrypoints-noncanonical-format-{index}"));
+            let source_root = context.workspace_root.join("src");
+            fs::create_dir_all(&source_root).unwrap();
+            fs::write(
+                context.workspace_root.join("v8project.yaml"),
+                format!(
+                    "format: {format:?}\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
+                ),
+            )
+            .unwrap();
+            fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+            let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+            let runner = RecordingProcessRunner {
+                commands: RefCell::new(Vec::new()),
+                output: ProcessOutput {
+                    status_success: true,
+                    status: "exit status: 0".to_string(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+            };
+
+            for dry_run in [true, false] {
+                let execute_error = RuntimeAdapter::with_runner(&runner)
+                    .invoke("unica.runtime.execute", &args, &context, dry_run, true)
+                    .expect_err("runtime.execute must reject runner-invalid format");
+                assert!(
+                    execute_error.contains("exact `DESIGNER` or `EDT`"),
+                    "{format:?}: {execute_error}"
+                );
+
+                let job_error = match RuntimeJobAdapter::invoke(
+                    RuntimeJobAction::Start,
+                    "unica.runtime.job.start",
+                    &args,
+                    &context,
+                    dry_run,
+                ) {
+                    Ok(_) => panic!("runtime.job.start must reject format {format:?}"),
+                    Err(error) => error,
+                };
+                assert!(
+                    job_error.contains("exact `DESIGNER` or `EDT`"),
+                    "{format:?}: {job_error}"
+                );
+            }
+
+            assert!(runner.commands.borrow().is_empty());
+            assert!(!context.cache_root.join("jobs").exists());
+            cleanup_context(&context);
+        }
+    }
+
+    #[test]
     fn runtime_adapter_delegates_successful_build_without_wrapper_timeout() {
         let context = temp_context("runtime-build-success");
         configure_designer_source(&context);

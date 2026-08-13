@@ -12,6 +12,7 @@ use crate::infrastructure::platform::{
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -617,6 +618,16 @@ struct CancelMarker {
     requested_at_ms: u64,
 }
 
+struct ActiveLifecycleLock {
+    file: File,
+}
+
+impl Drop for ActiveLifecycleLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RuntimeJobStore {
     cache_root: PathBuf,
@@ -637,6 +648,10 @@ impl RuntimeJobStore {
 
     fn active_lock_path(&self) -> PathBuf {
         self.jobs_root().join("active.lock")
+    }
+
+    fn active_lifecycle_lock_path(&self) -> PathBuf {
+        self.jobs_root().join("active.lifecycle.lock")
     }
 
     fn recovery_lock_path(&self) -> PathBuf {
@@ -665,8 +680,36 @@ impl RuntimeJobStore {
     }
 
     fn acquire_active_lock(&self, id: &str) -> JobResult<()> {
+        self.acquire_active_lock_after_lifecycle(id, || {})
+    }
+
+    fn acquire_active_lock_after_lifecycle(
+        &self,
+        id: &str,
+        after_lifecycle_lock: impl FnOnce(),
+    ) -> JobResult<()> {
+        let _lifecycle_lock = self.acquire_active_lifecycle_lock()?;
+        after_lifecycle_lock();
+        self.acquire_active_lock_guarded(id)
+    }
+
+    fn acquire_active_lifecycle_lock(&self) -> JobResult<ActiveLifecycleLock> {
         fs::create_dir_all(self.jobs_root())
             .map_err(|error| io_error("create runtime jobs directory", &error))?;
+        let path = self.active_lifecycle_lock_path();
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| io_error("open active runtime job lifecycle lock", &error))?;
+        FileExt::lock_exclusive(&file)
+            .map_err(|error| io_error("acquire active runtime job lifecycle lock", &error))?;
+        Ok(ActiveLifecycleLock { file })
+    }
+
+    fn acquire_active_lock_guarded(&self, id: &str) -> JobResult<()> {
         let mut lock = match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -698,6 +741,23 @@ impl RuntimeJobStore {
     }
 
     fn release_active_lock_for(&self, id: &str) -> JobResult<()> {
+        self.release_active_lock_for_after_observation(id, || {})
+    }
+
+    fn release_active_lock_for_after_observation(
+        &self,
+        id: &str,
+        after_observation: impl FnOnce(),
+    ) -> JobResult<()> {
+        self.release_active_lock_for_after_hooks(id, after_observation, || {})
+    }
+
+    fn release_active_lock_for_after_hooks(
+        &self,
+        id: &str,
+        after_observation: impl FnOnce(),
+        after_guarded_observation: impl FnOnce(),
+    ) -> JobResult<()> {
         let lock_path = self.active_lock_path();
         let contents = match fs::read_to_string(&lock_path) {
             Ok(contents) => contents,
@@ -705,13 +765,25 @@ impl RuntimeJobStore {
             Err(error) => return Err(io_error("read active runtime job lock", &error)),
         };
         if contents.trim() == id {
-            match fs::remove_file(lock_path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(io_error("remove active runtime job lock", &error)),
-            }
+            after_observation();
         } else {
-            Ok(())
+            return Ok(());
+        }
+
+        let _lifecycle_lock = self.acquire_active_lifecycle_lock()?;
+        let current = match fs::read_to_string(&lock_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(io_error("read active runtime job lock", &error)),
+        };
+        if current.trim() != id {
+            return Ok(());
+        }
+        after_guarded_observation();
+        match fs::remove_file(lock_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_error("remove active runtime job lock", &error)),
         }
     }
 
@@ -1620,17 +1692,27 @@ fn fail_queued_job(cache_root: &Path, id: &str, error: &str) -> JobResult<()> {
 }
 
 fn cancel_queued_job(cache_root: &Path, id: &str) -> JobResult<()> {
+    cancel_queued_job_after_hooks(cache_root, id, || {}, || {})
+}
+
+fn cancel_queued_job_after_hooks(
+    cache_root: &Path,
+    id: &str,
+    after_record_read: impl FnOnce(),
+    after_lock_observation: impl FnOnce(),
+) -> JobResult<()> {
     let store = RuntimeJobStore::new(cache_root.to_path_buf(), DEFAULT_STALE_AFTER);
     let mut record = store.read_record(id)?;
     if record.phase != RuntimeJobPhase::Queued {
         return Ok(());
     }
+    after_record_read();
     record.cancelled = true;
     record.transition(RuntimeJobPhase::Cancelled)?;
     record.finished_at_ms = Some(now_millis());
     record.heartbeat_at_ms = Some(now_millis());
     store.write_record(&record)?;
-    store.release_active_lock_for(id)
+    store.release_active_lock_for_after_observation(id, after_lock_observation)
 }
 
 fn enqueue_cancellable_runtime_job(
@@ -1819,7 +1901,10 @@ mod tests {
     use std::{
         collections::HashMap,
         io::Cursor,
-        sync::atomic::{AtomicU32, Ordering},
+        sync::{
+            atomic::{AtomicU32, Ordering},
+            mpsc, Barrier,
+        },
     };
 
     #[test]
@@ -2594,6 +2679,176 @@ mod tests {
         assert_eq!(record.phase, RuntimeJobPhase::Cancelled);
         assert!(record.cancelled);
         assert!(!store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn concurrent_cancel_cleanup_cannot_remove_a_replacement_active_lock() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let cancelled =
+            RuntimeJobService::enqueue(cache.path(), &request).expect("queue cancelled job");
+        let both_read_queued = Arc::new(Barrier::new(2));
+        let (first_observed_tx, first_observed_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let (second_finished_tx, second_finished_rx) = mpsc::channel();
+
+        let first_cache = cache.path();
+        let first_id = cancelled.id.clone();
+        let first_barrier = both_read_queued.clone();
+        let first = thread::spawn(move || {
+            cancel_queued_job_after_hooks(
+                &first_cache,
+                &first_id,
+                || {
+                    first_barrier.wait();
+                },
+                || {
+                    first_observed_tx
+                        .send(())
+                        .expect("signal first lock observation");
+                    release_first_rx
+                        .recv()
+                        .expect("release first terminalization");
+                },
+            )
+        });
+
+        let second_cache = cache.path();
+        let second_id = cancelled.id.clone();
+        let second_barrier = both_read_queued;
+        let second = thread::spawn(move || {
+            let result = cancel_queued_job_after_hooks(
+                &second_cache,
+                &second_id,
+                || {
+                    second_barrier.wait();
+                    first_observed_rx
+                        .recv()
+                        .expect("wait for first lock observation");
+                },
+                || {},
+            );
+            second_finished_tx
+                .send(())
+                .expect("signal second terminalization");
+            result
+        });
+
+        second_finished_rx
+            .recv()
+            .expect("wait for second terminalization");
+        let replacement =
+            RuntimeJobService::enqueue(cache.path(), &request).expect("queue replacement job");
+        release_first_tx
+            .send(())
+            .expect("resume first terminalization");
+        first
+            .join()
+            .expect("join first terminalization")
+            .expect("finish first terminalization");
+        second
+            .join()
+            .expect("join second terminalization")
+            .expect("finish second terminalization");
+
+        let error = RuntimeJobService::enqueue(cache.path(), &request)
+            .expect_err("replacement job must retain exclusive admission");
+        assert!(error.contains(&replacement.id), "{error}");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read replacement active lock")
+                .trim(),
+            replacement.id
+        );
+    }
+
+    #[test]
+    fn active_lock_admission_and_release_hold_the_same_lifecycle_guard() {
+        fn assert_contended(path: &Path) {
+            let contender = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .expect("open lifecycle lock contender");
+            let error = FileExt::try_lock_exclusive(&contender)
+                .expect_err("lifecycle lock must remain held");
+            let expected = fs2::lock_contended_error();
+            assert!(
+                error.kind() == io::ErrorKind::WouldBlock
+                    || error
+                        .raw_os_error()
+                        .zip(expected.raw_os_error())
+                        .is_some_and(|(actual, expected)| actual == expected),
+                "unexpected lock contention error: {error}"
+            );
+        }
+
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let lifecycle_path = store.active_lifecycle_lock_path();
+        let (release_guarded_tx, release_guarded_rx) = mpsc::channel();
+        let (resume_release_tx, resume_release_rx) = mpsc::channel();
+        let release_store = store.clone();
+        let release_id = queued.id.clone();
+        let release = thread::spawn(move || {
+            release_store.release_active_lock_for_after_hooks(
+                &release_id,
+                || {},
+                || {
+                    release_guarded_tx
+                        .send(())
+                        .expect("signal guarded release observation");
+                    resume_release_rx.recv().expect("resume guarded release");
+                },
+            )
+        });
+
+        release_guarded_rx
+            .recv()
+            .expect("wait for guarded release observation");
+        assert_contended(&lifecycle_path);
+        resume_release_tx.send(()).expect("resume release");
+        release
+            .join()
+            .expect("join guarded release")
+            .expect("release active lock");
+
+        let replacement_id = Uuid::new_v4().to_string();
+        let (acquire_guarded_tx, acquire_guarded_rx) = mpsc::channel();
+        let (resume_acquire_tx, resume_acquire_rx) = mpsc::channel();
+        let acquire_store = store.clone();
+        let acquired_id = replacement_id.clone();
+        let acquire = thread::spawn(move || {
+            acquire_store.acquire_active_lock_after_lifecycle(&acquired_id, || {
+                acquire_guarded_tx
+                    .send(())
+                    .expect("signal guarded admission");
+                resume_acquire_rx.recv().expect("resume guarded admission");
+            })
+        });
+
+        acquire_guarded_rx
+            .recv()
+            .expect("wait for guarded admission");
+        assert_contended(&lifecycle_path);
+        assert!(!store.active_lock_path().exists());
+        resume_acquire_tx.send(()).expect("resume admission");
+        acquire
+            .join()
+            .expect("join guarded admission")
+            .expect("acquire replacement active lock");
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read replacement active lock")
+                .trim(),
+            replacement_id
+        );
+        store
+            .release_active_lock_for(&replacement_id)
+            .expect("release replacement active lock");
     }
 
     #[test]
