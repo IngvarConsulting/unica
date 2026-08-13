@@ -1142,7 +1142,7 @@ mod tests {
         assert!(execution.ok);
         assert_eq!(
             execution.result.sections[0].status,
-            ProviderSectionStatus::Failed
+            ProviderSectionStatus::TimedOut
         );
         assert!(execution.result.sections[0].diagnostics[0].contains("30 ms search budget"));
 

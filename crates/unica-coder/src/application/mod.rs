@@ -1571,7 +1571,7 @@ fn invoke_code_intelligence_search(
     operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
 ) -> Result<ports::HandlerOutcome, String> {
-    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    let (context, _scope) = ports.resolve_code_search_context(workspace, args)?;
     let request = SearchRequest {
         query: args
             .get("query")

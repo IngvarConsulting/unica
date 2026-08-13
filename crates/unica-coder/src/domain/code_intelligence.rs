@@ -4,6 +4,7 @@ use crate::domain::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -124,6 +125,51 @@ impl CodeIntelligenceReadRequest {
 pub struct CodeIntelligenceContext {
     pub workspace: WorkspaceContext,
     pub source_root: ResolvedSourceRoot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelativeSearchFilter {
+    Exact(PathBuf),
+    Subtree(PathBuf),
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeSearchScope {
+    pub source_set: String,
+    pub source_root: PathBuf,
+    pub filters: Vec<RelativeSearchFilter>,
+    pub legacy_selector: bool,
+}
+
+impl CodeSearchScope {
+    pub fn all(source_set: String, source_root: PathBuf, legacy_selector: bool) -> Self {
+        Self {
+            source_set,
+            source_root,
+            filters: Vec::new(),
+            legacy_selector,
+        }
+    }
+
+    pub fn accepts(&self, relative_path: &Path) -> bool {
+        if relative_path.is_absolute()
+            || relative_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return false;
+        }
+        self.filters.is_empty()
+            || self.filters.iter().any(|filter| match filter {
+                RelativeSearchFilter::Exact(path) => relative_path == path,
+                RelativeSearchFilter::Subtree(path) => relative_path.starts_with(path),
+            })
+    }
 }
 
 impl CodeIntelligenceContext {

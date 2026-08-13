@@ -2161,6 +2161,35 @@ impl ClosedPlatformXmlTarget {
     pub(crate) fn target_kind(&self) -> TargetKind {
         self.target_kind
     }
+
+    pub(crate) fn search_filters(
+        &self,
+    ) -> Vec<crate::domain::code_intelligence::RelativeSearchFilter> {
+        use crate::domain::code_intelligence::RelativeSearchFilter;
+        match self.target_kind {
+            TargetKind::Module => self
+                .target_path
+                .strip_prefix(&self.source_root)
+                .ok()
+                .map(|path| vec![RelativeSearchFilter::Exact(path.to_path_buf())])
+                .unwrap_or_default(),
+            TargetKind::MetadataObject => {
+                let mut filters = self
+                    .target_path
+                    .strip_prefix(&self.source_root)
+                    .ok()
+                    .map(|path| vec![RelativeSearchFilter::Exact(path.to_path_buf())])
+                    .unwrap_or_default();
+                if let Some(parent) = self.target_path.parent() {
+                    if let Ok(relative) = parent.strip_prefix(&self.source_root) {
+                        filters.push(RelativeSearchFilter::Subtree(relative.to_path_buf()));
+                    }
+                }
+                filters
+            }
+            TargetKind::SourceRoot => Vec::new(),
+        }
+    }
 }
 
 /// Which target kinds a caller is prepared to receive. The write surface passes
