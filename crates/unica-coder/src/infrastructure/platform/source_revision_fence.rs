@@ -120,8 +120,13 @@ mod macos {
         source_root: Vec<u8>,
         marker_root: Vec<u8>,
         changed_paths: Mutex<BTreeSet<PathBuf>>,
-        marker_event_id: Mutex<FSEventStreamEventId>,
+        marker: Mutex<MarkerState>,
         marker_changed: Condvar,
+    }
+
+    struct MarkerState {
+        expected_path: Option<Vec<u8>>,
+        event_id: FSEventStreamEventId,
     }
 
     pub(super) struct MacSourceRevisionFence {
@@ -129,7 +134,8 @@ mod macos {
         queue: DispatchRetained<DispatchQueue>,
         state: Box<WatcherState>,
         capability: FenceCapability,
-        marker_path: PathBuf,
+        marker_directory: PathBuf,
+        marker_prefix: String,
         marker_sequence: AtomicU64,
     }
 
@@ -140,17 +146,11 @@ mod macos {
 
     impl MacSourceRevisionFence {
         pub(super) fn new(root: &Path, fence_directory: &Path) -> Result<Self, String> {
-            let marker_path = fence_directory.join(format!("{}.fence", uuid::Uuid::new_v4()));
-            fs::write(&marker_path, b"0").map_err(|error| {
-                format!("failed to initialize source revision fence marker: {error}")
+            let marker_directory = fs::canonicalize(fence_directory).map_err(|error| {
+                format!("failed to resolve source revision fence directory: {error}")
             })?;
-            let marker_path = fs::canonicalize(&marker_path).map_err(|error| {
-                format!("failed to resolve source revision fence marker: {error}")
-            })?;
-            let marker_root = marker_path
-                .parent()
-                .ok_or_else(|| "source revision fence marker has no parent".to_string())?;
-            let marker_root_bytes = path_bytes(marker_root, "source revision marker root")?;
+            let marker_root_bytes = path_bytes(&marker_directory, "source revision marker root")?;
+            let marker_prefix = uuid::Uuid::new_v4().to_string();
             let source_root = fs::canonicalize(root)
                 .map_err(|error| format!("failed to resolve source revision root: {error}"))?;
             let source_root_bytes = path_bytes(&source_root, "source revision root")?;
@@ -158,11 +158,10 @@ mod macos {
                 .to_str()
                 .ok_or_else(|| "source revision root is not UTF-8".to_string())?;
             let watched_path = CFString::from_str(root);
-            let marker_directory = marker_path
-                .parent()
-                .and_then(Path::to_str)
+            let marker_directory_text = marker_directory
+                .to_str()
                 .ok_or_else(|| "source revision fence cache path is not UTF-8".to_string())?;
-            let watched_marker_directory = CFString::from_str(marker_directory);
+            let watched_marker_directory = CFString::from_str(marker_directory_text);
             let paths = CFArray::from_objects(&[&*watched_path, &*watched_marker_directory]);
             let erased_paths: &CFArray =
                 unsafe { &*((paths.as_ref() as *const CFArray<CFString>).cast::<CFArray>()) };
@@ -171,7 +170,10 @@ mod macos {
                 source_root: source_root_bytes,
                 marker_root: marker_root_bytes,
                 changed_paths: Mutex::new(BTreeSet::new()),
-                marker_event_id: Mutex::new(0),
+                marker: Mutex::new(MarkerState {
+                    expected_path: None,
+                    event_id: 0,
+                }),
                 marker_changed: Condvar::new(),
             });
             let mut context = FSEventStreamContext {
@@ -213,7 +215,8 @@ mod macos {
                 queue,
                 state,
                 capability: FenceCapability::ProvenFast,
-                marker_path,
+                marker_directory,
+                marker_prefix,
                 marker_sequence: AtomicU64::new(0),
             })
         }
@@ -244,57 +247,74 @@ mod macos {
             // callback cannot then satisfy the following event-ID boundary.
             unsafe { FSEventStreamFlushSync(self.stream) };
             self.queue.exec_sync(|| {});
-            *self
-                .state
-                .marker_event_id
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = 0;
             let sequence = self.marker_sequence.fetch_add(1, Ordering::AcqRel) + 1;
-            let mut marker = OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(&self.marker_path)
-                .map_err(|error| {
-                    format!("source revision fence marker cannot be opened: {error}")
-                })?;
-            marker
-                .write_all(sequence.to_string().as_bytes())
-                .and_then(|_| marker.sync_all())
-                .map_err(|error| {
-                    format!("source revision fence marker cannot be flushed: {error}")
-                })?;
-            if unsafe { libc::fcntl(marker.as_raw_fd(), libc::F_FULLFSYNC) } == -1 {
-                return Err(format!(
-                    "source revision fence marker cannot reach the filesystem journal: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            unsafe { FSEventStreamFlushSync(self.stream) };
-            self.queue.exec_sync(|| {});
-            let mut marker_event_id = self
-                .state
-                .marker_event_id
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            while *marker_event_id == 0 {
-                if cancellation.is_cancelled() {
-                    return Err(cancelled_error("source revision fence stopped"));
-                }
-                let remaining = deadline.remaining();
-                if remaining.is_zero() {
-                    return Err("source revision fence deadline exceeded".to_string());
-                }
-                let (guard, wait) = self
+            let marker_path = self
+                .marker_directory
+                .join(format!("{}-{sequence}.fence", self.marker_prefix));
+            let marker_path_bytes = path_bytes(&marker_path, "source revision fence marker")?;
+            {
+                let mut marker = self
                     .state
-                    .marker_changed
-                    .wait_timeout(marker_event_id, remaining)
+                    .marker
+                    .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                marker_event_id = guard;
-                if wait.timed_out() && *marker_event_id == 0 {
-                    return Err("source revision fence deadline exceeded".to_string());
-                }
+                marker.expected_path = Some(marker_path_bytes);
+                marker.event_id = 0;
             }
-            drop(marker_event_id);
+            let marker_result = (|| {
+                let mut marker = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&marker_path)
+                    .map_err(|error| {
+                        format!("source revision fence marker cannot be opened: {error}")
+                    })?;
+                marker
+                    .write_all(sequence.to_string().as_bytes())
+                    .and_then(|_| marker.sync_all())
+                    .map_err(|error| {
+                        format!("source revision fence marker cannot be flushed: {error}")
+                    })?;
+                if unsafe { libc::fcntl(marker.as_raw_fd(), libc::F_FULLFSYNC) } == -1 {
+                    return Err(format!(
+                        "source revision fence marker cannot reach the filesystem journal: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                unsafe { FSEventStreamFlushSync(self.stream) };
+                self.queue.exec_sync(|| {});
+                let mut marker_state = self
+                    .state
+                    .marker
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                while marker_state.event_id == 0 {
+                    if cancellation.is_cancelled() {
+                        return Err(cancelled_error("source revision fence stopped"));
+                    }
+                    let remaining = deadline.remaining();
+                    if remaining.is_zero() {
+                        return Err("source revision fence deadline exceeded".to_string());
+                    }
+                    let (guard, wait) = self
+                        .state
+                        .marker_changed
+                        .wait_timeout(marker_state, remaining)
+                        .unwrap_or_else(|error| error.into_inner());
+                    marker_state = guard;
+                    if wait.timed_out() && marker_state.event_id == 0 {
+                        return Err("source revision fence deadline exceeded".to_string());
+                    }
+                }
+                Ok(())
+            })();
+            self.state
+                .marker
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .expected_path = None;
+            let _ = fs::remove_file(&marker_path);
+            marker_result?;
             if cancellation.is_cancelled() {
                 return Err(cancelled_error("source revision fence stopped"));
             }
@@ -332,7 +352,6 @@ mod macos {
                 FSEventStreamSetDispatchQueue(self.stream, None);
                 FSEventStreamRelease(self.stream);
             }
-            let _ = fs::remove_file(&self.marker_path);
         }
     }
 
@@ -375,12 +394,14 @@ mod macos {
                 }
                 let path = unsafe { CStr::from_ptr(*path) }.to_bytes();
                 if path_is_within(path, &state.marker_root) {
-                    let mut marker_event_id = state
-                        .marker_event_id
+                    let mut marker = state
+                        .marker
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    *marker_event_id = (*marker_event_id).max(*id);
-                    state.marker_changed.notify_all();
+                    if marker.expected_path.as_deref() == Some(path) {
+                        marker.event_id = marker.event_id.max(*id);
+                        state.marker_changed.notify_all();
+                    }
                     continue;
                 }
                 if !path_is_within(path, &state.source_root) {
@@ -476,6 +497,8 @@ mod tests {
     fn macos_fsevents_flush_observes_external_write_without_sleep() {
         let root = tempdir().unwrap();
         let cache = tempdir().unwrap();
+        let module = root.path().join("Module.bsl");
+        fs::write(&module, "Процедура A()\n").unwrap();
         let fence_cache = cache.path().join("revision-fence-cache");
         let fence = platform_fence(root.path(), &fence_cache).unwrap();
         if fence.capability() != FenceCapability::ProvenFast {
@@ -491,18 +514,21 @@ mod tests {
             !root.path().join(".build").exists(),
             "a read-side freshness fence must not write inside the source root"
         );
-        fs::write(root.path().join("Module.bsl"), "Процедура A()\n").unwrap();
-        let outcome = fence
-            .flush(
-                ProviderDeadline::from_budget(Duration::from_secs(2)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(
-            outcome,
-            FenceOutcome::Proven {
-                changed_paths: vec![PathBuf::from("Module.bsl")]
-            }
-        );
+        for source in ["Процедура B()\n", "Процедура C()\n"] {
+            fs::write(&module, source).unwrap();
+            let outcome = fence
+                .flush(
+                    ProviderDeadline::from_budget(Duration::from_secs(2)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(
+                outcome,
+                FenceOutcome::Proven {
+                    changed_paths: vec![PathBuf::from("Module.bsl")]
+                },
+                "a delayed event for an older marker must not satisfy the next fence"
+            );
+        }
     }
 }
