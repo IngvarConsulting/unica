@@ -1249,6 +1249,72 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertIn("non-Meta tool", result.stderr)
         self.assertIn("unica.project.status", result.stderr)
 
+    def test_accepts_typed_code_search_output_schema(self) -> None:
+        entries = self.tool_entries()
+        code_search = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
+        )
+        code_search["outputSchema"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "coverage": {"type": "string"},
+                        "elapsedMs": {"type": "integer"},
+                        "sections": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": {"type": "string"},
+                                    "provider": {"type": "string"},
+                                    "status": {"type": "string"},
+                                    "searchComplete": {"type": "boolean"},
+                                    "ranking": {"type": "string"},
+                                    "ordering": {"type": "string"},
+                                    "matches": {
+                                        "type": "object",
+                                        "properties": {
+                                            "returned": {"type": "integer"},
+                                            "total": {"type": "integer"},
+                                            "relation": {"type": "string"},
+                                        },
+                                        "required": ["returned", "relation"],
+                                    },
+                                    "hits": {"type": "array"},
+                                    "diagnostics": {"type": "array"},
+                                },
+                                "required": [
+                                    "role",
+                                    "provider",
+                                    "status",
+                                    "searchComplete",
+                                    "ranking",
+                                    "ordering",
+                                    "matches",
+                                    "hits",
+                                    "diagnostics",
+                                ],
+                            },
+                        },
+                    },
+                    "required": ["coverage", "elapsedMs", "sections"],
+                }
+            },
+            "required": [],
+        }
+
+        result = self.run_smoke(entries)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_rejects_xdto_info_schema_missing_required_target(self) -> None:
         entries = self.tool_entries()
         xdto_info = next(

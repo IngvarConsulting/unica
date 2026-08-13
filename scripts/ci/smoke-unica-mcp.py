@@ -36,6 +36,7 @@ META_TOOL_NAMES = {
     "unica.meta.remove",
 }
 ROLE_TYPED_TOOL_NAME = "unica.role.edit"
+CODE_SEARCH_TYPED_TOOL_NAME = "unica.code.search"
 CODE_SEARCH_PROVIDERS = ["rlm", "bsl-analyzer", "git-grep"]
 DEFAULT_TOTAL_TIMEOUT_SECONDS = 120.0
 UPSTREAM_SEARCH_FIELDS = {"root_id", "rootId", "roots", "cacheDir"}
@@ -130,6 +131,65 @@ def _input_schema_shape_error(value: object) -> str | None:
         return "must not repeat required property names"
     if value.get("additionalProperties") is not False:
         return "must reject additional properties"
+    return None
+
+
+def _code_search_output_schema_shape_error(value: object) -> str | None:
+    if not isinstance(value, dict) or value.get("type") != "object":
+        return "must declare an object envelope"
+    properties = value.get("properties")
+    if not isinstance(properties, dict):
+        return "must declare envelope properties"
+    data = properties.get("data")
+    if not isinstance(data, dict) or data.get("type") != "object":
+        return "must declare object data"
+    data_properties = data.get("properties")
+    required_data = {"coverage", "elapsedMs", "sections"}
+    if not isinstance(data_properties, dict) or not required_data.issubset(data_properties):
+        return "must declare coverage, elapsedMs, and sections"
+    if set(data.get("required", [])) != required_data:
+        return "must require coverage, elapsedMs, and sections"
+    sections = data_properties["sections"]
+    if (
+        not isinstance(sections, dict)
+        or sections.get("type") != "array"
+        or sections.get("minItems") != 3
+        or sections.get("maxItems") != 3
+    ):
+        return "must declare exactly three role sections"
+    section = sections.get("items")
+    section_fields = {
+        "role",
+        "provider",
+        "status",
+        "searchComplete",
+        "ranking",
+        "ordering",
+        "matches",
+        "hits",
+        "diagnostics",
+    }
+    if not isinstance(section, dict) or section.get("type") != "object":
+        return "must declare role-section objects"
+    section_properties = section.get("properties")
+    if not isinstance(section_properties, dict) or not section_fields.issubset(
+        section_properties
+    ):
+        return "must declare the provider-neutral role-section fields"
+    if not section_fields.issubset(set(section.get("required", []))):
+        return "must require the provider-neutral role-section fields"
+    matches = section_properties["matches"]
+    if not isinstance(matches, dict) or matches.get("type") != "object":
+        return "must declare matches as an object"
+    match_properties = matches.get("properties")
+    if not isinstance(match_properties, dict) or not {
+        "returned",
+        "total",
+        "relation",
+    }.issubset(match_properties):
+        return "must declare returned, total, and relation counts"
+    if not {"returned", "relation"}.issubset(set(matches.get("required", []))):
+        return "must require returned and relation counts"
     return None
 
 
@@ -2064,6 +2124,11 @@ def _stable_tool_contract(tools: list[object], expected_names: set[str]) -> None
                 error = _role_output_schema_shape_error(tool["outputSchema"])
                 if error is not None:
                     raise SystemExit(f"Unica MCP role.edit output schema {error}")
+        elif name == CODE_SEARCH_TYPED_TOOL_NAME:
+            if "outputSchema" in tool:
+                error = _code_search_output_schema_shape_error(tool["outputSchema"])
+                if error is not None:
+                    raise SystemExit(f"Unica MCP code.search output schema {error}")
         elif "outputSchema" in tool:
             raise SystemExit(f"non-Meta tool unexpectedly publishes outputSchema: {name}")
 
