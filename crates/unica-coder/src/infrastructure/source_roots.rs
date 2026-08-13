@@ -21,6 +21,12 @@ pub(crate) struct ResolvedNamedSourceSet {
     pub(crate) path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct DeclaredSourceRootRoute {
+    pub(crate) lexical_path: PathBuf,
+    pub(crate) identity_path: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NamedSourceSetErrorKind {
     NotFound,
@@ -107,15 +113,28 @@ pub(crate) fn resolve_named_source_set(
             format!("project source set `{name}` was not found"),
         )
     })?;
-    let lexical_path = lexical_contained_source_root(&context.workspace_root, &source_set.path)
-        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
-    reject_linked_source_root_route(&context.workspace_root, &lexical_path)?;
-    let path = normalize_contained_source_root(&context.workspace_root, &source_set.path)
-        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
+    let route = inspect_declared_source_root_route(&context.workspace_root, &source_set.path)?;
+    reject_linked_source_root_route(&context.workspace_root, &route.lexical_path)?;
     Ok(ResolvedNamedSourceSet {
         source_set,
+        lexical_path: route.lexical_path,
+        path: route.identity_path,
+    })
+}
+
+pub(crate) fn inspect_declared_source_root_route(
+    workspace_root: &Path,
+    configured_path: &str,
+) -> Result<DeclaredSourceRootRoute, NamedSourceSetError> {
+    let containment =
+        |detail: String| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, detail);
+    let lexical_path =
+        lexical_contained_source_root(workspace_root, configured_path).map_err(containment)?;
+    let identity_path =
+        normalize_contained_source_root(workspace_root, configured_path).map_err(containment)?;
+    Ok(DeclaredSourceRootRoute {
         lexical_path,
-        path,
+        identity_path,
     })
 }
 
@@ -145,7 +164,7 @@ fn lexical_contained_source_root(
     Ok(candidate)
 }
 
-fn reject_linked_source_root_route(
+pub(crate) fn reject_linked_source_root_route(
     workspace_root: &Path,
     source_root: &Path,
 ) -> Result<(), NamedSourceSetError> {

@@ -24,6 +24,8 @@ pub(crate) mod standards_documentation;
 #[allow(dead_code)]
 pub(crate) mod platform_xml_source_targets;
 pub mod plugin_runtime;
+#[allow(dead_code)]
+pub(crate) mod project_health;
 pub(crate) mod project_sources;
 pub(crate) mod redaction;
 pub(crate) mod rlm_navigation;
