@@ -513,6 +513,8 @@ impl<'a> WorkspaceServiceManager<'a> {
                 kind: ServiceRequestKind::RlmReady {
                     operation_id: Uuid::new_v4().to_string(),
                     args: Value::Object(args.clone()),
+                    timeout_seconds: send_budget.as_secs(),
+                    timeout_nanos: send_budget.subsec_nanos(),
                 },
             },
             cancellation,
@@ -1854,7 +1856,17 @@ impl WorkspaceServiceRuntime {
         }
     }
 
-    fn handle_rlm_ready(&self, args: Value, cancellation: &CancellationToken) -> ServiceResponse {
+    fn handle_rlm_ready(
+        &self,
+        args: Value,
+        timeout_seconds: u64,
+        timeout_nanos: u32,
+        cancellation: &CancellationToken,
+    ) -> ServiceResponse {
+        let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
+            Ok(timeout) => timeout,
+            Err(error) => return ServiceResponse::error(error),
+        };
         let mut args = args.as_object().cloned().unwrap_or_default();
         args.insert(
             "sourceDir".to_string(),
@@ -1864,13 +1876,11 @@ impl WorkspaceServiceRuntime {
             Ok(revisions) => revisions,
             Err(error) => return ServiceResponse::error(error),
         };
-        let revision = match revisions.snapshot(
-            ProviderDeadline::from_budget(Duration::from_secs(300)),
-            cancellation,
-        ) {
-            Ok(revision) => revision,
-            Err(error) => return ServiceResponse::error(error),
-        };
+        let revision =
+            match revisions.snapshot(ProviderDeadline::from_budget(timeout), cancellation) {
+                Ok(revision) => revision,
+                Err(error) => return ServiceResponse::error(error),
+            };
         args.insert(
             SOURCE_REVISION_GENERATION_ARG.to_string(),
             Value::from(revision.generation),
@@ -2257,9 +2267,12 @@ impl WorkspaceServiceOperationExecutor for SystemWorkspaceServiceOperationExecut
                 timeout_nanos,
                 cancellation,
             ),
-            ServiceRequestKind::RlmReady { args, .. } => {
-                runtime.handle_rlm_ready(args, cancellation)
-            }
+            ServiceRequestKind::RlmReady {
+                args,
+                timeout_seconds,
+                timeout_nanos,
+                ..
+            } => runtime.handle_rlm_ready(args, timeout_seconds, timeout_nanos, cancellation),
             ServiceRequestKind::RlmMcp {
                 operation,
                 timeout_seconds,
@@ -2291,6 +2304,8 @@ enum ServiceRequestKind {
     RlmReady {
         operation_id: String,
         args: Value,
+        timeout_seconds: u64,
+        timeout_nanos: u32,
     },
     RlmMcp {
         operation_id: String,
@@ -4281,6 +4296,21 @@ mod tests {
     }
 
     #[test]
+    fn rlm_readiness_protocol_roundtrips_full_positive_i64_seconds() {
+        let wire = json!({
+            "type": "rlm-ready",
+            "operation_id": "max-timeout",
+            "args": {},
+            "timeout_seconds": i64::MAX,
+            "timeout_nanos": 123_456_789
+        });
+
+        let request: ServiceRequestKind = serde_json::from_value(wire.clone()).unwrap();
+
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+
+    #[test]
     fn service_timeout_parts_reject_seconds_outside_positive_i64_config_domain() {
         let error = duration_from_timeout_parts(u64::MAX, 1)
             .expect_err("wire timeout must stay inside the accepted config domain");
@@ -4314,6 +4344,23 @@ mod tests {
             1,
             &CancellationToken::new(),
         );
+
+        cleanup(&context);
+        assert!(!response.ok, "{response:?}");
+        let error = response.error.expect("protocol error");
+        assert!(error.contains("exceeds"), "{error}");
+        assert!(error.contains(&i64::MAX.to_string()), "{error}");
+    }
+
+    #[test]
+    fn rlm_readiness_wire_boundary_rejects_out_of_domain_timeout_before_runtime_work() {
+        let context = test_context("rlm-readiness-out-of-domain-wire-timeout");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+
+        let response = runtime.handle_rlm_ready(json!({}), u64::MAX, 1, &CancellationToken::new());
 
         cleanup(&context);
         assert!(!response.ok, "{response:?}");
@@ -4779,6 +4826,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "blocked-1".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -4805,6 +4854,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "success-2".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(recovered.ok);
@@ -4953,6 +5004,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "header-overload".into(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(!overloaded.ok);
@@ -5000,6 +5053,8 @@ mod tests {
                 ServiceRequestKind::RlmReady {
                     operation_id: format!("blocked-{index}"),
                     args: json!({}),
+                    timeout_seconds: 5,
+                    timeout_nanos: 0,
                 },
             ));
         }
@@ -5009,6 +5064,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "overloaded".into(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(!overloaded.ok);
@@ -5044,6 +5101,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "blocked-first".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         let mut second = open_test_request(
@@ -5051,6 +5110,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "blocked-second".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(2);
@@ -5084,6 +5145,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "blocked-disconnected".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -5101,6 +5164,8 @@ mod tests {
                 ServiceRequestKind::RlmReady {
                     operation_id: "success-after-disconnect".to_string(),
                     args: json!({}),
+                    timeout_seconds: 5,
+                    timeout_nanos: 0,
                 },
             );
             if recovered.ok {
@@ -5137,6 +5202,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "duplicate-id".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -5146,6 +5213,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "duplicate-id".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(!duplicate.ok);
@@ -5178,6 +5247,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "held-after-cancel-1".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -5411,6 +5482,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "panic-worker-1".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(!panic_response.ok);
@@ -5425,6 +5498,8 @@ mod tests {
                 ServiceRequestKind::RlmReady {
                     operation_id: "success-after-panic".to_string(),
                     args: json!({}),
+                    timeout_seconds: 5,
+                    timeout_nanos: 0,
                 },
             )
             .ok
@@ -5648,6 +5723,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "held-after-cancel-zero-grace".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -7071,6 +7148,8 @@ fn main() {
         let rlm = ServiceRequestKind::RlmReady {
             operation_id: Uuid::new_v4().to_string(),
             args: json!({"sourceDir": "src"}),
+            timeout_seconds: 5,
+            timeout_nanos: 123,
         };
         assert_ne!(bsl.operation_id(), rlm.operation_id());
         for (kind, expected_tag) in [
@@ -8385,15 +8464,21 @@ fn main() {
                 &context,
                 &source_root,
                 &Map::new(),
-                Duration::from_secs(300),
+                Duration::new(300, 123_456_789),
                 &CancellationToken::new(),
             )
             .unwrap();
 
         let budget = *connector.budgets.borrow().last().unwrap();
+        let request = serde_json::to_value(connector.requests.borrow().last().unwrap()).unwrap();
+        let wire_timeout = Duration::new(
+            request["timeout_seconds"].as_u64().unwrap(),
+            request["timeout_nanos"].as_u64().unwrap() as u32,
+        );
         cleanup(&context);
         assert!(budget > Duration::from_secs(299), "{budget:?}");
-        assert!(budget <= Duration::from_secs(300), "{budget:?}");
+        assert!(budget <= Duration::new(300, 123_456_789), "{budget:?}");
+        assert_eq!(wire_timeout, budget);
     }
 
     #[test]
