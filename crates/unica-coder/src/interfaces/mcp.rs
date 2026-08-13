@@ -188,20 +188,16 @@ impl ServerHandler for UnicaServer {
             .and_then(Meta::get_progress_token)
             .or_else(|| context.meta.get_progress_token());
         let arguments = request.arguments.unwrap_or_default();
-        let (progress, progress_forwarder): (
-            Arc<dyn SearchProgressSink>,
-            Option<tokio::task::JoinHandle<()>>,
-        ) = if let Some(progress_token) = progress_token {
+        let progress_forwarding = if let Some(progress_token) = progress_token {
             let (sender, mut receiver) =
-                tokio::sync::watch::channel::<Option<SearchProgressSnapshot>>(None);
-            let sink: Arc<dyn SearchProgressSink> = Arc::new(McpSearchProgressSink { sender });
+                tokio::sync::mpsc::unbounded_channel::<Option<SearchProgressSnapshot>>();
+            let sink: Arc<dyn SearchProgressSink> = Arc::new(McpSearchProgressSink {
+                sender: sender.clone(),
+            });
             let peer = context.peer.clone();
             let forwarder = tokio::spawn(async move {
-                if receiver.wait_for(Option::is_some).await.is_err() {
-                    return;
-                }
-                loop {
-                    let Some(snapshot) = receiver.borrow_and_update().clone() else {
+                while let Some(message) = receiver.recv().await {
+                    let Some(snapshot) = message else {
                         break;
                     };
                     let mut meta = Meta::default();
@@ -218,19 +214,32 @@ impl ServerHandler for UnicaServer {
                     let mut notification = notification;
                     notification.meta = Some(meta);
                     let _ = peer.notify_progress(notification).await;
-                    if receiver.changed().await.is_err() {
-                        break;
-                    }
                 }
             });
-            (sink, Some(forwarder))
+            McpProgressForwarding {
+                sink,
+                forwarder: Some(forwarder),
+                stop: Some(sender),
+            }
         } else {
-            (Arc::new(NoopSearchProgressSink), None)
+            McpProgressForwarding {
+                sink: Arc::new(NoopSearchProgressSink),
+                forwarder: None,
+                stop: None,
+            }
         };
+        let McpProgressForwarding {
+            sink: progress,
+            forwarder: progress_forwarder,
+            stop: progress_stop,
+        } = progress_forwarding;
         let result = tokio::task::spawn_blocking(move || {
             handler(&handler_name, &arguments, cancellation, progress)
         })
         .await;
+        if let Some(stop) = progress_stop {
+            let _ = stop.send(None);
+        }
         if let Some(forwarder) = progress_forwarder {
             let _ = forwarder.await;
         }
@@ -251,13 +260,19 @@ impl ServerHandler for UnicaServer {
     }
 }
 
+struct McpProgressForwarding {
+    sink: Arc<dyn SearchProgressSink>,
+    forwarder: Option<tokio::task::JoinHandle<()>>,
+    stop: Option<tokio::sync::mpsc::UnboundedSender<Option<SearchProgressSnapshot>>>,
+}
+
 struct McpSearchProgressSink {
-    sender: tokio::sync::watch::Sender<Option<SearchProgressSnapshot>>,
+    sender: tokio::sync::mpsc::UnboundedSender<Option<SearchProgressSnapshot>>,
 }
 
 impl SearchProgressSink for McpSearchProgressSink {
     fn publish(&self, snapshot: SearchProgressSnapshot) {
-        self.sender.send_replace(Some(snapshot));
+        let _ = self.sender.send(Some(snapshot));
     }
 }
 
@@ -751,6 +766,115 @@ mod tests {
             response["result"]["structuredContent"]["data"]["coverage"],
             "partial"
         );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn retained_progress_sink_does_not_hold_the_tool_response_open() {
+        let retained = Arc::new(Mutex::new(None::<Arc<dyn SearchProgressSink>>));
+        let retained_by_handler = Arc::clone(&retained);
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, progress| {
+            *retained_by_handler.lock().unwrap() = Some(progress);
+            Ok(code_search_test_result())
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "_meta": {"progressToken": "search-retained"},
+                    "name": "unica.code.search",
+                    "arguments": {}
+                }
+            }))
+            .await;
+
+        let line = timeout(Duration::from_millis(500), client.reader.next_line())
+            .await
+            .expect("a retained progress sink must not delay the tool response")
+            .expect("MCP transport failed")
+            .expect("MCP server closed the stream before responding");
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["id"], 1);
+
+        retained.lock().unwrap().take();
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn progress_forwarder_preserves_rapid_phase_transitions() {
+        let retained = Arc::new(Mutex::new(None::<Arc<dyn SearchProgressSink>>));
+        let retained_by_handler = Arc::clone(&retained);
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, progress| {
+            for (elapsed_ms, phase, detail_code) in [
+                (
+                    5,
+                    crate::domain::code_intelligence::SearchProviderPhase::Preparing,
+                    "reconcilingSources",
+                ),
+                (
+                    6,
+                    crate::domain::code_intelligence::SearchProviderPhase::Searching,
+                    "executingQuery",
+                ),
+            ] {
+                progress.publish(crate::domain::code_intelligence::SearchProgressSnapshot {
+                    schema_version: 1,
+                    elapsed_ms,
+                    deadline_ms: 300_000,
+                    next_update_within_ms: 2_000,
+                    providers: vec![crate::domain::code_intelligence::SearchProviderProgress {
+                        identity: crate::domain::code_intelligence::ProviderId::Rlm.identity(),
+                        state: crate::domain::code_intelligence::SearchProviderState::Running,
+                        phase,
+                        detail_code: Some(detail_code.to_string()),
+                        results_found: 0,
+                    }],
+                });
+            }
+            *retained_by_handler.lock().unwrap() = Some(progress);
+            Ok(code_search_test_result())
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "_meta": {"progressToken": "search-phases"},
+                    "name": "unica.code.search",
+                    "arguments": {}
+                }
+            }))
+            .await;
+
+        let mut messages = Vec::new();
+        for _ in 0..3 {
+            let line = timeout(Duration::from_millis(500), client.reader.next_line())
+                .await
+                .expect("every phase transition and the result must be forwarded")
+                .expect("MCP transport failed")
+                .expect("MCP server closed the stream before responding");
+            messages.push(serde_json::from_str::<Value>(&line).unwrap());
+        }
+        assert_eq!(messages[0]["method"], "notifications/progress");
+        assert_eq!(messages[1]["method"], "notifications/progress");
+        assert_eq!(
+            messages[0]["params"]["_meta"]["io.unica/searchProgress"]["providers"][0]["detailCode"],
+            "reconcilingSources"
+        );
+        assert_eq!(
+            messages[1]["params"]["_meta"]["io.unica/searchProgress"]["providers"][0]["detailCode"],
+            "executingQuery"
+        );
+        assert_eq!(messages[2]["id"], 1);
+
+        retained.lock().unwrap().take();
         client.shutdown().await;
     }
 
