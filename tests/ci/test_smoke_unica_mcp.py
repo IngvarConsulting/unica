@@ -1624,7 +1624,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 return {
                     "result": {
                         "content": [{"text": json.dumps(payload)}],
-                        "isError": False,
+                        "isError": not payload["ok"],
                     }
                 }
 

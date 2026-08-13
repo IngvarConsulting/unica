@@ -1764,7 +1764,13 @@ def _code_search_payload(response: dict) -> dict:
         ) from error
     if not isinstance(payload, dict):
         raise SystemExit(f"Unica MCP code search payload is not an object: {payload!r}")
-    if not isinstance(payload.get("ok"), bool) or result.get("isError") is True:
+    ok = payload.get("ok")
+    is_error = result.get("isError")
+    if (
+        not isinstance(ok, bool)
+        or not isinstance(is_error, bool)
+        or is_error is not (not ok)
+    ):
         raise SystemExit(
             f"Unica MCP code search has inconsistent success state: {response}"
         )
