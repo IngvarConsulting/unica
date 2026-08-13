@@ -100,21 +100,39 @@ pub struct WorkspaceServiceIdentity {
     pub key: String,
     pub workspace_root: String,
     pub source_root: String,
+    pub workspace_epoch: u64,
+    pub provider_id: String,
     pub service_dir: PathBuf,
 }
 
 impl WorkspaceServiceIdentity {
     pub fn new(context: &WorkspaceContext, source_root: &Path) -> Result<Self, String> {
+        Self::new_for_provider(context, source_root, "workspace-service")
+    }
+
+    pub fn new_for_provider(
+        context: &WorkspaceContext,
+        source_root: &Path,
+        provider_id: &str,
+    ) -> Result<Self, String> {
         let workspace_root = normalize_path_identity(&context.workspace_root)?;
         let source_root = normalize_path_identity(source_root)?;
         let workspace_root = workspace_root.display().to_string();
         let source_root = source_root.display().to_string();
-        let key = service_key(&workspace_root, &source_root);
+        let provider_id = provider_id.to_string();
+        let key = service_key(
+            &workspace_root,
+            &source_root,
+            context.workspace_epoch,
+            &provider_id,
+        );
         let service_dir = context.cache_root.join("services").join(&key);
         Ok(Self {
             key,
             workspace_root,
             source_root,
+            workspace_epoch: context.workspace_epoch,
+            provider_id,
             service_dir,
         })
     }
@@ -286,8 +304,26 @@ impl<'a> WorkspaceServiceManager<'a> {
         cancellation: &CancellationToken,
         deadline: &WorkspaceServiceCallDeadline,
     ) -> Result<WorkspaceServiceRecord, String> {
+        self.ensure_service_cancellable_with_deadline_for_provider(
+            context,
+            source_root,
+            "workspace-service",
+            cancellation,
+            deadline,
+        )
+    }
+
+    fn ensure_service_cancellable_with_deadline_for_provider(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+        provider_id: &str,
+        cancellation: &CancellationToken,
+        deadline: &WorkspaceServiceCallDeadline,
+    ) -> Result<WorkspaceServiceRecord, String> {
         deadline.remaining(cancellation)?;
-        let identity = WorkspaceServiceIdentity::new(context, source_root)?;
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(context, source_root, provider_id)?;
         loop {
             deadline.remaining(cancellation)?;
             if let Some(spawn_lock) = acquire_spawn_lock(&identity)? {
@@ -355,9 +391,10 @@ impl<'a> WorkspaceServiceManager<'a> {
         let deadline = WorkspaceServiceCallDeadline::new(call.request_budget);
         let mut retried_transport = false;
         loop {
-            let record = self.ensure_service_cancellable_with_deadline(
+            let record = self.ensure_service_cancellable_with_deadline_for_provider(
                 context,
                 source_root,
+                "bsl-analyzer",
                 cancellation,
                 &deadline,
             )?;
@@ -414,9 +451,10 @@ impl<'a> WorkspaceServiceManager<'a> {
         let deadline = WorkspaceServiceCallDeadline::new(timeout);
         let mut retried_transport = false;
         loop {
-            let record = self.ensure_service_cancellable_with_deadline(
+            let record = self.ensure_service_cancellable_with_deadline_for_provider(
                 context,
                 source_root,
+                "rlm-tools-bsl",
                 cancellation,
                 &deadline,
             )?;
@@ -496,9 +534,10 @@ impl<'a> WorkspaceServiceManager<'a> {
         cancellation: &CancellationToken,
     ) -> Result<IndexReadiness, String> {
         let deadline = WorkspaceServiceCallDeadline::new(timeout);
-        let record = self.ensure_service_cancellable_with_deadline(
+        let record = self.ensure_service_cancellable_with_deadline_for_provider(
             context,
             source_root,
+            "rlm-tools-bsl",
             cancellation,
             &deadline,
         )?;
@@ -543,6 +582,8 @@ impl<'a> WorkspaceServiceManager<'a> {
                 key: String::new(),
                 workspace_root: String::new(),
                 source_root: String::new(),
+                workspace_epoch: 0,
+                provider_id: String::new(),
                 service_dir,
             };
             let Some(record) = read_record(&lock_identity) else {
@@ -1178,6 +1219,10 @@ impl ServiceSpawner for SystemServiceSpawner {
             .arg(&identity.workspace_root)
             .arg("--source-root")
             .arg(&identity.source_root)
+            .arg("--workspace-epoch")
+            .arg(identity.workspace_epoch.to_string())
+            .arg("--provider-id")
+            .arg(&identity.provider_id)
             .arg("--service-dir")
             .arg(identity.service_dir.display().to_string())
             .arg("--token")
@@ -3338,6 +3383,10 @@ fn service_cache_root(service_dir: &Path) -> PathBuf {
 pub fn run_workspace_service_from_args(args: &[String]) -> Result<(), String> {
     let workspace_root = required_arg(args, "--workspace-root")?;
     let source_root = required_arg(args, "--source-root")?;
+    let workspace_epoch = required_arg(args, "--workspace-epoch")?
+        .parse::<u64>()
+        .map_err(|_| "--workspace-epoch must be an unsigned integer".to_string())?;
+    let provider_id = required_arg(args, "--provider-id")?;
     let service_dir = PathBuf::from(required_arg(args, "--service-dir")?);
     let token = required_arg(args, "--token")?;
     let idle_secs = optional_u64_arg(args, "--idle-secs", DEFAULT_IDLE_SECS);
@@ -3351,6 +3400,8 @@ pub fn run_workspace_service_from_args(args: &[String]) -> Result<(), String> {
         key,
         workspace_root,
         source_root,
+        workspace_epoch,
+        provider_id,
         service_dir,
     };
     run_workspace_service(identity, token, idle_secs, max_age_secs)
@@ -4158,10 +4209,17 @@ fn mcp_tool_text(response: &Value) -> Result<String, String> {
     Ok(result.to_string())
 }
 
-fn service_key(workspace_root: &str, source_root: &str) -> String {
+fn service_key(
+    workspace_root: &str,
+    source_root: &str,
+    workspace_epoch: u64,
+    provider_id: &str,
+) -> String {
     let mut hasher = DefaultHasher::new();
     workspace_root.hash(&mut hasher);
     source_root.hash(&mut hasher);
+    workspace_epoch.hash(&mut hasher);
+    provider_id.hash(&mut hasher);
     format!("svc-{:016x}", hasher.finish())
 }
 
@@ -7940,6 +7998,29 @@ fn main() {
     }
 
     #[test]
+    fn service_identity_separates_workspace_epoch_and_provider() {
+        let context = test_context("identity-provider-epoch");
+        let source_root = context.workspace_root.join("src");
+        let analyzer =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
+        let rlm =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "rlm-tools-bsl")
+                .unwrap();
+        let mut next_epoch = context.clone();
+        next_epoch.workspace_epoch += 1;
+        let rebuilt =
+            WorkspaceServiceIdentity::new_for_provider(&next_epoch, &source_root, "bsl-analyzer")
+                .unwrap();
+
+        assert_ne!(analyzer.key, rlm.key);
+        assert_ne!(analyzer.key, rebuilt.key);
+        assert_eq!(analyzer.workspace_epoch, context.workspace_epoch);
+        assert_eq!(analyzer.provider_id, "bsl-analyzer");
+        cleanup(&context);
+    }
+
+    #[test]
     fn service_identity_reuses_normalized_paths() {
         let context = test_context("normalized-identity");
         let plain =
@@ -8855,7 +8936,9 @@ fn main() {
     fn manager_retries_bsl_request_once_after_transport_reset() {
         let context = test_context("bsl-transport-reset-retry");
         let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
         write_record(
             &identity,
             test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
@@ -8891,7 +8974,9 @@ fn main() {
     fn manager_shares_one_deadline_across_late_transport_retry() {
         let context = test_context("bsl-transport-shared-deadline");
         let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
         write_record(
             &identity,
             test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
@@ -8940,7 +9025,9 @@ fn main() {
     fn manager_passes_remaining_budget_and_fresh_token_to_retry_spawn() {
         let context = test_context("bsl-retry-spawn-budget-token");
         let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
         write_record(
             &identity,
             test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
@@ -8987,7 +9074,9 @@ fn main() {
     fn manager_bounds_delayed_retry_spawn_by_remaining_deadline() {
         let context = test_context("bsl-retry-delayed-spawn-budget");
         let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
         write_record(
             &identity,
             test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
@@ -9029,7 +9118,9 @@ fn main() {
     fn manager_does_not_spawn_when_retry_shutdown_observes_cancellation() {
         let context = test_context("bsl-retry-cancel-before-spawn");
         let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
         write_record(
             &identity,
             test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
@@ -9126,7 +9217,9 @@ fn main() {
     fn manager_stops_after_one_transport_retry() {
         let context = test_context("bsl-transport-reset-twice");
         let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
         write_record(
             &identity,
             test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
@@ -9159,7 +9252,9 @@ fn main() {
     fn manager_does_not_retry_unknown_bsl_tool_after_ambiguous_reset() {
         let context = test_context("unknown-bsl-tool-no-retry");
         let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
         write_record(
             &identity,
             test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),
@@ -9189,7 +9284,9 @@ fn main() {
     fn manager_does_not_retry_typed_bsl_failure() {
         let context = test_context("typed-bsl-failure-no-retry");
         let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let identity =
+            WorkspaceServiceIdentity::new_for_provider(&context, &source_root, "bsl-analyzer")
+                .unwrap();
         write_record(
             &identity,
             test_record(&identity, 34567, env!("CARGO_PKG_VERSION")),

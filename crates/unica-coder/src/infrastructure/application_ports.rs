@@ -21,7 +21,7 @@ use crate::domain::code_intelligence::{
 };
 use crate::domain::diagnostics::{
     DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
-    DiagnosticRequest, DiagnosticRequestError,
+    DiagnosticProvider, DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
@@ -30,6 +30,7 @@ use crate::domain::source_resources::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
+use crate::infrastructure::diagnostics::BslAnalyzerDiagnosticProvider;
 use crate::infrastructure::internal_adapters::{
     BslAnalyzerMcpAdapter, CliAdapter, ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter,
     RuntimeJobAdapter, StandardsAdapter,
@@ -201,6 +202,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             Arc::new(GitGrepProvider::new()),
         ];
         CodeIntelligenceRegistry::new(providers)
+    }
+
+    fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
+        let providers: Vec<Arc<dyn DiagnosticProvider>> =
+            vec![Arc::new(BslAnalyzerDiagnosticProvider::new())];
+        DiagnosticProviderRegistry::new(providers).map_err(|error| error.to_string())
     }
 
     fn resolve_source_navigation(

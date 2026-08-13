@@ -1557,6 +1557,42 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         }
     }
 
+    pub(crate) fn analyze_diagnostic_batch(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<AnalyzerDiagnosticsBatch, String> {
+        let mut args = Map::new();
+        args.insert(
+            "sourceDir".to_string(),
+            Value::String(source_root.display().to_string()),
+        );
+        let timeout_seconds = timeout.as_secs();
+        if (DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS..=DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
+            .contains(&timeout_seconds)
+        {
+            args.insert("timeoutSeconds".to_string(), json!(timeout_seconds));
+        }
+        let result = self.invoke_diagnostics_analyze(
+            "unica.code.diagnostics",
+            &args,
+            context,
+            false,
+            None,
+            cancellation,
+        )?;
+        result.diagnostics.ok_or_else(|| {
+            result
+                .outcome
+                .errors
+                .first()
+                .cloned()
+                .unwrap_or(result.outcome.summary)
+        })
+    }
+
     #[allow(dead_code)]
     pub fn invoke(
         &self,
