@@ -221,10 +221,31 @@ for raw in sys.stdin:
                     {"name": "main", "path": "src/cf", "sourceFormat": "platform_xml"}
                 ]
             }
-        elif name == "unica.code.diagnostics" and arguments.get("mode") == "workspace":
-            payload["diagnostics"] = [
-                {"code": "UnusedLocalVariable", "file": "CommonModules/Test/Ext/Module.bsl"}
-            ]
+        elif name == "unica.code.diagnostics" and arguments.get("action") == "analyze":
+            payload.pop("stdout")
+            payload["data"] = {
+                "action": "analyze",
+                "state": "completed",
+                "complete": True,
+                "providers": [],
+                "itemsTotal": 1,
+                "itemsReturned": 1,
+                "truncated": False,
+                "items": [{
+                    "kind": "diagnostic",
+                    "provider": "bsl-analyzer",
+                    "location": {
+                        "kind": "addressed",
+                        "sourceSet": "main",
+                        "targetKind": "sourceRoot",
+                    },
+                    "focus": {"kind": "target"},
+                    "code": "UnusedLocalVariable",
+                    "severity": "warning",
+                    "message": "fixture",
+                    "tags": [],
+                }],
+            }
         elif name == "unica.code.search":
             payload["data"] = {
                 "sections": [
@@ -589,12 +610,42 @@ for raw in sys.stdin:
                 },
             },
         )
-
         self.assertEqual(scenario["status"], "failed")
         self.assertTrue(
             any("rlm, bsl-analyzer, git-grep" in error for error in scenario["errors"]),
             scenario,
         )
+
+    def test_diagnostics_release_probe_uses_logical_analyze_contract(self) -> None:
+        module = load_assessment_module()
+        diagnostics = next(
+            scenario
+            for scenario in module.base_tool_scenarios(Path("/missing-bsp"))
+            if scenario[2] == "unica.code.diagnostics"
+        )
+        arguments = diagnostics[3]
+
+        self.assertEqual(arguments["action"], "analyze")
+        self.assertEqual(arguments["sourceSet"], "main")
+        for legacy in ("mode", "sourceDir", "path", "codes"):
+            self.assertNotIn(legacy, arguments)
+
+    def test_diagnostic_code_extraction_reads_provider_neutral_items(self) -> None:
+        module = load_assessment_module()
+        payload = {
+            "data": {
+                "items": [
+                    {
+                        "kind": "diagnostic",
+                        "provider": "bsl-analyzer",
+                        "code": "UnusedLocalVariable",
+                    },
+                    {"kind": "resourceFailure", "error": {"code": "source_failed"}},
+                ]
+            }
+        }
+
+        self.assertEqual(module.extract_diagnostic_codes(payload), ["UnusedLocalVariable"])
 
     def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:
         module = load_assessment_module()

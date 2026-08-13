@@ -10,7 +10,6 @@ import json
 import os
 import platform
 import queue
-import re
 import shutil
 import subprocess
 import sys
@@ -688,10 +687,10 @@ def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, A
         ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR}, True, True),
         ("cf-validate", "BSP Configuration.xml validation", "unica.cf.validate", {"ConfigPath": SOURCE_DIR, "MaxErrors": 50}, False, False),
         (
-            "code-diagnostics-workspace",
-            "BSL diagnostics workspace read",
+            "code-diagnostics-analyze",
+            "BSL diagnostics source-set analysis",
             "unica.code.diagnostics",
-            {"sourceDir": SOURCE_DIR, "mode": "workspace", "limit": 100},
+            {"action": "analyze", "sourceSet": "main", "limit": 100},
             False,
             False,
         ),
@@ -723,27 +722,21 @@ def extract_diagnostic_codes(payload: dict[str, Any] | None) -> list[str]:
     if not payload:
         return []
     codes: set[str] = set()
-    # unica.code.diagnostics answers with typed `data` (ADR-0023); the analyzer
-    # reply carries the findings there, not in a printed report.
+    # The public diagnostics contract exposes provider-neutral observations in
+    # data.items.  Resource failures have their own error codes and must not be
+    # reported as diagnostic findings.
     data = payload.get("data")
-    candidates = [payload.get("diagnostics")]
-    if isinstance(data, dict):
-        candidates.append(data.get("diagnostics"))
-    for diagnostics in candidates:
-        if not isinstance(diagnostics, list):
+    if not isinstance(data, dict):
+        return []
+    items = data.get("items")
+    if not isinstance(items, list):
+        return []
+    for item in items:
+        if not isinstance(item, dict) or item.get("kind") != "diagnostic":
             continue
-        for item in diagnostics:
-            if not isinstance(item, dict):
-                continue
-            for key in ("code", "id", "diagnostic", "diagnosticId"):
-                value = item.get(key)
-                if isinstance(value, str) and value:
-                    codes.add(value)
-    for text_key in ("stdout", "summary"):
-        text = payload.get(text_key)
-        if isinstance(text, str):
-            for match in re.findall(r"\b[A-Z][A-Za-z0-9_]{4,}\b", text):
-                codes.add(match)
+        code = item.get("code")
+        if isinstance(code, str) and code:
+            codes.add(code)
     return sorted(codes)
 
 

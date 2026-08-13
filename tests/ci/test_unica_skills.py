@@ -1516,6 +1516,73 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("compiled 120-second fallback", text)
         self.assertIn("do not read this operational config", text)
 
+    def test_code_diagnostics_examples_use_logical_action_contract(self) -> None:
+        calls = []
+        for path in sorted(self.skill_root().glob("*/SKILL.md")):
+            text = path.read_text(encoding="utf-8")
+            for block in re.findall(r"```(?:json|jsonc)\n(.*?)\n```", text, flags=re.S):
+                try:
+                    payload = json.loads(block)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                params = payload.get("params", {})
+                if params.get("name") == "unica.code.diagnostics":
+                    calls.append((path, params.get("arguments", {})))
+
+        self.assertGreaterEqual(len(calls), 2)
+        forbidden = {
+            "mode",
+            "sourceDir",
+            "path",
+            "codes",
+            "minSeverity",
+            "rangeStart",
+            "rangeEnd",
+            "config",
+            "format",
+            "detail",
+            "maxFiles",
+        }
+        for path, arguments in calls:
+            with self.subTest(
+                path=path.relative_to(self.repo_root()), arguments=arguments
+            ):
+                self.assertIn(
+                    arguments.get("action"),
+                    {"analyze", "findings", "status", "catalog"},
+                )
+                self.assertIsInstance(arguments.get("sourceSet"), str)
+                self.assertTrue(arguments["sourceSet"].strip())
+                self.assertEqual(forbidden.intersection(arguments), set())
+                if arguments["action"] == "findings":
+                    self.assertRegex(
+                        arguments.get("metadataPath", ""),
+                        r"^[^.]+\.[^.]+(?:\..+)?$",
+                    )
+                for code in arguments.get("filter", {}).get("codes", []):
+                    self.assertEqual(set(code), {"provider", "code"})
+                    self.assertTrue(code["provider"])
+                    self.assertTrue(code["code"])
+
+        code_diagnostics_calls = [
+            arguments
+            for path, arguments in calls
+            if path.parent.name == "code-diagnostics"
+        ]
+        self.assertTrue(
+            any(call["action"] == "analyze" for call in code_diagnostics_calls)
+        )
+        findings = next(
+            call
+            for call in code_diagnostics_calls
+            if call["action"] == "findings"
+        )
+        self.assertEqual(findings["sourceSet"], "main")
+        self.assertIn("metadataPath", findings)
+        self.assertTrue(findings.get("filter", {}).get("codes"))
+
     def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
         docs = {
             "code-search": self.skill_root() / "code-search" / "SKILL.md",

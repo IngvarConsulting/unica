@@ -162,23 +162,71 @@ def selector_branches(schema: dict) -> list[dict]:
     return branches
 
 
+def discriminated_object_surface(
+    schema: dict,
+) -> tuple[dict, set[str], set[str], set[str]] | None:
+    """Flatten a closed `oneOf` of complete object variants for the ledger.
+
+    Some tools publish each action as a separate object schema so a host can
+    validate forbidden action-specific arguments.  The ledger still needs to
+    show the union while distinguishing universally required, branch-required,
+    and branch-only optional arguments.
+    """
+    if schema.get("properties"):
+        return None
+    variants = schema.get("oneOf")
+    if not isinstance(variants, list) or not variants:
+        return None
+    if any(
+        not isinstance(variant, dict)
+        or not isinstance(variant.get("properties"), dict)
+        for variant in variants
+    ):
+        return None
+
+    properties: dict = {}
+    property_sets: list[set[str]] = []
+    required_sets: list[set[str]] = []
+    for variant in variants:
+        variant_properties = variant["properties"]
+        property_sets.append(set(variant_properties))
+        required_sets.append(set(variant.get("required") or []))
+        for name, entry in variant_properties.items():
+            properties.setdefault(name, entry)
+
+    required = set.intersection(*required_sets)
+    required_in_any_branch = set.union(*required_sets)
+    present_in_every_branch = set.intersection(*property_sets)
+    conditional = required_in_any_branch - required
+    branch_only = set(properties) - present_in_every_branch - conditional
+    return properties, required, conditional, branch_only
+
+
 def render_arguments(tool: dict) -> list[str]:
     schema = tool.get("inputSchema", {})
-    properties = schema.get("properties", {})
-    required = schema.get("required", [])
-    branches = selector_branches(schema)
-    # A conditionally required argument is not optional, and the `Обяз.` column
-    # cannot say so on its own: without this the ledger reads as though every
-    # selector could be omitted.
-    conditional = sorted({name for branch in branches for name in branch["required"]})
-    # An argument some branch forbids is not freely optional either: it is
-    # accepted only inside the branches that do not refuse it.
-    branch_only = {
-        name
-        for branch in branches
-        for name in branch["forbids"]
-        if name not in conditional
-    }
+    variant_surface = discriminated_object_surface(schema)
+    branches: list[dict]
+    if variant_surface is not None:
+        properties, required, conditional, branch_only = variant_surface
+        branches = []
+    else:
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        branches = selector_branches(schema)
+        # A conditionally required argument is not optional, and the `Обяз.`
+        # column cannot say so on its own: without this the ledger reads as
+        # though every selector could be omitted.
+        conditional = {
+            name for branch in branches for name in branch["required"]
+        }
+        # An argument some branch forbids is not freely optional either: it is
+        # accepted only inside the branches that do not refuse it.
+        branch_only = {
+            name
+            for branch in branches
+            for name in branch["forbids"]
+            if name not in conditional
+        }
     lines: list[str] = []
     shared = len(properties) > SHARED_ARGUMENT_THRESHOLD
     shown = (

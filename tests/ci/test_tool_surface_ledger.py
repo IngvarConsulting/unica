@@ -120,6 +120,42 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             rendered,
         )
 
+    def test_discriminated_object_branches_render_their_argument_union(self) -> None:
+        schema = {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "action": {"type": "string", "const": "analyze"},
+                        "sourceSet": {"type": "string"},
+                        "timeoutSeconds": {"type": "integer"},
+                    },
+                    "required": ["action", "sourceSet"],
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "action": {"type": "string", "const": "findings"},
+                        "sourceSet": {"type": "string"},
+                        "metadataPath": {"type": "string"},
+                    },
+                    "required": ["action", "sourceSet", "metadataPath"],
+                },
+            ]
+        }
+
+        rendered = "\n".join(
+            self.module.render_arguments({"inputSchema": schema})
+        )
+
+        self.assertIn("| `action` | string | да |", rendered)
+        self.assertIn("| `sourceSet` | string | да |", rendered)
+        self.assertIn("| `metadataPath` | string | по ветви |", rendered)
+        self.assertIn("| `timeoutSeconds` | integer | только в ветви |", rendered)
+        self.assertNotIn("Опубликованных аргументов нет", rendered)
+
     def test_published_patterns_stay_inside_the_ecmascript_dialect(self) -> None:
         """JSON Schema `pattern` — это ECMA-262.
 
@@ -164,6 +200,29 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             with self.subTest(tool=name):
                 self.assertEqual(self.review[name]["scope"], "in")
                 self.assertEqual(self.review[name]["result"]["contract"], "typed")
+
+    def test_diagnostics_surface_is_logical_provider_neutral_and_clean_break(self) -> None:
+        tool = next(tool for tool in self.tools if tool["name"] == "unica.code.diagnostics")
+        review = self.review["unica.code.diagnostics"]
+
+        self.assertEqual(review["scope"], "in")
+        self.assertEqual(review["result"]["contract"], "typed")
+        for token in ("provider", "location", "focus", "sourceSet", "metadataPath"):
+            self.assertIn(token, review["result"]["now"])
+
+        branches = tool["inputSchema"]["oneOf"]
+        self.assertEqual(
+            {branch["properties"]["action"]["const"] for branch in branches},
+            {"analyze", "findings", "status", "catalog"},
+        )
+        all_arguments = {
+            argument for branch in branches for argument in branch["properties"]
+        }
+        for required in ("action", "sourceSet", "providers", "filter"):
+            self.assertIn(required, all_arguments)
+        self.assertIn("range", all_arguments)
+        for legacy in ("mode", "sourceDir", "path", "codes", "rangeStart", "rangeEnd"):
+            self.assertNotIn(legacy, all_arguments)
 
     def test_schema_base_resolution_is_bounded(self) -> None:
         root = {"$defs": {"cycle": {"$ref": "#/$defs/cycle"}}}
