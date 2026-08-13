@@ -1063,21 +1063,22 @@ Inspect configured source sets and effective source format per source set.
 
 ### `unica.project.status`
 
-Inspect current Unica workspace, source set, and cache state.
+Inspect typed workspace, source-set, and portable Git readiness without changing the project.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 
-**Результат сейчас:** `data`: корни рабочего пространства и наборы исходников (ADR-0023) (отвечают типизированным `data`)
+**Результат сейчас:** `data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные `checks[]`, `sourceSets[]` и `diagnostics[]` с безопасной remediation (ADR-0055) (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 
 **Сценарии:**
 
-- Понять, готов ли workspace к работе после клонирования
-- Выяснить, устарел ли BSL-индекс перед серией поисковых вызовов
+- Понять, может ли Unica безопасно работать с source sets после клонирования
+- Отдельно проверить переносимость Git ignore, attributes и EOL для другого clone
+- Получить типизированные шаги remediation без автоматического изменения файлов или index
 
 ## role — роли и права
 

@@ -432,6 +432,20 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
 - **Scope:** source, runtime
 
+### INV-MCP-PROJECT-READINESS — Готовность проекта публикуется двумя независимыми контурами
+
+- **Rule:** `unica.project.status` остаётся единственной полной читающей
+  инспекцией проекта и при достоверном снимке возвращает в типизированных
+  `data` независимые `ready` и `repositoryReady`, полные `checks[]` и
+  `diagnostics[]` с `ok=true` даже при найденных проблемах проекта, тогда как
+  `unica.project.map` возвращает только карту наборов исходников и не запускает
+  проверки Git.
+- **Decision:** ADR-0055
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
+- **Check:** `doc-assert` — `tests/ci/test_project_health_contract.py`
+- **Scope:** source, packaged, runtime
+
 ### INV-MCP-PREVIEW-MUTATION-ONLY — Предпросмотр принадлежит мутации
 
 - **Rule:** `ToolExecution::Read` не публикует и не принимает `dryRun` и
@@ -958,6 +972,35 @@ Unica. Каждая запись формулирует одно нормати�
 - **Scope:** packaged, runtime
 
 ## SOURCE — наборы исходников рабочего пространства
+
+### INV-SOURCE-ROOT-SEPARATION — Корень исходников отделён от рабочего пространства
+
+- **Rule:** Полная инспекция считает каждый корень набора исходников строгим
+  потомком корня рабочего пространства, поэтому равенство после нормализации
+  или разрешения физической идентичности, включая `path: .`, `./` и ссылочный
+  псевдоним, даёт одну первичную ошибку
+  `source_set.root_is_workspace`, закрывает `ready` и не порождает производные
+  ошибки о служебных путях внутри того же корня.
+- **Decision:** ADR-0055
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/layout.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform_project_health.rs`
+- **Scope:** source, runtime
+
+### INV-SOURCE-PORTABLE-GIT — Переносимость Git доказывается содержимым репозитория
+
+- **Rule:** `repositoryReady` вычисляется отдельно от `ready` и требует
+  отслеживаемых правил исключений, ролевой классификации атрибутов и окончаний
+  строк выгрузки платформы и безопасной классификации подготовленного
+  `ConfigDumpInfo.xml`; локальные правила не считаются переносимыми, а отдельное
+  хранилище больших файлов предлагается только как необязательная подсказка и
+  не меняет ни один флаг.
+- **Decision:** ADR-0055
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/project_health.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/git.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform_project_health.rs`
+- **Scope:** source, runtime
 
 ### INV-SOURCE-PER-SET-FORMAT — Формат — свойство набора исходников
 

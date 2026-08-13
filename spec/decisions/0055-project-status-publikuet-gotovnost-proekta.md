@@ -1,6 +1,6 @@
 # ADR-0055: `unica.project.status` публикует типизированную готовность проекта
 
-- Статус: `proposed`
+- Статус: `accepted`
 - Дата: `2026-08-13`
 
 ## Контекст
@@ -104,9 +104,9 @@ descriptor.
 6. Решение не владеет размещением кеша `bsl-analyzer`; его меняет отдельный PR
    #473. Корневая ошибка `sourceSet.path: .` остаётся недопустимой независимо от
    состояния этого PR.
-7. Статус `proposed` не объявляет новую проверку доставленной. При реализации
-   запись переводится в `accepted` вместе с кодом, тестами и выведенными
-   правилами реестра.
+7. Решение не превращает диагностику в скрытую мутацию: даже опубликованная
+   команда остаётся объяснением возможного исправления, а не разрешением её
+   выполнить.
 
 ## Последствия
 
@@ -117,9 +117,8 @@ descriptor.
 3. Репозитории с source root в `.` должны отделить выгрузку от workspace root и
    обновить `v8project.yaml`; это намеренно несовместимое ужесточение health
    policy, а не автоматическая миграция.
-4. Нужен bounded Git/file-system inspector с точным provenance ignore rules,
-   attributes, EOL и staged blobs. Стоимость оплачивается только явным
-   `project.status`.
+4. Bounded Git/file-system inspector с точным provenance ignore rules,
+   attributes, EOL и staged blobs вызывается только явным `project.status`.
 5. Публичный payload `project.status` расширяется; operation descriptor,
    tool-surface, skill и package contracts должны измениться синхронно в
    implementation PR.
@@ -128,19 +127,20 @@ descriptor.
 
 ## Верификация
 
-- `manual` — до реализации ревьюер сопоставляет раздел `Решение` с проектной
-  запиской и проверяет, что ADR остаётся `proposed`, а действующие invariants не
-  заявляют недоставленное поведение.
+- `tests/ci/test_project_health_contract.py` — ADR-0055 принят, три выведенных
+  инварианта зарегистрированы, ведомость инструмента и AI workflow описывают
+  доставленную типизированную форму.
 - `tests/ci/test_architecture_registry.py` — каталог решений содержит ADR-0055
-  ровно в секции предложенных решений.
+  ровно в секции принятых решений, а записи реестра ссылаются на существующие
+  исполняемые проверки.
 - `tests/ci/test_design_documents.py` — approved design ссылается на
   существующую ADR-0055.
-- Будущий `cargo test -p unica-coder project_health -- --test-threads=1` —
+- `cargo test -p unica-coder project_health -- --test-threads=1` —
   проверяет два контура готовности, каталог первичных причин, полноту фактов и
   безопасную remediation.
-- Будущий `python3.12 -m unittest tests.ci.test_unica_mcp_smoke` — проверяет
+- `python3.12 -m unittest tests.ci.test_unica_mcp_smoke` — проверяет
   публичную typed форму `unica.project.status` и отсутствие Git health warning
   у `unica.project.map`.
-- Будущий `python3.12 scripts/ci/check-architecture-sync.py --base origin/main`
+- `python3.12 scripts/ci/check-architecture-sync.py --base origin/main`
   — принятие ADR, выведенные правила и изменение публичного контракта входят в
   один implementation PR.

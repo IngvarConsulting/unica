@@ -145,6 +145,28 @@ print("ok")
 PY
 ```
 
+## Project Health Acceptance
+
+This matrix exercises `INV-MCP-PROJECT-READINESS`,
+`INV-SOURCE-ROOT-SEPARATION`, and `INV-SOURCE-PORTABLE-GIT`. Run it with:
+
+```sh
+cargo test -p unica-coder project_health -- --test-threads=1
+cargo test -p unica-coder --test platform_project_health -- --test-threads=1
+python3.12 -m unittest tests.ci.test_unica_mcp_smoke
+```
+
+| Scenario | Expected result | Executable evidence |
+| --- | --- | --- |
+| Workspace without Git | `ready=true`, `repositoryReady=false`; the call still succeeds | `project_status_without_git_separates_source_and_repository_readiness`, `test_project_status_publishes_typed_readiness_without_mutation` |
+| Source set with `path: .` | `ready=false` and `source_set.root_is_workspace` | `project_status_reports_workspace_root_source_set_without_mutation` |
+| Ignore rule missing, local-only, or from an untracked file | `repositoryReady=false`; only a tracked `.gitignore` proves portability | `project_health_git_info_exclude_is_local_only`, `project_health_git_untracked_gitignore_is_local_only`, `project_health_git_missing_ignore_rules_do_not_create_probe_files` |
+| Tracked `ConfigDumpInfo.xml` | A staged runtime sidecar is rejected; a legitimate metadata descriptor is retained | `project_health_git_runtime_sidecar_and_legitimate_descriptor_are_distinct`, `project_health_parent_repository_reports_repository_relative_remediation` |
+| XDTO `Ext/Package.bin` | It is treated as text despite a broad binary rule | `project_health_repository_policy_classifies_platform_xml_roles_exactly` |
+| Text EOL | LF in the index and uniform LF or CRLF in the worktree pass; mixed EOL and lone CR fail | `project_health_repository_policy_accepts_tracked_portable_attributes`, `project_health_repository_policy_detects_mixed_worktree_eol` |
+| Cancellation, truncated output, invalid UTF-8, or malformed NUL | The affected check never becomes a partial `passed` result | `managed_child_*`, `project_health_git_index_parser_rejects_malformed_nul_record`, `project_health_repository_policy_parsers_require_complete_nul_protocols` |
+| Successful inspection | No project files, Git index, or hidden services are changed | `project_health_full_portable_repository_is_ready`, `project_health_linked_source_route_is_reported_without_following_it`, `test_project_status_publishes_typed_readiness_without_mutation` |
+
 ## Regression Tests
 
 ```sh

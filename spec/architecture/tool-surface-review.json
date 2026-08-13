@@ -15,12 +15,13 @@
   "unica.project.status": {
     "result": {
       "contract": "typed",
-      "now": "`data`: корни рабочего пространства и наборы исходников (ADR-0023)",
+      "now": "`data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные `checks[]`, `sourceSets[]` и `diagnostics[]` с безопасной remediation (ADR-0055)",
       "target": "достигнут"
     },
     "scenarios": [
-      "Понять, готов ли workspace к работе после клонирования",
-      "Выяснить, устарел ли BSL-индекс перед серией поисковых вызовов"
+      "Понять, может ли Unica безопасно работать с source sets после клонирования",
+      "Отдельно проверить переносимость Git ignore, attributes и EOL для другого clone",
+      "Получить типизированные шаги remediation без автоматического изменения файлов или index"
     ],
     "scope": "in"
   },
