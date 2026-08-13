@@ -16,7 +16,8 @@ Use the `v8-runner` skill and MCP `unica.runtime.execute`.
 
 After clone or workspace initialization, and before `build` or `dump`, first
 call `unica.project.status`. It returns `ready`, `repositoryReady`, `checks[]`,
-`sourceSets[]`, and `diagnostics[]`. A false `ready` blocks the source operation
+`sourceSets` (an array after completed source discovery, otherwise `null`), and
+`diagnostics[]`. A false `ready` blocks the source operation
 until its source-set problem is fixed. In particular, `sourceSet.path: .` is an
 error: explain how to move the export into a strict child such as `src/` and
 update `v8project.yaml` safely.

@@ -15,7 +15,7 @@
   "unica.project.status": {
     "result": {
       "contract": "typed",
-      "now": "`data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные `checks[]`, `sourceSets[]` и `diagnostics[]` с безопасной remediation (ADR-0055)",
+      "now": "`data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные `checks[]`, `sourceSets` (`array` после завершённой source discovery, `null` когда discovery не доказала наборы) и `diagnostics[]` с безопасной remediation (ADR-0056)",
       "target": "достигнут"
     },
     "scenarios": [

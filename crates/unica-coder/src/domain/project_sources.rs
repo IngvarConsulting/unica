@@ -36,6 +36,8 @@ pub struct ProjectSourceSet {
     pub path: String,
     pub source_format: SourceFormat,
     pub format_evidence: Vec<String>,
+    #[serde(skip_serializing)]
+    pub(crate) format_probe_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

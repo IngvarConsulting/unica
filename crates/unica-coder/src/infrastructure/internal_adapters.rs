@@ -37,6 +37,8 @@ pub struct ProcessCommand {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(OsString, OsString)>,
+    pub env_remove: Vec<OsString>,
+    pub capture_limits: Option<(usize, usize)>,
     pub timeout: Option<Duration>,
     pub cancellation: CancellationToken,
 }
@@ -305,6 +307,8 @@ impl<'a> CliAdapter<'a> {
             args: process_args,
             cwd: context.cwd.clone(),
             env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         })?;
@@ -454,6 +458,8 @@ impl<'a> RuntimeAdapter<'a> {
             args: execution_args,
             cwd: context.cwd.clone(),
             env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
@@ -1542,6 +1548,8 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 args: process_args,
                 cwd: context.cwd.clone(),
                 env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(process_timeout),
                 cancellation: cancellation.clone(),
             },
@@ -1879,6 +1887,8 @@ impl ProcessRunner for SystemProcessRunner {
             args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
             env: command.env.clone(),
+            env_remove: command.env_remove.clone(),
+            capture_limits: command.capture_limits,
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
         })?;
@@ -1896,6 +1906,8 @@ impl ProcessRunner for SystemProcessRunner {
                 args: command.args.clone(),
                 cwd: command.cwd.clone(),
                 env: command.env.clone(),
+                env_remove: command.env_remove.clone(),
+                capture_limits: command.capture_limits,
                 timeout: command.timeout,
                 cancellation: command.cancellation.clone(),
             },
@@ -1915,6 +1927,8 @@ impl ProcessRunner for SystemProcessRunner {
             args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
             env: command.env.clone(),
+            env_remove: command.env_remove.clone(),
+            capture_limits: command.capture_limits,
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
         })?;
@@ -5315,6 +5329,8 @@ analyze_timeout_seconds = 900
                 ],
                 cwd: std::env::current_dir().unwrap(),
                 env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: CancellationToken::new(),
             })
@@ -5350,6 +5366,33 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
+    fn system_process_runner_honors_larger_bounded_capture_limit() {
+        let output = SYSTEM_PROCESS_RUNNER
+            .run(&ProcessCommand {
+                program: std::env::current_exe().unwrap(),
+                args: vec![
+                    "--ignored".to_string(),
+                    "--exact".to_string(),
+                    "infrastructure::internal_adapters::tests::system_process_runner_large_stdout_helper"
+                        .to_string(),
+                    "--nocapture".to_string(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: Some((8 * 1024 * 1024, 256 * 1024)),
+                timeout: Some(Duration::from_secs(10)),
+                cancellation: CancellationToken::new(),
+            })
+            .unwrap();
+
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.stdout_truncated);
+        assert!(output.stdout.len() > 1024 * 1024);
+        assert!(output.stdout.contains("large-stdout-complete"));
+    }
+
+    #[test]
     fn system_process_runner_drains_large_stderr_while_running() {
         let output = SYSTEM_PROCESS_RUNNER
             .run(&ProcessCommand {
@@ -5363,6 +5406,8 @@ analyze_timeout_seconds = 900
                 ],
                 cwd: std::env::current_dir().unwrap(),
                 env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: CancellationToken::new(),
             })
@@ -5396,6 +5441,8 @@ analyze_timeout_seconds = 900
                 args: command.args,
                 cwd: std::env::current_dir().unwrap(),
                 env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: None,
                 cancellation: CancellationToken::new(),
             })
@@ -5418,6 +5465,8 @@ analyze_timeout_seconds = 900
                 args: command.args,
                 cwd: std::env::current_dir().unwrap(),
                 env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: token,
             })
@@ -5540,6 +5589,8 @@ analyze_timeout_seconds = 900
             args: Vec::new(),
             cwd: PathBuf::from("."),
             env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         };

@@ -50,6 +50,7 @@ mod tests {
             path: name.to_string(),
             source_format: SourceFormat::Unknown,
             format_evidence: Vec::new(),
+            format_probe_error: None,
         }
     }
 

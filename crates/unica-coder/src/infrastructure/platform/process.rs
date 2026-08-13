@@ -79,6 +79,8 @@ pub struct ManagedCommand {
     pub args: Vec<OsString>,
     pub cwd: PathBuf,
     pub env: Vec<(OsString, OsString)>,
+    pub env_remove: Vec<OsString>,
+    pub capture_limits: Option<(usize, usize)>,
     pub timeout: Option<Duration>,
     pub cancellation: CancellationToken,
 }
@@ -120,6 +122,7 @@ pub struct ManagedChild {
     state: ChildState,
     timeout: Option<Duration>,
     cancellation: CancellationToken,
+    capture_limits: Option<(usize, usize)>,
 }
 
 /// Owns a freshly spawned long-lived process tree until its readiness handshake
@@ -140,17 +143,32 @@ enum ChildState {
 impl ManagedChild {
     pub fn spawn(command: ManagedCommand) -> Result<Self, String> {
         let mut process = Command::new(&command.program);
-        process
-            .args(&command.args)
-            .current_dir(&command.cwd)
-            .envs(command.env);
-        Self::spawn_process(process, command.timeout, command.cancellation)
+        process.args(&command.args).current_dir(&command.cwd);
+        for name in command.env_remove {
+            process.env_remove(name);
+        }
+        process.envs(command.env);
+        Self::spawn_process_with_limits(
+            process,
+            command.timeout,
+            command.cancellation,
+            command.capture_limits,
+        )
     }
 
     pub(crate) fn spawn_process(
+        process: Command,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<Self, String> {
+        Self::spawn_process_with_limits(process, timeout, cancellation, None)
+    }
+
+    fn spawn_process_with_limits(
         mut process: Command,
         timeout: Option<Duration>,
         cancellation: CancellationToken,
+        capture_limits: Option<(usize, usize)>,
     ) -> Result<Self, String> {
         process
             .stdin(Stdio::piped())
@@ -171,6 +189,7 @@ impl ManagedChild {
             state: ChildState::Running,
             timeout,
             cancellation,
+            capture_limits,
         })
     }
 
@@ -246,8 +265,11 @@ impl ManagedChild {
         F: FnMut(),
     {
         drop(self.take_stdin());
-        let stdout = start_reader(self.take_stdout(), STDOUT_CAPTURE_LIMIT);
-        let stderr = start_reader(self.take_stderr(), STDERR_CAPTURE_LIMIT);
+        let (stdout_limit, stderr_limit) = self
+            .capture_limits
+            .unwrap_or((STDOUT_CAPTURE_LIMIT, STDERR_CAPTURE_LIMIT));
+        let stdout = start_reader(self.take_stdout(), stdout_limit);
+        let stderr = start_reader(self.take_stderr(), stderr_limit);
         let started = Instant::now();
         let mut last_callback = Instant::now();
 
@@ -1259,6 +1281,10 @@ mod tests {
                 std::io::stderr().write_all(b"err\xffend").unwrap();
             }
             "write_literal_replacement" => print!("ok\u{fffd}end"),
+            "print_removed_env" => print!(
+                "{}",
+                std::env::var("PATH").unwrap_or_else(|_| "missing".into())
+            ),
             "sleep" => thread::sleep(Duration::from_secs(10)),
             "stream_forever" => loop {
                 println!("streamed line");
@@ -1572,6 +1598,8 @@ mod tests {
             ],
             cwd: std::env::current_dir().map_err(|error| error.to_string())?,
             env: vec![(OsString::from(HELPER_ENV), OsString::from(mode))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(timeout),
             cancellation,
         })
@@ -1594,6 +1622,8 @@ mod tests {
                 ],
                 cwd: std::env::current_dir().map_err(|error| error.to_string())?,
                 env: vec![(OsString::from(HELPER_ENV), OsString::from(mode))],
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(timeout),
                 cancellation,
             },
@@ -1621,6 +1651,31 @@ mod tests {
             output.stdout
         );
         assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
+    }
+
+    #[test]
+    fn managed_child_removes_selected_inherited_environment() {
+        let output = ManagedChild::run(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(
+                OsString::from(HELPER_ENV),
+                OsString::from("print_removed_env"),
+            )],
+            env_remove: vec![OsString::from("PATH")],
+            capture_limits: None,
+            timeout: Some(Duration::from_secs(5)),
+            cancellation: CancellationToken::new(),
+        })
+        .unwrap();
+
+        assert!(output.status_success, "{output:?}");
+        assert!(output.stdout.contains("missing"), "{}", output.stdout);
     }
 
     #[test]
@@ -1747,6 +1802,8 @@ mod tests {
             args: Vec::new(),
             cwd: std::env::current_dir().unwrap(),
             env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1874,6 +1931,8 @@ mod tests {
                     pid_file.clone().into_os_string(),
                 ),
             ],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1899,6 +1958,8 @@ mod tests {
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("sleep"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1960,6 +2021,8 @@ mod tests {
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("success"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1981,6 +2044,8 @@ mod tests {
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("sleep"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -2020,6 +2085,8 @@ mod tests {
                     pid_file.clone().into_os_string(),
                 ),
             ],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(Duration::from_secs(10)),
             cancellation: cancellation.clone(),
         })
@@ -2071,6 +2138,8 @@ mod tests {
                     pid_file.clone().into_os_string(),
                 ),
             ],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(Duration::from_secs(10)),
             cancellation: cancellation.clone(),
         })
@@ -2122,6 +2191,8 @@ mod tests {
                     pid_file.clone().into_os_string(),
                 ),
             ],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(Duration::from_millis(200)),
             cancellation: cancellation.clone(),
         })

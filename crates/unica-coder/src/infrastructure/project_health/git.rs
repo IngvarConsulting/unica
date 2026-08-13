@@ -11,12 +11,14 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
-use crate::infrastructure::platform::filesystem::path_starts_with_host_root;
+use crate::infrastructure::platform::filesystem::{host_path_text, path_starts_with_host_root};
 use crate::infrastructure::project_health::layout::{InspectedSourceRoot, SourceLayoutInspection};
+use crate::infrastructure::project_health::SourceRootOwnerIndex;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use tempfile::TempDir;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitIndexEntry {
@@ -24,6 +26,9 @@ pub(crate) struct GitIndexEntry {
     pub(crate) blob_oid: Option<String>,
     pub(crate) mode: Option<String>,
 }
+
+const MAX_STAGED_IGNORE_FILES: usize = 1024;
+const MAX_STAGED_IGNORE_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IgnoreMatch {
@@ -33,9 +38,23 @@ struct IgnoreMatch {
     path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StagedBlobReadSafety {
+    LocalOnlyGuaranteed,
+    Blocked(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkingIgnoreInspection {
+    Complete(Vec<IgnoreMatch>),
+    TimedOut,
+    Incomplete(String),
+}
+
 pub(crate) struct GitRepositoryInspection {
     pub(crate) repository_root: Option<PathBuf>,
     pub(crate) entries: Vec<GitIndexEntry>,
+    pub(crate) resource_inspection_blocker: Option<String>,
     pub(crate) observations: Vec<ProjectCheckObservation>,
     pub(crate) facts: Vec<ProjectHealthFact>,
 }
@@ -45,8 +64,11 @@ pub(crate) struct ConfigDumpInfoIndexInspection {
     pub(crate) inconclusive_paths: Vec<String>,
 }
 
+#[derive(Debug)]
 pub(crate) enum ConfigDumpInfoIndexInspectionError {
     Cancelled,
+    TimedOut,
+    Incomplete(String),
 }
 
 pub(crate) struct GitRepositoryInspector<'a> {
@@ -57,6 +79,54 @@ pub(crate) struct GitRepositoryInspector<'a> {
 struct IgnoreCandidate {
     source_set: Option<String>,
     repo_path: String,
+}
+
+struct SourceRootOwners<'a> {
+    index: SourceRootOwnerIndex<'a>,
+}
+
+#[derive(Debug)]
+enum GeneratedPathInspectionError {
+    Cancelled,
+    TimedOut,
+}
+
+impl<'a> SourceRootOwners<'a> {
+    fn new(
+        repository_root: &Path,
+        roots: &'a [InspectedSourceRoot],
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<Self, GeneratedPathInspectionError> {
+        let index = SourceRootOwnerIndex::new_with_checkpoint(repository_root, roots, &mut || {
+            if cancellation.is_cancelled() {
+                Err(GeneratedPathInspectionError::Cancelled)
+            } else if deadline.remaining().is_zero() {
+                Err(GeneratedPathInspectionError::TimedOut)
+            } else {
+                Ok(())
+            }
+        })?;
+        Ok(Self { index })
+    }
+
+    fn owners_for_repo_path(
+        &self,
+        path: &str,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<Option<&[&'a InspectedSourceRoot]>, GeneratedPathInspectionError> {
+        let owners = self.index.deepest_owners_with_checkpoint(path, &mut || {
+            if cancellation.is_cancelled() {
+                return Err(GeneratedPathInspectionError::Cancelled);
+            }
+            if deadline.remaining().is_zero() {
+                return Err(GeneratedPathInspectionError::TimedOut);
+            }
+            Ok(())
+        })?;
+        Ok(owners.map(|(owners, _depth)| owners))
+    }
 }
 
 impl GitRepositoryInspector<'static> {
@@ -95,7 +165,10 @@ impl<'a> GitRepositoryInspector<'a> {
             deadline,
         ) {
             Ok(output) => output,
-            Err(error) if error.starts_with("process_failed:") => {
+            Err(_) if cancellation.is_cancelled() => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
+            Err(error) if git_executable_is_unavailable(&error) => {
                 return Ok(discovery_failed(
                     ProjectHealthFact::GitExecutableUnavailable { reason: error },
                     "Git executable is unavailable",
@@ -154,17 +227,20 @@ impl<'a> GitRepositoryInspector<'a> {
                 "Git discovery failed",
             ));
         }
-        let mut discovery_lines = discovery.stdout.lines();
-        let root_text = discovery_lines.next().unwrap_or_default().trim();
-        let inside = discovery_lines.next().unwrap_or_default().trim();
+        let (root_text, inside) = if let Some(root) = discovery.stdout.strip_suffix("\ntrue\n") {
+            (root, "true")
+        } else if let Some(root) = discovery.stdout.strip_suffix("\nfalse\n") {
+            (root, "false")
+        } else {
+            ("", "")
+        };
         if inside == "false" {
             return Ok(discovery_failed(
                 ProjectHealthFact::GitRepositoryAbsent,
                 "Workspace is not inside a Git work tree",
             ));
         }
-        if root_text.is_empty() || inside != "true" || discovery_lines.any(|line| !line.is_empty())
-        {
+        if root_text.is_empty() || inside != "true" {
             return Ok(discovery_failed(
                 ProjectHealthFact::GitInspectionIncomplete {
                     check: ProjectCheckId::RepositoryDiscovery,
@@ -220,6 +296,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 return Ok(GitRepositoryInspection {
                     repository_root: Some(repository_root),
                     entries: Vec::new(),
+                    resource_inspection_blocker: None,
                     observations,
                     facts,
                 });
@@ -241,6 +318,7 @@ impl<'a> GitRepositoryInspector<'a> {
             return Ok(GitRepositoryInspection {
                 repository_root: Some(repository_root),
                 entries: Vec::new(),
+                resource_inspection_blocker: None,
                 observations,
                 facts,
             });
@@ -261,87 +339,246 @@ impl<'a> GitRepositoryInspector<'a> {
             return Ok(GitRepositoryInspection {
                 repository_root: Some(repository_root),
                 entries: Vec::new(),
+                resource_inspection_blocker: None,
                 observations,
                 facts,
             });
         }
-        let entries = match parse_git_index_entries(&index.stdout) {
-            Ok(entries) => entries,
-            Err(reason) => {
-                observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryIndex,
-                    source_set: None,
-                    reason,
-                });
-                append_not_run_after_index(&mut observations, "Git index records are malformed");
-                return Ok(GitRepositoryInspection {
-                    repository_root: Some(repository_root),
-                    entries: Vec::new(),
-                    observations,
-                    facts,
-                });
-            }
-        };
+        let entries =
+            match parse_git_index_entries_controlled(&index.stdout, cancellation, deadline) {
+                Ok(entries) => entries,
+                Err(IndexParseError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(IndexParseError::TimedOut) => {
+                    observations.push(not_run(
+                        ProjectCheckId::RepositoryIndex,
+                        "Git index parsing exceeded the inspection deadline",
+                    ));
+                    facts.push(ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                    });
+                    append_not_run_after_index(
+                        &mut observations,
+                        "Git index parsing exceeded the inspection deadline",
+                    );
+                    return Ok(GitRepositoryInspection {
+                        repository_root: Some(repository_root),
+                        entries: Vec::new(),
+                        resource_inspection_blocker: None,
+                        observations,
+                        facts,
+                    });
+                }
+                Err(IndexParseError::Malformed(reason)) => {
+                    observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
+                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndex,
+                        source_set: None,
+                        reason,
+                    });
+                    append_not_run_after_index(
+                        &mut observations,
+                        "Git index records are malformed",
+                    );
+                    return Ok(GitRepositoryInspection {
+                        repository_root: Some(repository_root),
+                        entries: Vec::new(),
+                        resource_inspection_blocker: None,
+                        observations,
+                        facts,
+                    });
+                }
+            };
         observations.push(completed(ProjectCheckId::RepositoryIndex));
 
-        observations.push(completed(ProjectCheckId::RepositoryGeneratedPaths));
-        append_completed_for_roots(
-            &mut observations,
-            ProjectCheckId::RepositoryGeneratedPaths,
-            &layout.roots,
-        );
-        append_tracked_generated_facts(
-            &mut facts,
-            &entries,
-            &repository_root,
-            context,
-            &layout.roots,
-        );
-
-        observations.push(completed(ProjectCheckId::RepositoryConfigDumpInfo));
-        append_completed_for_roots(
-            &mut observations,
-            ProjectCheckId::RepositoryConfigDumpInfo,
-            &layout.roots,
-        );
-        self.append_config_dump_info_facts(
-            &mut facts,
-            &entries,
-            &repository_root,
-            &layout.roots,
-            cancellation,
-            deadline,
-        )?;
-
-        if !layout.source_targets_complete {
-            observations.push(not_run(
-                ProjectCheckId::RepositoryIgnore,
-                "source-set targets are incomplete",
-            ));
+        if !layout.repository_targets_complete {
+            append_not_run_after_index(&mut observations, "source-set targets are incomplete");
             return Ok(GitRepositoryInspection {
                 repository_root: Some(repository_root),
                 entries,
+                resource_inspection_blocker: None,
                 observations,
                 facts,
             });
         }
+
+        let blob_read_safety = if staged_blob_read_needed(&entries)
+            || layout
+                .roots
+                .iter()
+                .any(|root| root.source_set.source_format == SourceFormat::PlatformXml)
+        {
+            inspect_staged_blob_read_safety(self.runner, &repository_root, cancellation, deadline)?
+        } else {
+            StagedBlobReadSafety::LocalOnlyGuaranteed
+        };
+        let resource_inspection_blocker = match &blob_read_safety {
+            StagedBlobReadSafety::LocalOnlyGuaranteed => None,
+            StagedBlobReadSafety::Blocked(reason) => Some(reason.clone()),
+        };
+
+        let source_owners =
+            match SourceRootOwners::new(&repository_root, &layout.roots, cancellation, deadline) {
+                Ok(owners) => owners,
+                Err(GeneratedPathInspectionError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(GeneratedPathInspectionError::TimedOut) => {
+                    let reason = "source-root ownership index construction timed out";
+                    observations.push(not_run(ProjectCheckId::RepositoryGeneratedPaths, reason));
+                    append_not_run_for_roots(
+                        &mut observations,
+                        ProjectCheckId::RepositoryGeneratedPaths,
+                        &layout.roots,
+                        reason,
+                    );
+                    observations.push(not_run(ProjectCheckId::RepositoryConfigDumpInfo, reason));
+                    append_not_run_for_roots(
+                        &mut observations,
+                        ProjectCheckId::RepositoryConfigDumpInfo,
+                        &layout.roots,
+                        reason,
+                    );
+                    for check in [
+                        ProjectCheckId::RepositoryGeneratedPaths,
+                        ProjectCheckId::RepositoryConfigDumpInfo,
+                        ProjectCheckId::RepositoryIgnore,
+                    ] {
+                        facts.push(ProjectHealthFact::GitInspectionTimeout {
+                            check,
+                            source_set: None,
+                        });
+                    }
+                    observations.push(not_run(ProjectCheckId::RepositoryIgnore, reason));
+                    append_not_run_for_roots(
+                        &mut observations,
+                        ProjectCheckId::RepositoryIgnore,
+                        &layout.roots,
+                        reason,
+                    );
+                    return Ok(GitRepositoryInspection {
+                        repository_root: Some(repository_root),
+                        entries,
+                        resource_inspection_blocker,
+                        observations,
+                        facts,
+                    });
+                }
+            };
+        match tracked_generated_facts(
+            &entries,
+            &repository_root,
+            context,
+            &source_owners,
+            cancellation,
+            deadline,
+        ) {
+            Ok(generated_facts) => {
+                facts.extend(generated_facts);
+                observations.push(completed(ProjectCheckId::RepositoryGeneratedPaths));
+                append_completed_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryGeneratedPaths,
+                    &layout.roots,
+                );
+            }
+            Err(GeneratedPathInspectionError::Cancelled) => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
+            Err(GeneratedPathInspectionError::TimedOut) => {
+                let reason = "tracked generated-path inspection timed out";
+                observations.push(not_run(ProjectCheckId::RepositoryGeneratedPaths, reason));
+                append_not_run_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryGeneratedPaths,
+                    &layout.roots,
+                    reason,
+                );
+                facts.push(ProjectHealthFact::GitInspectionTimeout {
+                    check: ProjectCheckId::RepositoryGeneratedPaths,
+                    source_set: None,
+                });
+            }
+        }
+
+        match self.inspect_config_dump_info(
+            &entries,
+            &repository_root,
+            &source_owners,
+            &blob_read_safety,
+            cancellation,
+            deadline,
+        )? {
+            Ok(config_dump_facts) => {
+                observations.push(completed(ProjectCheckId::RepositoryConfigDumpInfo));
+                append_completed_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryConfigDumpInfo,
+                    &layout.roots,
+                );
+                facts.extend(config_dump_facts);
+            }
+            Err(ConfigDumpInfoIndexInspectionError::TimedOut) => {
+                let reason = "staged ConfigDumpInfo inspection timed out";
+                observations.push(not_run(ProjectCheckId::RepositoryConfigDumpInfo, reason));
+                append_not_run_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryConfigDumpInfo,
+                    &layout.roots,
+                    reason,
+                );
+                facts.push(ProjectHealthFact::GitInspectionTimeout {
+                    check: ProjectCheckId::RepositoryConfigDumpInfo,
+                    source_set: None,
+                });
+            }
+            Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)) => {
+                observations.push(not_run(ProjectCheckId::RepositoryConfigDumpInfo, &reason));
+                append_not_run_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryConfigDumpInfo,
+                    &layout.roots,
+                    &reason,
+                );
+                facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryConfigDumpInfo,
+                    source_set: None,
+                    reason,
+                });
+            }
+            Err(ConfigDumpInfoIndexInspectionError::Cancelled) => unreachable!(
+                "cancellation is converted to ProjectHealthInspectionError before this match"
+            ),
+        }
+
         let candidates = ignore_candidates(&repository_root, context, &layout.roots);
         let mut input = Vec::new();
         for candidate in &candidates {
             input.extend_from_slice(candidate.repo_path.as_bytes());
             input.push(0);
         }
-        let ignore_command = process_command(
+        let staged_ignore_root = match materialize_staged_ignore_files(
+            self.runner,
             &repository_root,
-            ["check-ignore", "-v", "-z", "--no-index", "--stdin"],
+            &entries,
+            &blob_read_safety,
             cancellation,
             deadline,
-        );
-        let ignore = match self.runner.run_with_input(&ignore_command, &input) {
-            Ok(output) => output,
-            Err(reason) => {
+        ) {
+            Ok(root) => root,
+            Err(ProjectHealthInspectionError::Cancelled) => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
+            Err(ProjectHealthInspectionError::Fatal(reason)) => {
                 observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
+                append_not_run_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryIgnore,
+                    &layout.roots,
+                    &reason,
+                );
                 facts.push(ProjectHealthFact::GitInspectionIncomplete {
                     check: ProjectCheckId::RepositoryIgnore,
                     source_set: None,
@@ -350,6 +587,48 @@ impl<'a> GitRepositoryInspector<'a> {
                 return Ok(GitRepositoryInspection {
                     repository_root: Some(repository_root),
                     entries,
+                    resource_inspection_blocker,
+                    observations,
+                    facts,
+                });
+            }
+        };
+        let work_tree_arg = format!(
+            "--work-tree={}",
+            staged_ignore_root.path().to_string_lossy()
+        );
+        let ignore_command = process_command_vec(
+            &repository_root,
+            vec![
+                work_tree_arg,
+                "check-ignore".into(),
+                "-v".into(),
+                "-z".into(),
+                "--no-index".into(),
+                "--stdin".into(),
+            ],
+            cancellation,
+            deadline,
+        );
+        let ignore = match self.runner.run_with_input(&ignore_command, &input) {
+            Ok(output) => output,
+            Err(reason) => {
+                observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
+                append_not_run_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryIgnore,
+                    &layout.roots,
+                    &reason,
+                );
+                facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryIgnore,
+                    source_set: None,
+                    reason,
+                });
+                return Ok(GitRepositoryInspection {
+                    repository_root: Some(repository_root),
+                    entries,
+                    resource_inspection_blocker,
                     observations,
                     facts,
                 });
@@ -359,10 +638,14 @@ impl<'a> GitRepositoryInspector<'a> {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
         if ignore.timed_out {
-            observations.push(not_run(
+            let reason = "Git ignore inspection timed out";
+            observations.push(not_run(ProjectCheckId::RepositoryIgnore, reason));
+            append_not_run_for_roots(
+                &mut observations,
                 ProjectCheckId::RepositoryIgnore,
-                "Git ignore inspection timed out",
-            ));
+                &layout.roots,
+                reason,
+            );
             facts.push(ProjectHealthFact::GitInspectionTimeout {
                 check: ProjectCheckId::RepositoryIgnore,
                 source_set: None,
@@ -376,6 +659,12 @@ impl<'a> GitRepositoryInspector<'a> {
                 nonzero_reason(&ignore)
             };
             observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
+            append_not_run_for_roots(
+                &mut observations,
+                ProjectCheckId::RepositoryIgnore,
+                &layout.roots,
+                &reason,
+            );
             facts.push(ProjectHealthFact::GitInspectionIncomplete {
                 check: ProjectCheckId::RepositoryIgnore,
                 source_set: None,
@@ -384,22 +673,72 @@ impl<'a> GitRepositoryInspector<'a> {
         } else {
             match parse_check_ignore_verbose_z(&ignore.stdout) {
                 Ok(matches) => {
-                    observations.push(completed(ProjectCheckId::RepositoryIgnore));
-                    append_completed_for_roots(
-                        &mut observations,
-                        ProjectCheckId::RepositoryIgnore,
-                        &layout.roots,
-                    );
-                    append_ignore_facts(
-                        &mut facts,
-                        &candidates,
-                        &matches,
-                        &entries,
-                        &repository_root,
-                    );
+                    let working_matches = if matches.len() < candidates.len() {
+                        inspect_working_ignore_matches(
+                            self.runner,
+                            &repository_root,
+                            &input,
+                            cancellation,
+                            deadline,
+                        )?
+                    } else {
+                        WorkingIgnoreInspection::Complete(Vec::new())
+                    };
+                    match working_matches {
+                        WorkingIgnoreInspection::Complete(working_matches) => {
+                            observations.push(completed(ProjectCheckId::RepositoryIgnore));
+                            append_completed_for_roots(
+                                &mut observations,
+                                ProjectCheckId::RepositoryIgnore,
+                                &layout.roots,
+                            );
+                            append_ignore_facts(
+                                &mut facts,
+                                &candidates,
+                                &matches,
+                                &working_matches,
+                                &entries,
+                                staged_ignore_root.path(),
+                            );
+                        }
+                        WorkingIgnoreInspection::TimedOut => {
+                            let reason = "working-tree Git ignore provenance inspection timed out";
+                            observations.push(not_run(ProjectCheckId::RepositoryIgnore, reason));
+                            append_not_run_for_roots(
+                                &mut observations,
+                                ProjectCheckId::RepositoryIgnore,
+                                &layout.roots,
+                                reason,
+                            );
+                            facts.push(ProjectHealthFact::GitInspectionTimeout {
+                                check: ProjectCheckId::RepositoryIgnore,
+                                source_set: None,
+                            });
+                        }
+                        WorkingIgnoreInspection::Incomplete(reason) => {
+                            observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
+                            append_not_run_for_roots(
+                                &mut observations,
+                                ProjectCheckId::RepositoryIgnore,
+                                &layout.roots,
+                                &reason,
+                            );
+                            facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                                check: ProjectCheckId::RepositoryIgnore,
+                                source_set: None,
+                                reason,
+                            });
+                        }
+                    }
                 }
                 Err(reason) => {
                     observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
+                    append_not_run_for_roots(
+                        &mut observations,
+                        ProjectCheckId::RepositoryIgnore,
+                        &layout.roots,
+                        &reason,
+                    );
                     facts.push(ProjectHealthFact::GitInspectionIncomplete {
                         check: ProjectCheckId::RepositoryIgnore,
                         source_set: None,
@@ -412,53 +751,103 @@ impl<'a> GitRepositoryInspector<'a> {
         Ok(GitRepositoryInspection {
             repository_root: Some(repository_root),
             entries,
+            resource_inspection_blocker,
             observations,
             facts,
         })
     }
 
-    fn append_config_dump_info_facts(
+    fn inspect_config_dump_info(
         &self,
-        facts: &mut Vec<ProjectHealthFact>,
         entries: &[GitIndexEntry],
         repository_root: &Path,
-        roots: &[InspectedSourceRoot],
+        source_owners: &SourceRootOwners<'_>,
+        blob_read_safety: &StagedBlobReadSafety,
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
-    ) -> Result<(), ProjectHealthInspectionError> {
+    ) -> Result<
+        Result<Vec<ProjectHealthFact>, ConfigDumpInfoIndexInspectionError>,
+        ProjectHealthInspectionError,
+    > {
+        if entries.iter().any(is_config_dump_info_entry) {
+            if let StagedBlobReadSafety::Blocked(reason) = blob_read_safety {
+                return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(
+                    reason.clone(),
+                )));
+            }
+        }
         let inspection = classify_staged_config_dump_info(
             self.runner,
             repository_root,
             entries,
             cancellation,
             deadline,
-        )
-        .map_err(|ConfigDumpInfoIndexInspectionError::Cancelled| {
-            ProjectHealthInspectionError::Cancelled
-        })?;
+        );
+        let inspection = match inspection {
+            Ok(inspection) => inspection,
+            Err(ConfigDumpInfoIndexInspectionError::Cancelled) => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
+            Err(error) => return Ok(Err(error)),
+        };
+        let mut facts = Vec::new();
         for path in inspection.runtime_paths {
-            if let Some(source_set) = source_set_for_repo_path(repository_root, roots, &path) {
+            let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
+                Ok(owners) => owners,
+                Err(GeneratedPathInspectionError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(GeneratedPathInspectionError::TimedOut) => {
+                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
+                }
+            };
+            if let Some([root]) = owners {
                 facts.push(ProjectHealthFact::RuntimeSidecarTracked {
-                    source_set: source_set.to_owned(),
+                    source_set: root.source_set.name.clone(),
                     path,
                 });
             } else {
+                let reason = owners
+                    .filter(|owners| owners.len() > 1)
+                    .map(|owners| {
+                        let mut names = owners
+                            .iter()
+                            .map(|root| root.source_set.name.clone())
+                            .collect::<Vec<_>>();
+                        names.sort();
+                        names.dedup();
+                        format!(
+                            "runtime sidecar has ambiguous equal-depth source-set owners: {}",
+                            names.join(", ")
+                        )
+                    })
+                    .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
                 facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
                     source_set: None,
                     path,
-                    reason: "runtime sidecar is outside a proven source root".into(),
+                    reason,
                 });
             }
         }
         for path in inspection.inconclusive_paths {
+            let source_set = match source_owners.owners_for_repo_path(&path, cancellation, deadline)
+            {
+                Ok(Some([root])) => Some(root.source_set.name.clone()),
+                Ok(_) => None,
+                Err(GeneratedPathInspectionError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(GeneratedPathInspectionError::TimedOut) => {
+                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
+                }
+            };
             facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                source_set: source_set_for_repo_path(repository_root, roots, &path)
-                    .map(str::to_owned),
+                source_set,
                 path,
                 reason: "staged blob classification is inconclusive".into(),
             });
         }
-        Ok(())
+        Ok(Ok(facts))
     }
 
     fn run<const N: usize>(
@@ -479,6 +868,155 @@ impl<'a> GitRepositoryInspector<'a> {
     }
 }
 
+fn staged_blob_read_needed(entries: &[GitIndexEntry]) -> bool {
+    entries.iter().any(|entry| {
+        is_config_dump_info_entry(entry)
+            || Path::new(&entry.repo_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some(".gitignore")
+    })
+}
+
+fn is_config_dump_info_entry(entry: &GitIndexEntry) -> bool {
+    Path::new(&entry.repo_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
+}
+
+fn inspect_staged_blob_read_safety(
+    runner: &dyn ProcessRunner,
+    repository_root: &Path,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<StagedBlobReadSafety, ProjectHealthInspectionError> {
+    let partial_clone = process_command(
+        repository_root,
+        [
+            "config",
+            "-z",
+            "--get-regexp",
+            "^(extensions\\.[Pp]artial[Cc]lone|remote\\..*\\.[Pp]romisor)$",
+        ],
+        cancellation,
+        deadline,
+    );
+    let partial_clone = match runner.run(&partial_clone) {
+        Ok(output) => output,
+        Err(_) if cancellation.is_cancelled() => {
+            return Err(ProjectHealthInspectionError::Cancelled)
+        }
+        Err(reason) => {
+            return Ok(StagedBlobReadSafety::Blocked(format!(
+                "cannot prove that staged blob reads are local-only: {reason}"
+            )))
+        }
+    };
+    if partial_clone.cancelled || cancellation.is_cancelled() {
+        return Err(ProjectHealthInspectionError::Cancelled);
+    }
+    if partial_clone.timed_out || output_incomplete(&partial_clone) {
+        let reason = if partial_clone.timed_out {
+            "partial-clone configuration inspection timed out".into()
+        } else {
+            completeness_reason(&partial_clone)
+        };
+        return Ok(StagedBlobReadSafety::Blocked(format!(
+            "cannot prove that staged blob reads are local-only: {reason}"
+        )));
+    }
+    if !partial_clone.status_success {
+        return if status_is_no_match(&partial_clone) {
+            Ok(StagedBlobReadSafety::LocalOnlyGuaranteed)
+        } else {
+            Ok(StagedBlobReadSafety::Blocked(format!(
+                "cannot prove that staged blob reads are local-only: {}",
+                nonzero_reason(&partial_clone)
+            )))
+        };
+    }
+    if !partial_clone_config_is_enabled(&partial_clone.stdout) {
+        return Ok(StagedBlobReadSafety::LocalOnlyGuaranteed);
+    }
+
+    let version = process_command(repository_root, ["version"], cancellation, deadline);
+    let version = match runner.run(&version) {
+        Ok(output) => output,
+        Err(_) if cancellation.is_cancelled() => {
+            return Err(ProjectHealthInspectionError::Cancelled)
+        }
+        Err(reason) => {
+            return Ok(StagedBlobReadSafety::Blocked(format!(
+                "partial clone detected but Git version could not be inspected: {reason}"
+            )))
+        }
+    };
+    if version.cancelled || cancellation.is_cancelled() {
+        return Err(ProjectHealthInspectionError::Cancelled);
+    }
+    if version.timed_out || output_incomplete(&version) || !version.status_success {
+        let reason = if version.timed_out {
+            "Git version inspection timed out".into()
+        } else if output_incomplete(&version) {
+            completeness_reason(&version)
+        } else {
+            nonzero_reason(&version)
+        };
+        return Ok(StagedBlobReadSafety::Blocked(format!(
+            "partial clone detected but staged blob reads cannot be proven local-only: {reason}"
+        )));
+    }
+    let version_text = version.stdout.trim();
+    if git_version_has_no_lazy_fetch_guard(version_text) {
+        Ok(StagedBlobReadSafety::LocalOnlyGuaranteed)
+    } else {
+        Ok(StagedBlobReadSafety::Blocked(format!(
+            "Git {} in a partial clone cannot guarantee local-only staged blob reads; Git 2.46 or newer is required",
+            version_text.strip_prefix("git version ").unwrap_or(version_text)
+        )))
+    }
+}
+
+fn partial_clone_config_is_enabled(config: &str) -> bool {
+    if !config.is_empty() && !config.ends_with('\0') {
+        return true;
+    }
+    config.split_terminator('\0').any(|record| {
+        let Some((key, value)) = record.split_once('\n') else {
+            return true;
+        };
+        if key.eq_ignore_ascii_case("extensions.partialclone") {
+            return !value.trim().is_empty();
+        }
+        key.to_ascii_lowercase().ends_with(".promisor")
+            && matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "true" | "yes" | "on" | "1"
+            )
+    })
+}
+
+fn git_version_has_no_lazy_fetch_guard(version: &str) -> bool {
+    let Some(version) = version.strip_prefix("git version ") else {
+        return false;
+    };
+    let mut components = version.split('.');
+    let Some(major) = components
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    let Some(minor) = components
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    major > 2 || (major == 2 && minor >= 46)
+}
+
 pub(crate) fn classify_staged_config_dump_info(
     runner: &dyn ProcessRunner,
     repository_root: &Path,
@@ -489,12 +1027,10 @@ pub(crate) fn classify_staged_config_dump_info(
     let mut runtime_paths = Vec::new();
     let mut inconclusive_paths = Vec::new();
     let mut blob_cache = BTreeMap::<String, Option<ConfigDumpInfoXmlKind>>::new();
-    for entry in entries.iter().filter(|entry| {
-        Path::new(&entry.repo_path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
-    }) {
+    for entry in entries
+        .iter()
+        .filter(|entry| is_config_dump_info_entry(entry))
+    {
         if cancellation.is_cancelled() {
             return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
         }
@@ -503,8 +1039,7 @@ pub(crate) fn classify_staged_config_dump_info(
             continue;
         };
         if deadline.remaining().is_zero() {
-            inconclusive_paths.push(entry.repo_path.clone());
-            continue;
+            return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
         }
         let classification = if let Some(cached) = blob_cache.get(oid) {
             *cached
@@ -520,13 +1055,25 @@ pub(crate) fn classify_staged_config_dump_info(
                     if output.cancelled || cancellation.is_cancelled() {
                         return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
                     }
-                    (!output.timed_out && output.status_success && !output_incomplete(&output))
-                        .then(|| config_dump_info_xml_kind(output.stdout.as_bytes()))
+                    if output.timed_out {
+                        return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
+                    }
+                    if output_incomplete(&output) {
+                        return Err(ConfigDumpInfoIndexInspectionError::Incomplete(
+                            completeness_reason(&output),
+                        ));
+                    }
+                    if !output.status_success {
+                        return Err(ConfigDumpInfoIndexInspectionError::Incomplete(
+                            nonzero_reason(&output),
+                        ));
+                    }
+                    Some(config_dump_info_xml_kind(output.stdout.as_bytes()))
                 }
                 Err(_) if cancellation.is_cancelled() => {
                     return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
                 }
-                Err(_) => None,
+                Err(reason) => return Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)),
             };
             blob_cache.insert(oid.clone(), classified);
             classified
@@ -561,17 +1108,74 @@ fn process_command<const N: usize>(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> ProcessCommand {
+    process_command_vec(
+        cwd,
+        args.into_iter().map(str::to_owned).collect(),
+        cancellation,
+        deadline,
+    )
+}
+
+fn process_command_vec(
+    cwd: &Path,
+    args: Vec<String>,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> ProcessCommand {
     ProcessCommand {
         program: PathBuf::from("git"),
-        args: args.into_iter().map(str::to_owned).collect(),
+        args,
         cwd: cwd.to_path_buf(),
         env: vec![
             (OsString::from("LC_ALL"), OsString::from("C")),
             (OsString::from("LANG"), OsString::from("C")),
+            (OsString::from("GIT_NO_LAZY_FETCH"), OsString::from("1")),
+            (
+                OsString::from("GIT_NO_REPLACE_OBJECTS"),
+                OsString::from("1"),
+            ),
+            (OsString::from("GIT_OPTIONAL_LOCKS"), OsString::from("0")),
+            (OsString::from("GIT_TERMINAL_PROMPT"), OsString::from("0")),
+            (OsString::from("GIT_CONFIG_COUNT"), OsString::from("1")),
+            (
+                OsString::from("GIT_CONFIG_KEY_0"),
+                OsString::from("core.fsmonitor"),
+            ),
+            (
+                OsString::from("GIT_CONFIG_VALUE_0"),
+                OsString::from("false"),
+            ),
+            (OsString::from("GIT_ATTR_NOSYSTEM"), OsString::from("1")),
         ],
+        env_remove: git_environment_removals(),
+        capture_limits: Some((
+            super::PROJECT_HEALTH_STDOUT_CAPTURE_LIMIT,
+            crate::infrastructure::platform::STDERR_CAPTURE_LIMIT,
+        )),
         timeout: Some(deadline.remaining()),
         cancellation: cancellation.clone(),
     }
+}
+
+pub(super) fn git_environment_removals() -> Vec<OsString> {
+    git_environment_removals_from(std::env::vars_os())
+}
+
+fn git_environment_removals_from(
+    variables: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<OsString> {
+    let mut names = variables
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| {
+            name.to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn timeout_output() -> ProcessOutput {
@@ -626,7 +1230,16 @@ fn nonzero_reason(output: &ProcessOutput) -> String {
 }
 
 fn status_is_no_match(output: &ProcessOutput) -> bool {
-    output.stdout.is_empty() && output.stderr.is_empty() && output.status.contains(": 1")
+    output.stdout.is_empty()
+        && output.stderr.is_empty()
+        && matches!(output.status.as_str(), "exit status: 1" | "exit code: 1")
+}
+
+fn git_executable_is_unavailable(error: &str) -> bool {
+    error.starts_with("process_failed:")
+        && (error.contains("No such file or directory")
+            || error.contains("os error 2")
+            || error.contains("program not found"))
 }
 
 fn completed(id: ProjectCheckId) -> ProjectCheckObservation {
@@ -657,6 +1270,32 @@ fn append_completed_for_roots(
                 scope: id.scope(),
                 source_set: Some(source_set),
                 outcome: ProjectCheckOutcome::Completed,
+            }),
+    );
+}
+
+fn append_not_run_for_roots(
+    observations: &mut Vec<ProjectCheckObservation>,
+    id: ProjectCheckId,
+    roots: &[InspectedSourceRoot],
+    reason: &str,
+) {
+    let mut source_sets = roots
+        .iter()
+        .map(|root| root.source_set.name.clone())
+        .collect::<Vec<_>>();
+    source_sets.sort();
+    source_sets.dedup();
+    observations.extend(
+        source_sets
+            .into_iter()
+            .map(|source_set| ProjectCheckObservation {
+                id,
+                scope: id.scope(),
+                source_set: Some(source_set),
+                outcome: ProjectCheckOutcome::NotRun {
+                    reason: reason.to_owned(),
+                },
             }),
     );
 }
@@ -694,6 +1333,7 @@ fn discovery_failed(fact: ProjectHealthFact, reason: &str) -> GitRepositoryInspe
     GitRepositoryInspection {
         repository_root: None,
         entries: Vec::new(),
+        resource_inspection_blocker: None,
         observations,
         facts: vec![fact],
     }
@@ -710,6 +1350,39 @@ fn append_not_run_after_index(observations: &mut Vec<ProjectCheckObservation>, r
 }
 
 pub(crate) fn parse_git_index_entries(stdout: &str) -> Result<Vec<GitIndexEntry>, String> {
+    parse_git_index_entries_with_checkpoint(stdout, &mut || Ok(())).map_err(|error| match error {
+        IndexParseError::Malformed(reason) => reason,
+        IndexParseError::Cancelled => "Git index parsing was cancelled".into(),
+        IndexParseError::TimedOut => "Git index parsing timed out".into(),
+    })
+}
+
+enum IndexParseError {
+    Malformed(String),
+    Cancelled,
+    TimedOut,
+}
+
+fn parse_git_index_entries_controlled(
+    stdout: &str,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<Vec<GitIndexEntry>, IndexParseError> {
+    parse_git_index_entries_with_checkpoint(stdout, &mut || {
+        if cancellation.is_cancelled() {
+            Err(IndexParseError::Cancelled)
+        } else if deadline.remaining().is_zero() {
+            Err(IndexParseError::TimedOut)
+        } else {
+            Ok(())
+        }
+    })
+}
+
+fn parse_git_index_entries_with_checkpoint(
+    stdout: &str,
+    checkpoint: &mut dyn FnMut() -> Result<(), IndexParseError>,
+) -> Result<Vec<GitIndexEntry>, IndexParseError> {
     #[derive(Default)]
     struct State {
         records: usize,
@@ -717,19 +1390,29 @@ pub(crate) fn parse_git_index_entries(stdout: &str) -> Result<Vec<GitIndexEntry>
         mode: Option<String>,
     }
     if !stdout.is_empty() && !stdout.ends_with('\0') {
-        return Err("Git index output is missing its terminal NUL".into());
+        return Err(IndexParseError::Malformed(
+            "Git index output is missing its terminal NUL".into(),
+        ));
     }
     let mut entries = BTreeMap::<String, State>::new();
-    for record in stdout.split_terminator('\0') {
-        let (metadata, path) = record
-            .split_once('\t')
-            .ok_or_else(|| "Git index record has no tab separator".to_string())?;
+    checkpoint()?;
+    for (record_index, record) in stdout.split_terminator('\0').enumerate() {
+        if record_index % 256 == 0 {
+            checkpoint()?;
+        }
+        let (metadata, path) = record.split_once('\t').ok_or_else(|| {
+            IndexParseError::Malformed("Git index record has no tab separator".into())
+        })?;
         if path.is_empty() {
-            return Err("Git index record has an empty path".into());
+            return Err(IndexParseError::Malformed(
+                "Git index record has an empty path".into(),
+            ));
         }
         let fields = metadata.split_whitespace().collect::<Vec<_>>();
         if fields.len() != 3 {
-            return Err("Git index record has invalid metadata".into());
+            return Err(IndexParseError::Malformed(
+                "Git index record has invalid metadata".into(),
+            ));
         }
         let (mode, oid, stage) = (fields[0], fields[1], fields[2]);
         let usable = matches!(mode, "100644" | "100755")
@@ -747,6 +1430,7 @@ pub(crate) fn parse_git_index_entries(stdout: &str) -> Result<Vec<GitIndexEntry>
             state.mode = None;
         }
     }
+    checkpoint()?;
     Ok(entries
         .into_iter()
         .map(|(repo_path, state)| GitIndexEntry {
@@ -815,18 +1499,25 @@ fn ignore_candidates(
         }
     }
     candidates.sort_by(|left, right| left.repo_path.cmp(&right.repo_path));
-    candidates.dedup_by(|left, right| left.repo_path == right.repo_path);
+    candidates.dedup_by(|left, right| {
+        left.repo_path == right.repo_path && left.source_set == right.source_set
+    });
     candidates
 }
 
 fn append_ignore_facts(
     facts: &mut Vec<ProjectHealthFact>,
     candidates: &[IgnoreCandidate],
-    matches: &[IgnoreMatch],
+    staged_matches: &[IgnoreMatch],
+    working_matches: &[IgnoreMatch],
     entries: &[GitIndexEntry],
-    repository_root: &Path,
+    staged_ignore_root: &Path,
 ) {
-    let matches_by_path = matches
+    let staged_by_path = staged_matches
+        .iter()
+        .map(|matched| (matched.path.as_str(), matched))
+        .collect::<BTreeMap<_, _>>();
+    let working_by_path = working_matches
         .iter()
         .map(|matched| (matched.path.as_str(), matched))
         .collect::<BTreeMap<_, _>>();
@@ -835,14 +1526,22 @@ fn append_ignore_facts(
         .map(|entry| entry.repo_path.as_str())
         .collect::<BTreeSet<_>>();
     for candidate in candidates {
-        let Some(matched) = matches_by_path.get(candidate.repo_path.as_str()) else {
+        let Some(matched) = staged_by_path.get(candidate.repo_path.as_str()) else {
+            if let Some(local) = working_by_path.get(candidate.repo_path.as_str()) {
+                facts.push(ProjectHealthFact::IgnoreRuleLocalOnly {
+                    source_set: candidate.source_set.clone(),
+                    path: candidate.repo_path.clone(),
+                    origin: format!("{}:{}:{}", local.source, local.line, local.pattern),
+                });
+                continue;
+            }
             facts.push(ProjectHealthFact::IgnoreRuleMissing {
                 source_set: candidate.source_set.clone(),
                 path: candidate.repo_path.clone(),
             });
             continue;
         };
-        let portable_source = portable_ignore_source(repository_root, &matched.source);
+        let portable_source = portable_ignore_source(staged_ignore_root, &matched.source);
         if portable_source
             .as_deref()
             .is_none_or(|source| !tracked.contains(source))
@@ -856,12 +1555,193 @@ fn append_ignore_facts(
     }
 }
 
-fn portable_ignore_source(repository_root: &Path, source: &str) -> Option<String> {
+fn materialize_staged_ignore_files(
+    runner: &dyn ProcessRunner,
+    repository_root: &Path,
+    entries: &[GitIndexEntry],
+    blob_read_safety: &StagedBlobReadSafety,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<TempDir, ProjectHealthInspectionError> {
+    let root = TempDir::new().map_err(|error| {
+        ProjectHealthInspectionError::Fatal(format!(
+            "create staged ignore inspection directory: {error}"
+        ))
+    })?;
+    let mut staged_ignore_files = Vec::new();
+    for entry in entries {
+        if Path::new(&entry.repo_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(".gitignore")
+        {
+            continue;
+        }
+        let Some(oid) = entry.blob_oid.as_deref().filter(|_| {
+            entry
+                .mode
+                .as_deref()
+                .is_some_and(|mode| matches!(mode, "100644" | "100755"))
+        }) else {
+            return Err(ProjectHealthInspectionError::Fatal(format!(
+                "staged .gitignore path does not have one regular stage-0 blob: {}",
+                entry.repo_path
+            )));
+        };
+        staged_ignore_files.push((entry.repo_path.as_str(), oid));
+    }
+    if staged_ignore_files.is_empty() {
+        return Ok(root);
+    }
+    if staged_ignore_files.len() > MAX_STAGED_IGNORE_FILES {
+        return Err(ProjectHealthInspectionError::Fatal(format!(
+            "staged ignore policy contains {} .gitignore files; inspection supports at most {MAX_STAGED_IGNORE_FILES}",
+            staged_ignore_files.len()
+        )));
+    }
+    if let StagedBlobReadSafety::Blocked(reason) = blob_read_safety {
+        return Err(ProjectHealthInspectionError::Fatal(reason.clone()));
+    }
+    let mut total_bytes = 0_usize;
+    for (path, oid) in staged_ignore_files {
+        if cancellation.is_cancelled() {
+            return Err(ProjectHealthInspectionError::Cancelled);
+        }
+        if deadline.remaining().is_zero() {
+            return Err(ProjectHealthInspectionError::Fatal(
+                "staged .gitignore blob inspection timed out".into(),
+            ));
+        }
+        let command = process_command_vec(
+            repository_root,
+            vec![
+                "--no-replace-objects".into(),
+                "cat-file".into(),
+                "blob".into(),
+                oid.into(),
+            ],
+            cancellation,
+            deadline,
+        );
+        let remaining = MAX_STAGED_IGNORE_TOTAL_BYTES.saturating_sub(total_bytes);
+        let mut command = command;
+        command.capture_limits = Some((
+            remaining.saturating_add(1),
+            crate::infrastructure::platform::STDERR_CAPTURE_LIMIT,
+        ));
+        let output = runner
+            .run(&command)
+            .map_err(ProjectHealthInspectionError::Fatal)?;
+        if output.cancelled || cancellation.is_cancelled() {
+            return Err(ProjectHealthInspectionError::Cancelled);
+        }
+        if !output.status_success || output.timed_out || output_incomplete(&output) {
+            let reason = if output.timed_out {
+                "staged .gitignore blob inspection timed out".into()
+            } else if output_incomplete(&output) {
+                completeness_reason(&output)
+            } else {
+                nonzero_reason(&output)
+            };
+            return Err(ProjectHealthInspectionError::Fatal(reason));
+        }
+        total_bytes = total_bytes.saturating_add(output.stdout.len());
+        if total_bytes > MAX_STAGED_IGNORE_TOTAL_BYTES {
+            return Err(ProjectHealthInspectionError::Fatal(format!(
+                "staged .gitignore policy exceeds {MAX_STAGED_IGNORE_TOTAL_BYTES} bytes"
+            )));
+        }
+        let relative = Path::new(path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(ProjectHealthInspectionError::Fatal(format!(
+                "staged .gitignore path is not a safe repository-relative path: {path}"
+            )));
+        }
+        let target = root.path().join(relative);
+        let parent = target.parent().ok_or_else(|| {
+            ProjectHealthInspectionError::Fatal(format!(
+                "staged .gitignore path has no parent: {path}"
+            ))
+        })?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            ProjectHealthInspectionError::Fatal(format!(
+                "create staged .gitignore parent for {path}: {error}"
+            ))
+        })?;
+        std::fs::write(&target, output.stdout.as_bytes()).map_err(|error| {
+            ProjectHealthInspectionError::Fatal(format!(
+                "write staged .gitignore blob {path}: {error}"
+            ))
+        })?;
+    }
+    Ok(root)
+}
+
+fn inspect_working_ignore_matches(
+    runner: &dyn ProcessRunner,
+    repository_root: &Path,
+    input: &[u8],
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<WorkingIgnoreInspection, ProjectHealthInspectionError> {
+    let command = process_command(
+        repository_root,
+        ["check-ignore", "-v", "-z", "--no-index", "--stdin"],
+        cancellation,
+        deadline,
+    );
+    let output = match runner.run_with_input(&command, input) {
+        Ok(output) => output,
+        Err(_) if cancellation.is_cancelled() => {
+            return Err(ProjectHealthInspectionError::Cancelled)
+        }
+        Err(reason) => return Ok(WorkingIgnoreInspection::Incomplete(reason)),
+    };
+    if output.cancelled || cancellation.is_cancelled() {
+        return Err(ProjectHealthInspectionError::Cancelled);
+    }
+    if output.timed_out {
+        return Ok(WorkingIgnoreInspection::TimedOut);
+    }
+    if output_incomplete(&output) {
+        return Ok(WorkingIgnoreInspection::Incomplete(completeness_reason(
+            &output,
+        )));
+    }
+    if !output.status_success && !status_is_no_match(&output) {
+        return Ok(WorkingIgnoreInspection::Incomplete(nonzero_reason(&output)));
+    }
+    match parse_check_ignore_verbose_z(&output.stdout) {
+        Ok(matches) => Ok(WorkingIgnoreInspection::Complete(matches)),
+        Err(reason) => Ok(WorkingIgnoreInspection::Incomplete(reason)),
+    }
+}
+
+fn portable_ignore_source(staged_ignore_root: &Path, source: &str) -> Option<String> {
     let source_path = Path::new(source);
     let repo_path = if source_path.is_absolute() {
-        repo_path(repository_root, source_path)?
+        repo_path(staged_ignore_root, source_path)?
     } else {
-        normalize_git_path(source)
+        if source_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return None;
+        }
+        let materialized = staged_ignore_root.join(source_path);
+        let metadata = std::fs::symlink_metadata(&materialized).ok()?;
+        if !metadata.is_file()
+            || crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+                &metadata,
+            )
+        {
+            return None;
+        }
+        source.to_owned()
     };
     (Path::new(&repo_path)
         .file_name()
@@ -871,15 +1751,25 @@ fn portable_ignore_source(repository_root: &Path, source: &str) -> Option<String
     .then_some(repo_path)
 }
 
-fn append_tracked_generated_facts(
-    facts: &mut Vec<ProjectHealthFact>,
+fn tracked_generated_facts(
     entries: &[GitIndexEntry],
     repository_root: &Path,
     context: &WorkspaceContext,
-    roots: &[InspectedSourceRoot],
-) {
+    source_owners: &SourceRootOwners<'_>,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<Vec<ProjectHealthFact>, GeneratedPathInspectionError> {
     let cache = repo_path(repository_root, &context.cache_root);
-    for entry in entries {
+    let mut facts = Vec::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        if entry_index % 256 == 0 {
+            if cancellation.is_cancelled() {
+                return Err(GeneratedPathInspectionError::Cancelled);
+            }
+            if deadline.remaining().is_zero() {
+                return Err(GeneratedPathInspectionError::TimedOut);
+            }
+        }
         if Path::new(&entry.repo_path)
             .file_name()
             .and_then(|name| name.to_str())
@@ -903,41 +1793,30 @@ fn append_tracked_generated_facts(
             });
         if generated {
             facts.push(ProjectHealthFact::GeneratedPathTracked {
-                source_set: source_set_for_repo_path(repository_root, roots, &entry.repo_path)
-                    .map(str::to_owned),
+                source_set: source_owners
+                    .owners_for_repo_path(&entry.repo_path, cancellation, deadline)?
+                    .and_then(|owners| {
+                        (owners.len() == 1).then(|| owners[0].source_set.name.clone())
+                    }),
                 path: entry.repo_path.clone(),
             });
         }
     }
-}
-
-fn source_set_for_repo_path<'a>(
-    repository_root: &Path,
-    roots: &'a [InspectedSourceRoot],
-    path: &str,
-) -> Option<&'a str> {
-    let absolute = repository_root.join(path);
-    roots
-        .iter()
-        .filter(|root| path_starts_with_host_root(&absolute, &root.path))
-        .max_by_key(|root| root.path.components().count())
-        .map(|root| root.source_set.name.as_str())
+    Ok(facts)
 }
 
 fn repo_path(repository_root: &Path, path: &Path) -> Option<String> {
     let path = normalize_path_identity(path).ok()?;
     let relative = path.strip_prefix(repository_root).ok()?;
-    Some(normalize_git_path(&relative.to_string_lossy()))
-}
-
-fn normalize_git_path(path: &str) -> String {
-    path.replace('\\', "/").trim_start_matches("./").into()
+    Some(host_path_text(relative.to_string_lossy().into_owned()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_check_ignore_verbose_z, parse_git_index_entries, GitRepositoryInspector, IgnoreMatch,
+        git_environment_removals_from, materialize_staged_ignore_files,
+        parse_check_ignore_verbose_z, parse_git_index_entries, partial_clone_config_is_enabled,
+        GitIndexEntry, GitRepositoryInspector, IgnoreMatch, StagedBlobReadSafety,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -946,11 +1825,206 @@ mod tests {
     use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
     use crate::infrastructure::project_health::layout::SourceLayoutInspector;
     use std::cell::RefCell;
+    use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
+
+    static CONFIG_DUMP_OWNERSHIP_CLOCK_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+    fn advancing_config_dump_ownership_clock() -> Instant {
+        let tick = CONFIG_DUMP_OWNERSHIP_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
+        Instant::now() + Duration::from_millis(tick)
+    }
+
+    static OWNER_INDEX_CLOCK_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+    fn advancing_owner_index_clock() -> Instant {
+        let tick = OWNER_INDEX_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
+        Instant::now() + Duration::from_millis(tick)
+    }
+
+    #[test]
+    fn source_owner_index_timeout_marks_ignore_not_run_for_every_source_set() {
+        let fixture = health_fixture(false);
+        let layout = inspect_layout(&fixture.context);
+        let mut timed_out_inspection = None;
+
+        for budget_millis in 1..64 {
+            OWNER_INDEX_CLOCK_TICKS.store(0, Ordering::SeqCst);
+            let deadline = ProviderDeadline::with_clock(
+                advancing_owner_index_clock() + Duration::from_millis(budget_millis),
+                advancing_owner_index_clock,
+            );
+            let mut no_partial_clone = process_output(false, "");
+            no_partial_clone.status = "exit status: 1".into();
+            let runner = SequenceRunner::outputs(vec![
+                process_output(
+                    true,
+                    &format!("{}\ntrue\n", fixture.context.workspace_root.display()),
+                ),
+                process_output(true, ""),
+                no_partial_clone,
+            ]);
+            let inspection = GitRepositoryInspector::with_runner(&runner)
+                .inspect_base(
+                    &fixture.context,
+                    &layout,
+                    &CancellationToken::new(),
+                    deadline,
+                )
+                .unwrap();
+            if inspection.observations.iter().any(|observation| {
+                observation.id == ProjectCheckId::RepositoryIgnore
+                    && observation.source_set.is_none()
+                    && matches!(
+                        &observation.outcome,
+                        ProjectCheckOutcome::NotRun { reason }
+                            if reason == "source-root ownership index construction timed out"
+                    )
+            }) {
+                timed_out_inspection = Some(inspection);
+                break;
+            }
+        }
+
+        let inspection = timed_out_inspection.expect("fixture must expire while building owners");
+        assert!(inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIgnore
+                && observation.source_set.as_deref() == Some("main")
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+    }
+
+    #[test]
+    fn config_dump_info_ownership_deadline_is_typed_not_fatal() {
+        let fixture = health_fixture(false);
+        let path = format!("{}/ConfigDumpInfo.xml", "deep/".repeat(600));
+        let entries = vec![GitIndexEntry {
+            repo_path: path.clone(),
+            blob_oid: Some("a".repeat(40)),
+            mode: Some("100644".into()),
+        }];
+        let runner = SequenceRunner::outputs(vec![process_output(true, "<ConfigDumpInfo/>")]);
+        let layout = inspect_layout(&fixture.context);
+        let owners = super::SourceRootOwners::new(
+            fixture.context.workspace_root.as_path(),
+            &layout.roots,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap();
+        CONFIG_DUMP_OWNERSHIP_CLOCK_TICKS.store(0, Ordering::SeqCst);
+        let deadline = ProviderDeadline::with_clock(
+            advancing_config_dump_ownership_clock() + Duration::from_millis(4),
+            advancing_config_dump_ownership_clock,
+        );
+
+        let inspection = GitRepositoryInspector::with_runner(&runner)
+            .inspect_config_dump_info(
+                &entries,
+                fixture.context.workspace_root.as_path(),
+                &owners,
+                &StagedBlobReadSafety::LocalOnlyGuaranteed,
+                &CancellationToken::new(),
+                deadline,
+            )
+            .expect("deadline is reported inside the typed config-dump outcome");
+
+        assert!(matches!(
+            inspection,
+            Err(super::ConfigDumpInfoIndexInspectionError::TimedOut)
+        ));
+    }
+
+    #[test]
+    fn generated_path_timeout_discards_partial_ordinary_facts() {
+        let fixture = health_fixture(false);
+        let layout = inspect_layout(&fixture.context);
+        let cancellation = CancellationToken::new();
+        let owners = super::SourceRootOwners::new(
+            fixture.context.workspace_root.as_path(),
+            &layout.roots,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap();
+        let mut entries = vec![GitIndexEntry {
+            repo_path: "src/.build/first.bin".into(),
+            blob_oid: Some("a".repeat(40)),
+            mode: Some("100644".into()),
+        }];
+        entries.extend((1..=256).map(|index| GitIndexEntry {
+            repo_path: format!("ordinary/{index}.txt"),
+            blob_oid: Some(format!("{index:040x}")),
+            mode: Some("100644".into()),
+        }));
+        CONFIG_DUMP_OWNERSHIP_CLOCK_TICKS.store(0, Ordering::SeqCst);
+        let deadline = ProviderDeadline::with_clock(
+            advancing_config_dump_ownership_clock() + Duration::from_millis(3),
+            advancing_config_dump_ownership_clock,
+        );
+
+        let result = super::tracked_generated_facts(
+            &entries,
+            fixture.context.workspace_root.as_path(),
+            &fixture.context,
+            &owners,
+            &cancellation,
+            deadline,
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::GeneratedPathInspectionError::TimedOut)
+        ));
+    }
+
+    #[test]
+    fn equal_root_runtime_sidecar_reports_ambiguous_owners() {
+        let fixture = health_fixture(false);
+        fs::write(
+            fixture.context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: first\n    type: CONFIGURATION\n    path: src\n  - name: second\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let layout = inspect_layout(&fixture.context);
+        let cancellation = CancellationToken::new();
+        let owners = super::SourceRootOwners::new(
+            fixture.context.workspace_root.as_path(),
+            &layout.roots,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap();
+        let entries = vec![GitIndexEntry {
+            repo_path: "src/ConfigDumpInfo.xml".into(),
+            blob_oid: Some("a".repeat(40)),
+            mode: Some("100644".into()),
+        }];
+        let runner = SequenceRunner::outputs(vec![process_output(true, "<ConfigDumpInfo/>")]);
+
+        let facts = GitRepositoryInspector::with_runner(&runner)
+            .inspect_config_dump_info(
+                &entries,
+                fixture.context.workspace_root.as_path(),
+                &owners,
+                &StagedBlobReadSafety::LocalOnlyGuaranteed,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(1)),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            facts.as_slice(),
+            [ProjectHealthFact::ConfigDumpInfoUnclassified { reason, .. }]
+                if reason.contains("ambiguous") && reason.contains("first") && reason.contains("second")
+        ));
+    }
 
     #[test]
     fn project_health_git_index_parser_groups_stages_and_preserves_unusual_paths() {
@@ -974,6 +2048,192 @@ mod tests {
         assert_eq!(entries[1].mode.as_deref(), Some("100755"));
         assert_eq!(entries[2].blob_oid, None);
         assert_eq!(entries[3].blob_oid, None);
+    }
+
+    #[test]
+    fn partial_clone_parser_preserves_whitespace_inside_remote_name() {
+        assert!(partial_clone_config_is_enabled(
+            "remote.foo bar.promisor\ntrue\0"
+        ));
+        assert!(!partial_clone_config_is_enabled(
+            "remote.foo bar.promisor\nfalse\0"
+        ));
+    }
+
+    #[test]
+    fn project_health_git_ignore_rejects_index_entry_without_unique_blob() {
+        let repository = TempDir::new().unwrap();
+        let runner = SequenceRunner::outputs(Vec::new());
+        let error = materialize_staged_ignore_files(
+            &runner,
+            repository.path(),
+            &[GitIndexEntry {
+                repo_path: ".gitignore".into(),
+                blob_oid: None,
+                mode: None,
+            }],
+            &StagedBlobReadSafety::LocalOnlyGuaranteed,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                crate::domain::project_health::ProjectHealthInspectionError::Fatal(ref reason)
+                    if reason.contains("does not have one regular stage-0 blob")
+            ),
+            "{error:?}"
+        );
+        assert!(runner.commands.borrow().is_empty());
+    }
+
+    #[test]
+    fn project_health_git_ignore_bounds_staged_policy_file_count() {
+        let repository = TempDir::new().unwrap();
+        let runner = SequenceRunner::outputs(Vec::new());
+        let entries = (0..=super::MAX_STAGED_IGNORE_FILES)
+            .map(|index| GitIndexEntry {
+                repo_path: format!("nested/{index}/.gitignore"),
+                blob_oid: Some(format!("{index:040x}")),
+                mode: Some("100644".into()),
+            })
+            .collect::<Vec<_>>();
+
+        let error = materialize_staged_ignore_files(
+            &runner,
+            repository.path(),
+            &entries,
+            &StagedBlobReadSafety::LocalOnlyGuaranteed,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                crate::domain::project_health::ProjectHealthInspectionError::Fatal(ref reason)
+                    if reason.contains("at most 1024")
+            ),
+            "{error:?}"
+        );
+        assert!(runner.commands.borrow().is_empty());
+    }
+
+    #[test]
+    fn project_health_git_ignore_bounds_total_staged_policy_bytes() {
+        let repository = TempDir::new().unwrap();
+        let runner = SequenceRunner::outputs(vec![process_output(
+            true,
+            &"x".repeat(super::MAX_STAGED_IGNORE_TOTAL_BYTES + 1),
+        )]);
+
+        let error = materialize_staged_ignore_files(
+            &runner,
+            repository.path(),
+            &[GitIndexEntry {
+                repo_path: ".gitignore".into(),
+                blob_oid: Some("a".repeat(40)),
+                mode: Some("100644".into()),
+            }],
+            &StagedBlobReadSafety::LocalOnlyGuaranteed,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                crate::domain::project_health::ProjectHealthInspectionError::Fatal(ref reason)
+                    if reason.contains("exceeds 8388608 bytes")
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            runner.commands.borrow()[0].capture_limits,
+            Some((super::MAX_STAGED_IGNORE_TOTAL_BYTES + 1, 256 * 1024))
+        );
+    }
+
+    #[test]
+    fn project_health_git_removes_every_inherited_git_variable() {
+        assert_eq!(
+            git_environment_removals_from([
+                (OsString::from("PATH"), OsString::from("/bin")),
+                (OsString::from("GIT_DIR"), OsString::from("elsewhere")),
+                (
+                    OsString::from("GIT_INDEX_FILE"),
+                    OsString::from("alternate-index"),
+                ),
+                (
+                    OsString::from("GIT_OBJECT_DIRECTORY"),
+                    OsString::from("alternate-objects"),
+                ),
+                (OsString::from("GIT_FUTURE_OVERRIDE"), OsString::from("1")),
+                (OsString::from("git_dir"), OsString::from("mixed-case")),
+            ]),
+            vec![
+                OsString::from("GIT_DIR"),
+                OsString::from("GIT_FUTURE_OVERRIDE"),
+                OsString::from("GIT_INDEX_FILE"),
+                OsString::from("GIT_OBJECT_DIRECTORY"),
+                OsString::from("git_dir"),
+            ]
+        );
+    }
+
+    #[test]
+    fn project_health_git_commands_use_large_but_bounded_capture() {
+        let command = super::process_command(
+            Path::new("."),
+            ["status"],
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        );
+
+        assert_eq!(
+            command.capture_limits,
+            Some((
+                super::super::PROJECT_HEALTH_STDOUT_CAPTURE_LIMIT,
+                256 * 1024
+            ))
+        );
+        assert_eq!(
+            super::super::PROJECT_HEALTH_STDOUT_CAPTURE_LIMIT,
+            64 * 1024 * 1024
+        );
+        assert!(
+            command
+                .env
+                .iter()
+                .any(|(name, value)| { name == "GIT_NO_LAZY_FETCH" && value == "1" }),
+            "{:?}",
+            command.env
+        );
+        for (name, value) in [
+            ("GIT_NO_REPLACE_OBJECTS", "1"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+        ] {
+            assert!(
+                command
+                    .env
+                    .iter()
+                    .any(|(actual_name, actual_value)| actual_name == name && actual_value == value),
+                "{name}: {:?}",
+                command.env
+            );
+        }
+        assert!(
+            command
+                .env
+                .iter()
+                .any(|(name, value)| { name == "GIT_OPTIONAL_LOCKS" && value == "0" }),
+            "{:?}",
+            command.env
+        );
     }
 
     #[test]
@@ -1003,9 +2263,24 @@ mod tests {
     }
 
     #[test]
+    fn git_no_match_requires_exact_exit_code_one() {
+        let output = |status: &str| ProcessOutput {
+            status: status.into(),
+            ..process_output(false, "")
+        };
+
+        assert!(super::status_is_no_match(&output("exit status: 1")));
+        for status in ["exit status: 128", "exit code: 10", "signal: 1 (SIGHUP)"] {
+            assert!(!super::status_is_no_match(&output(status)), "{status}");
+        }
+    }
+
+    #[test]
     fn project_health_git_missing_executable_is_typed_and_stops_discovery() {
         let fixture = health_fixture(false);
-        let runner = SequenceRunner::errors(vec!["process_failed: git missing"]);
+        let runner = SequenceRunner::errors(vec![
+            "process_failed: No such file or directory (os error 2)",
+        ]);
         let layout = inspect_layout(&fixture.context);
 
         let inspection = GitRepositoryInspector::with_runner(&runner)
@@ -1021,12 +2296,60 @@ mod tests {
         assert!(matches!(
             inspection.facts.as_slice(),
             [ProjectHealthFact::GitExecutableUnavailable { reason }]
-                if reason.contains("git missing")
+                if reason.contains("No such file")
         ));
         assert!(inspection.observations.iter().any(|observation| {
             observation.id == ProjectCheckId::RepositoryIndex
                 && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
         }));
+    }
+
+    #[test]
+    fn project_health_git_non_not_found_spawn_error_is_inspection_incomplete() {
+        let fixture = health_fixture(false);
+        let runner =
+            SequenceRunner::errors(vec!["process_failed: Permission denied (os error 13)"]);
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::with_runner(&runner)
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(1)),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            inspection.facts.as_slice(),
+            [ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryDiscovery,
+                reason,
+                ..
+            }] if reason.contains("Permission denied")
+        ));
+    }
+
+    #[test]
+    fn project_health_git_error_after_cancellation_is_cancelled() {
+        let fixture = health_fixture(false);
+        let cancellation = CancellationToken::new();
+        let runner = CancellingRunner {
+            cancellation: cancellation.clone(),
+        };
+        let layout = inspect_layout(&fixture.context);
+
+        let result = GitRepositoryInspector::with_runner(&runner).inspect_base(
+            &fixture.context,
+            &layout,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::domain::project_health::ProjectHealthInspectionError::Cancelled)
+        ));
     }
 
     #[test]
@@ -1083,6 +2406,10 @@ mod tests {
                 stderr_had_invalid_utf8: false,
             },
             ProcessOutput {
+                status: "exit status: 1".into(),
+                ..process_output(false, "")
+            },
+            ProcessOutput {
                 status_success: true,
                 status: "exit status: 0".into(),
                 stdout: String::new(),
@@ -1093,6 +2420,10 @@ mod tests {
                 stderr_truncated: false,
                 stdout_had_invalid_utf8: false,
                 stderr_had_invalid_utf8: false,
+            },
+            ProcessOutput {
+                status: "exit status: 1".into(),
+                ..process_output(false, "")
             },
         ]);
         let layout = inspect_layout(&fixture.context);
@@ -1113,6 +2444,123 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn project_health_git_config_dump_timeout_is_incomplete_not_unclassified() {
+        let fixture = health_fixture(false);
+        let oid = "a".repeat(40);
+        let runner = SequenceRunner::outputs(vec![
+            process_output(
+                true,
+                &format!("{}\ntrue\n", fixture.context.workspace_root.display()),
+            ),
+            process_output(true, &format!("100644 {oid} 0\tsrc/ConfigDumpInfo.xml\0")),
+            ProcessOutput {
+                status: "exit status: 1".into(),
+                ..process_output(false, "")
+            },
+            ProcessOutput {
+                timed_out: true,
+                ..process_output(false, "")
+            },
+            ProcessOutput {
+                status: "exit status: 1".into(),
+                ..process_output(false, "")
+            },
+            ProcessOutput {
+                status: "exit status: 1".into(),
+                ..process_output(false, "")
+            },
+        ]);
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::with_runner(&runner)
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(1)),
+            )
+            .unwrap();
+
+        assert!(inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryConfigDumpInfo
+                && observation.source_set.is_none()
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryConfigDumpInfo
+                && observation.source_set.as_deref() == Some("main")
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionTimeout {
+                check: ProjectCheckId::RepositoryConfigDumpInfo,
+                ..
+            }
+        )));
+        assert!(!inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::ConfigDumpInfoUnclassified { path, .. }
+                if path == "src/ConfigDumpInfo.xml"
+        )));
+    }
+
+    #[test]
+    fn project_health_old_git_partial_clone_never_reads_staged_blobs() {
+        let fixture = health_fixture(false);
+        let oid = "a".repeat(40);
+        let no_match = || ProcessOutput {
+            status: "exit status: 1".into(),
+            ..process_output(false, "")
+        };
+        let runner = SequenceRunner::outputs(vec![
+            process_output(
+                true,
+                &format!("{}\ntrue\n", fixture.context.workspace_root.display()),
+            ),
+            process_output(true, &format!("100644 {oid} 0\tsrc/ConfigDumpInfo.xml\0")),
+            process_output(true, "remote.origin.promisor\ntrue\0"),
+            process_output(true, "git version 2.40.1\n"),
+            no_match(),
+            no_match(),
+        ]);
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::with_runner(&runner)
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(1)),
+            )
+            .unwrap();
+
+        assert!(inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryConfigDumpInfo
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        assert!(inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryConfigDumpInfo,
+                reason,
+                ..
+            } if reason.contains("Git 2.40.1") && reason.contains("partial clone")
+        )));
+        assert!(
+            runner
+                .commands
+                .borrow()
+                .iter()
+                .all(|command| { !command.args.iter().any(|argument| argument == "cat-file") }),
+            "{:?}",
+            runner.commands.borrow()
+        );
+        let config_command = &runner.commands.borrow()[2];
+        assert!(!config_command.args.iter().any(|arg| arg == "--local"));
     }
 
     #[test]
@@ -1161,6 +2609,77 @@ mod tests {
     }
 
     #[test]
+    fn project_health_git_discovers_repository_root_containing_newline() {
+        if std::path::MAIN_SEPARATOR == '\\' {
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("repo\nname");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        git(&root, &["init"]);
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let layout = inspect_layout(&context);
+
+        let inspection = GitRepositoryInspector::new()
+            .inspect_base(
+                &context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            inspection.repository_root,
+            Some(fs::canonicalize(&root).unwrap())
+        );
+
+        fs::write(
+            root.join(".gitattributes"),
+            "*.xml text eol=lf\n*.bsl text eol=lf\n*.bin -text\n",
+        )
+        .unwrap();
+        git(&root, &["add", ".gitattributes", "src/Configuration.xml"]);
+        let inspection =
+            crate::infrastructure::project_health::resources::SourceResourcePolicyInspector::new()
+                .inspect(
+                    inspection.repository_root.as_ref().unwrap(),
+                    &layout.roots,
+                    &GitRepositoryInspector::new()
+                        .inspect_base(
+                            &context,
+                            &layout,
+                            &CancellationToken::new(),
+                            ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        )
+                        .unwrap()
+                        .entries,
+                    &CancellationToken::new(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                )
+                .unwrap();
+        assert!(
+            inspection.observations.iter().all(|observation| {
+                observation.id != ProjectCheckId::RepositoryAttributes
+                    || matches!(observation.outcome, ProjectCheckOutcome::Completed)
+            }),
+            "{:?}",
+            inspection.facts
+        );
+    }
+
+    #[test]
     fn project_health_git_info_exclude_is_local_only() {
         let fixture = parent_repository_fixture();
         fs::write(
@@ -1184,6 +2703,190 @@ mod tests {
                 fact,
                 ProjectHealthFact::IgnoreRuleLocalOnly { origin, .. }
                     if origin.contains("exclude")
+            )),
+            "{:?}",
+            inspection.facts
+        );
+    }
+
+    #[test]
+    fn project_health_git_ignore_uses_staged_empty_file_not_valid_worktree_file() {
+        let fixture = parent_repository_fixture();
+        fs::write(fixture.repository_root.join(".gitignore"), "").unwrap();
+        git(&fixture.repository_root, &["add", ".gitignore"]);
+        fs::write(
+            fixture.repository_root.join(".gitignore"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+
+        assert!(
+            inspection.facts.iter().any(|fact| matches!(
+                fact,
+                ProjectHealthFact::IgnoreRuleLocalOnly { path, .. }
+                    if path == "workspace/src/ConfigDumpInfo.xml"
+            )),
+            "{:?}",
+            inspection.facts
+        );
+    }
+
+    #[test]
+    fn project_health_git_global_excludes_cannot_impersonate_staged_gitignore() {
+        let fixture = parent_repository_fixture();
+        fs::write(fixture.repository_root.join(".gitignore"), "").unwrap();
+        git(&fixture.repository_root, &["add", ".gitignore"]);
+        fs::write(
+            fixture.repository_root.join(".gitignore"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        let excludes = fixture.repository_root.join(".gitignore");
+        git(
+            &fixture.repository_root,
+            &["config", "core.excludesFile", excludes.to_str().unwrap()],
+        );
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+
+        assert!(
+            inspection.facts.iter().any(|fact| matches!(
+                fact,
+                ProjectHealthFact::IgnoreRuleLocalOnly { path, .. }
+                    if path == "workspace/src/ConfigDumpInfo.xml"
+            )),
+            "{:?}",
+            inspection.facts
+        );
+    }
+
+    #[test]
+    fn project_health_git_duplicate_local_ignore_does_not_mask_portable_staged_rule() {
+        let fixture = parent_repository_fixture();
+        fs::write(
+            fixture.repository_root.join(".gitignore"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        git(&fixture.repository_root, &["add", ".gitignore"]);
+        fs::write(
+            fixture.repository_root.join(".git/info/exclude"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+
+        assert!(
+            !inspection
+                .facts
+                .iter()
+                .any(|fact| matches!(fact, ProjectHealthFact::IgnoreRuleLocalOnly { .. })),
+            "{:?}",
+            inspection.facts
+        );
+    }
+
+    #[test]
+    fn project_health_git_ignore_uses_valid_staged_file_not_empty_worktree_file() {
+        let fixture = parent_repository_fixture();
+        fs::write(
+            fixture.repository_root.join(".gitignore"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        git(&fixture.repository_root, &["add", ".gitignore"]);
+        fs::write(fixture.repository_root.join(".gitignore"), "").unwrap();
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+
+        assert!(
+            !inspection.facts.iter().any(|fact| matches!(
+                fact,
+                ProjectHealthFact::IgnoreRuleMissing { path, .. }
+                    | ProjectHealthFact::IgnoreRuleLocalOnly { path, .. }
+                    if path == "workspace/src/ConfigDumpInfo.xml"
+            )),
+            "{:?}",
+            inspection.facts
+        );
+    }
+
+    #[test]
+    fn project_health_staged_ignore_read_does_not_run_smudge_filter() {
+        let fixture = parent_repository_fixture();
+        fs::write(
+            fixture.repository_root.join(".gitattributes"),
+            ".gitignore filter=project-health-probe\n",
+        )
+        .unwrap();
+        fs::write(
+            fixture.repository_root.join(".gitignore"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        git(
+            &fixture.repository_root,
+            &[
+                "config",
+                "filter.project-health-probe.smudge",
+                "unica-project-health-smudge-command-must-not-run",
+            ],
+        );
+        git(
+            &fixture.repository_root,
+            &["add", ".gitattributes", ".gitignore"],
+        );
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+
+        assert!(
+            !inspection.facts.iter().any(|fact| matches!(
+                fact,
+                ProjectHealthFact::IgnoreRuleMissing { .. }
+                    | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
             )),
             "{:?}",
             inspection.facts
@@ -1251,6 +2954,90 @@ mod tests {
             .workspace_root
             .join("src/.build/.unica-health-probe")
             .exists());
+    }
+
+    #[test]
+    fn project_health_working_ignore_timeout_is_not_reported_as_a_missing_rule() {
+        let fixture = health_fixture(true);
+        let no_match = || ProcessOutput {
+            status: "exit status: 1".into(),
+            ..process_output(false, "")
+        };
+        let runner = SequenceRunner::outputs(vec![
+            process_output(
+                true,
+                &format!("{}\ntrue\n", fixture.context.workspace_root.display()),
+            ),
+            process_output(true, ""),
+            no_match(),
+            no_match(),
+            ProcessOutput {
+                timed_out: true,
+                ..process_output(false, "")
+            },
+        ]);
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::with_runner(&runner)
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(1)),
+            )
+            .unwrap();
+
+        assert!(inspection
+            .observations
+            .iter()
+            .filter(|observation| observation.id == ProjectCheckId::RepositoryIgnore)
+            .all(|observation| matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })));
+        assert!(inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionTimeout {
+                check: ProjectCheckId::RepositoryIgnore,
+                source_set: None,
+            }
+        )));
+        assert!(!inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::IgnoreRuleMissing { .. }
+                | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
+        )));
+    }
+
+    #[test]
+    fn project_health_git_reports_missing_ignore_for_every_equal_root_owner() {
+        let fixture = health_fixture(true);
+        fs::write(
+            fixture.context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: first\n    type: CONFIGURATION\n    path: src\n  - name: second\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+
+        for owner in ["first", "second"] {
+            assert!(
+                inspection.facts.iter().any(|fact| matches!(
+                    fact,
+                    ProjectHealthFact::IgnoreRuleMissing {
+                        source_set: Some(source_set),
+                        path,
+                    } if source_set == owner && path == "src/ConfigDumpInfo.xml"
+                )),
+                "owner={owner}; facts={:?}",
+                inspection.facts
+            );
+        }
     }
 
     #[test]
@@ -1350,6 +3137,17 @@ mod tests {
         results: RefCell<Vec<Result<ProcessOutput, String>>>,
     }
 
+    struct CancellingRunner {
+        cancellation: CancellationToken,
+    }
+
+    impl ProcessRunner for CancellingRunner {
+        fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.cancellation.cancel();
+            Err("process failed while cancellation was requested".into())
+        }
+    }
+
     impl SequenceRunner {
         fn outputs(outputs: Vec<ProcessOutput>) -> Self {
             Self {
@@ -1378,6 +3176,25 @@ mod tests {
             _input: &[u8],
         ) -> Result<ProcessOutput, String> {
             self.run(command)
+        }
+    }
+
+    fn process_output(status_success: bool, stdout: &str) -> ProcessOutput {
+        ProcessOutput {
+            status_success,
+            status: if status_success {
+                "exit status: 0".into()
+            } else {
+                "exit status: 2".into()
+            },
+            stdout: stdout.into(),
+            stderr: String::new(),
+            timed_out: false,
+            cancelled: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
         }
     }
 

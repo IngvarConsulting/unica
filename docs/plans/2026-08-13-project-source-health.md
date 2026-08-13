@@ -7,7 +7,7 @@
 > failing test, records the observed RED reason, and ends with the narrow GREEN
 > command before broader verification.
 
-**Goal:** Реализовать ADR-0055: `unica.project.status` одним read-only вызовом
+**Goal:** Реализовать ADR-0056: `unica.project.status` одним read-only вызовом
 публикует типизированные `ready`, `repositoryReady`, `checks[]` и
 `diagnostics[]` для workspace, Git-репозитория и каждого source set, а AI
 получает доказанную безопасную инструкцию исправления.
@@ -26,7 +26,7 @@ CLI с NUL-протоколами, Python 3.12 contract tests, Markdown ADR/inva
 
 ## Global Constraints
 
-- ADR-0055 и
+- ADR-0056 и
   `docs/design/2026-08-13-project-source-health-design.md` владеют границей
   реализации. До последнего task ADR остаётся `proposed`; в `accepted` она
   переводится только вместе с работающим кодом, тестами и выведенными правилами.
@@ -72,9 +72,9 @@ CLI с NUL-протоколами, Python 3.12 contract tests, Markdown ADR/inva
   `10 * 1024 * 1024` байт для одного binary и `100 * 1024 * 1024` байт
   суммарно; broad `*.bin` command не публикуется.
 - Remediation никогда не выполняется. Команда имеет форму
-  `RemediationCommand { program, args, cwd }`, без shell-строки. Максимум
+  `RemediationCommand { program, argv, cwd }`, без shell-строки. Максимум
   20 примеров paths и 20 evidence; `count` сохраняет полное число совпадений.
-  Git-команды используют repo-relative args и `cwd` доказанного repository
+  Git-команды используют repo-relative `argv` и `cwd` доказанного repository
   root, поэтому parent-repository/linked-worktree не искажают path.
 - Все Git-процессы делят общий `ProviderDeadline` публичного вызова, соблюдают
   cancellation и пределы stdout/stderr. Truncation, lossy UTF-8, неизвестная
@@ -113,7 +113,7 @@ CLI с NUL-протоколами, Python 3.12 contract tests, Markdown ADR/inva
 | Modify: `crates/unica-coder/src/interfaces/mcp.rs`, `tests/ci/test_unica_mcp_smoke.py` | Consumer-visible status payload и read-only MCP smoke. |
 | Create: `tests/ci/test_project_health_contract.py` | Синхронизация ADR, invariants, tool review, acceptance и AI guidance. |
 | Modify: `spec/architecture/{invariants,change-checklist,building-blocks,concepts,runtime,tool-surface-review.json,tool-surface.md}` | Действующие правила и ведомость изменённого результата. |
-| Modify: `spec/decisions/{0055-project-status-publikuet-gotovnost-proekta.md,README.md}` | Принятие решения только после GREEN реализации. |
+| Modify: `spec/decisions/{0056-project-status-publikuet-gotovnost-proekta.md,README.md}` | Принятие решения только после GREEN реализации. |
 | Modify: `spec/acceptance/unica-mcp-validation.md` | Исполняемая матрица project health. |
 | Modify: `plugins/unica/skills/v8-runner/SKILL.md`, `plugins/unica/references/use-cases/workspace-runtime.md`, `tests/ci/test_unica_skills.py` | AI вызывает preflight, читает typed remediation и не выполняет её без полномочия. |
 
@@ -241,7 +241,7 @@ pub(crate) struct ProjectCheckObservation {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemediationCommand {
     pub(crate) program: String,
-    pub(crate) args: Vec<String>,
+    pub(crate) argv: Vec<String>,
     pub(crate) cwd: String,
 }
 
@@ -567,6 +567,7 @@ let ready = !public_checks.iter().any(|check| {
 
 let repository_ready = !public_checks.iter().any(|check| {
     check.scope == DiagnosticScope::Repository
+        && check.id != ProjectCheckId::RepositoryLfs.as_str()
         && matches!(check.status, ProjectCheckStatus::Failed | ProjectCheckStatus::NotRun)
 });
 ```
@@ -616,7 +617,7 @@ path требует:
 
 ```rust
 assert_eq!(command.program, "git");
-assert_eq!(command.args, ["rm", "--cached", "--", "line\nbreak/ConfigDumpInfo.xml"]);
+assert_eq!(command.argv, ["rm", "--cached", "--", "line\nbreak/ConfigDumpInfo.xml"]);
 ```
 
 - [ ] **Step 5: Run GREEN and commit.**
@@ -758,7 +759,7 @@ Helper не должен выбирать health cause или принимать
 
 1. проверить cancellation и remaining deadline;
 2. вызвать `discover_project_source_map` ровно один раз;
-3. при ошибке вернуть source discovery `Completed`, пустые roots,
+3. при ошибке вернуть source discovery `NotRun`, пустые roots,
    `source_targets_complete=false` и
    `SourceInspectionIncomplete`, но не fatal; домен превратит discovery в
    `failed`, а Git inspector из Task 4 создаст repository-wide `NotRun` для
@@ -774,9 +775,10 @@ Helper не должен выбирать health cause или принимать
    component, existence, `.build` exact path и cache containment;
 8. для root-is-workspace положить linked alias/cache/build только в evidence и не добавлять
    `CacheInsideSourceSet`/`GeneratedBuildPresent`;
-9. path, identity которого нельзя безопасно получить, выставляет incomplete
-   targets; missing, root-is-workspace и Invalid/Unknown сохраняют доказанный
-   root для независимых repository findings;
+9. path, identity которого нельзя безопасно получить, а также Invalid/Unknown
+   format выставляют incomplete targets; roots могут оставаться в snapshot как
+   evidence, но source-dependent repository checks до полного доказательства
+   области получают только repository-wide `NotRun`;
 10. не читать произвольные дочерние файлы и не запускать Git.
 
 - [ ] **Step 5: Run GREEN and commit.**
@@ -1089,11 +1091,11 @@ Required candidates:
 3. root `ConfigDumpInfo.xml` и `DumpFilesIndex.txt` только для Platform XML
    Configuration/Extension.
 
-Если `layout.source_targets_complete=false`, repository discovery и независимые
-cache/index checks могут завершиться, а каждый source-dependent check получает
-один repository-wide `NotRun` (`sourceSet=None`). Доказанные уникальные roots
-могут параллельно получить собственные completed observations/findings; общий
-`NotRun` всё равно делает `repositoryReady=false`, а не ложный pass.
+Если `layout.source_targets_complete=false`, завершаются только repository
+discovery и полный index snapshot. Все source-dependent repository checks
+получают repository-wide `NotRun` (`sourceSet=None`) и не публикуют per-set
+`Completed`: иначе частично доказанный root выглядел бы как готовая политика
+при неизвестной полной области source set.
 
 Передать все repo-relative candidates как NUL input в:
 
@@ -1123,9 +1125,11 @@ git --no-replace-objects cat-file blob <oid>
 ```
 
 Runtime root → `RuntimeSidecarTracked`; ExternalProcessor/ExternalReport/
-MetadataDescriptor → no fact; Other, missing OID, timeout, truncated/lossy →
-`ConfigDumpInfoUnclassified`. Blob cache keyed by OID запрещает повторное
-чтение.
+MetadataDescriptor → no fact; Other или missing OID →
+`ConfigDumpInfoUnclassified`. Timeout, truncated/lossy output и process failure
+делают `repository.config_dump_info` `NotRun` с typed
+`GitInspectionTimeout|GitInspectionIncomplete`, а не содержательной
+диагностикой blob. Blob cache keyed by OID запрещает повторное чтение.
 
 До Task 6 старый `GitTrackingAdapter` должен делегировать CDFI snapshot новому
 helper и только рендерить compatibility warning. Удалить из
@@ -1299,25 +1303,26 @@ Expected: FAIL из-за отсутствующих classifier/attribute/EOL par
 
 - [ ] **Step 4: Implement effective attributes collection.**
 
-Сначала получить hash-format-aware empty tree read-only командой:
-
-```text
-git hash-object -t tree --stdin
-```
-
-Затем передать одинаковые classified repo paths NUL input в два вызова:
+Для portable policy прочитать effective attributes из staged index:
 
 ```text
 git check-attr -z --cached text eol filter --stdin
-git check-attr -z --source=<empty-tree-oid> text eol filter --stdin
 ```
 
-Первый результат содержит staged tracked `.gitattributes` плюс
-`.git/info/attributes`, global и system policy; второй изолирует только эти
-непереносимые источники, потому что source tree пуст. Если local-only результат
-для кандидата не `unspecified`, публиковать `AttributesLocalOnly` независимо от
-совпадения effective value и не принимать policy как portable. Working-only
-`.gitattributes` исключает `--cached`.
+Для local-only policy создать временный пустой index совместимыми с Git 2.40
+plumbing-командами и передать тем же путям controlled `GIT_INDEX_FILE`:
+
+```text
+git read-tree --empty
+git check-attr -z --cached text eol filter --stdin
+```
+
+Первый результат содержит staged tracked `.gitattributes` вместе с local,
+global и system policy. Пустой alternate index исключает tracked policy и
+изолирует непереносимые источники без Git-2.43-only `check-attr --source`.
+Если local-only результат для кандидата не `unspecified`, публиковать
+`AttributesLocalOnly` независимо от совпадения effective value и не принимать
+policy как portable. Working-only `.gitattributes` исключает `--cached`.
 
 Parser читает triples `path\0attribute\0value\0` и требует ровно по одному
 значению каждого requested attribute на каждый path в обоих результатах. Text policy satisfied,
@@ -1357,8 +1362,9 @@ kind — `GitInspectionIncomplete`. Не ожидать несуществующ
 
 - [ ] **Step 6: Implement advisory LFS aggregation.**
 
-Для classified binary regular files взять `symlink_metadata.len()` без
-перехода по symlink/reparse. `filter=lfs` исключает файл из рекомендации.
+Для classified binary regular files открыть exact repository-relative path
+component-wise no-follow и взять размер по metadata уже открытого handle.
+`filter=lfs` исключает файл из рекомендации.
 Публиковать один `LfsConsider`, когда любой файл ≥10 MiB или сумма ≥100 MiB;
 fact несёт full count/total/largest и полный sorted paths, а доменный public
 aggregator из Task 1 обрезает только `diagnostics[].paths` до 20. Commands в
@@ -1607,7 +1613,7 @@ service/write regressions.
 **Files:**
 
 - Create: `tests/ci/test_project_health_contract.py`
-- Modify: `spec/decisions/0055-project-status-publikuet-gotovnost-proekta.md`
+- Modify: `spec/decisions/0056-project-status-publikuet-gotovnost-proekta.md`
 - Modify: `spec/decisions/README.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/change-checklist.md`
@@ -1624,7 +1630,7 @@ service/write regressions.
 **Interfaces:**
 
 - Consumes: GREEN public behavior from Task 6.
-- Produces: accepted ADR-0055 and three executable rules:
+- Produces: accepted ADR-0056 and three executable rules:
 
 ```text
 INV-MCP-PROJECT-READINESS
@@ -1638,7 +1644,7 @@ INV-SOURCE-PORTABLE-GIT
 
 ```python
 def test_project_health_contract_is_accepted_and_routed(self) -> None:
-    adr = self.read("spec/decisions/0055-project-status-publikuet-gotovnost-proekta.md")
+    adr = self.read("spec/decisions/0056-project-status-publikuet-gotovnost-proekta.md")
     invariants = self.read("spec/architecture/invariants.md")
     review = json.loads(self.read("spec/architecture/tool-surface-review.json"))
     workflow = self.read("plugins/unica/references/use-cases/workspace-runtime.md")
@@ -1656,7 +1662,7 @@ def test_project_health_contract_is_accepted_and_routed(self) -> None:
     self.assertIn("remediation", workflow)
 ```
 
-Добавить assertions, что ADR-0055 находится в accepted section README и
+Добавить assertions, что ADR-0056 находится в accepted section README и
 отсутствует в proposed section, а `project.map` review не обещает health.
 
 - [ ] **Step 2: Run the contract test and witness RED.**
@@ -1669,7 +1675,7 @@ Expected: FAIL на `proposed`/missing invariants, не на import/path error.
 
 - [ ] **Step 3: Add the three invariant records and current architecture.**
 
-Нормативные `Rule` формулировать по-русски и ссылать на ADR-0055:
+Нормативные `Rule` формулировать по-русски и ссылать на ADR-0056:
 
 - `INV-MCP-PROJECT-READINESS`: status typed data, два флага, checks,
   diagnostics, `ok=true` для findings; map не делает health check;
@@ -1684,7 +1690,7 @@ change checklist по ID, а building-blocks/concepts/runtime — только �
 
 - [ ] **Step 4: Accept ADR and update acceptance.**
 
-Перевести ADR-0055 `proposed → accepted`, переместить ровно одну ссылку в
+Перевести ADR-0056 `proposed → accepted`, переместить ровно одну ссылку в
 decision README. В `unica-mcp-validation.md` добавить executable matrix:
 
 1. no Git → ready true/repository false;
@@ -1731,7 +1737,7 @@ surface не меняются.
 python3.12 -m unittest tests.ci.test_project_health_contract tests.ci.test_design_documents tests.ci.test_architecture_registry tests.ci.test_unica_skills
 python3.12 scripts/ci/check-architecture-sync.py --base origin/main
 git diff --check
-git add tests/ci/test_project_health_contract.py tests/ci/test_unica_skills.py spec/decisions/0055-project-status-publikuet-gotovnost-proekta.md spec/decisions/README.md spec/architecture/invariants.md spec/architecture/change-checklist.md spec/architecture/building-blocks.md spec/architecture/concepts.md spec/architecture/runtime.md spec/architecture/tool-surface-review.json spec/architecture/tool-surface.md spec/acceptance/unica-mcp-validation.md plugins/unica/skills/v8-runner/SKILL.md plugins/unica/references/use-cases/workspace-runtime.md
+git add tests/ci/test_project_health_contract.py tests/ci/test_unica_skills.py spec/decisions/0056-project-status-publikuet-gotovnost-proekta.md spec/decisions/README.md spec/architecture/invariants.md spec/architecture/change-checklist.md spec/architecture/building-blocks.md spec/architecture/concepts.md spec/architecture/runtime.md spec/architecture/tool-surface-review.json spec/architecture/tool-surface.md spec/acceptance/unica-mcp-validation.md plugins/unica/skills/v8-runner/SKILL.md plugins/unica/references/use-cases/workspace-runtime.md
 git commit -m "docs(project): accept project health contract"
 ```
 
@@ -1793,4 +1799,4 @@ Use `superpowers:requesting-code-review`. Review must explicitly verify:
 - no lossy/truncated observation becomes passed;
 - CDFI has one classifier and staged-blob semantics;
 - path `.` reports the root cause while independent Git findings remain;
-- ADR-0055 is accepted only with all checks GREEN.
+- ADR-0056 is accepted only with all checks GREEN.

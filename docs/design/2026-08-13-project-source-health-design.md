@@ -1,6 +1,6 @@
 - Date: `2026-08-13`
 - Status: `approved`
-- Decision: `ADR-0055`
+- Decision: `ADR-0056`
 
 # Типизированная проверка готовности проекта и наборов исходников
 
@@ -157,7 +157,27 @@ Git-предупреждения из `GitTrackingAdapter` удаляются и
       "formatEvidence": ["Configuration.xml"]
     }
   ],
-  "diagnostics": []
+  "diagnostics": [
+    {
+      "code": "source_set.root_is_workspace",
+      "severity": "error",
+      "scope": "sourceSet",
+      "sourceSet": "main",
+      "paths": ["."],
+      "count": 1,
+      "message": "Source root resolves to the workspace root",
+      "evidence": ["normalized identity: /workspace"],
+      "remediation": {
+        "summary": "Separate the 1C source root from the workspace root",
+        "steps": [
+          "Create a dedicated source subdirectory that is a strict child of the workspace",
+          "Set the source-set path in v8project.yaml to the new subdirectory instead of .",
+          "Run unica.project.status again"
+        ],
+        "commands": []
+      }
+    }
+  ]
 }
 ```
 
@@ -218,7 +238,7 @@ Git-предупреждения из `GitTrackingAdapter` удаляются и
     "commands": [
       {
         "program": "git",
-        "args": ["rm", "--cached", "--", "src/ConfigDumpInfo.xml"],
+        "argv": ["rm", "--cached", "--", "src/ConfigDumpInfo.xml"],
         "cwd": "/workspace"
       }
     ]
@@ -226,7 +246,7 @@ Git-предупреждения из `GitTrackingAdapter` удаляются и
 }
 ```
 
-Команда представлена программой и массивом аргументов, а не shell-строкой.
+Команда представлена полями `program`, `argv` и `cwd`, а не shell-строкой.
 Так путь с пробелом, кавычкой, переводом строки или начальным `-` остаётся
 данными и не превращается в код оболочки. `commands` может быть пустым: AI
 получает команду только когда классификация и precondition доказаны.
@@ -358,8 +378,12 @@ Git-сборщик использует только argv-вызовы без sh
 - `git ls-files -z` — tracked/index entries и происхождение tracked
   `.gitignore`/`.gitattributes`;
 - `git check-ignore -v --no-index` — совпавшее правило и файл-источник;
-- `git check-attr -z --stdin` — effective attributes;
-- `git ls-files --eol -z` — index и working-tree EOL;
+- `git check-attr -z --cached --stdin` — effective attributes, а второй
+  `--cached`-probe в изолированном index/GIT_DIR доказывает portable staged
+  policy без `$GIT_DIR/info/attributes` и global/system rules;
+- `git ls-files --eol -z` — только index EOL в изолированном index с пустым
+  worktree; реальный worktree читается отдельно, bounded и component-wise
+  no-follow;
 - `git cat-file` — staged blob для содержательной классификации.
 
 Решение принимается по index, а не только по рабочему файлу: именно staged blob
@@ -515,7 +539,7 @@ PR #473 владеет размещением кеша `bsl-analyzer` вне sou
 2. Ввести fact snapshot, внутренние порты и чистые правила.
 3. Перевести `unica.project.status` на новую модель и убрать Git warning из
    `project.map`.
-4. Вместе с кодом перевести ADR-0055 в `accepted`, добавить выведенные правила
+4. Вместе с кодом перевести ADR-0056 в `accepted`, добавить выведенные правила
    в реестр, синхронизировать tool surface, change checklist, operation
    descriptors, skill и package contracts.
 5. Запустить unit, platform-specific, MCP smoke и архитектурные стражи.

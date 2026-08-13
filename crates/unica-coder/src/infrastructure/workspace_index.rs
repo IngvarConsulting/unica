@@ -1456,6 +1456,8 @@ fn run_index_command_with_heartbeat(
         args: command.args.clone(),
         cwd: command.cwd.clone(),
         env: command.env.clone(),
+        env_remove: Vec::new(),
+        capture_limits: None,
         timeout: Some(command.timeout),
         cancellation: command.cancellation.clone(),
     })

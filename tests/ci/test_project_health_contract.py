@@ -16,7 +16,7 @@ class ProjectHealthContractTests(unittest.TestCase):
 
     def test_project_health_contract_is_accepted_and_routed(self) -> None:
         adr = self.read(
-            "spec/decisions/0055-project-status-publikuet-gotovnost-proekta.md"
+            "spec/decisions/0056-project-status-publikuet-gotovnost-proekta.md"
         )
         invariants = self.read("spec/architecture/invariants.md")
         decisions = self.read("spec/decisions/README.md")
@@ -36,12 +36,14 @@ class ProjectHealthContractTests(unittest.TestCase):
             self.assertIn(f"### {invariant}", invariants)
 
         accepted, proposed = decisions.split("## Предложенные решения", maxsplit=1)
-        self.assertIn("ADR-0055", accepted)
-        self.assertNotIn("ADR-0055", proposed)
+        self.assertIn("ADR-0056", accepted)
+        self.assertNotIn("ADR-0056", proposed)
 
         status_result = review["unica.project.status"]["result"]["now"]
         self.assertIn("ready", status_result)
         self.assertIn("repositoryReady", status_result)
+        self.assertIn("`array`", status_result)
+        self.assertIn("`null`", status_result)
 
         map_review = json.dumps(
             review["unica.project.map"], ensure_ascii=False
@@ -52,6 +54,7 @@ class ProjectHealthContractTests(unittest.TestCase):
         self.assertIn("unica.project.status", workflow)
         self.assertIn("ready", workflow)
         self.assertIn("repositoryReady", workflow)
+        self.assertIn("otherwise `null`", workflow)
         self.assertIn("remediation", workflow)
 
     def test_single_resolved_root_does_not_narrow_project_inspection(self) -> None:

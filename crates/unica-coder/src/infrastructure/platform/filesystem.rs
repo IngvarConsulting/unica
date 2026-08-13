@@ -2807,6 +2807,52 @@ pub(crate) fn host_path_text(path: String) -> String {
 }
 
 #[cfg(windows)]
+pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> bool {
+    open_absolute_directory_path_nofollow(path)
+        .and_then(|directory| relative_child_object_attributes(&directory))
+        .map(|attributes| attributes == 0)
+        .unwrap_or(true)
+}
+
+#[cfg(target_vendor = "apple")]
+pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+
+    let Ok(directory) = fs::File::open(path) else {
+        return true;
+    };
+    // SAFETY: directory owns a valid descriptor and fpathconf only queries it.
+    unsafe { libc::fpathconf(directory.as_raw_fd(), libc::_PC_CASE_SENSITIVE) != 0 }
+}
+
+#[cfg(all(not(windows), not(target_vendor = "apple")))]
+pub(crate) fn host_filesystem_case_sensitive(_path: &Path) -> bool {
+    true
+}
+
+pub(crate) fn host_path_component_identity_key(
+    component: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> String {
+    let text = component.to_string_lossy().into_owned();
+    if case_sensitive {
+        text
+    } else {
+        text.to_lowercase()
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn is_link_loop_error(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ELOOP)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn is_link_loop_error(_error: &io::Error) -> bool {
+    false
+}
+
+#[cfg(windows)]
 pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> std::path::PathBuf {
     use std::path::PathBuf;
 

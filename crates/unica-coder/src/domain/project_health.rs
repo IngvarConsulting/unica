@@ -127,7 +127,7 @@ pub(crate) struct ProjectCheckObservation {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RemediationCommand {
     pub(crate) program: String,
-    pub(crate) args: Vec<String>,
+    pub(crate) argv: Vec<String>,
     pub(crate) cwd: String,
 }
 
@@ -391,9 +391,22 @@ pub(crate) fn evaluate_project_health(
         .iter()
         .map(|observation| {
             let key = CheckKey::from_observation(observation);
+            let aggregate_failure = observation
+                .source_set
+                .is_none()
+                .then_some(())
+                .and_then(|()| {
+                    failed_checks.iter().find_map(|(failed, reason)| {
+                        (failed.id == observation.id && failed.scope == observation.scope)
+                            .then(|| reason.clone())
+                    })
+                });
             let (status, reason) = match &observation.outcome {
                 ProjectCheckOutcome::Completed if failed_checks.contains_key(&key) => {
                     (ProjectCheckStatus::Failed, failed_checks.get(&key).cloned())
+                }
+                ProjectCheckOutcome::Completed if aggregate_failure.is_some() => {
+                    (ProjectCheckStatus::Failed, aggregate_failure)
                 }
                 ProjectCheckOutcome::Completed => (ProjectCheckStatus::Passed, None),
                 ProjectCheckOutcome::NotRun { reason } => {
@@ -502,7 +515,26 @@ struct DiagnosticSeed {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RemediationKind {
-    Explain,
+    InspectSourceConfig,
+    ConfigureSourceSet,
+    SeparateSourceRoot,
+    CorrectSourcePath,
+    UniqueSourceSetNames,
+    ResolveSourceFormat,
+    MoveCacheOutsideSource,
+    RemoveGeneratedBuild,
+    InitializeRepository,
+    InstallGit,
+    RetryInspection,
+    UpgradeGitForPartialClone,
+    TrackIgnorePolicy,
+    ReviewTrackedGeneratedPath,
+    TrackPortableAttributes,
+    TrackTextAttributes,
+    TrackBinaryAttributes,
+    CorrectTextRole,
+    NormalizeIndexEol,
+    NormalizeWorkingEol,
     RuntimeSidecar,
     ManualReview,
     Advisory,
@@ -637,7 +669,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Source-set configuration could not be inspected completely",
             vec![reason.clone()],
-            RemediationKind::Explain,
+            RemediationKind::InspectSourceConfig,
         ),
         NoSourceSets => seed(
             "source_set.none_found",
@@ -648,7 +680,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "No source sets were discovered",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::ConfigureSourceSet,
         ),
         SourceRootIsWorkspace {
             source_set,
@@ -663,7 +695,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Source root resolves to the workspace root",
             evidence.clone(),
-            RemediationKind::Explain,
+            RemediationKind::SeparateSourceRoot,
         ),
         SourcePathMissing { source_set, path } => seed(
             "source_set.path_missing",
@@ -674,7 +706,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Declared source root does not exist",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::CorrectSourcePath,
         ),
         SourcePathUnsafe {
             source_set,
@@ -689,7 +721,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Declared source root is not safely contained in the workspace",
             vec![reason.clone()],
-            RemediationKind::Explain,
+            RemediationKind::CorrectSourcePath,
         ),
         SourceNameAmbiguous { name, count } => seed(
             "source_set.name_ambiguous",
@@ -700,7 +732,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             *count,
             "Source-set name is not unique",
             vec![format!("name: {name}")],
-            RemediationKind::Explain,
+            RemediationKind::UniqueSourceSetNames,
         ),
         SourceFormatInvalid {
             source_set,
@@ -714,7 +746,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Source format evidence is contradictory",
             evidence.clone(),
-            RemediationKind::Explain,
+            RemediationKind::ResolveSourceFormat,
         ),
         SourceFormatUnknown {
             source_set,
@@ -728,7 +760,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Source format could not be proven",
             evidence.clone(),
-            RemediationKind::Explain,
+            RemediationKind::ResolveSourceFormat,
         ),
         CacheInsideSourceSet {
             source_set,
@@ -743,7 +775,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Cache root is inside the source root",
             vec![format!("source root: {source_root}")],
-            RemediationKind::Explain,
+            RemediationKind::MoveCacheOutsideSource,
         ),
         GeneratedBuildPresent { source_set, path } => seed(
             "source_set.generated_build_present",
@@ -754,7 +786,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Generated .build content is present inside the source root",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::RemoveGeneratedBuild,
         ),
         GitRepositoryAbsent => seed(
             "git.repository_absent",
@@ -765,7 +797,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Workspace is not inside a Git work tree",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::InitializeRepository,
         ),
         GitExecutableUnavailable { reason } => seed(
             "git.executable_unavailable",
@@ -776,7 +808,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Git executable is unavailable",
             vec![reason.clone()],
-            RemediationKind::Explain,
+            RemediationKind::InstallGit,
         ),
         GitInspectionTimeout { check, source_set } => seed(
             "git.inspection_timeout",
@@ -787,7 +819,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Git inspection exceeded its deadline",
             vec![format!("check: {}", check.as_str())],
-            RemediationKind::Explain,
+            RemediationKind::RetryInspection,
         ),
         GitInspectionIncomplete {
             check,
@@ -802,7 +834,11 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Git inspection did not produce a complete trustworthy result",
             vec![reason.clone()],
-            RemediationKind::Explain,
+            if reason.contains("partial clone") && reason.contains("Git 2.46") {
+                RemediationKind::UpgradeGitForPartialClone
+            } else {
+                RemediationKind::RetryInspection
+            },
         ),
         IgnoreRuleMissing { source_set, path } => seed(
             "git.ignore_rule_missing",
@@ -813,7 +849,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Required generated path is not covered by a tracked .gitignore",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::TrackIgnorePolicy,
         ),
         IgnoreRuleLocalOnly {
             source_set,
@@ -828,7 +864,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Required generated path is ignored only by a local rule",
             vec![format!("origin: {origin}")],
-            RemediationKind::Explain,
+            RemediationKind::TrackIgnorePolicy,
         ),
         GeneratedPathTracked { source_set, path } => seed(
             "git.generated_path_tracked",
@@ -839,7 +875,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Generated path is tracked in the Git index",
             Vec::new(),
-            RemediationKind::ManualReview,
+            RemediationKind::ReviewTrackedGeneratedPath,
         ),
         RuntimeSidecarTracked { source_set, path } => seed(
             "git.runtime_sidecar_tracked",
@@ -880,7 +916,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Required attributes are supplied only by local Git policy",
             evidence.clone(),
-            RemediationKind::Explain,
+            RemediationKind::TrackPortableAttributes,
         ),
         TextPolicyMissing { source_set, path } => seed(
             "git.text_policy_missing",
@@ -891,7 +927,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Text resource has no portable text attributes",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::TrackTextAttributes,
         ),
         BinaryPolicyMissing { source_set, path } => seed(
             "git.binary_policy_missing",
@@ -902,7 +938,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Binary resource has no portable -text attribute",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::TrackBinaryAttributes,
         ),
         TextResourceMarkedBinary { source_set, path } => seed(
             "git.text_resource_marked_binary",
@@ -913,7 +949,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Text resource is marked as binary",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::CorrectTextRole,
         ),
         IndexEolNotLf {
             source_set,
@@ -928,7 +964,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Text blob in the Git index is not normalized to LF",
             vec![format!("observed: {observed}")],
-            RemediationKind::Explain,
+            RemediationKind::NormalizeIndexEol,
         ),
         MixedEol { source_set, path } => seed(
             "git.mixed_eol",
@@ -939,7 +975,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Working text file contains mixed line endings",
             Vec::new(),
-            RemediationKind::Explain,
+            RemediationKind::NormalizeWorkingEol,
         ),
         WorkingEolUnsupported {
             source_set,
@@ -954,7 +990,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Working text file uses unsupported line endings",
             vec![format!("observed: {observed}")],
-            RemediationKind::Explain,
+            RemediationKind::NormalizeWorkingEol,
         ),
         LfsConsider {
             source_set,
@@ -1029,11 +1065,11 @@ fn remediation_for(
     match kind {
         RemediationKind::RuntimeSidecar => {
             let commands = if count <= MAX_PROJECT_DIAGNOSTIC_PATHS && count == paths.len() {
-                let mut args = vec!["rm".into(), "--cached".into(), "--".into()];
-                args.extend(paths.iter().cloned());
+                let mut argv = vec!["rm".into(), "--cached".into(), "--".into()];
+                argv.extend(paths.iter().cloned());
                 vec![RemediationCommand {
                     program: "git".into(),
-                    args,
+                    argv,
                     cwd: repository_root
                         .expect("runtime sidecar snapshot validation proves repository root")
                         .into(),
@@ -1069,12 +1105,188 @@ fn remediation_for(
             ],
             commands: Vec::new(),
         },
-        RemediationKind::Explain => Remediation {
-            summary: "Correct the reported project policy without automatic mutation".into(),
+        RemediationKind::InspectSourceConfig => Remediation {
+            summary: "Repair the exact source-discovery input named in the evidence".into(),
             steps: vec![
-                "Review the diagnostic evidence and update the project or tracked Git policy"
-                    .into(),
+                "Inspect the exact reported input path and reason in the diagnostic evidence; it may be v8project.yaml or a source-format marker".into(),
+                "Correct the read, regular-file, link/reparse, size, UTF-8, YAML, or source-set-count problem without changing unrelated source data".into(),
                 "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::ConfigureSourceSet => Remediation {
+            summary: "Declare at least one source set explicitly".into(),
+            steps: vec![
+                "Add a source-set entry to v8project.yaml with a unique name, correct 1C type, and a dedicated path".into(),
+                "Keep the path as a strict child subdirectory of the workspace rather than .".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::SeparateSourceRoot => Remediation {
+            summary: "Separate the 1C source root from the workspace root".into(),
+            steps: vec![
+                "Create a dedicated source subdirectory that is a strict child of the workspace, for example src".into(),
+                "Move or re-export the 1C source files into that subdirectory without moving workspace service files".into(),
+                "Set the source-set path in v8project.yaml to the new subdirectory instead of .".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::CorrectSourcePath => Remediation {
+            summary: "Correct the declared source-set path".into(),
+            steps: vec![
+                "Set the source-set path in v8project.yaml to an existing regular directory contained directly inside the workspace".into(),
+                "Do not route the source root through symbolic links, reparse points, .., or an external directory".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::UniqueSourceSetNames => Remediation {
+            summary: "Give every source set a unique stable name".into(),
+            steps: vec![
+                "Rename duplicate source-set entries in v8project.yaml without changing their type or path unintentionally".into(),
+                "Update callers that select a source set by name".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::ResolveSourceFormat => Remediation {
+            summary: "Make the source-set format evidence unambiguous".into(),
+            steps: vec![
+                "Remove contradictory Platform XML and EDT markers from the same source root, or point the source set at the correct export directory".into(),
+                "Set the intended project format in v8project.yaml when file markers alone cannot prove it".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::MoveCacheOutsideSource => Remediation {
+            summary: "Move the Unica cache outside the source-set root".into(),
+            steps: vec![
+                "Choose a cache location under workspace service storage such as workspace/.build, not inside the 1C export directory".into(),
+                "Update the workspace/cache configuration without moving source files into the cache".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::RemoveGeneratedBuild => Remediation {
+            summary: "Remove generated .build content from the source root".into(),
+            steps: vec![
+                "Verify that the listed .build directory contains generated artifacts rather than source files".into(),
+                "Move the producer output outside the source root, then delete the stale generated directory".into(),
+                "Add a tracked .gitignore rule if the producer can recreate it, and run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::InitializeRepository => Remediation {
+            summary: "Place the workspace in the intended Git repository".into(),
+            steps: vec![
+                "Confirm the correct repository boundary for this workspace".into(),
+                "Initialize or clone that repository, then add tracked .gitignore and .gitattributes policy files".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::InstallGit => Remediation {
+            summary: "Make a standard Git executable available to Unica".into(),
+            steps: vec![
+                "Install Git or correct the process PATH used to launch Unica".into(),
+                "Verify git --version from the same execution environment".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::RetryInspection => Remediation {
+            summary: "Restore a complete trustworthy Git inspection".into(),
+            steps: vec![
+                "Resolve the reported timeout, truncated output, malformed protocol, or repository access error".into(),
+                "Do not infer a pass from the partial result".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::UpgradeGitForPartialClone => Remediation {
+            summary: "Restore local-only staged inspection for this partial clone".into(),
+            steps: vec![
+                "Confirm that this repository is intentionally configured as a partial/promisor clone".into(),
+                "Use Git 2.46 or newer from the same environment that launches Unica, or inspect a complete local non-promisor clone according to the repository owner's policy".into(),
+                "Run unica.project.status again; do not infer a pass from the blocked inspection".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::TrackIgnorePolicy => Remediation {
+            summary: "Add the required generated path to portable repository ignore policy".into(),
+            steps: vec![
+                "Add a narrow matching rule to a repository .gitignore; do not rely on global excludes or .git/info/exclude".into(),
+                "Stage the policy file with git add -- .gitignore (or the exact nested .gitignore path)".into(),
+                "If the generated path is already tracked, review it and remove only the generated path from the index".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::ReviewTrackedGeneratedPath => Remediation {
+            summary: "Review and stop tracking only the proven generated path".into(),
+            steps: vec![
+                "Confirm that every listed path is generated and contains no source data".into(),
+                "Add a narrow tracked .gitignore rule and remove only the approved generated paths from the index".into(),
+                "Review the staged deletion before committing, then run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::TrackPortableAttributes => Remediation {
+            summary: "Move the required attributes into tracked repository policy".into(),
+            steps: vec![
+                "Copy the required narrow rules from local, global, or .git/info/attributes policy into a tracked .gitattributes file".into(),
+                "Preserve the intended valid text policy for proven text roles (eol=lf or eol=crlf) and -text for proven binary roles".into(),
+                "Stage .gitattributes, review the effective attributes, and run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::TrackTextAttributes => Remediation {
+            summary: "Declare portable text attributes for the proven text resources".into(),
+            steps: vec![
+                "Add or refine a tracked .gitattributes rule that assigns text eol=lf to the exact text role".into(),
+                "Keep XDTOPackages/**/Ext/Package.bin classified as text even when other *.bin files are binary".into(),
+                "Stage .gitattributes and renormalize the affected paths, then review the staged diff".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::TrackBinaryAttributes => Remediation {
+            summary: "Declare portable binary attributes for the proven binary resources".into(),
+            steps: vec![
+                "Add a tracked .gitattributes rule with -text for the exact binary role or narrow path".into(),
+                "Do not use a broad *.bin rule without a later text override for XDTO Package.bin".into(),
+                "Stage .gitattributes and review the affected paths".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::CorrectTextRole => Remediation {
+            summary: "Remove the binary classification from the proven text resource".into(),
+            steps: vec![
+                "Find the tracked .gitattributes rule that applies -text or binary to the listed text path".into(),
+                "Replace or override it with a narrower text eol=lf rule for the proven text role".into(),
+                "Stage .gitattributes, renormalize the affected path, and review the staged diff".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::NormalizeIndexEol => Remediation {
+            summary: "Renormalize the affected text blobs to LF in the Git index".into(),
+            steps: vec![
+                "First ensure a tracked .gitattributes rule classifies the listed paths as text and normalizes their index blobs; either a valid eol=lf or eol=crlf worktree policy may remain".into(),
+                "Run git add --renormalize -- <affected paths> and review the staged diff before committing".into(),
+                "Run unica.project.status again".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::NormalizeWorkingEol => Remediation {
+            summary: "Rewrite each affected working-tree text file with one supported EOL style".into(),
+            steps: vec![
+                "Rewrite the complete file consistently as LF or CRLF; do not preserve mixed or bare-CR endings".into(),
+                "Ensure tracked .gitattributes still classifies the path as text and preserves the intended valid worktree policy; eol=lf and eol=crlf are both supported while the index remains normalized".into(),
+                "Stage and review the affected file, then run unica.project.status again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1167,6 +1379,43 @@ mod tests {
         );
         assert!(!report.repository_ready);
         assert_eq!(report.diagnostics[0].code, "git.inspection_incomplete");
+    }
+
+    #[test]
+    fn partial_clone_blocker_explains_the_actual_safe_corrections() {
+        let snapshot = snapshot_with(
+            vec![ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryAttributes,
+                source_set: None,
+                reason: "Git 2.45 in a partial clone cannot guarantee local-only staged blob reads; Git 2.46 or newer is required".into(),
+            }],
+            vec![observation(
+                ProjectCheckId::RepositoryAttributes,
+                None,
+                ProjectCheckOutcome::NotRun {
+                    reason: "partial clone is unsafe with this Git version".into(),
+                },
+            )],
+        );
+
+        let report = evaluate_project_health(snapshot).unwrap();
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.inspection_incomplete")
+            .unwrap();
+
+        assert!(diagnostic
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains("Git 2.46")));
+        assert!(diagnostic
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains("non-promisor clone")));
+        assert!(diagnostic.remediation.commands.is_empty());
     }
 
     #[test]
@@ -1265,9 +1514,211 @@ mod tests {
         assert_eq!(command.program, "git");
         assert_eq!(command.cwd, "/repo");
         assert_eq!(
-            command.args,
+            command.argv,
             ["rm", "--cached", "--", "src/line\nbreak/ConfigDumpInfo.xml"]
         );
+
+        let serialized = serde_json::to_value(&report).unwrap();
+        let serialized_command = &serialized["diagnostics"][0]["remediation"]["commands"][0];
+        assert_eq!(
+            serialized_command["argv"][3],
+            "src/line\nbreak/ConfigDumpInfo.xml"
+        );
+        assert!(serialized_command.get("args").is_none());
+    }
+
+    #[test]
+    fn source_root_remediation_tells_ai_how_to_separate_the_export() {
+        let report = evaluate_project_health(snapshot_with(
+            vec![ProjectHealthFact::SourceRootIsWorkspace {
+                source_set: "main".into(),
+                path: ".".into(),
+                evidence: vec!["normalized identity: /repo".into()],
+            }],
+            Vec::new(),
+        ))
+        .unwrap();
+        let remediation = &report.diagnostics[0].remediation;
+
+        assert!(remediation.summary.contains("source root"));
+        assert!(remediation
+            .steps
+            .iter()
+            .any(|step| step.contains("v8project.yaml") && step.contains("path")));
+        assert!(remediation
+            .steps
+            .iter()
+            .any(|step| step.contains("strict child") || step.contains("subdirectory")));
+    }
+
+    #[test]
+    fn ignore_and_attribute_remediations_name_the_tracked_policy_files() {
+        let report = evaluate_project_health(snapshot_with(
+            vec![
+                ProjectHealthFact::IgnoreRuleMissing {
+                    source_set: Some("main".into()),
+                    path: "src/.build/.unica-health-probe".into(),
+                },
+                ProjectHealthFact::TextPolicyMissing {
+                    source_set: "main".into(),
+                    path: "src/A.xml".into(),
+                },
+                ProjectHealthFact::BinaryPolicyMissing {
+                    source_set: "main".into(),
+                    path: "src/Picture.bin".into(),
+                },
+            ],
+            Vec::new(),
+        ))
+        .unwrap();
+
+        let ignore = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.ignore_rule_missing")
+            .unwrap();
+        assert!(ignore
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains(".gitignore") && step.contains("git add")));
+
+        let text = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.text_policy_missing")
+            .unwrap();
+        assert!(text
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains(".gitattributes") && step.contains("text eol=lf")));
+
+        let binary = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.binary_policy_missing")
+            .unwrap();
+        assert!(binary
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains(".gitattributes") && step.contains("-text")));
+    }
+
+    #[test]
+    fn eol_remediations_explain_index_and_worktree_corrections() {
+        let report = evaluate_project_health(snapshot_with(
+            vec![
+                ProjectHealthFact::IndexEolNotLf {
+                    source_set: "main".into(),
+                    path: "src/A.xml".into(),
+                    observed: "crlf".into(),
+                },
+                ProjectHealthFact::MixedEol {
+                    source_set: "main".into(),
+                    path: "src/B.xml".into(),
+                },
+            ],
+            Vec::new(),
+        ))
+        .unwrap();
+
+        let index = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.index_eol_not_lf")
+            .unwrap();
+        assert!(index
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains("git add --renormalize")));
+        assert!(
+            !index
+                .remediation
+                .steps
+                .iter()
+                .any(|step| { step.contains("assigns text eol=lf") }),
+            "{:?}",
+            index.remediation.steps
+        );
+        let working = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.mixed_eol")
+            .unwrap();
+        assert!(working
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains("LF or CRLF")));
+        assert!(
+            working
+                .remediation
+                .steps
+                .iter()
+                .any(|step| { step.contains("eol=lf") && step.contains("eol=crlf") }),
+            "{:?}",
+            working.remediation.steps
+        );
+    }
+
+    #[test]
+    fn local_attributes_remediation_preserves_either_supported_text_policy() {
+        let report = evaluate_project_health(snapshot_with(
+            vec![ProjectHealthFact::AttributesLocalOnly {
+                source_set: "main".into(),
+                path: "src/A.xml".into(),
+                evidence: vec!["text=set, eol=crlf".into()],
+            }],
+            Vec::new(),
+        ))
+        .unwrap();
+
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.attributes_local_only")
+            .unwrap();
+        assert!(diagnostic
+            .remediation
+            .steps
+            .iter()
+            .any(|step| { step.contains("eol=lf") && step.contains("eol=crlf") }));
+    }
+
+    #[test]
+    fn incomplete_source_remediation_points_to_reported_input_not_only_v8project() {
+        let report = evaluate_project_health(snapshot_with(
+            vec![ProjectHealthFact::SourceInspectionIncomplete {
+                reason: "project source-map input must not be a symbolic link: /repo/src/.project"
+                    .into(),
+            }],
+            vec![ProjectCheckObservation {
+                id: ProjectCheckId::SourceDiscovery,
+                scope: ProjectCheckId::SourceDiscovery.scope(),
+                source_set: None,
+                outcome: ProjectCheckOutcome::NotRun {
+                    reason: "linked marker".into(),
+                },
+            }],
+        ))
+        .unwrap();
+
+        let remediation = &report.diagnostics[0].remediation;
+        assert!(
+            remediation
+                .steps
+                .iter()
+                .any(|step| { step.contains("evidence") || step.contains("reported input") }),
+            "{:?}",
+            remediation.steps
+        );
+        assert!(!remediation
+            .steps
+            .iter()
+            .all(|step| step.contains("v8project.yaml")));
     }
 
     #[test]
@@ -1421,6 +1872,28 @@ mod tests {
         assert_eq!(report.diagnostics[1].scope, DiagnosticScope::SourceSet);
     }
 
+    #[test]
+    fn repository_aggregate_check_fails_when_any_source_set_check_fails() {
+        let report = evaluate_project_health(snapshot_with(
+            vec![ProjectHealthFact::IgnoreRuleMissing {
+                source_set: Some("main".into()),
+                path: "src/.build/probe".into(),
+            }],
+            Vec::new(),
+        ))
+        .unwrap();
+
+        let aggregate = report
+            .checks
+            .iter()
+            .find(|check| {
+                check.id == ProjectCheckId::RepositoryIgnore.as_str() && check.source_set.is_none()
+            })
+            .unwrap();
+        assert_eq!(aggregate.status, ProjectCheckStatus::Failed);
+        assert!(aggregate.reason.is_some());
+    }
+
     fn snapshot_with(
         facts: Vec<ProjectHealthFact>,
         replacements: Vec<ProjectCheckObservation>,
@@ -1474,6 +1947,7 @@ mod tests {
                 path: "src".into(),
                 source_format: SourceFormat::PlatformXml,
                 format_evidence: vec!["Configuration.xml".into()],
+                format_probe_error: None,
             }]),
             source_targets_complete: true,
             observations,

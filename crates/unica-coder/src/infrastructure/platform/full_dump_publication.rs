@@ -1373,6 +1373,8 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             args: execution_args,
             cwd: context.cwd.clone(),
             env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: match invocation {
                 FullDumpInvocation::BuildDump => Some(BUILD_DUMP_TIMEOUT),
                 FullDumpInvocation::RuntimeExecute => None,
@@ -7514,6 +7516,8 @@ fn verify_platform_candidate(
         args: vec!["--version".to_string()],
         cwd: install_dir.to_path_buf(),
         env: Vec::new(),
+        env_remove: Vec::new(),
+        capture_limits: None,
         timeout: Some(PLATFORM_PROBE_TIMEOUT),
         cancellation: cancellation.clone(),
     })?;

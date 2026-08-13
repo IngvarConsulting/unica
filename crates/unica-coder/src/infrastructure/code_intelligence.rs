@@ -103,6 +103,8 @@ impl<'a> GitGrepProvider<'a> {
             args,
             cwd: context.source_root.path.clone(),
             env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(timeout),
             cancellation: cancellation.clone(),
         };
