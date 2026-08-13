@@ -1895,15 +1895,23 @@ network = "allow"
             ]
             called_tools = {call["tool"] for call in standin_calls}
             self.assertIn("graph", called_tools)
-            self.assertIn("rlm_execute", called_tools)
-            self.assertTrue(
-                any(
-                    "find_definition" in str(call["arguments"].get("code", ""))
-                    for call in standin_calls
-                    if call["tool"] == "rlm_execute"
-                ),
-                standin_calls,
-            )
+            self.assertIn("search", called_tools)
+            if sys.platform == "darwin":
+                self.assertIn("rlm_execute", called_tools)
+                self.assertTrue(
+                    any(
+                        "find_definition" in str(call["arguments"].get("code", ""))
+                        for call in standin_calls
+                        if call["tool"] == "rlm_execute"
+                    ),
+                    standin_calls,
+                )
+            else:
+                self.assertNotIn(
+                    "rlm_execute",
+                    called_tools,
+                    "RLM must fail closed where a source-revision fence is unavailable",
+                )
             self.assertGreater(len(v8std.calls), 0)
             self.assertEqual({call["path"] for call in v8std.calls}, {"/mcp"})
             self.assertTrue(
