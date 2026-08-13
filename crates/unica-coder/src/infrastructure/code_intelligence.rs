@@ -20,7 +20,7 @@ use crate::infrastructure::workspace_services::{
     WorkspaceServiceManager, WorkspaceServiceRlmCall,
 };
 use serde_json::{json, Map, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const SEARCH_CAPABILITIES: &[ProviderCapability] = &[ProviderCapability::Search];
@@ -107,23 +107,26 @@ impl<'a> GitGrepProvider<'a> {
         let mut hits = Vec::new();
         let mut diagnostics = Vec::new();
         let mut fatal = None;
-        let mut consume =
-            |line_number: usize, bytes: &[u8]| match parse_git_grep_record(bytes, context) {
-                Ok(hit) => {
-                    hits.push(hit);
-                    if hits.len() >= request.limit {
-                        StreamControl::Stop
-                    } else {
-                        StreamControl::Continue
-                    }
-                }
-                Err(error) => {
-                    diagnostics.push(format!(
-                        "ignored malformed git-grep record #{line_number}: {error}"
-                    ));
+        let mut consume = |line_number: usize, bytes: &[u8]| match parse_git_grep_record(
+            bytes,
+            context,
+            cancellation,
+        ) {
+            Ok(hit) => {
+                hits.push(hit);
+                if hits.len() >= request.limit {
+                    StreamControl::Stop
+                } else {
                     StreamControl::Continue
                 }
-            };
+            }
+            Err(error) => {
+                diagnostics.push(format!(
+                    "ignored malformed git-grep record #{line_number}: {error}"
+                ));
+                StreamControl::Continue
+            }
+        };
         let output = match self
             .runner
             .run_streaming(&command, 1024 * 1024, &mut consume)
@@ -311,7 +314,8 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             .search(context, arguments, timeout, cancellation)
         {
             Ok(output) => {
-                let mut section = parse_bsl_analyzer_search(&output.result_text, context);
+                let mut section =
+                    parse_bsl_analyzer_search(&output.result_text, context, cancellation);
                 let retain_stderr = match section.status {
                     ProviderSectionStatus::Ok
                     | ProviderSectionStatus::Empty
@@ -613,7 +617,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             timeout,
             cancellation,
         ) {
-            Ok(result) => parse_rlm_search(&result, context),
+            Ok(result) => parse_rlm_search(&result, context, cancellation),
             Err(error) => failed_section(ProviderId::Rlm, error),
         }
     }
@@ -646,7 +650,11 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
     }
 }
 
-fn parse_rlm_search(text: &str, context: &CodeIntelligenceContext) -> ProviderSearchSection {
+fn parse_rlm_search(
+    text: &str,
+    context: &CodeIntelligenceContext,
+    cancellation: &CancellationToken,
+) -> ProviderSearchSection {
     let value: Value = match serde_json::from_str(text.trim()) {
         Ok(value) => value,
         Err(error) => {
@@ -668,7 +676,7 @@ fn parse_rlm_search(text: &str, context: &CodeIntelligenceContext) -> ProviderSe
     let mut hits = Vec::new();
     let mut diagnostics = Vec::new();
     for (index, row) in rows.iter().enumerate() {
-        match parse_rlm_search_row(row, hits.len() + 1, context) {
+        match parse_rlm_search_row(row, hits.len() + 1, context, cancellation) {
             Ok(hit) => hits.push(hit),
             Err(error) => {
                 diagnostics.push(format!("ignored malformed RLM result #{index}: {error}"))
@@ -696,6 +704,7 @@ fn parse_rlm_search_row(
     row: &Value,
     rank: usize,
     context: &CodeIntelligenceContext,
+    cancellation: &CancellationToken,
 ) -> Result<ProviderSearchHit, String> {
     let object = row
         .as_object()
@@ -750,7 +759,7 @@ fn parse_rlm_search_row(
     Ok(ProviderSearchHit {
         rank: Some(rank),
         provider_score: detail.get("rank").and_then(Value::as_f64),
-        location: unaddressable_location(context, &path),
+        location: project_search_location(context, Path::new(&path), cancellation)?,
         line,
         end_line,
         symbol,
@@ -763,6 +772,7 @@ fn parse_rlm_search_row(
 fn parse_bsl_analyzer_search(
     text: &str,
     context: &CodeIntelligenceContext,
+    cancellation: &CancellationToken,
 ) -> ProviderSearchSection {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed == "No results found." {
@@ -792,10 +802,10 @@ fn parse_bsl_analyzer_search(
             if let Some(hit) = current.take() {
                 hits.push(hit);
             }
-            match parse_bsl_analyzer_header(line, context) {
-                Some(hit) => current = Some(hit),
-                None => diagnostics.push(format!(
-                    "ignored malformed bsl-analyzer search header: {line}"
+            match parse_bsl_analyzer_header(line, context, cancellation) {
+                Ok(hit) => current = Some(hit),
+                Err(error) => diagnostics.push(format!(
+                    "ignored malformed bsl-analyzer search header: {error}"
                 )),
             }
         } else if let Some(graph_id) = line.strip_prefix("graph_id:") {
@@ -858,31 +868,60 @@ fn parse_bsl_analyzer_search(
 fn parse_bsl_analyzer_header(
     line: &str,
     context: &CodeIntelligenceContext,
-) -> Option<ProviderSearchHit> {
-    let after_hash = line.strip_prefix('#')?;
-    let (rank, after_rank) = after_hash.split_once(' ')?;
-    let rank = rank.parse::<usize>().ok()?;
-    let after_open = after_rank.strip_prefix('[')?;
-    let (modality, after_modality) = after_open.split_once("] ")?;
-    let (location, symbol_and_kind) = after_modality.split_once(" :: ")?;
-    let line_separator = location.rfind(':')?;
+    cancellation: &CancellationToken,
+) -> Result<ProviderSearchHit, String> {
+    let after_hash = line
+        .strip_prefix('#')
+        .ok_or_else(|| "rank marker is missing".to_string())?;
+    let (rank, after_rank) = after_hash
+        .split_once(' ')
+        .ok_or_else(|| "rank separator is missing".to_string())?;
+    let rank = rank
+        .parse::<usize>()
+        .map_err(|_| "rank is not a positive integer".to_string())?;
+    let after_open = after_rank
+        .strip_prefix('[')
+        .ok_or_else(|| "modality marker is missing".to_string())?;
+    let (modality, after_modality) = after_open
+        .split_once("] ")
+        .ok_or_else(|| "modality terminator is missing".to_string())?;
+    let (location, symbol_and_kind) = after_modality
+        .split_once(" :: ")
+        .ok_or_else(|| "symbol separator is missing".to_string())?;
+    let line_separator = location
+        .rfind(':')
+        .ok_or_else(|| "line separator is missing".to_string())?;
     let path = location[..line_separator].trim();
     let line_range = &location[line_separator + 1..];
     let (line_start, end_line) = match line_range.split_once('-') {
         Some((start, end)) => (
-            start.parse::<usize>().ok()?,
-            Some(end.parse::<usize>().ok()?),
+            start
+                .parse::<usize>()
+                .map_err(|_| "line start is not a positive integer".to_string())?,
+            Some(
+                end.parse::<usize>()
+                    .map_err(|_| "line end is not a positive integer".to_string())?,
+            ),
         ),
-        None => (line_range.parse::<usize>().ok()?, None),
+        None => (
+            line_range
+                .parse::<usize>()
+                .map_err(|_| "line is not a positive integer".to_string())?,
+            None,
+        ),
     };
-    let symbol_and_kind = symbol_and_kind.strip_suffix(')')?;
-    let (symbol, kind) = symbol_and_kind.rsplit_once(" (")?;
+    let symbol_and_kind = symbol_and_kind
+        .strip_suffix(')')
+        .ok_or_else(|| "symbol kind terminator is missing".to_string())?;
+    let (symbol, kind) = symbol_and_kind
+        .rsplit_once(" (")
+        .ok_or_else(|| "symbol kind is missing".to_string())?;
     let mut attributes = Map::new();
     attributes.insert("modality".to_string(), json!(modality));
-    Some(ProviderSearchHit {
+    Ok(ProviderSearchHit {
         rank: Some(rank),
         provider_score: None,
-        location: unaddressable_location(context, &path.replace('\\', "/")),
+        location: project_search_location(context, Path::new(path), cancellation)?,
         line: line_start,
         end_line,
         symbol: Some(symbol.to_string()),
@@ -983,6 +1022,7 @@ fn git_grep_stream_section(
 fn parse_git_grep_record(
     record: &[u8],
     context: &CodeIntelligenceContext,
+    cancellation: &CancellationToken,
 ) -> Result<ProviderSearchHit, String> {
     let mut parts = record.splitn(3, |byte| *byte == 0);
     let path = std::str::from_utf8(parts.next().ok_or("path is missing")?)
@@ -999,17 +1039,10 @@ fn parse_git_grep_record(
         return Err("path is empty".to_string());
     }
     let relative = PathBuf::from(path.replace('\\', "/"));
-    if context
-        .search_scope
-        .as_ref()
-        .is_some_and(|scope| !scope.accepts(&relative))
-    {
-        return Err("path is outside the logical search scope".to_string());
-    }
     Ok(ProviderSearchHit {
         rank: None,
         provider_score: None,
-        location: project_search_location(context, &relative),
+        location: project_search_location(context, &relative, cancellation)?,
         line: line_number,
         end_line: None,
         symbol: None,
@@ -1021,8 +1054,20 @@ fn parse_git_grep_record(
 
 fn project_search_location(
     context: &CodeIntelligenceContext,
-    relative_path: &std::path::Path,
-) -> SourceLocation {
+    provider_path: &Path,
+    cancellation: &CancellationToken,
+) -> Result<SourceLocation, String> {
+    if cancellation.is_cancelled() {
+        return Err(cancelled_error("search result location projection stopped"));
+    }
+    let relative_path = contained_provider_relative_path(context, provider_path)?;
+    if context
+        .search_scope
+        .as_ref()
+        .is_some_and(|scope| !scope.accepts(&relative_path))
+    {
+        return Err("provider path is outside the logical search scope".to_string());
+    }
     let source_set = context
         .source_root
         .source_set
@@ -1035,25 +1080,87 @@ fn project_search_location(
     match crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
         &context.workspace,
         &request,
-        &CancellationToken::new(),
+        cancellation,
     ) {
-        Ok(located) if located.rejection.is_none() => SourceLocation::Addressed {
+        Ok(located) if located.rejection.is_none() => Ok(SourceLocation::Addressed {
             source_set,
             metadata_path: located.metadata_path,
             target_kind: located
                 .target_kind
                 .unwrap_or(crate::domain::source_target::TargetKind::SourceRoot),
-        },
-        Ok(located) => SourceLocation::Unaddressable {
+        }),
+        Ok(located)
+            if located.rejection
+                == Some(crate::domain::source_location::LocateRejection::OutsideSourceSet) =>
+        {
+            Err("provider path is outside sourceSet".to_string())
+        }
+        Ok(located) => Ok(SourceLocation::Unaddressable {
             source_set,
             owner_metadata_path: located.owner_metadata_path,
             path: located.relative_path,
-        },
-        Err(_) => SourceLocation::Unaddressable {
+        }),
+        Err(error) if error.starts_with(CANCELLED_PREFIX) => Err(error),
+        Err(_) => Ok(SourceLocation::Unaddressable {
             source_set,
             owner_metadata_path: None,
             path: relative_path.to_string_lossy().replace('\\', "/"),
-        },
+        }),
+    }
+}
+
+fn contained_provider_relative_path(
+    context: &CodeIntelligenceContext,
+    provider_path: &Path,
+) -> Result<PathBuf, String> {
+    let raw_text = provider_path.to_string_lossy().replace('\\', "/");
+    if raw_text.is_empty() || foreign_absolute_path(&raw_text) {
+        return Err("provider path is outside sourceSet".to_string());
+    }
+    let normalized_root =
+        crate::infrastructure::source_roots::normalize_path_identity(&context.source_root.path)
+            .map_err(|_| "sourceSet path identity is unavailable".to_string())?;
+    let raw = Path::new(&raw_text);
+    let candidates = if raw.is_absolute() {
+        vec![raw.to_path_buf()]
+    } else {
+        vec![
+            context.workspace.workspace_root.join(raw),
+            context.source_root.path.join(raw),
+        ]
+    };
+    for candidate in candidates {
+        let Ok(normalized) =
+            crate::infrastructure::source_roots::normalize_path_identity(&candidate)
+        else {
+            continue;
+        };
+        let Ok(relative) = normalized.strip_prefix(&normalized_root) else {
+            continue;
+        };
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        return Ok(relative.to_path_buf());
+    }
+    Err("provider path is outside sourceSet".to_string())
+}
+
+fn foreign_absolute_path(path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        let bytes = path.as_bytes();
+        (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/')
+            || path.starts_with("//")
     }
 }
 
@@ -1119,18 +1226,6 @@ fn failed_section(provider: ProviderId, diagnostic: String) -> ProviderSearchSec
     ProviderSearchSection::failed(provider.identity(), diagnostic)
 }
 
-fn unaddressable_location(context: &CodeIntelligenceContext, path: &str) -> SourceLocation {
-    SourceLocation::Unaddressable {
-        source_set: context
-            .source_root
-            .source_set
-            .clone()
-            .unwrap_or_else(|| "legacy".to_string()),
-        owner_metadata_path: None,
-        path: path.replace('\\', "/"),
-    }
-}
-
 #[cfg(test)]
 fn location_path(location: &SourceLocation) -> &str {
     match location {
@@ -1142,8 +1237,8 @@ fn location_path(location: &SourceLocation) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        location_path, parse_bsl_analyzer_search, parse_rlm_search, rlm_search_unready_error,
-        BslAnalyzerProvider, BslSearchClient, GitGrepProvider, RlmProvider, RlmSearchClient,
+        location_path, rlm_search_unready_error, BslAnalyzerProvider, BslSearchClient,
+        GitGrepProvider, RlmProvider, RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::cancellation::CANCELLED_PREFIX;
@@ -1152,6 +1247,7 @@ mod tests {
         CodeIntelligenceRegistry, CodeSearchScope, ProviderCapability, ProviderDeadline,
         ProviderId, ProviderSectionStatus, RelativeSearchFilter, SearchRequest,
     };
+    use crate::domain::source_location::SourceLocation;
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
@@ -1182,6 +1278,20 @@ mod tests {
                 .expect("manual test clock must be initialized");
             *current.borrow_mut() = Some(now + duration);
         });
+    }
+
+    fn parse_bsl_analyzer_search(
+        text: &str,
+        context: &CodeIntelligenceContext,
+    ) -> crate::domain::code_intelligence::ProviderSearchSection {
+        super::parse_bsl_analyzer_search(text, context, &CancellationToken::new())
+    }
+
+    fn parse_rlm_search(
+        text: &str,
+        context: &CodeIntelligenceContext,
+    ) -> crate::domain::code_intelligence::ProviderSearchSection {
+        super::parse_rlm_search(text, context, &CancellationToken::new())
     }
 
     struct FakeRunner {
@@ -1231,6 +1341,86 @@ mod tests {
             timed_out: false,
             cancelled: false,
             stdout_truncated: false,
+        }
+    }
+
+    fn assert_sales_module_location(location: &SourceLocation) {
+        let SourceLocation::Addressed {
+            source_set,
+            metadata_path,
+            target_kind,
+        } = location
+        else {
+            panic!("expected an addressed search location, got {location:?}");
+        };
+        assert_eq!(source_set, "main");
+        assert_eq!(
+            metadata_path.as_ref().map(|path| path.as_str()),
+            Some("CommonModule.Sales.Module")
+        );
+        assert_eq!(
+            *target_kind,
+            crate::domain::source_target::TargetKind::Module
+        );
+    }
+
+    #[test]
+    fn every_search_provider_uses_the_same_logical_location_projection() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace_root = temporary.path().join("workspace");
+        let source_root = workspace_root.join("src");
+        let descriptor = source_root.join("CommonModules/Sales.xml");
+        let module = source_root.join("CommonModules/Sales/Ext/Module.bsl");
+        std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+        std::fs::write(
+            workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            descriptor,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Sales</Name></Properties></CommonModule></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(&module, "Procedure Post()\nEndProcedure\n").unwrap();
+        let context = CodeIntelligenceContext::new(
+            WorkspaceContext {
+                cwd: workspace_root.clone(),
+                workspace_root: workspace_root.clone(),
+                cache_root: workspace_root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            ResolvedSourceRoot {
+                source_set: Some("main".to_string()),
+                path: source_root,
+            },
+        );
+
+        let rlm = parse_rlm_search(
+            r#"[{"text":"Post","source_type":"method","path":"CommonModules/Sales/Ext/Module.bsl","detail":{"line":1}}]"#,
+            &context,
+        );
+        let analyzer = parse_bsl_analyzer_search(
+            "#1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n",
+            &context,
+        );
+        let runner = FakeRunner {
+            output: output("CommonModules/Sales/Ext/Module.bsl\x001\x00Procedure Post()\n"),
+            commands: Mutex::new(Vec::new()),
+        };
+        let lexical = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context,
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        for section in [&rlm, &analyzer, &lexical] {
+            assert_eq!(section.status, ProviderSectionStatus::Ok);
+            assert_sales_module_location(&section.hits[0].location);
         }
     }
 
@@ -1486,9 +1676,33 @@ mod tests {
     }
 
     #[test]
-    fn bsl_analyzer_ranked_text_parser_preserves_modality_graph_id_and_windows_paths() {
+    fn git_grep_does_not_publish_a_parent_escape_as_a_location() {
+        let runner = FakeRunner {
+            output: output("../outside/Secret.bsl\x002\x00Password = 1;\n"),
+            commands: Mutex::new(Vec::new()),
+        };
+
+        let section = GitGrepProvider::with_runner(&runner).search(
+            &SearchRequest {
+                query: "Password".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+        assert!(!serde_json::to_string(&section)
+            .unwrap()
+            .contains("Secret.bsl"));
+    }
+
+    #[test]
+    fn bsl_analyzer_ranked_text_parser_projects_absolute_paths_inside_source_set() {
         let section = parse_bsl_analyzer_search(
-            "#1 [L+S] C:\\repo\\src\\CommonModules\\Sales\\Ext\\Module.bsl:42-58 :: Post (procedure)\n\
+            "#1 [L+S] /workspace/src/CommonModules/Sales/Ext/Module.bsl:42-58 :: Post (procedure)\n\
                graph_id: method/common/Sales/Post\n\
                │ Procedure Post()\n\
                │     Return;\n\
@@ -1504,7 +1718,7 @@ mod tests {
         assert_eq!(section.hits.len(), 2);
         assert_eq!(
             location_path(&section.hits[0].location),
-            "C:/repo/src/CommonModules/Sales/Ext/Module.bsl"
+            "CommonModules/Sales/Ext/Module.bsl"
         );
         assert_eq!(section.hits[0].line, 42);
         assert_eq!(section.hits[0].end_line, Some(58));
@@ -1537,6 +1751,21 @@ mod tests {
             section.hits.iter().map(|hit| hit.rank).collect::<Vec<_>>(),
             vec![Some(1), Some(2)]
         );
+    }
+
+    #[test]
+    fn bsl_analyzer_does_not_publish_an_absolute_path_outside_source_set() {
+        let section = parse_bsl_analyzer_search(
+            "#1 [L] /outside/Secret.bsl:2 :: Password (variable)\n\
+               │ Password = 1;\n",
+            &context(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+        assert!(!serde_json::to_string(&section)
+            .unwrap()
+            .contains("Secret.bsl"));
     }
 
     #[test]
@@ -1839,6 +2068,25 @@ mod tests {
         assert!(section.hits.is_empty());
         assert_eq!(section.diagnostics.len(), 3);
         assert!(section.diagnostics[0].contains("no valid rows"));
+    }
+
+    #[test]
+    fn rlm_does_not_publish_an_absolute_path_outside_source_set() {
+        let section = parse_rlm_search(
+            r#"[{
+                "text": "Password",
+                "source_type": "variable",
+                "path": "/outside/Secret.bsl",
+                "detail": {"line": 2}
+            }]"#,
+            &context(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+        assert!(!serde_json::to_string(&section)
+            .unwrap()
+            .contains("Secret.bsl"));
     }
 
     #[test]
