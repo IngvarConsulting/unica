@@ -51,6 +51,13 @@ enum WorkingIgnoreInspection {
     Incomplete(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IgnoreInspectionError {
+    Malformed(String),
+    Cancelled,
+    TimedOut,
+}
+
 pub(crate) struct GitRepositoryInspection {
     pub(crate) repository_root: Option<PathBuf>,
     pub(crate) entries: Vec<GitIndexEntry>,
@@ -172,6 +179,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 return Ok(discovery_failed(
                     ProjectHealthFact::GitExecutableUnavailable { reason: error },
                     "Git executable is unavailable",
+                    &layout.roots,
                 ));
             }
             Err(error) => {
@@ -182,6 +190,7 @@ impl<'a> GitRepositoryInspector<'a> {
                         reason: error,
                     },
                     "Git discovery failed",
+                    &layout.roots,
                 ));
             }
         };
@@ -195,6 +204,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     source_set: None,
                 },
                 "Git discovery timed out",
+                &layout.roots,
             ));
         }
         if output_incomplete(&discovery) {
@@ -205,6 +215,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     reason: completeness_reason(&discovery),
                 },
                 "Git discovery output is incomplete",
+                &layout.roots,
             ));
         }
         if !discovery.status_success {
@@ -216,6 +227,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 return Ok(discovery_failed(
                     ProjectHealthFact::GitRepositoryAbsent,
                     "Workspace is not inside a Git work tree",
+                    &layout.roots,
                 ));
             }
             return Ok(discovery_failed(
@@ -225,6 +237,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     reason: nonzero_reason(&discovery),
                 },
                 "Git discovery failed",
+                &layout.roots,
             ));
         }
         let (root_text, inside) = if let Some(root) = discovery.stdout.strip_suffix("\ntrue\n") {
@@ -238,6 +251,7 @@ impl<'a> GitRepositoryInspector<'a> {
             return Ok(discovery_failed(
                 ProjectHealthFact::GitRepositoryAbsent,
                 "Workspace is not inside a Git work tree",
+                &layout.roots,
             ));
         }
         if root_text.is_empty() || inside != "true" {
@@ -248,6 +262,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     reason: "git rev-parse returned an unrecognized response".into(),
                 },
                 "Git discovery returned an unrecognized response",
+                &layout.roots,
             ));
         }
         let repository_root = match normalize_path_identity(Path::new(root_text)) {
@@ -260,6 +275,7 @@ impl<'a> GitRepositoryInspector<'a> {
                         reason,
                     },
                     "Git repository root is invalid",
+                    &layout.roots,
                 ));
             }
         };
@@ -273,6 +289,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     reason: "Git repository root does not contain the workspace".into(),
                 },
                 "Git repository root does not contain the workspace",
+                &layout.roots,
             ));
         }
 
@@ -285,6 +302,9 @@ impl<'a> GitRepositoryInspector<'a> {
             deadline,
         ) {
             Ok(output) => output,
+            Err(_) if cancellation.is_cancelled() => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
             Err(reason) => {
                 observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
                 facts.push(ProjectHealthFact::GitInspectionIncomplete {
@@ -292,7 +312,11 @@ impl<'a> GitRepositoryInspector<'a> {
                     source_set: None,
                     reason,
                 });
-                append_not_run_after_index(&mut observations, "Git index inspection failed");
+                append_not_run_after_index(
+                    &mut observations,
+                    &layout.roots,
+                    "Git index inspection failed",
+                );
                 return Ok(GitRepositoryInspection {
                     repository_root: Some(repository_root),
                     entries: Vec::new(),
@@ -314,7 +338,11 @@ impl<'a> GitRepositoryInspector<'a> {
                 check: ProjectCheckId::RepositoryIndex,
                 source_set: None,
             });
-            append_not_run_after_index(&mut observations, "Git index inspection timed out");
+            append_not_run_after_index(
+                &mut observations,
+                &layout.roots,
+                "Git index inspection timed out",
+            );
             return Ok(GitRepositoryInspection {
                 repository_root: Some(repository_root),
                 entries: Vec::new(),
@@ -335,7 +363,11 @@ impl<'a> GitRepositoryInspector<'a> {
                 source_set: None,
                 reason,
             });
-            append_not_run_after_index(&mut observations, "Git index output is incomplete");
+            append_not_run_after_index(
+                &mut observations,
+                &layout.roots,
+                "Git index output is incomplete",
+            );
             return Ok(GitRepositoryInspection {
                 repository_root: Some(repository_root),
                 entries: Vec::new(),
@@ -361,6 +393,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     });
                     append_not_run_after_index(
                         &mut observations,
+                        &layout.roots,
                         "Git index parsing exceeded the inspection deadline",
                     );
                     return Ok(GitRepositoryInspection {
@@ -380,6 +413,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     });
                     append_not_run_after_index(
                         &mut observations,
+                        &layout.roots,
                         "Git index records are malformed",
                     );
                     return Ok(GitRepositoryInspection {
@@ -394,7 +428,11 @@ impl<'a> GitRepositoryInspector<'a> {
         observations.push(completed(ProjectCheckId::RepositoryIndex));
 
         if !layout.repository_targets_complete {
-            append_not_run_after_index(&mut observations, "source-set targets are incomplete");
+            append_not_run_after_index(
+                &mut observations,
+                &layout.roots,
+                "source-set targets are incomplete",
+            );
             return Ok(GitRepositoryInspection {
                 repository_root: Some(repository_root),
                 entries,
@@ -553,6 +591,20 @@ impl<'a> GitRepositoryInspector<'a> {
             ),
         }
 
+        let incomplete_ignore_roots = layout
+            .roots
+            .iter()
+            .filter(|root| {
+                matches!(
+                    root.source_set.kind,
+                    SourceSetKind::Configuration | SourceSetKind::Extension
+                ) && matches!(
+                    root.source_set.source_format,
+                    SourceFormat::Unknown | SourceFormat::Invalid
+                )
+            })
+            .collect::<Vec<_>>();
+
         let candidates = ignore_candidates(&repository_root, context, &layout.roots);
         let mut input = Vec::new();
         for candidate in &candidates {
@@ -610,8 +662,14 @@ impl<'a> GitRepositoryInspector<'a> {
             cancellation,
             deadline,
         );
-        let ignore = match self.runner.run_with_input(&ignore_command, &input) {
+        let ignore = match sticky_process_result(
+            self.runner.run_with_input(&ignore_command, &input),
+            cancellation,
+        ) {
             Ok(output) => output,
+            Err(_) if cancellation.is_cancelled() => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
             Err(reason) => {
                 observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
                 append_not_run_for_roots(
@@ -671,7 +729,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 reason,
             });
         } else {
-            match parse_check_ignore_verbose_z(&ignore.stdout) {
+            match parse_check_ignore_verbose_z_controlled(&ignore.stdout, cancellation, deadline) {
                 Ok(matches) => {
                     let working_matches = if matches.len() < candidates.len() {
                         inspect_working_ignore_matches(
@@ -686,20 +744,92 @@ impl<'a> GitRepositoryInspector<'a> {
                     };
                     match working_matches {
                         WorkingIgnoreInspection::Complete(working_matches) => {
-                            observations.push(completed(ProjectCheckId::RepositoryIgnore));
-                            append_completed_for_roots(
-                                &mut observations,
-                                ProjectCheckId::RepositoryIgnore,
-                                &layout.roots,
-                            );
-                            append_ignore_facts(
-                                &mut facts,
+                            let ignore_fact_result = ignore_facts_with_checkpoint(
                                 &candidates,
                                 &matches,
                                 &working_matches,
                                 &entries,
                                 staged_ignore_root.path(),
+                                &mut || ignore_inspection_checkpoint(cancellation, deadline),
                             );
+                            match ignore_fact_result {
+                                Ok(mut ignore_facts) => {
+                                    observations.push(if incomplete_ignore_roots.is_empty() {
+                                        completed(ProjectCheckId::RepositoryIgnore)
+                                    } else {
+                                        not_run(
+                                            ProjectCheckId::RepositoryIgnore,
+                                            "source format is incomplete, so format-dependent ignore targets are unknown",
+                                        )
+                                    });
+                                    append_completed_for_roots(
+                                        &mut observations,
+                                        ProjectCheckId::RepositoryIgnore,
+                                        layout.roots.iter().filter(|root| {
+                                            !incomplete_ignore_roots
+                                                .iter()
+                                                .any(|incomplete| std::ptr::eq(*incomplete, *root))
+                                        }),
+                                    );
+                                    append_not_run_for_roots(
+                                        &mut observations,
+                                        ProjectCheckId::RepositoryIgnore,
+                                        incomplete_ignore_roots.iter().copied(),
+                                        "source format is incomplete, so format-dependent ignore targets are unknown",
+                                    );
+                                    if !incomplete_ignore_roots.is_empty() {
+                                        ignore_facts.retain(|fact| match fact {
+                                            ProjectHealthFact::IgnoreRuleMissing {
+                                                source_set,
+                                                ..
+                                            }
+                                            | ProjectHealthFact::IgnoreRuleLocalOnly {
+                                                source_set,
+                                                ..
+                                            } => source_set.as_deref().is_some_and(|source_set| {
+                                                !incomplete_ignore_roots
+                                                    .iter()
+                                                    .any(|root| root.source_set.name == source_set)
+                                            }),
+                                            _ => true,
+                                        });
+                                    }
+                                    facts.extend(ignore_facts);
+                                }
+                                Err(IgnoreInspectionError::Cancelled) => {
+                                    return Err(ProjectHealthInspectionError::Cancelled)
+                                }
+                                Err(IgnoreInspectionError::TimedOut) => {
+                                    let reason = "Git ignore fact composition timed out";
+                                    observations
+                                        .push(not_run(ProjectCheckId::RepositoryIgnore, reason));
+                                    append_not_run_for_roots(
+                                        &mut observations,
+                                        ProjectCheckId::RepositoryIgnore,
+                                        &layout.roots,
+                                        reason,
+                                    );
+                                    facts.push(ProjectHealthFact::GitInspectionTimeout {
+                                        check: ProjectCheckId::RepositoryIgnore,
+                                        source_set: None,
+                                    });
+                                }
+                                Err(IgnoreInspectionError::Malformed(reason)) => {
+                                    observations
+                                        .push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
+                                    append_not_run_for_roots(
+                                        &mut observations,
+                                        ProjectCheckId::RepositoryIgnore,
+                                        &layout.roots,
+                                        &reason,
+                                    );
+                                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                                        check: ProjectCheckId::RepositoryIgnore,
+                                        source_set: None,
+                                        reason,
+                                    });
+                                }
+                            }
                         }
                         WorkingIgnoreInspection::TimedOut => {
                             let reason = "working-tree Git ignore provenance inspection timed out";
@@ -731,7 +861,24 @@ impl<'a> GitRepositoryInspector<'a> {
                         }
                     }
                 }
-                Err(reason) => {
+                Err(IgnoreInspectionError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(IgnoreInspectionError::TimedOut) => {
+                    let reason = "Git ignore protocol parsing timed out";
+                    observations.push(not_run(ProjectCheckId::RepositoryIgnore, reason));
+                    append_not_run_for_roots(
+                        &mut observations,
+                        ProjectCheckId::RepositoryIgnore,
+                        &layout.roots,
+                        reason,
+                    );
+                    facts.push(ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIgnore,
+                        source_set: None,
+                    });
+                }
+                Err(IgnoreInspectionError::Malformed(reason)) => {
                     observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
                     append_not_run_for_roots(
                         &mut observations,
@@ -863,8 +1010,21 @@ impl<'a> GitRepositoryInspector<'a> {
         if deadline.remaining().is_zero() {
             return Ok(timeout_output());
         }
-        self.runner
-            .run(&process_command(cwd, args, cancellation, deadline))
+        let result = self
+            .runner
+            .run(&process_command(cwd, args, cancellation, deadline));
+        sticky_process_result(result, cancellation)
+    }
+}
+
+fn sticky_process_result(
+    result: Result<ProcessOutput, String>,
+    cancellation: &CancellationToken,
+) -> Result<ProcessOutput, String> {
+    if cancellation.is_cancelled() {
+        Err("cancelled: project health Git inspection".into())
+    } else {
+        result
     }
 }
 
@@ -902,7 +1062,7 @@ fn inspect_staged_blob_read_safety(
         cancellation,
         deadline,
     );
-    let partial_clone = match runner.run(&partial_clone) {
+    let partial_clone = match sticky_process_result(runner.run(&partial_clone), cancellation) {
         Ok(output) => output,
         Err(_) if cancellation.is_cancelled() => {
             return Err(ProjectHealthInspectionError::Cancelled)
@@ -941,7 +1101,7 @@ fn inspect_staged_blob_read_safety(
     }
 
     let version = process_command(repository_root, ["version"], cancellation, deadline);
-    let version = match runner.run(&version) {
+    let version = match sticky_process_result(runner.run(&version), cancellation) {
         Ok(output) => output,
         Err(_) if cancellation.is_cancelled() => {
             return Err(ProjectHealthInspectionError::Cancelled)
@@ -1050,7 +1210,7 @@ pub(crate) fn classify_staged_config_dump_info(
                 cancellation,
                 deadline,
             );
-            let classified = match runner.run(&command) {
+            let classified = match sticky_process_result(runner.run(&command), cancellation) {
                 Ok(output) => {
                     if output.cancelled || cancellation.is_cancelled() {
                         return Err(ConfigDumpInfoIndexInspectionError::Cancelled);
@@ -1251,13 +1411,13 @@ fn completed(id: ProjectCheckId) -> ProjectCheckObservation {
     }
 }
 
-fn append_completed_for_roots(
+fn append_completed_for_roots<'a>(
     observations: &mut Vec<ProjectCheckObservation>,
     id: ProjectCheckId,
-    roots: &[InspectedSourceRoot],
+    roots: impl IntoIterator<Item = &'a InspectedSourceRoot>,
 ) {
     let mut source_sets = roots
-        .iter()
+        .into_iter()
         .map(|root| root.source_set.name.clone())
         .collect::<Vec<_>>();
     source_sets.sort();
@@ -1274,14 +1434,14 @@ fn append_completed_for_roots(
     );
 }
 
-fn append_not_run_for_roots(
+fn append_not_run_for_roots<'a>(
     observations: &mut Vec<ProjectCheckObservation>,
     id: ProjectCheckId,
-    roots: &[InspectedSourceRoot],
+    roots: impl IntoIterator<Item = &'a InspectedSourceRoot>,
     reason: &str,
 ) {
     let mut source_sets = roots
-        .iter()
+        .into_iter()
         .map(|root| root.source_set.name.clone())
         .collect::<Vec<_>>();
     source_sets.sort();
@@ -1311,7 +1471,11 @@ fn not_run(id: ProjectCheckId, reason: &str) -> ProjectCheckObservation {
     }
 }
 
-fn discovery_failed(fact: ProjectHealthFact, reason: &str) -> GitRepositoryInspection {
+fn discovery_failed(
+    fact: ProjectHealthFact,
+    reason: &str,
+    roots: &[InspectedSourceRoot],
+) -> GitRepositoryInspection {
     let discovery = if matches!(
         fact,
         ProjectHealthFact::GitInspectionTimeout { .. }
@@ -1329,6 +1493,9 @@ fn discovery_failed(fact: ProjectHealthFact, reason: &str) -> GitRepositoryInspe
         ProjectCheckId::RepositoryConfigDumpInfo,
     ] {
         observations.push(not_run(id, reason));
+        if id != ProjectCheckId::RepositoryIndex {
+            append_not_run_for_roots(&mut observations, id, roots, reason);
+        }
     }
     GitRepositoryInspection {
         repository_root: None,
@@ -1339,13 +1506,18 @@ fn discovery_failed(fact: ProjectHealthFact, reason: &str) -> GitRepositoryInspe
     }
 }
 
-fn append_not_run_after_index(observations: &mut Vec<ProjectCheckObservation>, reason: &str) {
+fn append_not_run_after_index(
+    observations: &mut Vec<ProjectCheckObservation>,
+    roots: &[InspectedSourceRoot],
+    reason: &str,
+) {
     for id in [
         ProjectCheckId::RepositoryIgnore,
         ProjectCheckId::RepositoryGeneratedPaths,
         ProjectCheckId::RepositoryConfigDumpInfo,
     ] {
         observations.push(not_run(id, reason));
+        append_not_run_for_roots(observations, id, roots, reason);
     }
 }
 
@@ -1442,22 +1614,68 @@ fn parse_git_index_entries_with_checkpoint(
 }
 
 fn parse_check_ignore_verbose_z(stdout: &str) -> Result<Vec<IgnoreMatch>, String> {
+    parse_check_ignore_verbose_z_with_checkpoint(stdout, &mut || Ok(())).map_err(
+        |error| match error {
+            IgnoreInspectionError::Malformed(reason) => reason,
+            IgnoreInspectionError::Cancelled => "Git ignore parsing was cancelled".into(),
+            IgnoreInspectionError::TimedOut => "Git ignore parsing timed out".into(),
+        },
+    )
+}
+
+fn parse_check_ignore_verbose_z_controlled(
+    stdout: &str,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<Vec<IgnoreMatch>, IgnoreInspectionError> {
+    parse_check_ignore_verbose_z_with_checkpoint(stdout, &mut || {
+        ignore_inspection_checkpoint(cancellation, deadline)
+    })
+}
+
+fn parse_check_ignore_verbose_z_with_checkpoint(
+    stdout: &str,
+    checkpoint: &mut dyn FnMut() -> Result<(), IgnoreInspectionError>,
+) -> Result<Vec<IgnoreMatch>, IgnoreInspectionError> {
+    checkpoint()?;
     if !stdout.is_empty() && !stdout.ends_with('\0') {
-        return Err("Git check-ignore output is missing its terminal NUL".into());
+        return Err(IgnoreInspectionError::Malformed(
+            "Git check-ignore output is missing its terminal NUL".into(),
+        ));
     }
-    let fields = stdout.split_terminator('\0').collect::<Vec<_>>();
-    if fields.len() % 4 != 0 {
-        return Err("Git check-ignore output is not a sequence of quadruples".into());
+    let mut fields = stdout.split_terminator('\0');
+    let mut matches = Vec::new();
+    let mut record_index = 0_usize;
+    loop {
+        if record_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        let Some(source) = fields.next() else { break };
+        let line = fields.next().ok_or_else(|| {
+            IgnoreInspectionError::Malformed(
+                "Git check-ignore output is not a sequence of quadruples".into(),
+            )
+        })?;
+        let pattern = fields.next().ok_or_else(|| {
+            IgnoreInspectionError::Malformed(
+                "Git check-ignore output is not a sequence of quadruples".into(),
+            )
+        })?;
+        let path = fields.next().ok_or_else(|| {
+            IgnoreInspectionError::Malformed(
+                "Git check-ignore output is not a sequence of quadruples".into(),
+            )
+        })?;
+        matches.push(IgnoreMatch {
+            source: source.into(),
+            line: line.into(),
+            pattern: pattern.into(),
+            path: path.into(),
+        });
+        record_index += 1;
     }
-    Ok(fields
-        .chunks_exact(4)
-        .map(|fields| IgnoreMatch {
-            source: fields[0].into(),
-            line: fields[1].into(),
-            pattern: fields[2].into(),
-            path: fields[3].into(),
-        })
-        .collect())
+    checkpoint()?;
+    Ok(matches)
 }
 
 fn ignore_candidates(
@@ -1505,27 +1723,40 @@ fn ignore_candidates(
     candidates
 }
 
-fn append_ignore_facts(
-    facts: &mut Vec<ProjectHealthFact>,
+fn ignore_facts_with_checkpoint(
     candidates: &[IgnoreCandidate],
     staged_matches: &[IgnoreMatch],
     working_matches: &[IgnoreMatch],
     entries: &[GitIndexEntry],
     staged_ignore_root: &Path,
-) {
-    let staged_by_path = staged_matches
-        .iter()
-        .map(|matched| (matched.path.as_str(), matched))
-        .collect::<BTreeMap<_, _>>();
-    let working_by_path = working_matches
-        .iter()
-        .map(|matched| (matched.path.as_str(), matched))
-        .collect::<BTreeMap<_, _>>();
-    let tracked = entries
-        .iter()
-        .map(|entry| entry.repo_path.as_str())
-        .collect::<BTreeSet<_>>();
-    for candidate in candidates {
+    checkpoint: &mut dyn FnMut() -> Result<(), IgnoreInspectionError>,
+) -> Result<Vec<ProjectHealthFact>, IgnoreInspectionError> {
+    let mut staged_by_path = BTreeMap::new();
+    for (match_index, matched) in staged_matches.iter().enumerate() {
+        if match_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        staged_by_path.insert(matched.path.as_str(), matched);
+    }
+    let mut working_by_path = BTreeMap::new();
+    for (match_index, matched) in working_matches.iter().enumerate() {
+        if match_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        working_by_path.insert(matched.path.as_str(), matched);
+    }
+    let mut tracked = BTreeSet::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        if entry_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        tracked.insert(entry.repo_path.as_str());
+    }
+    let mut facts = Vec::new();
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        if candidate_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
         let Some(matched) = staged_by_path.get(candidate.repo_path.as_str()) else {
             if let Some(local) = working_by_path.get(candidate.repo_path.as_str()) {
                 facts.push(ProjectHealthFact::IgnoreRuleLocalOnly {
@@ -1552,6 +1783,21 @@ fn append_ignore_facts(
                 origin: format!("{}:{}:{}", matched.source, matched.line, matched.pattern),
             });
         }
+    }
+    checkpoint()?;
+    Ok(facts)
+}
+
+fn ignore_inspection_checkpoint(
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<(), IgnoreInspectionError> {
+    if cancellation.is_cancelled() {
+        Err(IgnoreInspectionError::Cancelled)
+    } else if deadline.remaining().is_zero() {
+        Err(IgnoreInspectionError::TimedOut)
+    } else {
+        Ok(())
     }
 }
 
@@ -1629,9 +1875,13 @@ fn materialize_staged_ignore_files(
             remaining.saturating_add(1),
             crate::infrastructure::platform::STDERR_CAPTURE_LIMIT,
         ));
-        let output = runner
-            .run(&command)
-            .map_err(ProjectHealthInspectionError::Fatal)?;
+        let output = match sticky_process_result(runner.run(&command), cancellation) {
+            Ok(output) => output,
+            Err(_) if cancellation.is_cancelled() => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
+            Err(reason) => return Err(ProjectHealthInspectionError::Fatal(reason)),
+        };
         if output.cancelled || cancellation.is_cancelled() {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
@@ -1694,7 +1944,7 @@ fn inspect_working_ignore_matches(
         cancellation,
         deadline,
     );
-    let output = match runner.run_with_input(&command, input) {
+    let output = match sticky_process_result(runner.run_with_input(&command, input), cancellation) {
         Ok(output) => output,
         Err(_) if cancellation.is_cancelled() => {
             return Err(ProjectHealthInspectionError::Cancelled)
@@ -1715,9 +1965,13 @@ fn inspect_working_ignore_matches(
     if !output.status_success && !status_is_no_match(&output) {
         return Ok(WorkingIgnoreInspection::Incomplete(nonzero_reason(&output)));
     }
-    match parse_check_ignore_verbose_z(&output.stdout) {
+    match parse_check_ignore_verbose_z_controlled(&output.stdout, cancellation, deadline) {
         Ok(matches) => Ok(WorkingIgnoreInspection::Complete(matches)),
-        Err(reason) => Ok(WorkingIgnoreInspection::Incomplete(reason)),
+        Err(IgnoreInspectionError::Cancelled) => Err(ProjectHealthInspectionError::Cancelled),
+        Err(IgnoreInspectionError::TimedOut) => Ok(WorkingIgnoreInspection::TimedOut),
+        Err(IgnoreInspectionError::Malformed(reason)) => {
+            Ok(WorkingIgnoreInspection::Incomplete(reason))
+        }
     }
 }
 
@@ -1820,11 +2074,14 @@ mod tests {
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::project_health::{ProjectCheckId, ProjectCheckOutcome, ProjectHealthFact};
+    use crate::domain::project_health::{
+        ProjectCheckId, ProjectCheckOutcome, ProjectHealthFact, ProjectHealthInspectionError,
+    };
+    use crate::domain::project_sources::SourceFormat;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
     use crate::infrastructure::project_health::layout::SourceLayoutInspector;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2263,6 +2520,57 @@ mod tests {
     }
 
     #[test]
+    fn project_health_git_ignore_parser_honors_cooperative_checkpoint() {
+        let mut checkpoints = 0;
+        let error = super::parse_check_ignore_verbose_z_with_checkpoint(
+            concat!(
+                ".gitignore\0",
+                "1\0",
+                "**/.build/\0",
+                ".build/unica/probe\0"
+            ),
+            &mut || {
+                checkpoints += 1;
+                if checkpoints == 2 {
+                    Err(super::IgnoreInspectionError::TimedOut)
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, super::IgnoreInspectionError::TimedOut));
+    }
+
+    #[test]
+    fn project_health_git_ignore_fact_composition_is_all_or_nothing() {
+        let candidates = vec![super::IgnoreCandidate {
+            source_set: Some("main".into()),
+            repo_path: "src/.build/.unica-health-probe".into(),
+        }];
+        let entries = vec![GitIndexEntry {
+            repo_path: ".gitignore".into(),
+            blob_oid: Some("a".repeat(40)),
+            mode: Some("100644".into()),
+        }];
+
+        let result = super::ignore_facts_with_checkpoint(
+            &candidates,
+            &[],
+            &[],
+            &entries,
+            Path::new("/staged"),
+            &mut || Err(super::IgnoreInspectionError::TimedOut),
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::IgnoreInspectionError::TimedOut)
+        ));
+    }
+
+    #[test]
     fn git_no_match_requires_exact_exit_code_one() {
         let output = |status: &str| ProcessOutput {
             status: status.into(),
@@ -2327,6 +2635,30 @@ mod tests {
                 reason,
                 ..
             }] if reason.contains("Permission denied")
+        ));
+    }
+
+    #[test]
+    fn project_health_git_index_error_after_cancellation_cancels_inspection() {
+        let fixture = health_fixture(false);
+        let cancellation = CancellationToken::new();
+        let runner = LateCancellingIndexRunner {
+            repository_root: fixture.context.workspace_root.clone(),
+            cancellation: cancellation.clone(),
+            calls: Cell::new(0),
+        };
+        let layout = inspect_layout(&fixture.context);
+
+        let result = GitRepositoryInspector::with_runner(&runner).inspect_base(
+            &fixture.context,
+            &layout,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProjectHealthInspectionError::Cancelled)
         ));
     }
 
@@ -2957,6 +3289,160 @@ mod tests {
     }
 
     #[test]
+    fn unknown_and_invalid_source_formats_do_not_pass_format_dependent_ignore() {
+        for configured_format in [None, Some("UNSUPPORTED")] {
+            let fixture = health_fixture(true);
+            fs::remove_file(fixture.context.workspace_root.join("src/Configuration.xml")).unwrap();
+            let format = configured_format
+                .map(|value| format!("format: {value}\n"))
+                .unwrap_or_default();
+            fs::write(
+                fixture.context.workspace_root.join("v8project.yaml"),
+                format!(
+                    "{format}source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
+                ),
+            )
+            .unwrap();
+            fs::write(
+                fixture
+                    .context
+                    .workspace_root
+                    .join("src/ConfigDumpInfo.xml"),
+                "<ConfigDumpInfo/>",
+            )
+            .unwrap();
+            git(
+                &fixture.context.workspace_root,
+                &["add", "src/ConfigDumpInfo.xml"],
+            );
+            let layout = inspect_layout(&fixture.context);
+            assert!(matches!(
+                layout.roots[0].source_set.source_format,
+                SourceFormat::Unknown | SourceFormat::Invalid
+            ));
+
+            let inspection = GitRepositoryInspector::new()
+                .inspect_base(
+                    &fixture.context,
+                    &layout,
+                    &CancellationToken::new(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                )
+                .unwrap();
+
+            assert!(
+                inspection.observations.iter().any(|observation| {
+                    observation.id == ProjectCheckId::RepositoryIgnore
+                        && observation.source_set.as_deref() == Some("main")
+                        && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+                }),
+                "format={configured_format:?}; observations={:?}",
+                inspection.observations
+            );
+            assert!(
+                !inspection.facts.iter().any(|fact| matches!(
+                    fact,
+                    ProjectHealthFact::IgnoreRuleMissing { path, .. }
+                        | ProjectHealthFact::IgnoreRuleLocalOnly { path, .. }
+                        if path == "src/ConfigDumpInfo.xml"
+                )),
+                "format={configured_format:?}; facts={:?}",
+                inspection.facts
+            );
+            let mut observations = layout
+                .observations
+                .iter()
+                .cloned()
+                .chain(inspection.observations.iter().cloned())
+                .collect::<Vec<_>>();
+            observations.extend(
+                crate::infrastructure::project_health::resources::resource_observations(
+                    layout.source_sets.iter().flatten(),
+                    "source-set targets are incomplete",
+                    layout.source_targets_complete,
+                ),
+            );
+            let snapshot = crate::domain::project_health::ProjectHealthSnapshot {
+                workspace_root: fixture.context.workspace_root.display().to_string(),
+                cache_root: fixture.context.cache_root.display().to_string(),
+                repository_root: inspection
+                    .repository_root
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                source_sets: layout.source_sets.clone(),
+                source_targets_complete: layout.source_targets_complete,
+                observations,
+                facts: layout
+                    .facts
+                    .iter()
+                    .cloned()
+                    .chain(inspection.facts.iter().cloned())
+                    .collect(),
+            };
+            assert!(
+                crate::domain::project_health::evaluate_project_health(snapshot).is_ok(),
+                "format={configured_format:?}; facts={:?}",
+                inspection.facts
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_format_does_not_suppress_ignore_for_a_proven_sibling_set() {
+        let fixture = health_fixture(true);
+        fs::create_dir_all(fixture.context.workspace_root.join("unknown")).unwrap();
+        fs::write(
+            fixture.context.workspace_root.join("v8project.yaml"),
+            "source-set:\n  - name: designer\n    type: CONFIGURATION\n    path: src\n  - name: unknown\n    type: CONFIGURATION\n    path: unknown\n",
+        )
+        .unwrap();
+        fs::write(
+            fixture.context.workspace_root.join(".gitignore"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        git(&fixture.context.workspace_root, &["add", ".gitignore"]);
+        let layout = inspect_layout(&fixture.context);
+
+        let inspection = GitRepositoryInspector::new()
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+            )
+            .unwrap();
+
+        assert!(
+            inspection.observations.iter().any(|observation| {
+                observation.id == ProjectCheckId::RepositoryIgnore
+                    && observation.source_set.as_deref() == Some("designer")
+                    && matches!(observation.outcome, ProjectCheckOutcome::Completed)
+            }),
+            "{:?}",
+            inspection.observations
+        );
+        assert!(
+            inspection.observations.iter().any(|observation| {
+                observation.id == ProjectCheckId::RepositoryIgnore
+                    && observation.source_set.as_deref() == Some("unknown")
+                    && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+            }),
+            "{:?}",
+            inspection.observations
+        );
+        assert!(
+            inspection.observations.iter().any(|observation| {
+                observation.id == ProjectCheckId::RepositoryIgnore
+                    && observation.source_set.is_none()
+                    && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+            }),
+            "{:?}",
+            inspection.observations
+        );
+    }
+
+    #[test]
     fn project_health_working_ignore_timeout_is_not_reported_as_a_missing_rule() {
         let fixture = health_fixture(true);
         let no_match = || ProcessOutput {
@@ -3201,6 +3687,36 @@ mod tests {
     struct HealthFixture {
         _temp: TempDir,
         context: WorkspaceContext,
+    }
+
+    struct LateCancellingIndexRunner {
+        repository_root: PathBuf,
+        cancellation: CancellationToken,
+        calls: Cell<usize>,
+    }
+
+    impl ProcessRunner for LateCancellingIndexRunner {
+        fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            let call = self.calls.get();
+            self.calls.set(call + 1);
+            if call == 0 {
+                Ok(process_output(
+                    true,
+                    &format!("{}\ntrue\n", self.repository_root.display()),
+                ))
+            } else {
+                self.cancellation.cancel();
+                Err("index process failed after cancellation".into())
+            }
+        }
+
+        fn run_with_input(
+            &self,
+            command: &ProcessCommand,
+            _input: &[u8],
+        ) -> Result<ProcessOutput, String> {
+            self.run(command)
+        }
     }
 
     fn health_fixture(initialize_git: bool) -> HealthFixture {

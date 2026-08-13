@@ -103,6 +103,57 @@ fn project_health_full_portable_repository_is_ready() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn project_health_mixed_platform_and_nested_edt_publish_profile_specific_checks() {
+    let root = temp_root("mixed-platform-edt");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("src/edt")).unwrap();
+    fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+    fs::write(root.join("src/edt/.project"), "<projectDescription/>\n").unwrap();
+    fs::write(root.join("src/edt/Foo.xml"), "<edt/>\n").unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "source-set:\n  - name: designer\n    type: CONFIGURATION\n    path: src\n  - name: edt\n    type: CONFIGURATION\n    path: src/edt\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+    git(&root, &["add", "."]);
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    for check in [
+        "repository.attributes",
+        "repository.index_eol",
+        "repository.working_eol",
+        "repository.lfs",
+    ] {
+        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row["sourceSet"] == "designer"
+                && row["status"] == "passed"
+        }), "{check}/designer: {data}");
+        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row["sourceSet"] == "edt"
+                && row["status"] == "notApplicable"
+        }), "{check}/edt: {data}");
+    }
+    assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.text_policy_missing"
+            && diagnostic["paths"].as_array().is_some_and(|paths| {
+                paths.iter().any(|path| path == "src/edt/Foo.xml")
+            })
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
 #[cfg(unix)]
 #[test]
 fn project_health_does_not_execute_configured_fsmonitor_hook() {

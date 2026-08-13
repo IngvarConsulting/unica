@@ -582,17 +582,44 @@ fn validate_snapshot(snapshot: &ProjectHealthSnapshot) -> Result<(), String> {
             return snapshot_error(format!("missing observation for {}", required.as_str()));
         }
     }
-    if snapshot.source_targets_complete {
-        let Some(source_sets) = snapshot.source_sets.as_ref() else {
-            return snapshot_error(
-                "source targets are complete but sourceSets are unavailable".into(),
-            );
-        };
+    if snapshot.source_targets_complete && snapshot.source_sets.is_none() {
+        return snapshot_error("source targets are complete but sourceSets are unavailable".into());
+    }
+    if let Some(source_sets) = snapshot.source_sets.as_ref() {
+        let mut source_set_name_counts = BTreeMap::<&str, usize>::new();
         for source_set in source_sets {
+            *source_set_name_counts
+                .entry(source_set.name.as_str())
+                .or_default() += 1;
+        }
+        for source_set in source_sets {
+            if source_set_name_counts.get(source_set.name.as_str()) != Some(&1) {
+                continue;
+            }
             for required in [
                 ProjectCheckId::SourceLayout,
                 ProjectCheckId::SourceFormat,
                 ProjectCheckId::SourceGeneratedPaths,
+            ] {
+                if !snapshot.observations.iter().any(|observation| {
+                    observation.id == required
+                        && observation.source_set.as_deref() == Some(source_set.name.as_str())
+                }) {
+                    return snapshot_error(format!(
+                        "missing {} observation for source set {}",
+                        required.as_str(),
+                        source_set.name
+                    ));
+                }
+            }
+            for required in [
+                ProjectCheckId::RepositoryIgnore,
+                ProjectCheckId::RepositoryGeneratedPaths,
+                ProjectCheckId::RepositoryConfigDumpInfo,
+                ProjectCheckId::RepositoryAttributes,
+                ProjectCheckId::RepositoryIndexEol,
+                ProjectCheckId::RepositoryWorkingEol,
+                ProjectCheckId::RepositoryLfs,
             ] {
                 if !snapshot.observations.iter().any(|observation| {
                     observation.id == required
@@ -1820,6 +1847,20 @@ mod tests {
     }
 
     #[test]
+    fn complete_source_targets_require_every_per_set_repository_check() {
+        let mut snapshot = snapshot_with(Vec::new(), Vec::new());
+        snapshot.observations.retain(|observation| {
+            !(observation.id == ProjectCheckId::RepositoryAttributes
+                && observation.source_set.as_deref() == Some("main"))
+        });
+
+        let error = evaluate_project_health(snapshot).unwrap_err();
+
+        assert!(error.contains("repository.attributes"), "{error}");
+        assert!(error.contains("main"), "{error}");
+    }
+
+    #[test]
     fn git_inspection_fact_rejects_a_source_scoped_check_id() {
         let snapshot = snapshot_with(
             vec![ProjectHealthFact::GitInspectionTimeout {
@@ -1921,6 +1962,7 @@ mod tests {
         observations.extend(
             [
                 ProjectCheckId::RepositoryIgnore,
+                ProjectCheckId::RepositoryGeneratedPaths,
                 ProjectCheckId::RepositoryConfigDumpInfo,
                 ProjectCheckId::RepositoryAttributes,
                 ProjectCheckId::RepositoryIndexEol,

@@ -7,15 +7,13 @@ pub(crate) const PROJECT_HEALTH_STDOUT_CAPTURE_LIMIT: usize = 64 * 1024 * 1024;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::project_health::{
-    ProjectCheckId, ProjectCheckObservation, ProjectCheckOutcome, ProjectHealthInspectionError,
-    ProjectHealthSnapshot,
+    ProjectCheckId, ProjectCheckOutcome, ProjectHealthInspectionError, ProjectHealthSnapshot,
 };
-use crate::domain::project_sources::SourceFormat;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{system_process_runner, ProcessRunner};
 use git::GitRepositoryInspector;
 use layout::SourceLayoutInspector;
-use resources::SourceResourcePolicyInspector;
+use resources::{resource_observations, SourceResourcePolicyInspector};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -181,6 +179,19 @@ fn inspect_project_health_with(
     observations.extend(git.observations);
     let mut facts = layout.facts;
     facts.extend(git.facts);
+    let declared_source_sets = uniquely_addressable_source_sets(layout.source_sets.as_deref());
+    let repository_matrix_reason = if !layout.source_targets_complete {
+        "source-set targets are incomplete"
+    } else if git.repository_root.is_none() {
+        "Git repository root is unavailable"
+    } else {
+        "repository check was not reached"
+    };
+    complete_repository_matrix(
+        &mut observations,
+        &declared_source_sets,
+        repository_matrix_reason,
+    );
     let runtime_sidecars = facts
         .iter()
         .filter_map(|fact| match fact {
@@ -208,11 +219,6 @@ fn inspect_project_health_with(
         observations.extend(resources.observations);
         facts.extend(resources.facts);
     } else {
-        let platform_xml_policy_not_applicable = layout.source_targets_complete
-            && layout
-                .roots
-                .iter()
-                .all(|root| root.source_set.source_format != SourceFormat::PlatformXml);
         let reason = if !layout.source_targets_complete {
             "source-set targets are incomplete"
         } else if let Some(reason) = git.resource_inspection_blocker.as_deref() {
@@ -222,35 +228,24 @@ fn inspect_project_health_with(
         } else {
             "Git repository root is unavailable"
         };
-        for id in [
-            ProjectCheckId::RepositoryAttributes,
-            ProjectCheckId::RepositoryIndexEol,
-            ProjectCheckId::RepositoryWorkingEol,
-            ProjectCheckId::RepositoryLfs,
-        ] {
-            observations.push(ProjectCheckObservation {
-                id,
-                scope: id.scope(),
-                source_set: None,
-                outcome: if platform_xml_policy_not_applicable {
-                    ProjectCheckOutcome::NotApplicable {
-                        reason: "no Platform XML source roots were proven".into(),
-                    }
-                } else {
-                    ProjectCheckOutcome::NotRun {
-                        reason: reason.into(),
-                    }
-                },
-            });
-        }
-        if let Some(reason) = git.resource_inspection_blocker.as_ref() {
-            facts.push(
-                crate::domain::project_health::ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryAttributes,
-                    source_set: None,
-                    reason: reason.clone(),
-                },
-            );
+        observations.extend(resource_observations(
+            declared_source_sets.iter().copied(),
+            reason,
+            layout.source_targets_complete,
+        ));
+        let platform_resource_policy_required = declared_source_sets.iter().any(|source_set| {
+            source_set.source_format == crate::domain::project_sources::SourceFormat::PlatformXml
+        });
+        if platform_resource_policy_required {
+            if let Some(reason) = git.resource_inspection_blocker.as_ref() {
+                facts.push(
+                    crate::domain::project_health::ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryAttributes,
+                        source_set: None,
+                        reason: reason.clone(),
+                    },
+                );
+            }
         }
     }
     Ok(ProjectHealthSnapshot {
@@ -262,6 +257,49 @@ fn inspect_project_health_with(
         observations,
         facts,
     })
+}
+
+fn complete_repository_matrix(
+    observations: &mut Vec<crate::domain::project_health::ProjectCheckObservation>,
+    source_sets: &[&crate::domain::project_sources::ProjectSourceSet],
+    reason: &str,
+) {
+    for source_set in source_sets {
+        for id in [
+            ProjectCheckId::RepositoryIgnore,
+            ProjectCheckId::RepositoryGeneratedPaths,
+            ProjectCheckId::RepositoryConfigDumpInfo,
+        ] {
+            if observations.iter().any(|observation| {
+                observation.id == id
+                    && observation.source_set.as_deref() == Some(source_set.name.as_str())
+            }) {
+                continue;
+            }
+            observations.push(crate::domain::project_health::ProjectCheckObservation {
+                id,
+                scope: id.scope(),
+                source_set: Some(source_set.name.clone()),
+                outcome: crate::domain::project_health::ProjectCheckOutcome::NotRun {
+                    reason: reason.into(),
+                },
+            });
+        }
+    }
+}
+
+fn uniquely_addressable_source_sets(
+    source_sets: Option<&[crate::domain::project_sources::ProjectSourceSet]>,
+) -> Vec<&crate::domain::project_sources::ProjectSourceSet> {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for source_set in source_sets.into_iter().flatten() {
+        *counts.entry(source_set.name.as_str()).or_default() += 1;
+    }
+    source_sets
+        .into_iter()
+        .flatten()
+        .filter(|source_set| counts.get(source_set.name.as_str()) == Some(&1))
+        .collect()
 }
 
 #[cfg(test)]
@@ -523,6 +561,15 @@ mod tests {
         )
         .unwrap();
 
+        assert!(
+            snapshot.observations.iter().all(|observation| {
+                observation.id != ProjectCheckId::RepositoryIndex
+                    || observation.source_set.is_none()
+            }),
+            "repository.index is repository-wide: {:?}",
+            snapshot.observations
+        );
+
         for check in [
             ProjectCheckId::RepositoryAttributes,
             ProjectCheckId::RepositoryIndexEol,
@@ -532,6 +579,7 @@ mod tests {
             assert!(
                 snapshot.observations.iter().any(|observation| {
                     observation.id == check
+                        && observation.source_set.as_deref() == Some("main")
                         && matches!(
                             observation.outcome,
                             ProjectCheckOutcome::NotApplicable { .. }
@@ -541,6 +589,164 @@ mod tests {
                 snapshot.observations
             );
         }
+    }
+
+    #[test]
+    fn mixed_source_sets_without_git_publish_complete_per_set_repository_matrix() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join("designer")).unwrap();
+        fs::create_dir_all(root.join("edt")).unwrap();
+        fs::write(root.join("designer/Configuration.xml"), "<MetaDataObject/>").unwrap();
+        fs::write(root.join("edt/.project"), "<projectDescription/>").unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "source-set:\n  - name: designer\n    type: CONFIGURATION\n    path: designer\n  - name: edt\n    type: CONFIGURATION\n    path: edt\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let snapshot = inspect_project_health_with_runner(
+            &context,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+            &NoGitRunner,
+        )
+        .unwrap();
+
+        for check in [
+            ProjectCheckId::RepositoryIgnore,
+            ProjectCheckId::RepositoryGeneratedPaths,
+            ProjectCheckId::RepositoryConfigDumpInfo,
+        ] {
+            for source_set in ["designer", "edt"] {
+                assert!(
+                    snapshot.observations.iter().any(|observation| {
+                        observation.id == check
+                            && observation.source_set.as_deref() == Some(source_set)
+                            && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+                    }),
+                    "{check:?}/{source_set}: {:?}",
+                    snapshot.observations
+                );
+            }
+        }
+        for check in [
+            ProjectCheckId::RepositoryAttributes,
+            ProjectCheckId::RepositoryIndexEol,
+            ProjectCheckId::RepositoryWorkingEol,
+            ProjectCheckId::RepositoryLfs,
+        ] {
+            assert!(
+                snapshot.observations.iter().any(|observation| {
+                    observation.id == check
+                        && observation.source_set.as_deref() == Some("designer")
+                        && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+                }),
+                "{check:?}/designer: {:?}",
+                snapshot.observations
+            );
+            assert!(
+                snapshot.observations.iter().any(|observation| {
+                    observation.id == check
+                        && observation.source_set.as_deref() == Some("edt")
+                        && matches!(
+                            observation.outcome,
+                            ProjectCheckOutcome::NotApplicable { .. }
+                        )
+                }),
+                "{check:?}/edt: {:?}",
+                snapshot.observations
+            );
+        }
+    }
+
+    #[test]
+    fn known_unsafe_source_set_without_git_still_has_a_complete_repository_matrix() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::write(root.join("src"), "not a directory").unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let snapshot = inspect_project_health_with_runner(
+            &context,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+            &NoGitRunner,
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.source_sets.as_ref().unwrap()[0].name, "main");
+        for check in [
+            ProjectCheckId::RepositoryIgnore,
+            ProjectCheckId::RepositoryGeneratedPaths,
+            ProjectCheckId::RepositoryConfigDumpInfo,
+            ProjectCheckId::RepositoryAttributes,
+            ProjectCheckId::RepositoryIndexEol,
+            ProjectCheckId::RepositoryWorkingEol,
+            ProjectCheckId::RepositoryLfs,
+        ] {
+            assert!(
+                snapshot.observations.iter().any(|observation| {
+                    observation.id == check
+                        && observation.source_set.as_deref() == Some("main")
+                        && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+                }),
+                "{check:?}: {:?}",
+                snapshot.observations
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_source_set_names_do_not_invent_an_addressable_repository_row() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::create_dir_all(root.join("b")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: a\n  - name: main\n    type: EXTENSION\n    path: b\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let snapshot = inspect_project_health_with_runner(
+            &context,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+            &NoGitRunner,
+        )
+        .unwrap();
+
+        assert!(snapshot.observations.iter().all(|observation| {
+            observation.source_set.as_deref() != Some("main")
+                || !matches!(
+                    observation.id.scope(),
+                    crate::domain::project_health::DiagnosticScope::Repository
+                )
+        }));
+        assert!(crate::domain::project_health::evaluate_project_health(snapshot).is_ok());
     }
 
     #[test]
@@ -563,6 +769,7 @@ mod tests {
         let runner = OldPartialCloneRunner {
             repository_root: root,
             commands: RefCell::new(Vec::new()),
+            index_paths: vec!["src/Configuration.xml".into()],
         };
 
         let snapshot = inspect_project_health_with_runner(
@@ -591,6 +798,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn edt_only_old_partial_clone_keeps_resource_checks_not_applicable() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/.project"), "<projectDescription/>").unwrap();
+        fs::write(root.join(".gitignore"), "**/.build/\n").unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let runner = OldPartialCloneRunner {
+            repository_root: root,
+            commands: RefCell::new(Vec::new()),
+            index_paths: vec!["src/.project".into(), ".gitignore".into()],
+        };
+
+        let snapshot = inspect_project_health_with_runner(
+            &context,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+            &runner,
+        )
+        .unwrap();
+        assert!(snapshot.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryIgnore
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
+        let report = crate::domain::project_health::evaluate_project_health(snapshot).unwrap();
+
+        for check in [
+            ProjectCheckId::RepositoryAttributes,
+            ProjectCheckId::RepositoryIndexEol,
+            ProjectCheckId::RepositoryWorkingEol,
+            ProjectCheckId::RepositoryLfs,
+        ] {
+            assert!(report.checks.iter().any(|reported| {
+                reported.id == check.as_str()
+                    && reported.source_set.as_deref() == Some("main")
+                    && reported.status
+                        == crate::domain::project_health::ProjectCheckStatus::NotApplicable
+            }));
+        }
+    }
+
     struct RecordingRunner {
         repository_root: PathBuf,
         commands: RefCell<Vec<ProcessCommand>>,
@@ -601,6 +860,7 @@ mod tests {
     struct OldPartialCloneRunner {
         repository_root: PathBuf,
         commands: RefCell<Vec<ProcessCommand>>,
+        index_paths: Vec<String>,
     }
 
     impl ProcessRunner for OldPartialCloneRunner {
@@ -611,10 +871,14 @@ mod tests {
                     true,
                     &format!("{}\ntrue\n", self.repository_root.display()),
                 )),
-                Some("ls-files") if command.args.iter().any(|arg| arg == "--stage") => Ok(output(
-                    true,
-                    &format!("100644 {} 0\tsrc/Configuration.xml\0", "a".repeat(40)),
-                )),
+                Some("ls-files") if command.args.iter().any(|arg| arg == "--stage") => {
+                    let stdout = self
+                        .index_paths
+                        .iter()
+                        .map(|path| format!("100644 {} 0\t{path}\0", "a".repeat(40)))
+                        .collect::<String>();
+                    Ok(output(true, &stdout))
+                }
                 Some("config") => Ok(output(true, "remote.origin.promisor\ntrue\0")),
                 Some("version") => Ok(output(true, "git version 2.40.1\n")),
                 Some(arg) if arg.starts_with("--work-tree=") => Ok(ProcessOutput {

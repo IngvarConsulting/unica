@@ -81,6 +81,13 @@ struct EolValues {
     worktree: String,
 }
 
+struct AttributePolicyEvaluation {
+    facts: Vec<ProjectHealthFact>,
+    local_only: BTreeSet<String>,
+    text_policy_missing: BTreeSet<String>,
+    text_marked_binary: BTreeSet<String>,
+}
+
 #[derive(Debug)]
 struct IsolatedGitIndex {
     _root: TempDir,
@@ -142,13 +149,8 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 source_sets: Vec::new(),
             })
         })?;
-        let owners = SourceRootOwnerIndex::new_with_checkpoint(
-            &repository_root,
-            roots
-                .iter()
-                .filter(|root| root.source_set.source_format == SourceFormat::PlatformXml),
-            checkpoint,
-        )?;
+        let owners =
+            SourceRootOwnerIndex::new_with_checkpoint(&repository_root, roots.iter(), checkpoint)?;
         let mut resources = Vec::new();
         checkpoint()?;
         for (entry_index, entry) in entries.iter().enumerate() {
@@ -178,6 +180,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 ));
             }
             let root = owners[0];
+            if root.source_set.source_format != SourceFormat::PlatformXml {
+                continue;
+            }
             let mut relative = String::new();
             for (component_index, component) in Path::new(&entry.repo_path)
                 .components()
@@ -253,7 +258,11 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         if cancellation.is_cancelled() {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
-        let mut observations = resource_observations(roots);
+        let mut observations = resource_observations(
+            roots.iter().map(|root| &root.source_set),
+            "repository resource check was not reached",
+            true,
+        );
         let resources = match Self::classify_with_checkpoint(
             repository_root,
             roots,
@@ -339,9 +348,23 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             deadline,
         ) {
             Ok(output) if semantic_success(&output) => {
-                match parse_attribute_records(&output.stdout, &paths) {
+                match parse_attribute_records_controlled(
+                    &output.stdout,
+                    &paths,
+                    cancellation,
+                    deadline,
+                ) {
                     Ok(records) => records,
-                    Err(reason) => {
+                    Err(ResourceProtocolParseError::Cancelled) => {
+                        return Err(ProjectHealthInspectionError::Cancelled)
+                    }
+                    Err(ResourceProtocolParseError::TimedOut) => {
+                        return Ok(timeout_policy(
+                            observations,
+                            ProjectCheckId::RepositoryAttributes,
+                        ));
+                    }
+                    Err(ResourceProtocolParseError::Malformed(reason)) => {
                         return Ok(incomplete_policy(
                             observations,
                             ProjectCheckId::RepositoryAttributes,
@@ -415,6 +438,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             deadline,
         ) {
             Ok(index) => index,
+            Err(_) if cancellation.is_cancelled() => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
             Err(reason) => {
                 return if cancellation.is_cancelled() {
                     Err(ProjectHealthInspectionError::Cancelled)
@@ -454,11 +480,28 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             cancellation,
             deadline,
         );
-        let staged = match self.runner.run_with_input(&staged_command, &input) {
+        let staged = match sticky_process_result(
+            self.runner.run_with_input(&staged_command, &input),
+            cancellation,
+        ) {
             Ok(output) if semantic_success(&output) => {
-                match parse_attribute_records(&output.stdout, &paths) {
+                match parse_attribute_records_controlled(
+                    &output.stdout,
+                    &paths,
+                    cancellation,
+                    deadline,
+                ) {
                     Ok(records) => records,
-                    Err(reason) => {
+                    Err(ResourceProtocolParseError::Cancelled) => {
+                        return Err(ProjectHealthInspectionError::Cancelled)
+                    }
+                    Err(ResourceProtocolParseError::TimedOut) => {
+                        return Ok(timeout_policy(
+                            observations,
+                            ProjectCheckId::RepositoryAttributes,
+                        ));
+                    }
+                    Err(ResourceProtocolParseError::Malformed(reason)) => {
                         return Ok(incomplete_policy(
                             observations,
                             ProjectCheckId::RepositoryAttributes,
@@ -483,52 +526,36 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 ));
             }
         };
-        let mut facts = Vec::new();
-        let mut local_only = BTreeSet::new();
-        let mut text_policy_missing = BTreeSet::new();
-        let mut text_marked_binary = BTreeSet::new();
-        for resource in &resources {
-            let attributes = &staged[&resource.repo_path];
-            let effective_attributes = &effective[&resource.repo_path];
-            let staged_policy_sufficient = policy_satisfied(resource.kind, attributes);
-            if !staged_policy_sufficient && policy_satisfied(resource.kind, effective_attributes) {
-                local_only.insert(resource.repo_path.clone());
-                facts.push(ProjectHealthFact::AttributesLocalOnly {
-                    source_set: resource.source_set.clone(),
-                    path: resource.repo_path.clone(),
-                    evidence: vec![format!(
-                        "local-only text={} eol={} filter={}",
-                        effective_attributes.text,
-                        effective_attributes.eol,
-                        effective_attributes.filter
-                    )],
-                });
-                continue;
+        let attribute_policy = match evaluate_attribute_policy_with_checkpoint(
+            &resources,
+            &staged,
+            &effective,
+            &mut || resource_protocol_checkpoint(cancellation, deadline),
+        ) {
+            Ok(policy) => policy,
+            Err(ResourceProtocolParseError::Cancelled) => {
+                return Err(ProjectHealthInspectionError::Cancelled)
             }
-            match resource.kind {
-                RepositoryResourceKind::Text if attributes.text == "unset" => {
-                    text_marked_binary.insert(resource.repo_path.clone());
-                    facts.push(ProjectHealthFact::TextResourceMarkedBinary {
-                        source_set: resource.source_set.clone(),
-                        path: resource.repo_path.clone(),
-                    });
-                }
-                RepositoryResourceKind::Text if !text_policy_satisfied(attributes) => {
-                    text_policy_missing.insert(resource.repo_path.clone());
-                    facts.push(ProjectHealthFact::TextPolicyMissing {
-                        source_set: resource.source_set.clone(),
-                        path: resource.repo_path.clone(),
-                    });
-                }
-                RepositoryResourceKind::Binary if attributes.text != "unset" => {
-                    facts.push(ProjectHealthFact::BinaryPolicyMissing {
-                        source_set: resource.source_set.clone(),
-                        path: resource.repo_path.clone(),
-                    });
-                }
-                RepositoryResourceKind::Text | RepositoryResourceKind::Binary => {}
+            Err(ResourceProtocolParseError::TimedOut) => {
+                return Ok(timeout_policy(
+                    observations,
+                    ProjectCheckId::RepositoryAttributes,
+                ));
             }
-        }
+            Err(ResourceProtocolParseError::Malformed(reason)) => {
+                return Ok(incomplete_policy(
+                    observations,
+                    ProjectCheckId::RepositoryAttributes,
+                    reason,
+                ));
+            }
+        };
+        let AttributePolicyEvaluation {
+            mut facts,
+            local_only,
+            text_policy_missing,
+            text_marked_binary,
+        } = attribute_policy;
         mark_check_completed(&mut observations, ProjectCheckId::RepositoryAttributes);
 
         let expected_text_resources = resources
@@ -570,98 +597,169 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 mode: Some("100644".into()),
             })
             .collect::<Vec<_>>();
-        let eol_entry_refs = eol_entries.iter().collect::<Vec<_>>();
-        let eol_index = match self.create_isolated_index(
-            repository_root,
-            &eol_entry_refs,
-            cancellation,
-            deadline,
+        let eol = if eol_entries.is_empty() {
+            BTreeMap::new()
+        } else {
+            let eol_entry_refs = eol_entries.iter().collect::<Vec<_>>();
+            let eol_index = match self.create_isolated_index(
+                repository_root,
+                &eol_entry_refs,
+                cancellation,
+                deadline,
+            ) {
+                Ok(index) => index,
+                Err(_) if cancellation.is_cancelled() => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(reason) => {
+                    mark_check_not_run(
+                        &mut observations,
+                        ProjectCheckId::RepositoryIndexEol,
+                        &reason,
+                    );
+                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndexEol,
+                        source_set: None,
+                        reason,
+                    });
+                    return Ok(RepositoryPolicyInspection {
+                        observations,
+                        facts,
+                    });
+                }
+            };
+            let eol_command = isolated_git_command(
+                repository_root,
+                &eol_index,
+                vec!["ls-files".into(), "--eol".into(), "-z".into()],
+                cancellation,
+                deadline,
+            );
+            let eol_output =
+                match sticky_process_result(self.runner.run(&eol_command), cancellation) {
+                    Ok(output) if semantic_success(&output) => output,
+                    Ok(output) if output.cancelled => {
+                        return Err(ProjectHealthInspectionError::Cancelled)
+                    }
+                    Ok(output) => {
+                        let reason = output_reason(&output);
+                        mark_check_not_run(
+                            &mut observations,
+                            ProjectCheckId::RepositoryIndexEol,
+                            &reason,
+                        );
+                        facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                            check: ProjectCheckId::RepositoryIndexEol,
+                            source_set: None,
+                            reason,
+                        });
+                        return Ok(RepositoryPolicyInspection {
+                            observations,
+                            facts,
+                        });
+                    }
+                    Err(reason) => {
+                        mark_check_not_run(
+                            &mut observations,
+                            ProjectCheckId::RepositoryIndexEol,
+                            &reason,
+                        );
+                        facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                            check: ProjectCheckId::RepositoryIndexEol,
+                            source_set: None,
+                            reason,
+                        });
+                        return Ok(RepositoryPolicyInspection {
+                            observations,
+                            facts,
+                        });
+                    }
+                };
+            let expected_text_eol_paths = expected_text_resources
+                .iter()
+                .map(|resource| resource.repo_path.clone())
+                .collect::<Vec<_>>();
+            match parse_eol_records_controlled(
+                &eol_output.stdout,
+                &expected_text_eol_paths,
+                cancellation,
+                deadline,
+            ) {
+                Ok(records) => records,
+                Err(ResourceProtocolParseError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(ResourceProtocolParseError::TimedOut) => {
+                    let reason = "Git EOL protocol parsing exceeded the inspection deadline";
+                    mark_check_not_run(
+                        &mut observations,
+                        ProjectCheckId::RepositoryIndexEol,
+                        reason,
+                    );
+                    facts.push(ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryIndexEol,
+                        source_set: None,
+                    });
+                    return Ok(RepositoryPolicyInspection {
+                        observations,
+                        facts,
+                    });
+                }
+                Err(ResourceProtocolParseError::Malformed(reason)) => {
+                    mark_check_not_run(
+                        &mut observations,
+                        ProjectCheckId::RepositoryIndexEol,
+                        &reason,
+                    );
+                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIndexEol,
+                        source_set: None,
+                        reason,
+                    });
+                    return Ok(RepositoryPolicyInspection {
+                        observations,
+                        facts,
+                    });
+                }
+            }
+        };
+        let index_eol_facts = match index_eol_facts_with_checkpoint(
+            &resources,
+            &eol,
+            &local_only,
+            &text_policy_missing,
+            &text_marked_binary,
+            &mut || resource_protocol_checkpoint(cancellation, deadline),
         ) {
-            Ok(index) => index,
-            Err(reason) => {
+            Ok(index_eol_facts) => index_eol_facts,
+            Err(ResourceProtocolParseError::Cancelled) => {
+                return Err(ProjectHealthInspectionError::Cancelled)
+            }
+            Err(ResourceProtocolParseError::TimedOut) => {
+                let reason = "Git index EOL evaluation exceeded the inspection deadline";
                 mark_check_not_run(
                     &mut observations,
                     ProjectCheckId::RepositoryIndexEol,
-                    &reason,
+                    reason,
                 );
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                facts.push(ProjectHealthFact::GitInspectionTimeout {
                     check: ProjectCheckId::RepositoryIndexEol,
                     source_set: None,
-                    reason,
                 });
                 return Ok(RepositoryPolicyInspection {
                     observations,
                     facts,
                 });
+            }
+            Err(ResourceProtocolParseError::Malformed(reason)) => {
+                return Ok(incomplete_policy(
+                    observations,
+                    ProjectCheckId::RepositoryIndexEol,
+                    reason,
+                ));
             }
         };
-        let eol_command = isolated_git_command(
-            repository_root,
-            &eol_index,
-            vec!["ls-files".into(), "--eol".into(), "-z".into()],
-            cancellation,
-            deadline,
-        );
-        let eol_output = match self.runner.run(&eol_command) {
-            Ok(output) if semantic_success(&output) => output,
-            Ok(output) if output.cancelled => return Err(ProjectHealthInspectionError::Cancelled),
-            Ok(output) => {
-                let reason = output_reason(&output);
-                mark_check_not_run(
-                    &mut observations,
-                    ProjectCheckId::RepositoryIndexEol,
-                    &reason,
-                );
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryIndexEol,
-                    source_set: None,
-                    reason,
-                });
-                return Ok(RepositoryPolicyInspection {
-                    observations,
-                    facts,
-                });
-            }
-            Err(reason) => {
-                mark_check_not_run(
-                    &mut observations,
-                    ProjectCheckId::RepositoryIndexEol,
-                    &reason,
-                );
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryIndexEol,
-                    source_set: None,
-                    reason,
-                });
-                return Ok(RepositoryPolicyInspection {
-                    observations,
-                    facts,
-                });
-            }
-        };
-        let expected_text_eol_paths = expected_text_resources
-            .iter()
-            .map(|resource| resource.repo_path.clone())
-            .collect::<Vec<_>>();
-        let eol = match parse_eol_records(&eol_output.stdout, &expected_text_eol_paths) {
-            Ok(records) => records,
-            Err(reason) => {
-                mark_check_not_run(
-                    &mut observations,
-                    ProjectCheckId::RepositoryIndexEol,
-                    &reason,
-                );
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryIndexEol,
-                    source_set: None,
-                    reason,
-                });
-                return Ok(RepositoryPolicyInspection {
-                    observations,
-                    facts,
-                });
-            }
-        };
+        facts.extend(index_eol_facts);
         mark_check_completed(&mut observations, ProjectCheckId::RepositoryIndexEol);
         let mut total_working_bytes = 0_u64;
         let mut working_incomplete = None;
@@ -671,9 +769,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         let mut lfs_timed_out = false;
         let mut binary_by_source = BTreeMap::<String, Vec<(String, u64)>>::new();
         for resource in &resources {
-            if local_only.contains(&resource.repo_path) {
-                continue;
-            }
             if cancellation.is_cancelled() {
                 return Err(ProjectHealthInspectionError::Cancelled);
             }
@@ -684,20 +779,12 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 }
                 continue;
             }
+            if local_only.contains(&resource.repo_path) {
+                continue;
+            }
             let attributes = &staged[&resource.repo_path];
             match resource.kind {
                 RepositoryResourceKind::Text => {
-                    let observed = &eol[&resource.repo_path];
-                    if !text_policy_missing.contains(&resource.repo_path)
-                        && !text_marked_binary.contains(&resource.repo_path)
-                        && !matches!(observed.index.as_str(), "lf" | "none")
-                    {
-                        facts.push(ProjectHealthFact::IndexEolNotLf {
-                            source_set: resource.source_set.clone(),
-                            path: resource.repo_path.clone(),
-                            observed: observed.index.clone(),
-                        });
-                    }
                     // `-text` is the primary policy defect for a known platform XML
                     // resource. Git deliberately stops treating that path as text, so
                     // any EOL interpretation derived from its working bytes would be a
@@ -806,31 +893,35 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 source_set: None,
             });
         } else if !lfs_incomplete {
-            mark_check_completed(&mut observations, ProjectCheckId::RepositoryLfs);
-        }
-        for (source_set, mut files) in binary_by_source
-            .into_iter()
-            .filter(|_| !lfs_incomplete && !lfs_timed_out)
-        {
-            files.sort_by(|left, right| left.0.cmp(&right.0));
-            let total_bytes = files
-                .iter()
-                .fold(0_u64, |total, (_, size)| total.saturating_add(*size));
-            let largest = files.iter().max_by_key(|(_, size)| *size);
-            if let Some((largest_path, largest_bytes)) = largest.filter(|(_, largest)| {
-                *largest >= LFS_SINGLE_FILE_THRESHOLD_BYTES
-                    || total_bytes >= LFS_AGGREGATE_THRESHOLD_BYTES
+            match lfs_facts_with_checkpoint(binary_by_source, &mut || {
+                resource_protocol_checkpoint(cancellation, deadline)
             }) {
-                facts.push(ProjectHealthFact::LfsConsider {
-                    source_set,
-                    count: files.len(),
-                    total_bytes,
-                    largest_path: largest_path.clone(),
-                    largest_bytes: *largest_bytes,
-                    single_threshold_bytes: LFS_SINGLE_FILE_THRESHOLD_BYTES,
-                    aggregate_threshold_bytes: LFS_AGGREGATE_THRESHOLD_BYTES,
-                    paths: files.into_iter().map(|(path, _)| path).collect(),
-                });
+                Ok(lfs_facts) => {
+                    facts.extend(lfs_facts);
+                    mark_check_completed(&mut observations, ProjectCheckId::RepositoryLfs);
+                }
+                Err(ResourceProtocolParseError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(ResourceProtocolParseError::TimedOut) => {
+                    mark_check_not_run(
+                        &mut observations,
+                        ProjectCheckId::RepositoryLfs,
+                        "deadline expired during LFS aggregation",
+                    );
+                    facts.push(ProjectHealthFact::GitInspectionTimeout {
+                        check: ProjectCheckId::RepositoryLfs,
+                        source_set: None,
+                    });
+                }
+                Err(ResourceProtocolParseError::Malformed(reason)) => {
+                    mark_check_not_run(&mut observations, ProjectCheckId::RepositoryLfs, &reason);
+                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryLfs,
+                        source_set: None,
+                        reason,
+                    });
+                }
             }
         }
         Ok(RepositoryPolicyInspection {
@@ -846,12 +937,13 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<ProcessOutput, String> {
-        self.runner.run(&process_command(
+        let result = self.runner.run(&process_command(
             cwd,
             args.into_iter().map(str::to_owned).collect(),
             cancellation,
             deadline,
-        ))
+        ));
+        sticky_process_result(result, cancellation)
     }
 
     fn run_with_input<const N: usize>(
@@ -879,8 +971,10 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<ProcessOutput, String> {
-        self.runner
-            .run_with_input(&process_command(cwd, args, cancellation, deadline), input)
+        let result = self
+            .runner
+            .run_with_input(&process_command(cwd, args, cancellation, deadline), input);
+        sticky_process_result(result, cancellation)
     }
 
     fn validate_resource_blob_sizes(
@@ -1087,7 +1181,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             cancellation,
             deadline,
         );
-        let output = self.runner.run(&initialize)?;
+        let output = sticky_process_result(self.runner.run(&initialize), cancellation)?;
         if !semantic_success(&output) {
             return Err(output_reason(&output));
         }
@@ -1121,7 +1215,10 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 cancellation,
                 deadline,
             );
-            let output = self.runner.run_with_input(&update, &index_info)?;
+            let output = sticky_process_result(
+                self.runner.run_with_input(&update, &index_info),
+                cancellation,
+            )?;
             if !semantic_success(&output) {
                 return Err(output_reason(&output));
             }
@@ -1177,43 +1274,112 @@ fn parse_attribute_records(
     stdout: &str,
     expected_paths: &[String],
 ) -> Result<BTreeMap<String, AttributeValues>, String> {
-    let fields = nul_fields(stdout, "Git check-attr")?;
-    if fields.len() % 3 != 0 {
-        return Err("Git check-attr output is not a sequence of triples".into());
-    }
-    let expected = expected_paths.iter().collect::<BTreeSet<_>>();
-    let mut raw = BTreeMap::<String, BTreeMap<String, String>>::new();
-    for fields in fields.chunks_exact(3) {
-        if !expected.contains(&fields[0]) {
-            return Err(format!(
-                "Git check-attr returned unexpected path {}",
-                fields[0]
-            ));
+    parse_attribute_records_with_checkpoint(stdout, expected_paths, &mut || Ok(()))
+        .map_err(ResourceProtocolParseError::into_reason)
+}
+
+fn parse_attribute_records_controlled(
+    stdout: &str,
+    expected_paths: &[String],
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<BTreeMap<String, AttributeValues>, ResourceProtocolParseError> {
+    parse_attribute_records_with_checkpoint(stdout, expected_paths, &mut || {
+        resource_protocol_checkpoint(cancellation, deadline)
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResourceProtocolParseError {
+    Malformed(String),
+    Cancelled,
+    TimedOut,
+}
+
+impl ResourceProtocolParseError {
+    fn into_reason(self) -> String {
+        match self {
+            Self::Malformed(reason) => reason,
+            Self::Cancelled => "Git resource protocol parsing was cancelled".into(),
+            Self::TimedOut => "Git resource protocol parsing timed out".into(),
         }
-        let attributes = raw.entry(fields[0].clone()).or_default();
+    }
+}
+
+fn parse_attribute_records_with_checkpoint(
+    stdout: &str,
+    expected_paths: &[String],
+    checkpoint: &mut dyn FnMut() -> Result<(), ResourceProtocolParseError>,
+) -> Result<BTreeMap<String, AttributeValues>, ResourceProtocolParseError> {
+    checkpoint()?;
+    if !stdout.is_empty() && !stdout.ends_with('\0') {
+        return Err(ResourceProtocolParseError::Malformed(
+            "Git check-attr output is missing its terminal NUL".into(),
+        ));
+    }
+    let mut expected = BTreeSet::new();
+    for (path_index, path) in expected_paths.iter().enumerate() {
+        if path_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        expected.insert(path.as_str());
+    }
+    let mut raw = BTreeMap::<String, BTreeMap<String, String>>::new();
+    let mut fields = stdout.split_terminator('\0');
+    let mut record_index = 0_usize;
+    loop {
+        if record_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        let Some(path) = fields.next() else { break };
+        let attribute = fields.next().ok_or_else(|| {
+            ResourceProtocolParseError::Malformed(
+                "Git check-attr output is not a sequence of triples".into(),
+            )
+        })?;
+        let value = fields.next().ok_or_else(|| {
+            ResourceProtocolParseError::Malformed(
+                "Git check-attr output is not a sequence of triples".into(),
+            )
+        })?;
+        if !expected.contains(path) {
+            return Err(ResourceProtocolParseError::Malformed(format!(
+                "Git check-attr returned unexpected path {path}"
+            )));
+        }
+        let attributes = raw.entry(path.to_owned()).or_default();
         if attributes
-            .insert(fields[1].clone(), fields[2].clone())
+            .insert(attribute.to_owned(), value.to_owned())
             .is_some()
         {
-            return Err("Git check-attr returned a duplicate attribute".into());
+            return Err(ResourceProtocolParseError::Malformed(
+                "Git check-attr returned a duplicate attribute".into(),
+            ));
         }
+        record_index += 1;
     }
     let mut records = BTreeMap::new();
-    for path in expected_paths {
-        let attributes = raw
-            .remove(path)
-            .ok_or_else(|| format!("Git check-attr omitted {path}"))?;
+    for (path_index, path) in expected_paths.iter().enumerate() {
+        if path_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        let attributes = raw.remove(path).ok_or_else(|| {
+            ResourceProtocolParseError::Malformed(format!("Git check-attr omitted {path}"))
+        })?;
         if attributes.len() != 3 {
-            return Err(format!(
+            return Err(ResourceProtocolParseError::Malformed(format!(
                 "Git check-attr returned incomplete attributes for {path}"
-            ));
+            )));
         }
         records.insert(
             path.clone(),
             AttributeValues {
-                text: required_attribute(&attributes, "text", path)?,
-                eol: required_attribute(&attributes, "eol", path)?,
-                filter: required_attribute(&attributes, "filter", path)?,
+                text: required_attribute(&attributes, "text", path)
+                    .map_err(ResourceProtocolParseError::Malformed)?,
+                eol: required_attribute(&attributes, "eol", path)
+                    .map_err(ResourceProtocolParseError::Malformed)?,
+                filter: required_attribute(&attributes, "filter", path)
+                    .map_err(ResourceProtocolParseError::Malformed)?,
             },
         );
     }
@@ -1235,30 +1401,158 @@ fn parse_eol_records(
     stdout: &str,
     expected_text_paths: &[String],
 ) -> Result<BTreeMap<String, EolValues>, String> {
-    let records = nul_fields(stdout, "git ls-files --eol")?;
+    parse_eol_records_with_checkpoint(stdout, expected_text_paths, &mut || Ok(()))
+        .map_err(ResourceProtocolParseError::into_reason)
+}
+
+fn parse_eol_records_controlled(
+    stdout: &str,
+    expected_text_paths: &[String],
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<BTreeMap<String, EolValues>, ResourceProtocolParseError> {
+    parse_eol_records_with_checkpoint(stdout, expected_text_paths, &mut || {
+        resource_protocol_checkpoint(cancellation, deadline)
+    })
+}
+
+fn resource_protocol_checkpoint(
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<(), ResourceProtocolParseError> {
+    if cancellation.is_cancelled() {
+        Err(ResourceProtocolParseError::Cancelled)
+    } else if deadline.remaining().is_zero() {
+        Err(ResourceProtocolParseError::TimedOut)
+    } else {
+        Ok(())
+    }
+}
+
+fn evaluate_attribute_policy_with_checkpoint(
+    resources: &[RepositoryResource],
+    staged: &BTreeMap<String, AttributeValues>,
+    effective: &BTreeMap<String, AttributeValues>,
+    checkpoint: &mut dyn FnMut() -> Result<(), ResourceProtocolParseError>,
+) -> Result<AttributePolicyEvaluation, ResourceProtocolParseError> {
+    let mut evaluation = AttributePolicyEvaluation {
+        facts: Vec::new(),
+        local_only: BTreeSet::new(),
+        text_policy_missing: BTreeSet::new(),
+        text_marked_binary: BTreeSet::new(),
+    };
+    for (resource_index, resource) in resources.iter().enumerate() {
+        if resource_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        let attributes = staged.get(&resource.repo_path).ok_or_else(|| {
+            ResourceProtocolParseError::Malformed(format!(
+                "staged Git attribute policy omitted {}",
+                resource.repo_path
+            ))
+        })?;
+        let effective_attributes = effective.get(&resource.repo_path).ok_or_else(|| {
+            ResourceProtocolParseError::Malformed(format!(
+                "effective Git attribute policy omitted {}",
+                resource.repo_path
+            ))
+        })?;
+        let staged_policy_sufficient = policy_satisfied(resource.kind, attributes);
+        if !staged_policy_sufficient && policy_satisfied(resource.kind, effective_attributes) {
+            evaluation.local_only.insert(resource.repo_path.clone());
+            evaluation
+                .facts
+                .push(ProjectHealthFact::AttributesLocalOnly {
+                    source_set: resource.source_set.clone(),
+                    path: resource.repo_path.clone(),
+                    evidence: vec![format!(
+                        "local-only text={} eol={} filter={}",
+                        effective_attributes.text,
+                        effective_attributes.eol,
+                        effective_attributes.filter
+                    )],
+                });
+            continue;
+        }
+        match resource.kind {
+            RepositoryResourceKind::Text if attributes.text == "unset" => {
+                evaluation
+                    .text_marked_binary
+                    .insert(resource.repo_path.clone());
+                evaluation
+                    .facts
+                    .push(ProjectHealthFact::TextResourceMarkedBinary {
+                        source_set: resource.source_set.clone(),
+                        path: resource.repo_path.clone(),
+                    });
+            }
+            RepositoryResourceKind::Text if !text_policy_satisfied(attributes) => {
+                evaluation
+                    .text_policy_missing
+                    .insert(resource.repo_path.clone());
+                evaluation.facts.push(ProjectHealthFact::TextPolicyMissing {
+                    source_set: resource.source_set.clone(),
+                    path: resource.repo_path.clone(),
+                });
+            }
+            RepositoryResourceKind::Binary if attributes.text != "unset" => {
+                evaluation
+                    .facts
+                    .push(ProjectHealthFact::BinaryPolicyMissing {
+                        source_set: resource.source_set.clone(),
+                        path: resource.repo_path.clone(),
+                    });
+            }
+            RepositoryResourceKind::Text | RepositoryResourceKind::Binary => {}
+        }
+    }
+    checkpoint()?;
+    Ok(evaluation)
+}
+
+fn parse_eol_records_with_checkpoint(
+    stdout: &str,
+    expected_text_paths: &[String],
+    checkpoint: &mut dyn FnMut() -> Result<(), ResourceProtocolParseError>,
+) -> Result<BTreeMap<String, EolValues>, ResourceProtocolParseError> {
+    checkpoint()?;
+    if !stdout.is_empty() && !stdout.ends_with('\0') {
+        return Err(ResourceProtocolParseError::Malformed(
+            "git ls-files --eol output is missing its terminal NUL".into(),
+        ));
+    }
     let mut result = BTreeMap::new();
-    for record in records {
-        let (metadata, path) = record
-            .split_once('\t')
-            .ok_or_else(|| "git ls-files --eol record has no tab separator".to_string())?;
+    for (record_index, record) in stdout.split_terminator('\0').enumerate() {
+        if record_index % 256 == 0 {
+            checkpoint()?;
+        }
+        let (metadata, path) = record.split_once('\t').ok_or_else(|| {
+            ResourceProtocolParseError::Malformed(
+                "git ls-files --eol record has no tab separator".into(),
+            )
+        })?;
         if path.is_empty() {
-            return Err("git ls-files --eol record has an empty path".into());
+            return Err(ResourceProtocolParseError::Malformed(
+                "git ls-files --eol record has an empty path".into(),
+            ));
         }
         let fields = metadata.split_whitespace().collect::<Vec<_>>();
         if fields.len() < 2 || !fields[0].starts_with("i/") || !fields[1].starts_with("w/") {
-            return Err("git ls-files --eol record has invalid metadata".into());
+            return Err(ResourceProtocolParseError::Malformed(
+                "git ls-files --eol record has invalid metadata".into(),
+            ));
         }
         let index = &fields[0][2..];
         let worktree = &fields[1][2..];
         if !matches!(index, "" | "lf" | "crlf" | "mixed" | "none" | "-text") {
-            return Err(format!(
+            return Err(ResourceProtocolParseError::Malformed(format!(
                 "git ls-files --eol returned unsupported index EOL metadata {index}"
-            ));
+            )));
         }
         if !matches!(worktree, "" | "lf" | "crlf" | "mixed" | "none" | "-text") {
-            return Err(format!(
+            return Err(ResourceProtocolParseError::Malformed(format!(
                 "git ls-files --eol returned unsupported worktree EOL metadata {worktree}"
-            ));
+            )));
         }
         if result
             .insert(
@@ -1270,27 +1564,108 @@ fn parse_eol_records(
             )
             .is_some()
         {
-            return Err("git ls-files --eol returned a duplicate path".into());
+            return Err(ResourceProtocolParseError::Malformed(
+                "git ls-files --eol returned a duplicate path".into(),
+            ));
         }
     }
-    for path in expected_text_paths {
-        let observed = result
-            .get(path)
-            .ok_or_else(|| format!("git ls-files --eol omitted {path}"))?;
+    for (path_index, path) in expected_text_paths.iter().enumerate() {
+        if path_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        let observed = result.get(path).ok_or_else(|| {
+            ResourceProtocolParseError::Malformed(format!("git ls-files --eol omitted {path}"))
+        })?;
         if observed.index.is_empty() {
-            return Err(format!(
+            return Err(ResourceProtocolParseError::Malformed(format!(
                 "git ls-files --eol returned empty index EOL metadata for tracked text path {path}"
-            ));
+            )));
         }
     }
     Ok(result)
 }
 
-fn nul_fields(stdout: &str, command: &str) -> Result<Vec<String>, String> {
-    if !stdout.is_empty() && !stdout.ends_with('\0') {
-        return Err(format!("{command} output is missing its terminal NUL"));
+fn index_eol_facts_with_checkpoint(
+    resources: &[RepositoryResource],
+    eol: &BTreeMap<String, EolValues>,
+    local_only: &BTreeSet<String>,
+    text_policy_missing: &BTreeSet<String>,
+    text_marked_binary: &BTreeSet<String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), ResourceProtocolParseError>,
+) -> Result<Vec<ProjectHealthFact>, ResourceProtocolParseError> {
+    let mut facts = Vec::new();
+    for (resource_index, resource) in resources.iter().enumerate() {
+        if resource_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        if resource.kind != RepositoryResourceKind::Text
+            || local_only.contains(&resource.repo_path)
+            || text_policy_missing.contains(&resource.repo_path)
+            || text_marked_binary.contains(&resource.repo_path)
+        {
+            continue;
+        }
+        let observed = eol.get(&resource.repo_path).ok_or_else(|| {
+            ResourceProtocolParseError::Malformed(format!(
+                "git ls-files --eol omitted {}",
+                resource.repo_path
+            ))
+        })?;
+        if !matches!(observed.index.as_str(), "lf" | "none") {
+            facts.push(ProjectHealthFact::IndexEolNotLf {
+                source_set: resource.source_set.clone(),
+                path: resource.repo_path.clone(),
+                observed: observed.index.clone(),
+            });
+        }
     }
-    Ok(stdout.split_terminator('\0').map(str::to_owned).collect())
+    checkpoint()?;
+    Ok(facts)
+}
+
+fn lfs_facts_with_checkpoint(
+    binary_by_source: BTreeMap<String, Vec<(String, u64)>>,
+    checkpoint: &mut dyn FnMut() -> Result<(), ResourceProtocolParseError>,
+) -> Result<Vec<ProjectHealthFact>, ResourceProtocolParseError> {
+    let mut facts = Vec::new();
+    for (source_index, (source_set, files)) in binary_by_source.into_iter().enumerate() {
+        if source_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        let mut total_bytes = 0_u64;
+        let mut largest = None::<&(String, u64)>;
+        let mut sample_paths = BTreeSet::new();
+        for (file_index, file) in files.iter().enumerate() {
+            if file_index.is_multiple_of(256) {
+                checkpoint()?;
+            }
+            total_bytes = total_bytes.saturating_add(file.1);
+            if largest.is_none_or(|current| file.1 > current.1) {
+                largest = Some(file);
+            }
+            sample_paths.insert(file.0.clone());
+            if sample_paths.len() > crate::domain::project_health::MAX_PROJECT_DIAGNOSTIC_PATHS {
+                sample_paths.pop_last();
+            }
+        }
+        if let Some((largest_path, largest_bytes)) = largest.filter(|(_, largest)| {
+            *largest >= LFS_SINGLE_FILE_THRESHOLD_BYTES
+                || total_bytes >= LFS_AGGREGATE_THRESHOLD_BYTES
+        }) {
+            facts.push(ProjectHealthFact::LfsConsider {
+                source_set,
+                count: files.len(),
+                total_bytes,
+                largest_path: largest_path.clone(),
+                largest_bytes: *largest_bytes,
+                single_threshold_bytes: LFS_SINGLE_FILE_THRESHOLD_BYTES,
+                aggregate_threshold_bytes: LFS_AGGREGATE_THRESHOLD_BYTES,
+                paths: sample_paths.into_iter().collect(),
+            });
+        }
+    }
+    checkpoint()?;
+    Ok(facts)
 }
 
 fn process_command(
@@ -1378,6 +1753,27 @@ fn semantic_success(output: &ProcessOutput) -> bool {
         && !output.stderr_had_invalid_utf8
 }
 
+fn sticky_process_result(
+    result: Result<ProcessOutput, String>,
+    cancellation: &CancellationToken,
+) -> Result<ProcessOutput, String> {
+    if cancellation.is_cancelled() {
+        return Ok(ProcessOutput {
+            cancelled: true,
+            status_success: false,
+            status: "cancelled".into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
+        });
+    }
+    result
+}
+
 fn output_reason(output: &ProcessOutput) -> String {
     if output.timed_out {
         "Git resource inspection timed out".into()
@@ -1418,12 +1814,35 @@ fn incomplete_policy(
     }
 }
 
+fn timeout_policy(
+    mut observations: Vec<ProjectCheckObservation>,
+    check: ProjectCheckId,
+) -> RepositoryPolicyInspection {
+    let reason = "Git resource protocol parsing exceeded the inspection deadline";
+    let started = resource_check_ids()
+        .into_iter()
+        .position(|candidate| candidate == check)
+        .unwrap_or(0);
+    for dependent in resource_check_ids().into_iter().skip(started) {
+        mark_check_not_run(&mut observations, dependent, reason);
+    }
+    RepositoryPolicyInspection {
+        observations,
+        facts: vec![ProjectHealthFact::GitInspectionTimeout {
+            check,
+            source_set: None,
+        }],
+    }
+}
+
 fn mark_check_completed(observations: &mut [ProjectCheckObservation], check: ProjectCheckId) {
     for observation in observations
         .iter_mut()
         .filter(|observation| observation.id == check)
     {
-        observation.outcome = ProjectCheckOutcome::Completed;
+        if matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. }) {
+            observation.outcome = ProjectCheckOutcome::Completed;
+        }
     }
 }
 
@@ -1432,10 +1851,13 @@ fn mark_check_not_run(
     check: ProjectCheckId,
     reason: &str,
 ) {
-    for observation in observations
-        .iter_mut()
-        .filter(|observation| observation.id == check)
-    {
+    for observation in observations.iter_mut().filter(|observation| {
+        observation.id == check
+            && !matches!(
+                observation.outcome,
+                ProjectCheckOutcome::NotApplicable { .. }
+            )
+    }) {
         observation.outcome = ProjectCheckOutcome::NotRun {
             reason: reason.to_owned(),
         };
@@ -1451,35 +1873,31 @@ fn resource_check_ids() -> [ProjectCheckId; 4] {
     ]
 }
 
-fn resource_observations(roots: &[InspectedSourceRoot]) -> Vec<ProjectCheckObservation> {
-    let mut source_sets = roots
+pub(super) fn resource_observations<'a>(
+    source_sets: impl IntoIterator<Item = &'a crate::domain::project_sources::ProjectSourceSet>,
+    not_run_reason: &str,
+    source_profiles_complete: bool,
+) -> Vec<ProjectCheckObservation> {
+    let mut source_sets = source_sets.into_iter().collect::<Vec<_>>();
+    source_sets.sort_by(|left, right| left.name.cmp(&right.name));
+    source_sets.dedup_by(|left, right| left.name == right.name);
+    let has_platform_xml = source_sets
         .iter()
-        .filter(|root| root.source_set.source_format == SourceFormat::PlatformXml)
-        .map(|root| root.source_set.name.clone())
-        .collect::<Vec<_>>();
-    source_sets.sort();
-    source_sets.dedup();
-    if source_sets.is_empty() {
-        return resource_check_ids()
-            .into_iter()
-            .map(|id| ProjectCheckObservation {
-                id,
-                scope: id.scope(),
-                source_set: None,
-                outcome: ProjectCheckOutcome::NotApplicable {
-                    reason: "no Platform XML source roots were proven".into(),
-                },
-            })
-            .collect();
-    }
+        .any(|source_set| source_set.source_format == SourceFormat::PlatformXml);
     let mut observations = Vec::new();
     for id in resource_check_ids() {
         observations.push(ProjectCheckObservation {
             id,
             scope: id.scope(),
             source_set: None,
-            outcome: ProjectCheckOutcome::NotRun {
-                reason: "repository resource check was not reached".into(),
+            outcome: if source_profiles_complete && !has_platform_xml {
+                ProjectCheckOutcome::NotApplicable {
+                    reason: "no Platform XML source roots were proven".into(),
+                }
+            } else {
+                ProjectCheckOutcome::NotRun {
+                    reason: not_run_reason.into(),
+                }
             },
         });
         observations.extend(
@@ -1488,9 +1906,15 @@ fn resource_observations(roots: &[InspectedSourceRoot]) -> Vec<ProjectCheckObser
                 .map(|source_set| ProjectCheckObservation {
                     id,
                     scope: id.scope(),
-                    source_set: Some(source_set.clone()),
-                    outcome: ProjectCheckOutcome::NotRun {
-                        reason: "repository resource check was not reached".into(),
+                    source_set: Some(source_set.name.clone()),
+                    outcome: if source_set.source_format == SourceFormat::Edt {
+                        ProjectCheckOutcome::NotApplicable {
+                            reason: "EDT has no format-specific repository resource policy".into(),
+                        }
+                    } else {
+                        ProjectCheckOutcome::NotRun {
+                            reason: not_run_reason.into(),
+                        }
                     },
                 }),
         );
@@ -1711,12 +2135,15 @@ fn repository_regular_file_size(
 mod tests {
     use super::{
         classify_platform_xml_relative_path, inspect_working_eol, parse_attribute_records,
-        parse_eol_records, RepositoryResourceKind, SourceResourcePolicyInspector,
-        LFS_SINGLE_FILE_THRESHOLD_BYTES,
+        parse_eol_records, resource_check_ids, RepositoryResourceKind,
+        SourceResourcePolicyInspector, LFS_SINGLE_FILE_THRESHOLD_BYTES,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::project_health::{ProjectCheckId, ProjectHealthFact};
+    use crate::domain::project_health::{
+        ProjectCheckId, ProjectCheckOutcome, ProjectHealthFact, ProjectHealthInspectionError,
+    };
+    use crate::domain::project_sources::{ProjectSourceSet, SourceFormat, SourceSetKind};
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
     use crate::infrastructure::platform::testing::{
@@ -1724,7 +2151,9 @@ mod tests {
         FileLinkFixtureOutcome,
     };
     use crate::infrastructure::project_health::git::{GitIndexEntry, GitRepositoryInspector};
-    use crate::infrastructure::project_health::layout::SourceLayoutInspector;
+    use crate::infrastructure::project_health::layout::{
+        InspectedSourceRoot, SourceLayoutInspector,
+    };
     use std::cell::{Cell, RefCell};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1781,6 +2210,112 @@ mod tests {
     }
 
     #[test]
+    fn nested_edt_root_shields_resources_from_outer_platform_xml_profile() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join("src/edt")).unwrap();
+        let roots = vec![
+            InspectedSourceRoot {
+                source_set: ProjectSourceSet {
+                    name: "designer".into(),
+                    kind: SourceSetKind::Configuration,
+                    path: "src".into(),
+                    source_format: SourceFormat::PlatformXml,
+                    format_evidence: Vec::new(),
+                    format_probe_error: None,
+                },
+                path: root.join("src"),
+            },
+            InspectedSourceRoot {
+                source_set: ProjectSourceSet {
+                    name: "edt".into(),
+                    kind: SourceSetKind::Configuration,
+                    path: "src/edt".into(),
+                    source_format: SourceFormat::Edt,
+                    format_evidence: Vec::new(),
+                    format_probe_error: None,
+                },
+                path: root.join("src/edt"),
+            },
+        ];
+
+        let resources = SourceResourcePolicyInspector::classify(
+            &root,
+            &roots,
+            &[GitIndexEntry {
+                repo_path: "src/edt/Foo.xml".into(),
+                blob_oid: Some("a".repeat(40)),
+                mode: Some("100644".into()),
+            }],
+            &Default::default(),
+        )
+        .unwrap();
+
+        assert!(resources.is_empty(), "{resources:?}");
+    }
+
+    #[test]
+    fn platform_probe_failure_does_not_overwrite_edt_not_applicable() {
+        let fixture = policy_fixture();
+        fs::create_dir_all(fixture.root.join("src/edt")).unwrap();
+        fs::write(
+            fixture.root.join("src/edt/.project"),
+            "<projectDescription/>",
+        )
+        .unwrap();
+        fs::write(
+            fixture.root.join("v8project.yaml"),
+            "source-set:\n  - name: designer\n    type: CONFIGURATION\n    path: src\n  - name: edt\n    type: CONFIGURATION\n    path: src/edt\n",
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+        )
+        .unwrap();
+
+        let inspection = SourceResourcePolicyInspector::with_process_runner(&FailingRunner)
+            .inspect(
+                &fixture.root,
+                &layout.roots,
+                &[GitIndexEntry {
+                    repo_path: "src/Configuration.xml".into(),
+                    blob_oid: Some("a".repeat(40)),
+                    mode: Some("100644".into()),
+                }],
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(2)),
+            )
+            .unwrap();
+
+        for check in resource_check_ids() {
+            assert!(
+                inspection.observations.iter().any(|observation| {
+                    observation.id == check
+                        && observation.source_set.as_deref() == Some("designer")
+                        && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+                }),
+                "{check:?}: {:?}",
+                inspection.observations
+            );
+            assert!(
+                inspection.observations.iter().any(|observation| {
+                    observation.id == check
+                        && observation.source_set.as_deref() == Some("edt")
+                        && matches!(
+                            observation.outcome,
+                            ProjectCheckOutcome::NotApplicable { .. }
+                        )
+                }),
+                "{check:?}: {:?}",
+                inspection.observations
+            );
+        }
+    }
+
+    #[test]
     fn project_health_rejects_nonregular_staged_resource() {
         let fixture = policy_fixture();
         let cancellation = CancellationToken::new();
@@ -1834,6 +2369,238 @@ mod tests {
         assert_eq!(eol["src/A.xml"].worktree, "crlf");
         assert!(parse_eol_records("i/lf w/lf without-tab\0", &expected).is_err());
         assert!(parse_eol_records("i/unknown w/lf attr/text\tsrc/A.xml\0", &expected).is_err());
+    }
+
+    #[test]
+    fn repository_policy_parsers_honor_cooperative_checkpoint() {
+        let attributes =
+            "src/A.xml\0text\0set\0src/A.xml\0eol\0lf\0src/A.xml\0filter\0unspecified\0";
+        let mut attribute_checkpoints = 0;
+        let attribute_error = super::parse_attribute_records_with_checkpoint(
+            attributes,
+            &["src/A.xml".into()],
+            &mut || {
+                attribute_checkpoints += 1;
+                Err(super::ResourceProtocolParseError::TimedOut)
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            attribute_error,
+            super::ResourceProtocolParseError::TimedOut
+        ));
+        assert_eq!(attribute_checkpoints, 1);
+
+        let mut eol_checkpoints = 0;
+        let eol_error = super::parse_eol_records_with_checkpoint(
+            "i/lf w/lf attr/text\tsrc/A.xml\0",
+            &["src/A.xml".into()],
+            &mut || {
+                eol_checkpoints += 1;
+                Err(super::ResourceProtocolParseError::Cancelled)
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            eol_error,
+            super::ResourceProtocolParseError::Cancelled
+        ));
+        assert_eq!(eol_checkpoints, 1);
+
+        let attribute_error =
+            super::parse_attribute_records_with_checkpoint("unterminated", &[], &mut || {
+                Err(super::ResourceProtocolParseError::Cancelled)
+            })
+            .unwrap_err();
+        assert!(matches!(
+            attribute_error,
+            super::ResourceProtocolParseError::Cancelled
+        ));
+
+        let eol_error = super::parse_eol_records_with_checkpoint("unterminated", &[], &mut || {
+            Err(super::ResourceProtocolParseError::TimedOut)
+        })
+        .unwrap_err();
+        assert!(matches!(
+            eol_error,
+            super::ResourceProtocolParseError::TimedOut
+        ));
+    }
+
+    #[test]
+    fn repository_policy_parsers_checkpoint_final_expected_path_validation() {
+        let attributes =
+            "src/A.xml\0text\0set\0src/A.xml\0eol\0lf\0src/A.xml\0filter\0unspecified\0";
+        let mut attribute_checkpoints = 0;
+        let attribute_error = super::parse_attribute_records_with_checkpoint(
+            attributes,
+            &["src/A.xml".into()],
+            &mut || {
+                attribute_checkpoints += 1;
+                if attribute_checkpoints == 4 {
+                    Err(super::ResourceProtocolParseError::TimedOut)
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            attribute_error,
+            super::ResourceProtocolParseError::TimedOut
+        ));
+
+        let mut eol_checkpoints = 0;
+        let eol_error = super::parse_eol_records_with_checkpoint(
+            "i/lf w/lf attr/text\tsrc/A.xml\0",
+            &["src/A.xml".into()],
+            &mut || {
+                eol_checkpoints += 1;
+                if eol_checkpoints == 3 {
+                    Err(super::ResourceProtocolParseError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            eol_error,
+            super::ResourceProtocolParseError::Cancelled
+        ));
+    }
+
+    #[test]
+    fn index_eol_evaluation_is_all_or_nothing_on_timeout() {
+        let resources = vec![
+            super::RepositoryResource {
+                source_set: "main".into(),
+                repo_path: "src/A.xml".into(),
+                worktree_path: PathBuf::from("src/A.xml"),
+                kind: RepositoryResourceKind::Text,
+                blob_oid: "a".repeat(40),
+            },
+            super::RepositoryResource {
+                source_set: "main".into(),
+                repo_path: "src/B.xml".into(),
+                worktree_path: PathBuf::from("src/B.xml"),
+                kind: RepositoryResourceKind::Text,
+                blob_oid: "b".repeat(40),
+            },
+        ];
+        let mut first_resource_is_not_evaluated = std::collections::BTreeSet::new();
+        first_resource_is_not_evaluated.insert("src/A.xml".to_string());
+        let eol = std::collections::BTreeMap::from([
+            (
+                "src/A.xml".into(),
+                super::EolValues {
+                    index: "lf".into(),
+                    worktree: "lf".into(),
+                },
+            ),
+            (
+                "src/B.xml".into(),
+                super::EolValues {
+                    index: "crlf".into(),
+                    worktree: "crlf".into(),
+                },
+            ),
+        ]);
+        let mut checkpoints = 0;
+
+        let result = super::index_eol_facts_with_checkpoint(
+            &resources,
+            &eol,
+            &Default::default(),
+            &first_resource_is_not_evaluated,
+            &Default::default(),
+            &mut || {
+                checkpoints += 1;
+                if checkpoints == 1 {
+                    Err(super::ResourceProtocolParseError::TimedOut)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::ResourceProtocolParseError::TimedOut)
+        ));
+    }
+
+    #[test]
+    fn index_eol_evaluation_checks_deadline_for_fully_filtered_resources() {
+        let resources = vec![super::RepositoryResource {
+            source_set: "main".into(),
+            repo_path: "src/Picture.bin".into(),
+            worktree_path: PathBuf::from("src/Picture.bin"),
+            kind: RepositoryResourceKind::Binary,
+            blob_oid: "a".repeat(40),
+        }];
+
+        let result = super::index_eol_facts_with_checkpoint(
+            &resources,
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+            &mut || Err(super::ResourceProtocolParseError::TimedOut),
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::ResourceProtocolParseError::TimedOut)
+        ));
+    }
+
+    #[test]
+    fn attribute_policy_evaluation_is_all_or_nothing_on_timeout() {
+        let resources = vec![super::RepositoryResource {
+            source_set: "main".into(),
+            repo_path: "src/A.xml".into(),
+            worktree_path: PathBuf::from("src/A.xml"),
+            kind: RepositoryResourceKind::Text,
+            blob_oid: "a".repeat(40),
+        }];
+        let attributes = std::collections::BTreeMap::from([(
+            "src/A.xml".into(),
+            super::AttributeValues {
+                text: "unspecified".into(),
+                eol: "unspecified".into(),
+                filter: "unspecified".into(),
+            },
+        )]);
+
+        let result = super::evaluate_attribute_policy_with_checkpoint(
+            &resources,
+            &attributes,
+            &attributes,
+            &mut || Err(super::ResourceProtocolParseError::TimedOut),
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::ResourceProtocolParseError::TimedOut)
+        ));
+    }
+
+    #[test]
+    fn lfs_aggregation_is_all_or_nothing_on_timeout() {
+        let binaries = std::collections::BTreeMap::from([(
+            "main".to_string(),
+            vec![("src/Picture.bin".to_string(), 12 * 1024 * 1024)],
+        )]);
+
+        let result = super::lfs_facts_with_checkpoint(binaries, &mut || {
+            Err(super::ResourceProtocolParseError::TimedOut)
+        });
+
+        assert!(matches!(
+            result,
+            Err(super::ResourceProtocolParseError::TimedOut)
+        ));
     }
 
     #[test]
@@ -1960,6 +2727,75 @@ mod tests {
             "{:?}",
             runner.commands.borrow()
         );
+    }
+
+    #[test]
+    fn late_cancellation_during_staged_attribute_probe_cancels_inspection() {
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join("src/A.xml"), "<A/>\n").unwrap();
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+        )
+        .unwrap();
+        let runner = LateCancellingAttributeRunner {
+            inner: AttributeProbeRunner::default(),
+            cancellation: cancellation.clone(),
+        };
+
+        let result = SourceResourcePolicyInspector::with_process_runner(&runner).inspect(
+            &fixture.root,
+            &layout.roots,
+            &[GitIndexEntry {
+                repo_path: "src/A.xml".into(),
+                blob_oid: Some("a".repeat(40)),
+                mode: Some("100644".into()),
+            }],
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProjectHealthInspectionError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn late_cancellation_during_eol_index_creation_cancels_inspection() {
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join("src/A.xml"), "<A/>\n").unwrap();
+        let cancellation = CancellationToken::new();
+        let layout = SourceLayoutInspector::inspect(
+            &fixture.context,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+        )
+        .unwrap();
+        let runner = LateCancellingEolIndexRunner {
+            inner: AttributeProbeRunner::default(),
+            cancellation: cancellation.clone(),
+            read_tree_calls: Cell::new(0),
+        };
+
+        let result = SourceResourcePolicyInspector::with_process_runner(&runner).inspect(
+            &fixture.root,
+            &layout.roots,
+            &[GitIndexEntry {
+                repo_path: "src/A.xml".into(),
+                blob_oid: Some("a".repeat(40)),
+                mode: Some("100644".into()),
+            }],
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProjectHealthInspectionError::Cancelled)
+        ));
     }
 
     #[test]
@@ -2415,13 +3251,22 @@ mod tests {
     thread_local! {
         static RESOURCE_POLICY_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
         static RESOURCE_POLICY_EXPIRED: Cell<bool> = const { Cell::new(false) };
+        static RESOURCE_POLICY_CHECKS_BEFORE_EXPIRY: Cell<usize> = const { Cell::new(0) };
     }
 
     fn resource_policy_now() -> Instant {
         RESOURCE_POLICY_NOW.with(|now| {
             let started = now.borrow().expect("resource policy clock initialized");
             if RESOURCE_POLICY_EXPIRED.with(Cell::get) {
-                started + Duration::from_secs(1)
+                RESOURCE_POLICY_CHECKS_BEFORE_EXPIRY.with(|remaining| {
+                    let remaining_checks = remaining.get();
+                    if remaining_checks == 0 {
+                        started + Duration::from_secs(1)
+                    } else {
+                        remaining.set(remaining_checks - 1);
+                        started
+                    }
+                })
             } else {
                 started
             }
@@ -2442,17 +3287,22 @@ mod tests {
         let started = Instant::now();
         RESOURCE_POLICY_NOW.with(|now| *now.borrow_mut() = Some(started));
         RESOURCE_POLICY_EXPIRED.with(|expired| expired.set(false));
-        let runner = ResourceLoopCheckpointRunner { cancellation: None };
+        RESOURCE_POLICY_CHECKS_BEFORE_EXPIRY.with(|remaining| remaining.set(8));
+        let runner = ResourceLoopCheckpointRunner {
+            cancellation: None,
+            attribute_calls: Cell::new(0),
+        };
+        let binary_entry = GitIndexEntry {
+            repo_path: "src/Picture.bin".into(),
+            blob_oid: Some("a".repeat(40)),
+            mode: Some("100644".into()),
+        };
 
         let inspection = SourceResourcePolicyInspector::with_process_runner(&runner)
             .inspect(
                 &fixture.root,
                 &layout.roots,
-                &[GitIndexEntry {
-                    repo_path: "src/Picture.bin".into(),
-                    blob_oid: Some("a".repeat(40)),
-                    mode: Some("100644".into()),
-                }],
+                &[binary_entry],
                 &cancellation,
                 ProviderDeadline::with_clock(
                     started + Duration::from_millis(10),
@@ -2490,6 +3340,7 @@ mod tests {
         .unwrap();
         let runner = ResourceLoopCheckpointRunner {
             cancellation: Some(cancellation.clone()),
+            attribute_calls: Cell::new(0),
         };
 
         let result = SourceResourcePolicyInspector::with_process_runner(&runner).inspect(
@@ -2725,19 +3576,24 @@ mod tests {
         commands: RefCell<Vec<ProcessCommand>>,
     }
 
+    struct LateCancellingAttributeRunner {
+        inner: AttributeProbeRunner,
+        cancellation: CancellationToken,
+    }
+
+    struct LateCancellingEolIndexRunner {
+        inner: AttributeProbeRunner,
+        cancellation: CancellationToken,
+        read_tree_calls: Cell<usize>,
+    }
+
     struct ResourceLoopCheckpointRunner {
         cancellation: Option<CancellationToken>,
+        attribute_calls: Cell<usize>,
     }
 
     impl ProcessRunner for ResourceLoopCheckpointRunner {
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-            if command.args.iter().any(|arg| arg == "ls-files") {
-                if let Some(cancellation) = &self.cancellation {
-                    cancellation.cancel();
-                }
-                RESOURCE_POLICY_EXPIRED.with(|expired| expired.set(true));
-                return Ok(success_output(""));
-            }
             if command.args.iter().any(|arg| arg == "rev-parse") {
                 if command.args.iter().any(|arg| arg == "--show-object-format") {
                     return Ok(success_output("sha1\n"));
@@ -2755,6 +3611,15 @@ mod tests {
             _command: &ProcessCommand,
             _input: &[u8],
         ) -> Result<ProcessOutput, String> {
+            let calls = self.attribute_calls.get() + 1;
+            self.attribute_calls.set(calls);
+            if calls == 2 {
+                if let Some(cancellation) = &self.cancellation {
+                    cancellation.cancel();
+                } else {
+                    RESOURCE_POLICY_EXPIRED.with(|expired| expired.set(true));
+                }
+            }
             let (text, eol) = ("unset", "unspecified");
             Ok(success_output(&format!(
                 "src/Picture.bin\0text\0{text}\0src/Picture.bin\0eol\0{eol}\0src/Picture.bin\0filter\0unspecified\0"
@@ -2788,16 +3653,63 @@ mod tests {
             command: &ProcessCommand,
             _input: &[u8],
         ) -> Result<ProcessOutput, String> {
-            self.commands.borrow_mut().push(command.clone());
             if command.args.first().map(String::as_str) == Some("hash-object") {
+                self.commands.borrow_mut().push(command.clone());
                 return Ok(success_output(&format!("{}\n", "a".repeat(40))));
             }
-            let local_probe = command.args.iter().any(|arg| arg.starts_with("--source="))
-                || command.env.iter().any(|(name, _)| name == "GIT_INDEX_FILE");
-            let value = if local_probe { "unspecified" } else { "set" };
+            if command.args.iter().any(|arg| arg == "cat-file") {
+                self.commands.borrow_mut().push(command.clone());
+                return Ok(success_output(&format!("{} blob 5\n", "a".repeat(40))));
+            }
+            let staged_probe = command.args.iter().any(|arg| arg == "--git-dir")
+                || command.args.iter().any(|arg| arg.starts_with("--git-dir="));
+            self.commands.borrow_mut().push(command.clone());
+            let value = if staged_probe { "set" } else { "unspecified" };
             Ok(success_output(&format!(
                 "src/A.xml\0text\0{value}\0src/A.xml\0eol\0{value}\0src/A.xml\0filter\0unspecified\0"
             )))
+        }
+    }
+
+    impl ProcessRunner for LateCancellingAttributeRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.inner.run(command)
+        }
+
+        fn run_with_input(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+        ) -> Result<ProcessOutput, String> {
+            if command.args.iter().any(|arg| arg == "check-attr")
+                && command.env.iter().any(|(name, _)| name == "GIT_INDEX_FILE")
+            {
+                self.cancellation.cancel();
+                return Err("staged attribute process failed after cancellation".into());
+            }
+            self.inner.run_with_input(command, input)
+        }
+    }
+
+    impl ProcessRunner for LateCancellingEolIndexRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            if command.args.iter().any(|arg| arg == "read-tree") {
+                let calls = self.read_tree_calls.get() + 1;
+                self.read_tree_calls.set(calls);
+                if calls == 2 {
+                    self.cancellation.cancel();
+                    return Err("EOL index initialization failed after cancellation".into());
+                }
+            }
+            self.inner.run(command)
+        }
+
+        fn run_with_input(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+        ) -> Result<ProcessOutput, String> {
+            self.inner.run_with_input(command, input)
         }
     }
 

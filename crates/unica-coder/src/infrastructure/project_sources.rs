@@ -33,6 +33,9 @@ const PROJECT_SOURCE_MAP_READ_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_HEALTH_SOURCE_SETS: usize = 1024;
 const MAX_HEALTH_SOURCE_SET_VALUE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_HEALTH_YAML_RETAINED_BYTES: usize = 2 * 1024 * 1024;
+const MAX_HEALTH_YAML_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_HEALTH_YAML_DOCUMENT_NODES: usize = 64 * 1024;
+const MAX_HEALTH_YAML_DOCUMENT_DEPTH: usize = 256;
 const MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES: usize = 16 * 1024;
 const MAX_HEALTH_FORMAT_EVIDENCE_BYTES: usize = 4 * 1024 * 1024;
 const EDT_SOURCE_MARKERS: &[&str] = &[
@@ -627,12 +630,16 @@ fn bound_health_yaml_alias_expansion(
 
     struct Frame {
         expanded_bytes: usize,
+        expanded_nodes: usize,
+        expanded_depth: usize,
         anchor: Option<Vec<u8>>,
     }
 
     #[derive(Clone)]
     struct AnchorValue {
         expanded_bytes: usize,
+        expanded_nodes: usize,
+        expanded_depth: usize,
         scalar_value: Option<Vec<u8>>,
     }
 
@@ -645,6 +652,8 @@ fn bound_health_yaml_alias_expansion(
         anchors: &mut BTreeMap<Vec<u8>, AnchorValue>,
         anchor: Option<Vec<u8>>,
         expanded_bytes: usize,
+        expanded_nodes: usize,
+        expanded_depth: usize,
         scalar_value: Option<Vec<u8>>,
     ) {
         if let Some(anchor) = anchor {
@@ -652,12 +661,16 @@ fn bound_health_yaml_alias_expansion(
                 anchor,
                 AnchorValue {
                     expanded_bytes,
+                    expanded_nodes,
+                    expanded_depth,
                     scalar_value,
                 },
             );
         }
         if let Some(parent) = stack.last_mut() {
             parent.expanded_bytes = parent.expanded_bytes.saturating_add(expanded_bytes);
+            parent.expanded_nodes = parent.expanded_nodes.saturating_add(expanded_nodes);
+            parent.expanded_depth = parent.expanded_depth.max(expanded_depth.saturating_add(1));
         }
     }
 
@@ -670,6 +683,27 @@ fn bound_health_yaml_alias_expansion(
         } else {
             Ok(())
         }
+    }
+
+    fn account_health_document_expansion(
+        nodes: &mut usize,
+        expanded_bytes: &mut usize,
+        added_nodes: usize,
+        bytes: usize,
+    ) -> Result<(), String> {
+        *nodes = nodes.saturating_add(added_nodes);
+        if *nodes > MAX_HEALTH_YAML_DOCUMENT_NODES {
+            return Err(format!(
+                "expanded YAML document for health inspection exceeds {MAX_HEALTH_YAML_DOCUMENT_NODES} nodes"
+            ));
+        }
+        *expanded_bytes = expanded_bytes.saturating_add(bytes);
+        if *expanded_bytes > MAX_HEALTH_YAML_DOCUMENT_BYTES {
+            return Err(format!(
+                "expanded YAML document for health inspection exceeds {MAX_HEALTH_YAML_DOCUMENT_BYTES} bytes"
+            ));
+        }
+        Ok(())
     }
 
     // serde_yaml resolves aliases while deserializing a `YamlValue`. Preflight the
@@ -691,6 +725,8 @@ fn bound_health_yaml_alias_expansion(
         let mut next_root_value_is_retained = false;
         let mut retained_container_depth = None;
         let mut retained_bytes = 0_usize;
+        let mut document_nodes = 0_usize;
+        let mut document_expanded_bytes = 0_usize;
         let result = loop {
             if let Err(reason) = checkpoint() {
                 break Err(reason);
@@ -719,10 +755,23 @@ fn bound_health_yaml_alias_expansion(
                     next_root_value_is_retained = false;
                     retained_container_depth = None;
                     retained_bytes = 0;
+                    document_nodes = 0;
+                    document_expanded_bytes = 0;
                     Ok(())
                 }
                 YAML_MAPPING_START_EVENT => {
                     let new_depth = stack.len() + 1;
+                    if new_depth > MAX_HEALTH_YAML_DOCUMENT_DEPTH {
+                        return Err(format!(
+                            "expanded YAML document for health inspection exceeds depth {MAX_HEALTH_YAML_DOCUMENT_DEPTH}"
+                        ));
+                    }
+                    account_health_document_expansion(
+                        &mut document_nodes,
+                        &mut document_expanded_bytes,
+                        1,
+                        16,
+                    )?;
                     if stack.is_empty() {
                         root_mapping_depth = Some(new_depth);
                     }
@@ -737,12 +786,25 @@ fn bound_health_yaml_alias_expansion(
                     }
                     stack.push(Frame {
                         expanded_bytes: 16,
+                        expanded_nodes: 1,
+                        expanded_depth: 1,
                         anchor: anchor_bytes((*event).data.mapping_start.anchor),
                     });
                     Ok(())
                 }
                 YAML_SEQUENCE_START_EVENT => {
                     let new_depth = stack.len() + 1;
+                    if new_depth > MAX_HEALTH_YAML_DOCUMENT_DEPTH {
+                        return Err(format!(
+                            "expanded YAML document for health inspection exceeds depth {MAX_HEALTH_YAML_DOCUMENT_DEPTH}"
+                        ));
+                    }
+                    account_health_document_expansion(
+                        &mut document_nodes,
+                        &mut document_expanded_bytes,
+                        1,
+                        16,
+                    )?;
                     if root_mapping_depth == Some(stack.len())
                         && !root_expects_key
                         && next_root_value_is_retained
@@ -754,6 +816,8 @@ fn bound_health_yaml_alias_expansion(
                     }
                     stack.push(Frame {
                         expanded_bytes: 16,
+                        expanded_nodes: 1,
+                        expanded_depth: 1,
                         anchor: anchor_bytes((*event).data.sequence_start.anchor),
                     });
                     Ok(())
@@ -768,6 +832,8 @@ fn bound_health_yaml_alias_expansion(
                         &mut anchors,
                         frame.anchor,
                         frame.expanded_bytes,
+                        frame.expanded_nodes,
+                        frame.expanded_depth,
                         None,
                     );
                     if retained_container_depth == Some(closing_depth) {
@@ -784,6 +850,12 @@ fn bound_health_yaml_alias_expansion(
                 YAML_SCALAR_EVENT => {
                     let scalar = (*event).data.scalar;
                     let expanded_bytes = (scalar.length as usize).saturating_add(16);
+                    account_health_document_expansion(
+                        &mut document_nodes,
+                        &mut document_expanded_bytes,
+                        1,
+                        expanded_bytes,
+                    )?;
                     let is_root_child = root_mapping_depth == Some(stack.len());
                     if retained_container_depth.is_some()
                         || (is_root_child && !root_expects_key && next_root_value_is_retained)
@@ -795,6 +867,8 @@ fn bound_health_yaml_alias_expansion(
                         &mut anchors,
                         anchor_bytes(scalar.anchor),
                         expanded_bytes,
+                        1,
+                        1,
                         (!scalar.anchor.is_null()).then(|| {
                             std::slice::from_raw_parts(scalar.value, scalar.length as usize)
                                 .to_vec()
@@ -821,13 +895,34 @@ fn bound_health_yaml_alias_expansion(
                         "YAML alias refers to an unresolved or recursive anchor".to_string()
                     })?;
                     let expanded_bytes = anchor.expanded_bytes;
+                    if stack.len().saturating_add(anchor.expanded_depth)
+                        > MAX_HEALTH_YAML_DOCUMENT_DEPTH
+                    {
+                        return Err(format!(
+                            "expanded YAML document for health inspection exceeds depth {MAX_HEALTH_YAML_DOCUMENT_DEPTH}"
+                        ));
+                    }
+                    account_health_document_expansion(
+                        &mut document_nodes,
+                        &mut document_expanded_bytes,
+                        anchor.expanded_nodes,
+                        expanded_bytes,
+                    )?;
                     let is_root_child = root_mapping_depth == Some(stack.len());
                     if retained_container_depth.is_some()
                         || (is_root_child && !root_expects_key && next_root_value_is_retained)
                     {
                         retain_health_value_bytes(&mut retained_bytes, expanded_bytes)?;
                     }
-                    add_node(&mut stack, &mut anchors, None, expanded_bytes, None);
+                    add_node(
+                        &mut stack,
+                        &mut anchors,
+                        None,
+                        expanded_bytes,
+                        anchor.expanded_nodes,
+                        anchor.expanded_depth,
+                        None,
+                    );
                     if is_root_child {
                         if root_expects_key {
                             next_root_value_is_retained =
@@ -1884,6 +1979,75 @@ mod tests {
         assert_eq!(map.source_sets[0].source_format, SourceFormat::Unknown);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn health_source_map_bounds_unknown_yaml_subtrees_before_serde_materialization() {
+        let root = temp_workspace("unica-source-map-health-unknown-yaml-depth");
+        let depth = 512;
+        let mut config = String::from(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\nignored: ",
+        );
+        config.push_str(&"[".repeat(depth));
+        config.push('0');
+        config.push_str(&"]".repeat(depth));
+        write(&root.join("v8project.yaml"), &config);
+        write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
+        let mut checkpoint = || Ok(());
+
+        let error = discover_project_source_map_controlled(&root, &mut checkpoint)
+            .expect_err("health YAML depth must be rejected before serde materialization");
+
+        assert!(error.contains("YAML") && error.contains("depth"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_source_map_counts_nodes_expanded_through_unknown_aliases() {
+        let root = temp_workspace("unica-source-map-health-unknown-alias-nodes");
+        let anchored_nodes = 512;
+        let alias_count = 128;
+        let mut config = String::from(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ntemplate: &many [",
+        );
+        config.push_str(&"{},".repeat(anchored_nodes));
+        config.push_str("]\nignored:\n");
+        config.push_str(&"  - *many\n".repeat(alias_count));
+        write(&root.join("v8project.yaml"), &config);
+        write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
+        let mut checkpoint = || Ok(());
+
+        let error = discover_project_source_map_controlled(&root, &mut checkpoint)
+            .expect_err("expanded alias nodes must be rejected before serde materialization");
+
+        assert!(error.contains("YAML") && error.contains("nodes"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_source_map_bounds_depth_expanded_at_alias_site() {
+        let root = temp_workspace("unica-source-map-health-alias-expanded-depth");
+        let anchor_depth = 180;
+        let alias_site_depth = 100;
+        let mut config = String::from(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ntemplate: &deep ",
+        );
+        config.push_str(&"[".repeat(anchor_depth));
+        config.push('0');
+        config.push_str(&"]".repeat(anchor_depth));
+        config.push_str("\nignored: ");
+        config.push_str(&"[".repeat(alias_site_depth));
+        config.push_str("*deep");
+        config.push_str(&"]".repeat(alias_site_depth));
+        write(&root.join("v8project.yaml"), &config);
+        write(&root.join("src/Configuration.xml"), "<MetaDataObject/>");
+        let mut checkpoint = || Ok(());
+
+        let error = discover_project_source_map_controlled(&root, &mut checkpoint)
+            .expect_err("alias-site expanded depth must be bounded before serde");
+
+        assert!(error.contains("YAML") && error.contains("depth"), "{error}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

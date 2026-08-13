@@ -152,3 +152,36 @@ MCP typed result envelope, Python contract tests.
 - [x] Repeat the full verification matrix and obtain an independent clean
   semantic re-review of the final diff.
 - [x] Perform a fresh independent semantic review before declaring merge-ready.
+
+### Task 8: Close findings from the second independent pre-merge review
+
+**Files:**
+- Modify: `crates/unica-coder/src/infrastructure/project_health.rs`
+- Modify: `crates/unica-coder/src/infrastructure/project_health/git.rs`
+- Modify: `crates/unica-coder/src/infrastructure/project_health/layout.rs`
+- Modify: `crates/unica-coder/src/infrastructure/project_health/resources.rs`
+- Modify: `crates/unica-coder/src/infrastructure/project_sources.rs`
+- Test: corresponding inline and platform modules
+
+- [x] Add a failing regression proving a resource below a nested EDT root is
+  not assigned to an outer Platform XML source set, then select the deepest
+  owner across all proven roots before applying the owner's format profile.
+- [x] Add failing regressions for `Unknown` and `Invalid` source formats that
+  currently let format-dependent ignore policy pass; keep only those dependent
+  ignore observations `NotRun` until the source profile is proven.
+- [x] Add a failing unknown-field YAML depth/node bomb that exceeds the health
+  deadline inside monolithic serde parsing; enforce a document-wide health-only
+  event depth/node/expanded-byte budget before materialization.
+- [x] Add failing late-cancellation runner tests for staged attributes,
+  isolated-index creation and EOL inspection; make cancellation sticky across
+  every process success and error branch.
+- [x] Add failing mixed Platform XML/EDT and no-Git regressions for the public
+  `checks[]` matrix; publish per-source-set Platform results or `NotRun` and EDT
+  `NotApplicable` whenever source-set identities are known, retaining aggregate-
+  only observations only while `sourceSets` is `null`.
+- [x] Add failing cancellation/deadline regressions for maximum-size Git
+  attribute and EOL protocols; parse NUL records incrementally with periodic
+  checkpoints instead of materializing and cloning every field first.
+- [x] Run focused RED -> GREEN verification after every item, then the full Rust,
+  clippy, formatting, Python contract and MCP smoke matrix and obtain a new
+  independent semantic re-review before declaring the branch merge-ready.
