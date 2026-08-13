@@ -961,9 +961,12 @@ mod tests {
     #[test]
     fn project_health_git_ignore_parser_reads_verbose_z_quadruples() {
         assert_eq!(
-            parse_check_ignore_verbose_z(
-                ".gitignore\0007\0**/.build/\0workspace/src/.build/probe\0"
-            )
+            parse_check_ignore_verbose_z(concat!(
+                ".gitignore\0",
+                "007\0",
+                "**/.build/\0",
+                "workspace/src/.build/probe\0"
+            ))
             .unwrap(),
             vec![IgnoreMatch {
                 source: ".gitignore".into(),
@@ -972,7 +975,7 @@ mod tests {
                 path: "workspace/src/.build/probe".into(),
             }]
         );
-        assert!(parse_check_ignore_verbose_z(".gitignore\01\0pattern\0").is_err());
+        assert!(parse_check_ignore_verbose_z(concat!(".gitignore\0", "1\0", "pattern\0")).is_err());
     }
 
     #[test]
