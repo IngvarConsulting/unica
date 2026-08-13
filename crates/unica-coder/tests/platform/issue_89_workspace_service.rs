@@ -19,7 +19,44 @@ use windows_sys::Win32::System::Threading::{
 
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(10);
 const INDEX_BUILD_DEADLINE: Duration = Duration::from_secs(60);
+const STDERR_TAIL_LIMIT: usize = 32 * 1024;
 static FIXTURE_NONCE: AtomicU64 = AtomicU64::new(0);
+
+fn drain_stderr(reader: impl Read, tail: &Arc<Mutex<String>>) -> std::io::Result<()> {
+    let mut reader = BufReader::new(reader);
+    let mut bytes = Vec::new();
+    loop {
+        bytes.clear();
+        if reader.read_until(b'\n', &mut bytes)? == 0 {
+            return Ok(());
+        }
+
+        let mut tail = tail.lock().unwrap();
+        tail.push_str(&String::from_utf8_lossy(&bytes));
+        if tail.len() > STDERR_TAIL_LIMIT {
+            let mut remove = tail.len() - STDERR_TAIL_LIMIT;
+            while !tail.is_char_boundary(remove) {
+                remove += 1;
+            }
+            tail.drain(..remove);
+        }
+    }
+}
+
+#[test]
+fn stderr_drain_survives_invalid_utf8_and_keeps_the_tail() {
+    let mut input = vec![b'a'; STDERR_TAIL_LIMIT];
+    input.extend_from_slice(&[0xff, b'\n']);
+    input.extend_from_slice(b"diagnostic after invalid byte\n");
+    let tail = Arc::new(Mutex::new(String::new()));
+
+    drain_stderr(std::io::Cursor::new(input), &tail).unwrap();
+
+    let tail = tail.lock().unwrap();
+    assert!(tail.contains('\u{fffd}'));
+    assert!(tail.ends_with("diagnostic after invalid byte\n"));
+    assert!(tail.len() <= STDERR_TAIL_LIMIT);
+}
 
 #[test]
 #[ignore = "long search integration; routed by search_integration_changed or ci:full"]
@@ -458,15 +495,7 @@ impl McpProcess {
         let stderr_tail = Arc::new(Mutex::new(String::new()));
         let stderr_tail_writer = Arc::clone(&stderr_tail);
         thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let mut tail = stderr_tail_writer.lock().unwrap();
-                tail.push_str(&line);
-                tail.push('\n');
-                if tail.len() > 32 * 1024 {
-                    let remove = tail.len() - 32 * 1024;
-                    tail.drain(..remove);
-                }
-            }
+            let _ = drain_stderr(stderr, &stderr_tail_writer);
         });
         let (tx, responses) = mpsc::channel();
         thread::spawn(move || {
