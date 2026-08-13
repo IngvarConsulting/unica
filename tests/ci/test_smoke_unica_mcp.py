@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import socket
@@ -30,6 +31,35 @@ class SmokeUnicaMcpTests(unittest.TestCase):
     def expected_tools(self) -> set[str]:
         module = load_module()
         return module.expected_tool_names(REPO_ROOT / "plugins" / "unica")
+
+    def test_request_notifications_cannot_restart_the_aggregate_deadline(self) -> None:
+        module = load_module()
+
+        class Process:
+            stdin = io.StringIO()
+
+        session = module.McpSession.__new__(module.McpSession)
+        session.process = Process()
+        session.timeout_seconds = 0.05
+        session.lines = module.queue.Queue()
+        session.diagnostics = []
+
+        def publish_notifications() -> None:
+            for _ in range(10):
+                session.lines.put('{"jsonrpc":"2.0","method":"notifications/progress"}\n')
+                time.sleep(0.02)
+
+        publisher = threading.Thread(target=publish_notifications)
+        publisher.start()
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(SystemExit, "timed out after 0.05s"):
+                session.request({"jsonrpc": "2.0", "id": 41, "method": "tools/list"})
+        finally:
+            elapsed = time.monotonic() - started
+            publisher.join(timeout=1.0)
+
+        self.assertLess(elapsed, 0.15, "notifications restarted the request deadline")
 
     def test_requires_all_logical_source_tools(self) -> None:
         expected = self.expected_tools()
@@ -145,6 +175,37 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     process.terminate()
                 process.wait(timeout=1.0)
 
+    def test_close_failure_still_shuts_down_and_waits_for_workspace_services(self) -> None:
+        module = load_module()
+        events: list[object] = []
+
+        class FailingSession:
+            def close(self) -> None:
+                events.append("close")
+                raise SystemExit("MCP close failed")
+
+        cache_root = Path("cache")
+        module._shutdown_workspace_services = lambda root, timeout: (
+            events.append(("shutdown", root, timeout)) or {41}
+        )
+        module._wait_for_workspace_services = lambda root, timeout, pids: events.append(
+            ("wait", root, timeout, pids)
+        )
+
+        with self.assertRaisesRegex(SystemExit, "MCP close failed"):
+            module._close_session_and_workspace_services(
+                FailingSession(), cache_root, 7.0
+            )
+
+        self.assertEqual(
+            events,
+            [
+                "close",
+                ("shutdown", cache_root, 7.0),
+                ("wait", cache_root, 7.0, {41}),
+            ],
+        )
+
     def test_expected_tools_are_the_canonical_review_ledger_exact_set(self) -> None:
         review = json.loads(
             (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(
@@ -252,6 +313,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         result_drift: bool = False,
         provider_revision: bool = False,
         read_writes: bool = False,
+        code_search_ok: bool = True,
         code_search_status: str = "ok",
         code_search_root_field: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
@@ -276,6 +338,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             tools = json.loads(r'''__TOOLS__''')
             source_flows = json.loads(r'''__SOURCE_FLOWS__''')
             read_writes = __READ_WRITES__
+            code_search_ok = __CODE_SEARCH_OK__
             code_search_status = __CODE_SEARCH_STATUS__
             code_search_root_field = __CODE_SEARCH_ROOT_FIELD__
 
@@ -406,7 +469,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                             "isError": not payload["ok"],
                         }
                     elif name == "unica.code.search":
-                        payload = operation_result(True, "code search completed")
+                        payload = operation_result(code_search_ok, "code search completed")
                         bsl_section = {
                             "provider": "bsl-analyzer",
                             "status": code_search_status,
@@ -443,7 +506,8 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                             ]
                         }
                         result = {
-                            "content": [{"type": "text", "text": json.dumps(payload)}]
+                            "content": [{"type": "text", "text": json.dumps(payload)}],
+                            "isError": False,
                         }
                     else:
                         payload = source_payload(name, args)
@@ -460,6 +524,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 json.dumps(source_flows, ensure_ascii=False),
             )
             .replace("__READ_WRITES__", repr(read_writes))
+            .replace("__CODE_SEARCH_OK__", repr(code_search_ok))
             .replace("__CODE_SEARCH_STATUS__", repr(code_search_status))
             .replace("__CODE_SEARCH_ROOT_FIELD__", repr(code_search_root_field))
             .replace("__NAME__", repr(server_name))
@@ -771,6 +836,15 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("bsl-analyzer", result.stderr)
 
+    def test_rejects_failed_code_search_even_when_bsl_section_has_a_hit(self) -> None:
+        result = self.run_smoke(
+            self.tool_entries(),
+            code_search_ok=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("inconsistent success state", result.stderr)
+
     def test_retries_bsl_analyzer_while_search_index_is_being_built(self) -> None:
         payload = {
             "data": {
@@ -803,6 +877,65 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         }
 
         self.assertFalse(load_module()._bsl_search_is_ready(payload))
+
+    def test_bsl_search_retries_the_real_request_loop_until_ready(self) -> None:
+        module = load_module()
+        unavailable = {
+            "ok": False,
+            "data": {
+                "sections": [
+                    {"provider": "rlm", "status": "empty", "hits": []},
+                    {
+                        "provider": "bsl-analyzer",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": ["Search index is being built"],
+                    },
+                    {"provider": "git-grep", "status": "empty", "hits": []},
+                ]
+            },
+        }
+        ready = json.loads(json.dumps(unavailable))
+        ready["ok"] = True
+        ready["data"]["sections"][1] = {
+            "provider": "bsl-analyzer",
+            "status": "ok",
+            "hits": [
+                {
+                    "path": "CommonModules/Shared/Ext/Module.bsl",
+                    "symbol": "Run",
+                }
+            ],
+            "diagnostics": [],
+        }
+
+        class Session:
+            def __init__(self) -> None:
+                self.payloads = [unavailable, ready]
+                self.request_ids: list[int] = []
+
+            def request(self, message: dict) -> dict:
+                self.request_ids.append(message["id"])
+                payload = self.payloads.pop(0)
+                return {
+                    "result": {
+                        "content": [{"text": json.dumps(payload)}],
+                        "isError": False,
+                    }
+                }
+
+        session = Session()
+        original_sleep = module.time.sleep
+        sleeps: list[float] = []
+        module.time.sleep = sleeps.append
+        try:
+            next_id = module._exercise_bsl_search(session, 17, 1.0)
+        finally:
+            module.time.sleep = original_sleep
+
+        self.assertEqual(next_id, 19)
+        self.assertEqual(session.request_ids, [17, 18])
+        self.assertEqual(sleeps, [0.5])
 
     def test_rejects_upstream_root_identity_leaking_from_packaged_search(self) -> None:
         result = self.run_smoke(

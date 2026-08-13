@@ -218,7 +218,7 @@
   целевой платформы хоста, и каждая цель проверяет собранный ею архив прежде,
   чем этот архив можно опубликовать; цель, провалившая собственную проверку,
   блокирует публикацию для всех остальных.
-- **Decision:** ADR-0010, ADR-0008
+- **Decision:** ADR-0055, ADR-0008
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
 - **Scope:** ci, release
@@ -305,7 +305,7 @@
   закреплённой по версии настоящей конфигурации 1С и выдаёт машиночитаемый
   отчёт, называющий каждый сценарий, его статус и его длительность; упавший
   блокирующий сценарий проваливает оценку.
-- **Decision:** ADR-0008, ADR-0010
+- **Decision:** ADR-0008, ADR-0055
 - **Check:** `guard-script` — `scripts/ci/release-assessment.py`
 - **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
 - **Scope:** ci, release

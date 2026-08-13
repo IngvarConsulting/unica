@@ -1307,9 +1307,15 @@ class McpSession:
         assert self.process.stdin is not None
         self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
         self.process.stdin.flush()
+        deadline = time.monotonic() + self.timeout_seconds
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SystemExit(
+                    f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
+                )
             try:
-                line = self.lines.get(timeout=self.timeout_seconds)
+                line = self.lines.get(timeout=remaining)
             except queue.Empty as error:
                 raise SystemExit(
                     f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
@@ -1403,14 +1409,19 @@ def _assert_no_upstream_search_fields(value: object) -> None:
 def _code_search_payload(response: dict) -> dict:
     if "error" in response:
         raise SystemExit(f"Unica MCP code search failed as JSON-RPC: {response['error']}")
+    result = response.get("result")
     try:
-        payload = json.loads(response["result"]["content"][0]["text"])
+        payload = json.loads(result["content"][0]["text"])
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise SystemExit(
             f"Unica MCP code search has no JSON operation payload: {response}"
         ) from error
     if not isinstance(payload, dict):
         raise SystemExit(f"Unica MCP code search payload is not an object: {payload!r}")
+    if not isinstance(payload.get("ok"), bool) or result.get("isError") is True:
+        raise SystemExit(
+            f"Unica MCP code search has inconsistent success state: {response}"
+        )
     _assert_no_upstream_search_fields(payload)
     return payload
 
@@ -1485,6 +1496,11 @@ def _exercise_bsl_search(
         )
         request_id += 1
         if _bsl_search_is_ready(payload):
+            if payload.get("ok") is not True:
+                raise SystemExit(
+                    "Unica MCP code search has inconsistent success state: "
+                    f"{payload}"
+                )
             return request_id
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -1640,6 +1656,25 @@ def _shutdown_workspace_services(
                 f"Unica MCP workspace service did not confirm shutdown: {response!r}"
             )
     return service_pids
+
+
+def _close_session_and_workspace_services(
+    session: McpSession,
+    cache_root: Path,
+    timeout_seconds: float,
+) -> None:
+    service_pids: set[int] = set()
+    try:
+        session.close()
+    finally:
+        try:
+            service_pids = _shutdown_workspace_services(cache_root, timeout_seconds)
+        finally:
+            _wait_for_workspace_services(
+                cache_root,
+                timeout_seconds,
+                service_pids,
+            )
 
 
 def _call(
@@ -1938,14 +1973,10 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             if diagnostics[0].get("code") != "invalid_arguments":
                 raise SystemExit(f"invalid Meta smoke returned unstable diagnostics: {invalid}")
         finally:
-            session.close()
-            service_pids = _shutdown_workspace_services(
-                cache_root, max(5.0, timeout_seconds)
-            )
-            _wait_for_workspace_services(
+            _close_session_and_workspace_services(
+                session,
                 cache_root,
                 max(5.0, timeout_seconds),
-                service_pids,
             )
         after = _workspace_snapshot(workspace)
         # The whole public source surface is read-only, so the packaged smoke

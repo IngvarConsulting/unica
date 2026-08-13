@@ -8,8 +8,8 @@ use crate::infrastructure::platform::{
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
-    ready_index_for_source_generation, IndexReadiness, WorkspaceIndexService,
-    SOURCE_GENERATION_STALE_STATUS,
+    ready_index_for_source_generation, IndexBackgroundTaskTracker, IndexReadiness,
+    SystemIndexRunner, WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -1473,6 +1473,7 @@ struct WorkspaceServiceRuntime {
     /// as it answers, which would both hide the thread from `begin_shutdown` and
     /// let a late `cancel` for the finished read kill the scheduled update.
     rlm_maintenance_cancellation: CancellationToken,
+    rlm_maintenance_tasks: Arc<SessionTeardownLifecycle>,
     session_teardowns: SessionTeardownLifecycle,
     analyzer_source_generation: Mutex<Option<u64>>,
     rlm_source_generation: Mutex<Option<u64>>,
@@ -1526,6 +1527,8 @@ impl WorkspaceServiceRuntime {
             cache_root: service_cache_root(&identity.service_dir),
             workspace_epoch: 0,
         };
+        let rlm_maintenance_tasks = Arc::new(SessionTeardownLifecycle::default());
+        let requester_tasks = Arc::clone(&rlm_maintenance_tasks);
         Self {
             identity,
             token: record_owner.token.clone(),
@@ -1537,21 +1540,19 @@ impl WorkspaceServiceRuntime {
             rlm_lane: AnalyzerLane::default(),
             rlm: Mutex::new(None),
             rlm_starter: Arc::new(RlmMcpSession::start),
-            rlm_maintenance_requester: Arc::new(|context, source_root, cancellation| {
+            rlm_maintenance_requester: Arc::new(move |context, source_root, cancellation| {
                 let mut args = Map::new();
                 args.insert(
                     "sourceDir".to_string(),
                     Value::String(source_root.display().to_string()),
                 );
-                let _ = WorkspaceIndexService::new().start_for_workspace_cancellable(
-                    &context,
-                    &args,
-                    false,
-                    &cancellation,
-                );
+                let runner = SystemIndexRunner::tracked(requester_tasks.clone());
+                let _ = WorkspaceIndexService::with_runner(&runner)
+                    .start_for_workspace_cancellable(&context, &args, false, &cancellation);
             }),
             rlm_maintenance_pending: Arc::new(AtomicBool::new(false)),
             rlm_maintenance_cancellation: CancellationToken::new(),
+            rlm_maintenance_tasks,
             session_teardowns: SessionTeardownLifecycle::default(),
             analyzer_source_generation: Mutex::new(None),
             rlm_source_generation: Mutex::new(None),
@@ -1694,7 +1695,9 @@ impl WorkspaceServiceRuntime {
         if let Some(session) = rlm {
             self.retire_session(session);
         }
-        self.session_teardowns.drain(SESSION_TEARDOWN_GRACE)
+        let sessions_drained = self.session_teardowns.drain(SESSION_TEARDOWN_GRACE);
+        let maintenance_drained = self.rlm_maintenance_tasks.drain(SESSION_TEARDOWN_GRACE);
+        sessions_drained && maintenance_drained
     }
 
     fn invalidate(&self, events: &[DomainEvent]) -> ServiceResponse {
@@ -1833,14 +1836,24 @@ impl WorkspaceServiceRuntime {
     }
 
     fn handle_rlm_ready(&self, args: Value, cancellation: &CancellationToken) -> ServiceResponse {
+        if cancellation.is_cancelled() {
+            return ServiceResponse::error(cancelled_error(
+                "rlm index operation stopped before work",
+            ));
+        }
         let mut args = args.as_object().cloned().unwrap_or_default();
         args.insert(
             "sourceDir".to_string(),
             Value::String(self.identity.source_root.clone()),
         );
-        let service = WorkspaceIndexService::new();
-        let start_report =
-            service.start_for_workspace_cancellable(&self.context, &args, false, cancellation);
+        let runner = SystemIndexRunner::tracked(self.rlm_maintenance_tasks.clone());
+        let service = WorkspaceIndexService::with_runner(&runner);
+        let start_report = service.start_for_workspace_cancellable(
+            &self.context,
+            &args,
+            false,
+            &self.rlm_maintenance_cancellation,
+        );
         let readiness = service.ready_index_cancellable(&self.context, &args, cancellation);
         ServiceResponse::from_readiness(readiness, start_report.warnings)
     }
@@ -1867,7 +1880,10 @@ impl WorkspaceServiceRuntime {
                 let _pending = RlmMaintenanceRequestGuard(pending);
                 requester(context, source_root, cancellation);
             }) {
-            Ok(_) => Vec::new(),
+            Ok(handle) => {
+                self.rlm_maintenance_tasks.track(handle);
+                Vec::new()
+            }
             Err(error) => {
                 self.rlm_maintenance_pending.store(false, Ordering::Release);
                 vec![format!(
@@ -2054,6 +2070,12 @@ impl SessionTeardownLifecycle {
                 index += 1;
             }
         }
+    }
+}
+
+impl IndexBackgroundTaskTracker for SessionTeardownLifecycle {
+    fn track(&self, handle: thread::JoinHandle<()>) {
+        SessionTeardownLifecycle::track(self, handle);
     }
 }
 
@@ -3531,7 +3553,7 @@ fn serve_workspace_service(
     runtime.begin_shutdown();
     if !runtime.shutdown_provider_sessions() && result.is_ok() {
         result = Err(format!(
-            "workspace provider sessions did not stop within {} ms",
+            "workspace provider sessions or maintenance tasks did not stop within {} ms",
             SESSION_TEARDOWN_GRACE.as_millis()
         ));
     }
@@ -5399,6 +5421,54 @@ mod tests {
 
         assert!(runtime.shutdown_provider_sessions());
         dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn runtime_shutdown_drains_cancelled_rlm_maintenance() {
+        let context = test_context("tracked-rlm-maintenance");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        runtime.rlm_maintenance_requester =
+            Arc::new(move |_context, _source_root, cancellation| {
+                started_tx.send(()).unwrap();
+                while !cancellation.is_cancelled() {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                cancelled_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            });
+        let runtime = Arc::new(runtime);
+
+        assert!(runtime
+            .request_rlm_index_maintenance(&CancellationToken::new())
+            .is_empty());
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        runtime.begin_shutdown();
+        cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let shutdown_runtime = Arc::clone(&runtime);
+        let (drained_tx, drained_rx) = mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            drained_tx
+                .send(shutdown_runtime.shutdown_provider_sessions())
+                .unwrap();
+        });
+        assert!(matches!(
+            drained_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_tx.send(()).unwrap();
+        assert!(drained_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        shutdown.join().unwrap();
+        drop(runtime);
         cleanup(&context);
     }
 
