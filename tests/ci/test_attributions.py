@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import tempfile
@@ -99,6 +100,31 @@ class AttributionTests(unittest.TestCase):
             "[MIT](third-party/licenses/1c-design-guide/LICENSE)",
             sections.get(("upstream", "1c-design-guide"), ""),
         )
+
+    def test_bsl_analyzer_packages_the_complete_upstream_license_set(self) -> None:
+        root = self.repo_root()
+        license_dir = root / "plugins/unica/third-party/licenses/bsl-analyzer"
+        expected_hashes = {
+            "LICENSE-APACHE": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+            "LICENSE-GPL": "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0",
+            "LICENSE-LGPL": "996af0513df21f7496288951c41428a03c174e9e4a9d63665c57d670f845ccb1",
+            "LICENSE-MIT": "eabf424905be03c7e86b9ba3905ee0935936f85ad98afce697716f3d046ac838",
+        }
+
+        self.assertEqual(
+            {path.name for path in license_dir.iterdir() if path.name.startswith("LICENSE-")},
+            set(expected_hashes),
+            "the package must carry the four license texts published with bsl-analyzer",
+        )
+        for name, expected_hash in expected_hashes.items():
+            actual_hash = hashlib.sha256((license_dir / name).read_bytes()).hexdigest()
+            self.assertEqual(actual_hash, expected_hash, name)
+
+        section = load_attribution_module().parse_sections(
+            (root / "plugins/unica/ATTRIBUTIONS.md").read_text(encoding="utf-8")
+        )[("tool", "bsl-analyzer")]
+        for name in expected_hashes:
+            self.assertIn(f"third-party/licenses/bsl-analyzer/{name}", section)
 
     def test_parse_sections_maps_grouped_markers_to_one_section(self) -> None:
         module = load_attribution_module()

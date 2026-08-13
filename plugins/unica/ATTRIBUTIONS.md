@@ -28,6 +28,10 @@
 - Автор: [BSL Analyzer Contributors](https://github.com/itrous/bsl-analyzer/graphs/contributors)
 - Закреплённая версия: `0.2.62`, commit `9a6cb15d60c0381dce6a3b5e536434adb12da89b`
 - Лицензия: [LGPL-3.0-or-later](third-party/licenses/bsl-analyzer/LICENSE-LGPL)
+- Полный набор текстов лицензий компонентов: [MIT](third-party/licenses/bsl-analyzer/LICENSE-MIT),
+  [Apache-2.0](third-party/licenses/bsl-analyzer/LICENSE-APACHE),
+  [LGPL-3.0-or-later](third-party/licenses/bsl-analyzer/LICENSE-LGPL) и
+  [GPL-3.0](third-party/licenses/bsl-analyzer/LICENSE-GPL)
 - Дополнительные условия и происхождение: [NOTICE](third-party/licenses/bsl-analyzer/NOTICE)
 
 Unica поставляет LSP-бинарник `bsl-analyzer`. Его лицензионная заметка
