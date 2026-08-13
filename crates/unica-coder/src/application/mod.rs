@@ -334,6 +334,121 @@ pub fn role_edit_output_schema() -> Value {
     schema
 }
 
+/// Closed MCP schema for the provider-neutral code-search result.
+///
+/// Provider-specific attributes remain an intentionally open JSON object, but
+/// the envelope, role sections, completeness claims, counts, hits, and logical
+/// location algebra are all machine-checkable. `data` remains optional because
+/// failures before provider admission (for example an invalid operational
+/// configuration) use the common error envelope and have no search result.
+pub fn code_search_output_schema() -> Value {
+    let string_array = || json!({"type": "array", "items": {"type": "string"}});
+    let logical_location = json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "addressed"},
+                    "sourceSet": {"type": "string", "minLength": 1},
+                    "metadataPath": {"type": "string", "minLength": 1},
+                    "targetKind": {
+                        "type": "string",
+                        "enum": ["sourceRoot", "metadataObject", "module"]
+                    }
+                },
+                "required": ["kind", "sourceSet", "targetKind"]
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "unaddressable"},
+                    "sourceSet": {"type": "string", "minLength": 1},
+                    "ownerMetadataPath": {"type": "string", "minLength": 1},
+                    "path": {"type": "string", "minLength": 1}
+                },
+                "required": ["kind", "sourceSet", "path"]
+            }
+        ]
+    });
+    let hit = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "rank": {"type": "integer", "minimum": 1},
+            "providerScore": {"type": "number"},
+            "location": logical_location,
+            "line": {"type": "integer", "minimum": 1},
+            "endLine": {"type": ["integer", "null"], "minimum": 1},
+            "symbol": {"type": ["string", "null"]},
+            "kind": {"type": ["string", "null"]},
+            "snippet": {"type": "string"},
+            "attributes": {
+                "type": "object",
+                "description": "Provider-specific evidence; consumers must not branch on it."
+            }
+        },
+        "required": [
+            "location", "line", "endLine", "symbol", "kind", "snippet", "attributes"
+        ]
+    });
+    let section = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "role": {"type": "string", "enum": ["semantic", "symbol", "lexical"]},
+            "provider": {"type": "string", "minLength": 1},
+            "status": {
+                "type": "string",
+                "enum": ["ok", "empty", "limitReached", "timedOut", "unavailable", "failed"]
+            },
+            "searchComplete": {"type": "boolean"},
+            "ranking": {"type": "string", "enum": ["provider", "none"]},
+            "ordering": {"type": "string", "enum": ["provider", "providerTraversal"]},
+            "matches": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "returned": {"type": "integer", "minimum": 0},
+                    "total": {"type": "integer", "minimum": 0},
+                    "relation": {"type": "string", "enum": ["exact", "lowerBound", "unknown"]}
+                },
+                "required": ["returned", "relation"]
+            },
+            "hits": {"type": "array", "items": hit},
+            "diagnostics": string_array(),
+            "artifacts": string_array()
+        },
+        "required": [
+            "role", "provider", "status", "searchComplete", "ranking", "ordering",
+            "matches", "hits", "diagnostics"
+        ]
+    });
+    let mut schema = operation_result_output_schema();
+    if let Some(properties) = schema["properties"].as_object_mut() {
+        for forbidden in ["stdout", "stderr", "command", "job"] {
+            properties.remove(forbidden);
+        }
+    }
+    schema["properties"]["data"] = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "coverage": {"type": "string", "enum": ["complete", "partial", "none"]},
+            "elapsedMs": {"type": "integer", "minimum": 0},
+            "sections": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": section
+            }
+        },
+        "required": ["coverage", "elapsedMs", "sections"]
+    });
+    schema
+}
+
 /// Project invalid Meta arguments into the stable operation envelope for an
 /// MCP adapter without changing the direct application-call error contract.
 pub fn metadata_argument_failure_result(

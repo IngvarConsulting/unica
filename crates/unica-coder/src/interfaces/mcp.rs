@@ -7,9 +7,9 @@
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
 use crate::application::{
-    input_schema_for_tool, metadata_argument_failure_result, operation_result_output_schema,
-    role_edit_argument_failure_result, role_edit_output_schema, OperationResult, ToolHandler,
-    ToolSpec, UnicaApplication,
+    code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
+    operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
+    CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec, UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -131,6 +131,9 @@ fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
             operation: "role-edit",
             ..
         } => Some(role_edit_output_schema()),
+        ToolHandler::CodeIntelligence {
+            operation: CodeIntelligenceOperation::Search,
+        } => Some(code_search_output_schema()),
         _ => None,
     }
 }
@@ -505,6 +508,62 @@ mod tests {
         }
     }
 
+    fn code_search_test_result() -> OperationResult {
+        let mut result = successful_test_result("search complete");
+        result.data = Some(json!({
+            "coverage": "partial",
+            "elapsedMs": 12,
+            "sections": [
+                {
+                    "role": "semantic",
+                    "provider": "rlm",
+                    "status": "unavailable",
+                    "searchComplete": false,
+                    "ranking": "none",
+                    "ordering": "provider",
+                    "matches": {"returned": 0, "relation": "unknown"},
+                    "hits": [],
+                    "diagnostics": ["index unavailable"]
+                },
+                {
+                    "role": "symbol",
+                    "provider": "bsl-analyzer",
+                    "status": "empty",
+                    "searchComplete": true,
+                    "ranking": "provider",
+                    "ordering": "provider",
+                    "matches": {"returned": 0, "total": 0, "relation": "exact"},
+                    "hits": [],
+                    "diagnostics": []
+                },
+                {
+                    "role": "lexical",
+                    "provider": "git-grep",
+                    "status": "limitReached",
+                    "searchComplete": false,
+                    "ranking": "none",
+                    "ordering": "providerTraversal",
+                    "matches": {"returned": 1, "total": 1, "relation": "lowerBound"},
+                    "hits": [{
+                        "location": {
+                            "kind": "unaddressable",
+                            "sourceSet": "main",
+                            "path": "CommonModules/Smoke/Ext/Module.bsl"
+                        },
+                        "line": 3,
+                        "endLine": null,
+                        "symbol": null,
+                        "kind": "text",
+                        "snippet": "Needle",
+                        "attributes": {}
+                    }],
+                    "diagnostics": []
+                }
+            ]
+        }));
+        result
+    }
+
     struct McpClient {
         writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
         reader: tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
@@ -660,7 +719,7 @@ mod tests {
                     results_found: 2,
                 }],
             });
-            Ok(successful_test_result("search complete"))
+            Ok(code_search_test_result())
         });
         let (mut client, _) = spawn_server(handler);
         client.initialize().await;
@@ -688,6 +747,10 @@ mod tests {
         );
         let response = client.receive().await;
         assert_eq!(response["id"], 1);
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["coverage"],
+            "partial"
+        );
         client.shutdown().await;
     }
 
@@ -1006,6 +1069,45 @@ mod tests {
             .find(|tool| tool.name == "unica.role.info")
             .unwrap();
         assert!(role_info.output_schema.is_none());
+    }
+
+    #[test]
+    fn code_search_publishes_a_closed_typed_result_schema() {
+        let listed = tool_definitions(&crate::application::tools());
+        let code_search = listed
+            .iter()
+            .find(|tool| tool.name == "unica.code.search")
+            .expect("code.search must be listed");
+        let output = code_search
+            .output_schema
+            .as_ref()
+            .expect("code.search must publish outputSchema");
+
+        assert_eq!(output["type"], "object");
+        assert_eq!(output["additionalProperties"], false);
+        for forbidden in ["stdout", "stderr", "command", "job"] {
+            assert!(output["properties"].get(forbidden).is_none());
+        }
+        assert_eq!(output["properties"]["data"]["additionalProperties"], false);
+        assert_eq!(
+            output["properties"]["data"]["required"],
+            json!(["coverage", "elapsedMs", "sections"])
+        );
+        let section = &output["properties"]["data"]["properties"]["sections"]["items"];
+        assert_eq!(section["additionalProperties"], false);
+        assert!(section["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("searchComplete")));
+        let location = &section["properties"]["hits"]["items"]["properties"]["location"];
+        assert_eq!(location["oneOf"].as_array().unwrap().len(), 2);
+
+        let schema = Value::Object(output.as_ref().clone());
+        let instance = serde_json::to_value(code_search_test_result()).unwrap();
+        jsonschema::validator_for(&schema)
+            .expect("code.search outputSchema must compile")
+            .validate(&instance)
+            .expect("the serialized code.search result must satisfy its advertised schema");
     }
 
     #[tokio::test]
