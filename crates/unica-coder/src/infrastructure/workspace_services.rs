@@ -1657,6 +1657,7 @@ impl WorkspaceServiceRuntime {
     fn begin_shutdown(&self) -> ServiceResponse {
         self.shutting_down.store(true, Ordering::Release);
         self.rlm_maintenance_cancellation.cancel();
+        self.rlm_maintenance_tasks.close();
         let cancellations = self
             .operations
             .lock()
@@ -2024,31 +2025,50 @@ impl WorkspaceServiceRuntime {
     }
 }
 
-#[derive(Default)]
 struct SessionTeardownLifecycle {
-    handles: Mutex<Vec<thread::JoinHandle<()>>>,
+    state: Mutex<TrackedTaskState>,
+}
+
+struct TrackedTaskState {
+    accepting: bool,
+    handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl Default for SessionTeardownLifecycle {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(TrackedTaskState {
+                accepting: true,
+                handles: Vec::new(),
+            }),
+        }
+    }
 }
 
 impl SessionTeardownLifecycle {
     fn track(&self, handle: thread::JoinHandle<()>) {
-        let mut handles = self
-            .handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        Self::reap_finished(&mut handles);
-        handles.push(handle);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        Self::reap_finished(&mut state.handles);
+        if state.accepting {
+            state.handles.push(handle);
+            return;
+        }
+        drop(state);
+        let _ = handle.join();
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.accepting = false;
     }
 
     fn drain(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             {
-                let mut handles = self
-                    .handles
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                Self::reap_finished(&mut handles);
-                if handles.is_empty() {
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                Self::reap_finished(&mut state.handles);
+                if state.handles.is_empty() {
                     return true;
                 }
             }
@@ -5098,6 +5118,96 @@ mod tests {
     }
 
     #[test]
+    fn workspace_service_record_outlives_late_maintenance_registration() {
+        struct LateMaintenanceExecutor {
+            before_registration: mpsc::Sender<()>,
+            allow_registration: Mutex<mpsc::Receiver<()>>,
+            task_started: mpsc::Sender<()>,
+            task_release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+
+        impl WorkspaceServiceOperationExecutor for LateMaintenanceExecutor {
+            fn execute(
+                &self,
+                runtime: &WorkspaceServiceRuntime,
+                _kind: ServiceRequestKind,
+                _cancellation: &CancellationToken,
+            ) -> ServiceResponse {
+                self.before_registration.send(()).unwrap();
+                self.allow_registration.lock().unwrap().recv().unwrap();
+                let task_started = self.task_started.clone();
+                let task_release = Arc::clone(&self.task_release);
+                let handle = thread::spawn(move || {
+                    task_started.send(()).unwrap();
+                    task_release.lock().unwrap().recv().unwrap();
+                });
+                runtime.rlm_maintenance_tasks.track(handle);
+                ServiceResponse {
+                    ok: true,
+                    status: Some("late-maintenance-finished".to_string()),
+                    ..ServiceResponse::default()
+                }
+            }
+        }
+
+        let (before_registration_tx, before_registration_rx) = mpsc::channel();
+        let (allow_registration_tx, allow_registration_rx) = mpsc::channel();
+        let (task_started_tx, task_started_rx) = mpsc::channel();
+        let (task_release_tx, task_release_rx) = mpsc::channel();
+        let executor = Arc::new(LateMaintenanceExecutor {
+            before_registration: before_registration_tx,
+            allow_registration: Mutex::new(allow_registration_rx),
+            task_started: task_started_tx,
+            task_release: Arc::new(Mutex::new(task_release_rx)),
+        });
+        let (context, record, _runtime, server) = workspace_test_server_with_executor(
+            "late-maintenance-record",
+            executor,
+            SERVICE_SHUTDOWN_GRACE,
+        );
+        let mut request = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "late-maintenance".to_string(),
+                args: json!({}),
+            },
+        );
+        before_registration_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        let record_path =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src"))
+                .unwrap()
+                .record_path();
+        let (server_finished_tx, server_finished_rx) = mpsc::channel();
+        let joiner = thread::spawn(move || {
+            server_finished_tx.send(server.join().unwrap()).unwrap();
+        });
+        allow_registration_tx.send(()).unwrap();
+        task_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(matches!(
+            server_finished_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(record_path.exists());
+
+        task_release_tx.send(()).unwrap();
+        assert!(read_test_response(&mut request).ok);
+        server_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        joiner.join().unwrap();
+        assert!(!record_path.exists());
+        cleanup(&context);
+    }
+
+    #[test]
     fn workspace_service_control_path_disconnect_cancels_only_its_operation() {
         let (context, record, _runtime, executor, server) =
             workspace_control_test_server("control-disconnect");
@@ -5468,6 +5578,41 @@ mod tests {
         release_tx.send(()).unwrap();
         assert!(drained_rx.recv_timeout(Duration::from_secs(1)).unwrap());
         shutdown.join().unwrap();
+        drop(runtime);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn runtime_shutdown_joins_rlm_maintenance_registered_after_drain_started() {
+        let context = test_context("late-rlm-maintenance-registration");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
+        let (allow_registration_tx, allow_registration_rx) = mpsc::channel();
+        let (task_release_tx, task_release_rx) = mpsc::channel();
+        let (registration_finished_tx, registration_finished_rx) = mpsc::channel();
+        let tracker = Arc::clone(&runtime.rlm_maintenance_tasks);
+        let registrar = thread::spawn(move || {
+            allow_registration_rx.recv().unwrap();
+            let handle = thread::spawn(move || task_release_rx.recv().unwrap());
+            tracker.track(handle);
+            registration_finished_tx.send(()).unwrap();
+        });
+
+        runtime.begin_shutdown();
+        assert!(runtime.shutdown_provider_sessions());
+        allow_registration_tx.send(()).unwrap();
+        assert!(matches!(
+            registration_finished_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        task_release_tx.send(()).unwrap();
+        registration_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        registrar.join().unwrap();
         drop(runtime);
         cleanup(&context);
     }
