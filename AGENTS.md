@@ -235,12 +235,20 @@
 [`mcp-server-dev`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/mcp-server-dev).
 
 Если хотя бы один обязательный навык недоступен, не начинайте MCP-работу, пока
-не установлен весь комплект. В Codex используйте системный `skill-installer`
-с repository `anthropics/claude-plugins-official`, ref `main` и путями:
+не доступен весь комплект. В Codex явно вызовите `$skill-installer` и установите
+только отсутствующие навыки из repository
+`anthropics/claude-plugins-official`, ref `main`, передав соответствующие пути:
 
 - `plugins/mcp-server-dev/skills/build-mcp-server`;
 - `plugins/mcp-server-dev/skills/build-mcp-app`;
 - `plugins/mcp-server-dev/skills/build-mcpb`.
+
+Не передавайте установщику путь уже установленного навыка: он не перезаписывает
+существующий каталог. Ожидаемое назначение каждого навыка —
+`$CODEX_HOME/skills/<имя>/SKILL.md`. После установки завершите текущий ход. На
+следующем ходе проверьте, что все три навыка доступны для явного вызова и их
+`SKILL.md` читаются. Если навык не появился, перезапустите Codex и повторите
+проверку; до успешной проверки MCP-работу не продолжайте.
 
 В Claude Code установите официальный плагин:
 
