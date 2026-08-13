@@ -6629,9 +6629,11 @@ fn main() {
     fn write_ready_rlm_status_for_current_source(
         context: &WorkspaceContext,
         source_root: &Path,
-    ) -> SourceRevision {
-        let revision = SourceRevisionService::new(context, source_root)
-            .unwrap()
+    ) -> (SourceRevision, Arc<SourceRevisionService>) {
+        let revision_service = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(context, source_root).unwrap(),
+        );
+        let revision = revision_service
             .snapshot(
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
@@ -6660,7 +6662,7 @@ fn main() {
             serde_json::to_string_pretty(&status).unwrap() + "\n",
         )
         .unwrap();
-        revision
+        (revision, revision_service)
     }
 
     fn write_active_rlm_index_lock(context: &WorkspaceContext, source_root: &Path) {
@@ -6702,7 +6704,7 @@ fn main() {
         let source_root = context.workspace_root.join("src");
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        let pre_execution_revision =
+        let (pre_execution_revision, revision_service) =
             write_ready_rlm_status_for_current_source(&context, &source_root);
         let fixture = blocking_rlm_fixture();
         fs::create_dir_all(&context.cache_root).unwrap();
@@ -6711,6 +6713,7 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revision_service);
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
         let maintenance_revisions = Arc::new(Mutex::new(Vec::new()));
         runtime.rlm_maintenance_requester = Arc::new({
@@ -7882,10 +7885,12 @@ fn main() {
             "Процедура Тест()\nКонецПроцедуры\n",
         )
         .unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let (_, revision_service) =
+            write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revision_service);
         let starts = Arc::new(AtomicUsize::new(0));
         runtime.rlm_starter = Arc::new({
             let starts = Arc::clone(&starts);
@@ -7922,10 +7927,12 @@ fn main() {
         let source_root = context.workspace_root.join("src");
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let (_, revision_service) =
+            write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revision_service);
         let starts = Arc::new(AtomicUsize::new(0));
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
         runtime.rlm_maintenance_requester = Arc::new({
@@ -7974,10 +7981,12 @@ fn main() {
         let source_root = context.workspace_root.join("src");
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let (_, revision_service) =
+            write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revision_service);
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
         let (maintenance_started_tx, maintenance_started_rx) = mpsc::channel();
         let (maintenance_release_tx, maintenance_release_rx) = mpsc::channel();

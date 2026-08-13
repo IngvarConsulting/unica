@@ -15,6 +15,8 @@ use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const GENERATED_DIR_NAME: &str = ".build";
@@ -25,6 +27,33 @@ const REVISION_RECORD_SCHEMA_VERSION: u32 = 2;
 struct SourceEntryDigest {
     kind: u8,
     digest: [u8; 32],
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct ReconcileEverySnapshotFence {
+    at_reconcile_boundary: AtomicBool,
+}
+
+#[cfg(test)]
+impl SourceRevisionFence for ReconcileEverySnapshotFence {
+    fn capability(&self) -> FenceCapability {
+        FenceCapability::ProvenFast
+    }
+
+    fn flush(
+        &self,
+        _deadline: ProviderDeadline,
+        _cancellation: &CancellationToken,
+    ) -> Result<FenceOutcome, String> {
+        if self.at_reconcile_boundary.fetch_xor(true, Ordering::AcqRel) {
+            Ok(FenceOutcome::Proven {
+                changed_paths: Vec::new(),
+            })
+        } else {
+            Ok(FenceOutcome::TrustLost(SourceRevisionTrustLoss::WatcherGap))
+        }
+    }
 }
 
 type SourceManifest = BTreeMap<PathBuf, SourceEntryDigest>;
@@ -67,6 +96,29 @@ struct SourceRevisionRecord {
 
 impl SourceRevisionService {
     pub(crate) fn new(context: &WorkspaceContext, source_root: &Path) -> Result<Self, String> {
+        let canonical_source_root = fs::canonicalize(source_root)
+            .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
+        let fence = platform_fence(&canonical_source_root, &context.cache_root)?;
+        Self::with_fence(context, &canonical_source_root, fence)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_reconciling_for_test(
+        context: &WorkspaceContext,
+        source_root: &Path,
+    ) -> Result<Self, String> {
+        Self::with_fence(
+            context,
+            source_root,
+            Arc::new(ReconcileEverySnapshotFence::default()),
+        )
+    }
+
+    fn with_fence(
+        context: &WorkspaceContext,
+        source_root: &Path,
+        fence: Arc<dyn SourceRevisionFence>,
+    ) -> Result<Self, String> {
         let workspace_root = fs::canonicalize(&context.workspace_root)
             .map_err(|error| format!("workspace revision root cannot be normalized: {error}"))?;
         let source_root = fs::canonicalize(source_root)
@@ -83,7 +135,6 @@ impl SourceRevisionService {
         let machine = load_revision_record(&record_path, &workspace_root, &source_root)
             .and_then(|revision| SourceRevisionMachine::from_revision(revision).ok())
             .unwrap_or_default();
-        let fence = platform_fence(&source_root, &context.cache_root)?;
         Ok(Self {
             workspace_root,
             source_root,

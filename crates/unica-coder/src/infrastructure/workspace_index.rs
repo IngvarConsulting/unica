@@ -3194,8 +3194,9 @@ source-set:
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        let revision_service =
-            Arc::new(SourceRevisionService::new(&context, &source_root).unwrap());
+        let revision_service = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
+        );
         let captured = revision_service
             .snapshot(
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
@@ -3282,8 +3283,9 @@ source-set:
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, "").unwrap();
         let mut job = test_background_job(&context, "update");
-        let revision_service =
-            Arc::new(SourceRevisionService::new(&context, &source_root).unwrap());
+        let revision_service = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
+        );
         let captured = revision_service
             .snapshot(
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
@@ -3319,8 +3321,9 @@ source-set:
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
         fs::write(source_root.join("Module.bsl"), "Процедура Smoke()\n").unwrap();
-        let revision_service =
-            Arc::new(SourceRevisionService::new(&context, &source_root).unwrap());
+        let revision_service = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
+        );
         let captured = revision_service
             .snapshot(
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
