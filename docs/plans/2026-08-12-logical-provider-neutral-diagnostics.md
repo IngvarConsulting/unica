@@ -14,7 +14,7 @@
 - Work on one branch based directly on current `main`; do not base the PR on another open PR.
 - Follow strict TDD for every task: add the named failing test, run it and confirm the expected failure, then write production code and rerun it.
 - Keep one public MCP server named `unica` and one public tool named `unica.code.diagnostics`; BSL LS and metadata-validator implementations are test doubles only in this PR.
-- Public requests and results never contain an absolute path, URI, `sourceDir`, or provider-specific payload. The only public physical observation is a safe `/`-normalized `observedPath` relative to the selected source set.
+- Public target selectors and diagnostic results never contain an absolute path, URI, `sourceDir`, or provider-specific payload. The generic optional `cwd` remains the sole absolute-path exception: it selects the workspace context, never identifies the diagnostic target, and is not echoed in result `data`. The only public physical diagnostic observation is a safe `/`-normalized `observedPath` relative to the selected source set.
 - Do not deduplicate findings across providers. Rule identity is the exact `(provider, code)` pair.
 - Resolve a named `sourceSet` exactly. Do not fall back to `main`, a sole source set, `cwd`, or a caller-supplied directory.
 - Cancellation wins over all partial outcomes and publishes no collected items.
