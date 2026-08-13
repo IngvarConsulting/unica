@@ -1203,7 +1203,7 @@ mod tests {
     #[test]
     fn git_grep_is_literal_source_scoped_and_uses_the_upstream_deadline() {
         let runner = FakeRunner {
-            output: output("CommonModules/Sales/Ext/Module.bsl\04\0Post();\n"),
+            output: output("CommonModules/Sales/Ext/Module.bsl\x004\x00Post();\n"),
             commands: Mutex::new(Vec::new()),
         };
         let provider = GitGrepProvider::with_runner(&runner);
@@ -1252,9 +1252,9 @@ mod tests {
     fn git_grep_returns_the_first_unranked_provider_traversal_prefix() {
         let runner = FakeRunner {
             output: output(
-                "b/Module.bsl\09\0Second\n\
-                 a/Module.bsl\07\0Later\n\
-                 a/Module.bsl\02\0First\n",
+                "b/Module.bsl\x009\x00Second\n\
+                 a/Module.bsl\x007\x00Later\n\
+                 a/Module.bsl\x002\x00First\n",
             ),
             commands: Mutex::new(Vec::new()),
         };
@@ -1283,7 +1283,7 @@ mod tests {
     #[test]
     fn git_grep_preserves_utf8_paths() {
         let runner = FakeRunner {
-            output: output("Catalogs/Номенклатура.xml\07\0<Name>Номенклатура</Name>\n"),
+            output: output("Catalogs/Номенклатура.xml\x007\x00<Name>Номенклатура</Name>\n"),
             commands: Mutex::new(Vec::new()),
         };
 
@@ -1310,7 +1310,7 @@ mod tests {
             output: ProcessOutput {
                 status_success: false,
                 status: "timeout".to_string(),
-                stdout: "a/Module.bsl\02\0First\nb/Module.bsl\09\0Second\n".to_string(),
+                stdout: "a/Module.bsl\x002\x00First\nb/Module.bsl\x009\x00Second\n".to_string(),
                 stderr: String::new(),
                 timed_out: true,
                 cancelled: false,
@@ -1345,8 +1345,8 @@ mod tests {
                 status_success: true,
                 status: "exit status: 0".to_string(),
                 stdout: concat!(
-                    "CommonModules/Other/Ext/Module.bsl\012\0Procedure Other()\n",
-                    "CommonModules/Test/Ext/Module.bsl\01\0Procedure Test()\n"
+                    "CommonModules/Other/Ext/Module.bsl\x0012\x00Procedure Other()\n",
+                    "CommonModules/Test/Ext/Module.bsl\x001\x00Procedure Test()\n"
                 )
                 .to_string(),
                 stderr: String::new(),
