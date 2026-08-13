@@ -2,6 +2,8 @@ use serde::Serialize;
 use std::fmt;
 use std::time::Duration;
 
+use crate::domain::code_intelligence::ProviderRole;
+
 const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 300;
 const SEARCH_RLM_DEFAULT_SECONDS: u64 = 300;
 const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 2;
@@ -158,6 +160,14 @@ impl CodeIntelligenceDeadlines {
 
     pub const fn provider_read_timeout(self) -> Duration {
         self.provider_read_timeout
+    }
+
+    pub const fn search_timeout_for(self, role: ProviderRole) -> Duration {
+        match role {
+            ProviderRole::Semantic => self.search_rlm_timeout,
+            ProviderRole::Symbol => self.search_total_timeout,
+            ProviderRole::Lexical => self.search_git_grep_timeout,
+        }
     }
 
     #[cfg(test)]

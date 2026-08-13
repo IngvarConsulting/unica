@@ -1808,7 +1808,7 @@ fn invoke_code_intelligence_read(
             request.capability()
         )
     })?;
-    let provider_id = provider.id();
+    let provider_identity = provider.identity();
     let mut outcome = code_intelligence::execute_provider_read(
         provider,
         request,
@@ -1818,13 +1818,12 @@ fn invoke_code_intelligence_read(
             .provider_read_timeout(),
         cancellation,
     )?;
-    if outcome.provider != provider_id {
+    if outcome.provider != provider_identity {
         outcome.warnings.insert(
             0,
             format!(
                 "provider registry selected {}, but the response identified {}",
-                provider_id.as_str(),
-                outcome.provider.as_str()
+                provider_identity.provider, outcome.provider.provider
             ),
         );
     }
@@ -3151,8 +3150,8 @@ mod tests {
     struct FullRangeReadProvider;
 
     impl crate::domain::code_intelligence::CodeIntelligenceProvider for FullRangeReadProvider {
-        fn id(&self) -> crate::domain::code_intelligence::ProviderId {
-            crate::domain::code_intelligence::ProviderId::Rlm
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            crate::domain::code_intelligence::ProviderId::Rlm.identity()
         }
 
         fn capabilities(&self) -> &[crate::domain::code_intelligence::ProviderCapability] {
@@ -3206,7 +3205,7 @@ mod tests {
                 }
             };
             Ok(crate::domain::code_intelligence::ProviderReadOutcome {
-                provider: crate::domain::code_intelligence::ProviderId::Rlm,
+                provider: crate::domain::code_intelligence::ProviderId::Rlm.identity(),
                 ok: true,
                 summary: "read".to_string(),
                 warnings: Vec::new(),

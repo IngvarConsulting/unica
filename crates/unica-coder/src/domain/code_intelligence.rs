@@ -38,7 +38,7 @@ impl ProviderRole {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderIdentity {
     pub role: ProviderRole,
@@ -827,7 +827,7 @@ pub struct CodeDefinition {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderReadOutcome {
-    pub provider: ProviderId,
+    pub provider: ProviderIdentity,
     pub ok: bool,
     pub summary: String,
     pub warnings: Vec<String>,
@@ -839,7 +839,7 @@ pub struct ProviderReadOutcome {
 }
 
 pub trait CodeIntelligenceProvider: Send + Sync {
-    fn id(&self) -> ProviderId;
+    fn identity(&self) -> ProviderIdentity;
     fn capabilities(&self) -> &[ProviderCapability];
     fn search(
         &self,
@@ -858,7 +858,7 @@ pub trait CodeIntelligenceProvider: Send + Sync {
     ) -> Result<ProviderReadOutcome, String> {
         Err(format!(
             "provider {} does not implement {:?}",
-            self.id().as_str(),
+            self.identity().provider,
             request.capability()
         ))
     }
@@ -871,11 +871,23 @@ pub struct CodeIntelligenceRegistry {
 impl CodeIntelligenceRegistry {
     pub fn new(providers: Vec<Arc<dyn CodeIntelligenceProvider>>) -> Result<Self, String> {
         let mut ids = std::collections::HashSet::new();
+        let mut search_roles = std::collections::HashSet::new();
         for provider in &providers {
-            if !ids.insert(provider.id()) {
+            let identity = provider.identity();
+            if !ids.insert(identity.provider.clone()) {
                 return Err(format!(
                     "duplicate code intelligence provider: {}",
-                    provider.id().as_str()
+                    identity.provider
+                ));
+            }
+            if provider
+                .capabilities()
+                .contains(&ProviderCapability::Search)
+                && !search_roles.insert(identity.role)
+            {
+                return Err(format!(
+                    "duplicate code intelligence search role: {}",
+                    identity.role.as_str()
                 ));
             }
         }
@@ -915,7 +927,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     struct FakeProvider {
-        id: ProviderId,
+        identity: ProviderIdentity,
         capabilities: Vec<ProviderCapability>,
     }
 
@@ -935,8 +947,8 @@ mod tests {
     }
 
     impl CodeIntelligenceProvider for FakeProvider {
-        fn id(&self) -> ProviderId {
-            self.id
+        fn identity(&self) -> ProviderIdentity {
+            self.identity.clone()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -951,7 +963,7 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
             ProviderSearchSection::complete(
-                self.id.identity(),
+                self.identity.clone(),
                 SearchRanking::Provider,
                 SearchOrdering::Provider,
                 Vec::new(),
@@ -968,7 +980,7 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> Result<ProviderReadOutcome, String> {
             Ok(ProviderReadOutcome {
-                provider: self.id,
+                provider: self.identity.clone(),
                 ok: true,
                 summary: format!("{} handled", request.operation_name()),
                 warnings: Vec::new(),
@@ -985,15 +997,15 @@ mod tests {
     fn registry_preserves_injected_search_provider_order() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
-                id: ProviderId::Rlm,
+                identity: ProviderId::Rlm.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
             Arc::new(FakeProvider {
-                id: ProviderId::BslAnalyzer,
+                identity: ProviderId::BslAnalyzer.identity(),
                 capabilities: Vec::new(),
             }),
             Arc::new(FakeProvider {
-                id: ProviderId::GitGrep,
+                identity: ProviderId::GitGrep.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
         ])
@@ -1001,21 +1013,21 @@ mod tests {
 
         let ids = registry
             .search_providers()
-            .map(|provider| provider.id())
+            .map(|provider| provider.identity().provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, vec![ProviderId::Rlm, ProviderId::GitGrep]);
+        assert_eq!(ids, vec!["rlm", "git-grep"]);
     }
 
     #[test]
     fn registry_rejects_duplicate_provider_ids() {
         let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
             Arc::new(FakeProvider {
-                id: ProviderId::Rlm,
+                identity: ProviderId::Rlm.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
             Arc::new(FakeProvider {
-                id: ProviderId::Rlm,
+                identity: ProviderId::Rlm.identity(),
                 capabilities: Vec::new(),
             }),
         ];
@@ -1029,10 +1041,31 @@ mod tests {
     }
 
     #[test]
+    fn registry_rejects_two_search_implementations_for_the_same_role() {
+        let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
+            Arc::new(FakeProvider {
+                identity: ProviderIdentity::new(ProviderRole::Semantic, "semantic-a"),
+                capabilities: vec![ProviderCapability::Search],
+            }),
+            Arc::new(FakeProvider {
+                identity: ProviderIdentity::new(ProviderRole::Semantic, "semantic-b"),
+                capabilities: vec![ProviderCapability::Search],
+            }),
+        ];
+
+        let error = match CodeIntelligenceRegistry::new(providers) {
+            Ok(_) => panic!("duplicate search roles must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "duplicate code intelligence search role: semantic");
+    }
+
+    #[test]
     fn registry_resolves_an_executable_provider_for_read_capabilities() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
-                id: ProviderId::Rlm,
+                identity: ProviderId::Rlm.identity(),
                 capabilities: vec![
                     ProviderCapability::Search,
                     ProviderCapability::Definition,
@@ -1041,7 +1074,7 @@ mod tests {
                 ],
             }),
             Arc::new(FakeProvider {
-                id: ProviderId::GitGrep,
+                identity: ProviderId::GitGrep.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
         ])
@@ -1064,7 +1097,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(outcome.provider, ProviderId::Rlm);
+        assert_eq!(outcome.provider, ProviderId::Rlm.identity());
         assert_eq!(outcome.summary, "code definition handled");
     }
 

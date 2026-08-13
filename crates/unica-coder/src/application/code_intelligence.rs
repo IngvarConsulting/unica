@@ -1,10 +1,11 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-    CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderId, ProviderProgressSink,
-    ProviderProgressUpdate, ProviderReadOutcome, ProviderRole, ProviderSearchSection,
-    ProviderSectionStatus, SearchCoverage, SearchProgressSink, SearchProgressSnapshot,
-    SearchProviderPhase, SearchProviderProgress, SearchProviderState, SearchRequest,
+    CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderIdentity,
+    ProviderProgressSink, ProviderProgressUpdate, ProviderReadOutcome, ProviderRole,
+    ProviderSearchSection, ProviderSectionStatus, SearchCoverage, SearchProgressSink,
+    SearchProgressSnapshot, SearchProviderPhase, SearchProviderProgress, SearchProviderState,
+    SearchRequest,
 };
 use crate::domain::operational_config::CodeIntelligenceDeadlines;
 use std::any::Any;
@@ -140,17 +141,17 @@ impl CodeSearchCoordinator {
         }
 
         let mut providers = self.registry.search_provider_arcs();
-        providers.sort_by_key(|provider| provider_role_order(provider.id().role()));
-        let provider_ids = providers
+        providers.sort_by_key(|provider| provider_role_order(provider.identity().role));
+        let provider_identities = providers
             .iter()
-            .map(|provider| provider.id())
+            .map(|provider| provider.identity())
             .collect::<Vec<_>>();
         let started_at = Instant::now();
         let public_search_budget = self.deadlines.search_total_timeout();
-        let mut provider_progress = provider_ids
+        let mut provider_progress = provider_identities
             .iter()
             .map(|provider| SearchProviderProgress {
-                identity: provider.identity(),
+                identity: provider.clone(),
                 state: SearchProviderState::Queued,
                 phase: SearchProviderPhase::Preparing,
                 detail_code: None,
@@ -166,19 +167,23 @@ impl CodeSearchCoordinator {
         );
         let (tx, rx) = mpsc::channel();
         let mut slots = vec![None; providers.len()];
-        let provider_budgets = provider_ids
+        let provider_budgets = provider_identities
             .iter()
-            .map(|provider| self.provider_budget(*provider).min(public_search_budget))
+            .map(|provider| {
+                self.provider_budget(provider.role)
+                    .min(public_search_budget)
+            })
             .collect::<Vec<_>>();
-        let provider_cancellations = provider_ids
+        let provider_cancellations = provider_identities
             .iter()
             .map(|_| cancellation.linked_child())
             .collect::<Vec<_>>();
         for (index, provider) in providers.into_iter().enumerate() {
-            let provider_id = provider.id();
-            let Some(worker_permit) = self.worker_admission.try_acquire(provider_id) else {
+            let provider_identity = provider.identity();
+            let Some(worker_permit) = self.worker_admission.try_acquire(provider_identity.clone())
+            else {
                 slots[index] = Some(provider_admission_exhausted_section(
-                    provider_id,
+                    provider_identity,
                     self.worker_admission.per_provider_limit,
                 ));
                 provider_progress[index].state = SearchProviderState::Unavailable;
@@ -197,28 +202,33 @@ impl CodeSearchCoordinator {
                     }));
             let budget = provider_budgets[index];
             let worker_cancellation = provider_cancellations[index].clone();
+            let worker_identity = provider_identity.clone();
+            let worker_provider = Arc::clone(&provider);
             let spawn_result = thread::Builder::new()
-                .name(format!("unica-code-search-{}", provider_id.as_str()))
+                .name(format!(
+                    "unica-code-search-{}",
+                    provider_identity.role.as_str()
+                ))
                 .spawn(move || {
                     let _worker_permit = worker_permit;
                     let mut section = catch_unwind(AssertUnwindSafe(|| {
-                        provider.search(
+                        worker_provider.search(
                             &request,
                             &context,
                             ProviderDeadline::from_started_at(started_at, budget),
                             &worker_cancellation,
                         )
                     }))
-                    .unwrap_or_else(|panic| failed_after_panic(provider_id, panic));
-                    if section.identity != provider_id.identity() {
+                    .unwrap_or_else(|panic| failed_after_panic(worker_identity.clone(), panic));
+                    if section.identity != worker_identity {
                         section.diagnostics.push(format!(
                             "provider returned mismatched identity {}/{}; normalized to {}/{}",
                             section.identity.role.as_str(),
                             section.identity.provider,
-                            provider_id.role().as_str(),
-                            provider_id.as_str()
+                            worker_identity.role.as_str(),
+                            worker_identity.provider
                         ));
-                        section.identity = provider_id.identity();
+                        section.identity = worker_identity;
                     }
                     let _ = tx.send(ProviderWorkerMessage::Completed { index, section });
                 });
@@ -226,7 +236,7 @@ impl CodeSearchCoordinator {
                 Ok(handle) => self.worker_lifecycle.track(handle),
                 Err(error) => {
                     slots[index] = Some(ProviderSearchSection::failed(
-                        provider_id.identity(),
+                        provider_identity,
                         format!("failed to start provider worker: {error}"),
                     ));
                     provider_progress[index].state = SearchProviderState::Failed;
@@ -259,7 +269,7 @@ impl CodeSearchCoordinator {
                 if slot.is_none() && elapsed >= provider_budgets[index] {
                     provider_cancellations[index].cancel();
                     *slot = Some(provider_timeout_section(
-                        provider_ids[index],
+                        provider_identities[index].clone(),
                         provider_budgets[index],
                     ));
                     provider_progress[index].state = SearchProviderState::TimedOut;
@@ -351,11 +361,11 @@ impl CodeSearchCoordinator {
 
         let sections = slots
             .into_iter()
-            .zip(provider_ids)
+            .zip(provider_identities)
             .map(|(section, provider)| {
                 section.unwrap_or_else(|| {
                     ProviderSearchSection::failed(
-                        provider.identity(),
+                        provider,
                         "provider worker ended without a result".to_string(),
                     )
                 })
@@ -428,12 +438,8 @@ impl CodeSearchCoordinator {
         })
     }
 
-    fn provider_budget(&self, provider: ProviderId) -> Duration {
-        match provider {
-            ProviderId::Rlm => self.deadlines.search_rlm_timeout(),
-            ProviderId::BslAnalyzer => self.deadlines.search_total_timeout(),
-            ProviderId::GitGrep => self.deadlines.search_git_grep_timeout(),
-        }
+    fn provider_budget(&self, role: ProviderRole) -> Duration {
+        self.deadlines.search_timeout_for(role)
     }
 }
 
@@ -478,7 +484,7 @@ fn duration_millis(duration: Duration) -> u64 {
 
 struct ProviderWorkerAdmission {
     per_provider_limit: usize,
-    active: Mutex<HashMap<ProviderId, usize>>,
+    active: Mutex<HashMap<ProviderIdentity, usize>>,
 }
 
 struct ProviderWorkerLifecycle {
@@ -561,12 +567,12 @@ impl ProviderWorkerAdmission {
         }
     }
 
-    fn try_acquire(self: &Arc<Self>, provider: ProviderId) -> Option<ProviderWorkerPermit> {
+    fn try_acquire(self: &Arc<Self>, provider: ProviderIdentity) -> Option<ProviderWorkerPermit> {
         let mut active = self
             .active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = active.entry(provider).or_default();
+        let count = active.entry(provider.clone()).or_default();
         if *count >= self.per_provider_limit {
             return None;
         }
@@ -578,11 +584,11 @@ impl ProviderWorkerAdmission {
     }
 
     #[cfg(test)]
-    fn active_count(&self, provider: ProviderId) -> usize {
+    fn active_count(&self, provider: &ProviderIdentity) -> usize {
         self.active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&provider)
+            .get(provider)
             .copied()
             .unwrap_or_default()
     }
@@ -590,7 +596,7 @@ impl ProviderWorkerAdmission {
 
 struct ProviderWorkerPermit {
     admission: Arc<ProviderWorkerAdmission>,
-    provider: ProviderId,
+    provider: ProviderIdentity,
 }
 
 impl Drop for ProviderWorkerPermit {
@@ -660,20 +666,25 @@ fn execute_provider_read_with_policy(
             "code intelligence read stopped before provider start",
         ));
     }
-    let provider_id = provider.id();
-    let _permit = worker_admission.try_acquire(provider_id).ok_or_else(|| {
-        format!(
-            "{} read provider worker capacity exhausted (limit {})",
-            provider_id.as_str(),
-            worker_admission.per_provider_limit
-        )
-    })?;
+    let provider_identity = provider.identity();
+    let _permit = worker_admission
+        .try_acquire(provider_identity.clone())
+        .ok_or_else(|| {
+            format!(
+                "{} read provider worker capacity exhausted (limit {})",
+                provider_identity.provider, worker_admission.per_provider_limit
+            )
+        })?;
     let worker_cancellation = cancellation.linked_child();
     let worker_token = worker_cancellation.clone();
     let started_at = Instant::now();
     let (tx, rx) = mpsc::sync_channel(1);
+    let worker_identity = provider_identity.clone();
     let handle = thread::Builder::new()
-        .name(format!("unica-code-read-{}", provider_id.as_str()))
+        .name(format!(
+            "unica-code-read-{}",
+            provider_identity.role.as_str()
+        ))
         .spawn(move || {
             let _permit = _permit;
             let result = catch_unwind(AssertUnwindSafe(|| {
@@ -690,7 +701,10 @@ fn execute_provider_read_with_policy(
                     .map(|value| (*value).to_string())
                     .or_else(|| panic.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "unknown panic payload".to_string());
-                format!("{} read provider panicked: {detail}", provider_id.as_str())
+                format!(
+                    "{} read provider panicked: {detail}",
+                    worker_identity.provider
+                )
             })
             .and_then(|result| result);
             let _ = tx.send(result);
@@ -698,7 +712,7 @@ fn execute_provider_read_with_policy(
         .map_err(|error| {
             format!(
                 "failed to start {} read provider worker: {error}",
-                provider_id.as_str()
+                provider_identity.provider
             )
         })?;
     worker_lifecycle.track(handle);
@@ -717,7 +731,7 @@ fn execute_provider_read_with_policy(
             worker_cancellation.cancel();
             return Err(format!(
                 "{} provider exceeded its {} ms read budget",
-                provider_id.as_str(),
+                provider_identity.provider,
                 budget.as_millis()
             ));
         }
@@ -733,7 +747,7 @@ fn execute_provider_read_with_policy(
                 worker_lifecycle.reap();
                 return Err(format!(
                     "{} read provider ended without a result",
-                    provider_id.as_str()
+                    provider_identity.provider
                 ));
             }
         }
@@ -759,9 +773,9 @@ pub(crate) fn track_code_search_worker_for_test(handle: thread::JoinHandle<()>) 
     global_provider_worker_lifecycle().track(handle);
 }
 
-fn provider_timeout_section(provider: ProviderId, budget: Duration) -> ProviderSearchSection {
+fn provider_timeout_section(provider: ProviderIdentity, budget: Duration) -> ProviderSearchSection {
     ProviderSearchSection::timed_out(
-        provider.identity(),
+        provider,
         crate::domain::code_intelligence::SearchRanking::None,
         crate::domain::code_intelligence::SearchOrdering::Provider,
         Vec::new(),
@@ -774,22 +788,25 @@ fn provider_timeout_section(provider: ProviderId, budget: Duration) -> ProviderS
 }
 
 fn provider_admission_exhausted_section(
-    provider: ProviderId,
+    provider: ProviderIdentity,
     limit: usize,
 ) -> ProviderSearchSection {
     ProviderSearchSection::unavailable(
-        provider.identity(),
+        provider,
         format!("provider worker capacity exhausted (limit {limit})"),
     )
 }
 
-fn failed_after_panic(provider: ProviderId, panic: Box<dyn Any + Send>) -> ProviderSearchSection {
+fn failed_after_panic(
+    provider: ProviderIdentity,
+    panic: Box<dyn Any + Send>,
+) -> ProviderSearchSection {
     let detail = panic
         .downcast_ref::<&str>()
         .map(|value| (*value).to_string())
         .or_else(|| panic.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown panic payload".to_string());
-    ProviderSearchSection::failed(provider.identity(), format!("provider panicked: {detail}"))
+    ProviderSearchSection::failed(provider, format!("provider panicked: {detail}"))
 }
 
 fn section_problem(section: &ProviderSearchSection) -> String {
@@ -833,8 +850,8 @@ mod tests {
     }
 
     impl CodeIntelligenceProvider for GateProvider {
-        fn id(&self) -> ProviderId {
-            self.id
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            self.id.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -997,7 +1014,6 @@ mod tests {
     }
 
     struct StaticProvider {
-        id: ProviderId,
         section: ProviderSearchSection,
     }
 
@@ -1016,8 +1032,8 @@ mod tests {
     }
 
     impl CodeIntelligenceProvider for SlowProvider {
-        fn id(&self) -> ProviderId {
-            self.id
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            self.id.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1073,8 +1089,8 @@ mod tests {
     }
 
     impl CodeIntelligenceProvider for StaticProvider {
-        fn id(&self) -> ProviderId {
-            self.id
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            self.section.identity.clone()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1098,9 +1114,42 @@ mod tests {
         diagnostic: &str,
     ) -> Arc<dyn CodeIntelligenceProvider> {
         Arc::new(StaticProvider {
-            id,
             section: test_section(id, status, Vec::new(), diagnostic),
         })
+    }
+
+    #[test]
+    fn coordinator_preserves_the_replaceable_provider_identity_for_a_role() {
+        let provider = Arc::new(StaticProvider {
+            section: ProviderSearchSection::complete(
+                crate::domain::code_intelligence::ProviderIdentity::new(
+                    crate::domain::code_intelligence::ProviderRole::Semantic,
+                    "replacement-semantic",
+                ),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap(),
+        });
+
+        let execution =
+            CodeSearchCoordinator::new(CodeIntelligenceRegistry::new(vec![provider]).unwrap())
+                .search(
+                    &SearchRequest {
+                        query: "Post".to_string(),
+                        limit: 20,
+                    },
+                    &context(),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+
+        assert_eq!(
+            execution.result.sections[0].identity.provider,
+            "replacement-semantic"
+        );
     }
 
     #[test]
@@ -1184,7 +1233,6 @@ mod tests {
     fn coordinator_preserves_provider_local_ranks_and_limit_claim() {
         let hits = (0..2).map(test_hit).collect();
         let provider = Arc::new(StaticProvider {
-            id: ProviderId::GitGrep,
             section: ProviderSearchSection::limit_reached(
                 ProviderId::GitGrep.identity(),
                 SearchRanking::Provider,
@@ -1228,8 +1276,8 @@ mod tests {
     }
 
     impl CodeIntelligenceProvider for BudgetProvider {
-        fn id(&self) -> ProviderId {
-            self.id
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            self.id.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1312,15 +1360,15 @@ mod tests {
         );
 
         assert_eq!(
-            coordinator.provider_budget(ProviderId::BslAnalyzer),
+            coordinator.provider_budget(ProviderId::BslAnalyzer.role()),
             Duration::from_secs(100)
         );
         assert_eq!(
-            coordinator.provider_budget(ProviderId::Rlm),
+            coordinator.provider_budget(ProviderId::Rlm.role()),
             Duration::from_secs(30)
         );
         assert_eq!(
-            coordinator.provider_budget(ProviderId::GitGrep),
+            coordinator.provider_budget(ProviderId::GitGrep.role()),
             Duration::from_secs(70)
         );
         assert_eq!(deadlines.provider_read_timeout(), Duration::from_secs(40));
@@ -1357,8 +1405,8 @@ mod tests {
     struct DeadlineIgnoringProvider;
 
     impl CodeIntelligenceProvider for DeadlineIgnoringProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::BslAnalyzer
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            ProviderId::BslAnalyzer.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1420,7 +1468,10 @@ mod tests {
         );
         assert!(execution.result.sections[0].diagnostics[0].contains("30 ms search budget"));
 
-        assert_eq!(admission.active_count(ProviderId::BslAnalyzer), 1);
+        assert_eq!(
+            admission.active_count(&ProviderId::BslAnalyzer.identity()),
+            1
+        );
         assert_eq!(lifecycle.pending_count(), 1);
         let second = CodeSearchCoordinator::with_policy(
             CodeIntelligenceRegistry::new(vec![
@@ -1449,14 +1500,17 @@ mod tests {
 
         assert!(lifecycle.drain(Duration::from_secs(2)));
         assert_eq!(lifecycle.pending_count(), 0);
-        assert_eq!(admission.active_count(ProviderId::BslAnalyzer), 0);
+        assert_eq!(
+            admission.active_count(&ProviderId::BslAnalyzer.identity()),
+            0
+        );
     }
 
     struct StaticReadProvider;
 
     impl CodeIntelligenceProvider for StaticReadProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::Rlm
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            ProviderId::Rlm.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1481,7 +1535,7 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> Result<ProviderReadOutcome, String> {
             Ok(ProviderReadOutcome {
-                provider: ProviderId::Rlm,
+                provider: ProviderId::Rlm.identity(),
                 ok: true,
                 summary: "read".to_string(),
                 warnings: Vec::new(),
@@ -1497,8 +1551,8 @@ mod tests {
     struct DeadlineIgnoringReadProvider;
 
     impl CodeIntelligenceProvider for DeadlineIgnoringReadProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::Rlm
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            ProviderId::Rlm.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1524,7 +1578,7 @@ mod tests {
         ) -> Result<ProviderReadOutcome, String> {
             thread::sleep(Duration::from_millis(500));
             Ok(ProviderReadOutcome {
-                provider: ProviderId::Rlm,
+                provider: ProviderId::Rlm.identity(),
                 ok: true,
                 summary: "late".to_string(),
                 warnings: Vec::new(),
@@ -1560,9 +1614,9 @@ mod tests {
 
         assert!(error.contains("30 ms read budget"), "{error}");
         assert!(started.elapsed() < Duration::from_millis(250));
-        assert_eq!(admission.active_count(ProviderId::Rlm), 1);
+        assert_eq!(admission.active_count(&ProviderId::Rlm.identity()), 1);
         assert!(lifecycle.drain(Duration::from_secs(2)));
-        assert_eq!(admission.active_count(ProviderId::Rlm), 0);
+        assert_eq!(admission.active_count(&ProviderId::Rlm.identity()), 0);
     }
 
     #[test]
@@ -1595,7 +1649,7 @@ mod tests {
         let worker_cancellation = cancellation.linked_child();
         cancellation.cancel();
         let result = Ok(ProviderReadOutcome {
-            provider: ProviderId::Rlm,
+            provider: ProviderId::Rlm.identity(),
             ok: true,
             summary: "result published after parent cancellation".to_string(),
             warnings: Vec::new(),
@@ -1615,8 +1669,8 @@ mod tests {
     struct PanickingProvider;
 
     impl CodeIntelligenceProvider for PanickingProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::Rlm
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            ProviderId::Rlm.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1667,8 +1721,8 @@ mod tests {
     struct CancellingProvider;
 
     impl CodeIntelligenceProvider for CancellingProvider {
-        fn id(&self) -> ProviderId {
-            ProviderId::Rlm
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            ProviderId::Rlm.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {

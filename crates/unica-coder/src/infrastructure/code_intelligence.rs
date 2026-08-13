@@ -147,8 +147,8 @@ impl<'a> GitGrepProvider<'a> {
 }
 
 impl CodeIntelligenceProvider for GitGrepProvider<'_> {
-    fn id(&self) -> ProviderId {
-        ProviderId::GitGrep
+    fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+        ProviderId::GitGrep.identity()
     }
 
     fn capabilities(&self) -> &[ProviderCapability] {
@@ -217,8 +217,8 @@ impl<'a> BslAnalyzerProvider<'a> {
 }
 
 impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
-    fn id(&self) -> ProviderId {
-        ProviderId::BslAnalyzer
+    fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+        ProviderId::BslAnalyzer.identity()
     }
 
     fn capabilities(&self) -> &[ProviderCapability] {
@@ -245,7 +245,7 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
         };
         let tool_name = request.operation_name();
         let mut outcome = ProviderReadOutcome {
-            provider: ProviderId::BslAnalyzer,
+            provider: ProviderId::BslAnalyzer.identity(),
             ok: true,
             summary: format!("{tool_name} completed from the current BSL source"),
             warnings: Vec::new(),
@@ -480,8 +480,8 @@ impl<'a> RlmProvider<'a> {
 }
 
 impl CodeIntelligenceProvider for RlmProvider<'_> {
-    fn id(&self) -> ProviderId {
-        ProviderId::Rlm
+    fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+        ProviderId::Rlm.identity()
     }
 
     fn capabilities(&self) -> &[ProviderCapability] {
@@ -584,7 +584,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
         )?;
         let outcome = navigation.outcome;
         Ok(ProviderReadOutcome {
-            provider: ProviderId::Rlm,
+            provider: ProviderId::Rlm.identity(),
             ok: outcome.ok,
             summary: outcome.summary,
             warnings: outcome.warnings,
@@ -2484,8 +2484,8 @@ mod tests {
         assert_eq!(
             registry
                 .provider_for(ProviderCapability::Outline)
-                .map(|provider| provider.id()),
-            Some(ProviderId::BslAnalyzer)
+                .map(|provider| provider.identity()),
+            Some(ProviderId::BslAnalyzer.identity())
         );
     }
 
