@@ -552,6 +552,10 @@ fn ensure_no_link_components(
 mod tests {
     use super::*;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::testing::{
+        create_directory_link_fixture_for_test, remove_dir_symlink_for_test,
+        windows_extended_length_path_for_test, FileLinkFixtureOutcome,
+    };
     use serde_json::{Map, Value};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -880,12 +884,14 @@ mod tests {
         cleanup(&context);
     }
 
-    #[cfg(windows)]
     #[test]
     fn physical_support_target_accepts_regular_and_verbatim_windows_paths() {
         let context = fixture("physical-windows-verbatim");
         let resource = context.workspace_root.join("src/Configuration.xml");
-        let verbatim = PathBuf::from(format!(r"\\?\{}", resource.display()));
+        let Some(verbatim) = windows_extended_length_path_for_test(&resource) else {
+            cleanup(&context);
+            return;
+        };
 
         let regular = physical_selection(&resource, &context, AttachedResource::ConfigurationRoot)
             .expect("the regular Windows spelling resolves");
@@ -905,15 +911,21 @@ mod tests {
         cleanup(&context);
     }
 
-    #[cfg(windows)]
     #[test]
-    fn physical_support_target_rejects_a_parent_directory_reparse_point() {
+    fn physical_support_target_rejects_a_parent_directory_link_or_reparse_point() {
         let context = fixture("physical-windows-parent-reparse");
         let src = context.workspace_root.join("src");
         let linked_parent = src.join("Roles/Sales");
         let referent = src.join("linked-sales");
         fs::rename(&linked_parent, &referent).unwrap();
-        std::os::windows::fs::symlink_dir(&referent, &linked_parent).unwrap();
+        match create_directory_link_fixture_for_test(&referent, &linked_parent).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                cleanup(&context);
+                return;
+            }
+        }
 
         let failure = physical_selection(
             &linked_parent.join("Ext/Rights.xml"),
@@ -923,8 +935,7 @@ mod tests {
         .expect_err("a resource below a reparse-point parent must be refused");
 
         assert_eq!(failure.code(), "containment_denied");
-        crate::infrastructure::platform::filesystem::remove_dir_symlink_for_test(&linked_parent)
-            .unwrap();
+        remove_dir_symlink_for_test(&linked_parent).unwrap();
         cleanup(&context);
     }
 
