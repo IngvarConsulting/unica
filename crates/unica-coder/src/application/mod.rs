@@ -11368,12 +11368,12 @@ mod tests {
             outcome: AdapterOutcome::ok("reader omitted its typed payload"),
             data: None,
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect_err("successful typed reader without data must fail closed");
 
         assert_eq!(
             error,
-            "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+            "typed_result_missing: unica.project.map returned ok without OperationResult.data"
         );
     }
 
@@ -11386,12 +11386,12 @@ mod tests {
             outcome,
             data: Some(json!({"fixture": true})),
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect_err("successful typed reader must not duplicate data in stdout");
 
         assert_eq!(
             error,
-            "typed_result_textual: unica.project.status returned ok with a stdout duplicate"
+            "typed_result_textual: unica.project.map returned ok with a stdout duplicate"
         );
     }
 
@@ -11405,7 +11405,7 @@ mod tests {
             outcome,
             data: None,
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect("typed reader failure may omit data");
 
         assert!(!result.ok);
