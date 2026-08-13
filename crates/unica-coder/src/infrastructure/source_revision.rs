@@ -174,17 +174,26 @@ impl SourceRevisionService {
         })?;
         let needs_reconcile = match fence_outcome {
             FenceOutcome::Proven { changed_paths } => {
-                let trusted = matches!(
-                    self.machine
+                let (trusted, trust_loss_epoch) = {
+                    let machine = self
+                        .machine
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .state(),
-                    SourceRevisionState::Trusted(_)
-                );
+                        .unwrap_or_else(|error| error.into_inner());
+                    (
+                        matches!(machine.state(), SourceRevisionState::Trusted(_)),
+                        machine.trust_loss_epoch(),
+                    )
+                };
                 if changed_paths.is_empty() {
                     !trusted
                 } else {
-                    !(trusted && self.apply_incremental(changed_paths, deadline, cancellation)?)
+                    !(trusted
+                        && self.apply_incremental(
+                            changed_paths,
+                            trust_loss_epoch,
+                            deadline,
+                            cancellation,
+                        )?)
                 }
             }
             FenceOutcome::TrustLost(reason) => {
@@ -222,6 +231,7 @@ impl SourceRevisionService {
     fn apply_incremental(
         &self,
         mut changed_paths: Vec<PathBuf>,
+        expected_trust_loss_epoch: u64,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<bool, String> {
@@ -234,10 +244,16 @@ impl SourceRevisionService {
             return Ok(false);
         };
         for _ in 0..3 {
-            self.machine
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .begin_reconcile();
+            {
+                let mut machine = self
+                    .machine
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if machine.trust_loss_epoch() != expected_trust_loss_epoch {
+                    return Ok(false);
+                }
+                machine.begin_reconcile();
+            }
             for relative_path in changed_paths {
                 if cancellation.is_cancelled() || deadline.remaining().is_zero() {
                     self.machine
@@ -263,8 +279,7 @@ impl SourceRevisionService {
                 }
                 FenceOutcome::Proven { .. } => {
                     let digest = digest_source_manifest(&manifest)?;
-                    self.publish_revision(&manifest, digest)?;
-                    return Ok(true);
+                    return self.publish_revision(&manifest, digest, expected_trust_loss_epoch);
                 }
                 FenceOutcome::TrustLost(reason) => {
                     self.machine
@@ -359,12 +374,15 @@ impl SourceRevisionService {
         cancellation: &CancellationToken,
     ) -> Result<(), String> {
         for _ in 0..3 {
-            {
-                self.machine
+            let trust_loss_epoch = {
+                let mut machine = self
+                    .machine
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .begin_reconcile();
-            }
+                    .unwrap_or_else(|error| error.into_inner());
+                let trust_loss_epoch = machine.trust_loss_epoch();
+                machine.begin_reconcile();
+                trust_loss_epoch
+            };
             let manifest = (self.scanner)(&self.source_root, &|| {
                 cancellation.is_cancelled() || deadline.remaining().is_zero()
             })
@@ -392,18 +410,27 @@ impl SourceRevisionService {
                 FenceOutcome::Proven { .. } => {}
             }
             let digest = digest_source_manifest(&manifest)?;
-            self.publish_revision(&manifest, digest)?;
-            return Ok(());
+            if self.publish_revision(&manifest, digest, trust_loss_epoch)? {
+                return Ok(());
+            }
         }
         Err("source revision did not stabilize during reconcile".to_string())
     }
 
-    fn publish_revision(&self, manifest: &SourceManifest, digest: String) -> Result<(), String> {
-        let revision = self
+    fn publish_revision(
+        &self,
+        manifest: &SourceManifest,
+        digest: String,
+        trust_loss_epoch: u64,
+    ) -> Result<bool, String> {
+        let Some(revision) = self
             .machine
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .finish_reconcile(digest)?;
+            .finish_reconcile_if_trust_unchanged(digest, trust_loss_epoch)?
+        else {
+            return Ok(false);
+        };
         persist_revision_record(
             &self.record_path,
             &self.workspace_root,
@@ -420,7 +447,7 @@ impl SourceRevisionService {
             .manifest
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(manifest.clone());
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -587,6 +614,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
     use tempfile::tempdir;
 
     struct UnsupportedFence;
@@ -916,6 +945,87 @@ mod tests {
             incremental_reads.load(Ordering::Acquire),
             1,
             "a removed file must not be read"
+        );
+    }
+
+    #[test]
+    fn concurrent_mark_dirty_rejects_incremental_publication_and_reconciles_again() {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let module = source_root.join("Module.bsl");
+        fs::write(&module, "Процедура A()\n").unwrap();
+        let full_scans = Arc::new(AtomicUsize::new(0));
+        let (read_started_tx, read_started_rx) = mpsc::channel();
+        let (read_release_tx, read_release_rx) = mpsc::channel();
+        let read_release_rx = Mutex::new(read_release_rx);
+        let service = Arc::new(SourceRevisionService {
+            workspace_root: fs::canonicalize(workspace.path()).unwrap(),
+            source_root: fs::canonicalize(&source_root).unwrap(),
+            record_path: workspace.path().join("revision.json"),
+            machine: Mutex::new(SourceRevisionMachine::default()),
+            manifest: Mutex::new(None),
+            operation: Mutex::new(()),
+            fence: Arc::new(ScriptedFence {
+                outcomes: Mutex::new(VecDeque::from([
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: vec![PathBuf::from("Module.bsl")],
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                ])),
+            }),
+            scanner: Arc::new({
+                let full_scans = Arc::clone(&full_scans);
+                move |root, should_stop| {
+                    full_scans.fetch_add(1, Ordering::AcqRel);
+                    scan_source_manifest(root, should_stop)
+                }
+            }),
+            file_reader: Arc::new(move |path| {
+                read_started_tx.send(()).unwrap();
+                read_release_rx.lock().unwrap().recv().unwrap();
+                read_source_file(path)
+            }),
+        });
+        let initial = service
+            .snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(full_scans.load(Ordering::Acquire), 1);
+        fs::write(&module, "Процедура B()\n").unwrap();
+
+        let worker_service = Arc::clone(&service);
+        let worker = thread::spawn(move || {
+            worker_service.snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+        });
+        read_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        service.mark_dirty();
+        read_release_tx.send(()).unwrap();
+        let changed = worker.join().unwrap().unwrap();
+
+        assert!(changed.generation > initial.generation);
+        assert_eq!(
+            full_scans.load(Ordering::Acquire),
+            2,
+            "a watcher gap during incremental update must force a full reconcile"
         );
     }
 

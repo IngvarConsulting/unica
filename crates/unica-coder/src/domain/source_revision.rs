@@ -36,6 +36,7 @@ pub enum SourceRevisionState {
 pub struct SourceRevisionMachine {
     state: SourceRevisionState,
     last_trusted: Option<SourceRevision>,
+    trust_loss_epoch: u64,
 }
 
 impl SourceRevisionMachine {
@@ -46,6 +47,7 @@ impl SourceRevisionMachine {
                 reason: SourceRevisionTrustLoss::Startup,
             },
             last_trusted: None,
+            trust_loss_epoch: 1,
         }
     }
 
@@ -63,6 +65,7 @@ impl SourceRevisionMachine {
                 reason: SourceRevisionTrustLoss::Startup,
             },
             last_trusted: Some(revision),
+            trust_loss_epoch: 1,
         })
     }
 
@@ -96,7 +99,23 @@ impl SourceRevisionMachine {
         Ok(revision)
     }
 
+    pub fn finish_reconcile_if_trust_unchanged(
+        &mut self,
+        digest: String,
+        expected_trust_loss_epoch: u64,
+    ) -> Result<Option<SourceRevision>, String> {
+        if self.trust_loss_epoch != expected_trust_loss_epoch {
+            return Ok(None);
+        }
+        self.finish_reconcile(digest).map(Some)
+    }
+
+    pub fn trust_loss_epoch(&self) -> u64 {
+        self.trust_loss_epoch
+    }
+
     pub fn lose_trust(&mut self, reason: SourceRevisionTrustLoss) {
+        self.trust_loss_epoch = self.trust_loss_epoch.wrapping_add(1);
         self.state = SourceRevisionState::Untrusted {
             generation: self.generation(),
             reason,
@@ -147,6 +166,29 @@ mod tests {
             SourceRevisionState::Untrusted {
                 generation: 2,
                 reason: SourceRevisionTrustLoss::WatcherGap
+            }
+        ));
+    }
+
+    #[test]
+    fn revision_machine_does_not_publish_across_a_trust_loss_epoch() {
+        let mut machine = SourceRevisionMachine::new();
+        machine.finish_reconcile("a".repeat(64)).unwrap();
+        let admitted_epoch = machine.trust_loss_epoch();
+        machine.begin_reconcile();
+        machine.lose_trust(SourceRevisionTrustLoss::WatcherGap);
+
+        assert_eq!(
+            machine
+                .finish_reconcile_if_trust_unchanged("b".repeat(64), admitted_epoch)
+                .unwrap(),
+            None
+        );
+        assert!(matches!(
+            machine.state(),
+            SourceRevisionState::Untrusted {
+                reason: SourceRevisionTrustLoss::WatcherGap,
+                ..
             }
         ));
     }
