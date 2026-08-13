@@ -610,7 +610,6 @@ pub struct DiagnosticResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::source_navigation::SourceLocation;
     use crate::domain::source_target::{
         MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
@@ -699,18 +698,18 @@ mod tests {
         let metadata_path = metadata_address("CommonModule.Diagnostics.Module");
         let diagnostic = DiagnosticLocation::Addressed {
             source_set: "main".to_string(),
-            metadata_path: Some(metadata_path.clone()),
-            target_kind: TargetKind::Module,
-        };
-        let source = SourceLocation::Addressed {
-            source_set: "main".to_string(),
             metadata_path: Some(metadata_path),
             target_kind: TargetKind::Module,
         };
 
         assert_eq!(
             serde_json::to_value(diagnostic).unwrap(),
-            serde_json::to_value(source).unwrap()
+            json!({
+                "kind": "addressed",
+                "sourceSet": "main",
+                "metadataPath": "CommonModule.Diagnostics.Module",
+                "targetKind": "module"
+            })
         );
     }
 

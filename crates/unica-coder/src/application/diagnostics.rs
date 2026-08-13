@@ -1189,9 +1189,7 @@ mod tests {
         MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
     use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use serde_json::{json, Map, Value};
-    use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -1438,56 +1436,7 @@ mod tests {
         }
     }
 
-    struct LogicalFixture {
-        _temp: tempfile::TempDir,
-        workspace: WorkspaceContext,
-        module: PathBuf,
-    }
-
-    fn logical_fixture() -> LogicalFixture {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let source = root.join("src");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Diagnostics</Name></Properties><ChildObjects><CommonModule>Документы Обмена</CommonModule><Catalog>Номенклатура</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
-        )
-        .unwrap();
-        let common_modules = source.join("CommonModules");
-        fs::create_dir_all(common_modules.join("Документы Обмена/Ext")).unwrap();
-        fs::write(
-            common_modules.join("Документы Обмена.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Документы Обмена</Name></Properties></CommonModule></MetaDataObject>"#,
-        )
-        .unwrap();
-        let module = common_modules.join("Документы Обмена/Ext/Module.bsl");
-        fs::write(&module, "Procedure Обмен()\nEndProcedure\n").unwrap();
-        let catalogs = source.join("Catalogs");
-        fs::create_dir_all(&catalogs).unwrap();
-        fs::write(
-            catalogs.join("Номенклатура.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog><Properties><Name>Номенклатура</Name></Properties><ChildObjects><TabularSection><Properties><Name>Товары</Name></Properties><ChildObjects><Attribute><Properties><Name>Цена</Name><Type>number</Type></Properties></Attribute></ChildObjects></TabularSection></ChildObjects></Catalog></MetaDataObject>"#,
-        )
-        .unwrap();
-        LogicalFixture {
-            workspace: WorkspaceContext {
-                cwd: root.to_path_buf(),
-                workspace_root: root.to_path_buf(),
-                cache_root: root.join(".build/unica"),
-                workspace_epoch: 1,
-            },
-            module,
-            _temp: temp,
-        }
-    }
-
-    fn run_with_real_mapping(
+    fn run_with_logical_mapping(
         descriptor: &'static DiagnosticProviderDescriptor,
         outcome: DiagnosticProviderOutcome,
         request: &DiagnosticRequest,
@@ -1495,7 +1444,7 @@ mod tests {
     ) -> DiagnosticResult {
         let (provider, _) = provider(descriptor, outcome);
         let registry = DiagnosticProviderRegistry::new(vec![provider]).unwrap();
-        DiagnosticCoordinator::new(registry, &InfrastructureApplicationPorts::new())
+        DiagnosticCoordinator::new(registry, &FAKE_MAPPING)
             .execute(request, workspace, &CancellationToken::new())
             .unwrap()
     }
@@ -2297,8 +2246,8 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_logical_end_to_end_maps_cyrillic_module_without_physical_transport() {
-        let fixture = logical_fixture();
+    fn diagnostics_logical_assembly_preserves_cyrillic_module_without_physical_transport() {
+        let workspace = workspace();
         let request = DiagnosticRequest {
             action: DiagnosticAction::Findings,
             source_set: "main".to_string(),
@@ -2309,11 +2258,11 @@ mod tests {
             limit: 200,
             timeout: None,
         };
-        let result = run_with_real_mapping(
+        let result = run_with_logical_mapping(
             &ANALYZER_DESCRIPTOR,
             successful(vec![diagnostic(
                 ANALYZER,
-                &fixture.module.to_string_lossy(),
+                "Документы Обмена",
                 "LineLength",
                 DiagnosticSeverity::Warning,
                 DiagnosticObservationFocus::SourceRange(DiagnosticRange {
@@ -2324,7 +2273,7 @@ mod tests {
                 }),
             )]),
             &request,
-            &fixture.workspace,
+            &workspace,
         );
         let data = serde_json::to_value(result).unwrap();
 
@@ -2336,12 +2285,12 @@ mod tests {
         );
         assert_eq!(data["items"][0]["location"]["targetKind"], "module");
         assert_eq!(data["items"][0]["focus"]["kind"], "sourceRange");
-        assert_no_physical_transport(&data, &fixture.workspace.workspace_root.to_string_lossy());
+        assert_no_physical_transport(&data, &workspace.workspace_root.to_string_lossy());
     }
 
     #[test]
     fn diagnostics_future_provider_contract_accepts_bsl_ls_and_metadata_focus() {
-        let fixture = logical_fixture();
+        let workspace = workspace();
         let module_request = DiagnosticRequest {
             action: DiagnosticAction::Findings,
             source_set: "main".to_string(),
@@ -2352,14 +2301,11 @@ mod tests {
             limit: 200,
             timeout: None,
         };
-        let module_uri = url::Url::from_file_path(&fixture.module)
-            .unwrap()
-            .to_string();
-        let bsl_ls = run_with_real_mapping(
+        let bsl_ls = run_with_logical_mapping(
             &LANGUAGE_SERVER_DESCRIPTOR,
             successful(vec![diagnostic(
                 LANGUAGE_SERVER,
-                &module_uri,
+                "Документы Обмена",
                 "UnusedVariable",
                 DiagnosticSeverity::Warning,
                 DiagnosticObservationFocus::SourceRange(DiagnosticRange {
@@ -2370,7 +2316,7 @@ mod tests {
                 }),
             )]),
             &module_request,
-            &fixture.workspace,
+            &workspace,
         );
         let bsl_ls = serde_json::to_value(bsl_ls).unwrap();
         assert_eq!(bsl_ls["selection"]["providers"][0], "bsl-language-server");
@@ -2387,7 +2333,7 @@ mod tests {
             limit: 200,
             timeout: None,
         };
-        let metadata = run_with_real_mapping(
+        let metadata = run_with_logical_mapping(
             &METADATA_DESCRIPTOR,
             successful(vec![DiagnosticObservation::Diagnostic {
                 provider: METADATA_VALIDATOR,
@@ -2414,7 +2360,7 @@ mod tests {
                 tags: Vec::new(),
             }]),
             &metadata_request,
-            &fixture.workspace,
+            &workspace,
         );
         let metadata = serde_json::to_value(metadata).unwrap();
         assert_eq!(
