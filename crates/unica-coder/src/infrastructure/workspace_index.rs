@@ -75,9 +75,19 @@ pub struct BslIndexStatus {
     pub source_generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indexed_revision: Option<SourceRevision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_revision: Option<SourceRevision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<BslIndexNextAction>,
     pub updated_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run: Option<BslIndexRunMetrics>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BslIndexNextAction {
+    Update,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +290,7 @@ impl<'a> WorkspaceIndexService<'a> {
             .or_else(|| revision_generation(args))
             .unwrap_or_else(|| self.source_generation(&source_root));
         let matching_failed = failed_status_for_source(context, &source_root, generation);
+        let prefer_update = status_prefers_update(context, &source_root);
 
         if active_lock(context, &source_root) {
             return IndexStartReport {
@@ -341,6 +352,19 @@ impl<'a> WorkspaceIndexService<'a> {
                     };
                 }
                 match other {
+                    IndexReadiness::Missing if prefer_update => self.start_background(
+                        context,
+                        IndexStartSpec {
+                            action: "update",
+                            source_root,
+                            primary: commands.update,
+                            info: commands.info,
+                            recovery_build: Some(commands.build),
+                            warning: "rlm index building",
+                            source_generation: generation,
+                            source_revision: source_revision.clone(),
+                        },
+                    ),
                     IndexReadiness::Missing => self.start_background(
                         context,
                         IndexStartSpec {
@@ -609,6 +633,8 @@ impl BslIndexStatus {
             failure_class: None,
             source_generation: None,
             indexed_revision: None,
+            observed_revision: None,
+            next_action: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -623,6 +649,8 @@ impl BslIndexStatus {
             failure_class: None,
             source_generation: None,
             indexed_revision: None,
+            observed_revision: None,
+            next_action: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -637,6 +665,8 @@ impl BslIndexStatus {
             failure_class: Some(BslIndexFailureClass::Retryable),
             source_generation: None,
             indexed_revision: None,
+            observed_revision: None,
+            next_action: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -651,6 +681,8 @@ impl BslIndexStatus {
             failure_class: Some(BslIndexFailureClass::Terminal),
             source_generation: None,
             indexed_revision: None,
+            observed_revision: None,
+            next_action: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -665,6 +697,8 @@ impl BslIndexStatus {
             failure_class: None,
             source_generation: None,
             indexed_revision: None,
+            observed_revision: None,
+            next_action: None,
             updated_at: now_secs(),
             last_run: None,
         }
@@ -682,6 +716,16 @@ impl BslIndexStatus {
 
     fn with_indexed_revision(mut self, revision: Option<SourceRevision>) -> Self {
         self.indexed_revision = revision;
+        self
+    }
+
+    fn with_observed_revision(mut self, revision: SourceRevision) -> Self {
+        self.observed_revision = Some(revision);
+        self
+    }
+
+    fn with_next_action(mut self, action: BslIndexNextAction) -> Self {
+        self.next_action = Some(action);
         self
     }
 }
@@ -1096,10 +1140,13 @@ fn ready_status_after_revision_verification(
             .with_source_generation(job.source_generation)
             .with_indexed_revision(Some(captured.clone()))
             .with_last_run(metrics),
-        Ok(_) => BslIndexStatus::failed(
+        Ok(current) => BslIndexStatus::failed(
             format!("source revision changed during {}", job.action).as_str(),
             Some(&job.source_root),
         )
+        .with_source_generation(current.generation)
+        .with_observed_revision(current)
+        .with_next_action(BslIndexNextAction::Update)
         .with_last_run(metrics),
         Err(error) => BslIndexStatus::failed(
             format!(
@@ -1670,6 +1717,16 @@ fn failed_status_for_source(
         return None;
     }
     status.message
+}
+
+fn status_prefers_update(context: &WorkspaceContext, source_root: &Path) -> bool {
+    read_bsl_index_status(context).is_some_and(|status| {
+        status.status == "failed"
+            && status.failure_class == Some(BslIndexFailureClass::Retryable)
+            && status.next_action == Some(BslIndexNextAction::Update)
+            && status.observed_revision.is_some()
+            && stored_path_matches(status.source_root.as_deref(), source_root)
+    })
 }
 
 fn stored_path_matches(stored: Option<&str>, current: &Path) -> bool {
@@ -3166,16 +3223,29 @@ source-set:
                 &CancellationToken::new(),
             )
             .unwrap();
+        assert_eq!(status.observed_revision.as_ref(), Some(&current));
+        assert_eq!(status.next_action, Some(BslIndexNextAction::Update));
+        fs::write(
+            &module,
+            "Процедура Smoke(ЕщёОдинПараметр)\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let newer = revision_service
+            .snapshot(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_ne!(newer, current);
         let mut args = Map::new();
         args.insert(
             SOURCE_REVISION_ARG.to_string(),
-            serde_json::to_value(&current).unwrap(),
+            serde_json::to_value(&newer).unwrap(),
         );
         let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                db_path.display()
-            ))]),
+            outputs: RefCell::new(vec![IndexOutput::success(
+                "Index not found: /tmp/bsl_index.db",
+            )]),
             ..Default::default()
         };
         let report =

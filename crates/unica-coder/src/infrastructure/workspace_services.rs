@@ -6211,6 +6211,8 @@ fn main() {
             failure_class: None,
             source_generation: Some(revision.generation),
             indexed_revision: Some(revision),
+            observed_revision: None,
+            next_action: None,
             updated_at: now_secs_for_test(),
             last_run: None,
         };
