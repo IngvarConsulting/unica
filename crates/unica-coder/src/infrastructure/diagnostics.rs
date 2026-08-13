@@ -708,7 +708,11 @@ mod bsl_diagnostics_provider_tests {
     impl ProviderFixture {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().to_path_buf();
+            // macOS exposes tempfile paths through `/var` while canonical file
+            // identities use `/private/var`. Keep the hand-built context on
+            // the same normalized boundary as production application ports.
+            let root =
+                crate::infrastructure::source_roots::normalize_path_identity(temp.path()).unwrap();
             let source = root.join("src");
             let module = source.join("CommonModules/Smoke/Ext/Module.bsl");
             fs::create_dir_all(module.parent().unwrap()).unwrap();
@@ -1482,7 +1486,10 @@ mod tests {
     impl Fixture {
         fn platform_xml() -> Self {
             let temp = tempfile::tempdir().unwrap();
-            let root = temp.path();
+            // Match the normalized workspace identity supplied by production
+            // ports; macOS otherwise mixes `/var` and `/private/var` aliases.
+            let root =
+                crate::infrastructure::source_roots::normalize_path_identity(temp.path()).unwrap();
             fs::write(
                 root.join("v8project.yaml"),
                 "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
@@ -1497,8 +1504,8 @@ mod tests {
             .unwrap();
             Self {
                 context: WorkspaceContext {
-                    cwd: root.to_path_buf(),
-                    workspace_root: root.to_path_buf(),
+                    cwd: root.clone(),
+                    workspace_root: root.clone(),
                     cache_root: root.join(".build/unica"),
                     workspace_epoch: 1,
                 },
