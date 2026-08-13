@@ -291,6 +291,9 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                 cancelled_error("bsl-analyzer search stopped before request"),
             );
         }
+        if has_targeted_search_scope(context) {
+            return unavailable_targeted_scope_section(ProviderId::BslAnalyzer);
+        }
         let timeout = deadline.remaining();
         if timeout.is_zero() {
             return failed_section(
@@ -519,6 +522,9 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                 ProviderId::Rlm,
                 cancelled_error("RLM search stopped before readiness check"),
             );
+        }
+        if has_targeted_search_scope(context) {
+            return unavailable_targeted_scope_section(ProviderId::Rlm);
         }
         context.report_progress(ProviderProgressUpdate {
             phase: SearchProviderPhase::Preparing,
@@ -1092,6 +1098,23 @@ fn unavailable_section(provider: ProviderId, diagnostic: String) -> ProviderSear
     ProviderSearchSection::unavailable(provider.identity(), diagnostic)
 }
 
+fn has_targeted_search_scope(context: &CodeIntelligenceContext) -> bool {
+    context
+        .search_scope
+        .as_ref()
+        .is_some_and(|scope| !scope.filters.is_empty())
+}
+
+fn unavailable_targeted_scope_section(provider: ProviderId) -> ProviderSearchSection {
+    unavailable_section(
+        provider,
+        format!(
+            "{} cannot constrain search to metadataPath; the role was not searched outside the requested logical scope",
+            provider.as_str()
+        ),
+    )
+}
+
 fn failed_section(provider: ProviderId, diagnostic: String) -> ProviderSearchSection {
     ProviderSearchSection::failed(provider.identity(), diagnostic)
 }
@@ -1126,8 +1149,8 @@ mod tests {
     use crate::domain::cancellation::CANCELLED_PREFIX;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-        CodeIntelligenceRegistry, ProviderCapability, ProviderDeadline, ProviderId,
-        ProviderSectionStatus, SearchRequest,
+        CodeIntelligenceRegistry, CodeSearchScope, ProviderCapability, ProviderDeadline,
+        ProviderId, ProviderSectionStatus, RelativeSearchFilter, SearchRequest,
     };
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
@@ -1186,6 +1209,17 @@ mod tests {
                 path: PathBuf::from("/workspace/src"),
             },
         )
+    }
+
+    fn metadata_scoped_context() -> CodeIntelligenceContext {
+        context().with_search_scope(CodeSearchScope {
+            source_set: "main".to_string(),
+            source_root: PathBuf::from("/workspace/src"),
+            filters: vec![RelativeSearchFilter::Exact(PathBuf::from(
+                "CommonModules/Scoped/Ext/Module.bsl",
+            ))],
+            legacy_selector: false,
+        })
     }
 
     fn output(stdout: &str) -> ProcessOutput {
@@ -1641,6 +1675,31 @@ mod tests {
     }
 
     #[test]
+    fn bsl_analyzer_does_not_broaden_metadata_scoped_search() {
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text: "No results found.".to_string(),
+                stderr: String::new(),
+            },
+        };
+
+        let section = BslAnalyzerProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &metadata_scoped_context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert!(section.diagnostics.join(" ").contains("metadataPath"));
+        assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn bsl_analyzer_successful_search_omits_provider_stderr() {
         let client = FakeBslClient {
             calls: Mutex::new(Vec::new()),
@@ -1959,6 +2018,33 @@ mod tests {
         assert_eq!(calls[0].2, 20);
         assert!(calls[0].3 > Duration::from_secs(45));
         assert!(calls[0].3 <= Duration::from_secs(90));
+    }
+
+    #[test]
+    fn rlm_does_not_broaden_metadata_scoped_search() {
+        let client = FakeRlmClient {
+            readiness: IndexReadiness::Ready {
+                db_path: PathBuf::from("/cache/index.db"),
+            },
+            readiness_calls: Mutex::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
+            result: "[]".to_string(),
+        };
+
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &metadata_scoped_context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert!(section.diagnostics.join(" ").contains("metadataPath"));
+        assert!(client.readiness_calls.lock().unwrap().is_empty());
+        assert!(client.calls.lock().unwrap().is_empty());
     }
 
     #[test]
