@@ -52,19 +52,20 @@ fn rlm_provider_state_root_with(
     let preferred = normalize_path_identity(&context.cache_root)?;
     let workspace = normalize_path_identity(&context.workspace_root)?;
     let source = normalize_path_identity(source_root)?;
-    if !path_starts_with_host_root(&preferred, &source) {
-        return Ok(preferred);
-    }
-    let root = external_base.ok_or_else(|| {
-        "UNICA_PROVIDER_STATE_DIR, HOME, or USERPROFILE is required for RLM state outside sourceRoot".to_string()
-    })?;
+    let base = if !path_starts_with_host_root(&preferred, &source) {
+        preferred.join("provider-state")
+    } else {
+        external_base.ok_or_else(|| {
+            "UNICA_PROVIDER_STATE_DIR, HOME, or USERPROFILE is required for RLM state outside sourceRoot".to_string()
+        })?
+    };
     let mut hasher = Sha256::new();
     for component in [&workspace, &source] {
         hasher.update(path_lock_identity(component).as_bytes());
         hasher.update([0]);
     }
     let identity = format!("{:x}", hasher.finalize());
-    let root = normalize_path_identity(&root.join(format!("rlm-{identity}")))?;
+    let root = normalize_path_identity(&base.join(format!("rlm-{identity}")))?;
     if path_starts_with_host_root(&root, &source) {
         return Err("failed to place RLM state outside the indexed source tree".to_string());
     }
@@ -1851,7 +1852,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn rlm_provider_state_keeps_the_existing_safe_cache_layout() {
+    fn rlm_provider_state_scopes_the_existing_safe_cache_layout() {
         let context = test_context("safe-provider-root");
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
@@ -1863,10 +1864,17 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
+        let safe_parent =
+            normalize_path_identity(&context.cache_root.join("provider-state")).unwrap();
+        assert!(actual.starts_with(&safe_parent));
+        assert_ne!(
             actual,
             normalize_path_identity(&context.cache_root).unwrap()
         );
+        let identity = actual.file_name().unwrap().to_string_lossy();
+        let digest = identity.strip_prefix("rlm-").unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
         cleanup(&context);
     }
 
@@ -1895,11 +1903,11 @@ mod tests {
 
     #[test]
     fn rlm_provider_state_separates_source_roots() {
-        let mut context = test_context("separate-provider-roots");
-        context.cache_root = context.workspace_root.join(".build/unica");
+        let context = test_context("separate-provider-roots");
         let external = context.workspace_root.parent().unwrap().join("host-data");
-        let first_source = context.workspace_root.clone();
+        let first_source = context.workspace_root.join("src/configuration");
         let second_source = context.workspace_root.join("src/extension");
+        fs::create_dir_all(&first_source).unwrap();
         fs::create_dir_all(&second_source).unwrap();
 
         let first =
@@ -2161,9 +2169,11 @@ source-set:
         assert_eq!(backgrounds[0].primary.env[0].0, "RLM_INDEX_DIR");
         assert_eq!(
             PathBuf::from(&backgrounds[0].primary.env[0].1),
-            normalize_path_identity(&context.cache_root)
-                .unwrap()
-                .join(LEGACY_RLM_INDEX_DIR_NAME)
+            rlm_index_dir(
+                &context,
+                &normalize_path_identity(&context.workspace_root.join("src")).unwrap()
+            )
+            .unwrap()
         );
         assert!(status_path(&context).is_file());
         cleanup(&context);
