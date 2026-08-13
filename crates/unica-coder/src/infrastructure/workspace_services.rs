@@ -1497,8 +1497,9 @@ type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) ->
 type RlmSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<RlmMcpSession, String>
     + Send
     + Sync;
-type RlmIndexMaintenanceRequester =
-    dyn Fn(WorkspaceContext, PathBuf, SourceRevision, CancellationToken) + Send + Sync;
+type RlmIndexMaintenanceRequester = dyn Fn(WorkspaceContext, PathBuf, SourceRevision, Arc<SourceRevisionService>, CancellationToken)
+    + Send
+    + Sync;
 
 struct RlmMaintenanceRequestGuard(Arc<AtomicBool>);
 
@@ -1541,27 +1542,27 @@ impl WorkspaceServiceRuntime {
             rlm_lane: AnalyzerLane::default(),
             rlm: Mutex::new(None),
             rlm_starter: Arc::new(RlmMcpSession::start),
-            rlm_maintenance_requester: Arc::new(|context, source_root, revision, cancellation| {
-                let mut args = Map::new();
-                args.insert(
-                    "sourceDir".to_string(),
-                    Value::String(source_root.display().to_string()),
-                );
-                args.insert(
-                    SOURCE_REVISION_GENERATION_ARG.to_string(),
-                    Value::from(revision.generation),
-                );
-                args.insert(
-                    SOURCE_REVISION_ARG.to_string(),
-                    serde_json::to_value(revision).expect("source revision is always serializable"),
-                );
-                let _ = WorkspaceIndexService::new().start_for_workspace_cancellable(
-                    &context,
-                    &args,
-                    false,
-                    &cancellation,
-                );
-            }),
+            rlm_maintenance_requester: Arc::new(
+                |context, source_root, revision, revision_service, cancellation| {
+                    let mut args = Map::new();
+                    args.insert(
+                        "sourceDir".to_string(),
+                        Value::String(source_root.display().to_string()),
+                    );
+                    args.insert(
+                        SOURCE_REVISION_GENERATION_ARG.to_string(),
+                        Value::from(revision.generation),
+                    );
+                    args.insert(
+                        SOURCE_REVISION_ARG.to_string(),
+                        serde_json::to_value(revision)
+                            .expect("source revision is always serializable"),
+                    );
+                    let _ = WorkspaceIndexService::new()
+                        .with_source_revision_service(revision_service)
+                        .start_for_workspace_cancellable(&context, &args, false, &cancellation);
+                },
+            ),
             rlm_maintenance_pending: Arc::new(AtomicBool::new(false)),
             rlm_maintenance_cancellation: CancellationToken::new(),
             session_teardowns: SessionTeardownLifecycle::default(),
@@ -1878,7 +1879,8 @@ impl WorkspaceServiceRuntime {
             SOURCE_REVISION_ARG.to_string(),
             serde_json::to_value(&revision).expect("source revision is always serializable"),
         );
-        let service = WorkspaceIndexService::new();
+        let service =
+            WorkspaceIndexService::new().with_source_revision_service(Arc::clone(&revisions));
         let start_report =
             service.start_for_workspace_cancellable(&self.context, &args, false, cancellation);
         let readiness = service.ready_index_cancellable(&self.context, &args, cancellation);
@@ -1904,6 +1906,7 @@ impl WorkspaceServiceRuntime {
     fn request_rlm_index_maintenance(
         &self,
         revision: SourceRevision,
+        revision_service: Arc<SourceRevisionService>,
         cancellation: &CancellationToken,
     ) -> Vec<String> {
         if cancellation.is_cancelled() {
@@ -1925,7 +1928,13 @@ impl WorkspaceServiceRuntime {
             .name("unica-rlm-index-maintenance".to_string())
             .spawn(move || {
                 let _pending = RlmMaintenanceRequestGuard(pending);
-                requester(context, source_root, revision, cancellation);
+                requester(
+                    context,
+                    source_root,
+                    revision,
+                    revision_service,
+                    cancellation,
+                );
             }) {
             Ok(_) => Vec::new(),
             Err(error) => {
@@ -1999,8 +2008,11 @@ impl WorkspaceServiceRuntime {
             if let Some(stale_session) = stale_session {
                 self.retire_session(stale_session);
             }
-            let warnings =
-                self.request_rlm_index_maintenance(pre_execution_revision.clone(), cancellation);
+            let warnings = self.request_rlm_index_maintenance(
+                pre_execution_revision.clone(),
+                Arc::clone(&revisions),
+                cancellation,
+            );
             return ServiceResponse::unavailable_rlm_execution(pre_execution_readiness, warnings);
         }
         let result = (|| {
@@ -2054,6 +2066,7 @@ impl WorkspaceServiceRuntime {
                     }
                     let warnings = self.request_rlm_index_maintenance(
                         pre_execution_revision.clone(),
+                        Arc::clone(&revisions),
                         cancellation,
                     );
                     return ServiceResponse::unavailable_rlm_execution(
@@ -6181,7 +6194,7 @@ fn main() {
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
         runtime.rlm_maintenance_requester = Arc::new({
             let maintenance_requests = Arc::clone(&maintenance_requests);
-            move |_context, _source_root, _generation, _cancellation| {
+            move |_context, _source_root, _generation, _revision_service, _cancellation| {
                 maintenance_requests.fetch_add(1, Ordering::AcqRel);
             }
         });
@@ -7389,7 +7402,7 @@ fn main() {
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
         runtime.rlm_maintenance_requester = Arc::new({
             let maintenance_requests = Arc::clone(&maintenance_requests);
-            move |_context, _source_root, _generation, _cancellation| {
+            move |_context, _source_root, _generation, _revision_service, _cancellation| {
                 maintenance_requests.fetch_add(1, Ordering::AcqRel);
             }
         });
@@ -7444,7 +7457,7 @@ fn main() {
         runtime.rlm_maintenance_requester = Arc::new({
             let maintenance_requests = Arc::clone(&maintenance_requests);
             let maintenance_release_rx = Arc::clone(&maintenance_release_rx);
-            move |_context, _source_root, _generation, _cancellation| {
+            move |_context, _source_root, _generation, _revision_service, _cancellation| {
                 let request_index = maintenance_requests.fetch_add(1, Ordering::AcqRel);
                 maintenance_started_tx.send(request_index).unwrap();
                 if request_index == 0 {

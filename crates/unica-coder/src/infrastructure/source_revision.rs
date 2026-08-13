@@ -10,6 +10,7 @@ use crate::infrastructure::platform::source_revision_fence::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
@@ -27,6 +28,17 @@ pub(crate) struct SourceRevisionService {
     record_path: PathBuf,
     machine: Mutex<SourceRevisionMachine>,
     fence: Arc<dyn SourceRevisionFence>,
+}
+
+impl fmt::Debug for SourceRevisionService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SourceRevisionService")
+            .field("source_root", &self.source_root)
+            .field("record_path", &self.record_path)
+            .field("fence", &self.fence.capability())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
