@@ -205,6 +205,7 @@ Git-предупреждения из `GitTrackingAdapter` удаляются и
   "scope": "repository",
   "sourceSet": "main",
   "paths": ["src/ConfigDumpInfo.xml"],
+  "count": 1,
   "message": "Platform-generated ConfigDumpInfo.xml is tracked",
   "evidence": ["staged root element: ConfigDumpInfo"],
   "remediation": {
@@ -246,6 +247,8 @@ Git-предупреждения из `GitTrackingAdapter` удаляются и
 
 | Код | Severity | Причина | Контур |
 | --- | --- | --- | --- |
+| `source_set.inspection_incomplete` | error | Конфигурацию наборов исходников нельзя прочитать или разобрать полностью | `ready` |
+| `source_set.none_found` | error | Инспекция завершилась, но не нашла ни одного набора исходников | `ready` |
 | `source_set.root_is_workspace` | error | Нормализованный source root равен workspace root, включая `.`, `./` и alias через symlink/reparse | `ready` |
 | `source_set.path_missing` | error | Объявленный корень не существует | `ready` |
 | `source_set.path_unsafe` | error | Корень выходит из workspace или containment нельзя доказать | `ready` |
@@ -273,6 +276,7 @@ workspace, чтобы служебные файлы проекта не смеш
 | `git.generated_path_tracked` | error | Служебный путь уже находится в index | `repositoryReady` |
 | `git.runtime_sidecar_tracked` | error | Staged blob доказан как runtime sidecar | `repositoryReady` |
 | `git.config_dump_info_unclassified` | error | Одноимённый staged blob нельзя безопасно классифицировать | `repositoryReady` |
+| `git.attributes_local_only` | error | Нужный effective attribute задан только локальным `.git/info/attributes`, global или system policy | `repositoryReady` |
 | `git.text_policy_missing` | error | Доказанный текстовый ресурс не классифицирован как text | `repositoryReady` |
 | `git.binary_policy_missing` | error | Доказанный бинарный ресурс не классифицирован как `-text` | `repositoryReady` |
 | `git.text_resource_marked_binary` | error | Текстовый ресурс, включая XDTO `Package.bin`, покрыт binary-политикой | `repositoryReady` |
@@ -318,6 +322,8 @@ provenance. Это позволяет сообщить отсутствие пр
 Platform XML профиль классифицирует ресурсы по доказанной роли, а не по одному
 расширению:
 
+- переносимая attributes policy доказывается tracked `.gitattributes` из index;
+  `.git/info/attributes`, global и system attributes не засчитываются;
 - XML, BSL и доказанные текстовые `.bin` обязаны иметь text policy;
 - доказанные двоичные ресурсы обязаны иметь `-text`;
 - broad `*.bin binary` не принимается, если оно захватывает XDTO
@@ -376,8 +382,10 @@ Git-сборщик использует только argv-вызовы без sh
    том же корне; эти пути остаются evidence. Независимые Git-находки о missing
    ignore rule или tracked path не поглощаются: они закрывают другой контур и
    требуют отдельного исправления.
-2. Ошибка обнаружения source set делает зависимые проверки `notRun` вместо
-   каскада вымышленных находок.
+2. Ошибка обнаружения source set даёт
+   `source_set.inspection_incomplete` и делает зависимые проверки `notRun`
+   вместо каскада вымышленных находок. Полный пустой результат даёт отдельный
+   `source_set.none_found`.
 3. Отсутствие Git даёт одну диагностику; ignore/attributes/EOL становятся
    `notRun`.
 4. Неоднозначный `ConfigDumpInfo.xml` даёт одну ручную диагностику без команды
@@ -422,6 +430,7 @@ PR #473 владеет размещением кеша `bsl-analyzer` вне sou
 
 - исчисление двух флагов по scope/severity;
 - `notRun` и `notApplicable`;
+- неразобранная и доказанно пустая карта source sets;
 - подавление производных диагностик для корневой причины;
 - стабильная сортировка и агрегация;
 - команда remediation появляется только при доказанном precondition.
