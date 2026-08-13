@@ -1,4 +1,7 @@
 #[cfg(windows)]
+use super::*;
+
+#[cfg(windows)]
 #[test]
 fn diagnostics_windows_accepts_drive_letter_case_and_rejects_another_drive() {
     let fixture = Fixture::platform_xml();
