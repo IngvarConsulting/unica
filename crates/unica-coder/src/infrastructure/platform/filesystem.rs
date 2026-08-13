@@ -2288,7 +2288,92 @@ pub(crate) fn create_new_directory_child(
             )),
         };
     }
-    Ok(created)
+    // A directory handle with listing or deletion access blocks the internal
+    // cross-directory target open performed by FILE_RENAME_INFORMATION on
+    // Windows. Keep the creation handle until the identity-safe reopen has
+    // succeeded, then retain only the least-privilege destination handle.
+    let expected_identity = match file_identity(&created) {
+        Ok(identity) => identity,
+        Err(primary) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(io::Error::new(
+                    primary.kind(),
+                    format!(
+                        "{primary}; failed to remove unverified directory created through the retained parent: {cleanup}"
+                    ),
+                )),
+            };
+        }
+    };
+    let reopened = match open_directory_child_for_rename_destination(parent, name) {
+        Ok(reopened) => reopened,
+        Err(primary) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(io::Error::new(
+                    primary.kind(),
+                    format!(
+                        "{primary}; failed to remove unreopenable directory created through the retained parent: {cleanup}"
+                    ),
+                )),
+            };
+        }
+    };
+    let actual_identity = match file_identity(&reopened) {
+        Ok(identity) => identity,
+        Err(primary) => {
+            return match discard_created_child(&created) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(io::Error::new(
+                    primary.kind(),
+                    format!(
+                        "{primary}; failed to remove unverified reopened directory created through the retained parent: {cleanup}"
+                    ),
+                )),
+            };
+        }
+    };
+    if actual_identity != expected_identity {
+        let primary = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "created directory identity changed before rename-compatible reopen",
+        );
+        return match discard_created_child(&created) {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(io::Error::new(
+                primary.kind(),
+                format!("{primary}; failed to remove replaced created directory: {cleanup}"),
+            )),
+        };
+    }
+    drop(created);
+    Ok(reopened)
+}
+
+#[cfg(windows)]
+fn open_directory_child_for_rename_destination(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, FILE_TRAVERSE, SYNCHRONIZE,
+    };
+
+    let directory = open_relative_child(
+        parent,
+        name,
+        FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        0,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    validate_directory_handle(&directory)?;
+    Ok(directory)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -3179,7 +3264,7 @@ pub(crate) fn remove_identity_bound_empty_directory_child(
             "directory child identity changed; replacement left untouched",
         ));
     }
-    delete_open_child(retained)
+    delete_open_child(&named)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -3242,14 +3327,15 @@ mod tests {
     mod windows {
         use super::{fs, io, unique_temp_root};
         use crate::infrastructure::platform::filesystem::{
-            capture_windows_immutable_entry_evidence, create_owner_only_directory,
-            create_owner_only_directory_child, create_owner_only_file,
+            capture_windows_immutable_entry_evidence, create_new_directory_child,
+            create_owner_only_directory, create_owner_only_directory_child, create_owner_only_file,
             create_owner_only_file_child, delete_open_child, directory_query_is_end, file_identity,
             nt_create_options_for_std_file, open_any_child_for_delete, open_any_child_nofollow,
             open_directory_child_for_rename, open_directory_child_nofollow,
             open_directory_nofollow, open_regular_child_nofollow, opened_child_kind,
             parse_directory_information_buffer, read_directory_names,
-            rename_directory_handle_child_no_replace, verify_owner_only_acl,
+            rename_directory_handle_child_no_replace,
+            rename_identity_bound_regular_child_no_replace, verify_owner_only_acl,
             verify_owner_only_security_descriptor, verify_thread_token_fallback_error,
             verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
             verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
@@ -3755,6 +3841,40 @@ mod tests {
             drop(retained_file);
             drop(created);
             drop(parent);
+            drop(root_handle);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn regular_child_moves_into_live_created_directory_handle() {
+            let root = unique_temp_root("regular-child-live-destination");
+            fs::create_dir_all(&root).unwrap();
+            let root_handle = open_directory_nofollow(&root).unwrap();
+            let source_name = std::ffi::OsStr::new("published.bin");
+            let destination_name = std::ffi::OsStr::new("quarantined.bin");
+            fs::write(root.join(source_name), b"published bytes").unwrap();
+            let retained_source = open_regular_child_nofollow(&root_handle, source_name).unwrap();
+            let source_identity = file_identity(&retained_source).unwrap();
+            let recovery =
+                create_new_directory_child(&root_handle, std::ffi::OsStr::new("recovery")).unwrap();
+
+            rename_identity_bound_regular_child_no_replace(
+                &root_handle,
+                source_name,
+                source_identity,
+                &retained_source,
+                &recovery,
+                destination_name,
+            )
+            .expect("a retained recovery directory must accept an identity-bound child move");
+
+            assert!(!root.join(source_name).exists());
+            assert_eq!(
+                fs::read(root.join("recovery").join(destination_name)).unwrap(),
+                b"published bytes"
+            );
+            drop(retained_source);
+            drop(recovery);
             drop(root_handle);
             fs::remove_dir_all(root).unwrap();
         }
