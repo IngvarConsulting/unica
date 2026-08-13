@@ -532,9 +532,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 "{} must be dispatched through the provider-neutral diagnostics coordinator",
                 spec.name
             )),
-            ToolHandler::CodeAdapter {
-                command: ["graph"] | ["analyze"],
-            } => BslAnalyzerMcpAdapter::new()
+            ToolHandler::CodeAdapter { command: ["graph"] } => BslAnalyzerMcpAdapter::new()
                 .invoke_cancellable_with_operational_config(
                     spec.name,
                     args,

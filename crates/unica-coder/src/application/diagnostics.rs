@@ -1,6 +1,8 @@
-use super::ports::ApplicationPorts;
+use super::ports::{ApplicationPorts, HandlerOutcome};
+use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::diagnostics::*;
+use crate::domain::operational_config::OperationalConfig;
 use crate::domain::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
@@ -12,6 +14,67 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_CONCURRENT_DIAGNOSTIC_WORKERS_PER_PROVIDER: usize = 32;
+
+pub(crate) fn invoke(
+    ports: &dyn ApplicationPorts,
+    args: &Map<String, Value>,
+    workspace: &WorkspaceContext,
+    operational_config: Option<&OperationalConfig>,
+    cancellation: &CancellationToken,
+) -> Result<HandlerOutcome, String> {
+    let mut request = parse_diagnostic_request(args)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    if request.action == DiagnosticAction::Analyze {
+        request.timeout = Some(
+            operational_config
+                .ok_or_else(|| {
+                    "diagnostics analyze call is missing operational config".to_string()
+                })?
+                .code_diagnostics()
+                .analyze_timeout(),
+        );
+    }
+    let result = DiagnosticCoordinator::new(ports.diagnostic_provider_registry()?, ports)
+        .execute(&request, workspace, cancellation)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let ok = result.ok;
+    let summary = match result.state {
+        DiagnosticResultState::Completed => {
+            "unica.code.diagnostics completed through provider-neutral diagnostics"
+        }
+        DiagnosticResultState::Partial => {
+            "unica.code.diagnostics returned a partial provider-neutral result"
+        }
+        DiagnosticResultState::Failed => {
+            "unica.code.diagnostics failed because no provider produced a useful result"
+        }
+    }
+    .to_string();
+    let warnings = (result.state == DiagnosticResultState::Partial)
+        .then(|| "one or more diagnostic providers returned an incomplete result".to_string())
+        .into_iter()
+        .collect();
+    let errors = (!ok)
+        .then(|| "diagnostics_failed: no provider produced a useful result".to_string())
+        .into_iter()
+        .collect();
+    let data = serde_json::to_value(result)
+        .map_err(|error| format!("failed to serialize diagnostic result: {error}"))?;
+    Ok(HandlerOutcome::with_data(
+        AdapterOutcome {
+            ok,
+            summary,
+            changes: Vec::new(),
+            warnings,
+            errors,
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: None,
+        },
+        data,
+    ))
+}
 
 pub(crate) trait DiagnosticMapping: Send + Sync {
     fn resolve_context(
@@ -49,16 +112,13 @@ impl<T: ApplicationPorts + ?Sized> DiagnosticMapping for T {
     }
 }
 
-pub(crate) struct DiagnosticCoordinator<'a> {
+pub(crate) struct DiagnosticCoordinator<'a, M: DiagnosticMapping + ?Sized> {
     registry: DiagnosticProviderRegistry,
-    mapping: &'a dyn DiagnosticMapping,
+    mapping: &'a M,
 }
 
-impl<'a> DiagnosticCoordinator<'a> {
-    pub(crate) fn new(
-        registry: DiagnosticProviderRegistry,
-        mapping: &'a dyn DiagnosticMapping,
-    ) -> Self {
+impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
+    pub(crate) fn new(registry: DiagnosticProviderRegistry, mapping: &'a M) -> Self {
         Self { registry, mapping }
     }
 

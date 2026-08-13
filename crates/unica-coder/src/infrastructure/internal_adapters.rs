@@ -1628,7 +1628,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
-        operational_config: Option<&OperationalConfig>,
+        _operational_config: Option<&OperationalConfig>,
         cancellation: &CancellationToken,
     ) -> Result<BslAnalyzerOutcome, String> {
         if cancellation.is_cancelled() {
@@ -1636,24 +1636,6 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 format!("{tool_name} cancelled before adapter work"),
             )));
         }
-        let diagnostics_path = match (tool_name, args.get("path")) {
-            ("unica.code.diagnostics", Some(Value::String(path))) => Some(path.as_str()),
-            ("unica.code.diagnostics", Some(_)) => {
-                return Err("invalid_diagnostics_path: argument `path` must be string".to_string());
-            }
-            _ => None,
-        };
-        if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
-            return self.invoke_diagnostics_analyze(
-                tool_name,
-                args,
-                context,
-                dry_run,
-                operational_config,
-                cancellation,
-            );
-        }
-
         let plugin_root = match find_plugin_root(&context.cwd) {
             Some(plugin_root) => plugin_root,
             None => {
@@ -1665,9 +1647,6 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             }
         };
         let source_dir = resolve_source_dir(context, args)?;
-        if let Some(path) = diagnostics_path {
-            validate_diagnostics_path(&source_dir, path)?;
-        }
         let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
         // A workspace that has not downloaded the tools has no analyzer in its
         // manifest. `code.search` already answers that state with an
@@ -1706,31 +1685,9 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         }
 
         let output = self.runner.call(&command)?;
-        let section = if command.tool_name == "graph" {
-            "bsl-analyzer-graph"
-        } else {
-            "bsl-analyzer-diagnostics"
-        };
+        let section = "bsl-analyzer-graph";
         let readiness_warnings = bsl_mcp_readiness_warnings(&output.result_text);
-        let diagnostics_pending = tool_name == "unica.code.diagnostics"
-            && diagnostics_mode_reports_findings(diagnostics_mode(args))
-            && !readiness_warnings.is_empty();
-        let (summary, warnings, errors) = if diagnostics_pending {
-            (
-                format!("{tool_name} is pending while bsl-analyzer prepares diagnostics"),
-                Vec::new(),
-                readiness_warnings
-                    .into_iter()
-                    .map(|warning| format!("{DIAGNOSTICS_PENDING_PREFIX} {warning}"))
-                    .collect(),
-            )
-        } else {
-            (
-                format!("{tool_name} completed through typed bsl-analyzer MCP adapter"),
-                readiness_warnings,
-                Vec::new(),
-            )
-        };
+        let summary = format!("{tool_name} completed through typed bsl-analyzer MCP adapter");
         // ADR-0023: the analyzer answers this tool with JSON, and wrapping that
         // JSON in a section header made the caller unwrap a string to reach it.
         // `analyze` is the analyzer MCP tool name, not a spawned 1C process, so
@@ -1741,30 +1698,26 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         // dropped the analyzer text, its stderr and the reported command, so a
         // plain-text diagnostic became "unparsable reply" and nothing else.
         let mut parse_error = None;
-        let data = if diagnostics_pending {
-            None
-        } else {
-            match serde_json::from_str::<Value>(output.result_text.trim()) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    parse_error = Some(format!(
-                        "{tool_name} received an unparsable bsl-analyzer reply: {error}"
-                    ));
-                    None
-                }
+        let data = match serde_json::from_str::<Value>(output.result_text.trim()) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                parse_error = Some(format!(
+                    "{tool_name} received an unparsable bsl-analyzer reply: {error}"
+                ));
+                None
             }
         };
-        let mut errors = errors;
+        let mut errors = Vec::new();
         if let Some(parse_error) = parse_error {
             errors.push(parse_error);
         }
-        let unparsable = data.is_none() && !diagnostics_pending;
+        let unparsable = data.is_none();
         Ok(BslAnalyzerOutcome {
             outcome: AdapterOutcome {
-                ok: !diagnostics_pending && !unparsable,
+                ok: !unparsable,
                 summary,
                 changes: Vec::new(),
-                warnings,
+                warnings: readiness_warnings,
                 errors,
                 artifacts: vec![
                     source_dir.display().to_string(),
@@ -1971,21 +1924,6 @@ fn required_string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a st
         .ok_or_else(|| format!("missing required `{key}` argument"))
 }
 
-/// Machine-readable marker for a retryable diagnostics reply.
-const DIAGNOSTICS_PENDING_PREFIX: &str = "diagnostics_pending:";
-
-fn diagnostics_mode(args: &Map<String, Value>) -> &str {
-    args.get("mode")
-        .and_then(Value::as_str)
-        .unwrap_or("analyze")
-}
-
-/// Modes whose reply is a finding set, so an empty result reads as "clean code".
-/// Readiness probes and catalogs may report loading without failing.
-fn diagnostics_mode_reports_findings(mode: &str) -> bool {
-    matches!(mode, "analyze" | "file" | "workspace")
-}
-
 fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
     let mut filtered = Map::new();
     for key in ["cwd", "confirm", "sourceDir", "config"] {
@@ -2069,19 +2007,6 @@ fn bsl_mcp_tool_request(
             copy_json_arg(&mut payload, args, "maxOutputTokens", "max_output_tokens");
             Ok(("graph", Value::Object(payload)))
         }
-        "unica.code.diagnostics" => {
-            let mut payload = Map::new();
-            payload.insert("action".to_string(), json!(diagnostics_mode(args)));
-            copy_json_arg(&mut payload, args, "codes", "codes");
-            copy_json_arg(&mut payload, args, "path", "path");
-            copy_json_arg(&mut payload, args, "detail", "detail");
-            copy_json_arg(&mut payload, args, "minSeverity", "min_severity");
-            copy_json_arg(&mut payload, args, "rangeStart", "range_start");
-            copy_json_arg(&mut payload, args, "rangeEnd", "range_end");
-            copy_json_arg(&mut payload, args, "limit", "max_findings");
-            copy_json_arg(&mut payload, args, "maxFiles", "max_files");
-            Ok(("diagnostics", Value::Object(payload)))
-        }
         _ => Err(format!("unsupported bsl-analyzer MCP tool: {tool_name}")),
     }
 }
@@ -2103,28 +2028,6 @@ fn resolve_source_dir(
 ) -> Result<PathBuf, String> {
     resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str))
         .map(|resolved| resolved.path)
-}
-
-fn validate_diagnostics_path(source_dir: &Path, raw_path: &str) -> Result<(), String> {
-    let raw_path = Path::new(raw_path);
-    let candidate = if raw_path.is_absolute() {
-        raw_path.to_path_buf()
-    } else {
-        source_dir.join(raw_path)
-    };
-    let path = normalize_path_identity(&candidate)
-        .map_err(|error| format!("invalid_diagnostics_path: {error}"))?;
-    let source_dir = normalize_path_identity(source_dir)
-        .map_err(|error| format!("invalid_diagnostics_path: {error}"))?;
-    if path.starts_with(&source_dir) {
-        Ok(())
-    } else {
-        Err(format!(
-            "invalid_diagnostics_path: path {} is outside sourceDir {}",
-            path.display(),
-            source_dir.display()
-        ))
-    }
 }
 
 fn bsl_mcp_readiness_warnings(text: &str) -> Vec<String> {
@@ -4683,10 +4586,7 @@ source-set:
         args.insert("format".to_string(), json!("json"));
         args.insert("limit".to_string(), json!(20));
 
-        let outcome = BslAnalyzerMcpAdapter::new()
-            .invoke("unica.code.diagnostics", &args, &context, true)
-            .unwrap()
-            .outcome;
+        let outcome = invoke_analyze(&BslAnalyzerMcpAdapter::new(), &args, &context, true).outcome;
 
         let command = outcome.command.unwrap().join(" ");
         assert!(command.contains("bin/"));
@@ -4712,9 +4612,12 @@ source-set:
             )),
         };
 
-        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &Map::new(), &context, false)
-            .unwrap();
+        let analyzer = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &Map::new(),
+            &context,
+            false,
+        );
 
         assert!(analyzer.outcome.ok, "{:?}", analyzer.outcome);
         assert!(analyzer.outcome.stdout.is_none());
@@ -4762,9 +4665,12 @@ source-set:
             )),
         };
 
-        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &Map::new(), &context, false)
-            .unwrap();
+        let analyzer = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &Map::new(),
+            &context,
+            false,
+        );
 
         assert!(analyzer.outcome.ok, "{:?}", analyzer.outcome);
         assert!(analyzer.outcome.stdout.is_none());
@@ -4799,9 +4705,12 @@ source-set:
         let mut args = Map::new();
         args.insert("timeoutSeconds".to_string(), json!(900));
 
-        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+        let analyzer = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &args,
+            &context,
+            false,
+        );
         let outcome = analyzer.outcome;
 
         assert!(outcome.ok);
@@ -4835,7 +4744,7 @@ source-set:
             .unwrap();
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke_cancellable_with_operational_config(
+            .invoke_diagnostics_analyze(
                 "unica.code.diagnostics",
                 &Map::new(),
                 &context,
@@ -4875,7 +4784,7 @@ analyze_timeout_seconds = 900
             .unwrap();
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke_cancellable_with_operational_config(
+            .invoke_diagnostics_analyze(
                 "unica.code.diagnostics",
                 &Map::new(),
                 &context,
@@ -4911,9 +4820,12 @@ analyze_timeout_seconds = 900
         let mut args = Map::new();
         args.insert("timeoutSeconds".to_string(), json!(900));
 
-        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+        let analyzer = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &args,
+            &context,
+            false,
+        );
         let outcome = analyzer.outcome;
 
         assert!(!outcome.ok);
@@ -5036,7 +4948,7 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn bsl_diagnostics_adapter_maps_file_mode_to_allowlisted_mcp_call() {
+    fn legacy_diagnostics_file_route_is_not_available_through_graph_adapter() {
         let context = temp_context("diagnostics-mcp");
         let runner = RecordingBslMcpRunner {
             commands: RefCell::new(Vec::new()),
@@ -5058,29 +4970,20 @@ analyze_timeout_seconds = 900
         args.insert("detail".to_string(), json!("detailed"));
         args.insert("limit".to_string(), json!(5));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        assert!(outcome.ok);
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].tool_name, "diagnostics");
-        assert_eq!(commands[0].tool_args["action"], "file");
         assert_eq!(
-            commands[0].tool_args["path"],
-            "CommonModules/SmokeModule/Ext/Module.bsl"
+            error,
+            "unsupported bsl-analyzer MCP tool: unica.code.diagnostics"
         );
-        assert_eq!(commands[0].tool_args["min_severity"], "warning");
-        assert_eq!(commands[0].tool_args["range_start"], 3);
-        assert_eq!(commands[0].tool_args["range_end"], 7);
-        assert_eq!(commands[0].tool_args["max_findings"], 5);
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn diagnostics_mcp_adapter_accepts_absolute_path_inside_source_dir() {
+    fn legacy_absolute_diagnostics_path_does_not_restore_adapter_route() {
         let context = temp_context("diagnostics-absolute-inside");
         let path = context
             .cwd
@@ -5098,20 +5001,17 @@ analyze_timeout_seconds = 900
         args.insert("mode".to_string(), json!("file"));
         args.insert("path".to_string(), json!(path));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        assert!(outcome.ok);
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].tool_args["path"], path);
+        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn diagnostics_mcp_adapter_rejects_paths_outside_source_dir() {
+    fn legacy_diagnostics_paths_are_rejected_before_any_runner_call() {
         let context = temp_context("diagnostics-path-containment");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
         let outside = context.workspace_root.with_file_name(format!(
@@ -5155,7 +5055,10 @@ analyze_timeout_seconds = 900
             let error = BslAnalyzerMcpAdapter::with_runner(&runner)
                 .invoke("unica.code.diagnostics", &args, &context, false)
                 .unwrap_err();
-            assert!(error.starts_with("invalid_diagnostics_path:"), "{error}");
+            assert!(
+                error.starts_with("unsupported bsl-analyzer MCP tool:"),
+                "{error}"
+            );
             assert!(runner.commands.borrow().is_empty());
         }
 
@@ -5164,7 +5067,7 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn diagnostics_mcp_adapter_rejects_non_string_path_before_runner() {
+    fn legacy_non_string_diagnostics_paths_cannot_reach_runner() {
         let context = temp_context("diagnostics-non-string-path");
 
         for path in [Value::Null, json!(true), json!(1), json!([]), json!({})] {
@@ -5183,7 +5086,7 @@ analyze_timeout_seconds = 900
                 .invoke("unica.code.diagnostics", &args, &context, false)
                 .unwrap_err();
             assert!(
-                error.starts_with("invalid_diagnostics_path:"),
+                error.starts_with("unsupported bsl-analyzer MCP tool:"),
                 "{path}: {error}"
             );
             assert!(runner.commands.borrow().is_empty(), "{path}");
@@ -5220,7 +5123,7 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn diagnostics_mcp_adapter_reports_loading_as_retryable_failure() {
+    fn legacy_diagnostics_loading_route_is_not_available() {
         let context = temp_context("diagnostics-loading");
         let runner = RecordingBslMcpRunner {
             commands: RefCell::new(Vec::new()),
@@ -5236,24 +5139,17 @@ analyze_timeout_seconds = 900
             json!("CommonModules/Probe/Ext/Module.bsl"),
         );
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        assert!(!outcome.ok);
-        assert!(outcome.warnings.is_empty());
-        assert!(outcome.summary.contains("pending"));
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)
-                && error.contains("not ready")));
+        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn diagnostics_status_mode_reports_loading_without_failing() {
+    fn legacy_diagnostics_status_route_is_not_available() {
         let context = temp_context("diagnostics-status-loading");
         let runner = RecordingBslMcpRunner {
             commands: RefCell::new(Vec::new()),
@@ -5266,25 +5162,17 @@ analyze_timeout_seconds = 900
         let mut args = Map::new();
         args.insert("mode".to_string(), json!("status"));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        // `status` is the readiness probe callers are told to run first: it
-        // answered the question it was asked, so a loading model is its result
-        // and not a failed call.
-        assert!(outcome.ok);
-        assert!(outcome.errors.is_empty());
-        assert!(outcome
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("not ready")));
+        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn diagnostics_findings_quoting_loading_state_stay_successful() {
+    fn legacy_diagnostics_findings_route_is_not_available() {
         let context = temp_context("diagnostics-quoted-loading");
         let runner = RecordingBslMcpRunner {
             commands: RefCell::new(Vec::new()),
@@ -5301,16 +5189,12 @@ analyze_timeout_seconds = 900
             json!("CommonModules/Probe/Ext/Module.bsl"),
         );
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        // Readiness lives in the reply's own fields; a finding that quotes the
-        // words must not turn a complete result into a retryable failure.
-        assert!(outcome.ok);
-        assert!(outcome.errors.is_empty());
-        assert!(outcome.warnings.is_empty());
+        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
@@ -5332,6 +5216,24 @@ analyze_timeout_seconds = 900
         }
     }
 
+    fn invoke_analyze(
+        adapter: &BslAnalyzerMcpAdapter<'_>,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+    ) -> BslAnalyzerOutcome {
+        adapter
+            .invoke_diagnostics_analyze(
+                "bsl-analyzer diagnostics provider",
+                args,
+                context,
+                dry_run,
+                None,
+                &CancellationToken::new(),
+            )
+            .unwrap()
+    }
+
     fn analyze_outcome(format: Option<&str>, stdout: &str, label: &str) -> BslAnalyzerOutcome {
         let context = temp_context(label);
         let runner = FakeProcessRunner {
@@ -5342,9 +5244,12 @@ analyze_timeout_seconds = 900
             args.insert("format".to_string(), json!(format));
         }
 
-        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+        let outcome = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &args,
+            &context,
+            false,
+        );
 
         cleanup_context(&context);
         outcome

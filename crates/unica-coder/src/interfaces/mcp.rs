@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_expose_flat_diagnostics_worktree_contract() {
+    fn tool_definitions_expose_logical_diagnostics_action_union() {
         let listed = tool_definitions(&crate::application::tools());
         let diagnostics = listed
             .iter()
@@ -785,18 +785,17 @@ mod tests {
             .expect("unica.code.diagnostics must be listed");
 
         let schema = diagnostics.input_schema.as_ref();
-        let properties = schema["properties"].as_object().unwrap();
-        for name in [
-            "cwd",
-            "sourceDir",
-            "mode",
-            "path",
-            "codes",
-            "timeoutSeconds",
-        ] {
-            assert!(properties.contains_key(name), "missing {name}");
+        let branches = schema["oneOf"].as_array().expect("closed action union");
+        assert_eq!(branches.len(), 4);
+        for branch in branches {
+            let properties = branch["properties"].as_object().unwrap();
+            assert!(properties.contains_key("action"));
+            assert!(properties.contains_key("sourceSet"));
+            assert!(properties.contains_key("cwd"));
+            for legacy in ["sourceDir", "mode", "path", "codes"] {
+                assert!(!properties.contains_key(legacy), "legacy field {legacy}");
+            }
         }
-        assert!(schema.get("oneOf").is_none());
     }
 
     #[test]

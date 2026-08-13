@@ -1145,6 +1145,13 @@ fn call_tool(
             ToolHandler::SourceResources { operation } => {
                 source_resources::invoke(operation, ports, args, &context, cancellation)?
             }
+            ToolHandler::Diagnostics => diagnostics::invoke(
+                ports,
+                args,
+                &context,
+                operational_config.as_ref(),
+                cancellation,
+            )?,
             _ => ports.invoke_handler_with_operational_config(
                 spec,
                 args,
@@ -2921,6 +2928,254 @@ mod tests {
         }
     }
 
+    static DIAGNOSTICS_BOUNDARY_DESCRIPTOR:
+        crate::domain::diagnostics::DiagnosticProviderDescriptor =
+        crate::domain::diagnostics::DiagnosticProviderDescriptor {
+            id: crate::domain::diagnostics::BSL_ANALYZER_PROVIDER,
+            actions: &[crate::domain::diagnostics::DiagnosticAction::Status],
+            findings_target_kinds: &[],
+            emits_focus_kinds: &[],
+        };
+
+    struct DiagnosticsBoundaryProvider {
+        calls: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl crate::domain::diagnostics::DiagnosticProvider for DiagnosticsBoundaryProvider {
+        fn descriptor(&self) -> &'static crate::domain::diagnostics::DiagnosticProviderDescriptor {
+            &DIAGNOSTICS_BOUNDARY_DESCRIPTOR
+        }
+
+        fn execute(
+            &self,
+            _request: &crate::domain::diagnostics::DiagnosticProviderRequest,
+            _context: &crate::domain::diagnostics::DiagnosticContext,
+            _deadline: crate::domain::diagnostics::ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> crate::domain::diagnostics::DiagnosticProviderOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return crate::domain::diagnostics::DiagnosticProviderOutcome {
+                    status: crate::domain::diagnostics::DiagnosticProviderStatus::Failed,
+                    complete: false,
+                    version: Some("test".to_string()),
+                    observations: Vec::new(),
+                    rules: Vec::new(),
+                    readiness: None,
+                    error: Some(crate::domain::diagnostics::DiagnosticError {
+                        code: "provider_unavailable".to_string(),
+                        message: "test provider is unavailable".to_string(),
+                        retryable: true,
+                    }),
+                };
+            }
+            crate::domain::diagnostics::DiagnosticProviderOutcome {
+                status: crate::domain::diagnostics::DiagnosticProviderStatus::Empty,
+                complete: true,
+                version: Some("test".to_string()),
+                observations: Vec::new(),
+                rules: Vec::new(),
+                readiness: None,
+                error: None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct DiagnosticsBoundaryPorts {
+        handler_calls: AtomicUsize,
+        provider_calls: Arc<AtomicUsize>,
+        fail_provider: bool,
+    }
+
+    impl ports::ApplicationPorts for DiagnosticsBoundaryPorts {
+        fn discover_workspace(
+            &self,
+            requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            let root = requested_cwd.unwrap_or_else(|| PathBuf::from("workspace"));
+            Ok(WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 7,
+            })
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _mode: InvocationMode,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn diagnostic_provider_registry(
+            &self,
+        ) -> Result<crate::domain::diagnostics::DiagnosticProviderRegistry, String> {
+            crate::domain::diagnostics::DiagnosticProviderRegistry::new(vec![Arc::new(
+                DiagnosticsBoundaryProvider {
+                    calls: Arc::clone(&self.provider_calls),
+                    fail: self.fail_provider,
+                },
+            )])
+            .map_err(|error| error.to_string())
+        }
+
+        fn resolve_diagnostic_context(
+            &self,
+            request: &crate::domain::diagnostics::DiagnosticRequest,
+            workspace: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<
+            crate::domain::diagnostics::DiagnosticContext,
+            crate::domain::diagnostics::DiagnosticRequestError,
+        > {
+            Ok(crate::domain::diagnostics::DiagnosticContext::new(
+                workspace.clone(),
+                crate::domain::project_sources::ProjectSourceSet {
+                    name: request.source_set.clone(),
+                    kind: crate::domain::project_sources::SourceSetKind::Configuration,
+                    path: "src".to_string(),
+                    source_format: crate::domain::project_sources::SourceFormat::PlatformXml,
+                    format_evidence: Vec::new(),
+                },
+                crate::domain::source_roots::ResolvedSourceRoot {
+                    source_set: Some(request.source_set.clone()),
+                    path: workspace.workspace_root.join("src"),
+                },
+                crate::domain::source_target::ResolvedTarget {
+                    source_set: request.source_set.clone(),
+                    metadata_path: request.metadata_path.clone(),
+                    target_kind: crate::domain::source_target::TargetKind::SourceRoot,
+                },
+            ))
+        }
+
+        fn map_diagnostic_observation(
+            &self,
+            _observation: crate::domain::diagnostics::DiagnosticObservation,
+            _context: &crate::domain::diagnostics::DiagnosticContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<
+            crate::domain::diagnostics::DiagnosticItem,
+            crate::domain::diagnostics::DiagnosticMapError,
+        > {
+            unreachable!("status providers do not emit observations")
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            Ok(SupportGuardCheck::Allow)
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _mode: InvocationMode,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.handler_calls.fetch_add(1, Ordering::SeqCst);
+            Err("diagnostics was misrouted to the generic handler".to_string())
+        }
+
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            _mode: InvocationMode,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            Ok(CacheReport {
+                mode: "read".to_string(),
+                root: context.cache_root.display().to_string(),
+                workspace_epoch: context.workspace_epoch,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+                publication_warnings: Vec::new(),
+            })
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_routes_only_through_coordinator_and_data() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({"action": "status", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["state"], "completed");
+        assert!(result.stdout.is_none());
+        assert!(result.stderr.is_none());
+        assert!(result.command.is_none());
+        assert!(result.diagnostics.is_none());
+        assert!(result.artifacts.is_empty());
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_preserves_failed_useful_result_semantics() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts {
+            fail_provider: true,
+            ..Default::default()
+        });
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({"action": "status", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["state"], "failed");
+        assert!(result.diagnostics.is_none());
+        assert!(result.stdout.is_none());
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_cancellation_publishes_no_partial_data() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({"action": "status", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let error = app
+            .call_tool_cancellable("unica.code.diagnostics", &args, cancellation)
+            .unwrap_err();
+
+        assert!(error.contains("cancel"), "{error}");
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn invocation_mode_is_derived_from_validated_tool_execution() {
         let reader = tools()
@@ -3148,6 +3403,15 @@ mod tests {
                     )),
                 });
             }
+            if matches!(spec.handler, ToolHandler::Diagnostics) {
+                return Ok(ports::PreparedToolInvocation {
+                    format_guard: None,
+                    handler: Some(ports::HandlerOutcome::with_data(
+                        AdapterOutcome::ok("prepared diagnostics"),
+                        json!({"state": "completed"}),
+                    )),
+                });
+            }
             Ok(ports::PreparedToolInvocation::empty())
         }
 
@@ -3277,22 +3541,21 @@ mod tests {
         let app = UnicaApplication::with_ports(ports.clone());
 
         let mut status = Map::new();
-        status.insert("mode".to_string(), json!("status"));
+        status.insert("action".to_string(), json!("status"));
+        status.insert("sourceSet".to_string(), json!("main"));
         app.call_tool("unica.code.diagnostics", &status).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 0);
 
         let mut analyze = Map::new();
+        analyze.insert("action".to_string(), json!("analyze"));
+        analyze.insert("sourceSet".to_string(), json!("main"));
         analyze.insert("timeoutSeconds".to_string(), json!(900));
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            *ports.observed_analyze_timeout.lock().unwrap(),
-            Some(Duration::from_secs(900))
-        );
 
         app.call_tool("unica.project.status", &Map::new()).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 1);
 
         for (tool_name, args) in [
             ("unica.code.search", json!({"query": "needle"})),
@@ -3334,7 +3597,10 @@ mod tests {
             ("unica.code.search", json!({"query": "needle"})),
             ("unica.code.definition", json!({"name": "Needle"})),
             ("unica.code.outline", json!({"path": "Module.bsl"})),
-            ("unica.code.diagnostics", json!({"timeoutSeconds": 900})),
+            (
+                "unica.code.diagnostics",
+                json!({"action": "analyze", "sourceSet": "main", "timeoutSeconds": 900}),
+            ),
         ];
 
         for (tool_name, args) in cases {
