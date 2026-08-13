@@ -1,5 +1,6 @@
 use crate::domain::{
-    cancellation::CancellationToken, source_roots::ResolvedSourceRoot, workspace::WorkspaceContext,
+    cancellation::CancellationToken, source_location::SourceLocation,
+    source_roots::ResolvedSourceRoot, workspace::WorkspaceContext,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -14,6 +15,56 @@ pub enum ProviderId {
     BslAnalyzer,
     #[serde(rename = "git-grep")]
     GitGrep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderRole {
+    Semantic,
+    Symbol,
+    Lexical,
+}
+
+impl ProviderRole {
+    pub const ALL: [Self; 3] = [Self::Semantic, Self::Symbol, Self::Lexical];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Semantic => "semantic",
+            Self::Symbol => "symbol",
+            Self::Lexical => "lexical",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderIdentity {
+    pub role: ProviderRole,
+    pub provider: String,
+}
+
+impl ProviderIdentity {
+    pub fn new(role: ProviderRole, provider: impl Into<String>) -> Self {
+        Self {
+            role,
+            provider: provider.into(),
+        }
+    }
+}
+
+impl ProviderId {
+    pub const fn role(self) -> ProviderRole {
+        match self {
+            Self::Rlm => ProviderRole::Semantic,
+            Self::BslAnalyzer => ProviderRole::Symbol,
+            Self::GitGrep => ProviderRole::Lexical,
+        }
+    }
+
+    pub fn identity(self) -> ProviderIdentity {
+        ProviderIdentity::new(self.role(), self.as_str())
+    }
 }
 
 impl ProviderId {
@@ -154,10 +205,12 @@ impl ProviderDeadline {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum ProviderSectionStatus {
     Ok,
     Empty,
+    LimitReached,
+    TimedOut,
     Unavailable,
     Failed,
 }
@@ -167,18 +220,61 @@ impl ProviderSectionStatus {
         match self {
             Self::Ok => "ok",
             Self::Empty => "empty",
+            Self::LimitReached => "limitReached",
+            Self::TimedOut => "timedOut",
             Self::Unavailable => "unavailable",
             Self::Failed => "failed",
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchRanking {
+    Provider,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchOrdering {
+    Provider,
+    ProviderTraversal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchCountRelation {
+    Exact,
+    LowerBound,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatchCount {
+    pub returned: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    pub relation: SearchCountRelation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchCoverage {
+    Complete,
+    Partial,
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSearchHit {
-    pub rank: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_score: Option<f64>,
-    pub path: String,
+    pub location: SourceLocation,
     pub line: usize,
     pub end_line: Option<usize>,
     pub symbol: Option<String>,
@@ -190,16 +286,237 @@ pub struct ProviderSearchHit {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSearchSection {
-    pub provider: ProviderId,
+    #[serde(flatten)]
+    pub identity: ProviderIdentity,
     pub status: ProviderSectionStatus,
+    pub search_complete: bool,
+    pub ranking: SearchRanking,
+    pub ordering: SearchOrdering,
+    pub matches: SearchMatchCount,
     pub hits: Vec<ProviderSearchHit>,
     pub diagnostics: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
+}
+
+impl ProviderSearchSection {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        identity: ProviderIdentity,
+        status: ProviderSectionStatus,
+        search_complete: bool,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        matches: SearchMatchCount,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        if matches.returned != hits.len() {
+            return Err("search match count must equal the number of returned hits".to_string());
+        }
+        match status {
+            ProviderSectionStatus::Ok => {
+                if !search_complete
+                    || hits.is_empty()
+                    || matches.relation != SearchCountRelation::Exact
+                    || matches.total != Some(hits.len())
+                {
+                    return Err(
+                        "ok search section must be complete with an exact non-zero count"
+                            .to_string(),
+                    );
+                }
+            }
+            ProviderSectionStatus::Empty => {
+                if !search_complete
+                    || !hits.is_empty()
+                    || matches.relation != SearchCountRelation::Exact
+                    || matches.total != Some(0)
+                {
+                    return Err("empty search section must carry an exact zero count".to_string());
+                }
+            }
+            ProviderSectionStatus::LimitReached | ProviderSectionStatus::TimedOut => {
+                if search_complete
+                    || matches.relation != SearchCountRelation::LowerBound
+                    || matches.total.is_none_or(|total| total < hits.len())
+                {
+                    return Err(
+                        "bounded search section must be incomplete with a valid lower bound"
+                            .to_string(),
+                    );
+                }
+            }
+            ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => {
+                if search_complete
+                    || !hits.is_empty()
+                    || matches.relation != SearchCountRelation::Unknown
+                    || matches.total.is_some()
+                {
+                    return Err(
+                        "failed search section must be incomplete without result claims"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        match ranking {
+            SearchRanking::None
+                if hits
+                    .iter()
+                    .any(|hit| hit.rank.is_some() || hit.provider_score.is_some()) =>
+            {
+                return Err("unranked search hits cannot carry rank or provider score".to_string());
+            }
+            SearchRanking::Provider
+                if hits
+                    .iter()
+                    .enumerate()
+                    .any(|(index, hit)| hit.rank != Some(index + 1)) =>
+            {
+                return Err(
+                    "provider-ranked hits must carry consecutive ranks from one".to_string()
+                );
+            }
+            _ => {}
+        }
+        Ok(Self {
+            identity,
+            status,
+            search_complete,
+            ranking,
+            ordering,
+            matches,
+            hits,
+            diagnostics,
+            artifacts: Vec::new(),
+        })
+    }
+
+    pub fn complete(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        let returned = hits.len();
+        let status = if returned == 0 {
+            ProviderSectionStatus::Empty
+        } else {
+            ProviderSectionStatus::Ok
+        };
+        Self::new(
+            identity,
+            status,
+            true,
+            ranking,
+            ordering,
+            SearchMatchCount {
+                returned,
+                total: Some(returned),
+                relation: SearchCountRelation::Exact,
+            },
+            hits,
+            diagnostics,
+        )
+    }
+
+    pub fn limit_reached(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        Self::bounded(
+            identity,
+            ProviderSectionStatus::LimitReached,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+        )
+    }
+
+    pub fn timed_out(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        Self::bounded(
+            identity,
+            ProviderSectionStatus::TimedOut,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+        )
+    }
+
+    fn bounded(
+        identity: ProviderIdentity,
+        status: ProviderSectionStatus,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        let returned = hits.len();
+        Self::new(
+            identity,
+            status,
+            false,
+            ranking,
+            ordering,
+            SearchMatchCount {
+                returned,
+                total: Some(returned),
+                relation: SearchCountRelation::LowerBound,
+            },
+            hits,
+            diagnostics,
+        )
+    }
+
+    pub fn unavailable(identity: ProviderIdentity, diagnostic: String) -> Self {
+        Self::problem(identity, ProviderSectionStatus::Unavailable, diagnostic)
+    }
+
+    pub fn failed(identity: ProviderIdentity, diagnostic: String) -> Self {
+        Self::problem(identity, ProviderSectionStatus::Failed, diagnostic)
+    }
+
+    fn problem(
+        identity: ProviderIdentity,
+        status: ProviderSectionStatus,
+        diagnostic: String,
+    ) -> Self {
+        Self::new(
+            identity,
+            status,
+            false,
+            SearchRanking::None,
+            SearchOrdering::Provider,
+            SearchMatchCount {
+                returned: 0,
+                total: None,
+                relation: SearchCountRelation::Unknown,
+            },
+            Vec::new(),
+            vec![diagnostic],
+        )
+        .expect("problem section is a valid closed construction")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeSearchResult {
+    pub coverage: SearchCoverage,
+    pub elapsed_ms: u64,
     pub sections: Vec<ProviderSearchSection>,
 }
 
@@ -429,13 +746,14 @@ mod tests {
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
-            ProviderSearchSection {
-                provider: self.id,
-                status: ProviderSectionStatus::Empty,
-                hits: Vec::new(),
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            }
+            ProviderSearchSection::complete(
+                self.id.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap()
         }
 
         fn read(
@@ -549,13 +867,20 @@ mod tests {
     #[test]
     fn canonical_result_serializes_the_reader_facing_contract() {
         let result = CodeSearchResult {
-            sections: vec![ProviderSearchSection {
-                provider: ProviderId::Rlm,
-                status: ProviderSectionStatus::Ok,
-                hits: vec![ProviderSearchHit {
-                    rank: 1,
+            coverage: SearchCoverage::Complete,
+            elapsed_ms: 12,
+            sections: vec![ProviderSearchSection::complete(
+                ProviderId::Rlm.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                vec![ProviderSearchHit {
+                    rank: Some(1),
                     provider_score: Some(0.91),
-                    path: "CommonModules/Sales/Ext/Module.bsl".to_string(),
+                    location: SourceLocation::Unaddressable {
+                        source_set: "main".to_string(),
+                        owner_metadata_path: None,
+                        path: "CommonModules/Sales/Ext/Module.bsl".to_string(),
+                    },
                     line: 42,
                     end_line: Some(58),
                     symbol: Some("Post".to_string()),
@@ -563,21 +888,32 @@ mod tests {
                     snippet: "Procedure Post()".to_string(),
                     attributes: Map::new(),
                 }],
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            }],
+                Vec::new(),
+            )
+            .unwrap()],
         };
 
         assert_eq!(
             serde_json::to_value(result).unwrap(),
             json!({
+                "coverage": "complete",
+                "elapsedMs": 12,
                 "sections": [{
+                    "role": "semantic",
                     "provider": "rlm",
                     "status": "ok",
+                    "searchComplete": true,
+                    "ranking": "provider",
+                    "ordering": "provider",
+                    "matches": {"returned": 1, "total": 1, "relation": "exact"},
                     "hits": [{
                         "rank": 1,
                         "providerScore": 0.91,
-                        "path": "CommonModules/Sales/Ext/Module.bsl",
+                        "location": {
+                            "kind": "unaddressable",
+                            "sourceSet": "main",
+                            "path": "CommonModules/Sales/Ext/Module.bsl"
+                        },
                         "line": 42,
                         "endLine": 58,
                         "symbol": "Post",
@@ -585,8 +921,7 @@ mod tests {
                         "snippet": "Procedure Post()",
                         "attributes": {}
                     }],
-                    "diagnostics": [],
-                    "artifacts": []
+                    "diagnostics": []
                 }]
             })
         );
@@ -625,5 +960,94 @@ mod tests {
             ProviderDeadline::new(deadline),
             ProviderDeadline::new(deadline)
         );
+    }
+
+    #[test]
+    fn search_section_serializes_role_provenance_completeness_and_logical_location() {
+        use crate::domain::source_location::SourceLocation;
+        use crate::domain::source_target::{
+            MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+        };
+
+        let location = SourceLocation::Addressed {
+            source_set: "main".to_string(),
+            metadata_path: Some(
+                MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "CommonModule.Sales.Module",
+                )
+                .unwrap(),
+            ),
+            target_kind: TargetKind::Module,
+        };
+        let section = ProviderSearchSection::complete(
+            ProviderIdentity::new(ProviderRole::Semantic, "replacement-semantic"),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            vec![ProviderSearchHit {
+                rank: Some(1),
+                provider_score: Some(0.91),
+                location,
+                line: 42,
+                end_line: Some(58),
+                symbol: Some("Post".to_string()),
+                kind: Some("procedure".to_string()),
+                snippet: "Procedure Post()".to_string(),
+                attributes: Map::new(),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(section).unwrap(),
+            json!({
+                "role": "semantic",
+                "provider": "replacement-semantic",
+                "status": "ok",
+                "searchComplete": true,
+                "ranking": "provider",
+                "ordering": "provider",
+                "matches": {"returned": 1, "total": 1, "relation": "exact"},
+                "hits": [{
+                    "rank": 1,
+                    "providerScore": 0.91,
+                    "location": {
+                        "kind": "addressed",
+                        "sourceSet": "main",
+                        "metadataPath": "CommonModule.Sales.Module",
+                        "targetKind": "module"
+                    },
+                    "line": 42,
+                    "endLine": 58,
+                    "symbol": "Post",
+                    "kind": "procedure",
+                    "snippet": "Procedure Post()",
+                    "attributes": {}
+                }],
+                "diagnostics": []
+            })
+        );
+    }
+
+    #[test]
+    fn empty_section_rejects_an_incomplete_count() {
+        let error = ProviderSearchSection::new(
+            ProviderIdentity::new(ProviderRole::Lexical, "git-grep"),
+            ProviderSectionStatus::Empty,
+            true,
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            SearchMatchCount {
+                returned: 0,
+                total: Some(0),
+                relation: SearchCountRelation::LowerBound,
+            },
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "empty search section must carry an exact zero count");
     }
 }

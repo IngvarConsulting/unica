@@ -2,7 +2,7 @@ use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
     CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderId, ProviderReadOutcome,
-    ProviderSearchSection, ProviderSectionStatus, SearchRequest,
+    ProviderSearchSection, ProviderSectionStatus, SearchCoverage, SearchRequest,
 };
 use crate::domain::operational_config::CodeIntelligenceDeadlines;
 use std::any::Any;
@@ -122,26 +122,25 @@ impl CodeSearchCoordinator {
                         )
                     }))
                     .unwrap_or_else(|panic| failed_after_panic(provider_id, panic));
-                    if section.provider != provider_id {
+                    if section.identity != provider_id.identity() {
                         section.diagnostics.push(format!(
-                            "provider returned mismatched id {}; normalized to {}",
-                            section.provider.as_str(),
+                            "provider returned mismatched identity {}/{}; normalized to {}/{}",
+                            section.identity.role.as_str(),
+                            section.identity.provider,
+                            provider_id.role().as_str(),
                             provider_id.as_str()
                         ));
-                        section.provider = provider_id;
+                        section.identity = provider_id.identity();
                     }
                     let _ = tx.send((index, section));
                 });
             match spawn_result {
                 Ok(handle) => self.worker_lifecycle.track(handle),
                 Err(error) => {
-                    slots[index] = Some(ProviderSearchSection {
-                        provider: provider_id,
-                        status: ProviderSectionStatus::Failed,
-                        hits: Vec::new(),
-                        diagnostics: vec![format!("failed to start provider worker: {error}")],
-                        artifacts: Vec::new(),
-                    });
+                    slots[index] = Some(ProviderSearchSection::failed(
+                        provider_id.identity(),
+                        format!("failed to start provider worker: {error}"),
+                    ));
                 }
             }
         }
@@ -202,16 +201,12 @@ impl CodeSearchCoordinator {
             .into_iter()
             .zip(provider_ids)
             .map(|(section, provider)| {
-                normalize_provider_section(
-                    section.unwrap_or_else(|| ProviderSearchSection {
-                        provider,
-                        status: ProviderSectionStatus::Failed,
-                        hits: Vec::new(),
-                        diagnostics: vec!["provider worker ended without a result".to_string()],
-                        artifacts: Vec::new(),
-                    }),
-                    request.limit,
-                )
+                section.unwrap_or_else(|| {
+                    ProviderSearchSection::failed(
+                        provider.identity(),
+                        "provider worker ended without a result".to_string(),
+                    )
+                })
             })
             .collect::<Vec<_>>();
         self.worker_lifecycle.reap();
@@ -219,7 +214,10 @@ impl CodeSearchCoordinator {
             matches!(
                 section.status,
                 ProviderSectionStatus::Ok | ProviderSectionStatus::Empty
-            )
+            ) || matches!(
+                section.status,
+                ProviderSectionStatus::LimitReached | ProviderSectionStatus::TimedOut
+            ) && !section.hits.is_empty()
         });
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
@@ -239,7 +237,25 @@ impl CodeSearchCoordinator {
                 }
             }
         }
-        let result = CodeSearchResult { sections };
+        let coverage =
+            if !sections.is_empty() && sections.iter().all(|section| section.search_complete) {
+                SearchCoverage::Complete
+            } else if sections.iter().any(|section| {
+                section.search_complete
+                    || matches!(
+                        section.status,
+                        ProviderSectionStatus::LimitReached | ProviderSectionStatus::TimedOut
+                    ) && !section.hits.is_empty()
+            }) {
+                SearchCoverage::Partial
+            } else {
+                SearchCoverage::None
+            };
+        let result = CodeSearchResult {
+            coverage,
+            elapsed_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            sections,
+        };
 
         Ok(CodeSearchExecution {
             ok,
@@ -333,29 +349,6 @@ impl ProviderWorkerLifecycle {
         Self::reap_finished(&mut handles);
         handles.len()
     }
-}
-
-fn normalize_provider_section(
-    mut section: ProviderSearchSection,
-    limit: usize,
-) -> ProviderSearchSection {
-    if matches!(
-        section.status,
-        ProviderSectionStatus::Failed | ProviderSectionStatus::Unavailable
-    ) {
-        section.hits.clear();
-        return section;
-    }
-    section.hits.truncate(limit);
-    for (index, hit) in section.hits.iter_mut().enumerate() {
-        hit.rank = index + 1;
-    }
-    section.status = if section.hits.is_empty() {
-        ProviderSectionStatus::Empty
-    } else {
-        ProviderSectionStatus::Ok
-    };
-    section
 }
 
 impl ProviderWorkerAdmission {
@@ -565,31 +558,27 @@ pub(crate) fn track_code_search_worker_for_test(handle: thread::JoinHandle<()>) 
 }
 
 fn provider_timeout_section(provider: ProviderId, budget: Duration) -> ProviderSearchSection {
-    ProviderSearchSection {
-        provider,
-        status: ProviderSectionStatus::Failed,
-        hits: Vec::new(),
-        diagnostics: vec![format!(
+    ProviderSearchSection::timed_out(
+        provider.identity(),
+        crate::domain::code_intelligence::SearchRanking::None,
+        crate::domain::code_intelligence::SearchOrdering::Provider,
+        Vec::new(),
+        vec![format!(
             "provider exceeded its {} ms search budget",
             budget.as_millis()
         )],
-        artifacts: Vec::new(),
-    }
+    )
+    .expect("timeout section is valid")
 }
 
 fn provider_admission_exhausted_section(
     provider: ProviderId,
     limit: usize,
 ) -> ProviderSearchSection {
-    ProviderSearchSection {
-        provider,
-        status: ProviderSectionStatus::Unavailable,
-        hits: Vec::new(),
-        diagnostics: vec![format!(
-            "provider worker capacity exhausted (limit {limit})"
-        )],
-        artifacts: Vec::new(),
-    }
+    ProviderSearchSection::unavailable(
+        provider.identity(),
+        format!("provider worker capacity exhausted (limit {limit})"),
+    )
 }
 
 fn failed_after_panic(provider: ProviderId, panic: Box<dyn Any + Send>) -> ProviderSearchSection {
@@ -598,13 +587,7 @@ fn failed_after_panic(provider: ProviderId, panic: Box<dyn Any + Send>) -> Provi
         .map(|value| (*value).to_string())
         .or_else(|| panic.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown panic payload".to_string());
-    ProviderSearchSection {
-        provider,
-        status: ProviderSectionStatus::Failed,
-        hits: Vec::new(),
-        diagnostics: vec![format!("provider panicked: {detail}")],
-        artifacts: Vec::new(),
-    }
+    ProviderSearchSection::failed(provider.identity(), format!("provider panicked: {detail}"))
 }
 
 fn section_problem(section: &ProviderSearchSection) -> String {
@@ -613,7 +596,7 @@ fn section_problem(section: &ProviderSearchSection) -> String {
     } else {
         section.diagnostics.join("; ")
     };
-    format!("{}: {detail}", section.provider.as_str())
+    format!("{}: {detail}", section.identity.provider)
 }
 
 #[cfg(test)]
@@ -627,9 +610,10 @@ mod tests {
         CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
         CodeIntelligenceRegistry, ProviderCapability, ProviderDeadline, ProviderId,
         ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
-        SearchRequest,
+        SearchOrdering, SearchRanking, SearchRequest,
     };
     use crate::domain::operational_config::CodeIntelligenceDeadlines;
+    use crate::domain::source_location::SourceLocation;
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::Map;
@@ -663,13 +647,7 @@ mod tests {
         ) -> ProviderSearchSection {
             self.started.send(self.id).unwrap();
             self.release.wait();
-            ProviderSearchSection {
-                provider: self.id,
-                status: self.status,
-                hits: Vec::new(),
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            }
+            test_section(self.id, self.status, Vec::new(), "")
         }
     }
 
@@ -686,6 +664,70 @@ mod tests {
                 path: PathBuf::from("/workspace/src"),
             },
         )
+    }
+
+    fn test_section(
+        id: ProviderId,
+        status: ProviderSectionStatus,
+        hits: Vec<ProviderSearchHit>,
+        diagnostic: &str,
+    ) -> ProviderSearchSection {
+        let diagnostics = (!diagnostic.is_empty())
+            .then(|| diagnostic.to_string())
+            .into_iter()
+            .collect::<Vec<_>>();
+        match status {
+            ProviderSectionStatus::Ok | ProviderSectionStatus::Empty => {
+                ProviderSearchSection::complete(
+                    id.identity(),
+                    SearchRanking::Provider,
+                    SearchOrdering::Provider,
+                    hits,
+                    diagnostics,
+                )
+                .unwrap()
+            }
+            ProviderSectionStatus::LimitReached => ProviderSearchSection::limit_reached(
+                id.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                hits,
+                diagnostics,
+            )
+            .unwrap(),
+            ProviderSectionStatus::TimedOut => ProviderSearchSection::timed_out(
+                id.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                hits,
+                diagnostics,
+            )
+            .unwrap(),
+            ProviderSectionStatus::Unavailable => {
+                ProviderSearchSection::unavailable(id.identity(), diagnostic.to_string())
+            }
+            ProviderSectionStatus::Failed => {
+                ProviderSearchSection::failed(id.identity(), diagnostic.to_string())
+            }
+        }
+    }
+
+    fn test_hit(index: usize) -> ProviderSearchHit {
+        ProviderSearchHit {
+            rank: Some(index + 1),
+            provider_score: None,
+            location: SourceLocation::Unaddressable {
+                source_set: "main".to_string(),
+                owner_metadata_path: None,
+                path: format!("Module{index}.bsl"),
+            },
+            line: index + 1,
+            end_line: None,
+            symbol: None,
+            kind: None,
+            snippet: format!("hit {index}"),
+            attributes: Map::new(),
+        }
     }
 
     #[test]
@@ -741,12 +783,12 @@ mod tests {
                 .result
                 .sections
                 .iter()
-                .map(|section| section.provider)
+                .map(|section| section.identity.role)
                 .collect::<Vec<_>>(),
             vec![
-                ProviderId::Rlm,
-                ProviderId::BslAnalyzer,
-                ProviderId::GitGrep
+                ProviderId::Rlm.role(),
+                ProviderId::BslAnalyzer.role(),
+                ProviderId::GitGrep.role()
             ]
         );
     }
@@ -783,16 +825,7 @@ mod tests {
     ) -> Arc<dyn CodeIntelligenceProvider> {
         Arc::new(StaticProvider {
             id,
-            section: ProviderSearchSection {
-                provider: id,
-                status,
-                hits: Vec::new(),
-                diagnostics: (!diagnostic.is_empty())
-                    .then(|| diagnostic.to_string())
-                    .into_iter()
-                    .collect(),
-                artifacts: Vec::new(),
-            },
+            section: test_section(id, status, Vec::new(), diagnostic),
         })
     }
 
@@ -874,29 +907,18 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_enforces_limit_and_normalizes_provider_local_ranks() {
-        let hits = (0..4)
-            .map(|index| ProviderSearchHit {
-                rank: if index == 0 { 0 } else { 99 },
-                provider_score: None,
-                path: format!("Module{index}.bsl"),
-                line: index + 1,
-                end_line: None,
-                symbol: None,
-                kind: None,
-                snippet: format!("hit {index}"),
-                attributes: Map::new(),
-            })
-            .collect();
+    fn coordinator_preserves_provider_local_ranks_and_limit_claim() {
+        let hits = (0..2).map(test_hit).collect();
         let provider = Arc::new(StaticProvider {
             id: ProviderId::GitGrep,
-            section: ProviderSearchSection {
-                provider: ProviderId::GitGrep,
-                status: ProviderSectionStatus::Ok,
+            section: ProviderSearchSection::limit_reached(
+                ProviderId::GitGrep.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
                 hits,
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            },
+                Vec::new(),
+            )
+            .unwrap(),
         });
 
         let execution =
@@ -918,7 +940,11 @@ mod tests {
                 .iter()
                 .map(|hit| hit.rank)
                 .collect::<Vec<_>>(),
-            vec![1, 2]
+            vec![Some(1), Some(2)]
+        );
+        assert_eq!(
+            execution.result.sections[0].status,
+            ProviderSectionStatus::LimitReached
         );
     }
 
@@ -944,13 +970,7 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
             assert!(deadline.remaining() <= self.maximum);
-            ProviderSearchSection {
-                provider: self.id,
-                status: ProviderSectionStatus::Empty,
-                hits: Vec::new(),
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            }
+            test_section(self.id, ProviderSectionStatus::Empty, Vec::new(), "")
         }
     }
 
@@ -985,7 +1005,7 @@ mod tests {
                 .result
                 .sections
                 .iter()
-                .map(|section| (section.provider.as_str(), section.hits.len()))
+                .map(|section| (section.identity.provider.as_str(), section.hits.len()))
                 .collect::<Vec<_>>(),
             vec![("rlm", 0), ("bsl-analyzer", 0), ("git-grep", 0)]
         );
@@ -994,12 +1014,12 @@ mod tests {
                 .result
                 .sections
                 .iter()
-                .map(|section| section.provider)
+                .map(|section| section.identity.role)
                 .collect::<Vec<_>>(),
             vec![
-                ProviderId::Rlm,
-                ProviderId::BslAnalyzer,
-                ProviderId::GitGrep
+                ProviderId::Rlm.role(),
+                ProviderId::BslAnalyzer.role(),
+                ProviderId::GitGrep.role()
             ]
         );
     }
@@ -1079,13 +1099,12 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
             thread::sleep(Duration::from_millis(500));
-            ProviderSearchSection {
-                provider: ProviderId::BslAnalyzer,
-                status: ProviderSectionStatus::Empty,
-                hits: Vec::new(),
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            }
+            test_section(
+                ProviderId::BslAnalyzer,
+                ProviderSectionStatus::Empty,
+                Vec::new(),
+                "",
+            )
         }
     }
 
@@ -1390,13 +1409,12 @@ mod tests {
             cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
             cancellation.cancel();
-            ProviderSearchSection {
-                provider: ProviderId::Rlm,
-                status: ProviderSectionStatus::Empty,
-                hits: Vec::new(),
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            }
+            test_section(
+                ProviderId::Rlm,
+                ProviderSectionStatus::Empty,
+                Vec::new(),
+                "",
+            )
         }
     }
 

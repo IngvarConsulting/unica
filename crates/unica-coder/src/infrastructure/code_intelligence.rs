@@ -3,8 +3,9 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
     CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderId,
     ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
-    SearchRequest,
+    SearchOrdering, SearchRanking, SearchRequest,
 };
+use crate::domain::source_location::SourceLocation;
 use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
@@ -268,9 +269,12 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             .search(context, arguments, timeout, cancellation)
         {
             Ok(output) => {
-                let mut section = parse_bsl_analyzer_search(&output.result_text);
+                let mut section = parse_bsl_analyzer_search(&output.result_text, context);
                 let retain_stderr = match section.status {
-                    ProviderSectionStatus::Ok | ProviderSectionStatus::Empty => false,
+                    ProviderSectionStatus::Ok
+                    | ProviderSectionStatus::Empty
+                    | ProviderSectionStatus::LimitReached
+                    | ProviderSectionStatus::TimedOut => false,
                     ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => true,
                 };
                 if retain_stderr && !output.stderr.trim().is_empty() {
@@ -467,7 +471,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             timeout,
             cancellation,
         ) {
-            Ok(result) => parse_rlm_search(&result),
+            Ok(result) => parse_rlm_search(&result, context),
             Err(error) => failed_section(ProviderId::Rlm, error),
         }
     }
@@ -500,7 +504,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
     }
 }
 
-fn parse_rlm_search(text: &str) -> ProviderSearchSection {
+fn parse_rlm_search(text: &str, context: &CodeIntelligenceContext) -> ProviderSearchSection {
     let value: Value = match serde_json::from_str(text.trim()) {
         Ok(value) => value,
         Err(error) => {
@@ -522,33 +526,32 @@ fn parse_rlm_search(text: &str) -> ProviderSearchSection {
     let mut hits = Vec::new();
     let mut diagnostics = Vec::new();
     for (index, row) in rows.iter().enumerate() {
-        match parse_rlm_search_row(row, hits.len() + 1) {
+        match parse_rlm_search_row(row, hits.len() + 1, context) {
             Ok(hit) => hits.push(hit),
             Err(error) => {
                 diagnostics.push(format!("ignored malformed RLM result #{index}: {error}"))
             }
         }
     }
-    let status = if hits.is_empty() {
-        if rows.is_empty() {
-            ProviderSectionStatus::Empty
-        } else {
-            diagnostics.insert(0, "RLM search helper returned no valid rows".to_string());
-            ProviderSectionStatus::Failed
-        }
-    } else {
-        ProviderSectionStatus::Ok
-    };
-    ProviderSearchSection {
-        provider: ProviderId::Rlm,
-        status,
+    if hits.is_empty() && !rows.is_empty() {
+        diagnostics.insert(0, "RLM search helper returned no valid rows".to_string());
+        return ProviderSearchSection::failed(ProviderId::Rlm.identity(), diagnostics.join("; "));
+    }
+    ProviderSearchSection::complete(
+        ProviderId::Rlm.identity(),
+        SearchRanking::Provider,
+        SearchOrdering::Provider,
         hits,
         diagnostics,
-        artifacts: Vec::new(),
-    }
+    )
+    .unwrap_or_else(|error| ProviderSearchSection::failed(ProviderId::Rlm.identity(), error))
 }
 
-fn parse_rlm_search_row(row: &Value, rank: usize) -> Result<ProviderSearchHit, String> {
+fn parse_rlm_search_row(
+    row: &Value,
+    rank: usize,
+    context: &CodeIntelligenceContext,
+) -> Result<ProviderSearchHit, String> {
     let object = row
         .as_object()
         .ok_or_else(|| "row is not an object".to_string())?;
@@ -600,9 +603,9 @@ fn parse_rlm_search_row(row: &Value, rank: usize) -> Result<ProviderSearchHit, S
     }
     attributes.insert("detail".to_string(), Value::Object(detail.clone()));
     Ok(ProviderSearchHit {
-        rank,
+        rank: Some(rank),
         provider_score: detail.get("rank").and_then(Value::as_f64),
-        path,
+        location: unaddressable_location(context, &path),
         line,
         end_line,
         symbol,
@@ -612,10 +615,13 @@ fn parse_rlm_search_row(row: &Value, rank: usize) -> Result<ProviderSearchHit, S
     })
 }
 
-fn parse_bsl_analyzer_search(text: &str) -> ProviderSearchSection {
+fn parse_bsl_analyzer_search(
+    text: &str,
+    context: &CodeIntelligenceContext,
+) -> ProviderSearchSection {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed == "No results found." {
-        return empty_section(ProviderId::BslAnalyzer);
+        return empty_section(ProviderId::BslAnalyzer, SearchRanking::Provider);
     }
     if let Ok(envelope) = serde_json::from_str::<Value>(trimmed) {
         if envelope.get("status").and_then(Value::as_str) == Some("not_ready") {
@@ -641,7 +647,7 @@ fn parse_bsl_analyzer_search(text: &str) -> ProviderSearchSection {
             if let Some(hit) = current.take() {
                 hits.push(hit);
             }
-            match parse_bsl_analyzer_header(line) {
+            match parse_bsl_analyzer_header(line, context) {
                 Some(hit) => current = Some(hit),
                 None => diagnostics.push(format!(
                     "ignored malformed bsl-analyzer search header: {line}"
@@ -679,28 +685,35 @@ fn parse_bsl_analyzer_search(text: &str) -> ProviderSearchSection {
         hits.push(hit);
     }
     for (index, hit) in hits.iter_mut().enumerate() {
-        hit.rank = index + 1;
+        hit.rank = Some(index + 1);
     }
 
-    let status = if hits.is_empty() {
+    if hits.is_empty() {
         diagnostics.insert(
             0,
             "bsl-analyzer returned non-empty output without any valid search hits".to_string(),
         );
-        ProviderSectionStatus::Failed
-    } else {
-        ProviderSectionStatus::Ok
-    };
-    ProviderSearchSection {
-        provider: ProviderId::BslAnalyzer,
-        status,
+        return ProviderSearchSection::failed(
+            ProviderId::BslAnalyzer.identity(),
+            diagnostics.join("; "),
+        );
+    }
+    ProviderSearchSection::complete(
+        ProviderId::BslAnalyzer.identity(),
+        SearchRanking::Provider,
+        SearchOrdering::Provider,
         hits,
         diagnostics,
-        artifacts: Vec::new(),
-    }
+    )
+    .unwrap_or_else(|error| {
+        ProviderSearchSection::failed(ProviderId::BslAnalyzer.identity(), error)
+    })
 }
 
-fn parse_bsl_analyzer_header(line: &str) -> Option<ProviderSearchHit> {
+fn parse_bsl_analyzer_header(
+    line: &str,
+    context: &CodeIntelligenceContext,
+) -> Option<ProviderSearchHit> {
     let after_hash = line.strip_prefix('#')?;
     let (rank, after_rank) = after_hash.split_once(' ')?;
     let rank = rank.parse::<usize>().ok()?;
@@ -722,9 +735,9 @@ fn parse_bsl_analyzer_header(line: &str) -> Option<ProviderSearchHit> {
     let mut attributes = Map::new();
     attributes.insert("modality".to_string(), json!(modality));
     Some(ProviderSearchHit {
-        rank,
+        rank: Some(rank),
         provider_score: None,
-        path: path.replace('\\', "/"),
+        location: unaddressable_location(context, &path.replace('\\', "/")),
         line: line_start,
         end_line,
         symbol: Some(symbol.to_string()),
@@ -752,7 +765,7 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
         && output.stderr.trim().is_empty()
         && process_exit_code_is(&output.status, 1);
     if no_matches {
-        return empty_section(ProviderId::GitGrep);
+        return empty_section(ProviderId::GitGrep, SearchRanking::None);
     }
     if !output.status_success
         && output.stderr.contains("not a git repository")
@@ -787,14 +800,14 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
         }
     }
     hits.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
+        location_path(&left.location)
+            .cmp(location_path(&right.location))
             .then_with(|| left.line.cmp(&right.line))
             .then_with(|| left.snippet.cmp(&right.snippet))
     });
     hits.truncate(limit);
-    for (index, hit) in hits.iter_mut().enumerate() {
-        hit.rank = index + 1;
+    for hit in &mut hits {
+        hit.rank = None;
     }
     if output.stdout_truncated {
         diagnostics.push("git-grep output was truncated by the process runner".to_string());
@@ -818,12 +831,20 @@ fn git_grep_section(output: ProcessOutput, limit: usize) -> ProviderSearchSectio
     } else {
         ProviderSectionStatus::Ok
     };
-    ProviderSearchSection {
-        provider: ProviderId::GitGrep,
-        status,
-        hits,
-        diagnostics,
-        artifacts: Vec::new(),
+    match status {
+        ProviderSectionStatus::Ok | ProviderSectionStatus::Empty => {
+            ProviderSearchSection::complete(
+                ProviderId::GitGrep.identity(),
+                SearchRanking::None,
+                SearchOrdering::ProviderTraversal,
+                hits,
+                diagnostics,
+            )
+            .unwrap_or_else(|error| {
+                ProviderSearchSection::failed(ProviderId::GitGrep.identity(), error)
+            })
+        }
+        _ => ProviderSearchSection::failed(ProviderId::GitGrep.identity(), diagnostics.join("; ")),
     }
 }
 
@@ -836,9 +857,13 @@ fn parse_git_grep_line(line: &str) -> Option<ProviderSearchHit> {
         return None;
     }
     Some(ProviderSearchHit {
-        rank: 0,
+        rank: None,
         provider_score: None,
-        path: path.replace('\\', "/"),
+        location: SourceLocation::Unaddressable {
+            source_set: "legacy".to_string(),
+            owner_metadata_path: None,
+            path: path.replace('\\', "/"),
+        },
         line: line_number,
         end_line: None,
         symbol: None,
@@ -870,41 +895,53 @@ fn process_exit_code_is(status: &str, code: i32) -> bool {
     status == code.to_string() || status.ends_with(&format!(": {code}"))
 }
 
-fn empty_section(provider: ProviderId) -> ProviderSearchSection {
-    ProviderSearchSection {
-        provider,
-        status: ProviderSectionStatus::Empty,
-        hits: Vec::new(),
-        diagnostics: Vec::new(),
-        artifacts: Vec::new(),
-    }
+fn empty_section(provider: ProviderId, ranking: SearchRanking) -> ProviderSearchSection {
+    ProviderSearchSection::complete(
+        provider.identity(),
+        ranking,
+        if ranking == SearchRanking::None {
+            SearchOrdering::ProviderTraversal
+        } else {
+            SearchOrdering::Provider
+        },
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("empty section is valid")
 }
 
 fn unavailable_section(provider: ProviderId, diagnostic: String) -> ProviderSearchSection {
-    ProviderSearchSection {
-        provider,
-        status: ProviderSectionStatus::Unavailable,
-        hits: Vec::new(),
-        diagnostics: vec![diagnostic],
-        artifacts: Vec::new(),
-    }
+    ProviderSearchSection::unavailable(provider.identity(), diagnostic)
 }
 
 fn failed_section(provider: ProviderId, diagnostic: String) -> ProviderSearchSection {
-    ProviderSearchSection {
-        provider,
-        status: ProviderSectionStatus::Failed,
-        hits: Vec::new(),
-        diagnostics: vec![diagnostic],
-        artifacts: Vec::new(),
+    ProviderSearchSection::failed(provider.identity(), diagnostic)
+}
+
+fn unaddressable_location(context: &CodeIntelligenceContext, path: &str) -> SourceLocation {
+    SourceLocation::Unaddressable {
+        source_set: context
+            .source_root
+            .source_set
+            .clone()
+            .unwrap_or_else(|| "legacy".to_string()),
+        owner_metadata_path: None,
+        path: path.replace('\\', "/"),
+    }
+}
+
+fn location_path(location: &SourceLocation) -> &str {
+    match location {
+        SourceLocation::Unaddressable { path, .. } => path,
+        SourceLocation::Addressed { .. } => "",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_bsl_analyzer_search, parse_rlm_search, rlm_search_unready_error, BslAnalyzerProvider,
-        BslSearchClient, GitGrepProvider, RlmProvider, RlmSearchClient,
+        location_path, parse_bsl_analyzer_search, parse_rlm_search, rlm_search_unready_error,
+        BslAnalyzerProvider, BslSearchClient, GitGrepProvider, RlmProvider, RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::cancellation::CANCELLED_PREFIX;
@@ -1002,7 +1039,7 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(section.provider, ProviderId::GitGrep);
+        assert_eq!(section.identity, ProviderId::GitGrep.identity());
         assert_eq!(section.status, ProviderSectionStatus::Ok);
         let commands = runner.commands.lock().unwrap();
         assert_eq!(commands.len(), 1);
@@ -1056,11 +1093,11 @@ mod tests {
 
         assert_eq!(section.status, ProviderSectionStatus::Ok);
         assert_eq!(section.hits.len(), 2);
-        assert_eq!(section.hits[0].rank, 1);
-        assert_eq!(section.hits[0].path, "a/Module.bsl");
+        assert_eq!(section.hits[0].rank, None);
+        assert_eq!(location_path(&section.hits[0].location), "a/Module.bsl");
         assert_eq!(section.hits[0].line, 2);
-        assert_eq!(section.hits[1].rank, 2);
-        assert_eq!(section.hits[1].path, "a/Module.bsl");
+        assert_eq!(section.hits[1].rank, None);
+        assert_eq!(location_path(&section.hits[1].location), "a/Module.bsl");
         assert_eq!(section.hits[1].line, 7);
         assert!(section.hits.iter().all(|hit| hit.provider_score.is_none()));
     }
@@ -1083,7 +1120,10 @@ mod tests {
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Ok);
-        assert_eq!(section.hits[0].path, "Catalogs/Номенклатура.xml");
+        assert_eq!(
+            location_path(&section.hits[0].location),
+            "Catalogs/Номенклатура.xml"
+        );
     }
 
     #[test]
@@ -1153,12 +1193,15 @@ mod tests {
         );
 
         assert_eq!(section.hits.len(), 1);
-        assert_eq!(section.hits[0].path, "CommonModules/Test/Ext/Module.bsl");
+        assert_eq!(
+            location_path(&section.hits[0].location),
+            "CommonModules/Test/Ext/Module.bsl"
+        );
         assert!(
             !section
                 .hits
                 .iter()
-                .any(|hit| hit.path == "dules/Broken/Ext/Module.bsl"),
+                .any(|hit| location_path(&hit.location) == "dules/Broken/Ext/Module.bsl"),
             "{:?}",
             section.hits
         );
@@ -1322,12 +1365,13 @@ mod tests {
                │ Function Find()\n\
              \n\
              -- semantic skipped: not configured --\n",
+            &context(),
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Ok);
         assert_eq!(section.hits.len(), 2);
         assert_eq!(
-            section.hits[0].path,
+            location_path(&section.hits[0].location),
             "C:/repo/src/CommonModules/Sales/Ext/Module.bsl"
         );
         assert_eq!(section.hits[0].line, 42);
@@ -1338,7 +1382,7 @@ mod tests {
             "method/common/Sales/Post"
         );
         assert_eq!(section.hits[0].snippet, "Procedure Post()\n    Return;");
-        assert_eq!(section.hits[1].rank, 2);
+        assert_eq!(section.hits[1].rank, Some(2));
         assert_eq!(section.hits[1].attributes["modality"], "L");
         assert_eq!(
             section.diagnostics,
@@ -1354,11 +1398,12 @@ mod tests {
              \n\
              #9 [S] b/Module.bsl:4 :: Second (procedure)\n\
                │ Procedure Second()\n",
+            &context(),
         );
 
         assert_eq!(
             section.hits.iter().map(|hit| hit.rank).collect::<Vec<_>>(),
-            vec![1, 2]
+            vec![Some(1), Some(2)]
         );
     }
 
@@ -1366,6 +1411,7 @@ mod tests {
     fn bsl_analyzer_not_ready_envelope_is_unavailable() {
         let section = parse_bsl_analyzer_search(
             r#"{"status":"not_ready","detail":"indexing 40%","retry_after_ms":1500}"#,
+            &context(),
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Unavailable);
@@ -1376,6 +1422,7 @@ mod tests {
     fn bsl_analyzer_non_empty_malformed_output_is_failed() {
         let section = parse_bsl_analyzer_search(
             "plain output from an incompatible analyzer\n#broken header\n",
+            &context(),
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Failed);
@@ -1394,6 +1441,7 @@ mod tests {
                │ Procedure First()\n\
              \n\
              ----\n",
+            &context(),
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Ok);
@@ -1604,17 +1652,18 @@ mod tests {
                     "detail": {}
                 }
             ]"#,
+            &context(),
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Ok);
         assert_eq!(section.hits.len(), 2);
-        assert_eq!(section.hits[0].rank, 1);
+        assert_eq!(section.hits[0].rank, Some(1));
         assert_eq!(section.hits[0].provider_score, Some(-2.75));
         assert_eq!(section.hits[0].line, 42);
         assert_eq!(section.hits[0].end_line, Some(58));
         assert_eq!(section.hits[0].symbol.as_deref(), Some("Post"));
         assert_eq!(section.hits[0].kind.as_deref(), Some("procedure"));
-        assert_eq!(section.hits[1].rank, 2);
+        assert_eq!(section.hits[1].rank, Some(2));
         assert_eq!(section.hits[1].provider_score, None);
         assert_eq!(section.hits[1].line, 1);
     }
@@ -1626,6 +1675,7 @@ mod tests {
                 {"text": "missing path", "detail": {}},
                 {"path": "CommonModules/X/Ext/Module.bsl", "detail": {}}
             ]"#,
+            &context(),
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Failed);
@@ -1646,11 +1696,12 @@ mod tests {
                     "detail": {"line": 7}
                 }
             ]"#,
+            &context(),
         );
 
         assert_eq!(section.status, ProviderSectionStatus::Ok);
         assert_eq!(section.hits.len(), 1);
-        assert_eq!(section.hits[0].rank, 1);
+        assert_eq!(section.hits[0].rank, Some(1));
         assert_eq!(section.hits[0].line, 7);
         assert_eq!(section.diagnostics.len(), 1);
     }
