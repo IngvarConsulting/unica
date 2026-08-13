@@ -1412,12 +1412,12 @@ fn call_tool_observed(
         }
     } else {
         let cache = ports.cache_report(&context, &events, mode, spec.cache_access);
-        if cancellation.is_cancelled() {
+        if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
             return Ok(cancelled_operation_result(&context, mode));
         }
         cache?
     };
-    if cancellation.is_cancelled() {
+    if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
         return Ok(cancelled_operation_result(&context, mode));
     }
     outcome.warnings.append(&mut cache.publication_warnings);
@@ -1445,7 +1445,7 @@ fn call_tool_observed(
     } else {
         outcome.artifacts
     };
-    if cancellation.is_cancelled() {
+    if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
         return Ok(cancelled_operation_result(&context, mode));
     }
     Ok(OperationResult {
