@@ -1486,6 +1486,8 @@ struct WorkspaceServiceRuntime {
     control_admission: Arc<AdmissionGate>,
     #[cfg(test)]
     handler_started_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    provider_sessions_drained_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<PersistentMcpSession, String>
@@ -1565,6 +1567,8 @@ impl WorkspaceServiceRuntime {
             control_admission: AdmissionGate::new(SERVICE_MAX_CONTROL_HANDLERS),
             #[cfg(test)]
             handler_started_hook: Mutex::new(None),
+            #[cfg(test)]
+            provider_sessions_drained_hook: Mutex::new(None),
         }
     }
 
@@ -1656,8 +1660,9 @@ impl WorkspaceServiceRuntime {
 
     fn begin_shutdown(&self) -> ServiceResponse {
         self.shutting_down.store(true, Ordering::Release);
-        self.rlm_maintenance_cancellation.cancel();
+        self.session_teardowns.close();
         self.rlm_maintenance_tasks.close();
+        self.rlm_maintenance_cancellation.cancel();
         let cancellations = self
             .operations
             .lock()
@@ -1698,6 +1703,10 @@ impl WorkspaceServiceRuntime {
         }
         let sessions_drained = self.session_teardowns.drain(SESSION_TEARDOWN_GRACE);
         let maintenance_drained = self.rlm_maintenance_tasks.drain(SESSION_TEARDOWN_GRACE);
+        #[cfg(test)]
+        if let Some(hook) = self.provider_sessions_drained_hook.lock().unwrap().clone() {
+            hook();
+        }
         sessions_drained && maintenance_drained
     }
 
@@ -5197,6 +5206,111 @@ mod tests {
         assert!(record_path.exists());
 
         task_release_tx.send(()).unwrap();
+        assert!(read_test_response(&mut request).ok);
+        server_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        joiner.join().unwrap();
+        assert!(!record_path.exists());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn workspace_service_record_outlives_late_session_retirement() {
+        struct BlockingRetiredSession {
+            drop_started: mpsc::Sender<()>,
+            drop_release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+
+        impl Drop for BlockingRetiredSession {
+            fn drop(&mut self) {
+                self.drop_started.send(()).unwrap();
+                self.drop_release.lock().unwrap().recv().unwrap();
+            }
+        }
+
+        struct LateSessionRetirementExecutor {
+            before_retirement: mpsc::Sender<()>,
+            allow_retirement: Mutex<mpsc::Receiver<()>>,
+            drop_started: mpsc::Sender<()>,
+            drop_release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+
+        impl WorkspaceServiceOperationExecutor for LateSessionRetirementExecutor {
+            fn execute(
+                &self,
+                runtime: &WorkspaceServiceRuntime,
+                _kind: ServiceRequestKind,
+                _cancellation: &CancellationToken,
+            ) -> ServiceResponse {
+                self.before_retirement.send(()).unwrap();
+                self.allow_retirement.lock().unwrap().recv().unwrap();
+                runtime.retire_session(BlockingRetiredSession {
+                    drop_started: self.drop_started.clone(),
+                    drop_release: Arc::clone(&self.drop_release),
+                });
+                ServiceResponse {
+                    ok: true,
+                    status: Some("late-session-retired".to_string()),
+                    ..ServiceResponse::default()
+                }
+            }
+        }
+
+        let (before_retirement_tx, before_retirement_rx) = mpsc::channel();
+        let (allow_retirement_tx, allow_retirement_rx) = mpsc::channel();
+        let (drop_started_tx, drop_started_rx) = mpsc::channel();
+        let (drop_release_tx, drop_release_rx) = mpsc::channel();
+        let executor = Arc::new(LateSessionRetirementExecutor {
+            before_retirement: before_retirement_tx,
+            allow_retirement: Mutex::new(allow_retirement_rx),
+            drop_started: drop_started_tx,
+            drop_release: Arc::new(Mutex::new(drop_release_rx)),
+        });
+        let (context, record, runtime, server) = workspace_test_server_with_executor(
+            "late-session-record",
+            executor,
+            SERVICE_SHUTDOWN_GRACE,
+        );
+        let (providers_drained_tx, providers_drained_rx) = mpsc::channel();
+        *runtime.provider_sessions_drained_hook.lock().unwrap() =
+            Some(Arc::new(move || providers_drained_tx.send(()).unwrap()));
+        let mut request = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "late-session".to_string(),
+                args: json!({}),
+            },
+        );
+        before_retirement_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        providers_drained_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let record_path =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src"))
+                .unwrap()
+                .record_path();
+        let (server_finished_tx, server_finished_rx) = mpsc::channel();
+        let joiner = thread::spawn(move || {
+            server_finished_tx.send(server.join().unwrap()).unwrap();
+        });
+        allow_retirement_tx.send(()).unwrap();
+        drop_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(matches!(
+            server_finished_rx.recv_timeout(Duration::from_millis(500)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(record_path.exists());
+
+        drop_release_tx.send(()).unwrap();
         assert!(read_test_response(&mut request).ok);
         server_finished_rx
             .recv_timeout(Duration::from_secs(1))
