@@ -4,7 +4,6 @@ use crate::application::{
 };
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::operational_config::OperationalConfig;
-use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
@@ -26,7 +25,6 @@ use crate::infrastructure::source_roots::resolve_source_root;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -204,19 +202,6 @@ pub(crate) struct GitTrackingAdapter<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConfigDumpInfoGitCheck {
     Complete(Option<String>),
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GitIndexPath {
-    path: String,
-    blob_oid: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GitBlobClassification {
-    Classified(ConfigDumpInfoXmlKind),
-    Inconclusive,
     Cancelled,
 }
 
@@ -452,7 +437,7 @@ impl<'a> GitTrackingAdapter<'a> {
                     .to_string(),
             ));
         }
-        if output.stdout.contains('\u{fffd}') {
+        if output.stdout_had_invalid_utf8 {
             return ConfigDumpInfoGitCheck::Complete(Some(
                 "ConfigDumpInfo.xml Git tracking check returned non-UTF-8 paths; inspect the Git index manually because matching paths cannot be classified safely"
                     .to_string(),
@@ -462,7 +447,9 @@ impl<'a> GitTrackingAdapter<'a> {
             return ConfigDumpInfoGitCheck::Complete(None);
         }
 
-        let Some(index_paths) = parse_git_index_paths(&output.stdout) else {
+        let Ok(index_paths) =
+            crate::infrastructure::project_health::git::parse_git_index_entries(&output.stdout)
+        else {
             return ConfigDumpInfoGitCheck::Complete(Some(
                 "ConfigDumpInfo.xml Git tracking check returned an unrecognized index record; inspect matching tracked paths manually"
                     .to_string(),
@@ -472,139 +459,25 @@ impl<'a> GitTrackingAdapter<'a> {
             return ConfigDumpInfoGitCheck::Complete(None);
         }
 
-        let mut runtime_paths = Vec::new();
-        let mut ambiguous_paths = Vec::new();
-        let mut blob_cache = BTreeMap::new();
-        let mut entries = index_paths.into_iter();
-        while let Some(entry) = entries.next() {
-            if cancellation.is_cancelled() {
+        let budget = deadline.saturating_duration_since(Instant::now());
+        let inspection = match crate::infrastructure::project_health::git::classify_staged_config_dump_info(
+            self.runner,
+            &context.workspace_root,
+            &index_paths,
+            cancellation,
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(budget),
+        ) {
+            Ok(inspection) => inspection,
+            Err(crate::infrastructure::project_health::git::ConfigDumpInfoIndexInspectionError::Cancelled) => {
                 return ConfigDumpInfoGitCheck::Cancelled;
             }
-            if Instant::now() >= deadline {
-                ambiguous_paths.push(entry.path);
-                ambiguous_paths.extend(entries.map(|remaining| remaining.path));
-                break;
-            }
-            let Some(oid) = entry.blob_oid else {
-                ambiguous_paths.push(entry.path);
-                continue;
-            };
-            let classification = if let Some(cached) = blob_cache.get(&oid) {
-                *cached
-            } else {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let Some(remaining) = (!remaining.is_zero()).then_some(remaining) else {
-                    ambiguous_paths.push(entry.path);
-                    continue;
-                };
-                let classification = self.classify_git_blob(context, &oid, remaining, cancellation);
-                if classification != GitBlobClassification::Cancelled {
-                    blob_cache.insert(oid, classification);
-                }
-                classification
-            };
-            match classification {
-                GitBlobClassification::Cancelled => {
-                    return ConfigDumpInfoGitCheck::Cancelled;
-                }
-                GitBlobClassification::Classified(ConfigDumpInfoXmlKind::RuntimeSidecar) => {
-                    runtime_paths.push(entry.path);
-                }
-                GitBlobClassification::Classified(
-                    ConfigDumpInfoXmlKind::ExternalProcessor
-                    | ConfigDumpInfoXmlKind::ExternalReport
-                    | ConfigDumpInfoXmlKind::MetadataDescriptor,
-                ) => {}
-                GitBlobClassification::Classified(ConfigDumpInfoXmlKind::Other)
-                | GitBlobClassification::Inconclusive => {
-                    ambiguous_paths.push(entry.path);
-                }
-            }
-        }
-
-        ConfigDumpInfoGitCheck::Complete(config_dump_info_warnings(runtime_paths, ambiguous_paths))
-    }
-
-    fn classify_git_blob(
-        &self,
-        context: &WorkspaceContext,
-        oid: &str,
-        timeout: Duration,
-        cancellation: &CancellationToken,
-    ) -> GitBlobClassification {
-        let output = match self.runner.run(&ProcessCommand {
-            program: PathBuf::from("git"),
-            args: ["--no-replace-objects", "cat-file", "blob", oid]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            cwd: context.workspace_root.clone(),
-            env: Vec::new(),
-            timeout: Some(timeout),
-            cancellation: cancellation.clone(),
-        }) {
-            Ok(output) => output,
-            Err(error) if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) => {
-                return GitBlobClassification::Cancelled;
-            }
-            Err(_) => return GitBlobClassification::Inconclusive,
         };
-        if output.cancelled || cancellation.is_cancelled() {
-            return GitBlobClassification::Cancelled;
-        }
-        if output.timed_out
-            || output.stdout_truncated
-            || output.stdout.contains('\u{fffd}')
-            || !output.status_success
-        {
-            return GitBlobClassification::Inconclusive;
-        }
-        GitBlobClassification::Classified(config_dump_info_xml_kind(output.stdout.as_bytes()))
-    }
-}
 
-fn parse_git_index_paths(stdout: &str) -> Option<Vec<GitIndexPath>> {
-    #[derive(Default)]
-    struct EntryState {
-        records: usize,
-        blob_oid: Option<String>,
+        ConfigDumpInfoGitCheck::Complete(config_dump_info_warnings(
+            inspection.runtime_paths,
+            inspection.inconclusive_paths,
+        ))
     }
-
-    let mut entries = BTreeMap::<String, EntryState>::new();
-    for record in stdout.split('\0').filter(|record| !record.is_empty()) {
-        let (metadata, path) = record.split_once('\t')?;
-        if path.is_empty() {
-            return None;
-        }
-        let fields = metadata.split_whitespace().collect::<Vec<_>>();
-        if fields.len() != 3 {
-            return None;
-        }
-        let mode = fields[0];
-        let oid = fields[1];
-        let stage = fields[2];
-        let usable_blob = matches!(mode, "100644" | "100755")
-            && stage == "0"
-            && !oid.is_empty()
-            && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
-            && oid.bytes().any(|byte| byte != b'0');
-        let entry = entries.entry(path.to_string()).or_default();
-        entry.records += 1;
-        if entry.records == 1 && usable_blob {
-            entry.blob_oid = Some(oid.to_string());
-        } else {
-            entry.blob_oid = None;
-        }
-    }
-    Some(
-        entries
-            .into_iter()
-            .map(|(path, state)| GitIndexPath {
-                path,
-                blob_oid: state.blob_oid,
-            })
-            .collect(),
-    )
 }
 
 fn config_dump_info_warnings(
@@ -3442,7 +3315,7 @@ mod tests {
             .collect::<Vec<_>>()
         );
 
-        let lossy_runner = SequenceProcessRunner {
+        let literal_replacement_runner = SequenceProcessRunner {
             commands: RefCell::new(Vec::new()),
             outputs: RefCell::new(vec![
                 ProcessOutput {
@@ -3474,21 +3347,17 @@ mod tests {
             ]),
         };
 
-        let result = GitTrackingAdapter::with_runner(&lossy_runner)
+        let result = GitTrackingAdapter::with_runner(&literal_replacement_runner)
             .config_dump_info_warning(&context, &CancellationToken::new());
 
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("lossy index blob must require manual review");
-        };
-        assert!(warning.contains("manual review"));
-        assert!(!warning.contains("git rm --cached"));
+        assert_eq!(result, ConfigDumpInfoGitCheck::Complete(None));
 
         let _ = fs::remove_dir_all(context.workspace_root);
     }
 
     #[test]
     fn config_dump_info_index_parser_marks_unmerged_and_intent_to_add_as_ambiguous() {
-        let entries = parse_git_index_paths(concat!(
+        let entries = crate::infrastructure::project_health::git::parse_git_index_entries(concat!(
             "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tconflict/ConfigDumpInfo.xml\0",
             "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\tconflict/ConfigDumpInfo.xml\0",
             "100644 0000000000000000000000000000000000000000 0\tnew/ConfigDumpInfo.xml\0",
@@ -3497,9 +3366,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].path, "conflict/ConfigDumpInfo.xml");
+        assert_eq!(entries[0].repo_path, "conflict/ConfigDumpInfo.xml");
         assert_eq!(entries[0].blob_oid, None);
-        assert_eq!(entries[1].path, "new/ConfigDumpInfo.xml");
+        assert_eq!(entries[1].repo_path, "new/ConfigDumpInfo.xml");
         assert_eq!(entries[1].blob_oid, None);
         assert_eq!(
             entries[2].blob_oid.as_deref(),
@@ -3590,7 +3459,7 @@ mod tests {
                 cancelled: false,
                 stdout_truncated: false,
                 stderr_truncated: false,
-                stdout_had_invalid_utf8: false,
+                stdout_had_invalid_utf8: true,
                 stderr_had_invalid_utf8: false,
             },
         };
