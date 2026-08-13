@@ -1,10 +1,10 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-    CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderId, ProviderReadOutcome,
-    ProviderRole, ProviderSearchSection, ProviderSectionStatus, SearchCoverage, SearchProgressSink,
-    SearchProgressSnapshot, SearchProviderPhase, SearchProviderProgress, SearchProviderState,
-    SearchRequest,
+    CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderId, ProviderProgressSink,
+    ProviderProgressUpdate, ProviderReadOutcome, ProviderRole, ProviderSearchSection,
+    ProviderSectionStatus, SearchCoverage, SearchProgressSink, SearchProgressSnapshot,
+    SearchProviderPhase, SearchProviderProgress, SearchProviderState, SearchRequest,
 };
 use crate::domain::operational_config::CodeIntelligenceDeadlines;
 use std::any::Any;
@@ -30,6 +30,31 @@ pub(crate) struct CodeSearchCoordinator {
     deadlines: CodeIntelligenceDeadlines,
     worker_admission: Arc<ProviderWorkerAdmission>,
     worker_lifecycle: Arc<ProviderWorkerLifecycle>,
+}
+
+enum ProviderWorkerMessage {
+    Progress {
+        index: usize,
+        update: ProviderProgressUpdate,
+    },
+    Completed {
+        index: usize,
+        section: ProviderSearchSection,
+    },
+}
+
+struct ChannelProviderProgressSink {
+    index: usize,
+    sender: mpsc::Sender<ProviderWorkerMessage>,
+}
+
+impl ProviderProgressSink for ChannelProviderProgressSink {
+    fn publish(&self, update: ProviderProgressUpdate) {
+        let _ = self.sender.send(ProviderWorkerMessage::Progress {
+            index: self.index,
+            update,
+        });
+    }
 }
 
 impl CodeSearchCoordinator {
@@ -163,7 +188,13 @@ impl CodeSearchCoordinator {
             provider_progress[index].phase = SearchProviderPhase::Searching;
             let tx = tx.clone();
             let request = request.clone();
-            let context = context.clone();
+            let context =
+                context
+                    .clone()
+                    .with_provider_progress(Arc::new(ChannelProviderProgressSink {
+                        index,
+                        sender: tx.clone(),
+                    }));
             let budget = provider_budgets[index];
             let worker_cancellation = provider_cancellations[index].clone();
             let spawn_result = thread::Builder::new()
@@ -189,7 +220,7 @@ impl CodeSearchCoordinator {
                         ));
                         section.identity = provider_id.identity();
                     }
-                    let _ = tx.send((index, section));
+                    let _ = tx.send(ProviderWorkerMessage::Completed { index, section });
                 });
             match spawn_result {
                 Ok(handle) => self.worker_lifecycle.track(handle),
@@ -263,7 +294,22 @@ impl CodeSearchCoordinator {
                 .min(heartbeat_wait)
                 .min(Duration::from_millis(50));
             match rx.recv_timeout(wait) {
-                Ok((index, section)) if slots[index].is_none() => {
+                Ok(ProviderWorkerMessage::Progress { index, update }) if slots[index].is_none() => {
+                    provider_progress[index].phase = update.phase;
+                    provider_progress[index].detail_code = update.detail_code;
+                    provider_progress[index].results_found = update.results_found;
+                    publish_search_progress(
+                        progress,
+                        started_at,
+                        public_search_budget,
+                        heartbeat_interval,
+                        &provider_progress,
+                    );
+                    last_progress_at = Instant::now();
+                }
+                Ok(ProviderWorkerMessage::Completed { index, section })
+                    if slots[index].is_none() =>
+                {
                     provider_progress[index].state = progress_state_for_section(&section);
                     provider_progress[index].results_found = section.hits.len();
                     slots[index] = Some(section);

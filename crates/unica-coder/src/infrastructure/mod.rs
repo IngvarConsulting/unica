@@ -28,6 +28,7 @@ pub(crate) mod project_sources;
 pub(crate) mod redaction;
 pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_jobs;
+pub(crate) mod source_revision;
 pub(crate) mod source_roots;
 // The topology provider is introduced before both public consumers migrate to it.
 #[allow(dead_code)]

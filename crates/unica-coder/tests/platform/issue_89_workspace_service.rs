@@ -18,9 +18,11 @@ use windows_sys::Win32::System::Threading::{
 };
 
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(10);
+const INDEX_BUILD_DEADLINE: Duration = Duration::from_secs(60);
 static FIXTURE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+#[ignore = "long search integration; routed by search_integration_changed or ci:full"]
 fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     let mut fixture = Fixture::new();
     let mut mcp = McpProcess::start(&fixture);
@@ -36,6 +38,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "unica.code.search",
         json!({
             "cwd": fixture.workspace,
+            "sourceSet": "main",
             "query": "Procedure",
             "dryRun": true
         }),
@@ -53,25 +56,31 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "rejected code.search preview must not start workspace services"
     );
 
-    mcp.send(tool_call(
-        11,
-        "unica.code.search",
-        json!({
-            "cwd": fixture.workspace,
-            "query": "Procedure"
-        }),
-    ));
-    let _ = mcp.receive_ids(&[11], RESPONSE_DEADLINE);
-    fixture.wait_for_index_ready(RESPONSE_DEADLINE);
-
-    mcp.send(tool_call(
+    mcp.send(tool_call_with_progress(
         2,
         "unica.code.search",
         json!({
             "cwd": fixture.workspace,
+            "sourceSet": "main",
             "query": "Procedure"
         }),
+        "issue-89-cold-search",
     ));
+    let cold_progress = mcp.wait_for_search_progress_detail(
+        "issue-89-cold-search",
+        "reconcilingSources",
+        RESPONSE_DEADLINE,
+    );
+    assert_eq!(
+        cold_progress["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|provider| provider["role"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["semantic", "symbol", "lexical"]
+    );
+    fixture.wait_for_index_ready(INDEX_BUILD_DEADLINE);
     fixture.wait_for_log("rlm|", RESPONSE_DEADLINE);
     let initial_owner = fixture.single_service_owner();
 
@@ -115,6 +124,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "unica.code.search",
         json!({
             "cwd": fixture.workspace,
+            "sourceSet": "main",
             "query": "Procedure"
         }),
     ));
@@ -194,6 +204,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "unica.code.search",
         json!({
             "cwd": fixture.workspace,
+            "sourceSet": "main",
             "query": "Procedure"
         }),
     ));
@@ -204,9 +215,9 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     assert_eq!(
         search_sections
             .iter()
-            .map(|section| section["provider"].as_str().unwrap())
+            .map(|section| section["role"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["rlm", "bsl-analyzer", "git-grep"]
+        vec!["semantic", "symbol", "lexical"]
     );
     let rlm_status = search_sections
         .iter()
@@ -275,6 +286,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
 }
 
 #[test]
+#[ignore = "long search integration; routed by search_integration_changed or ci:full"]
 fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
     let tracked = Arc::new(Mutex::new(Vec::<ToolRecord>::new()));
     let fixture_root = Arc::new(Mutex::new(None::<PathBuf>));
@@ -290,17 +302,11 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
         let _ = mcp.receive_ids(&[1], RESPONSE_DEADLINE);
         mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}));
         mcp.send(tool_call(
-            10,
-            "unica.code.search",
-            json!({"cwd":fixture.workspace,"query":"Procedure"}),
-        ));
-        let _ = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
-        fixture.wait_for_index_ready(RESPONSE_DEADLINE);
-        mcp.send(tool_call(
             2,
             "unica.code.search",
-            json!({"cwd":fixture.workspace,"query":"Procedure"}),
+            json!({"cwd":fixture.workspace,"sourceSet":"main","query":"Procedure"}),
         ));
+        fixture.wait_for_index_ready(INDEX_BUILD_DEADLINE);
         fixture.wait_for_log("rlm|", RESPONSE_DEADLINE);
         *tracked_inside.lock().unwrap() = fixture.log_records();
         *cleanup_started_inside.lock().unwrap() = Some(Instant::now());
@@ -341,6 +347,24 @@ fn initialize_request() -> Value {
 
 fn tool_call(id: u64, name: &str, arguments: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})
+}
+
+fn tool_call_with_progress(
+    id: u64,
+    name: &str,
+    arguments: Value,
+    progress_token: &str,
+) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": name,
+            "arguments": arguments,
+            "_meta": {"progressToken": progress_token}
+        }
+    })
 }
 
 fn send_service_request(record: &Value, kind: Value) -> Result<Value, String> {
@@ -410,6 +434,7 @@ struct McpProcess {
     child: Child,
     stdin: Option<ChildStdin>,
     responses: mpsc::Receiver<String>,
+    stderr: Arc<Mutex<String>>,
 }
 
 impl McpProcess {
@@ -420,8 +445,8 @@ impl McpProcess {
             .env("UNICA_CACHE_DIR", &fixture.cache)
             .env("ISSUE89_LOG", &fixture.log)
             .env("ISSUE89_RLM_STATE", &fixture.rlm_state)
-            .env("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "30")
-            .env("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS", "60")
+            .env("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "120")
+            .env("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS", "300")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -429,6 +454,20 @@ impl McpProcess {
             .expect("start unica MCP");
         let stdin = child.stdin.take().expect("MCP stdin");
         let stdout = child.stdout.take().expect("MCP stdout");
+        let stderr = child.stderr.take().expect("MCP stderr");
+        let stderr_tail = Arc::new(Mutex::new(String::new()));
+        let stderr_tail_writer = Arc::clone(&stderr_tail);
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let mut tail = stderr_tail_writer.lock().unwrap();
+                tail.push_str(&line);
+                tail.push('\n');
+                if tail.len() > 32 * 1024 {
+                    let remove = tail.len() - 32 * 1024;
+                    tail.drain(..remove);
+                }
+            }
+        });
         let (tx, responses) = mpsc::channel();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -446,6 +485,7 @@ impl McpProcess {
             child,
             stdin: Some(stdin),
             responses,
+            stderr: stderr_tail,
         }
     }
 
@@ -460,6 +500,48 @@ impl McpProcess {
         self.receive_ids_timed(ids, timeout, Instant::now()).0
     }
 
+    fn wait_for_search_progress_detail(
+        &self,
+        progress_token: &str,
+        detail_code: &str,
+        timeout: Duration,
+    ) -> Value {
+        let deadline = Instant::now() + timeout;
+        let mut observed = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for search progress {detail_code}; observed: {observed:#?}"
+            );
+            let line = self.responses.recv_timeout(remaining).unwrap_or_else(|error| {
+                panic!(
+                    "search progress before deadline: {error}; observed: {observed:#?}; stderr: {}",
+                    self.stderr.lock().unwrap(),
+                )
+            });
+            let message: Value = serde_json::from_str(&line).expect("JSON MCP message");
+            if message.get("id").is_some() {
+                panic!("search completed before progress {detail_code}: {message:#}");
+            }
+            let snapshot = &message["params"]["_meta"]["io.unica/searchProgress"];
+            if message["method"] == "notifications/progress"
+                && message["params"]["progressToken"] == progress_token
+                && snapshot["providers"].as_array().is_some_and(|providers| {
+                    providers
+                        .iter()
+                        .any(|provider| provider["detailCode"] == detail_code)
+                })
+            {
+                return snapshot.clone();
+            }
+            observed.push(message);
+            if observed.len() > 32 {
+                observed.remove(0);
+            }
+        }
+    }
+
     fn receive_ids_timed(
         &self,
         ids: &[u64],
@@ -470,17 +552,24 @@ impl McpProcess {
         let expected = ids.iter().copied().collect::<HashSet<_>>();
         let mut found = HashMap::new();
         let mut response_times = HashMap::new();
+        let mut observed_lines = Vec::new();
         while found.len() < expected.len() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
                 !remaining.is_zero(),
                 "timed out waiting for MCP ids {expected:?}; got {found:?}"
             );
-            let line = self
-                .responses
-                .recv_timeout(remaining)
-                .expect("MCP response before deadline");
+            let line = self.responses.recv_timeout(remaining).unwrap_or_else(|error| {
+                panic!(
+                    "MCP response before deadline: {error}; observed: {observed_lines:#?}; stderr: {}",
+                    self.stderr.lock().unwrap(),
+                )
+            });
             let response: Value = serde_json::from_str(&line).expect("JSON MCP response");
+            observed_lines.push(response.clone());
+            if observed_lines.len() > 32 {
+                observed_lines.remove(0);
+            }
             if let Some(id) = response.get("id").and_then(Value::as_u64) {
                 if expected.contains(&id) {
                     response_times.insert(id, started.elapsed());

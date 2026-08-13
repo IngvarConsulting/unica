@@ -2,10 +2,11 @@ use crate::domain::cancellation::{cancelled_error, CancellationToken, CANCELLED_
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
     CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderId,
-    ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
-    SearchOrdering, SearchRanking, SearchRequest,
+    ProviderProgressUpdate, ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection,
+    ProviderSectionStatus, SearchOrdering, SearchProviderPhase, SearchRanking, SearchRequest,
 };
 use crate::domain::source_location::SourceLocation;
+use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bsl_outline::render_current_source_outline;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessRunner, ProcessStreamOutput,
@@ -13,7 +14,7 @@ use crate::infrastructure::internal_adapters::{
 use crate::infrastructure::platform::StreamControl;
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
-use crate::infrastructure::workspace_index::IndexReadiness;
+use crate::infrastructure::workspace_index::{read_bsl_index_status, IndexReadiness};
 use crate::infrastructure::workspace_services::{
     WorkspaceRlmOperation, WorkspaceServiceBslCall, WorkspaceServiceBslOutput,
     WorkspaceServiceManager, WorkspaceServiceRlmCall,
@@ -357,13 +358,61 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
         timeout: Duration,
         cancellation: &CancellationToken,
     ) -> Result<IndexReadiness, String> {
-        WorkspaceServiceManager::new().rlm_readiness_cancellable_with_timeout(
+        let started_at = std::time::Instant::now();
+        let manager = WorkspaceServiceManager::new();
+        let readiness = manager.rlm_readiness_cancellable_with_timeout(
             &context.workspace,
             &context.source_root.path,
             &Map::new(),
             timeout,
             cancellation,
-        )
+        )?;
+        if matches!(
+            readiness,
+            IndexReadiness::Ready { .. }
+                | IndexReadiness::Failed(_)
+                | IndexReadiness::Unavailable(_)
+        ) {
+            return Ok(readiness);
+        }
+
+        let mut reported_detail = None;
+        let mut backoff = Duration::from_millis(100);
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(cancelled_error("RLM readiness wait stopped"));
+            }
+            let Some(remaining) = timeout.checked_sub(started_at.elapsed()) else {
+                return Ok(IndexReadiness::Building);
+            };
+            if remaining.is_zero() {
+                return Ok(IndexReadiness::Building);
+            }
+            let status_is_terminal =
+                read_bsl_index_status(&context.workspace).is_some_and(|status| {
+                    matches!(status.status.as_str(), "ready" | "failed" | "unavailable")
+                });
+            if status_is_terminal {
+                return manager.rlm_readiness_cancellable_with_timeout(
+                    &context.workspace,
+                    &context.source_root.path,
+                    &Map::new(),
+                    remaining,
+                    cancellation,
+                );
+            }
+            let detail = rlm_index_progress_detail(&context.workspace);
+            if reported_detail.as_deref() != Some(detail) {
+                context.report_progress(ProviderProgressUpdate {
+                    phase: SearchProviderPhase::Preparing,
+                    detail_code: Some(detail.to_string()),
+                    results_found: 0,
+                });
+                reported_detail = Some(detail.to_string());
+            }
+            cancellable_sleep(backoff.min(remaining), cancellation)?;
+            backoff = (backoff * 2).min(Duration::from_secs(1));
+        }
     }
 
     fn search(
@@ -392,6 +441,29 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
                 }
             })
     }
+}
+
+fn rlm_index_progress_detail(context: &WorkspaceContext) -> &'static str {
+    let is_update = read_bsl_index_status(context)
+        .and_then(|status| status.message)
+        .is_some_and(|message| message.contains("update"));
+    if is_update {
+        "updatingIndex"
+    } else {
+        "buildingIndex"
+    }
+}
+
+fn cancellable_sleep(duration: Duration, cancellation: &CancellationToken) -> Result<(), String> {
+    let started_at = std::time::Instant::now();
+    while started_at.elapsed() < duration {
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error("RLM readiness wait stopped"));
+        }
+        let remaining = duration.saturating_sub(started_at.elapsed());
+        std::thread::sleep(remaining.min(Duration::from_millis(50)));
+    }
+    Ok(())
 }
 
 fn rlm_search_unready_error(readiness: IndexReadiness) -> String {
@@ -448,6 +520,11 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                 cancelled_error("RLM search stopped before readiness check"),
             );
         }
+        context.report_progress(ProviderProgressUpdate {
+            phase: SearchProviderPhase::Preparing,
+            detail_code: Some("reconcilingSources".to_string()),
+            results_found: 0,
+        });
         let readiness_timeout = deadline.remaining();
         if readiness_timeout.is_zero() {
             return failed_section(
@@ -469,7 +546,16 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return failed_section(ProviderId::Rlm, error);
             }
-            Err(error) => return unavailable_section(ProviderId::Rlm, redactor(&error)),
+            Err(error) => {
+                if error.contains("source revision") {
+                    context.report_progress(ProviderProgressUpdate {
+                        phase: SearchProviderPhase::Preparing,
+                        detail_code: Some("sourceRevisionUntrusted".to_string()),
+                        results_found: 0,
+                    });
+                }
+                return unavailable_section(ProviderId::Rlm, redactor(&error));
+            }
         };
         match readiness {
             IndexReadiness::Ready { .. } => {}
@@ -492,9 +578,21 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                 return unavailable_section(ProviderId::Rlm, "rlm index building".to_string());
             }
             IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => {
+                if error.contains("source revision") {
+                    context.report_progress(ProviderProgressUpdate {
+                        phase: SearchProviderPhase::Preparing,
+                        detail_code: Some("sourceRevisionUntrusted".to_string()),
+                        results_found: 0,
+                    });
+                }
                 return unavailable_section(ProviderId::Rlm, redactor(&error));
             }
         }
+        context.report_progress(ProviderProgressUpdate {
+            phase: SearchProviderPhase::Searching,
+            detail_code: Some("executingQuery".to_string()),
+            results_found: 0,
+        });
         let timeout = deadline.remaining();
         if timeout.is_zero() {
             return failed_section(
@@ -573,7 +671,10 @@ fn parse_rlm_search(text: &str, context: &CodeIntelligenceContext) -> ProviderSe
     }
     if hits.is_empty() && !rows.is_empty() {
         diagnostics.insert(0, "RLM search helper returned no valid rows".to_string());
-        return ProviderSearchSection::failed(ProviderId::Rlm.identity(), diagnostics.join("; "));
+        return ProviderSearchSection::failed_with_diagnostics(
+            ProviderId::Rlm.identity(),
+            diagnostics,
+        );
     }
     ProviderSearchSection::complete(
         ProviderId::Rlm.identity(),

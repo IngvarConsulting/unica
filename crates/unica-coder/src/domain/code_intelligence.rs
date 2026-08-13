@@ -147,6 +147,24 @@ impl SearchProgressSink for NoopSearchProgressSink {
     fn publish(&self, _snapshot: SearchProgressSnapshot) {}
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderProgressUpdate {
+    pub phase: SearchProviderPhase,
+    pub detail_code: Option<String>,
+    pub results_found: usize,
+}
+
+pub trait ProviderProgressSink: Send + Sync {
+    fn publish(&self, update: ProviderProgressUpdate);
+}
+
+#[derive(Debug, Default)]
+struct NoopProviderProgressSink;
+
+impl ProviderProgressSink for NoopProviderProgressSink {
+    fn publish(&self, _update: ProviderProgressUpdate) {}
+}
+
 impl ProviderId {
     pub const fn role(self) -> ProviderRole {
         match self {
@@ -214,11 +232,23 @@ impl CodeIntelligenceReadRequest {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CodeIntelligenceContext {
     pub workspace: WorkspaceContext,
     pub source_root: ResolvedSourceRoot,
     pub search_scope: Option<CodeSearchScope>,
+    provider_progress: Arc<dyn ProviderProgressSink>,
+}
+
+impl std::fmt::Debug for CodeIntelligenceContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CodeIntelligenceContext")
+            .field("workspace", &self.workspace)
+            .field("source_root", &self.source_root)
+            .field("search_scope", &self.search_scope)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,12 +302,22 @@ impl CodeIntelligenceContext {
             workspace,
             source_root,
             search_scope: None,
+            provider_progress: Arc::new(NoopProviderProgressSink),
         }
     }
 
     pub fn with_search_scope(mut self, scope: CodeSearchScope) -> Self {
         self.search_scope = Some(scope);
         self
+    }
+
+    pub(crate) fn with_provider_progress(mut self, sink: Arc<dyn ProviderProgressSink>) -> Self {
+        self.provider_progress = sink;
+        self
+    }
+
+    pub fn report_progress(&self, update: ProviderProgressUpdate) {
+        self.provider_progress.publish(update);
     }
 }
 
@@ -633,6 +673,24 @@ impl ProviderSearchSection {
 
     pub fn failed(identity: ProviderIdentity, diagnostic: String) -> Self {
         Self::problem(identity, ProviderSectionStatus::Failed, diagnostic)
+    }
+
+    pub fn failed_with_diagnostics(identity: ProviderIdentity, diagnostics: Vec<String>) -> Self {
+        Self::new(
+            identity,
+            ProviderSectionStatus::Failed,
+            false,
+            SearchRanking::None,
+            SearchOrdering::Provider,
+            SearchMatchCount {
+                returned: 0,
+                total: None,
+                relation: SearchCountRelation::Unknown,
+            },
+            Vec::new(),
+            diagnostics,
+        )
+        .expect("failed section is a valid closed construction")
     }
 
     fn problem(
