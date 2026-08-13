@@ -12,10 +12,13 @@ use crate::application::{
     ToolSpec, UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::{
+    NoopSearchProgressSink, SearchProgressSink, SearchProgressSnapshot,
+};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation,
-    InitializeResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-    ServerInfo, Tool,
+    InitializeResult, ListToolsResult, Meta, PaginatedRequestParams, ProgressNotificationParam,
+    ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -31,14 +34,19 @@ const TOOL_EXECUTION_ERROR: i32 = -32000;
 
 /// Executes one tool call synchronously without leaking SDK types into the application.
 /// Injectable so transport tests can substitute slow or failing tools.
-type ToolCallHandler = dyn Fn(&str, &Map<String, Value>, CancellationToken) -> Result<OperationResult, (i32, String)>
+type ToolCallHandler = dyn Fn(
+        &str,
+        &Map<String, Value>,
+        CancellationToken,
+        Arc<dyn SearchProgressSink>,
+    ) -> Result<OperationResult, (i32, String)>
     + Send
     + Sync;
 
 pub fn run_stdio() {
     let app = Arc::new(UnicaApplication::new());
-    let handler: Arc<ToolCallHandler> = Arc::new(move |name, arguments, cancellation| {
-        call_tool_result(&app, name, arguments, cancellation)
+    let handler: Arc<ToolCallHandler> = Arc::new(move |name, arguments, cancellation, progress| {
+        call_tool_result_observed(&app, name, arguments, cancellation, progress)
     });
     let server = UnicaServer::new(handler);
     let in_flight = server.in_flight();
@@ -171,10 +179,58 @@ impl ServerHandler for UnicaServer {
         let handler = Arc::clone(&self.handler);
         let name = request.name.to_string();
         let handler_name = name.clone();
+        let progress_token = request
+            .meta
+            .as_ref()
+            .and_then(Meta::get_progress_token)
+            .or_else(|| context.meta.get_progress_token());
         let arguments = request.arguments.unwrap_or_default();
-        let result =
-            tokio::task::spawn_blocking(move || handler(&handler_name, &arguments, cancellation))
-                .await;
+        let (progress, progress_forwarder): (
+            Arc<dyn SearchProgressSink>,
+            Option<tokio::task::JoinHandle<()>>,
+        ) = if let Some(progress_token) = progress_token {
+            let (sender, mut receiver) =
+                tokio::sync::watch::channel::<Option<SearchProgressSnapshot>>(None);
+            let sink: Arc<dyn SearchProgressSink> = Arc::new(McpSearchProgressSink { sender });
+            let peer = context.peer.clone();
+            let forwarder = tokio::spawn(async move {
+                if receiver.wait_for(Option::is_some).await.is_err() {
+                    return;
+                }
+                loop {
+                    let Some(snapshot) = receiver.borrow_and_update().clone() else {
+                        break;
+                    };
+                    let mut meta = Meta::default();
+                    meta.0.insert(
+                        "io.unica/searchProgress".to_string(),
+                        serde_json::to_value(&snapshot).unwrap_or(Value::Null),
+                    );
+                    let notification = ProgressNotificationParam::new(
+                        progress_token.clone(),
+                        snapshot.terminal_roles() as f64,
+                    )
+                    .with_total(snapshot.providers.len() as f64)
+                    .with_message(progress_message(&snapshot));
+                    let mut notification = notification;
+                    notification.meta = Some(meta);
+                    let _ = peer.notify_progress(notification).await;
+                    if receiver.changed().await.is_err() {
+                        break;
+                    }
+                }
+            });
+            (sink, Some(forwarder))
+        } else {
+            (Arc::new(NoopSearchProgressSink), None)
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            handler(&handler_name, &arguments, cancellation, progress)
+        })
+        .await;
+        if let Some(forwarder) = progress_forwarder {
+            let _ = forwarder.await;
+        }
         bridge.abort();
         drop(admission);
 
@@ -190,6 +246,36 @@ impl ServerHandler for UnicaServer {
             )),
         }
     }
+}
+
+struct McpSearchProgressSink {
+    sender: tokio::sync::watch::Sender<Option<SearchProgressSnapshot>>,
+}
+
+impl SearchProgressSink for McpSearchProgressSink {
+    fn publish(&self, snapshot: SearchProgressSnapshot) {
+        self.sender.send_replace(Some(snapshot));
+    }
+}
+
+fn progress_message(snapshot: &SearchProgressSnapshot) -> String {
+    snapshot
+        .providers
+        .iter()
+        .map(|provider| {
+            let detail = provider
+                .detail_code
+                .as_deref()
+                .unwrap_or_else(|| provider.phase.as_str());
+            format!(
+                "{}: {} {detail} ({} results)",
+                provider.identity.role.as_str(),
+                provider.state.as_str(),
+                provider.results_found
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Data-driven MCP tool definitions from the application descriptor registry.
@@ -235,11 +321,28 @@ fn render_tool_result(
     Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
+#[cfg(test)]
 fn call_tool_result(
     app: &UnicaApplication,
     name: &str,
     args: &Map<String, Value>,
     cancellation: CancellationToken,
+) -> Result<OperationResult, (i32, String)> {
+    call_tool_result_observed(
+        app,
+        name,
+        args,
+        cancellation,
+        Arc::new(NoopSearchProgressSink),
+    )
+}
+
+fn call_tool_result_observed(
+    app: &UnicaApplication,
+    name: &str,
+    args: &Map<String, Value>,
+    cancellation: CancellationToken,
+    progress: Arc<dyn SearchProgressSink>,
 ) -> Result<OperationResult, (i32, String)> {
     if let Some(result) = role_edit_argument_failure_result(name, args) {
         return Ok(result);
@@ -247,7 +350,7 @@ fn call_tool_result(
     if let Some(result) = metadata_argument_failure_result(name, args) {
         return Ok(result);
     }
-    app.call_tool_cancellable(name, args, cancellation)
+    app.call_tool_observed(name, args, cancellation, progress)
         .map_err(|message| (TOOL_EXECUTION_ERROR, message))
 }
 
@@ -492,8 +595,8 @@ mod tests {
 
     fn application_handler() -> Arc<ToolCallHandler> {
         let app = Arc::new(UnicaApplication::new());
-        Arc::new(move |name, arguments, cancellation| {
-            call_tool_result(&app, name, arguments, cancellation)
+        Arc::new(move |name, arguments, cancellation, progress| {
+            call_tool_result_observed(&app, name, arguments, cancellation, progress)
         })
     }
 
@@ -538,6 +641,53 @@ mod tests {
             compact_result_bytes < 1_285_000,
             "tools/list result consumes {compact_result_bytes} compact JSON bytes"
         );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn progress_token_receives_typed_search_snapshot_before_result() {
+        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _, progress| {
+            progress.publish(crate::domain::code_intelligence::SearchProgressSnapshot {
+                schema_version: 1,
+                elapsed_ms: 5,
+                deadline_ms: 300_000,
+                next_update_within_ms: 2_000,
+                providers: vec![crate::domain::code_intelligence::SearchProviderProgress {
+                    identity: crate::domain::code_intelligence::ProviderId::GitGrep.identity(),
+                    state: crate::domain::code_intelligence::SearchProviderState::Running,
+                    phase: crate::domain::code_intelligence::SearchProviderPhase::Searching,
+                    detail_code: None,
+                    results_found: 2,
+                }],
+            });
+            Ok(successful_test_result("search complete"))
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "_meta": {"progressToken": "search-17"},
+                    "name": "unica.code.search",
+                    "arguments": {}
+                }
+            }))
+            .await;
+
+        let notification = client.receive().await;
+        assert_eq!(notification["method"], "notifications/progress");
+        assert_eq!(notification["params"]["progressToken"], "search-17");
+        assert_eq!(notification["params"]["progress"], 0.0);
+        assert_eq!(notification["params"]["total"], 1.0);
+        assert_eq!(
+            notification["params"]["_meta"]["io.unica/searchProgress"]["providers"][0]["role"],
+            "lexical"
+        );
+        let response = client.receive().await;
+        assert_eq!(response["id"], 1);
         client.shutdown().await;
     }
 
@@ -860,7 +1010,7 @@ mod tests {
 
     #[tokio::test]
     async fn role_edit_mcp_calls_return_structured_success_and_error() {
-        let handler: Arc<ToolCallHandler> = Arc::new(|name, arguments, _| {
+        let handler: Arc<ToolCallHandler> = Arc::new(|name, arguments, _, _| {
             assert_eq!(name, "unica.role.edit");
             let rejected = arguments
                 .get("operations")
@@ -1346,7 +1496,7 @@ mod tests {
             .contains("does not accept argument `dryRun`"));
         client.shutdown().await;
 
-        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _| {
+        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _, _| {
             Err((
                 TOOL_EXECUTION_ERROR,
                 "typed_result_missing: unica.project.status returned ok without OperationResult.data"
@@ -1376,7 +1526,7 @@ mod tests {
     async fn ping_stays_responsive_and_cancellation_reaches_the_tool() {
         let cancellation_seen = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&cancellation_seen);
-        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation| {
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation, _| {
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !cancellation.is_cancelled() {
                 if Instant::now() > give_up {
@@ -1437,7 +1587,7 @@ mod tests {
     async fn eof_cancels_active_calls_within_a_bounded_grace() {
         let cancellation_seen = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&cancellation_seen);
-        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation| {
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation, _| {
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !cancellation.is_cancelled() {
                 if Instant::now() > give_up {
@@ -1575,7 +1725,7 @@ mod tests {
     async fn overloaded_dispatcher_returns_deterministic_json_rpc_error() {
         let release = Arc::new(AtomicBool::new(false));
         let gate = Arc::clone(&release);
-        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _| {
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, _| {
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !gate.load(Ordering::SeqCst) {
                 if Instant::now() > give_up {

@@ -1,7 +1,8 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
-    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
+    CodeIntelligenceReadRequest, NoopSearchProgressSink, ProviderDeadline, SearchProgressSink,
+    SearchRequest,
 };
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
@@ -431,6 +432,16 @@ impl UnicaApplication {
         args: &Map<String, Value>,
         cancellation: CancellationToken,
     ) -> Result<OperationResult, String> {
+        self.call_tool_observed(name, args, cancellation, Arc::new(NoopSearchProgressSink))
+    }
+
+    pub fn call_tool_observed(
+        &self,
+        name: &str,
+        args: &Map<String, Value>,
+        cancellation: CancellationToken,
+        progress: Arc<dyn SearchProgressSink>,
+    ) -> Result<OperationResult, String> {
         let deadline = ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE);
         let spec = tools()
             .into_iter()
@@ -443,7 +454,14 @@ impl UnicaApplication {
                     format!("unknown unica tool: {name}")
                 }
             })?;
-        call_tool(spec, args, self.ports.as_ref(), &cancellation, deadline)
+        call_tool_observed(
+            spec,
+            args,
+            self.ports.as_ref(),
+            &cancellation,
+            deadline,
+            progress.as_ref(),
+        )
     }
 }
 
@@ -820,12 +838,31 @@ pub fn tools() -> Vec<ToolSpec> {
     specs
 }
 
+#[cfg(test)]
 fn call_tool(
     spec: ToolSpec,
     args: &Map<String, Value>,
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
+) -> Result<OperationResult, String> {
+    call_tool_observed(
+        spec,
+        args,
+        ports,
+        cancellation,
+        deadline,
+        &NoopSearchProgressSink,
+    )
+}
+
+fn call_tool_observed(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    ports: &dyn ApplicationPorts,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+    progress: &dyn SearchProgressSink,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
@@ -1125,6 +1162,7 @@ fn call_tool(
                     "code intelligence call is missing operational config".to_string()
                 })?,
                 cancellation,
+                progress,
             )?,
             ToolHandler::CodeIntelligence { operation } => {
                 invoke_code_intelligence_read(CodeIntelligenceReadInvocation {
@@ -1570,6 +1608,7 @@ fn invoke_code_intelligence_search(
     workspace: &WorkspaceContext,
     operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
+    progress: &dyn SearchProgressSink,
 ) -> Result<ports::HandlerOutcome, String> {
     let (context, _scope) = ports.resolve_code_search_context(workspace, args)?;
     let request = SearchRequest {
@@ -1588,7 +1627,7 @@ fn invoke_code_intelligence_search(
         ports.code_intelligence_registry()?,
         operational_config.code_intelligence(),
     )
-    .search(&request, &context, cancellation)?;
+    .search_observed(&request, &context, cancellation, progress)?;
     let artifacts = execution
         .result
         .sections

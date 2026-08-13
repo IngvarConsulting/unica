@@ -54,6 +54,99 @@ impl ProviderIdentity {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchProviderState {
+    Queued,
+    Running,
+    Completed,
+    Unavailable,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+impl SearchProviderState {
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Unavailable | Self::Failed | Self::TimedOut | Self::Cancelled
+        )
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Unavailable => "unavailable",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed out",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchProviderPhase {
+    Preparing,
+    Searching,
+    Ranking,
+}
+
+impl SearchProviderPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Searching => "searching",
+            Self::Ranking => "ranking",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchProviderProgress {
+    #[serde(flatten)]
+    pub identity: ProviderIdentity,
+    pub state: SearchProviderState,
+    pub phase: SearchProviderPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_code: Option<String>,
+    pub results_found: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchProgressSnapshot {
+    pub schema_version: u32,
+    pub elapsed_ms: u64,
+    pub deadline_ms: u64,
+    pub next_update_within_ms: u64,
+    pub providers: Vec<SearchProviderProgress>,
+}
+
+impl SearchProgressSnapshot {
+    pub fn terminal_roles(&self) -> usize {
+        self.providers
+            .iter()
+            .filter(|provider| provider.state.is_terminal())
+            .count()
+    }
+}
+
+pub trait SearchProgressSink: Send + Sync {
+    fn publish(&self, snapshot: SearchProgressSnapshot);
+}
+
+#[derive(Debug, Default)]
+pub struct NoopSearchProgressSink;
+
+impl SearchProgressSink for NoopSearchProgressSink {
+    fn publish(&self, _snapshot: SearchProgressSnapshot) {}
+}
+
 impl ProviderId {
     pub const fn role(self) -> ProviderRole {
         match self {
@@ -975,6 +1068,40 @@ mod tests {
                         "attributes": {}
                     }],
                     "diagnostics": []
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn progress_snapshot_serializes_role_state_for_an_ai_client() {
+        let snapshot = SearchProgressSnapshot {
+            schema_version: 1,
+            elapsed_ms: 2_100,
+            deadline_ms: 300_000,
+            next_update_within_ms: 2_000,
+            providers: vec![SearchProviderProgress {
+                identity: ProviderId::GitGrep.identity(),
+                state: SearchProviderState::Running,
+                phase: SearchProviderPhase::Searching,
+                detail_code: None,
+                results_found: 4,
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_value(snapshot).unwrap(),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "elapsedMs": 2100,
+                "deadlineMs": 300000,
+                "nextUpdateWithinMs": 2000,
+                "providers": [{
+                    "role": "lexical",
+                    "provider": "git-grep",
+                    "state": "running",
+                    "phase": "searching",
+                    "resultsFound": 4
                 }]
             })
         );

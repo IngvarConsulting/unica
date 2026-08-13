@@ -2,7 +2,9 @@ use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
     CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderId, ProviderReadOutcome,
-    ProviderSearchSection, ProviderSectionStatus, SearchCoverage, SearchRequest,
+    ProviderRole, ProviderSearchSection, ProviderSectionStatus, SearchCoverage, SearchProgressSink,
+    SearchProgressSnapshot, SearchProviderPhase, SearchProviderProgress, SearchProviderState,
+    SearchRequest,
 };
 use crate::domain::operational_config::CodeIntelligenceDeadlines;
 use std::any::Any;
@@ -13,6 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_CONCURRENT_WORKERS_PER_PROVIDER: usize = 32;
+const SEARCH_PROGRESS_HEARTBEAT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub(crate) struct CodeSearchExecution {
@@ -66,11 +69,44 @@ impl CodeSearchCoordinator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn search(
         &self,
         request: &SearchRequest,
         context: &CodeIntelligenceContext,
         cancellation: &CancellationToken,
+    ) -> Result<CodeSearchExecution, String> {
+        self.search_observed(
+            request,
+            context,
+            cancellation,
+            &crate::domain::code_intelligence::NoopSearchProgressSink,
+        )
+    }
+
+    pub(crate) fn search_observed(
+        &self,
+        request: &SearchRequest,
+        context: &CodeIntelligenceContext,
+        cancellation: &CancellationToken,
+        progress: &dyn SearchProgressSink,
+    ) -> Result<CodeSearchExecution, String> {
+        self.search_with_progress_interval(
+            request,
+            context,
+            cancellation,
+            progress,
+            SEARCH_PROGRESS_HEARTBEAT,
+        )
+    }
+
+    fn search_with_progress_interval(
+        &self,
+        request: &SearchRequest,
+        context: &CodeIntelligenceContext,
+        cancellation: &CancellationToken,
+        progress: &dyn SearchProgressSink,
+        heartbeat_interval: Duration,
     ) -> Result<CodeSearchExecution, String> {
         if cancellation.is_cancelled() {
             return Err(cancelled_error(
@@ -78,13 +114,31 @@ impl CodeSearchCoordinator {
             ));
         }
 
-        let providers = self.registry.search_provider_arcs();
+        let mut providers = self.registry.search_provider_arcs();
+        providers.sort_by_key(|provider| provider_role_order(provider.id().role()));
         let provider_ids = providers
             .iter()
             .map(|provider| provider.id())
             .collect::<Vec<_>>();
         let started_at = Instant::now();
         let public_search_budget = self.deadlines.search_total_timeout();
+        let mut provider_progress = provider_ids
+            .iter()
+            .map(|provider| SearchProviderProgress {
+                identity: provider.identity(),
+                state: SearchProviderState::Queued,
+                phase: SearchProviderPhase::Preparing,
+                detail_code: None,
+                results_found: 0,
+            })
+            .collect::<Vec<_>>();
+        publish_search_progress(
+            progress,
+            started_at,
+            public_search_budget,
+            heartbeat_interval,
+            &provider_progress,
+        );
         let (tx, rx) = mpsc::channel();
         let mut slots = vec![None; providers.len()];
         let provider_budgets = provider_ids
@@ -102,8 +156,11 @@ impl CodeSearchCoordinator {
                     provider_id,
                     self.worker_admission.per_provider_limit,
                 ));
+                provider_progress[index].state = SearchProviderState::Unavailable;
                 continue;
             };
+            provider_progress[index].state = SearchProviderState::Running;
+            provider_progress[index].phase = SearchProviderPhase::Searching;
             let tx = tx.clone();
             let request = request.clone();
             let context = context.clone();
@@ -141,10 +198,19 @@ impl CodeSearchCoordinator {
                         provider_id.identity(),
                         format!("failed to start provider worker: {error}"),
                     ));
+                    provider_progress[index].state = SearchProviderState::Failed;
                 }
             }
         }
         drop(tx);
+        publish_search_progress(
+            progress,
+            started_at,
+            public_search_budget,
+            heartbeat_interval,
+            &provider_progress,
+        );
+        let mut last_progress_at = Instant::now();
 
         while slots.iter().any(Option::is_none) {
             if cancellation.is_cancelled() {
@@ -157,6 +223,7 @@ impl CodeSearchCoordinator {
             }
 
             let elapsed = started_at.elapsed();
+            let mut changed = false;
             for (index, slot) in slots.iter_mut().enumerate() {
                 if slot.is_none() && elapsed >= provider_budgets[index] {
                     provider_cancellations[index].cancel();
@@ -164,7 +231,19 @@ impl CodeSearchCoordinator {
                         provider_ids[index],
                         provider_budgets[index],
                     ));
+                    provider_progress[index].state = SearchProviderState::TimedOut;
+                    changed = true;
                 }
+            }
+            if changed {
+                publish_search_progress(
+                    progress,
+                    started_at,
+                    public_search_budget,
+                    heartbeat_interval,
+                    &provider_progress,
+                );
+                last_progress_at = Instant::now();
             }
             if slots.iter().all(Option::is_some) {
                 break;
@@ -177,11 +256,38 @@ impl CodeSearchCoordinator {
                 .filter_map(|(index, _)| provider_budgets[index].checked_sub(started_at.elapsed()))
                 .min()
                 .unwrap_or(Duration::ZERO);
-            let wait = next_deadline.min(Duration::from_millis(50));
+            let heartbeat_wait = heartbeat_interval
+                .checked_sub(last_progress_at.elapsed())
+                .unwrap_or(Duration::ZERO);
+            let wait = next_deadline
+                .min(heartbeat_wait)
+                .min(Duration::from_millis(50));
             match rx.recv_timeout(wait) {
-                Ok((index, section)) if slots[index].is_none() => slots[index] = Some(section),
+                Ok((index, section)) if slots[index].is_none() => {
+                    provider_progress[index].state = progress_state_for_section(&section);
+                    provider_progress[index].results_found = section.hits.len();
+                    slots[index] = Some(section);
+                    publish_search_progress(
+                        progress,
+                        started_at,
+                        public_search_budget,
+                        heartbeat_interval,
+                        &provider_progress,
+                    );
+                    last_progress_at = Instant::now();
+                }
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            if last_progress_at.elapsed() >= heartbeat_interval {
+                publish_search_progress(
+                    progress,
+                    started_at,
+                    public_search_budget,
+                    heartbeat_interval,
+                    &provider_progress,
+                );
+                last_progress_at = Instant::now();
             }
         }
 
@@ -209,6 +315,17 @@ impl CodeSearchCoordinator {
                 })
             })
             .collect::<Vec<_>>();
+        for (index, section) in sections.iter().enumerate() {
+            provider_progress[index].state = progress_state_for_section(section);
+            provider_progress[index].results_found = section.hits.len();
+        }
+        publish_search_progress(
+            progress,
+            started_at,
+            public_search_budget,
+            heartbeat_interval,
+            &provider_progress,
+        );
         self.worker_lifecycle.reap();
         let ok = sections.iter().any(|section| {
             matches!(
@@ -272,6 +389,45 @@ impl CodeSearchCoordinator {
             ProviderId::GitGrep => self.deadlines.search_git_grep_timeout(),
         }
     }
+}
+
+fn provider_role_order(role: ProviderRole) -> usize {
+    ProviderRole::ALL
+        .iter()
+        .position(|candidate| *candidate == role)
+        .unwrap_or(ProviderRole::ALL.len())
+}
+
+fn progress_state_for_section(section: &ProviderSearchSection) -> SearchProviderState {
+    match section.status {
+        ProviderSectionStatus::Ok
+        | ProviderSectionStatus::Empty
+        | ProviderSectionStatus::LimitReached => SearchProviderState::Completed,
+        ProviderSectionStatus::TimedOut => SearchProviderState::TimedOut,
+        ProviderSectionStatus::Unavailable => SearchProviderState::Unavailable,
+        ProviderSectionStatus::Failed => SearchProviderState::Failed,
+    }
+}
+
+fn publish_search_progress(
+    sink: &dyn SearchProgressSink,
+    started_at: Instant,
+    deadline: Duration,
+    heartbeat_interval: Duration,
+    providers: &[SearchProviderProgress],
+) {
+    let snapshot = SearchProgressSnapshot {
+        schema_version: 1,
+        elapsed_ms: duration_millis(started_at.elapsed()),
+        deadline_ms: duration_millis(deadline),
+        next_update_within_ms: duration_millis(heartbeat_interval),
+        providers: providers.to_vec(),
+    };
+    let _ = catch_unwind(AssertUnwindSafe(|| sink.publish(snapshot)));
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 struct ProviderWorkerAdmission {
@@ -610,7 +766,8 @@ mod tests {
         CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
         CodeIntelligenceRegistry, ProviderCapability, ProviderDeadline, ProviderId,
         ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
-        SearchOrdering, SearchRanking, SearchRequest,
+        SearchOrdering, SearchProgressSink, SearchProgressSnapshot, SearchProviderState,
+        SearchRanking, SearchRequest,
     };
     use crate::domain::operational_config::CodeIntelligenceDeadlines;
     use crate::domain::source_location::SourceLocation;
@@ -618,7 +775,7 @@ mod tests {
     use crate::domain::workspace::WorkspaceContext;
     use serde_json::Map;
     use std::path::PathBuf;
-    use std::sync::{mpsc, Arc, Barrier};
+    use std::sync::{mpsc, Arc, Barrier, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -796,6 +953,77 @@ mod tests {
     struct StaticProvider {
         id: ProviderId,
         section: ProviderSearchSection,
+    }
+
+    #[derive(Default)]
+    struct RecordingProgressSink(Mutex<Vec<SearchProgressSnapshot>>);
+
+    impl SearchProgressSink for RecordingProgressSink {
+        fn publish(&self, snapshot: SearchProgressSnapshot) {
+            self.0.lock().unwrap().push(snapshot);
+        }
+    }
+
+    struct SlowProvider {
+        id: ProviderId,
+        delay: Duration,
+    }
+
+    impl CodeIntelligenceProvider for SlowProvider {
+        fn id(&self) -> ProviderId {
+            self.id
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Search]
+        }
+
+        fn search(
+            &self,
+            _request: &SearchRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> ProviderSearchSection {
+            thread::sleep(self.delay);
+            test_section(self.id, ProviderSectionStatus::Empty, Vec::new(), "")
+        }
+    }
+
+    #[test]
+    fn coordinator_publishes_start_heartbeat_and_terminal_role_state() {
+        let sink = RecordingProgressSink::default();
+        let coordinator = CodeSearchCoordinator::new(
+            CodeIntelligenceRegistry::new(vec![Arc::new(SlowProvider {
+                id: ProviderId::Rlm,
+                delay: Duration::from_millis(80),
+            })])
+            .unwrap(),
+        );
+
+        coordinator
+            .search_with_progress_interval(
+                &SearchRequest {
+                    query: "Post".to_string(),
+                    limit: 20,
+                },
+                &context(),
+                &CancellationToken::new(),
+                &sink,
+                Duration::from_millis(20),
+            )
+            .unwrap();
+
+        let snapshots = sink.0.lock().unwrap();
+        assert!(snapshots.len() >= 4, "snapshots: {snapshots:?}");
+        assert!(snapshots
+            .iter()
+            .any(|snapshot| snapshot.providers[0].state == SearchProviderState::Running));
+        assert_eq!(
+            snapshots.last().unwrap().providers[0].state,
+            SearchProviderState::Completed
+        );
+        assert_eq!(snapshots.last().unwrap().terminal_roles(), 1);
     }
 
     impl CodeIntelligenceProvider for StaticProvider {
