@@ -491,6 +491,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 "{} must be dispatched through the provider-neutral source resource port",
                 spec.name
             )),
+            ToolHandler::Diagnostics => Err(format!(
+                "{} must be dispatched through the provider-neutral diagnostics coordinator",
+                spec.name
+            )),
             ToolHandler::CodeAdapter {
                 command: ["graph"] | ["analyze"],
             } => BslAnalyzerMcpAdapter::new()

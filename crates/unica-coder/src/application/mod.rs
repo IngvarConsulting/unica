@@ -157,6 +157,7 @@ pub enum ToolHandler {
     SourceResources {
         operation: SourceResourceOperation,
     },
+    Diagnostics,
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -764,16 +765,14 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.diagnostics",
-            description: "Run BSL diagnostics through the internal code analysis adapter.",
+            description: "Read provider-neutral diagnostics addressed by logical 1C source targets.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["bsl_diagnostics"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["analyze"],
-            },
+            handler: ToolHandler::Diagnostics,
         },
         ToolSpec {
             name: "unica.standards.search",
