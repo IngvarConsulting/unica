@@ -3106,6 +3106,7 @@ mod tests {
         load_calls: AtomicUsize,
         prepare_calls: AtomicUsize,
         handler_calls: AtomicUsize,
+        project_health_calls: AtomicUsize,
         code_context_calls: AtomicUsize,
         fail_load: bool,
         cancellation_on_load: Option<CancellationToken>,
@@ -3278,6 +3279,23 @@ mod tests {
                 );
             }
             Ok(crate::domain::operational_config::OperationalConfig::compiled_defaults())
+        }
+
+        fn inspect_project_health(
+            &self,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+            _deadline: ProviderDeadline,
+        ) -> Result<
+            crate::domain::project_health::ProjectHealthSnapshot,
+            crate::domain::project_health::ProjectHealthInspectionError,
+        > {
+            self.project_health_calls.fetch_add(1, Ordering::SeqCst);
+            Err(
+                crate::domain::project_health::ProjectHealthInspectionError::Fatal(
+                    "recording project health inspector stopped".into(),
+                ),
+            )
         }
 
         fn prepare_tool_invocation(
@@ -3461,9 +3479,11 @@ mod tests {
             Some(Duration::from_secs(900))
         );
 
-        app.call_tool("unica.project.status", &Map::new()).unwrap();
+        let status = app.call_tool("unica.project.status", &Map::new()).unwrap();
+        assert!(!status.ok);
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(ports.project_health_calls.load(Ordering::SeqCst), 1);
 
         for (tool_name, args) in [
             (
@@ -10003,23 +10023,37 @@ mod tests {
                 Ok(SupportGuardCheck::Allow)
             }
 
+            fn inspect_project_health(
+                &self,
+                _context: &WorkspaceContext,
+                cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<
+                crate::domain::project_health::ProjectHealthSnapshot,
+                crate::domain::project_health::ProjectHealthInspectionError,
+            > {
+                *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
+                if cancellation.is_cancelled() {
+                    return Err(
+                        crate::domain::project_health::ProjectHealthInspectionError::Cancelled,
+                    );
+                }
+                Err(
+                    crate::domain::project_health::ProjectHealthInspectionError::Fatal(
+                        "recording project health inspector expected cancellation".into(),
+                    ),
+                )
+            }
+
             fn invoke_handler(
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
                 _mode: InvocationMode,
-                cancellation: &CancellationToken,
+                _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
-                *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
-                if cancellation.is_cancelled() {
-                    return Ok(ports::HandlerOutcome::plain(AdapterOutcome::cancelled(
-                        "recording port stopped",
-                    )));
-                }
-                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                    "recording port completed",
-                )))
+                panic!("project.status must use inspect_project_health")
             }
 
             fn cache_report(
