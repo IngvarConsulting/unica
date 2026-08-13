@@ -3102,7 +3102,7 @@ source-set:
         let mut job = test_background_job(&context, "build");
         job.source_generation = captured.generation;
         job.source_revision = Some(captured.clone());
-        job.source_revision_service = Some(revision_service);
+        job.source_revision_service = Some(Arc::clone(&revision_service));
         let db_path = context.cache_root.join("rlm-tools-bsl/a/bsl_index.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, "").unwrap();
@@ -3129,6 +3129,31 @@ source-set:
                 .is_some_and(|message| message.contains("source revision changed during build")),
             "{status:?}"
         );
+
+        let current = revision_service
+            .snapshot(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            SOURCE_REVISION_ARG.to_string(),
+            serde_json::to_value(&current).unwrap(),
+        );
+        let runner = RecordingIndexRunner {
+            outputs: RefCell::new(vec![IndexOutput::success(format!(
+                "Index: {}\n  Status:   fresh\n",
+                db_path.display()
+            ))]),
+            ..Default::default()
+        };
+        let report =
+            WorkspaceIndexService::with_runner(&runner).start_for_workspace(&context, &args, false);
+
+        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
+        assert_eq!(runner.backgrounds.borrow().len(), 1);
+        assert_eq!(runner.backgrounds.borrow()[0].action, "update");
         cleanup(&context);
     }
 

@@ -118,7 +118,7 @@ mod macos {
         trust_loss: AtomicU8,
         source_root: Vec<u8>,
         marker_root: Vec<u8>,
-        marker_events: Mutex<u64>,
+        marker_event_id: Mutex<FSEventStreamEventId>,
         marker_changed: Condvar,
     }
 
@@ -169,7 +169,7 @@ mod macos {
                 trust_loss: AtomicU8::new(TRUSTED),
                 source_root: source_root_bytes,
                 marker_root: marker_root_bytes,
-                marker_events: Mutex::new(0),
+                marker_event_id: Mutex::new(0),
                 marker_changed: Condvar::new(),
             });
             let mut context = FSEventStreamContext {
@@ -238,11 +238,15 @@ mod macos {
                     SourceRevisionTrustLoss::UnsupportedFence,
                 ));
             }
-            let observed_marker_events = *self
+            // Drain everything before publishing the epoch marker. An older
+            // callback cannot then satisfy the following event-ID boundary.
+            unsafe { FSEventStreamFlushSync(self.stream) };
+            self.queue.exec_sync(|| {});
+            *self
                 .state
-                .marker_events
+                .marker_event_id
                 .lock()
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(|error| error.into_inner()) = 0;
             let sequence = self.marker_sequence.fetch_add(1, Ordering::AcqRel) + 1;
             let mut marker = OpenOptions::new()
                 .write(true)
@@ -265,12 +269,12 @@ mod macos {
             }
             unsafe { FSEventStreamFlushSync(self.stream) };
             self.queue.exec_sync(|| {});
-            let mut marker_events = self
+            let mut marker_event_id = self
                 .state
-                .marker_events
+                .marker_event_id
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            while *marker_events <= observed_marker_events {
+            while *marker_event_id == 0 {
                 if cancellation.is_cancelled() {
                     return Err(cancelled_error("source revision fence stopped"));
                 }
@@ -281,14 +285,14 @@ mod macos {
                 let (guard, wait) = self
                     .state
                     .marker_changed
-                    .wait_timeout(marker_events, remaining)
+                    .wait_timeout(marker_event_id, remaining)
                     .unwrap_or_else(|error| error.into_inner());
-                marker_events = guard;
-                if wait.timed_out() && *marker_events <= observed_marker_events {
+                marker_event_id = guard;
+                if wait.timed_out() && *marker_event_id == 0 {
                     return Err("source revision fence deadline exceeded".to_string());
                 }
             }
-            drop(marker_events);
+            drop(marker_event_id);
             if cancellation.is_cancelled() {
                 return Err(cancelled_error("source revision fence stopped"));
             }
@@ -313,10 +317,10 @@ mod macos {
             unsafe {
                 FSEventStreamStop(self.stream);
                 FSEventStreamInvalidate(self.stream);
-                FSEventStreamSetDispatchQueue(self.stream, None);
             }
             self.queue.exec_sync(|| {});
             unsafe {
+                FSEventStreamSetDispatchQueue(self.stream, None);
                 FSEventStreamRelease(self.stream);
             }
             let _ = fs::remove_file(&self.marker_path);
@@ -329,33 +333,20 @@ mod macos {
         event_count: usize,
         paths: NonNull<c_void>,
         flags: NonNull<FSEventStreamEventFlags>,
-        _ids: NonNull<FSEventStreamEventId>,
+        ids: NonNull<FSEventStreamEventId>,
     ) {
         let _ = std::panic::catch_unwind(|| {
             let state = unsafe { &*(info.cast::<WatcherState>()) };
             let flags = unsafe { std::slice::from_raw_parts(flags.as_ptr(), event_count) };
+            let ids = unsafe { std::slice::from_raw_parts(ids.as_ptr(), event_count) };
             let paths = unsafe {
                 std::slice::from_raw_parts(paths.as_ptr().cast::<*const i8>(), event_count)
             };
-            for (flags, path) in flags.iter().zip(paths) {
+            for ((flags, path), id) in flags.iter().zip(paths).zip(ids) {
                 if path.is_null() {
                     state.trust_loss.store(WATCHER_GAP, Ordering::Release);
                     continue;
                 }
-                let path = unsafe { CStr::from_ptr(*path) }.to_bytes();
-                if path_is_within(path, &state.marker_root) {
-                    let mut marker_events = state
-                        .marker_events
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
-                    *marker_events = marker_events.saturating_add(1);
-                    state.marker_changed.notify_all();
-                    continue;
-                }
-                if !path_is_within(path, &state.source_root) {
-                    continue;
-                }
-                state.dirty.store(true, Ordering::Release);
                 let loss = if flags & kFSEventStreamEventFlagRootChanged != 0 {
                     ROOT_CHANGED
                 } else if flags
@@ -373,6 +364,20 @@ mod macos {
                 if loss != TRUSTED {
                     state.trust_loss.store(loss, Ordering::Release);
                 }
+                let path = unsafe { CStr::from_ptr(*path) }.to_bytes();
+                if path_is_within(path, &state.marker_root) {
+                    let mut marker_event_id = state
+                        .marker_event_id
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    *marker_event_id = (*marker_event_id).max(*id);
+                    state.marker_changed.notify_all();
+                    continue;
+                }
+                if !path_is_within(path, &state.source_root) {
+                    continue;
+                }
+                state.dirty.store(true, Ordering::Release);
             }
         });
     }
