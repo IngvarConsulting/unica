@@ -23,6 +23,7 @@ use crate::infrastructure::native_operations::common::string_arg;
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::{
     metadata_is_link_or_reparse_point, path_starts_with_host_root,
+    strip_windows_extended_length_prefix,
 };
 use crate::infrastructure::platform_xml_source_targets::{
     locate_platform_xml_reader_path, platform_xml_resource_evidence, resolve_platform_xml_target,
@@ -311,7 +312,7 @@ pub(crate) fn physical_selection(
     }
     Ok(ResolvedReadTarget {
         target: resolution.resolved,
-        resource_path: proven,
+        resource_path: proven_identity,
     })
 }
 
@@ -478,7 +479,7 @@ fn prove_regular_file(
     let normalized = normalize_path_identity(&candidate).map_err(|_| {
         LogicalSelectorFailure::new("resource_absent", "the requested resource is not present")
     })?;
-    if !normalized.starts_with(&normalized_root) {
+    if !path_starts_with_host_root(&normalized, &normalized_root) {
         return Err(LogicalSelectorFailure::new(
             "containment_denied",
             "the resource escaped the selected source set",
@@ -500,14 +501,21 @@ fn ensure_no_link_components(
     source_root: &Path,
     target: &Path,
 ) -> Result<(), LogicalSelectorFailure> {
-    let relative = target.strip_prefix(source_root).map_err(|_| {
-        LogicalSelectorFailure::new(
+    // Keep the lexical components and remove only Windows' equivalent verbatim
+    // spelling. Canonicalizing here would erase a linked parent before it can
+    // be rejected by the component walk.
+    let source_root = strip_windows_extended_length_prefix(source_root);
+    let target = strip_windows_extended_length_prefix(target);
+    if !path_starts_with_host_root(&target, &source_root) {
+        return Err(LogicalSelectorFailure::new(
             "containment_denied",
             "the resource escaped the selected source set",
-        )
-    })?;
-    let mut current = source_root.to_path_buf();
-    for component in relative.components() {
+        ));
+    }
+    let root_component_count = source_root.components().count();
+    let relative = target.components().skip(root_component_count);
+    let mut current = source_root;
+    for component in relative {
         let std::path::Component::Normal(component) = component else {
             return Err(LogicalSelectorFailure::new(
                 "containment_denied",
@@ -544,6 +552,10 @@ fn ensure_no_link_components(
 mod tests {
     use super::*;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::testing::{
+        create_directory_link_fixture_for_test, remove_dir_symlink_for_test,
+        windows_extended_length_path_for_test, FileLinkFixtureOutcome,
+    };
     use serde_json::{Map, Value};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -841,7 +853,10 @@ mod tests {
         assert_eq!(selection.target.source_set, "main");
         assert_eq!(selection.target.metadata_path, None);
         assert_eq!(selection.target.target_kind, TargetKind::SourceRoot);
-        assert_eq!(selection.resource_path, fs::canonicalize(resource).unwrap());
+        assert_eq!(
+            selection.resource_path,
+            normalize_path_identity(&resource).unwrap()
+        );
         cleanup(&context);
     }
 
@@ -862,7 +877,65 @@ mod tests {
             Some("Subsystem.SalesOps")
         );
         assert_eq!(selection.target.target_kind, TargetKind::MetadataObject);
-        assert_eq!(selection.resource_path, fs::canonicalize(resource).unwrap());
+        assert_eq!(
+            selection.resource_path,
+            normalize_path_identity(&resource).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn physical_support_target_accepts_regular_and_verbatim_windows_paths() {
+        let context = fixture("physical-windows-verbatim");
+        let resource = context.workspace_root.join("src/Configuration.xml");
+        let Some(verbatim) = windows_extended_length_path_for_test(&resource) else {
+            cleanup(&context);
+            return;
+        };
+
+        let regular = physical_selection(&resource, &context, AttachedResource::ConfigurationRoot)
+            .expect("the regular Windows spelling resolves");
+        let extended = physical_selection(&verbatim, &context, AttachedResource::ConfigurationRoot)
+            .expect("the equivalent verbatim Windows spelling resolves");
+
+        assert_eq!(extended.target, regular.target);
+        assert_eq!(extended.resource_path, regular.resource_path);
+        assert!(
+            !extended
+                .resource_path
+                .as_os_str()
+                .to_string_lossy()
+                .starts_with(r"\\?\"),
+            "the public resource identity must not expose a Windows service prefix"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn physical_support_target_rejects_a_parent_directory_link_or_reparse_point() {
+        let context = fixture("physical-windows-parent-reparse");
+        let src = context.workspace_root.join("src");
+        let linked_parent = src.join("Roles/Sales");
+        let referent = src.join("linked-sales");
+        fs::rename(&linked_parent, &referent).unwrap();
+        match create_directory_link_fixture_for_test(&referent, &linked_parent).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                cleanup(&context);
+                return;
+            }
+        }
+
+        let failure = physical_selection(
+            &linked_parent.join("Ext/Rights.xml"),
+            &context,
+            AttachedResource::Rights,
+        )
+        .expect_err("a resource below a reparse-point parent must be refused");
+
+        assert_eq!(failure.code(), "containment_denied");
+        remove_dir_symlink_for_test(&linked_parent).unwrap();
         cleanup(&context);
     }
 
