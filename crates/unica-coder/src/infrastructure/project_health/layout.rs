@@ -52,7 +52,14 @@ impl SourceLayoutInspector {
                 return Ok(SourceLayoutInspection {
                     source_sets: None,
                     source_targets_complete: false,
-                    observations: vec![completed(ProjectCheckId::SourceDiscovery, None)],
+                    observations: vec![ProjectCheckObservation {
+                        id: ProjectCheckId::SourceDiscovery,
+                        scope: ProjectCheckId::SourceDiscovery.scope(),
+                        source_set: None,
+                        outcome: ProjectCheckOutcome::NotRun {
+                            reason: reason.clone(),
+                        },
+                    }],
                     facts: vec![ProjectHealthFact::SourceInspectionIncomplete { reason }],
                     roots: Vec::new(),
                 });

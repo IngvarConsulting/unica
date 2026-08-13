@@ -54,6 +54,17 @@ class ProjectHealthContractTests(unittest.TestCase):
         self.assertIn("repositoryReady", workflow)
         self.assertIn("remediation", workflow)
 
+    def test_single_resolved_root_does_not_narrow_project_inspection(self) -> None:
+        invariants = self.read("spec/architecture/invariants.md")
+        resolved_root = invariants.split(
+            "### INV-SOURCE-SINGLE-RESOLVED-ROOT", maxsplit=1
+        )[1].split("\n### ", maxsplit=1)[0]
+
+        self.assertIn("каждый объявленный набор", resolved_root)
+        self.assertNotIn(
+            "`unica.project.status` и `unica.project.map`", resolved_root
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

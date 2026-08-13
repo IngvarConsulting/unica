@@ -1047,11 +1047,14 @@ Unica. Каждая запись формулирует одно нормати�
   запроса, иначе побеждает набор исходников с именем `main`, а за ним —
   единственный набор исходников конфигурации; разрешённый корень нормализуется,
   остаётся внутри рабочего пространства и служит тем же корнем для анализатора,
-  индекса, идентичности сервиса, `unica.project.status` и `unica.project.map`.
-- **Decision:** ADR-0006
+  индекса и идентичности сервиса. Этот выбор не сужает карту проекта:
+  `unica.project.map` публикует все наборы, а `unica.project.status` проверяет
+  каждый объявленный набор.
+- **Decision:** ADR-0006, ADR-0055
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/tool_context.rs`
-- **Scope:** runtime
+- **Check:** `ci-test` — `tests/ci/test_project_health_contract.py`
+- **Scope:** source, runtime
 
 ### INV-SOURCE-LOGICAL-IDENTITY — Точная цель не зависит от файловой раскладки
 

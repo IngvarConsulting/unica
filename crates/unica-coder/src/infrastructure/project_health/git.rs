@@ -210,7 +210,7 @@ impl<'a> GitRepositoryInspector<'a> {
         ) {
             Ok(output) => output,
             Err(reason) => {
-                observations.push(completed(ProjectCheckId::RepositoryIndex));
+                observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
                 facts.push(ProjectHealthFact::GitInspectionIncomplete {
                     check: ProjectCheckId::RepositoryIndex,
                     source_set: None,
@@ -229,7 +229,10 @@ impl<'a> GitRepositoryInspector<'a> {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
         if index.timed_out {
-            observations.push(completed(ProjectCheckId::RepositoryIndex));
+            observations.push(not_run(
+                ProjectCheckId::RepositoryIndex,
+                "Git index inspection timed out",
+            ));
             facts.push(ProjectHealthFact::GitInspectionTimeout {
                 check: ProjectCheckId::RepositoryIndex,
                 source_set: None,
@@ -243,15 +246,16 @@ impl<'a> GitRepositoryInspector<'a> {
             });
         }
         if !index.status_success || output_incomplete(&index) {
-            observations.push(completed(ProjectCheckId::RepositoryIndex));
+            let reason = if output_incomplete(&index) {
+                completeness_reason(&index)
+            } else {
+                nonzero_reason(&index)
+            };
+            observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
             facts.push(ProjectHealthFact::GitInspectionIncomplete {
                 check: ProjectCheckId::RepositoryIndex,
                 source_set: None,
-                reason: if output_incomplete(&index) {
-                    completeness_reason(&index)
-                } else {
-                    nonzero_reason(&index)
-                },
+                reason,
             });
             append_not_run_after_index(&mut observations, "Git index output is incomplete");
             return Ok(GitRepositoryInspection {
@@ -264,7 +268,7 @@ impl<'a> GitRepositoryInspector<'a> {
         let entries = match parse_git_index_entries(&index.stdout) {
             Ok(entries) => entries,
             Err(reason) => {
-                observations.push(completed(ProjectCheckId::RepositoryIndex));
+                observations.push(not_run(ProjectCheckId::RepositoryIndex, &reason));
                 facts.push(ProjectHealthFact::GitInspectionIncomplete {
                     check: ProjectCheckId::RepositoryIndex,
                     source_set: None,
@@ -337,7 +341,7 @@ impl<'a> GitRepositoryInspector<'a> {
         let ignore = match self.runner.run_with_input(&ignore_command, &input) {
             Ok(output) => output,
             Err(reason) => {
-                observations.push(completed(ProjectCheckId::RepositoryIgnore));
+                observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
                 facts.push(ProjectHealthFact::GitInspectionIncomplete {
                     check: ProjectCheckId::RepositoryIgnore,
                     source_set: None,
@@ -354,13 +358,11 @@ impl<'a> GitRepositoryInspector<'a> {
         if ignore.cancelled || cancellation.is_cancelled() {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
-        observations.push(completed(ProjectCheckId::RepositoryIgnore));
-        append_completed_for_roots(
-            &mut observations,
-            ProjectCheckId::RepositoryIgnore,
-            &layout.roots,
-        );
         if ignore.timed_out {
+            observations.push(not_run(
+                ProjectCheckId::RepositoryIgnore,
+                "Git ignore inspection timed out",
+            ));
             facts.push(ProjectHealthFact::GitInspectionTimeout {
                 check: ProjectCheckId::RepositoryIgnore,
                 source_set: None,
@@ -368,29 +370,42 @@ impl<'a> GitRepositoryInspector<'a> {
         } else if output_incomplete(&ignore)
             || (!ignore.status_success && !status_is_no_match(&ignore))
         {
+            let reason = if output_incomplete(&ignore) {
+                completeness_reason(&ignore)
+            } else {
+                nonzero_reason(&ignore)
+            };
+            observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
             facts.push(ProjectHealthFact::GitInspectionIncomplete {
                 check: ProjectCheckId::RepositoryIgnore,
                 source_set: None,
-                reason: if output_incomplete(&ignore) {
-                    completeness_reason(&ignore)
-                } else {
-                    nonzero_reason(&ignore)
-                },
+                reason,
             });
         } else {
             match parse_check_ignore_verbose_z(&ignore.stdout) {
-                Ok(matches) => append_ignore_facts(
-                    &mut facts,
-                    &candidates,
-                    &matches,
-                    &entries,
-                    &repository_root,
-                ),
-                Err(reason) => facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryIgnore,
-                    source_set: None,
-                    reason,
-                }),
+                Ok(matches) => {
+                    observations.push(completed(ProjectCheckId::RepositoryIgnore));
+                    append_completed_for_roots(
+                        &mut observations,
+                        ProjectCheckId::RepositoryIgnore,
+                        &layout.roots,
+                    );
+                    append_ignore_facts(
+                        &mut facts,
+                        &candidates,
+                        &matches,
+                        &entries,
+                        &repository_root,
+                    );
+                }
+                Err(reason) => {
+                    observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
+                    facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryIgnore,
+                        source_set: None,
+                        reason,
+                    });
+                }
             }
         }
 
@@ -658,7 +673,16 @@ fn not_run(id: ProjectCheckId, reason: &str) -> ProjectCheckObservation {
 }
 
 fn discovery_failed(fact: ProjectHealthFact, reason: &str) -> GitRepositoryInspection {
-    let mut observations = vec![completed(ProjectCheckId::RepositoryDiscovery)];
+    let discovery = if matches!(
+        fact,
+        ProjectHealthFact::GitInspectionTimeout { .. }
+            | ProjectHealthFact::GitInspectionIncomplete { .. }
+    ) {
+        not_run(ProjectCheckId::RepositoryDiscovery, reason)
+    } else {
+        completed(ProjectCheckId::RepositoryDiscovery)
+    };
+    let mut observations = vec![discovery];
     for id in [
         ProjectCheckId::RepositoryIndex,
         ProjectCheckId::RepositoryIgnore,

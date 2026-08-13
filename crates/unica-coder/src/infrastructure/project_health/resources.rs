@@ -8,6 +8,10 @@ use crate::domain::project_sources::SourceFormat;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
+use crate::infrastructure::platform::filesystem::{
+    open_absolute_directory_path_nofollow, open_directory_child_nofollow,
+    open_regular_child_nofollow,
+};
 use crate::infrastructure::project_health::git::GitIndexEntry;
 use crate::infrastructure::project_health::layout::InspectedSourceRoot;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -148,7 +152,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         if cancellation.is_cancelled() {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
-        let observations = resource_observations(roots);
+        let mut observations = resource_observations(roots);
         let resources = match Self::classify(repository_root, roots, entries) {
             Ok(resources) => resources,
             Err(error) => {
@@ -157,6 +161,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     error.repo_path,
                     error.source_sets.join(", ")
                 );
+                for check in resource_check_ids() {
+                    mark_check_not_run(&mut observations, check, &reason);
+                }
                 return Ok(RepositoryPolicyInspection {
                     observations,
                     facts: resource_check_ids()
@@ -355,10 +362,16 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             Ok(output) if semantic_success(&output) => output,
             Ok(output) if output.cancelled => return Err(ProjectHealthInspectionError::Cancelled),
             Ok(output) => {
+                let reason = output_reason(&output);
+                mark_check_not_run(
+                    &mut observations,
+                    ProjectCheckId::RepositoryIndexEol,
+                    &reason,
+                );
                 facts.push(ProjectHealthFact::GitInspectionIncomplete {
                     check: ProjectCheckId::RepositoryIndexEol,
                     source_set: None,
-                    reason: output_reason(&output),
+                    reason,
                 });
                 return Ok(RepositoryPolicyInspection {
                     observations,
@@ -366,6 +379,11 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 });
             }
             Err(reason) => {
+                mark_check_not_run(
+                    &mut observations,
+                    ProjectCheckId::RepositoryIndexEol,
+                    &reason,
+                );
                 facts.push(ProjectHealthFact::GitInspectionIncomplete {
                     check: ProjectCheckId::RepositoryIndexEol,
                     source_set: None,
@@ -380,6 +398,11 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         let eol = match parse_eol_records(&eol_output.stdout) {
             Ok(records) => records,
             Err(reason) => {
+                mark_check_not_run(
+                    &mut observations,
+                    ProjectCheckId::RepositoryIndexEol,
+                    &reason,
+                );
                 facts.push(ProjectHealthFact::GitInspectionIncomplete {
                     check: ProjectCheckId::RepositoryIndexEol,
                     source_set: None,
@@ -393,6 +416,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         };
         let mut total_working_bytes = 0_u64;
         let mut working_incomplete = None;
+        let mut working_timed_out = false;
         let mut binary_by_source = BTreeMap::<String, Vec<(String, u64)>>::new();
         for resource in &resources {
             if local_only.contains(&resource.repo_path) {
@@ -402,10 +426,16 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             match resource.kind {
                 RepositoryResourceKind::Text => {
                     let Some(observed) = eol.get(&resource.repo_path) else {
+                        let reason = format!("git ls-files --eol omitted {}", resource.repo_path);
+                        mark_check_not_run(
+                            &mut observations,
+                            ProjectCheckId::RepositoryIndexEol,
+                            &reason,
+                        );
                         facts.push(ProjectHealthFact::GitInspectionIncomplete {
                             check: ProjectCheckId::RepositoryIndexEol,
                             source_set: None,
-                            reason: format!("git ls-files --eol omitted {}", resource.repo_path),
+                            reason,
                         });
                         continue;
                     };
@@ -427,7 +457,13 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                         });
                         continue;
                     }
-                    match inspect_working_eol(&resource.worktree_path, &mut total_working_bytes) {
+                    match inspect_working_eol(
+                        repository_root,
+                        Path::new(&resource.repo_path),
+                        &mut total_working_bytes,
+                        cancellation,
+                        deadline,
+                    ) {
                         Ok(Some(WorkingEol::Mixed)) => {
                             facts.push(ProjectHealthFact::MixedEol {
                                 source_set: resource.source_set.clone(),
@@ -442,7 +478,13 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                             });
                         }
                         Ok(Some(WorkingEol::Supported) | None) => {}
-                        Err(reason) => {
+                        Err(WorkingEolInspectionError::Cancelled) => {
+                            return Err(ProjectHealthInspectionError::Cancelled);
+                        }
+                        Err(WorkingEolInspectionError::TimedOut) => {
+                            working_timed_out = true;
+                        }
+                        Err(WorkingEolInspectionError::Incomplete(reason)) => {
                             working_incomplete
                                 .get_or_insert_with(|| format!("{}: {reason}", resource.repo_path));
                         }
@@ -459,17 +501,39 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                             .push((resource.repo_path.clone(), size)),
                         Ok(None) => {}
                         Err(reason) => {
+                            let reason = format!("{}: {reason}", resource.repo_path);
+                            mark_check_not_run(
+                                &mut observations,
+                                ProjectCheckId::RepositoryLfs,
+                                &reason,
+                            );
                             facts.push(ProjectHealthFact::GitInspectionIncomplete {
                                 check: ProjectCheckId::RepositoryLfs,
                                 source_set: None,
-                                reason: format!("{}: {reason}", resource.repo_path),
+                                reason,
                             });
                         }
                     }
                 }
             }
         }
-        if let Some(reason) = working_incomplete {
+        if working_timed_out {
+            let reason = "deadline expired during working EOL inspection";
+            mark_check_not_run(
+                &mut observations,
+                ProjectCheckId::RepositoryWorkingEol,
+                reason,
+            );
+            facts.push(ProjectHealthFact::GitInspectionTimeout {
+                check: ProjectCheckId::RepositoryWorkingEol,
+                source_set: None,
+            });
+        } else if let Some(reason) = working_incomplete {
+            mark_check_not_run(
+                &mut observations,
+                ProjectCheckId::RepositoryWorkingEol,
+                &reason,
+            );
             facts.push(ProjectHealthFact::GitInspectionIncomplete {
                 check: ProjectCheckId::RepositoryWorkingEol,
                 source_set: None,
@@ -736,10 +800,11 @@ fn output_reason(output: &ProcessOutput) -> String {
 }
 
 fn incomplete_policy(
-    observations: Vec<ProjectCheckObservation>,
+    mut observations: Vec<ProjectCheckObservation>,
     check: ProjectCheckId,
     reason: String,
 ) -> RepositoryPolicyInspection {
+    mark_check_not_run(&mut observations, check, &reason);
     RepositoryPolicyInspection {
         observations,
         facts: vec![ProjectHealthFact::GitInspectionIncomplete {
@@ -747,6 +812,21 @@ fn incomplete_policy(
             source_set: None,
             reason,
         }],
+    }
+}
+
+fn mark_check_not_run(
+    observations: &mut [ProjectCheckObservation],
+    check: ProjectCheckId,
+    reason: &str,
+) {
+    for observation in observations
+        .iter_mut()
+        .filter(|observation| observation.id == check)
+    {
+        observation.outcome = ProjectCheckOutcome::NotRun {
+            reason: reason.to_owned(),
+        };
     }
 }
 
@@ -850,39 +930,66 @@ enum WorkingEol {
     BareCr,
 }
 
-fn inspect_working_eol(
-    path: &Path,
-    total_working_bytes: &mut u64,
-) -> Result<Option<WorkingEol>, String> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("working path is not a regular file".into());
+#[derive(Debug, PartialEq, Eq)]
+enum WorkingEolInspectionError {
+    Cancelled,
+    TimedOut,
+    Incomplete(String),
+}
+
+impl std::fmt::Display for WorkingEolInspectionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("working EOL inspection was cancelled"),
+            Self::TimedOut => formatter.write_str("deadline expired during working EOL inspection"),
+            Self::Incomplete(reason) => formatter.write_str(reason),
+        }
     }
+}
+
+fn inspect_working_eol(
+    repository_root: &Path,
+    repo_path: &Path,
+    total_working_bytes: &mut u64,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<Option<WorkingEol>, WorkingEolInspectionError> {
+    let mut file = match open_repository_regular_file_nofollow(repository_root, repo_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(WorkingEolInspectionError::Incomplete(error.to_string())),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
     if metadata.len() > MAX_WORKING_EOL_FILE_BYTES {
-        return Err(format!(
+        return Err(WorkingEolInspectionError::Incomplete(format!(
             "working file exceeds {} bytes",
             MAX_WORKING_EOL_FILE_BYTES
-        ));
+        )));
     }
     *total_working_bytes = total_working_bytes.saturating_add(metadata.len());
     if *total_working_bytes > MAX_WORKING_EOL_TOTAL_BYTES {
-        return Err(format!(
+        return Err(WorkingEolInspectionError::Incomplete(format!(
             "working text total exceeds {} bytes",
             MAX_WORKING_EOL_TOTAL_BYTES
-        ));
+        )));
     }
-    let mut file = File::open(path).map_err(|error| error.to_string())?;
     let mut buffer = [0_u8; 64 * 1024];
     let mut previous_cr = false;
     let mut lf = false;
     let mut crlf = false;
     let mut bare_cr = false;
     loop {
-        let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if cancellation.is_cancelled() {
+            return Err(WorkingEolInspectionError::Cancelled);
+        }
+        if deadline.remaining().is_zero() {
+            return Err(WorkingEolInspectionError::TimedOut);
+        }
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| WorkingEolInspectionError::Incomplete(error.to_string()))?;
         if count == 0 {
             break;
         }
@@ -916,6 +1023,39 @@ fn inspect_working_eol(
     }))
 }
 
+fn open_repository_regular_file_nofollow(
+    repository_root: &Path,
+    repo_path: &Path,
+) -> std::io::Result<File> {
+    use std::path::Component;
+
+    if !repository_root.is_absolute() || repo_path.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "repository root must be absolute and resource path relative",
+        ));
+    }
+    let mut components = repo_path.components().peekable();
+    let mut parent = open_absolute_directory_path_nofollow(repository_root)?;
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "resource path contains a non-normal component",
+            ));
+        };
+        if components.peek().is_some() {
+            parent = open_directory_child_nofollow(&parent, name)?;
+        } else {
+            return open_regular_child_nofollow(&parent, name);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "resource path is empty",
+    ))
+}
+
 fn regular_file_size(path: &Path) -> Result<Option<u64>, String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -931,19 +1071,24 @@ fn regular_file_size(path: &Path) -> Result<Option<u64>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_platform_xml_relative_path, parse_attribute_records, parse_eol_records,
-        RepositoryResourceKind, SourceResourcePolicyInspector, LFS_SINGLE_FILE_THRESHOLD_BYTES,
+        classify_platform_xml_relative_path, inspect_working_eol, parse_attribute_records,
+        parse_eol_records, RepositoryResourceKind, SourceResourcePolicyInspector,
+        LFS_SINGLE_FILE_THRESHOLD_BYTES,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::project_health::{ProjectCheckId, ProjectHealthFact};
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use crate::infrastructure::project_health::git::GitRepositoryInspector;
     use crate::infrastructure::project_health::layout::SourceLayoutInspector;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
     #[test]
@@ -1087,6 +1232,100 @@ mod tests {
             "{:?}",
             inspection.facts
         );
+    }
+
+    #[test]
+    fn project_health_worktree_eol_rejects_a_symlink_at_open() {
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("target.xml");
+        let link = temp.path().join("link.xml");
+        fs::write(&target, "<A/>\n").unwrap();
+        match create_file_link_fixture_for_test(&target, &link).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+        let physical_root = fs::canonicalize(temp.path()).unwrap();
+
+        let error = inspect_working_eol(
+            &physical_root,
+            Path::new("link.xml"),
+            &mut 0,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap_err();
+        let error = error.to_string();
+
+        assert!(
+            error.contains("link") || error.contains("reparse"),
+            "{error}"
+        );
+    }
+
+    static DEADLINE_CLOCK_TICKS: AtomicUsize = AtomicUsize::new(0);
+
+    fn advancing_deadline_clock() -> Instant {
+        let tick = DEADLINE_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
+        Instant::now() + Duration::from_millis(tick)
+    }
+
+    #[test]
+    fn project_health_worktree_eol_checks_deadline_between_chunks() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("large.xml");
+        fs::write(&path, vec![b'x'; 128 * 1024]).unwrap();
+        let physical_root = fs::canonicalize(temp.path()).unwrap();
+        DEADLINE_CLOCK_TICKS.store(0, Ordering::SeqCst);
+        let deadline = ProviderDeadline::with_clock(
+            advancing_deadline_clock() + Duration::from_millis(2),
+            advancing_deadline_clock,
+        );
+
+        let error = inspect_working_eol(
+            &physical_root,
+            Path::new("large.xml"),
+            &mut 0,
+            &CancellationToken::new(),
+            deadline,
+        )
+        .unwrap_err();
+        let error = error.to_string();
+
+        assert!(error.contains("deadline"), "{error}");
+    }
+
+    #[test]
+    fn project_health_lfs_size_failure_is_not_run_but_advisory() {
+        let fixture = policy_fixture();
+        fs::write(fixture.root.join(".gitattributes"), "*.bin -text\n").unwrap();
+        let target = fixture.root.join("target.bin");
+        let link = fixture.root.join("src/Linked.bin");
+        fs::write(&target, b"binary").unwrap();
+        match create_file_link_fixture_for_test(&target, &link).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
+        git(&fixture.root, &["add", ".gitattributes", "src/Linked.bin"]);
+
+        let inspection = inspect_policy(&fixture);
+
+        assert!(inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryLfs,
+                ..
+            }
+        )));
+        assert!(inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryLfs
+                && observation.source_set.is_none()
+                && matches!(
+                    observation.outcome,
+                    crate::domain::project_health::ProjectCheckOutcome::NotRun { .. }
+                )
+        }));
     }
 
     #[test]

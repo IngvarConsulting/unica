@@ -430,6 +430,7 @@ pub(crate) fn evaluate_project_health(
     });
     let repository_ready = !checks.iter().any(|check| {
         check.scope == DiagnosticScope::Repository
+            && check.id != ProjectCheckId::RepositoryLfs.as_str()
             && matches!(
                 check.status,
                 ProjectCheckStatus::Failed | ProjectCheckStatus::NotRun
@@ -444,6 +445,15 @@ pub(crate) fn evaluate_project_health(
         source_sets: snapshot.source_sets,
         diagnostics,
     })
+}
+
+fn incomplete_fact_reason(fact: &ProjectHealthFact) -> Option<&str> {
+    match fact {
+        ProjectHealthFact::GitInspectionTimeout { .. } => Some("Git inspection timed out"),
+        ProjectHealthFact::GitInspectionIncomplete { reason, .. } => Some(reason),
+        ProjectHealthFact::SourceInspectionIncomplete { reason } => Some(reason),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -588,9 +598,14 @@ fn validate_snapshot(snapshot: &ProjectHealthSnapshot) -> Result<(), String> {
                 seed.check.id.as_str()
             ));
         };
-        if !matches!(observation.outcome, ProjectCheckOutcome::Completed) {
+        let outcome_matches_fact = if incomplete_fact_reason(fact).is_some() {
+            matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        } else {
+            matches!(observation.outcome, ProjectCheckOutcome::Completed)
+        };
+        if !outcome_matches_fact {
             return snapshot_error(format!(
-                "fact {} is attached to incomplete check {}",
+                "fact {} has an incompatible outcome for check {}",
                 seed.code,
                 seed.check.id.as_str()
             ));
@@ -765,7 +780,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
         ),
         GitInspectionTimeout { check, source_set } => seed(
             "git.inspection_timeout",
-            DiagnosticSeverity::Error,
+            incomplete_severity(*check),
             *check,
             source_set.clone(),
             Vec::new(),
@@ -780,7 +795,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             reason,
         } => seed(
             "git.inspection_incomplete",
-            DiagnosticSeverity::Error,
+            incomplete_severity(*check),
             *check,
             source_set.clone(),
             Vec::new(),
@@ -969,6 +984,14 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
     }
 }
 
+const fn incomplete_severity(check: ProjectCheckId) -> DiagnosticSeverity {
+    if matches!(check, ProjectCheckId::RepositoryLfs) {
+        DiagnosticSeverity::Info
+    } else {
+        DiagnosticSeverity::Error
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn seed(
     code: &'static str,
@@ -1115,12 +1138,78 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_repository_fact_serializes_its_check_as_not_run() {
+        let report = evaluate_project_health(snapshot_with(
+            vec![ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryIndex,
+                source_set: None,
+                reason: "Git index output was truncated".into(),
+            }],
+            vec![observation(
+                ProjectCheckId::RepositoryIndex,
+                None,
+                ProjectCheckOutcome::NotRun {
+                    reason: "Git index output was truncated".into(),
+                },
+            )],
+        ))
+        .unwrap();
+
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.id == "repository.index" && check.source_set.is_none())
+            .unwrap();
+        assert_eq!(check.status, ProjectCheckStatus::NotRun);
+        assert_eq!(
+            check.reason.as_deref(),
+            Some("Git index output was truncated")
+        );
+        assert!(!report.repository_ready);
+        assert_eq!(report.diagnostics[0].code, "git.inspection_incomplete");
+    }
+
+    #[test]
+    fn lfs_inspection_incomplete_is_advisory_and_does_not_close_readiness() {
+        let report = evaluate_project_health(snapshot_with(
+            vec![ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryLfs,
+                source_set: None,
+                reason: "binary size could not be inspected".into(),
+            }],
+            vec![observation(
+                ProjectCheckId::RepositoryLfs,
+                None,
+                ProjectCheckOutcome::NotRun {
+                    reason: "binary size could not be inspected".into(),
+                },
+            )],
+        ))
+        .unwrap();
+
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.id == "repository.lfs" && check.source_set.is_none())
+            .unwrap();
+        assert_eq!(check.status, ProjectCheckStatus::NotRun);
+        assert!(report.repository_ready);
+        assert_eq!(report.diagnostics[0].severity, DiagnosticSeverity::Info);
+    }
+
+    #[test]
     fn incomplete_source_discovery_closes_source_readiness_with_a_typed_cause() {
         let report = evaluate_project_health(snapshot_with(
             vec![ProjectHealthFact::SourceInspectionIncomplete {
                 reason: "v8project.yaml is malformed".into(),
             }],
-            Vec::new(),
+            vec![observation(
+                ProjectCheckId::SourceDiscovery,
+                None,
+                ProjectCheckOutcome::NotRun {
+                    reason: "v8project.yaml is malformed".into(),
+                },
+            )],
         ))
         .unwrap();
 
@@ -1220,14 +1309,17 @@ mod tests {
     }
 
     #[test]
-    fn fact_without_a_completed_check_is_a_fatal_snapshot_error() {
+    fn ordinary_fact_without_a_completed_check_is_a_fatal_snapshot_error() {
         let snapshot = snapshot_with(
-            vec![ProjectHealthFact::GitRepositoryAbsent],
+            vec![ProjectHealthFact::IgnoreRuleMissing {
+                source_set: None,
+                path: ".build/probe".into(),
+            }],
             vec![observation(
-                ProjectCheckId::RepositoryDiscovery,
+                ProjectCheckId::RepositoryIgnore,
                 None,
                 ProjectCheckOutcome::NotRun {
-                    reason: "repository discovery did not run".into(),
+                    reason: "ignore inspection did not run".into(),
                 },
             )],
         );
@@ -1238,7 +1330,24 @@ mod tests {
             error.starts_with("project_health_snapshot_invalid:"),
             "{error}"
         );
-        assert!(error.contains("repository.discovery"), "{error}");
+        assert!(error.contains("repository.ignore"), "{error}");
+    }
+
+    #[test]
+    fn incomplete_fact_requires_a_not_run_observation() {
+        let snapshot = snapshot_with(
+            vec![ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryIndex,
+                source_set: None,
+                reason: "Git index output was truncated".into(),
+            }],
+            Vec::new(),
+        );
+
+        let error = evaluate_project_health(snapshot).unwrap_err();
+
+        assert!(error.contains("incompatible outcome"), "{error}");
+        assert!(error.contains("repository.index"), "{error}");
     }
 
     #[test]

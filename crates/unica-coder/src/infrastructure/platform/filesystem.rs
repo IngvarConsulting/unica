@@ -425,6 +425,34 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
 }
 
 #[cfg(unix)]
+pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path must be absolute",
+        ));
+    }
+    let mut current = open_directory_nofollow(Path::new("/"))?;
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(name) => {
+                current = open_directory_child_nofollow(&current, name)?;
+            }
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secure directory path contains a non-normal component",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
+#[cfg(unix)]
 pub(crate) fn open_directory_child_nofollow(
     parent: &fs::File,
     name: &std::ffi::OsStr,
@@ -1287,6 +1315,52 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
         ));
     }
     Ok(file)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    let absolute = std::path::absolute(path)?;
+    let mut components = absolute.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure Windows directory path has no prefix",
+        ));
+    };
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure Windows directory path has no root component",
+        ));
+    }
+    let mut anchor = PathBuf::from(prefix.as_os_str());
+    anchor.push(r"\");
+    let mut current = open_directory_nofollow(&anchor)?;
+    for component in components {
+        match component {
+            Component::Normal(name) => {
+                current = open_directory_child_nofollow(&current, name)?;
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secure directory path contains a non-normal component",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn open_absolute_directory_path_nofollow(_path: &Path) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "secure no-follow directory paths are unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
