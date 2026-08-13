@@ -66,8 +66,13 @@ impl SourceRevisionService {
         cancellation: &CancellationToken,
     ) -> Result<SourceRevision, String> {
         if self.fence.capability() == FenceCapability::Unsupported {
-            self.reconcile_without_fast_fence(deadline, cancellation)?;
-            return self.trusted_snapshot();
+            self.machine
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .lose_trust(SourceRevisionTrustLoss::UnsupportedFence);
+            return Err(
+                "source revision fence is unsupported; freshness cannot be proven".to_string(),
+            );
         }
         let needs_reconcile = match self.fence.flush(deadline, cancellation)? {
             FenceOutcome::Proven { dirty } => {
@@ -153,37 +158,6 @@ impl SourceRevisionService {
             return Ok(());
         }
         Err("source revision did not stabilize during reconcile".to_string())
-    }
-
-    fn reconcile_without_fast_fence(
-        &self,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<(), String> {
-        self.machine
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .begin_reconcile();
-        let scan = || {
-            scan_source_digest(&self.source_root, &|| {
-                cancellation.is_cancelled() || deadline.remaining().is_zero()
-            })
-        };
-        let first = scan()?;
-        let second = scan()?;
-        if first != second {
-            self.machine
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .lose_trust(SourceRevisionTrustLoss::WatcherGap);
-            return Err("source revision changed during conservative reconcile".to_string());
-        }
-        let revision = self
-            .machine
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .finish_reconcile(first)?;
-        persist_revision_record(&self.record_path, &self.source_root, &revision)
     }
 }
 
@@ -303,6 +277,53 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    struct UnsupportedFence;
+
+    impl SourceRevisionFence for UnsupportedFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::Unsupported
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, String> {
+            Ok(FenceOutcome::TrustLost(
+                SourceRevisionTrustLoss::UnsupportedFence,
+            ))
+        }
+    }
+
+    #[test]
+    fn unsupported_fence_never_promotes_repeated_scans_to_trusted() {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(source_root.join("Module.bsl"), "Процедура A()\n").unwrap();
+        let service = SourceRevisionService {
+            source_root: fs::canonicalize(&source_root).unwrap(),
+            record_path: workspace.path().join("revision.json"),
+            machine: Mutex::new(SourceRevisionMachine::default()),
+            fence: Arc::new(UnsupportedFence),
+        };
+        let scans_before = FULL_RECONCILE_SCANS.load(Ordering::Acquire);
+
+        let error = service
+            .snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .expect_err("an unsupported fence cannot prove a trusted revision");
+
+        assert!(error.contains("unsupported"), "{error}");
+        assert_eq!(
+            FULL_RECONCILE_SCANS.load(Ordering::Acquire),
+            scans_before,
+            "repeated scans are not a replacement for a freshness fence"
+        );
+    }
 
     #[test]
     fn warm_snapshot_uses_fences_and_external_change_reconciles_once() {

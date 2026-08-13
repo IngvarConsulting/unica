@@ -31,28 +31,35 @@ pub(crate) fn platform_fence(
     cache_root: &Path,
 ) -> Result<Arc<dyn SourceRevisionFence>, String> {
     if !macos::is_local_apfs(root) {
-        return platform_fence_for_capability(root, cache_root, FenceCapability::Unsupported);
+        return platform_fence_for_capability(root, FenceCapability::Unsupported);
     }
     let fence_directory = cache_root.join("source-revision-fences");
     std::fs::create_dir_all(&fence_directory)
         .map_err(|error| format!("failed to create source revision fence cache: {error}"))?;
-    let capability = if macos::is_local_apfs(&fence_directory) {
+    let capability = if macos::is_local_apfs(&fence_directory)
+        && macos::is_same_device(root, &fence_directory)
+    {
         FenceCapability::ProvenFast
     } else {
         FenceCapability::Unsupported
     };
-    platform_fence_for_capability(root, &fence_directory, capability)
+    match capability {
+        FenceCapability::ProvenFast => macos::MacSourceRevisionFence::new(root, &fence_directory)
+            .map(|fence| Arc::new(fence) as Arc<dyn SourceRevisionFence>),
+        FenceCapability::Unsupported => platform_fence_for_capability(root, capability),
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn platform_fence_for_capability(
     root: &Path,
-    fence_directory: &Path,
     capability: FenceCapability,
 ) -> Result<Arc<dyn SourceRevisionFence>, String> {
     match capability {
-        FenceCapability::ProvenFast => macos::MacSourceRevisionFence::new(root, fence_directory)
-            .map(|fence| Arc::new(fence) as Arc<dyn SourceRevisionFence>),
+        FenceCapability::ProvenFast => Err(format!(
+            "a proven source revision fence for {} requires a same-device cache directory",
+            root.display()
+        )),
         FenceCapability::Unsupported => Ok(Arc::new(UnsupportedSourceRevisionFence)),
     }
 }
@@ -110,7 +117,7 @@ mod macos {
         dirty: AtomicBool,
         trust_loss: AtomicU8,
         source_root: Vec<u8>,
-        marker_path: Vec<u8>,
+        marker_root: Vec<u8>,
         marker_events: Mutex<u64>,
         marker_changed: Condvar,
     }
@@ -138,7 +145,10 @@ mod macos {
             let marker_path = fs::canonicalize(&marker_path).map_err(|error| {
                 format!("failed to resolve source revision fence marker: {error}")
             })?;
-            let marker_bytes = path_bytes(&marker_path, "source revision marker path")?;
+            let marker_root = marker_path
+                .parent()
+                .ok_or_else(|| "source revision fence marker has no parent".to_string())?;
+            let marker_root_bytes = path_bytes(marker_root, "source revision marker root")?;
             let source_root = fs::canonicalize(root)
                 .map_err(|error| format!("failed to resolve source revision root: {error}"))?;
             let source_root_bytes = path_bytes(&source_root, "source revision root")?;
@@ -158,7 +168,7 @@ mod macos {
                 dirty: AtomicBool::new(false),
                 trust_loss: AtomicU8::new(TRUSTED),
                 source_root: source_root_bytes,
-                marker_path: marker_bytes,
+                marker_root: marker_root_bytes,
                 marker_events: Mutex::new(0),
                 marker_changed: Condvar::new(),
             });
@@ -304,6 +314,9 @@ mod macos {
                 FSEventStreamStop(self.stream);
                 FSEventStreamInvalidate(self.stream);
                 FSEventStreamSetDispatchQueue(self.stream, None);
+            }
+            self.queue.exec_sync(|| {});
+            unsafe {
                 FSEventStreamRelease(self.stream);
             }
             let _ = fs::remove_file(&self.marker_path);
@@ -330,7 +343,7 @@ mod macos {
                     continue;
                 }
                 let path = unsafe { CStr::from_ptr(*path) }.to_bytes();
-                if path == state.marker_path {
+                if path_is_within(path, &state.marker_root) {
                     let mut marker_events = state
                         .marker_events
                         .lock()
@@ -389,6 +402,17 @@ mod macos {
         let file_system = unsafe { CStr::from_ptr(stats.f_fstypename.as_ptr()) };
         file_system.to_bytes() == b"apfs"
     }
+
+    pub(super) fn is_same_device(left: &Path, right: &Path) -> bool {
+        let Ok(left) = fs::metadata(left) else {
+            return false;
+        };
+        let Ok(right) = fs::metadata(right) else {
+            return false;
+        };
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev()
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -405,12 +429,8 @@ mod tests {
         let sandbox = tempdir().unwrap();
         let missing_root = sandbox.path().join("read-only-or-missing-source");
 
-        let fence = platform_fence_for_capability(
-            &missing_root,
-            &sandbox.path().join("cache"),
-            FenceCapability::Unsupported,
-        )
-        .expect("unsupported filesystems must use the conservative fence");
+        let fence = platform_fence_for_capability(&missing_root, FenceCapability::Unsupported)
+            .expect("unsupported filesystems must use the conservative fence");
 
         assert_eq!(fence.capability(), FenceCapability::Unsupported);
         assert!(!missing_root.exists());
@@ -420,7 +440,8 @@ mod tests {
     fn macos_fsevents_flush_observes_external_write_without_sleep() {
         let root = tempdir().unwrap();
         let cache = tempdir().unwrap();
-        let fence = platform_fence(root.path(), cache.path()).unwrap();
+        let fence_cache = cache.path().join("revision-fence-cache");
+        let fence = platform_fence(root.path(), &fence_cache).unwrap();
         if fence.capability() != FenceCapability::ProvenFast {
             return;
         }
