@@ -8,8 +8,8 @@ use crate::infrastructure::platform::{
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
-    ready_index_for_source_generation, IndexReadiness, WorkspaceIndexService,
-    SOURCE_GENERATION_STALE_STATUS,
+    ready_index_for_source_generation, IndexBackgroundTaskTracker, IndexReadiness,
+    SystemIndexRunner, WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -1473,6 +1473,7 @@ struct WorkspaceServiceRuntime {
     /// as it answers, which would both hide the thread from `begin_shutdown` and
     /// let a late `cancel` for the finished read kill the scheduled update.
     rlm_maintenance_cancellation: CancellationToken,
+    rlm_maintenance_tasks: Arc<SessionTeardownLifecycle>,
     session_teardowns: SessionTeardownLifecycle,
     analyzer_source_generation: Mutex<Option<u64>>,
     rlm_source_generation: Mutex<Option<u64>>,
@@ -1485,6 +1486,8 @@ struct WorkspaceServiceRuntime {
     control_admission: Arc<AdmissionGate>,
     #[cfg(test)]
     handler_started_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    provider_sessions_drained_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<PersistentMcpSession, String>
@@ -1526,6 +1529,8 @@ impl WorkspaceServiceRuntime {
             cache_root: service_cache_root(&identity.service_dir),
             workspace_epoch: 0,
         };
+        let rlm_maintenance_tasks = Arc::new(SessionTeardownLifecycle::default());
+        let requester_tasks = Arc::clone(&rlm_maintenance_tasks);
         Self {
             identity,
             token: record_owner.token.clone(),
@@ -1537,21 +1542,19 @@ impl WorkspaceServiceRuntime {
             rlm_lane: AnalyzerLane::default(),
             rlm: Mutex::new(None),
             rlm_starter: Arc::new(RlmMcpSession::start),
-            rlm_maintenance_requester: Arc::new(|context, source_root, cancellation| {
+            rlm_maintenance_requester: Arc::new(move |context, source_root, cancellation| {
                 let mut args = Map::new();
                 args.insert(
                     "sourceDir".to_string(),
                     Value::String(source_root.display().to_string()),
                 );
-                let _ = WorkspaceIndexService::new().start_for_workspace_cancellable(
-                    &context,
-                    &args,
-                    false,
-                    &cancellation,
-                );
+                let runner = SystemIndexRunner::tracked(requester_tasks.clone());
+                let _ = WorkspaceIndexService::with_runner(&runner)
+                    .start_for_workspace_cancellable(&context, &args, false, &cancellation);
             }),
             rlm_maintenance_pending: Arc::new(AtomicBool::new(false)),
             rlm_maintenance_cancellation: CancellationToken::new(),
+            rlm_maintenance_tasks,
             session_teardowns: SessionTeardownLifecycle::default(),
             analyzer_source_generation: Mutex::new(None),
             rlm_source_generation: Mutex::new(None),
@@ -1564,6 +1567,8 @@ impl WorkspaceServiceRuntime {
             control_admission: AdmissionGate::new(SERVICE_MAX_CONTROL_HANDLERS),
             #[cfg(test)]
             handler_started_hook: Mutex::new(None),
+            #[cfg(test)]
+            provider_sessions_drained_hook: Mutex::new(None),
         }
     }
 
@@ -1655,6 +1660,8 @@ impl WorkspaceServiceRuntime {
 
     fn begin_shutdown(&self) -> ServiceResponse {
         self.shutting_down.store(true, Ordering::Release);
+        self.session_teardowns.close();
+        self.rlm_maintenance_tasks.close();
         self.rlm_maintenance_cancellation.cancel();
         let cancellations = self
             .operations
@@ -1694,7 +1701,13 @@ impl WorkspaceServiceRuntime {
         if let Some(session) = rlm {
             self.retire_session(session);
         }
-        self.session_teardowns.drain(SESSION_TEARDOWN_GRACE)
+        let sessions_drained = self.session_teardowns.drain(SESSION_TEARDOWN_GRACE);
+        let maintenance_drained = self.rlm_maintenance_tasks.drain(SESSION_TEARDOWN_GRACE);
+        #[cfg(test)]
+        if let Some(hook) = self.provider_sessions_drained_hook.lock().unwrap().clone() {
+            hook();
+        }
+        sessions_drained && maintenance_drained
     }
 
     fn invalidate(&self, events: &[DomainEvent]) -> ServiceResponse {
@@ -1833,14 +1846,24 @@ impl WorkspaceServiceRuntime {
     }
 
     fn handle_rlm_ready(&self, args: Value, cancellation: &CancellationToken) -> ServiceResponse {
+        if cancellation.is_cancelled() {
+            return ServiceResponse::error(cancelled_error(
+                "rlm index operation stopped before work",
+            ));
+        }
         let mut args = args.as_object().cloned().unwrap_or_default();
         args.insert(
             "sourceDir".to_string(),
             Value::String(self.identity.source_root.clone()),
         );
-        let service = WorkspaceIndexService::new();
-        let start_report =
-            service.start_for_workspace_cancellable(&self.context, &args, false, cancellation);
+        let runner = SystemIndexRunner::tracked(self.rlm_maintenance_tasks.clone());
+        let service = WorkspaceIndexService::with_runner(&runner);
+        let start_report = service.start_for_workspace_cancellable(
+            &self.context,
+            &args,
+            false,
+            &self.rlm_maintenance_cancellation,
+        );
         let readiness = service.ready_index_cancellable(&self.context, &args, cancellation);
         ServiceResponse::from_readiness(readiness, start_report.warnings)
     }
@@ -1867,7 +1890,10 @@ impl WorkspaceServiceRuntime {
                 let _pending = RlmMaintenanceRequestGuard(pending);
                 requester(context, source_root, cancellation);
             }) {
-            Ok(_) => Vec::new(),
+            Ok(handle) => {
+                self.rlm_maintenance_tasks.track(handle);
+                Vec::new()
+            }
             Err(error) => {
                 self.rlm_maintenance_pending.store(false, Ordering::Release);
                 vec![format!(
@@ -2008,31 +2034,50 @@ impl WorkspaceServiceRuntime {
     }
 }
 
-#[derive(Default)]
 struct SessionTeardownLifecycle {
-    handles: Mutex<Vec<thread::JoinHandle<()>>>,
+    state: Mutex<TrackedTaskState>,
+}
+
+struct TrackedTaskState {
+    accepting: bool,
+    handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl Default for SessionTeardownLifecycle {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(TrackedTaskState {
+                accepting: true,
+                handles: Vec::new(),
+            }),
+        }
+    }
 }
 
 impl SessionTeardownLifecycle {
     fn track(&self, handle: thread::JoinHandle<()>) {
-        let mut handles = self
-            .handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        Self::reap_finished(&mut handles);
-        handles.push(handle);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        Self::reap_finished(&mut state.handles);
+        if state.accepting {
+            state.handles.push(handle);
+            return;
+        }
+        drop(state);
+        let _ = handle.join();
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.accepting = false;
     }
 
     fn drain(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             {
-                let mut handles = self
-                    .handles
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                Self::reap_finished(&mut handles);
-                if handles.is_empty() {
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                Self::reap_finished(&mut state.handles);
+                if state.handles.is_empty() {
                     return true;
                 }
             }
@@ -2054,6 +2099,12 @@ impl SessionTeardownLifecycle {
                 index += 1;
             }
         }
+    }
+}
+
+impl IndexBackgroundTaskTracker for SessionTeardownLifecycle {
+    fn track(&self, handle: thread::JoinHandle<()>) {
+        SessionTeardownLifecycle::track(self, handle);
     }
 }
 
@@ -2497,6 +2548,7 @@ impl PersistentMcpSession {
                 "stdio",
             ])
             .current_dir(&context.cwd);
+        configure_bsl_analyzer_cache_dir(&mut command, context, source_root)?;
         configure_bsl_analyzer_runtime_dir(&mut command)?;
         Self::start_with_command(command, cancellation)
     }
@@ -2756,6 +2808,47 @@ impl Drop for PersistentMcpSession {
     fn drop(&mut self) {
         self.invalidate();
     }
+}
+
+/// bsl-analyzer otherwise defaults its cache below the indexed source tree.
+/// The resulting filesystem events keep invalidating the index that produced
+/// them. Prefer the existing service identity, but move the analyzer cache to
+/// the private runtime root when the configured Unica cache is itself below
+/// the selected source root (for example `sourceDir = "."`).
+fn configure_bsl_analyzer_cache_dir(
+    command: &mut Command,
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<(), String> {
+    let identity = WorkspaceServiceIdentity::new(context, source_root)?;
+    let preferred = identity.service_dir.join("bsl-analyzer");
+    let source_root = PathBuf::from(&identity.source_root);
+    let preferred_identity = normalize_path_identity(&preferred)?;
+    let cache_dir = if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+        &preferred_identity,
+        &source_root,
+    ) {
+        let external_root = short_private_runtime_dir()
+            .map_err(|error| {
+                format!("failed to prepare external bsl-analyzer cache directory: {error}")
+            })?
+            .unwrap_or_else(|| std::env::temp_dir().join("unica-bsl"));
+        let external = external_root.join("cache").join(&identity.key);
+        let external_identity = normalize_path_identity(&external)?;
+        if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+            &external_identity,
+            &source_root,
+        ) {
+            return Err(
+                "failed to place bsl-analyzer cache outside the indexed source tree".to_string(),
+            );
+        }
+        external
+    } else {
+        preferred
+    };
+    command.arg("--cache-dir").arg(cache_dir);
+    Ok(())
 }
 
 /// A persistent session outlives the tool call that started it, by design
@@ -3489,7 +3582,7 @@ fn serve_workspace_service(
     runtime.begin_shutdown();
     if !runtime.shutdown_provider_sessions() && result.is_ok() {
         result = Err(format!(
-            "workspace provider sessions did not stop within {} ms",
+            "workspace provider sessions or maintenance tasks did not stop within {} ms",
             SESSION_TEARDOWN_GRACE.as_millis()
         ));
     }
@@ -4303,6 +4396,53 @@ mod tests {
     }
 
     #[test]
+    fn bsl_analyzer_child_uses_source_specific_cache_outside_the_source_tree() {
+        let context = test_context("bsl-analyzer-cache");
+        let first_source = context.workspace_root.join("src/main");
+        let second_source = context.workspace_root.join("src/extension");
+        fs::create_dir_all(&first_source).unwrap();
+        fs::create_dir_all(&second_source).unwrap();
+
+        let mut first = Command::new("bsl-analyzer");
+        configure_bsl_analyzer_cache_dir(&mut first, &context, &first_source).unwrap();
+        let mut second = Command::new("bsl-analyzer");
+        configure_bsl_analyzer_cache_dir(&mut second, &context, &second_source).unwrap();
+
+        let cache_arg = |command: &Command| {
+            let arguments = command.get_args().collect::<Vec<_>>();
+            let position = arguments
+                .iter()
+                .position(|argument| *argument == "--cache-dir")
+                .expect("cache argument");
+            PathBuf::from(arguments[position + 1])
+        };
+        let first_cache = cache_arg(&first);
+        let second_cache = cache_arg(&second);
+
+        assert!(first_cache.starts_with(&context.cache_root));
+        assert!(!first_cache.starts_with(&first_source));
+        assert_ne!(first_cache, second_cache);
+    }
+
+    #[test]
+    fn bsl_analyzer_cache_stays_outside_a_workspace_wide_source_root() {
+        let mut context = test_context("bsl-analyzer-workspace-cache");
+        context.cache_root = context.workspace_root.join(".build/unica");
+
+        let mut command = Command::new("bsl-analyzer");
+        configure_bsl_analyzer_cache_dir(&mut command, &context, &context.workspace_root).unwrap();
+
+        let arguments = command.get_args().collect::<Vec<_>>();
+        let position = arguments
+            .iter()
+            .position(|argument| *argument == "--cache-dir")
+            .expect("cache argument");
+        let cache = PathBuf::from(arguments[position + 1]);
+
+        assert!(!cache.starts_with(&context.workspace_root));
+    }
+
+    #[test]
     fn object_profile_helper_maps_public_sections_and_composes_predefined_items() {
         let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::ObjectProfile {
             name: "Document.Заказ".to_string(),
@@ -4987,6 +5127,201 @@ mod tests {
     }
 
     #[test]
+    fn workspace_service_record_outlives_late_maintenance_registration() {
+        struct LateMaintenanceExecutor {
+            before_registration: mpsc::Sender<()>,
+            allow_registration: Mutex<mpsc::Receiver<()>>,
+            task_started: mpsc::Sender<()>,
+            task_release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+
+        impl WorkspaceServiceOperationExecutor for LateMaintenanceExecutor {
+            fn execute(
+                &self,
+                runtime: &WorkspaceServiceRuntime,
+                _kind: ServiceRequestKind,
+                _cancellation: &CancellationToken,
+            ) -> ServiceResponse {
+                self.before_registration.send(()).unwrap();
+                self.allow_registration.lock().unwrap().recv().unwrap();
+                let task_started = self.task_started.clone();
+                let task_release = Arc::clone(&self.task_release);
+                let handle = thread::spawn(move || {
+                    task_started.send(()).unwrap();
+                    task_release.lock().unwrap().recv().unwrap();
+                });
+                runtime.rlm_maintenance_tasks.track(handle);
+                ServiceResponse {
+                    ok: true,
+                    status: Some("late-maintenance-finished".to_string()),
+                    ..ServiceResponse::default()
+                }
+            }
+        }
+
+        let (before_registration_tx, before_registration_rx) = mpsc::channel();
+        let (allow_registration_tx, allow_registration_rx) = mpsc::channel();
+        let (task_started_tx, task_started_rx) = mpsc::channel();
+        let (task_release_tx, task_release_rx) = mpsc::channel();
+        let executor = Arc::new(LateMaintenanceExecutor {
+            before_registration: before_registration_tx,
+            allow_registration: Mutex::new(allow_registration_rx),
+            task_started: task_started_tx,
+            task_release: Arc::new(Mutex::new(task_release_rx)),
+        });
+        let (context, record, _runtime, server) = workspace_test_server_with_executor(
+            "late-maintenance-record",
+            executor,
+            SERVICE_SHUTDOWN_GRACE,
+        );
+        let mut request = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "late-maintenance".to_string(),
+                args: json!({}),
+            },
+        );
+        before_registration_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        let record_path =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src"))
+                .unwrap()
+                .record_path();
+        let (server_finished_tx, server_finished_rx) = mpsc::channel();
+        let joiner = thread::spawn(move || {
+            server_finished_tx.send(server.join().unwrap()).unwrap();
+        });
+        allow_registration_tx.send(()).unwrap();
+        task_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(matches!(
+            server_finished_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(record_path.exists());
+
+        task_release_tx.send(()).unwrap();
+        assert!(read_test_response(&mut request).ok);
+        server_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        joiner.join().unwrap();
+        assert!(!record_path.exists());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn workspace_service_record_outlives_late_session_retirement() {
+        struct BlockingRetiredSession {
+            drop_started: mpsc::Sender<()>,
+            drop_release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+
+        impl Drop for BlockingRetiredSession {
+            fn drop(&mut self) {
+                self.drop_started.send(()).unwrap();
+                self.drop_release.lock().unwrap().recv().unwrap();
+            }
+        }
+
+        struct LateSessionRetirementExecutor {
+            before_retirement: mpsc::Sender<()>,
+            allow_retirement: Mutex<mpsc::Receiver<()>>,
+            drop_started: mpsc::Sender<()>,
+            drop_release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+
+        impl WorkspaceServiceOperationExecutor for LateSessionRetirementExecutor {
+            fn execute(
+                &self,
+                runtime: &WorkspaceServiceRuntime,
+                _kind: ServiceRequestKind,
+                _cancellation: &CancellationToken,
+            ) -> ServiceResponse {
+                self.before_retirement.send(()).unwrap();
+                self.allow_retirement.lock().unwrap().recv().unwrap();
+                runtime.retire_session(BlockingRetiredSession {
+                    drop_started: self.drop_started.clone(),
+                    drop_release: Arc::clone(&self.drop_release),
+                });
+                ServiceResponse {
+                    ok: true,
+                    status: Some("late-session-retired".to_string()),
+                    ..ServiceResponse::default()
+                }
+            }
+        }
+
+        let (before_retirement_tx, before_retirement_rx) = mpsc::channel();
+        let (allow_retirement_tx, allow_retirement_rx) = mpsc::channel();
+        let (drop_started_tx, drop_started_rx) = mpsc::channel();
+        let (drop_release_tx, drop_release_rx) = mpsc::channel();
+        let executor = Arc::new(LateSessionRetirementExecutor {
+            before_retirement: before_retirement_tx,
+            allow_retirement: Mutex::new(allow_retirement_rx),
+            drop_started: drop_started_tx,
+            drop_release: Arc::new(Mutex::new(drop_release_rx)),
+        });
+        let (context, record, runtime, server) = workspace_test_server_with_executor(
+            "late-session-record",
+            executor,
+            SERVICE_SHUTDOWN_GRACE,
+        );
+        let (providers_drained_tx, providers_drained_rx) = mpsc::channel();
+        *runtime.provider_sessions_drained_hook.lock().unwrap() =
+            Some(Arc::new(move || providers_drained_tx.send(()).unwrap()));
+        let mut request = open_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "late-session".to_string(),
+                args: json!({}),
+            },
+        );
+        before_retirement_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
+        providers_drained_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let record_path =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src"))
+                .unwrap()
+                .record_path();
+        let (server_finished_tx, server_finished_rx) = mpsc::channel();
+        let joiner = thread::spawn(move || {
+            server_finished_tx.send(server.join().unwrap()).unwrap();
+        });
+        allow_retirement_tx.send(()).unwrap();
+        drop_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        assert!(matches!(
+            server_finished_rx.recv_timeout(Duration::from_millis(500)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(record_path.exists());
+
+        drop_release_tx.send(()).unwrap();
+        assert!(read_test_response(&mut request).ok);
+        server_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        joiner.join().unwrap();
+        assert!(!record_path.exists());
+        cleanup(&context);
+    }
+
+    #[test]
     fn workspace_service_control_path_disconnect_cancels_only_its_operation() {
         let (context, record, _runtime, executor, server) =
             workspace_control_test_server("control-disconnect");
@@ -5310,6 +5645,89 @@ mod tests {
 
         assert!(runtime.shutdown_provider_sessions());
         dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        cleanup(&context);
+    }
+
+    #[test]
+    fn runtime_shutdown_drains_cancelled_rlm_maintenance() {
+        let context = test_context("tracked-rlm-maintenance");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        runtime.rlm_maintenance_requester =
+            Arc::new(move |_context, _source_root, cancellation| {
+                started_tx.send(()).unwrap();
+                while !cancellation.is_cancelled() {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                cancelled_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            });
+        let runtime = Arc::new(runtime);
+
+        assert!(runtime
+            .request_rlm_index_maintenance(&CancellationToken::new())
+            .is_empty());
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        runtime.begin_shutdown();
+        cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let shutdown_runtime = Arc::clone(&runtime);
+        let (drained_tx, drained_rx) = mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            drained_tx
+                .send(shutdown_runtime.shutdown_provider_sessions())
+                .unwrap();
+        });
+        assert!(matches!(
+            drained_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_tx.send(()).unwrap();
+        assert!(drained_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        shutdown.join().unwrap();
+        drop(runtime);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn runtime_shutdown_joins_rlm_maintenance_registered_after_drain_started() {
+        let context = test_context("late-rlm-maintenance-registration");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let record = test_record(&identity, 34567, env!("CARGO_PKG_VERSION"));
+        let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
+        let (allow_registration_tx, allow_registration_rx) = mpsc::channel();
+        let (task_release_tx, task_release_rx) = mpsc::channel();
+        let (registration_finished_tx, registration_finished_rx) = mpsc::channel();
+        let tracker = Arc::clone(&runtime.rlm_maintenance_tasks);
+        let registrar = thread::spawn(move || {
+            allow_registration_rx.recv().unwrap();
+            let handle = thread::spawn(move || task_release_rx.recv().unwrap());
+            tracker.track(handle);
+            registration_finished_tx.send(()).unwrap();
+        });
+
+        runtime.begin_shutdown();
+        assert!(runtime.shutdown_provider_sessions());
+        allow_registration_tx.send(()).unwrap();
+        assert!(matches!(
+            registration_finished_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        task_release_tx.send(()).unwrap();
+        registration_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        registrar.join().unwrap();
+        drop(runtime);
         cleanup(&context);
     }
 

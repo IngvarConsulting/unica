@@ -32,7 +32,7 @@ class SkillProvenanceTests(unittest.TestCase):
         return self.reviews_dir() / "2026-06-15-upstream-review.json"
 
     def product_backlog_path(self) -> Path:
-        return self.reviews_dir() / "2026-07-29-product-update-backlog.json"
+        return self.reviews_dir() / "2026-08-12-product-update-backlog.json"
 
     def load_provenance(self) -> dict:
         return json.loads(self.provenance_path().read_text(encoding="utf-8"))
@@ -536,7 +536,7 @@ class SkillProvenanceTests(unittest.TestCase):
             },
         )
 
-    def test_bsl_analyzer_contract_is_v0_2_62(self) -> None:
+    def test_bsl_analyzer_contract_is_v0_2_67(self) -> None:
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
@@ -545,19 +545,19 @@ class SkillProvenanceTests(unittest.TestCase):
         locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
 
         analyzer = locked_tools["bsl-analyzer"]
-        self.assertEqual(analyzer["version"], "0.2.62")
-        self.assertEqual(analyzer["sourceTag"], "v0.2.62")
+        self.assertEqual(analyzer["version"], "0.2.67")
+        self.assertEqual(analyzer["sourceTag"], "v0.2.67")
         self.assertEqual(
             analyzer["sourceCommit"],
-            "9a6cb15d60c0381dce6a3b5e536434adb12da89b",
+            "9a92766691bbd0191a5ff02c34fa9058e4570b85",
         )
-        self.assertEqual(analyzer["assetTag"], "bsl-analyzer-v0.2.62-build.1")
+        self.assertEqual(analyzer["assetTag"], "bsl-analyzer-v0.2.67-build.1")
         self.assertEqual(
             {target: asset["sha256"] for target, asset in analyzer["assets"].items()},
             {
-                "darwin-arm64": "97c599b2be9e8c4e267d7a8567b21d01d5d6939060d28084ae1f598d15c084a4",
-                "linux-x64": "070374453c933025c0750d59a658dfe9edd6415f7b5aa80d122268acc08ae8b9",
-                "win-x64": "9c42ef7d6b379b3f80afb525f9cbec757abd2ba1877bbdcfb5db49df9972fd22",
+                "darwin-arm64": "d18c3b79d017d60f229faf4e427bcefc0a9da59a93b57acbb867b064c52926bd",
+                "linux-x64": "c476c10fcdfa6eb7d310e83d0e69b02a27f9afeec0d394681feadb889de97301",
+                "win-x64": "a54d883bcb7ed0e0039953fb4d5cd7c2efbf30155de9951952f1a4060776eb3e",
             },
         )
 
@@ -690,7 +690,7 @@ class SkillProvenanceTests(unittest.TestCase):
         backlog = self.load_product_backlog()
         products = {item["id"]: item for item in backlog["products"]}
 
-        self.assertEqual(backlog["generatedAt"], "2026-07-29")
+        self.assertEqual(backlog["generatedAt"], "2026-08-12")
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"

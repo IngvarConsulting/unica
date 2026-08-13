@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Run a packaged Unica binary through its public MCP source-resource flow."""
+"""Run a packaged Unica binary through source and analyzer MCP flows."""
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import queue
+import signal
+import socket
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
+from typing import Callable
 
 
 TOOL_SURFACE_REVIEW_RELATIVE = Path("spec/architecture/tool-surface-review.json")
@@ -31,6 +36,9 @@ META_TOOL_NAMES = {
     "unica.meta.remove",
 }
 ROLE_TYPED_TOOL_NAME = "unica.role.edit"
+CODE_SEARCH_PROVIDERS = ["rlm", "bsl-analyzer", "git-grep"]
+DEFAULT_TOTAL_TIMEOUT_SECONDS = 120.0
+UPSTREAM_SEARCH_FIELDS = {"root_id", "rootId", "roots", "cacheDir"}
 EXPECTED_META_OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -1260,7 +1268,13 @@ class McpSession:
         timeout_seconds: float,
         *,
         cwd: Path,
+        deadline: float | None = None,
     ) -> None:
+        popen_options = {}
+        if os.name == "posix":
+            popen_options["start_new_session"] = True
+        elif os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         self.process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -1270,20 +1284,41 @@ class McpSession:
             encoding="utf-8",
             env=environment,
             cwd=cwd,
+            **popen_options,
         )
         assert self.process.stdin is not None
         assert self.process.stdout is not None
         assert self.process.stderr is not None
         self.timeout_seconds = timeout_seconds
+        self.deadline = deadline
         self.lines: queue.Queue[str] = queue.Queue()
         self.diagnostics: list[str] = []
         self.reader = threading.Thread(target=self._read_stdout, daemon=True)
-        self.reader.start()
-        # The server stays open across the whole flow and writes diagnostics to
-        # stderr, so an undrained pipe buffer would block it mid-request and
-        # surface as a bare timeout.
         self.error_reader = threading.Thread(target=self._read_stderr, daemon=True)
-        self.error_reader.start()
+        started_readers: list[threading.Thread] = []
+        try:
+            self.reader.start()
+            started_readers.append(self.reader)
+            # The server stays open across the whole flow and writes diagnostics to
+            # stderr, so an undrained pipe buffer would block it mid-request and
+            # surface as a bare timeout.
+            self.error_reader.start()
+            started_readers.append(self.error_reader)
+        except BaseException:
+            # The constructor has not returned, so neither the admission owner
+            # nor the watchdog can see this process yet. Reap it here before
+            # exposing the original thread-start failure.
+            _terminate_unregistered_process_tree(self.process)
+            for reader in started_readers:
+                reader.join(timeout=5)
+            for stream in (
+                self.process.stdin,
+                self.process.stdout,
+                self.process.stderr,
+            ):
+                if stream is not None and not stream.closed:
+                    stream.close()
+            raise
 
     def _read_stdout(self) -> None:
         assert self.process.stdout is not None
@@ -1299,13 +1334,82 @@ class McpSession:
     def _detail(self) -> str:
         return "".join(self.diagnostics).strip() or "no process output"
 
+    def terminate_tree(
+        self,
+        cache_root: Path,
+        known_service_pids: set[int] | None = None,
+    ) -> None:
+        service_pids = set(known_service_pids or ())
+        service_pids.update(_workspace_service_pids(cache_root))
+        owned_pids: set[int] = set()
+        try:
+            if os.name == "posix":
+                # The public Unica process starts a new session. Detached
+                # workspace services create their own process groups inside
+                # that session, so killing only the public process group would
+                # leak those services and their provider descendants.
+                owned_pids = _posix_owned_process_pids(
+                    self.process.pid,
+                    service_pids,
+                    public_running=self.process.poll() is None,
+                )
+                _signal_processes(owned_pids, signal.SIGTERM)
+            elif os.name == "nt":
+                # The public process may already have exited while a detached
+                # service keeps inherited pipe handles open. Kill recorded
+                # service trees independently before targeting the parent PID.
+                for pid in sorted(service_pids):
+                    _taskkill_process_tree(pid)
+                _taskkill_process_tree(self.process.pid)
+            else:
+                if self.process.poll() is None:
+                    self.process.terminate()
+        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        if os.name == "posix":
+            survivors = {
+                pid
+                for pid in owned_pids
+                if _process_is_running(pid)
+            }
+            _signal_processes(survivors, signal.SIGKILL)
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            _wait_for_process_pids(owned_pids, 5)
+            return
+        try:
+            if self.process.poll() is None:
+                self.process.kill()
+        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        _wait_for_process_pids(service_pids, 5)
+
     def request(self, message: dict) -> dict:
         assert self.process.stdin is not None
         self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
         self.process.stdin.flush()
+        deadline = min(
+            time.monotonic() + self.timeout_seconds,
+            getattr(self, "deadline", None) or float("inf"),
+        )
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SystemExit(
+                    f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
+                )
             try:
-                line = self.lines.get(timeout=self.timeout_seconds)
+                line = self.lines.get(timeout=remaining)
             except queue.Empty as error:
                 raise SystemExit(
                     f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
@@ -1330,20 +1434,156 @@ class McpSession:
         if self.process.stdin is not None and not self.process.stdin.closed:
             self.process.stdin.close()
         try:
-            result = self.process.wait(timeout=self.timeout_seconds)
+            result = self.process.wait(timeout=self._remaining_timeout())
         except subprocess.TimeoutExpired as error:
             self.process.kill()
             raise SystemExit(
                 f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
             ) from error
-        self.reader.join(timeout=self.timeout_seconds)
-        self.error_reader.join(timeout=self.timeout_seconds)
+        self.reader.join(timeout=self._remaining_timeout())
+        self.error_reader.join(timeout=self._remaining_timeout())
+        if self.reader.is_alive() or self.error_reader.is_alive():
+            raise SystemExit(
+                "Unica MCP reader threads did not stop before the aggregate deadline: "
+                f"{self._detail()}"
+            )
         detail = self._detail()
         for stream in (self.process.stdout, self.process.stderr):
             if stream is not None and not stream.closed:
                 stream.close()
         if result != 0:
             raise SystemExit(f"Unica MCP exited with {result}: {detail}")
+
+    def _remaining_timeout(self) -> float:
+        deadline = getattr(self, "deadline", None)
+        if deadline is None:
+            return self.timeout_seconds
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(
+                "Unica MCP smoke exceeded its aggregate deadline: "
+                f"{self._detail()}"
+            )
+        return min(self.timeout_seconds, remaining)
+
+
+def _workspace_service_pids(cache_root: Path) -> set[int]:
+    pids: set[int] = set()
+    for record_path in (cache_root / "services").glob("*/service.json"):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            continue
+        pid = record.get("pid") if isinstance(record, dict) else None
+        if (
+            not isinstance(pid, bool)
+            and isinstance(pid, int)
+            and 1 <= pid <= 0xFFFFFFFF
+        ):
+            pids.add(pid)
+    return pids
+
+
+def _terminate_unregistered_process_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "posix":
+        owned_pids = _posix_owned_process_pids(
+            process.pid,
+            set(),
+            public_running=process.poll() is None,
+        )
+        _signal_processes(owned_pids, signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        survivors = {pid for pid in owned_pids if _process_is_running(pid)}
+        _signal_processes(survivors, signal.SIGKILL)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        _wait_for_process_pids(owned_pids, 5)
+        return
+    if os.name == "nt":
+        _taskkill_process_tree(process.pid)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _taskkill_process_tree(pid: int) -> None:
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _signal_processes(pids: set[int], signal_number: int) -> None:
+    for pid in sorted(pids, reverse=True):
+        try:
+            os.kill(pid, signal_number)
+        except OSError:
+            pass
+
+
+def _posix_owned_process_pids(
+    public_pid: int,
+    service_pids: set[int],
+    *,
+    public_running: bool,
+) -> set[int]:
+    try:
+        snapshot = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        roots = set(service_pids)
+        if public_running:
+            roots.add(public_pid)
+        return roots
+    processes: dict[int, int] = {}
+    for line in snapshot.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, parent_pid = map(int, fields)
+        except ValueError:
+            continue
+        processes[pid] = parent_pid
+    owned = {pid for pid in service_pids if pid in processes}
+    if public_running and public_pid in processes:
+        owned.add(public_pid)
+    while True:
+        descendants = {
+            pid
+            for pid, parent_pid in processes.items()
+            if parent_pid in owned
+        }
+        expanded = owned | descendants
+        if expanded == owned:
+            return owned
+        owned = expanded
 
 
 def _tool_payload(response: dict) -> dict:
@@ -1381,6 +1621,329 @@ def _meta_payload(response: dict, *, expected_ok: bool) -> dict:
     if structured.get("ok") is not expected_ok or is_error is not (not expected_ok):
         raise SystemExit(f"Unica MCP Meta call has inconsistent success state: {response}")
     return structured
+
+
+def _assert_no_upstream_search_fields(value: object) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in UPSTREAM_SEARCH_FIELDS:
+                raise SystemExit(
+                    f"Unica MCP code search leaks upstream field {key}"
+                )
+            _assert_no_upstream_search_fields(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_no_upstream_search_fields(child)
+
+
+def _code_search_payload(response: dict) -> dict:
+    if "error" in response:
+        raise SystemExit(f"Unica MCP code search failed as JSON-RPC: {response['error']}")
+    result = response.get("result")
+    try:
+        payload = json.loads(result["content"][0]["text"])
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+        raise SystemExit(
+            f"Unica MCP code search has no JSON operation payload: {response}"
+        ) from error
+    if not isinstance(payload, dict):
+        raise SystemExit(f"Unica MCP code search payload is not an object: {payload!r}")
+    if not isinstance(payload.get("ok"), bool) or result.get("isError") is True:
+        raise SystemExit(
+            f"Unica MCP code search has inconsistent success state: {response}"
+        )
+    _assert_no_upstream_search_fields(payload)
+    return payload
+
+
+def _bsl_search_is_ready(payload: dict) -> bool:
+    try:
+        sections = payload["data"]["sections"]
+    except (KeyError, TypeError) as error:
+        raise SystemExit(
+            f"Unica MCP code search has no provider sections: {payload}"
+        ) from error
+    if not isinstance(sections, list):
+        raise SystemExit(f"Unica MCP code search sections are not a list: {payload}")
+    providers = [
+        section.get("provider") if isinstance(section, dict) else None
+        for section in sections
+    ]
+    if providers != CODE_SEARCH_PROVIDERS or len(set(providers)) != len(providers):
+        raise SystemExit(
+            "Unica MCP code search provider sections differ from "
+            f"{CODE_SEARCH_PROVIDERS}: {providers}"
+        )
+    bsl = sections[1]
+    status = bsl.get("status")
+    diagnostics = bsl.get("diagnostics")
+    if status == "unavailable":
+        detail = json.dumps(diagnostics, ensure_ascii=False).lower()
+        if (
+            "not_ready" in detail
+            or "not ready" in detail
+            or "search index is being built" in detail
+        ):
+            return False
+        raise SystemExit(f"Unica MCP bsl-analyzer is unavailable: {bsl}")
+    if status != "ok":
+        raise SystemExit(
+            f"Unica MCP bsl-analyzer section must be ok, got {status!r}: {bsl}"
+        )
+    hits = bsl.get("hits")
+    if not isinstance(hits, list) or not any(
+        "Run" in json.dumps(hit, ensure_ascii=False) for hit in hits
+    ):
+        raise SystemExit(
+            f"Unica MCP bsl-analyzer did not find fixture symbol Run: {bsl}"
+        )
+    return True
+
+
+def _exercise_bsl_search(
+    session: McpSession,
+    request_id: int,
+    timeout_seconds: float,
+    smoke_deadline: float | None = None,
+) -> int:
+    deadline = time.monotonic() + max(10.0, timeout_seconds * 3)
+    if smoke_deadline is not None:
+        deadline = min(deadline, smoke_deadline)
+    while True:
+        payload = _code_search_payload(
+            session.request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "unica.code.search",
+                        "arguments": {
+                            "sourceDir": "src",
+                            "query": "Run",
+                            "limit": 10,
+                        },
+                    },
+                }
+            )
+        )
+        request_id += 1
+        if _bsl_search_is_ready(payload):
+            if payload.get("ok") is not True:
+                raise SystemExit(
+                    "Unica MCP code search has inconsistent success state: "
+                    f"{payload}"
+                )
+            return request_id
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(
+                "Unica MCP bsl-analyzer stayed not_ready until the smoke deadline"
+            )
+        time.sleep(min(0.5, remaining))
+
+
+def _process_is_running(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes
+
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        open_process.restype = ctypes.c_void_p
+        wait_for_single_object = kernel32.WaitForSingleObject
+        wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        wait_for_single_object.restype = ctypes.c_uint32
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [ctypes.c_void_p]
+        close_handle.restype = ctypes.c_int
+        handle = open_process(synchronize, False, pid)
+        if not handle:
+            # Access denied still proves that a process owns the PID. Other
+            # failures mean there is no process left for this smoke to await.
+            return ctypes.get_last_error() == 5
+        try:
+            return wait_for_single_object(handle, 0) == wait_timeout
+        finally:
+            close_handle(handle)
+
+    try:
+        completed, _ = os.waitpid(pid, os.WNOHANG)
+        if completed == pid:
+            return False
+    except ChildProcessError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_process_pids(pids: set[int], timeout_seconds: float) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while any(_process_is_running(pid) for pid in pids):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.05, remaining))
+
+
+def _wait_for_workspace_services(
+    cache_root: Path,
+    timeout_seconds: float,
+    service_pids: set[int] | None = None,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    services_root = cache_root / "services"
+    service_pids = service_pids or set()
+    while True:
+        records_remain = any(services_root.glob("*/service.json"))
+        running_pids = {pid for pid in service_pids if _process_is_running(pid)}
+        if not records_remain and not running_pids:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(
+                "Unica MCP workspace service did not exit before smoke cleanup"
+            )
+        time.sleep(min(0.05, remaining))
+
+
+def _shutdown_workspace_services(
+    cache_root: Path, timeout_seconds: float
+) -> set[int]:
+    deadline = time.monotonic() + timeout_seconds
+    services_root = cache_root / "services"
+    service_pids: set[int] = set()
+    for record_path in sorted(services_root.glob("*/service.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError) as error:
+            raise SystemExit(
+                f"Unica MCP workspace service record is unreadable: {record_path}"
+            ) from error
+        if not isinstance(record, dict):
+            raise SystemExit(
+                f"Unica MCP workspace service record is not an object: {record_path}"
+            )
+        port = record.get("port")
+        pid = record.get("pid")
+        token = record.get("token")
+        if (
+            isinstance(pid, bool)
+            or not isinstance(pid, int)
+            or not 1 <= pid <= 0xFFFFFFFF
+            or isinstance(port, bool)
+            or not isinstance(port, int)
+            or not 1 <= port <= 65535
+            or not isinstance(token, str)
+            or not token
+        ):
+            raise SystemExit(
+                "Unica MCP workspace service record has no valid pid, port, and token: "
+                f"{record_path}"
+            )
+        service_pids.add(pid)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(
+                "Unica MCP workspace service shutdown exceeded the smoke deadline"
+            )
+        connection_timeout = min(2.0, remaining)
+        request = {
+            "token": token,
+            "kind": {"type": "shutdown"},
+        }
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", port), timeout=connection_timeout
+            ) as connection:
+                connection.settimeout(connection_timeout)
+                connection.sendall(
+                    (
+                        json.dumps(request, separators=(",", ":")) + "\n"
+                    ).encode("utf-8")
+                )
+                with connection.makefile("rb") as response_stream:
+                    response_line = response_stream.readline(65537)
+        except OSError as error:
+            if not record_path.exists():
+                continue
+            raise SystemExit(
+                f"Unica MCP workspace service rejected shutdown: {record_path}"
+            ) from error
+        if len(response_line) > 65536 or not response_line.endswith(b"\n"):
+            raise SystemExit(
+                f"Unica MCP workspace service returned an invalid shutdown frame: {record_path}"
+            )
+        try:
+            response = json.loads(response_line)
+        except json.JSONDecodeError as error:
+            raise SystemExit(
+                f"Unica MCP workspace service returned invalid shutdown JSON: {record_path}"
+            ) from error
+        if (
+            not isinstance(response, dict)
+            or response.get("ok") is not True
+            or response.get("shutdown") is not True
+        ):
+            raise SystemExit(
+                f"Unica MCP workspace service did not confirm shutdown: {response!r}"
+            )
+    return service_pids
+
+
+def _close_session_and_workspace_services(
+    session: McpSession,
+    cache_root: Path,
+    timeout_seconds: float,
+    deadline: float | None = None,
+) -> None:
+    # Capture PID roots before authenticated shutdown: a failed shutdown or
+    # TemporaryDirectory cleanup may remove the record that makes an orphan
+    # reachable for emergency cleanup.
+    service_pids = _workspace_service_pids(cache_root)
+    try:
+        try:
+            # On Windows, a detached workspace service may inherit extra copies of
+            # the MCP process' pipe handles. Closing the MCP session first then
+            # waits for reader EOF while the service that owns those copies is
+            # still alive, so cleanup never reaches its shutdown call.
+            # Ask the authenticated services to stop before waiting for MCP EOF.
+            service_pids.update(
+                _shutdown_workspace_services(
+                    cache_root,
+                    _remaining_smoke_timeout(deadline, timeout_seconds),
+                )
+            )
+        finally:
+            try:
+                session.close()
+            finally:
+                _wait_for_workspace_services(
+                    cache_root,
+                    _remaining_smoke_timeout(deadline, timeout_seconds),
+                    service_pids,
+                )
+    except BaseException:
+        session.terminate_tree(cache_root, service_pids)
+        raise
+
+
+def _remaining_smoke_timeout(deadline: float | None, cap: float) -> float:
+    if deadline is None:
+        return cap
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise SystemExit("Unica MCP smoke exceeded its aggregate deadline")
+    return min(cap, remaining)
 
 
 def _call(
@@ -1599,7 +2162,14 @@ def _exercise_reader_bridge(
     return request_id
 
 
-def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None:
+def smoke(
+    command: list[str],
+    plugin_root: Path,
+    timeout_seconds: float,
+    deadline: float,
+    session_started: Callable[[McpSession, Path], None] | None = None,
+    admission_lock: threading.Lock | None = None,
+) -> None:
     environment = os.environ.copy()
     environment["UNICA_PLUGIN_ROOT"] = str(plugin_root.resolve())
     expected_names = expected_tool_names(plugin_root)
@@ -1607,13 +2177,24 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
         root = Path(temporary)
         workspace = root / "workspace"
         workspace.mkdir()
-        environment["UNICA_CACHE_DIR"] = str(root / "cache")
+        cache_root = root / "cache"
+        environment["UNICA_CACHE_DIR"] = str(cache_root)
         _source_workspace(workspace)
         before = _workspace_snapshot(workspace)
         executable = Path(command[0])
         if executable.exists():
             command = [str(executable.resolve()), *command[1:]]
-        session = McpSession(command, environment, timeout_seconds, cwd=workspace)
+        admission = admission_lock or contextlib.nullcontext()
+        with admission:
+            session = McpSession(
+                command,
+                environment,
+                timeout_seconds,
+                cwd=workspace,
+                deadline=deadline,
+            )
+            if session_started is not None:
+                session_started(session, cache_root)
         try:
             initialize = session.request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
                 "protocolVersion": "2025-06-18", "capabilities": {},
@@ -1636,12 +2217,17 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             if not isinstance(tools, list):
                 raise SystemExit("Unica MCP tools/list response is missing")
             _stable_tool_contract(tools, expected_names)
-            cache_root = root / "cache"
             next_id, _ = _exercise_source_set(
                 session, 3, workspace, cache_root, "main"
             )
             next_id, _ = _exercise_source_set(
                 session, next_id, workspace, cache_root, "extension"
+            )
+            next_id = _exercise_bsl_search(
+                session,
+                next_id,
+                timeout_seconds,
+                deadline,
             )
             next_id = _exercise_reader_bridge(session, next_id, workspace)
             success = _meta_payload(
@@ -1678,7 +2264,12 @@ def smoke(command: list[str], plugin_root: Path, timeout_seconds: float) -> None
             if diagnostics[0].get("code") != "invalid_arguments":
                 raise SystemExit(f"invalid Meta smoke returned unstable diagnostics: {invalid}")
         finally:
-            session.close()
+            _close_session_and_workspace_services(
+                session,
+                cache_root,
+                max(5.0, timeout_seconds),
+                deadline,
+            )
         after = _workspace_snapshot(workspace)
         # The whole public source surface is read-only, so the packaged smoke
         # must end with the byte map it started from.
@@ -1701,9 +2292,97 @@ def main() -> None:
     parser.add_argument("--binary-arg", action="append", default=[])
     parser.add_argument("--plugin-root", required=True, type=Path)
     parser.add_argument("--timeout-seconds", type=float, default=20)
+    parser.add_argument(
+        "--total-timeout-seconds",
+        type=float,
+        default=DEFAULT_TOTAL_TIMEOUT_SECONDS,
+    )
     args = parser.parse_args()
-    smoke([args.binary, *args.binary_arg], args.plugin_root, args.timeout_seconds)
-    print("verified packaged Unica MCP source-resource flow")
+    if args.timeout_seconds <= 0 or args.total_timeout_seconds <= 0:
+        parser.error("timeout values must be positive")
+    deadline = time.monotonic() + args.total_timeout_seconds
+
+    active_session: list[tuple[McpSession, Path]] = []
+    cleanup_done = threading.Event()
+    outcome_lock = threading.Lock()
+    admission_lock = threading.Lock()
+    outcome = ["running"]
+
+    def cleanup_expired_smoke() -> None:
+        message = (
+            "Unica MCP smoke exceeded its aggregate deadline of "
+            f"{args.total_timeout_seconds:g}s\n"
+        ).encode("utf-8", errors="replace")
+        try:
+            os.write(2, message)
+        finally:
+            try:
+                # Popen and session publication share this lock, so the
+                # watchdog cannot observe the spawned child without its handle.
+                with admission_lock:
+                    active = active_session[0] if active_session else None
+                if active is not None:
+                    session, cache_root = active
+                    session.terminate_tree(cache_root)
+            finally:
+                cleanup_done.set()
+                os._exit(124)
+
+    def expire_smoke() -> None:
+        with outcome_lock:
+            if outcome[0] != "running":
+                return
+            outcome[0] = "expired"
+        cleanup_expired_smoke()
+
+    watchdog = threading.Timer(args.total_timeout_seconds, expire_smoke)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        try:
+            smoke(
+                [args.binary, *args.binary_arg],
+                args.plugin_root,
+                args.timeout_seconds,
+                deadline,
+                lambda session, cache_root: active_session.append((session, cache_root)),
+                admission_lock,
+            )
+            with outcome_lock:
+                if outcome[0] == "running":
+                    outcome[0] = "completed"
+                    completed = True
+                else:
+                    completed = False
+            if not completed:
+                # The watchdog already owns the outcome. A foreground success
+                # racing its slower tree cleanup must not commit exit code 0.
+                cleanup_done.wait(timeout=30)
+                os._exit(124)
+        except BaseException:
+            with outcome_lock:
+                if outcome[0] == "running" and time.monotonic() < deadline:
+                    outcome[0] = "failed"
+                    failure_action = "raise"
+                elif outcome[0] == "running":
+                    outcome[0] = "expired"
+                    failure_action = "cleanup"
+                elif outcome[0] == "expired":
+                    failure_action = "wait"
+                else:
+                    failure_action = "raise"
+            if failure_action == "cleanup":
+                cleanup_expired_smoke()
+            if failure_action == "wait":
+                # Killing the owned process tree can make the foreground request
+                # observe EOF before the watchdog reaches os._exit(124). Do not
+                # let that cleanup race turn a deadline into an ordinary error.
+                cleanup_done.wait(timeout=30)
+                os._exit(124)
+            raise
+    finally:
+        watchdog.cancel()
+    print("verified packaged Unica MCP source-resource flow and bsl-analyzer search")
 
 
 if __name__ == "__main__":

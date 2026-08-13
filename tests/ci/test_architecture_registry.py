@@ -1513,6 +1513,38 @@ class IndexSynchronizationTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class RuntimeArtifactFlowContractTests(unittest.TestCase):
+    """The runtime bytes exercised by smoke are the bytes approved for release."""
+
+    def setUp(self) -> None:
+        self.records = all_records()
+
+    def test_extracted_runtime_smoke_is_owned_by_the_superseding_decision(self) -> None:
+        legacy = (
+            DECISIONS_DIR / "0010-ci-build-cache-and-artifact-flow.md"
+        ).read_text(encoding="utf-8")
+        current_path = DECISIONS_DIR / "0055-smoke-proveryaet-upakovannyy-runtime.md"
+        self.assertTrue(current_path.exists(), "missing ADR-0055 runtime smoke decision")
+        current = current_path.read_text(encoding="utf-8")
+        design = (
+            REPO_ROOT / "docs/design/2026-08-12-bsl-analyzer-v0-2-67-design.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Статус: `superseded` — заменено ADR-0055", legacy)
+        self.assertIn("- Статус: `accepted`", current)
+        self.assertIn("извлеч", current.lower())
+        self.assertIn("архив", current.lower())
+        self.assertIn("- Decision: `ADR-0055`", design)
+        self.assertFalse(
+            any("ADR-0010" in (record.one("Decision") or "") for record in self.records),
+            "active registry rules must name ADR-0055 instead of superseded ADR-0010",
+        )
+        self.assertTrue(
+            any("ADR-0055" in (record.one("Decision") or "") for record in self.records),
+            "ADR-0055 must own the derived runtime artifact-flow rules",
+        )
+
+
 class ReaderInvocationContractTests(unittest.TestCase):
     """ADR-0044 stays activated through derived executable rules."""
 
