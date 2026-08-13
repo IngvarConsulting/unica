@@ -905,7 +905,7 @@ fn diagnostics_input_schema() -> Value {
                         "type": "integer",
                         "minimum": DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
                         "maximum": DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
-                        "description": "Total analyze budget. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config."
+                        "description": "Total action=analyze budget. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config."
                     }),
                     _ => unreachable!("diagnostic descriptor contains unknown field {name}"),
                 };
@@ -3481,7 +3481,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "timeoutSeconds",
-        "Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics mode analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120.",
+        "Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics action=analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120.",
     ),
     (
         "tool",
@@ -7312,6 +7312,17 @@ mod tests {
                 assert!(!properties.contains_key(removed), "{removed}");
             }
         }
+    }
+
+    #[test]
+    fn diagnostics_timeout_description_uses_the_action_contract() {
+        let schema = input_schema_for_tool(&diagnostic_tool());
+        let description = schema["properties"]["timeoutSeconds"]["description"]
+            .as_str()
+            .expect("timeoutSeconds is described at the summary object");
+
+        assert!(description.contains("action=analyze"), "{description}");
+        assert!(!description.contains("mode analyze"), "{description}");
     }
 
     #[test]

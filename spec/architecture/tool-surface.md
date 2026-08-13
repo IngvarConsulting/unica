@@ -390,7 +390,7 @@ Read provider-neutral diagnostics addressed by logical 1C source targets.
 | `providers` | array | нет | Optional non-empty provider selection; omission selects all providers applicable to the action and target. |
 | `range` | object | только в ветви | Zero-based, end-exclusive source range accepted only by findings for a module target. |
 | `sourceSet` | string | да | Exact source-set name from the workspace project map; no implicit fallback is used. |
-| `timeoutSeconds` | integer | только в ветви | Total analyze budget. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config. |
+| `timeoutSeconds` | integer | только в ветви | Total action=analyze budget. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config. |
 
 **Результат сейчас:** `data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; физические пути и формат одного анализатора наружу не выходят (отвечают типизированным `data`)
 
@@ -1275,7 +1275,7 @@ Wait for a durable runtime job with a caller-side bounded timeout.
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 | `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
-| `timeoutSeconds` | integer | нет | Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics mode analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120. |
+| `timeoutSeconds` | integer | нет | Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics action=analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120. |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 

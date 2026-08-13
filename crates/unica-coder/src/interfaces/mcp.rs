@@ -69,7 +69,7 @@ pub fn run_stdio() {
     // implementations can terminate their child process trees.
     if !drain_mcp_shutdown(&in_flight, EOF_CANCELLATION_GRACE) {
         eprintln!(
-            "unica mcp shutdown grace expired while tool calls or code-search providers were cleaning up"
+            "unica mcp shutdown grace expired while tool calls or provider workers were cleaning up"
         );
     }
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
@@ -77,7 +77,13 @@ pub fn run_stdio() {
 
 fn drain_mcp_shutdown(in_flight: &InFlightRegistry, grace: Duration) -> bool {
     drain_mcp_shutdown_with(in_flight, grace, |remaining| {
-        crate::application::code_intelligence::drain_code_search_workers(remaining)
+        let deadline = Instant::now() + remaining;
+        let code_search_idle =
+            crate::application::code_intelligence::drain_code_search_workers(remaining);
+        let diagnostics_idle = crate::application::diagnostics::drain_diagnostic_workers(
+            deadline.saturating_duration_since(Instant::now()),
+        );
+        code_search_idle && diagnostics_idle
     })
 }
 
@@ -1535,6 +1541,21 @@ mod tests {
                 EOF_CANCELLATION_GRACE
             ),
             "tracked code-search worker outlived the EOF cleanup grace"
+        );
+    }
+
+    #[test]
+    fn eof_cleanup_drains_noncooperative_diagnostic_worker_within_the_same_grace() {
+        // This worker deliberately has no cancellation token. It models a
+        // provider that ignored cancellation after its tool call returned.
+        crate::application::diagnostics::track_diagnostic_worker_for_test(std::thread::spawn(
+            || std::thread::sleep(Duration::from_millis(50)),
+        ));
+
+        let registry = InFlightRegistry::default();
+        assert!(
+            drain_mcp_shutdown(&registry, EOF_CANCELLATION_GRACE),
+            "tracked diagnostics worker outlived the EOF cleanup grace"
         );
     }
 

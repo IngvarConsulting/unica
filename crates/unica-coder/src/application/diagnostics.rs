@@ -168,13 +168,14 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
         let mut sections = Vec::with_capacity(selected.len());
         let mut all_items = Vec::new();
         for (selected_provider, execution) in selected.iter().zip(executions) {
-            let ProviderExecution::Outcome(outcome) = execution else {
+            let ProviderExecution::Outcome(mut outcome) = execution else {
                 sections.push(unsupported_section(
                     selected_provider.descriptor,
                     request.action,
                 ));
                 continue;
             };
+            sanitize_provider_outcome(&mut outcome, &context);
             let mut provider_items = Vec::new();
             let mut mapping_error = None;
             for observation in outcome.observations {
@@ -454,21 +455,43 @@ fn normalize_provider_outcome(
     for rule in &mut outcome.rules {
         rule.provider = provider_id;
     }
-    if outcome.status == DiagnosticProviderStatus::Failed && outcome.error.is_none() {
-        return provider_contract_failure(
-            outcome.version,
-            "failed provider outcome omitted its typed error",
-        );
-    }
-    if matches!(
-        outcome.status,
-        DiagnosticProviderStatus::Completed | DiagnosticProviderStatus::Empty
-    ) && outcome.error.is_some()
-    {
-        return provider_contract_failure(
-            outcome.version,
-            "successful provider outcome included an error",
-        );
+    match outcome.status {
+        DiagnosticProviderStatus::Completed => {
+            if outcome.error.is_some() {
+                return provider_contract_failure(
+                    outcome.version,
+                    "completed provider outcome included an error",
+                );
+            }
+        }
+        DiagnosticProviderStatus::Empty => {
+            if !outcome.complete
+                || !outcome.observations.is_empty()
+                || !outcome.rules.is_empty()
+                || outcome.readiness.is_some()
+                || outcome.error.is_some()
+            {
+                return provider_contract_failure(
+                    outcome.version,
+                    "empty provider outcome was not complete and payload-free",
+                );
+            }
+        }
+        DiagnosticProviderStatus::Failed
+        | DiagnosticProviderStatus::Unavailable
+        | DiagnosticProviderStatus::Unsupported => {
+            if outcome.complete
+                || !outcome.observations.is_empty()
+                || !outcome.rules.is_empty()
+                || outcome.readiness.is_some()
+                || outcome.error.is_none()
+            {
+                return provider_contract_failure(
+                    outcome.version,
+                    "non-success provider outcome was not incomplete, payload-free, and typed",
+                );
+            }
+        }
     }
     match action {
         DiagnosticAction::Status => {
@@ -476,6 +499,18 @@ fn normalize_provider_outcome(
                 return provider_contract_failure(
                     outcome.version,
                     "status provider returned findings or rules",
+                );
+            }
+            if matches!(
+                outcome.status,
+                DiagnosticProviderStatus::Completed | DiagnosticProviderStatus::Empty
+            ) && (outcome.status != DiagnosticProviderStatus::Completed
+                || !outcome.complete
+                || outcome.readiness.is_none())
+            {
+                return provider_contract_failure(
+                    outcome.version,
+                    "completed status provider omitted complete readiness evidence",
                 );
             }
         }
@@ -568,6 +603,142 @@ fn provider_panic_outcome(
     )
 }
 
+fn sanitize_provider_outcome(outcome: &mut DiagnosticProviderOutcome, context: &DiagnosticContext) {
+    outcome.version = outcome
+        .version
+        .take()
+        .map(|version| redact_public_physical_paths(&version, context));
+    if let Some(error) = &mut outcome.error {
+        sanitize_public_diagnostic_error(error);
+    }
+    for observation in &mut outcome.observations {
+        match observation {
+            DiagnosticObservation::Diagnostic { code, message, .. } => {
+                *code = redact_public_physical_paths(code, context);
+                *message = redact_public_physical_paths(message, context);
+            }
+            DiagnosticObservation::ResourceFailure { error, .. } => {
+                sanitize_public_diagnostic_error(error);
+            }
+        }
+    }
+    for rule in &mut outcome.rules {
+        rule.code = redact_public_physical_paths(&rule.code, context);
+        rule.title = redact_public_physical_paths(&rule.title, context);
+        rule.description = rule
+            .description
+            .take()
+            .map(|description| redact_public_physical_paths(&description, context));
+    }
+}
+
+fn sanitize_public_diagnostic_error(error: &mut DiagnosticError) {
+    error.message = match error.code.as_str() {
+        "source_analysis_failed" => "diagnostic provider could not analyze the selected resource",
+        "source_decode_failed" => "source is not valid in the detected encoding",
+        "provider_not_ready" => "diagnostic provider is not ready",
+        "target_not_supported" => "diagnostic provider does not support the selected target",
+        "action_not_supported" => "diagnostic provider does not support the selected action",
+        "location_outside_source_set" => "provider resource is outside the selected sourceSet",
+        "provider_contract_invalid" => "diagnostic provider returned an invalid result",
+        "provider_timeout" => "diagnostic provider deadline exceeded",
+        "provider_panicked" => "diagnostic provider terminated unexpectedly",
+        "provider_start_failed" | "provider_unavailable" => "diagnostic provider is unavailable",
+        "diagnostics_invalid" => "diagnostic provider returned an invalid diagnostics stream",
+        "diagnostics_incomplete" => "diagnostic provider returned an incomplete diagnostics stream",
+        "diagnostics_pending" => "diagnostic provider has not completed diagnostics",
+        "cancelled" => "diagnostic provider request was cancelled",
+        _ => "diagnostic provider reported an error",
+    }
+    .to_string();
+    if error.code.is_empty()
+        || !error
+            .code
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        error.code = "provider_error".to_string();
+    }
+}
+
+fn redact_public_physical_paths(text: &str, context: &DiagnosticContext) -> String {
+    let mut redacted = text.to_string();
+    for root in [
+        &context.workspace.cwd,
+        &context.workspace.workspace_root,
+        &context.workspace.cache_root,
+        &context.source_root.path,
+    ] {
+        let displayed = root.to_string_lossy();
+        if !displayed.is_empty() {
+            redacted = redacted.replace(displayed.as_ref(), "<physical-path>");
+            redacted = redacted.replace(displayed.replace('\\', "/").as_str(), "<physical-path>");
+        }
+    }
+    redact_absolute_path_tokens(&redacted)
+}
+
+fn redact_absolute_path_tokens(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let Some((offset, _)) = text[cursor..]
+            .char_indices()
+            .find(|(offset, _)| absolute_path_starts_at(text, cursor + offset))
+        else {
+            output.push_str(&text[cursor..]);
+            break;
+        };
+        let start = cursor + offset;
+        output.push_str(&text[cursor..start]);
+        let end = text[start..]
+            .char_indices()
+            .skip(1)
+            .find_map(|(offset, ch)| {
+                (ch.is_whitespace()
+                    || matches!(
+                        ch,
+                        '"' | '\'' | '<' | '>' | '|' | ',' | ';' | ')' | ']' | '}'
+                    ))
+                .then_some(start + offset)
+            })
+            .unwrap_or(text.len());
+        output.push_str("<physical-path>");
+        cursor = end;
+    }
+    output
+}
+
+fn absolute_path_starts_at(text: &str, index: usize) -> bool {
+    if !text.is_char_boundary(index) {
+        return false;
+    }
+    let previous = text[..index].chars().next_back();
+    let boundary = index == 0
+        || previous.is_some_and(|ch| !ch.is_alphanumeric() && !matches!(ch, '_' | '/' | '\\'));
+    if !boundary {
+        return false;
+    }
+    let suffix = &text[index..];
+    if suffix
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+        || suffix.starts_with("\\\\")
+    {
+        return true;
+    }
+    let mut chars = suffix.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some(drive), Some(':'), Some(separator))
+            if drive.is_ascii_alphabetic() && matches!(separator, '/' | '\\') =>
+        {
+            true
+        }
+        (Some('/'), Some(next), _) if next != '/' && !next.is_whitespace() => true,
+        _ => false,
+    }
+}
+
 struct DiagnosticWorkerAdmission {
     counts: Mutex<HashMap<DiagnosticProviderId, usize>>,
     per_provider_limit: usize,
@@ -631,32 +802,52 @@ struct DiagnosticWorkerLifecycle {
 
 impl DiagnosticWorkerLifecycle {
     fn track(&self, handle: thread::JoinHandle<()>) {
-        self.reap();
-        self.handles
+        let mut handles = self
+            .handles
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .push(handle);
+            .unwrap_or_else(|poison| poison.into_inner());
+        Self::reap_finished(&mut handles);
+        handles.push(handle);
+    }
+
+    fn drain(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            {
+                let mut handles = self
+                    .handles
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                Self::reap_finished(&mut handles);
+                if handles.is_empty() {
+                    return true;
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
     }
 
     fn reap(&self) {
-        let finished = {
-            let mut handles = self
-                .handles
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            let mut finished = Vec::new();
-            let mut index = 0;
-            while index < handles.len() {
-                if handles[index].is_finished() {
-                    finished.push(handles.swap_remove(index));
-                } else {
-                    index += 1;
-                }
+        let mut handles = self
+            .handles
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        Self::reap_finished(&mut handles);
+    }
+
+    fn reap_finished(handles: &mut Vec<thread::JoinHandle<()>>) {
+        let mut index = 0;
+        while index < handles.len() {
+            if handles[index].is_finished() {
+                let handle = handles.swap_remove(index);
+                let _ = handle.join();
+            } else {
+                index += 1;
             }
-            finished
-        };
-        for handle in finished {
-            let _ = handle.join();
         }
     }
 }
@@ -668,6 +859,15 @@ fn diagnostic_worker_lifecycle() -> Arc<DiagnosticWorkerLifecycle> {
             handles: Mutex::new(Vec::new()),
         })
     }))
+}
+
+pub(crate) fn drain_diagnostic_workers(timeout: Duration) -> bool {
+    diagnostic_worker_lifecycle().drain(timeout)
+}
+
+#[cfg(test)]
+pub(crate) fn track_diagnostic_worker_for_test(handle: thread::JoinHandle<()>) {
+    diagnostic_worker_lifecycle().track(handle);
 }
 
 fn select_providers(
@@ -818,26 +1018,32 @@ fn item_matches_request(
     request: &DiagnosticRequest,
     context: &DiagnosticContext,
 ) -> bool {
-    if let DiagnosticItem::Diagnostic {
-        provider,
-        code,
-        severity,
-        ..
-    } = item
-    {
-        if request
-            .filter
-            .min_severity
-            .is_some_and(|minimum| severity_rank(*severity) < severity_rank(minimum))
-        {
-            return false;
+    let provider_code = match item {
+        DiagnosticItem::Diagnostic {
+            provider,
+            code,
+            severity,
+            ..
+        } => {
+            if request
+                .filter
+                .min_severity
+                .is_some_and(|minimum| severity_rank(*severity) < severity_rank(minimum))
+            {
+                return false;
+            }
+            Some((*provider, code))
         }
+        DiagnosticItem::DiagnosticRule { provider, code, .. } => Some((*provider, code)),
+        DiagnosticItem::ResourceFailure { .. } => None,
+    };
+    if let Some((provider, code)) = provider_code {
         if !request.filter.codes.is_empty()
             && !request
                 .filter
                 .codes
                 .iter()
-                .any(|filter| filter.provider == *provider && filter.code == *code)
+                .any(|filter| filter.provider == provider && filter.code == *code)
         {
             return false;
         }
@@ -1582,6 +1788,60 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_catalog_filters_exact_provider_code_pairs_before_global_limit() {
+        let analyzer = DiagnosticProviderOutcome {
+            status: DiagnosticProviderStatus::Completed,
+            complete: true,
+            version: Some("test".to_string()),
+            observations: Vec::new(),
+            rules: vec![
+                DiagnosticRuleObservation {
+                    provider: ANALYZER,
+                    code: "KEEP".to_string(),
+                    default_severity: DiagnosticSeverity::Warning,
+                    title: "Keep".to_string(),
+                    description: None,
+                    tags: Vec::new(),
+                },
+                DiagnosticRuleObservation {
+                    provider: ANALYZER,
+                    code: "DROP".to_string(),
+                    default_severity: DiagnosticSeverity::Warning,
+                    title: "Drop".to_string(),
+                    description: None,
+                    tags: Vec::new(),
+                },
+            ],
+            readiness: None,
+            error: None,
+        };
+        let (registry, calls) =
+            fake_registry([analyzer, successful(Vec::new()), successful(Vec::new())]);
+        let mut request = findings_request();
+        request.action = DiagnosticAction::Catalog;
+        request.metadata_path = None;
+        request.filter.min_severity = None;
+        request.filter.codes = vec![DiagnosticCodeFilter {
+            provider: "bsl-analyzer".to_string(),
+            code: "KEEP".to_string(),
+        }];
+        request.limit = 1;
+
+        let result = run(registry, &request).unwrap();
+
+        assert_eq!(result.items_total, Some(1));
+        assert_eq!(result.items_returned, Some(1));
+        assert_eq!(result.truncated, Some(false));
+        assert!(matches!(
+            result.items.as_slice(),
+            [DiagnosticItem::DiagnosticRule { provider: "bsl-analyzer", code, .. }]
+                if code == "KEEP"
+        ));
+        assert_eq!(calls[0].load(Ordering::SeqCst), 1);
+        assert_eq!(calls[1].load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn diagnostics_provider_selection_rejects_no_automatic_applicable_provider() {
         let empty = successful(Vec::new());
         let (registry, calls) = fake_registry([empty.clone(), empty.clone(), empty]);
@@ -2199,6 +2459,128 @@ mod tests {
             analyze.providers[0].error.as_ref().unwrap().code,
             "provider_contract_invalid"
         );
+
+        for status in [
+            DiagnosticProviderStatus::Failed,
+            DiagnosticProviderStatus::Unavailable,
+            DiagnosticProviderStatus::Unsupported,
+            DiagnosticProviderStatus::Empty,
+        ] {
+            let malformed = DiagnosticProviderOutcome {
+                status,
+                complete: status == DiagnosticProviderStatus::Empty,
+                version: None,
+                observations: vec![diagnostic(
+                    ANALYZER,
+                    "selected",
+                    "MUST-NOT-PUBLISH",
+                    DiagnosticSeverity::Warning,
+                    DiagnosticObservationFocus::Target,
+                )],
+                rules: Vec::new(),
+                readiness: None,
+                error: (status != DiagnosticProviderStatus::Empty).then(|| DiagnosticError {
+                    code: "provider_failed".to_string(),
+                    message: "provider failed".to_string(),
+                    retryable: false,
+                }),
+            };
+            let (registry, _) =
+                fake_registry([malformed, successful(Vec::new()), successful(Vec::new())]);
+            let rejected = run(registry, &request).unwrap();
+            assert!(rejected.items.is_empty(), "status {status:?}");
+            assert_eq!(
+                rejected.providers[0].error.as_ref().unwrap().code,
+                "provider_contract_invalid",
+                "status {status:?}"
+            );
+        }
+
+        let status_without_readiness = successful(Vec::new());
+        let (registry, _) = fake_registry([
+            status_without_readiness,
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+        let missing_readiness = run(registry, &status_request).unwrap();
+        assert_eq!(
+            missing_readiness.providers[0].error.as_ref().unwrap().code,
+            "provider_contract_invalid"
+        );
+    }
+
+    #[test]
+    fn diagnostics_public_result_redacts_provider_controlled_physical_paths() {
+        let private_root = std::env::temp_dir().join("unica-diagnostics-private-message-workspace");
+        let private_path = private_root.join("src/CommonModules/Secret/Ext/Module.bsl");
+        let completed = DiagnosticProviderOutcome {
+            status: DiagnosticProviderStatus::Completed,
+            complete: false,
+            version: Some("test".to_string()),
+            observations: vec![
+                DiagnosticObservation::Diagnostic {
+                    provider: ANALYZER,
+                    location: DiagnosticObservationLocation::Resource {
+                        handle: "selected".to_string(),
+                    },
+                    focus: DiagnosticObservationFocus::Target,
+                    code: "PATH-IN-MESSAGE".to_string(),
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!(
+                        "analysis failed at {}; see https://example.invalid/rule",
+                        private_path.display()
+                    ),
+                    tags: Vec::new(),
+                },
+                DiagnosticObservation::ResourceFailure {
+                    provider: ANALYZER,
+                    location: DiagnosticObservationLocation::Resource {
+                        handle: "selected".to_string(),
+                    },
+                    error: DiagnosticError {
+                        code: "source_analysis_failed".to_string(),
+                        message: format!(
+                            "could not read {}; fallback C:\\private\\Secret.bsl",
+                            private_path.display()
+                        ),
+                        retryable: false,
+                    },
+                },
+            ],
+            rules: Vec::new(),
+            readiness: None,
+            error: None,
+        };
+        let failed = DiagnosticProviderOutcome {
+            status: DiagnosticProviderStatus::Failed,
+            complete: false,
+            version: Some("test".to_string()),
+            observations: Vec::new(),
+            rules: Vec::new(),
+            readiness: None,
+            error: Some(DiagnosticError {
+                code: "provider_failed".to_string(),
+                message: format!("provider failed below {}", private_root.display()),
+                retryable: false,
+            }),
+        };
+        let (registry, _) = fake_registry([completed, failed, successful(Vec::new())]);
+        let workspace = WorkspaceContext {
+            cwd: private_root.clone(),
+            workspace_root: private_root.clone(),
+            cache_root: private_root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result = DiagnosticCoordinator::new(registry, &FAKE_MAPPING)
+            .execute(&findings_request(), &workspace, &CancellationToken::new())
+            .unwrap();
+        let serialized = serde_json::to_value(result).unwrap();
+
+        assert_no_physical_transport(&serialized, &private_root.to_string_lossy());
+        let text = serialized.to_string();
+        assert!(!text.contains("C:\\\\private"), "{text}");
+        assert!(text.contains("https://example.invalid/rule"), "{text}");
     }
 
     #[test]

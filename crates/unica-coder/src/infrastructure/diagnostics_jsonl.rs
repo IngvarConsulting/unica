@@ -441,17 +441,16 @@ fn normalize_reported_path(source_root: &Path, raw: &str) -> Result<String, Stri
     }
     let path = Path::new(raw);
     let candidate = if path.is_absolute() {
-        normalize_lexical(path)?
+        normalize_lexical(path).map_err(|_| "file.path contains invalid traversal".to_string())?
     } else {
-        normalize_lexical(&source_root.join(path))?
+        normalize_lexical(&source_root.join(path))
+            .map_err(|_| "file.path contains invalid traversal".to_string())?
     };
-    let identity = normalize_path_identity(&candidate)?;
-    let relative = identity.strip_prefix(source_root).map_err(|_| {
-        format!(
-            "file.path `{raw}` escapes diagnostics source root {}",
-            source_root.display()
-        )
-    })?;
+    let identity = normalize_path_identity(&candidate)
+        .map_err(|_| "file.path could not be resolved safely".to_string())?;
+    let relative = identity
+        .strip_prefix(source_root)
+        .map_err(|_| "file.path resolves outside diagnostics source root".to_string())?;
     if relative.as_os_str().is_empty() {
         return Err("file.path must name a file below the diagnostics source root".to_string());
     }
@@ -783,6 +782,37 @@ mod tests {
         let result = parser.finish();
         assert_eq!(result.outcome.error.unwrap().code, "diagnostics_invalid");
         assert!(result.outcome.observations.is_empty());
+    }
+
+    #[test]
+    fn absolute_outside_path_is_rejected_without_copying_physical_handles() {
+        let fixture = TempDir::new().unwrap();
+        let source_root = fixture.path().join("source");
+        let outside = fixture.path().join("outside/Secret.bsl");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, "Procedure Secret()\nEndProcedure").unwrap();
+        let event = json!({"type":"file","path":outside,"diagnostics":[]}).to_string();
+        let mut parser = DiagnosticsJsonlParser::new(&source_root).unwrap();
+        feed(
+            &mut parser,
+            &[
+                r#"{"type":"start","total_files":1,"version":"0.2.62"}"#,
+                &event,
+            ],
+        );
+
+        let error = parser.finish().outcome.error.unwrap();
+
+        assert_eq!(error.code, "diagnostics_invalid");
+        assert_eq!(
+            error.message,
+            "line 2: file.path resolves outside diagnostics source root"
+        );
+        assert!(!error
+            .message
+            .contains(&source_root.to_string_lossy().as_ref()));
+        assert!(!error.message.contains(&outside.to_string_lossy().as_ref()));
     }
 
     #[test]

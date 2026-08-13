@@ -1260,6 +1260,22 @@ mod tests {
         spec
     }
 
+    #[test]
+    fn production_diagnostic_registry_matches_the_canonical_live_composition() {
+        use crate::application::ports::ApplicationPorts;
+        use crate::domain::diagnostics::LIVE_DIAGNOSTIC_PROVIDERS;
+
+        let ports = super::InfrastructureApplicationPorts::new();
+        let registry = ApplicationPorts::diagnostic_provider_registry(&ports).unwrap();
+        let registered = registry.ids().collect::<Vec<_>>();
+        let published = LIVE_DIAGNOSTIC_PROVIDERS
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+
+        assert_eq!(registered, published);
+    }
+
     #[derive(Clone)]
     struct RecordingSupportStateReaderFactory {
         calls: Arc<Mutex<Vec<(&'static str, ResolvedTarget)>>>,

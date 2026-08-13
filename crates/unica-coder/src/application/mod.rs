@@ -1249,7 +1249,8 @@ fn call_tool(
     );
 
     let role_typed = role_target.is_some();
-    if role_typed {
+    let diagnostics_typed = matches!(spec.handler, ToolHandler::Diagnostics);
+    if role_typed || diagnostics_typed {
         cache.root.clear();
     }
     let artifacts = if let Some(target) = role_target.as_ref() {
@@ -2987,12 +2988,15 @@ mod tests {
                 };
             }
             crate::domain::diagnostics::DiagnosticProviderOutcome {
-                status: crate::domain::diagnostics::DiagnosticProviderStatus::Empty,
+                status: crate::domain::diagnostics::DiagnosticProviderStatus::Completed,
                 complete: true,
                 version: Some("test".to_string()),
                 observations: Vec::new(),
                 rules: Vec::new(),
-                readiness: None,
+                readiness: Some(crate::domain::diagnostics::DiagnosticReadiness {
+                    state: crate::domain::diagnostics::DiagnosticReadinessState::Ready,
+                    retryable: false,
+                }),
                 error: None,
             }
         }
@@ -3130,17 +3134,39 @@ mod tests {
 
     #[test]
     fn diagnostics_application_boundary_routes_only_through_coordinator_and_data() {
+        fn contains_string(value: &Value, needle: &str) -> bool {
+            match value {
+                Value::Object(object) => {
+                    object.values().any(|value| contains_string(value, needle))
+                }
+                Value::Array(items) => items.iter().any(|value| contains_string(value, needle)),
+                Value::String(text) => text.contains(needle),
+                _ => false,
+            }
+        }
+
         let ports = Arc::new(DiagnosticsBoundaryPorts::default());
         let app = UnicaApplication::with_ports(ports.clone());
-        let args = json!({"action": "status", "sourceSet": "main"})
-            .as_object()
-            .unwrap()
-            .clone();
+        let workspace = std::env::temp_dir().join("unica-diagnostics-private-workspace");
+        let args = json!({
+            "action": "status",
+            "sourceSet": "main",
+            "cwd": workspace
+        })
+        .as_object()
+        .unwrap()
+        .clone();
 
         let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+        let wire = serde_json::to_value(&result).unwrap();
 
         assert!(result.ok);
         assert_eq!(result.data.as_ref().unwrap()["state"], "completed");
+        assert_eq!(wire["cache"]["root"], "");
+        assert!(
+            !contains_string(&wire, &workspace.display().to_string()),
+            "serialized diagnostics result leaked workspace path: {wire}"
+        );
         assert!(result.stdout.is_none());
         assert!(result.stderr.is_none());
         assert!(result.command.is_none());
