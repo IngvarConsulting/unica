@@ -1748,7 +1748,7 @@ mod tests {
     }
 
     #[test]
-    fn rlm_readiness_requires_the_exact_source_revision_not_only_its_generation() {
+    fn rlm_readiness_requires_the_complete_source_revision_tuple() {
         let context = test_context("exact-source-revision");
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
@@ -1775,18 +1775,48 @@ mod tests {
             }
         );
 
-        let same_generation_but_other_corpus = SourceRevision {
-            digest: "b".repeat(64),
-            ..indexed.clone()
-        };
-        assert_eq!(
-            ready_index_for_source_revision(
-                &context,
-                &source_root,
-                &same_generation_but_other_corpus,
+        let mismatches = [
+            (
+                "source root",
+                context.workspace_root.join("other-src"),
+                indexed.clone(),
             ),
-            source_generation_stale_readiness()
-        );
+            (
+                "generation",
+                source_root.clone(),
+                SourceRevision {
+                    generation: indexed.generation + 1,
+                    ..indexed.clone()
+                },
+            ),
+            (
+                "digest",
+                source_root.clone(),
+                SourceRevision {
+                    digest: "b".repeat(64),
+                    ..indexed.clone()
+                },
+            ),
+            (
+                "algorithm",
+                source_root.clone(),
+                SourceRevision {
+                    algorithm: "unica-source-sha256-v2".to_string(),
+                    ..indexed.clone()
+                },
+            ),
+        ];
+        for (component, requested_source_root, requested_revision) in mismatches {
+            assert_eq!(
+                ready_index_for_source_revision(
+                    &context,
+                    &requested_source_root,
+                    &requested_revision,
+                ),
+                source_generation_stale_readiness(),
+                "a mismatched {component} must make the index stale"
+            );
+        }
 
         write_status(
             &context,
