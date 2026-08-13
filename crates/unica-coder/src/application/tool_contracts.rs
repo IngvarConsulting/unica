@@ -3447,6 +3447,12 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                 "pattern": r"\S",
                 "description": "Optional canonical logical address inside sourceSet; every role is restricted to the resolved module or metadata-object subtree."
             }),
+            "sourceDir" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
+                "description": "Legacy workspace-relative migration selector used instead of sourceSet; it searches the entire resolved source root and cannot be combined with metadataPath. Prefer sourceSet for logical addressing."
+            }),
             _ => property_schema(name),
         };
     }
@@ -6659,6 +6665,12 @@ mod tests {
         assert!(search_schema["properties"].get("sourceSet").is_some());
         assert!(search_schema["properties"].get("metadataPath").is_some());
         assert!(search_schema["properties"].get("sourceDir").is_some());
+        let source_dir_description = search_schema["properties"]["sourceDir"]["description"]
+            .as_str()
+            .expect("code.search sourceDir must describe its migration branch");
+        assert!(source_dir_description.contains("migration selector"));
+        assert!(source_dir_description.contains("entire resolved source root"));
+        assert!(source_dir_description.contains("cannot be combined with metadataPath"));
         assert_eq!(
             search_schema["oneOf"],
             json!([
