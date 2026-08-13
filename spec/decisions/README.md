@@ -283,3 +283,9 @@ ADR-0001…ADR-0006 записаны смешанно: русские загол
   `Rule` реестра, — это работа ревью.
 - `tests/ci/test_architecture_registry.py` роняет запись реестра, у которой нет
   файла названного решения, и индекс, разошедшийся с файлами на диске.
+## Предложенные решения
+
+- [ADR-0041: `unica.meta.info` имеет отдельную полную read-model](0041-meta-info-complete-read-model.md)
+- [ADR-0055: `unica.project.status` публикует типизированную готовность проекта](0055-project-status-publikuet-gotovnost-proekta.md)
+
+Запись в статусе `proposed` ещё не действует и не заменяет принятые решения;
