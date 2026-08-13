@@ -11,6 +11,10 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
     ProviderDeadline,
 };
+use crate::domain::diagnostics::{
+    DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
+    DiagnosticRequest, DiagnosticRequestError,
+};
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaInfoDeclarations,
@@ -589,6 +593,32 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _cancellation: &CancellationToken,
     ) -> Result<SourceLocateResult, String> {
         Err("source navigation locator is not configured".to_string())
+    }
+
+    fn resolve_diagnostic_context(
+        &self,
+        _request: &DiagnosticRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<DiagnosticContext, DiagnosticRequestError> {
+        Err(DiagnosticRequestError {
+            code: "diagnostics_unavailable",
+            field: None,
+            message: "diagnostic context resolver is not configured".to_string(),
+            retryable: false,
+        })
+    }
+
+    fn map_diagnostic_observation(
+        &self,
+        _observation: DiagnosticObservation,
+        _context: &DiagnosticContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<DiagnosticItem, DiagnosticMapError> {
+        Err(DiagnosticMapError {
+            code: "diagnostics_unavailable",
+            message: "diagnostic location mapper is not configured".to_string(),
+        })
     }
 
     fn source_resources(

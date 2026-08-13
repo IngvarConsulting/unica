@@ -1842,6 +1842,7 @@ dependencies = [
  "tokio",
  "toml",
  "ureq",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
  "zip",

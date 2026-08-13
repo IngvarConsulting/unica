@@ -19,6 +19,10 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
     CodeIntelligenceRegistry, ProviderDeadline,
 };
+use crate::domain::diagnostics::{
+    DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
+    DiagnosticRequest, DiagnosticRequestError,
+};
 use crate::domain::events::DomainEvent;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::source_resources::{
@@ -234,6 +238,32 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
             context,
             &request,
+            cancellation,
+        )
+    }
+
+    fn resolve_diagnostic_context(
+        &self,
+        request: &DiagnosticRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<DiagnosticContext, DiagnosticRequestError> {
+        crate::infrastructure::diagnostics::resolve_diagnostic_context(
+            request,
+            context,
+            cancellation,
+        )
+    }
+
+    fn map_diagnostic_observation(
+        &self,
+        observation: DiagnosticObservation,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Result<DiagnosticItem, DiagnosticMapError> {
+        crate::infrastructure::diagnostics::map_diagnostic_observation(
+            observation,
+            context,
             cancellation,
         )
     }

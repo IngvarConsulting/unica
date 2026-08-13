@@ -2,6 +2,7 @@ use super::{
     MetaDiagnostic, MetaDiagnosticCode, MetaEventSource, MetaPropertyChanges, MetadataKind,
     MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
 };
+use crate::domain::diagnostics::MetadataElement;
 use crate::domain::source_target::MetadataAddress;
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
@@ -61,6 +62,45 @@ impl MetaCollection {
                     format!("unsupported metadata collection `{value}`"),
                 )
             })
+    }
+
+    pub(crate) const fn xml_element_name(self) -> &'static str {
+        match self {
+            Self::Attributes => "Attribute",
+            Self::TabularSections => "TabularSection",
+            Self::Dimensions => "Dimension",
+            Self::Resources => "Resource",
+            Self::EnumValues => "EnumValue",
+            Self::Columns => "Column",
+            Self::Forms => "Form",
+            Self::Templates => "Template",
+            Self::Commands => "Command",
+            Self::PredefinedItems => "PredefinedItem",
+        }
+    }
+}
+
+/// Validates the provider-neutral metadata focus grammar and returns the
+/// existing closed metadata collections that own it. The first version admits
+/// one top-level element and the only nested editable shape the platform model
+/// exposes today: an attribute of a tabular section.
+pub(crate) fn diagnostic_metadata_focus_route(
+    elements: &[MetadataElement],
+) -> Option<Vec<MetaCollection>> {
+    if elements
+        .iter()
+        .any(|element| element.name.trim().is_empty())
+    {
+        return None;
+    }
+    let collections = elements
+        .iter()
+        .map(|element| MetaCollection::parse(&element.collection).ok())
+        .collect::<Option<Vec<_>>>()?;
+    match collections.as_slice() {
+        [] | [_] => Some(collections),
+        [MetaCollection::TabularSections, MetaCollection::Attributes] => Some(collections),
+        _ => None,
     }
 }
 

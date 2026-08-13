@@ -1,6 +1,7 @@
 pub use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::{
     cancellation::CancellationToken,
+    project_sources::ProjectSourceSet,
     source_roots::ResolvedSourceRoot,
     source_target::{MetadataAddress, ResolvedTarget, TargetKind},
     workspace::WorkspaceContext,
@@ -71,6 +72,38 @@ pub struct DiagnosticRequest {
     pub timeout: Option<Duration>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticRequestError {
+    pub code: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<&'static str>,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl fmt::Display for DiagnosticRequestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DiagnosticRequestError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticMapError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl fmt::Display for DiagnosticMapError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DiagnosticMapError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticProviderRequest {
     pub action: DiagnosticAction,
@@ -84,6 +117,7 @@ pub struct DiagnosticProviderRequest {
 #[derive(Debug, Clone)]
 pub struct DiagnosticContext {
     pub workspace: WorkspaceContext,
+    pub source_set: ProjectSourceSet,
     pub source_root: ResolvedSourceRoot,
     pub target: ResolvedTarget,
 }
@@ -91,11 +125,13 @@ pub struct DiagnosticContext {
 impl DiagnosticContext {
     pub fn new(
         workspace: WorkspaceContext,
+        source_set: ProjectSourceSet,
         source_root: ResolvedSourceRoot,
         target: ResolvedTarget,
     ) -> Self {
         Self {
             workspace,
+            source_set,
             source_root,
             target,
         }
@@ -284,6 +320,7 @@ pub enum DiagnosticObservationFocus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiagnosticObservation {
     Diagnostic {
+        provider: DiagnosticProviderId,
         location: DiagnosticObservationLocation,
         focus: DiagnosticObservationFocus,
         code: String,
@@ -292,6 +329,7 @@ pub enum DiagnosticObservation {
         tags: Vec<DiagnosticTag>,
     },
     ResourceFailure {
+        provider: DiagnosticProviderId,
         location: DiagnosticObservationLocation,
         error: DiagnosticError,
     },
@@ -299,6 +337,7 @@ pub enum DiagnosticObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticRuleObservation {
+    pub provider: DiagnosticProviderId,
     pub code: String,
     pub default_severity: DiagnosticSeverity,
     pub title: String,

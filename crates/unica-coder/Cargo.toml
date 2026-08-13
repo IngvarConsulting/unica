@@ -29,6 +29,7 @@ roxmltree.workspace = true
 rust-stemmers.workspace = true
 regex.workspace = true
 ureq.workspace = true
+url.workspace = true
 uuid.workspace = true
 # `flate2` кодом крейта не вызывается: она объявлена, чтобы `zip` получил
 # чистый Rust-backend для deflate вместо системного zlib и без `zopfli`
