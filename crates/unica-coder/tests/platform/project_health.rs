@@ -49,9 +49,12 @@ fn project_health_parent_repository_reports_repository_relative_remediation() {
         .iter()
         .find(|diagnostic| diagnostic["code"] == "git.runtime_sidecar_tracked")
         .expect("runtime sidecar diagnostic");
+    let command_cwd = diagnostic["remediation"]["commands"][0]["cwd"]
+        .as_str()
+        .expect("remediation cwd");
     assert_eq!(
-        diagnostic["remediation"]["commands"][0]["cwd"],
-        root.canonicalize().unwrap().display().to_string()
+        Path::new(command_cwd).canonicalize().unwrap(),
+        root.canonicalize().unwrap()
     );
     assert_eq!(
         diagnostic["remediation"]["commands"][0]["argv"][3],
