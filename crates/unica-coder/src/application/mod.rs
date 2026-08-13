@@ -2820,6 +2820,22 @@ mod tests {
         crate::test_support::canonical_path(path)
     }
 
+    fn object_schema_property_maps(schema: &Value) -> Vec<&Map<String, Value>> {
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            return vec![properties];
+        }
+        schema["oneOf"]
+            .as_array()
+            .expect("tool schema publishes properties or closed object oneOf branches")
+            .iter()
+            .map(|branch| {
+                branch["properties"]
+                    .as_object()
+                    .expect("oneOf branch properties are an object")
+            })
+            .collect()
+    }
+
     fn call_public_tool_from_workspace(
         workspace: &std::path::Path,
         name: &str,
@@ -7719,21 +7735,20 @@ mod tests {
     fn reader_schemas_never_publish_dry_run_and_mutations_keep_it() {
         for tool in tools() {
             let schema = input_schema_for_tool(&tool);
-            let properties = schema["properties"]
-                .as_object()
-                .expect("tool input schema properties are an object");
-            assert_eq!(
-                properties.contains_key("dryRun"),
-                tool.execution.is_mutating(),
-                "{} publishes the wrong invocation switch",
-                tool.name,
-            );
-            if tool.execution.is_mutating() {
+            for properties in object_schema_property_maps(&schema) {
                 assert_eq!(
-                    properties["dryRun"]["default"], true,
-                    "{} publishes the wrong preview default",
+                    properties.contains_key("dryRun"),
+                    tool.execution.is_mutating(),
+                    "{} publishes the wrong invocation switch",
                     tool.name,
                 );
+                if tool.execution.is_mutating() {
+                    assert_eq!(
+                        properties["dryRun"]["default"], true,
+                        "{} publishes the wrong preview default",
+                        tool.name,
+                    );
+                }
             }
         }
     }

@@ -373,6 +373,29 @@ mod tests {
 
     const TEST_STEP: Duration = Duration::from_secs(10);
 
+    fn object_schema_property_maps(
+        schema: &serde_json::Map<String, serde_json::Value>,
+    ) -> Vec<&serde_json::Map<String, serde_json::Value>> {
+        if let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            return vec![properties];
+        }
+        schema
+            .get("oneOf")
+            .expect("tool schema publishes properties or closed object oneOf branches")
+            .as_array()
+            .expect("tool schema publishes properties or closed object oneOf branches")
+            .iter()
+            .map(|branch| {
+                branch["properties"]
+                    .as_object()
+                    .expect("oneOf branch properties are an object")
+            })
+            .collect()
+    }
+
     fn successful_test_result(summary: &str) -> OperationResult {
         OperationResult {
             ok: true,
@@ -1056,11 +1079,13 @@ mod tests {
     #[test]
     fn no_public_tool_schema_exposes_raw_adapter_args() {
         for tool in tool_definitions(&crate::application::tools()) {
-            assert!(
-                tool.input_schema["properties"].get("args").is_none(),
-                "{} must not expose raw adapter args",
-                tool.name
-            );
+            for properties in object_schema_property_maps(&tool.input_schema) {
+                assert!(
+                    properties.get("args").is_none(),
+                    "{} must not expose raw adapter args",
+                    tool.name
+                );
+            }
         }
     }
 
