@@ -4,13 +4,13 @@
 
 **Goal:** Сделать lexical-роль `git-grep` быстрым ограниченным резервным поиском: первые `limit` доказанных попаданий либо собственный deadline 2 секунды, с сохранением частичного результата и честной неполнотой.
 
-**Architecture:** Общий role/progress/logical-location контракт берётся из уже слитого ADR-0055. `git-grep` пишет NUL-разделённые записи, process runner передаёт их потребителю потоково и умеет остановить дерево по решению callback. Поставщик проверяет область и логически локализует запись до увеличения accepted count. Он не сортирует и не присваивает rank; порядок объявлен как `providerTraversal`. Решение принадлежит только ADR-0057.
+**Architecture:** Общий role/progress/logical-location контракт берётся из уже слитого ADR-0056. `git-grep` пишет NUL-разделённые записи, process runner передаёт их потребителю потоково и умеет остановить дерево по решению callback. Поставщик проверяет область и логически локализует запись до увеличения accepted count. Он не сортирует и не присваивает rank; порядок объявлен как `providerTraversal`. Решение принадлежит только ADR-0058.
 
 **Tech Stack:** Rust 2021, `std::process`, существующий `ManagedChild`, Git CLI, platform integration tests, Python 3.12 release-contract tests.
 
-**PR boundary:** Начать самостоятельную ветку от актуального `origin/main` после слияния ADR-0055. Не базировать PR на открытой search-contract ветке и не включать RLM source revisions. Из PR #469 переносить только доказанные lifecycle/process исправления, не его 500 ms, скрытый limit 6 и старую архитектурную формулировку.
+**PR boundary:** Начать самостоятельную ветку от актуального `origin/main` после слияния ADR-0056. Не базировать PR на открытой search-contract ветке и не включать RLM source revisions. Из PR #469 переносить только доказанные lifecycle/process исправления, не его 500 ms, скрытый limit 6 и старую архитектурную формулировку.
 
-**Design source:** `docs/design/2026-08-13-bounded-unranked-git-grep-search-design.md`, `spec/decisions/0057-bounded-unranked-git-grep-search.md`.
+**Design source:** `docs/design/2026-08-13-bounded-unranked-git-grep-search-design.md`, `spec/decisions/0058-bounded-unranked-git-grep-search.md`.
 
 ## Терминальные состояния lexical-секции
 
@@ -299,7 +299,7 @@ git commit -m "test: проверить bounded git-grep на реальном �
 
 **Files:**
 
-- Modify: `spec/decisions/0057-bounded-unranked-git-grep-search.md`
+- Modify: `spec/decisions/0058-bounded-unranked-git-grep-search.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/quality-requirements.md`
 - Modify: `spec/architecture/tool-surface.md`
@@ -331,18 +331,18 @@ Expected: FAIL до обновления docs/validator.
 
 **Step 2: Обновить нормативные записи**
 
-`INV-MCP-CODE-SEARCH-SECTIONS` ссылается на ADR-0055 и ADR-0057 для lexical completeness. Добавить/обновить измеримое требование `REQ-PERF-LEXICAL-BOUND`: default 2s либо limit, process tree reaped, partial hits preserved. Не создавать второй общий ADR поиска.
+`INV-MCP-CODE-SEARCH-SECTIONS` ссылается на ADR-0056 и ADR-0058 для lexical completeness. Добавить/обновить измеримое требование `REQ-PERF-LEXICAL-BOUND`: default 2s либо limit, process tree reaped, partial hits preserved. Не создавать второй общий ADR поиска.
 
 **Step 3: Обновить skill и validator**
 
 Skill прямо говорит модели: lexical hits — первые в provider traversal, не top-K; timeout/limit result можно использовать как evidence, но нельзя считать полным. Release assessment проверяет contract, но не требует lexical `ok`: semantic/symbol могут быть полезны при lexical timeout.
 
-**Step 4: Перевести ADR-0057 в accepted и закоммитить**
+**Step 4: Перевести ADR-0058 в accepted и закоммитить**
 
 Сделать это только после зелёных unit/integration tests.
 
 ```bash
-git add spec/decisions/0057-bounded-unranked-git-grep-search.md spec/architecture/invariants.md spec/architecture/quality-requirements.md spec/architecture/tool-surface.md plugins/unica/skills/code-search/SKILL.md scripts/ci/release-assessment.py tests/ci/test_release_assessment.py tests/ci/test_architecture_registry.py tests/ci/test_unica_skills.py
+git add spec/decisions/0058-bounded-unranked-git-grep-search.md spec/architecture/invariants.md spec/architecture/quality-requirements.md spec/architecture/tool-surface.md plugins/unica/skills/code-search/SKILL.md scripts/ci/release-assessment.py tests/ci/test_release_assessment.py tests/ci/test_architecture_registry.py tests/ci/test_unica_skills.py
 git commit -m "docs: принять bounded unranked git-grep"
 ```
 
@@ -376,4 +376,4 @@ Expected: PASS.
 
 **Step 3: Перебазировать только на main и открыть PR**
 
-Обновить `origin/main`; если common search PR ещё не слит, остановиться — базировать этот PR на его head запрещено. После rebase повторить Step 2. Открыть PR с `Closes #467`, ADR-0057, таблицей terminal states и результатами process/integration/full checks.
+Обновить `origin/main`; если common search PR ещё не слит, остановиться — базировать этот PR на его head запрещено. После rebase повторить Step 2. Открыть PR с `Closes #467`, ADR-0058, таблицей terminal states и результатами process/integration/full checks.

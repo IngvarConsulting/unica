@@ -191,9 +191,23 @@ pub trait IndexRunner {
     fn start_background(&self, job: IndexBackgroundJob) -> Result<(), String>;
 }
 
-pub struct SystemIndexRunner;
+pub trait IndexBackgroundTaskTracker: Send + Sync {
+    fn track(&self, handle: thread::JoinHandle<()>);
+}
 
-pub static SYSTEM_INDEX_RUNNER: SystemIndexRunner = SystemIndexRunner;
+pub struct SystemIndexRunner {
+    tracker: Option<Arc<dyn IndexBackgroundTaskTracker>>,
+}
+
+impl SystemIndexRunner {
+    pub fn tracked(tracker: Arc<dyn IndexBackgroundTaskTracker>) -> Self {
+        Self {
+            tracker: Some(tracker),
+        }
+    }
+}
+
+pub static SYSTEM_INDEX_RUNNER: SystemIndexRunner = SystemIndexRunner { tracker: None };
 
 pub struct WorkspaceIndexService<'a> {
     runner: &'a dyn IndexRunner,
@@ -216,8 +230,7 @@ impl<'a> WorkspaceIndexService<'a> {
         }
     }
 
-    #[cfg(test)]
-    pub fn with_runner(runner: &'a dyn IndexRunner) -> Self {
+    pub(crate) fn with_runner(runner: &'a dyn IndexRunner) -> Self {
         Self {
             runner,
             source_revision_service: None,
@@ -926,11 +939,14 @@ impl IndexRunner for SystemIndexRunner {
     }
 
     fn start_background(&self, job: IndexBackgroundJob) -> Result<(), String> {
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("unica-rlm-index".to_string())
             .spawn(move || run_background_job(job))
-            .map(|_| ())
-            .map_err(|error| format!("failed to start RLM index background worker: {error}"))
+            .map_err(|error| format!("failed to start RLM index background worker: {error}"))?;
+        if let Some(tracker) = &self.tracker {
+            tracker.track(handle);
+        }
+        Ok(())
     }
 }
 

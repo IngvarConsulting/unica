@@ -474,7 +474,7 @@ Unica. Каждая запись формулирует одно нормати�
   наличии маркера уведомлений ход и контрольные уведомления публикуются через
   MCP;
   отмена не возвращает частичный успех.
-- **Decision:** ADR-0055, ADR-0057
+- **Decision:** ADR-0056, ADR-0058
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
@@ -765,7 +765,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0040, ADR-0055, ADR-0057
+- **Decision:** ADR-0040, ADR-0056, ADR-0058
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
@@ -916,7 +916,7 @@ Unica. Каждая запись формулирует одно нормати�
   сверяет
   ревизию перед публикацией, а RLM-ответ принимается только при одинаковой
   доверенной ревизии до и после исполнения.
-- **Decision:** ADR-0056
+- **Decision:** ADR-0057
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/source_revision.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/source_revision.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs`
@@ -1439,7 +1439,7 @@ Unica. Каждая запись формулирует одно нормати�
   одним обязательным вызовом `cargo build --locked` в отдельный для целевой
   платформы каталог сборки Cargo; восстановленный кеш эту команду ускоряет, но
   никогда не заменяет.
-- **Decision:** ADR-0010
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci
@@ -1450,7 +1450,7 @@ Unica. Каждая запись формулирует одно нормати�
   разрешённый ключ тулчейна и хеш `Cargo.lock`, префиксные ключи восстановления
   не используются, а каждая платформенная сборка сообщает свою целевую
   платформу, исход обращения к кешу и длительность сборки.
-- **Decision:** ADR-0010
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci
 
@@ -1461,7 +1461,7 @@ Unica. Каждая запись формулирует одно нормати�
   runtime со сроком хранения в одни сутки, тогда как тонкая полезная нагрузка
   для маркетплейса сохраняет более длительный срок хранения для ручного
   размещения и продвижения.
-- **Decision:** ADR-0010
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci, release
 
@@ -1472,7 +1472,7 @@ Unica. Каждая запись формулирует одно нормати�
   элементов, режимы исполнения и обнулённые отметки времени до того, как архив
   будет выгружен или отброшен; при публикации по тегу проверка повторяется на
   скачанных опубликованных байтах.
-- **Decision:** ADR-0010, ADR-0008
+- **Decision:** ADR-0055, ADR-0008
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
 - **Scope:** ci, release
@@ -1483,7 +1483,7 @@ Unica. Каждая запись формулирует одно нормати�
   pull request и ручные прогоны собирают пакет и прогоняют дымовые проверки без
   публикации, а размещение и продвижение каталога остаются отдельными явными
   задачами.
-- **Decision:** ADR-0008, ADR-0010
+- **Decision:** ADR-0008, ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci, release
 
@@ -1492,7 +1492,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Каждый pull request решается единственным стабильным агрегирующим
   шлюзом, который вместе оценивает задачи по исходникам, по Rust, по упаковке,
   по bootstrap, по оценке релиза и по опубликованным артефактам.
-- **Decision:** ADR-0010
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Check:** `ci-test` — `tests/ci/test_evaluate_ci_gate.py`
 - **Scope:** ci

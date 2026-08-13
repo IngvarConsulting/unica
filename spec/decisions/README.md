@@ -72,9 +72,10 @@
 - [ADR-0051: Аргументы команды публикует тот инструмент, который её исполняет](0051-argumenty-komandy-prinadlezhat-instrumentu.md)
 - [ADR-0052: Аргумент, которого не читает ни один обработчик, не публикуется](0052-nechitaemyy-argument-ne-publikuetsya.md)
 - [ADR-0054: Состояние поддержки читается по логической цели через порт](0054-provider-neutral-support-state-reader.md)
-- [ADR-0055: Поиск кода наблюдаем и опирается на роли поставщиков](0055-observable-provider-neutral-code-search.md)
-- [ADR-0056: Свежесть RLM доказывается доверенным поколением исходников](0056-rlm-source-revision-freshness.md)
-- [ADR-0057: `git-grep` возвращает ограниченный неранжируемый префикс](0057-bounded-unranked-git-grep-search.md)
+- [ADR-0055: Дымовая проверка исполняет извлечённый проверенный архив runtime](0055-smoke-proveryaet-upakovannyy-runtime.md)
+- [ADR-0056: Поиск кода наблюдаем и опирается на роли поставщиков](0056-observable-provider-neutral-code-search.md)
+- [ADR-0057: Свежесть RLM доказывается доверенным поколением исходников](0057-rlm-source-revision-freshness.md)
+- [ADR-0058: `git-grep` возвращает ограниченный неранжируемый префикс](0058-bounded-unranked-git-grep-search.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

@@ -4,13 +4,13 @@
 
 **Goal:** Сделать `unica.code.search` одним наблюдаемым MCP-вызовом с логическим входом и выходом, параллельными ролями `semantic`/`symbol`/`lexical`, явной полнотой и удобным для модели progress-контрактом.
 
-**Architecture:** Слой application оркестрирует роли через `CodeIntelligenceProvider` и транспортно-нейтральный `SearchProgressSink`. Инфраструктура разрешает логическую область один раз, поставщики ограничивают ею поиск до ранжирования и подсчёта, а общий локатор проецирует внутренние пути в закрытую алгебру `SourceLocation`. MCP-слой только преобразует progress token запроса в `notifications/progress`; без token используется no-op sink. Решение принадлежит ADR-0055 и не включает источник поколений RLM или bounded streaming `git-grep` из ADR-0056/ADR-0057.
+**Architecture:** Слой application оркестрирует роли через `CodeIntelligenceProvider` и транспортно-нейтральный `SearchProgressSink`. Инфраструктура разрешает логическую область один раз, поставщики ограничивают ею поиск до ранжирования и подсчёта, а общий локатор проецирует внутренние пути в закрытую алгебру `SourceLocation`. MCP-слой только преобразует progress token запроса в `notifications/progress`; без token используется no-op sink. Решение принадлежит ADR-0056 и не включает источник поколений RLM или bounded streaming `git-grep` из ADR-0057/ADR-0058.
 
 **Tech Stack:** Rust 2021, `serde`, `serde_json`, `rmcp 2.2`, `tokio`, Python 3.12 CI-contract tests, GitHub Actions.
 
-**PR boundary:** Выполнять в самостоятельной ветке от актуального `origin/main`. PR не должен иметь базой head другого PR. После слияния этого PR планы ADR-0056 и ADR-0057 пересобираются от нового `main`; между собой они не зависят.
+**PR boundary:** Выполнять в самостоятельной ветке от актуального `origin/main`. PR не должен иметь базой head другого PR. После слияния этого PR планы ADR-0057 и ADR-0058 пересобираются от нового `main`; между собой они не зависят.
 
-**Design source:** `docs/design/2026-08-13-observable-code-search-design.md`, `spec/decisions/0055-observable-provider-neutral-code-search.md`.
+**Design source:** `docs/design/2026-08-13-observable-code-search-design.md`, `spec/decisions/0056-observable-provider-neutral-code-search.md`.
 
 ## Целевой wire-контракт
 
@@ -360,7 +360,7 @@ Semantic и symbol получают остаток global deadline; lexical — 
 
 **Step 5: Дождаться RLM readiness внутри semantic role**
 
-`RlmProvider::search` при `Missing`, `Stale` или `Building` сообщает `state=running`, `phase=preparing` и соответствующий `detailCode`, затем вызывает закрытую операцию workspace service `wait_rlm_readiness` с остатком provider deadline. Она запускает/проверяет индекс один раз, затем ждёт изменения status marker с ограниченным backoff `100ms, 200ms, 400ms, 800ms, 1s...`; пока marker остаётся `building`, полный `source_generation` повторно не вычисляется. Когда marker становится `ready`, `failed` или deadline истекает, generation пересверяется ровно на терминальной границе. `Failed`/`Unavailable` терминальны. Это позволяет одному честному integration call дождаться реально построенного индекса, не превращая private polling в повторный обход дерева и не выводя polling в MCP-поверхность. ADR-0056 позднее заменит обе терминальные сверки trusted revision fence.
+`RlmProvider::search` при `Missing`, `Stale` или `Building` сообщает `state=running`, `phase=preparing` и соответствующий `detailCode`, затем вызывает закрытую операцию workspace service `wait_rlm_readiness` с остатком provider deadline. Она запускает/проверяет индекс один раз, затем ждёт изменения status marker с ограниченным backoff `100ms, 200ms, 400ms, 800ms, 1s...`; пока marker остаётся `building`, полный `source_generation` повторно не вычисляется. Когда marker становится `ready`, `failed` или deadline истекает, generation пересверяется ровно на терминальной границе. `Failed`/`Unavailable` терминальны. Это позволяет одному честному integration call дождаться реально построенного индекса, не превращая private polling в повторный обход дерева и не выводя polling в MCP-поверхность. ADR-0057 позднее заменит обе терминальные сверки trusted revision fence.
 
 **Step 6: Собирать coverage из доказанной полноты**
 
@@ -452,7 +452,7 @@ git commit -m "feat: публиковать ход поиска через MCP p
 
 **Step 1: Написать падающие schema/registry tests**
 
-Требовать в схеме `sourceSet`, optional `metadataPath`, migration `sourceDir`, mutual exclusion и неизменный `limit 1..50`. В ledger требовать roles, logical location, completeness/ranking/`matches` и progress meta. В architecture test требовать числовые budgets `300`, `2`, heartbeat `2` и ADR-0055.
+Требовать в схеме `sourceSet`, optional `metadataPath`, migration `sourceDir`, mutual exclusion и неизменный `limit 1..50`. В ledger требовать roles, logical location, completeness/ranking/`matches` и progress meta. В architecture test требовать числовые budgets `300`, `2`, heartbeat `2` и ADR-0056.
 
 Run: `cargo test -p unica-coder application::tool_contracts -- --test-threads=1`
 
@@ -466,13 +466,13 @@ Expected: FAIL на старой схеме и fixed provider sections.
 
 **Step 3: Обновить нормативных владельцев**
 
-- `INV-MCP-CODE-SEARCH-SECTIONS`: Decision ADR-0055, роли/происхождение/полнота/отмена.
-- `INV-APP-CODE-PROVIDER-BOUNDARY`: Decision ADR-0017, ADR-0055; application зависит от роли, не implementation.
-- `INV-APP-CONFIG-SNAPSHOT`: Decision ADR-0040, ADR-0055; новые defaults 300/300/2.
+- `INV-MCP-CODE-SEARCH-SECTIONS`: Decision ADR-0056, роли/происхождение/полнота/отмена.
+- `INV-APP-CODE-PROVIDER-BOUNDARY`: Decision ADR-0017, ADR-0056; application зависит от роли, не implementation.
+- `INV-APP-CONFIG-SNAPSHOT`: Decision ADR-0040, ADR-0056; новые defaults 300/300/2.
 - добавить `REQ-OBS-SEARCH-PROGRESS`: start, phase change, heartbeat <=2s, no fake percentage, MCP token optional.
 - `tool-surface.md` и checklist ссылаются на ID владельцев, не копируют норму как отдельное правило.
 
-ADR-0017 и ADR-0040 уже приняты в `main`; их исторический текст не переписывать и не помечать целиком superseded, потому что ADR-0055 заменяет только названные части.
+ADR-0017 и ADR-0040 уже приняты в `main`; их исторический текст не переписывать и не помечать целиком superseded, потому что ADR-0056 заменяет только названные части.
 
 **Step 4: Обновить skill**
 
@@ -607,10 +607,10 @@ Run точной package/smoke-команды из текущего workflow д�
 
 **Step 5: Обновить решение и открыть PR**
 
-Перед PR перевести ADR-0055 из `proposed` в `accepted` в этой ещё не слитой ветке, если все acceptance checks выполнены. Перебазировать только на `origin/main`, повторить Steps 1–3, push и открыть один PR с:
+Перед PR перевести ADR-0056 из `proposed` в `accepted` в этой ещё не слитой ветке, если все acceptance checks выполнены. Перебазировать только на `origin/main`, повторить Steps 1–3, push и открыть один PR с:
 
 - ссылкой на #275;
 - `Closes #275`, если issue теперь целиком покрыта;
-- явными неграницами ADR-0056/ADR-0057;
+- явными неграницами ADR-0057/ADR-0058;
 - результатами unit/full/architecture checks;
 - отметкой, запускался ли реальный BSP release-assessment.

@@ -34,20 +34,101 @@ code-style standards published at v8std.ru (CC0) and in the official
 1C documentation. They do not implement a third party's proprietary
 rule set.
 
-Historical reference for the SDBL parser and lexer
---------------------------------------------------
-Early grammar work in the following files was developed with the
-bsl-parser project (https://github.com/1c-syntax/bsl-parser,
-LGPL-3.0-or-later) as a reference source:
+Derivation notice for the SDBL and BSL grammar layers
+-----------------------------------------------------
+The initial grammar work in the following files was written with the
+grammar files of the bsl-parser project
+(https://github.com/1c-syntax/bsl-parser, LGPL-3.0-or-later) open as
+the working reference:
 
-  * crates/parser/src/grammar/sdbl/
-  * crates/parser/src/grammar/ (BSL grammar layer)
-  * crates/lexer/src/sdbl.rs
+  * crates/lexer/src/sdbl/        (SDBL token inventory)
+  * crates/parser/src/grammar/sdbl/  (SDBL grammar)
+  * crates/parser/src/grammar/    (BSL grammar layer)
+  * crates/lexer/src/lib.rs       (BSL token inventory)
 
-These components are Tier B and are being replaced slice-by-slice
-from official 1C documentation under a clean-room process described
-in docs/legal/sdbl-clean-room-slices.md. Until that work completes,
-the Tier B crates and the final binary remain under LGPL-3.0-or-later.
+These facts are stated here directly, and not left to be discovered in
+the commit history, because the public mirror of this repository does
+not carry that history: a disclosure that can only be verified in a
+private repository is not a disclosure. The record below is given so
+that a reader who has only this file can rely on it.
+
+This is recorded in this repository's own history of December 2025,
+though not uniformly per file. The commit that introduced the SDBL lexer
+names both upstream grammar files in its commit message and in the file
+header. The commit that introduced the SDBL grammar names SDBLParser.g4
+in the file header and quotes upstream grammar rules in ANTLR notation in
+many of its function doc-comments. For the BSL layer the record is the
+planning document shipped in the initial commit, which names the upstream
+grammars as the source for both languages; a file header naming
+BSLLexer.g4 was added a few commits later. Details and commit identifiers
+are in docs/legal/sdbl-provenance-2026-07-audit.md.
+
+The SDBL layer has since been rewritten in bounded slices from official
+1C documentation under the clean-room process described in
+docs/legal/sdbl-clean-room-slices.md, and now diverges from the upstream
+grammar in token inventory, token granularity, rule decomposition and
+operator precedence. That rewrite is not finished, and the BSL layer has
+not been rewritten at all.
+
+The current assessment — what is proven, what has diverged, and what is
+still outstanding — is in docs/legal/sdbl-provenance-2026-07-audit.md.
+Until that work completes, the Tier B crates and the final binary remain
+under LGPL-3.0-or-later.
+
+Notice for crates written with a copyleft reference open
+---------------------------------------------------------
+The notice above covers the grammar layers only. Three crates that are
+currently licensed MIT OR Apache-2.0 were also written with a
+copyleft-licensed project open as the working reference. The three are
+not equivalent: the first two inherited structure, the third matched
+observable behaviour on purpose and copied nothing. In each case
+the annotations saying so were removed from the source in March and
+April 2026 without the code being rewritten, so the source as it stands
+today carries no trace of this. It is therefore stated here.
+
+  * crates/cfg — the control-flow-graph model was written with the CFG
+    package of bsl-language-server (LGPL-3.0-or-later) open, by way of
+    an earlier Rust project by the same author. The file headers read
+    "Ported from BSL Language Server (Java)" and carried per-method
+    "Maps to ... in Java" annotations. The builder architecture is
+    independent: a recursive descent over HIR, where the reference uses
+    a block writer over a parse tree, and the two share no structural
+    device. What follows the reference is the vertex and edge taxonomy,
+    its granularity, the decomposition of loops, try/except and labels,
+    and the part of the graph API that is not the underlying graph
+    library's own vocabulary.
+
+  * crates/bsl-metadata — the crate described itself as "a Rust port of
+    the Java mdclasses library" (https://github.com/1c-syntax/mdclasses,
+    LGPL-3.0) when it was created, with per-method "Java equivalent"
+    annotations. The parsing implementation is independent, and most of
+    the model is dictated by the 1C configuration export format itself,
+    which is the format this crate has to read. What is inherited is the
+    ontology: the set of named types, the split into traits, the builder
+    pattern, and part of the method naming.
+
+  * crates/hir-def — several diagnostic ranges and metrics were written
+    to reproduce the observable output of bsl-language-server and of the
+    ANTLR-generated parser it uses. Those commits changed comments only;
+    no code was copied. The behaviour was kept deliberately, so that the
+    two tools report the same numbers on the same source.
+
+The licensing tier of crates/cfg and crates/bsl-metadata is under review
+in light of the above.
+
+Compatibility with bsl-language-server
+--------------------------------------
+Where this project reports the same diagnostics as bsl-language-server,
+the agreement is deliberate. Rule codes, tags, severities, default
+activation and the places a rule fires form an interface that existing
+SonarQube quality profiles and CI pipelines depend on; a tool that
+reported different rules under different names on the same code would
+not replace its predecessor. These values match that project's published
+rule documentation, which is where they can be checked.
+
+This is a statement about observable behaviour, not about source code:
+implementing the same interface independently is intended, and copying
+implementation text is not.
 
 Bundled 1C platform data
 ------------------------
@@ -66,13 +147,20 @@ the full statement.
 Upstream acknowledgements
 -------------------------
   * rust-analyzer — architectural reference — MIT OR Apache-2.0
-  * bsl-parser — historical grammar reference for the SDBL layer —
-    LGPL-3.0-or-later
-  * bsl-language-server — compatibility target for configuration
-    format and diagnostic catalogue — LGPL-3.0-or-later
+  * bsl-parser — grammar reference used when the SDBL and BSL layers
+    were first written — LGPL-3.0-or-later
+  * bsl-language-server — deliberate compatibility target for the
+    configuration format and the diagnostic catalogue; also the
+    reference used when crates/cfg and parts of crates/hir-def were
+    first written — LGPL-3.0-or-later
+  * mdclasses — object-model reference used when crates/bsl-metadata
+    was first written — LGPL-3.0
   * v8std.ru — public catalogue of 1C coding standards — CC0
   * crates/parser/tests/fixtures/Module.bsl — © ООО «1С-Софт»,
-    CC BY 4.0, redistributed with its own license header intact
+    CC BY 4.0, redistributed with its own license header intact. The
+    copy was taken from the test resources of bsl-parser, which had
+    itself adapted it as a fixture; the content and its license are
+    1C's, not that project's.
   * crates/bsl-platform/data/platform_data.json — © ООО «1С-Софт»,
     1C copyright, bundled for interoperability; see
     crates/bsl-platform/data/PROVENANCE.md

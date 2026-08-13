@@ -8,9 +8,9 @@
 
 **Tech Stack:** Rust 2021, `sha2`, macOS CoreServices FSEvents через `objc2-core-services 0.3.2`, `objc2-core-foundation 0.3.2`, `dispatch2`, существующий workspace service protocol, platform integration tests.
 
-**PR boundary:** Начать самостоятельную ветку от актуального `origin/main` после слияния ADR-0055. Не базировать на открытом git-grep PR; ADR-0056 и ADR-0057 независимы. Общий progress payload не менять — этот PR только наполняет semantic role состояниями/фазами и detail codes `reconcilingSources`, `buildingIndex`, `updatingIndex`, `executingQuery`, `sourceRevisionUntrusted`.
+**PR boundary:** Начать самостоятельную ветку от актуального `origin/main` после слияния ADR-0056. Не базировать на открытом git-grep PR; ADR-0057 и ADR-0058 независимы. Общий progress payload не менять — этот PR только наполняет semantic role состояниями/фазами и detail codes `reconcilingSources`, `buildingIndex`, `updatingIndex`, `executingQuery`, `sourceRevisionUntrusted`.
 
-**Design source:** `docs/design/2026-08-13-rlm-source-revisions-design.md`, `spec/decisions/0056-rlm-source-revision-freshness.md`.
+**Design source:** `docs/design/2026-08-13-rlm-source-revisions-design.md`, `spec/decisions/0057-rlm-source-revision-freshness.md`.
 
 ## Инвариант свежести
 
@@ -377,7 +377,7 @@ source_revisions: Arc<SourceRevisionService>
 
 **Step 4: Публиковать безопасное состояние semantic provider**
 
-При reconcile semantic role получает `state=running`, `phase=preparing`, `detailCode=reconcilingSources`; обслуживание индекса — `buildingIndex`/`updatingIndex`; execute — `phase=searching`, `detailCode=executingQuery`; при trust loss — `state=failed`, `detailCode=sourceRevisionUntrusted` без digest и физических paths. Progress sink подключён через ADR-0055 seam; workspace service не знает MCP token.
+При reconcile semantic role получает `state=running`, `phase=preparing`, `detailCode=reconcilingSources`; обслуживание индекса — `buildingIndex`/`updatingIndex`; execute — `phase=searching`, `detailCode=executingQuery`; при trust loss — `state=failed`, `detailCode=sourceRevisionUntrusted` без digest и физических paths. Progress sink подключён через ADR-0056 seam; workspace service не знает MCP token.
 
 **Step 5: Запустить тесты и закоммитить**
 
@@ -533,7 +533,7 @@ git commit -m "perf: заменить обходы RLM на trusted fence"
 
 **Files:**
 
-- Modify: `spec/decisions/0056-rlm-source-revision-freshness.md`
+- Modify: `spec/decisions/0057-rlm-source-revision-freshness.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/quality-requirements.md`
 - Modify: `spec/architecture/runtime.md`
@@ -578,12 +578,12 @@ Expected: FAIL до синхронизации docs.
 
 Модель должна понимать `phase=preparing` с detail codes `reconcilingSources`/`buildingIndex`/`updatingIndex` и `phase=searching` с `executingQuery`; отсутствие процента при reconcile нормально. Не советовать отдельный polling tool. Digest/generation наружу не показываются.
 
-**Step 4: Перевести ADR-0056 в accepted и закоммитить**
+**Step 4: Перевести ADR-0057 в accepted и закоммитить**
 
 Только после зелёных state/index/execution/platform tests.
 
 ```bash
-git add spec/decisions/0056-rlm-source-revision-freshness.md spec/architecture/invariants.md spec/architecture/quality-requirements.md spec/architecture/runtime.md spec/architecture/building-blocks.md spec/architecture/risks.md plugins/unica/skills/code-search/SKILL.md tests/ci/test_architecture_registry.py tests/ci/test_product_contracts.py tests/ci/test_unica_skills.py
+git add spec/decisions/0057-rlm-source-revision-freshness.md spec/architecture/invariants.md spec/architecture/quality-requirements.md spec/architecture/runtime.md spec/architecture/building-blocks.md spec/architecture/risks.md plugins/unica/skills/code-search/SKILL.md tests/ci/test_architecture_registry.py tests/ci/test_product_contracts.py tests/ci/test_unica_skills.py
 git commit -m "docs: принять доверенные поколения RLM"
 ```
 
@@ -647,4 +647,4 @@ Expected: PASS.
 
 **Step 5: Перебазировать только на main и открыть PR**
 
-Если common search contract ещё не в `main`, остановиться. Git-grep PR может быть открыт или слит — зависимости на него нет. После rebase повторить Steps 2–3. Открыть самостоятельный PR с ADR-0056, measured evidence, macOS/non-macOS distinction и явным указанием, что ускорение первой версии гарантировано только backend с ProvenFast fence.
+Если common search contract ещё не в `main`, остановиться. Git-grep PR может быть открыт или слит — зависимости на него нет. После rebase повторить Steps 2–3. Открыть самостоятельный PR с ADR-0057, measured evidence, macOS/non-macOS distinction и явным указанием, что ускорение первой версии гарантировано только backend с ProvenFast fence.
