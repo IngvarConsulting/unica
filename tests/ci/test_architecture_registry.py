@@ -1691,6 +1691,155 @@ class ReaderInvocationContractTests(unittest.TestCase):
         self.assertEqual(numbered, [], "name documents by subject, not by chapter number")
 
 
+class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
+    """ADR-0055..0058 stay atomic and own separate derived rules."""
+
+    def setUp(self) -> None:
+        self.records = {record.id: record for record in all_records()}
+
+    def test_decisions_are_accepted_and_indexed_only_as_accepted(self) -> None:
+        index = DECISIONS_INDEX.read_text(encoding="utf-8")
+        accepted = index.split("## Принятые решения", 1)[1].split(
+            "## Предложенные решения", 1
+        )[0]
+        proposed = index.split("## Предложенные решения", 1)[1].split(
+            "\n## ", 1
+        )[0]
+        files = [
+            "0055-tipizirovannaya-gotovnost-rlm.md",
+            "0056-logicheskie-nablyudeniya-diagnostiki.md",
+            "0057-neytralnaya-kompoziciya-diagnostik.md",
+            "0058-yavnyy-rezhim-migracii-chitatelya.md",
+        ]
+
+        for filename in files:
+            with self.subTest(filename=filename):
+                decision = (DECISIONS_DIR / filename).read_text(encoding="utf-8")
+                self.assertIn("- Статус: `accepted`", decision)
+                self.assertIn(f"({filename})", accepted)
+                self.assertNotIn(f"({filename})", proposed)
+
+    def test_historical_records_only_name_their_replacements(self) -> None:
+        typed_reader = (
+            DECISIONS_DIR / "0045-typed-reader-completion-contract.md"
+        ).read_text(encoding="utf-8")
+        reader_bridge = (
+            DECISIONS_DIR
+            / "0049-most-logicheskoy-adresacii-predmetnyh-chitateley.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "- Статус: `superseded` — заменено ADR-0055, ADR-0056 и ADR-0057",
+            typed_reader,
+        )
+        self.assertIn(
+            "- Статус: `superseded` — заменено ADR-0058", reader_bridge
+        )
+
+    def test_atomic_diagnostics_rules_have_one_exact_owner_and_real_checks(self) -> None:
+        expected = {
+            "INV-MCP-DIAGNOSTIC-TARGET": (
+                "ADR-0056",
+                ["location", "focus", "абсолют"],
+                [
+                    "crates/unica-coder/src/application/tool_contracts.rs",
+                    "crates/unica-coder/src/application/diagnostics.rs",
+                ],
+            ),
+            "INV-APP-DIAGNOSTIC-PROVIDERS": (
+                "ADR-0057",
+                ["provider", "поряд", "дедуп"],
+                [
+                    "crates/unica-coder/src/application/diagnostics.rs",
+                    "crates/unica-coder/src/infrastructure/diagnostics.rs",
+                ],
+            ),
+            "INV-SOURCE-READER-MIGRATION": (
+                "ADR-0058",
+                ["bridge", "directSwitch", "unica.code.diagnostics"],
+                [
+                    "tests/ci/test_architecture_registry.py",
+                    "tests/ci/test_unica_skills.py",
+                ],
+            ),
+        }
+
+        for identifier, (decision, tokens, checks) in expected.items():
+            with self.subTest(identifier=identifier):
+                record = self.records.get(identifier)
+                self.assertIsNotNone(record, f"missing {identifier}")
+                if record is None:
+                    continue
+                self.assertEqual(record.one("Decision"), decision)
+                rule = record.one("Rule") or ""
+                for token in tokens:
+                    self.assertIn(token, rule)
+                rendered_checks = " ".join(record.fields.get("Check", []))
+                for check in checks:
+                    self.assertIn(check, rendered_checks)
+
+    def test_rlm_readiness_replaces_adr_0045_without_absorbing_diagnostics(self) -> None:
+        typed = self.records["INV-MCP-TYPED-RESULT"]
+        decisions = typed.one("Decision") or ""
+
+        self.assertIn("ADR-0055", decisions)
+        self.assertNotIn("ADR-0045", decisions)
+        rlm = (
+            DECISIONS_DIR / "0055-tipizirovannaya-gotovnost-rlm.md"
+        ).read_text(encoding="utf-8")
+        for foreign_concern in ("DiagnosticProviderRegistry", "directSwitch"):
+            self.assertNotIn(foreign_concern, rlm)
+
+    def test_each_diagnostics_decision_keeps_one_change_axis(self) -> None:
+        def decision_body(filename: str) -> str:
+            text = (DECISIONS_DIR / filename).read_text(encoding="utf-8")
+            return text.split("## Решение", 1)[1].split("## Неграницы", 1)[0]
+
+        target = decision_body("0056-logicheskie-nablyudeniya-diagnostiki.md")
+        providers = decision_body(
+            "0057-neytralnaya-kompoziciya-diagnostik.md"
+        )
+        migration = decision_body(
+            "0058-yavnyy-rezhim-migracii-chitatelya.md"
+        )
+
+        self.assertNotIn("legacy_target_removed", target)
+        self.assertNotIn("порядку поставщика", target)
+        self.assertNotIn("legacy_target_removed", providers)
+        self.assertNotIn("DiagnosticProvider", migration)
+        self.assertNotIn("location.kind", migration)
+
+    def test_runtime_and_checklist_use_the_action_contract(self) -> None:
+        runtime = (ARCHITECTURE_DIR / "runtime.md").read_text(encoding="utf-8")
+        checklist = (ARCHITECTURE_DIR / "change-checklist.md").read_text(
+            encoding="utf-8"
+        )
+        config_snapshot = self.records["INV-APP-CONFIG-SNAPSHOT"]
+
+        self.assertIn("`action=analyze`", runtime)
+        self.assertNotIn("diagnostics` в режиме `analyze`", runtime)
+        self.assertEqual(
+            config_snapshot.one("Decision"), "ADR-0040, ADR-0056"
+        )
+        for identifier in (
+            "INV-MCP-DIAGNOSTIC-TARGET",
+            "INV-APP-DIAGNOSTIC-PROVIDERS",
+            "INV-SOURCE-READER-MIGRATION",
+        ):
+            self.assertIn(identifier, checklist)
+        for artifact in (
+            "схем",
+            "обработчик",
+            "скилл",
+            "примеры",
+            "ведомость",
+            "миграц",
+            "релиз",
+            "тест",
+        ):
+            self.assertIn(artifact, checklist.lower())
+
+
 class ActiveLayerTests(unittest.TestCase):
     def active_documents(self) -> list[Path]:
         """Documents that describe the system as it is now.
