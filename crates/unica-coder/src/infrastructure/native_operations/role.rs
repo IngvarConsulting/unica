@@ -3937,8 +3937,15 @@ mod role_edit_contract_tests {
     }
 
     #[test]
-    fn preview_apply_repeat_are_typed_logical_and_idempotent() {
+    fn role_edit_without_vendor_support_is_logically_addressed_and_idempotent() {
         let (context, args, rights) = fixture("roundtrip");
+        assert!(
+            !context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin")
+                .exists(),
+            "the no-support case must not accidentally inherit vendor support evidence"
+        );
         let before = fs::read(&rights).unwrap();
         let preview = preview_edit_with_data(&args, &context);
         assert!(preview.outcome.ok, "{:?}", preview.outcome);
@@ -4178,8 +4185,8 @@ mod role_edit_contract_tests {
     }
 
     #[test]
-    fn support_deny_and_invalid_nested_matrix_leave_rights_unchanged() {
-        let (context, args, rights) = fixture("deny-and-matrix");
+    fn role_edit_rejects_invalid_nested_object_name_without_changing_rights() {
+        let (context, args, rights) = fixture("invalid-nested-object");
         let before = fs::read(&rights).unwrap();
 
         let mut nested = args.clone();
@@ -4195,6 +4202,13 @@ mod role_edit_contract_tests {
         let invalid = apply_edit_with_data(&nested, &context);
         assert!(!invalid.outcome.ok);
         assert_eq!(fs::read(&rights).unwrap(), before);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn role_edit_rejects_locked_vendor_supported_role_without_changing_rights() {
+        let (context, args, rights) = fixture("locked-vendor-supported-role");
+        let before = fs::read(&rights).unwrap();
 
         fs::create_dir_all(context.workspace_root.join("src/Ext")).unwrap();
         fs::write(
@@ -4218,6 +4232,37 @@ mod role_edit_contract_tests {
         assert!(!denied.outcome.ok, "{:?}", denied.outcome);
         assert!(denied.outcome.errors[0].contains("support_locked"));
         assert_eq!(fs::read(&rights).unwrap(), before);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn role_edit_changes_editable_vendor_supported_role_addressed_logically() {
+        let (context, args, rights) = fixture("editable-vendor-supported-role");
+        let before = fs::read(&rights).unwrap();
+        fs::create_dir_all(context.workspace_root.join("src/Ext")).unwrap();
+        fs::write(
+            context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin"),
+            concat!(
+                "\u{feff}{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                "\"VendorConf\",3,1,0,aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,1,0,",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,2,0,",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc,",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc}"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        let changed = apply_edit_with_data(&args, &context);
+
+        assert!(changed.outcome.ok, "{:?}", changed.outcome);
+        assert_ne!(fs::read(&rights).unwrap(), before);
+        assert!(changed.data.expect("typed success data").changed);
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
@@ -4839,7 +4884,7 @@ mod role_compile_contract_tests {
     }
 
     #[test]
-    fn role_compile_rolls_back_if_supported_configuration_appears_during_publication() {
+    fn role_compile_rolls_back_if_supported_format_owner_appears_during_publication() {
         let workspace = temp_root("supported-owner-appears-during-publication");
         let source = temp_root("detached-supported-owner-appears-during-publication");
         fs::create_dir_all(&source).unwrap();
@@ -4866,7 +4911,7 @@ mod role_compile_contract_tests {
     }
 
     #[test]
-    fn role_compile_validates_supported_configuration_that_appears_after_owner_probe() {
+    fn role_compile_validates_supported_format_owner_that_appears_after_owner_probe() {
         let workspace = temp_root("invalid-owner-appears-after-probe");
         let source = temp_root("detached-invalid-owner-appears-after-probe");
         fs::create_dir_all(source.join("Languages")).unwrap();
