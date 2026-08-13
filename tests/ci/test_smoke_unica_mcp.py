@@ -1249,14 +1249,9 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertIn("non-Meta tool", result.stderr)
         self.assertIn("unica.project.status", result.stderr)
 
-    def test_accepts_typed_code_search_output_schema(self) -> None:
-        entries = self.tool_entries()
-        code_search = next(
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
-        )
-        code_search["outputSchema"] = {
+    @staticmethod
+    def typed_code_search_output_schema() -> dict[str, object]:
+        return {
             "type": "object",
             "additionalProperties": False,
             "properties": {
@@ -1308,12 +1303,37 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     "required": ["coverage", "elapsedMs", "sections"],
                 }
             },
-            "required": [],
+            "required": ["data"],
         }
+
+    def test_accepts_typed_code_search_output_schema(self) -> None:
+        entries = self.tool_entries()
+        code_search = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
+        )
+        code_search["outputSchema"] = self.typed_code_search_output_schema()
 
         result = self.run_smoke(entries)
 
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_code_search_output_schema_that_does_not_require_data(self) -> None:
+        entries = self.tool_entries()
+        code_search = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
+        )
+        schema = self.typed_code_search_output_schema()
+        schema["required"] = []
+        code_search["outputSchema"] = schema
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must require data", result.stderr)
 
     def test_rejects_xdto_info_schema_missing_required_target(self) -> None:
         entries = self.tool_entries()
