@@ -2,7 +2,7 @@ use crate::application::{
     AdapterOutcome, RuntimeJobAction, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
     DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
-use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::operational_config::OperationalConfig;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
@@ -27,10 +27,9 @@ use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
-const GIT_TRACKING_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ProcessCommand {
@@ -194,17 +193,6 @@ pub struct RuntimeJobAdapterOutcome {
 
 pub struct RuntimeJobAdapter;
 
-pub(crate) struct GitTrackingAdapter<'a> {
-    runner: &'a dyn ProcessRunner,
-    timeout: Duration,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ConfigDumpInfoGitCheck {
-    Complete(Option<String>),
-    Cancelled,
-}
-
 pub struct BslAnalyzerMcpAdapter<'a> {
     runner: &'a dyn BslMcpRunner,
     process_runner: &'a dyn ProcessRunner,
@@ -367,158 +355,6 @@ impl<'a> CliAdapter<'a> {
             command: Some(command),
         })
     }
-}
-
-impl<'a> GitTrackingAdapter<'a> {
-    pub(crate) fn new() -> Self {
-        Self {
-            runner: &SYSTEM_PROCESS_RUNNER,
-            timeout: GIT_TRACKING_TIMEOUT,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_runner(runner: &'a dyn ProcessRunner) -> Self {
-        Self {
-            runner,
-            timeout: GIT_TRACKING_TIMEOUT,
-        }
-    }
-
-    pub(crate) fn config_dump_info_warning(
-        &self,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-    ) -> ConfigDumpInfoGitCheck {
-        if cancellation.is_cancelled() {
-            return ConfigDumpInfoGitCheck::Cancelled;
-        }
-        let started = Instant::now();
-        let deadline = started.checked_add(self.timeout).unwrap_or(started);
-
-        let output = match self.runner.run(&ProcessCommand {
-            program: PathBuf::from("git"),
-            args: [
-                "ls-files",
-                "--cached",
-                "--stage",
-                "-z",
-                "--",
-                ":(icase)ConfigDumpInfo.xml",
-                ":(icase,glob)**/ConfigDumpInfo.xml",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            cwd: context.workspace_root.clone(),
-            env: Vec::new(),
-            timeout: Some(self.timeout),
-            cancellation: cancellation.clone(),
-        }) {
-            Ok(output) => output,
-            Err(error) if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) => {
-                return ConfigDumpInfoGitCheck::Cancelled;
-            }
-            Err(_) => return ConfigDumpInfoGitCheck::Complete(None),
-        };
-
-        if output.cancelled || cancellation.is_cancelled() {
-            return ConfigDumpInfoGitCheck::Cancelled;
-        }
-        if output.timed_out {
-            return ConfigDumpInfoGitCheck::Complete(Some(format!(
-                "ConfigDumpInfo.xml Git tracking check timed out after {} seconds; project inspection continued without tracking diagnostics",
-                self.timeout.as_secs()
-            )));
-        }
-        if output.stdout_truncated {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check exceeded its bounded output capture; inspect the Git index manually because the tracked-path list is incomplete"
-                    .to_string(),
-            ));
-        }
-        if output.stdout_had_invalid_utf8 {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check returned non-UTF-8 paths; inspect the Git index manually because matching paths cannot be classified safely"
-                    .to_string(),
-            ));
-        }
-        if !output.status_success {
-            return ConfigDumpInfoGitCheck::Complete(None);
-        }
-
-        let Ok(index_paths) =
-            crate::infrastructure::project_health::git::parse_git_index_entries(&output.stdout)
-        else {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check returned an unrecognized index record; inspect matching tracked paths manually"
-                    .to_string(),
-            ));
-        };
-        if index_paths.is_empty() {
-            return ConfigDumpInfoGitCheck::Complete(None);
-        }
-
-        let budget = deadline.saturating_duration_since(Instant::now());
-        let inspection = match crate::infrastructure::project_health::git::classify_staged_config_dump_info(
-            self.runner,
-            &context.workspace_root,
-            &index_paths,
-            cancellation,
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(budget),
-        ) {
-            Ok(inspection) => inspection,
-            Err(crate::infrastructure::project_health::git::ConfigDumpInfoIndexInspectionError::Cancelled) => {
-                return ConfigDumpInfoGitCheck::Cancelled;
-            }
-        };
-
-        ConfigDumpInfoGitCheck::Complete(config_dump_info_warnings(
-            inspection.runtime_paths,
-            inspection.inconclusive_paths,
-        ))
-    }
-}
-
-fn config_dump_info_warnings(
-    mut runtime_paths: Vec<String>,
-    mut ambiguous_paths: Vec<String>,
-) -> Option<String> {
-    runtime_paths.sort();
-    runtime_paths.dedup();
-    ambiguous_paths.sort();
-    ambiguous_paths.dedup();
-    let mut warnings = Vec::new();
-    if !runtime_paths.is_empty() {
-        warnings.push(format!(
-            "per-infobase ConfigDumpInfo.xml runtime state is tracked by Git at {}; from the workspace root, remove only these paths with `git rm --cached -- <path>` and add the same workspace-relative paths to that workspace's .gitignore",
-            format_git_paths(runtime_paths.iter().map(String::as_str))
-        ));
-    }
-    if !ambiguous_paths.is_empty() {
-        warnings.push(manual_config_dump_info_warning(
-            ambiguous_paths.iter().map(String::as_str),
-            "the staged blob classification is inconclusive",
-        ));
-    }
-    (!warnings.is_empty()).then(|| warnings.join("; "))
-}
-
-fn manual_config_dump_info_warning<'a>(
-    paths: impl Iterator<Item = &'a str>,
-    reason: &str,
-) -> String {
-    format!(
-        "tracked ConfigDumpInfo.xml paths require manual review at {} because {reason}; keep platform-generated runtime sidecars out of Git, but do not untrack legitimate metadata object descriptors with the same filename",
-        format_git_paths(paths)
-    )
-}
-
-fn format_git_paths<'a>(paths: impl Iterator<Item = &'a str>) -> String {
-    paths
-        .map(|path| serde_json::to_string(path).expect("Git path serializes as JSON string"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 impl<'a> RuntimeAdapter<'a> {
@@ -3156,65 +2992,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn config_dump_info_git_check_uses_bounded_cancellable_process() {
-        let context = temp_context("tracked-config-dump-info");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "100644 0000000000000000000000000000000000000000 0\tnested/ConfigDumpInfo.xml\0",
-                    "100644 0000000000000000000000000000000000000000 0\tsrc/ConfigDumpInfo.xml\0",
-                )
-                .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-                stderr_truncated: false,
-                stdout_had_invalid_utf8: false,
-                stderr_had_invalid_utf8: false,
-            },
-        };
-        let cancellation = CancellationToken::new();
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &cancellation);
-
-        assert_eq!(
-            result,
-            ConfigDumpInfoGitCheck::Complete(Some(
-                "tracked ConfigDumpInfo.xml paths require manual review at \"nested/ConfigDumpInfo.xml\", \"src/ConfigDumpInfo.xml\" because the staged blob classification is inconclusive; keep platform-generated runtime sidecars out of Git, but do not untrack legitimate metadata object descriptors with the same filename"
-                    .to_string()
-            ))
-        );
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].program, PathBuf::from("git"));
-        assert_eq!(
-            commands[0].args,
-            [
-                "ls-files",
-                "--cached",
-                "--stage",
-                "-z",
-                "--",
-                ":(icase)ConfigDumpInfo.xml",
-                ":(icase,glob)**/ConfigDumpInfo.xml",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-        );
-        assert_eq!(commands[0].cwd, context.workspace_root);
-        assert_eq!(commands[0].timeout, Some(GIT_TRACKING_TIMEOUT));
-        assert!(!commands[0].cancellation.is_cancelled());
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
+    /*
     #[test]
     fn config_dump_info_git_check_reports_truncated_index_output_as_incomplete() {
         let context = temp_context("tracked-config-dump-info-truncated");
@@ -3537,6 +3315,7 @@ mod tests {
         let _ = fs::remove_dir_all(context.workspace_root);
     }
 
+    */
     #[test]
     fn standards_search_maps_to_v8std_search_request() {
         let mut args = Map::new();
@@ -6116,18 +5895,6 @@ analyze_timeout_seconds = 900
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.commands.borrow_mut().push(command.clone());
             Ok(self.output.clone())
-        }
-    }
-
-    struct SequenceProcessRunner {
-        commands: RefCell<Vec<ProcessCommand>>,
-        outputs: RefCell<Vec<ProcessOutput>>,
-    }
-
-    impl ProcessRunner for SequenceProcessRunner {
-        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-            self.commands.borrow_mut().push(command.clone());
-            Ok(self.outputs.borrow_mut().remove(0))
         }
     }
 

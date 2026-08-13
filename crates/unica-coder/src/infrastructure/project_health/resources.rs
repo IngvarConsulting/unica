@@ -73,9 +73,13 @@ impl SourceResourcePolicyInspector<'static> {
 }
 
 impl<'a> SourceResourcePolicyInspector<'a> {
+    pub(crate) fn with_process_runner(runner: &'a dyn ProcessRunner) -> Self {
+        Self { runner }
+    }
+
     #[cfg(test)]
     pub(crate) fn with_runner(runner: &'a dyn ProcessRunner) -> Self {
-        Self { runner }
+        Self::with_process_runner(runner)
     }
 
     pub(crate) fn classify(

@@ -25,6 +25,7 @@ pub(crate) mod operation_descriptors;
 pub(crate) mod operational_config;
 mod outcome;
 pub(crate) mod ports;
+pub(crate) mod project_health;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
@@ -619,7 +620,7 @@ pub fn tools() -> Vec<ToolSpec> {
     specs.extend([
         ToolSpec {
             name: "unica.project.status",
-            description: "Inspect current Unica workspace, source set, and cache state.",
+            description: "Inspect typed workspace, source-set, and portable Git readiness without changing the project.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
@@ -1324,6 +1325,9 @@ fn call_tool_observed(
             }
             ToolHandler::SourceResources { operation } => {
                 source_resources::invoke(operation, ports, args, &context, cancellation)?
+            }
+            ToolHandler::ProjectStatus => {
+                project_health::invoke(ports, &context, cancellation, deadline)
             }
             _ => ports.invoke_handler_with_operational_config(
                 spec,
@@ -2314,64 +2318,8 @@ pub(crate) struct TypedReadOutcome {
     pub(crate) data: Option<Value>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProjectStatusData {
-    workspace_root: String,
-    cache_root: String,
-    /// `null` when discovery failed: the caller must not read an empty list as
-    /// a workspace that has no source sets.
-    source_sets: Option<Vec<crate::domain::project_sources::ProjectSourceSet>>,
-}
-
-pub(crate) fn project_status(
-    context: &WorkspaceContext,
-    source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
-    tracked_config_dump_info_warning: Option<String>,
-) -> TypedReadOutcome {
-    let mut outcome = AdapterOutcome::ok(format!(
-        "workspace root: {}; cache root: {}",
-        context.workspace_root.display(),
-        context.cache_root.display()
-    ));
-    outcome
-        .artifacts
-        .push(context.workspace_root.display().to_string());
-    outcome
-        .artifacts
-        .push(context.cache_root.display().to_string());
-    let source_sets = match source_map {
-        Ok(source_map) => {
-            outcome
-                .summary
-                .push_str(&format!("; source sets: {}", source_map.source_sets.len()));
-            Some(source_map.source_sets)
-        }
-        Err(error) => {
-            outcome
-                .warnings
-                .push(format!("source-set discovery failed: {error}"));
-            None
-        }
-    };
-    if let Some(warning) = tracked_config_dump_info_warning {
-        outcome.warnings.push(warning);
-    }
-    let data = serde_json::to_value(ProjectStatusData {
-        workspace_root: context.workspace_root.display().to_string(),
-        cache_root: context.cache_root.display().to_string(),
-        source_sets,
-    })
-    .expect("project status data serializes");
-    TypedReadOutcome {
-        outcome,
-        data: Some(data),
-    }
-}
-
 pub(crate) fn project_map(
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
-    tracked_config_dump_info_warning: Option<String>,
 ) -> TypedReadOutcome {
     match source_map {
         Ok(source_map) => {
@@ -2381,9 +2329,6 @@ pub(crate) fn project_map(
             ));
             if let Some(error) = &source_map.source_selection_error {
                 outcome.warnings.push(error.clone());
-            }
-            if let Some(warning) = tracked_config_dump_info_warning {
-                outcome.warnings.push(warning);
             }
             // The map used to be serialized into `stdout`, which put a JSON
             // string inside the JSON envelope -- exactly the shape ADR-0020
@@ -2399,7 +2344,7 @@ pub(crate) fn project_map(
                 ok: false,
                 summary: "project map discovery failed".to_string(),
                 changes: Vec::new(),
-                warnings: tracked_config_dump_info_warning.into_iter().collect(),
+                warnings: Vec::new(),
                 errors: vec![error],
                 artifacts: Vec::new(),
                 stdout: None,
@@ -5911,13 +5856,89 @@ mod tests {
             .unwrap();
         assert!(result.ok);
         assert_eq!(result.cache.mode, "read");
-        assert!(result.summary.contains("workspace root"));
+        assert!(result.summary.contains("project health inspected"));
         let data = result.data.unwrap();
         assert!(data["workspaceRoot"].is_string());
         assert!(data["cacheRoot"].is_string());
+        assert!(data["ready"].is_boolean());
+        assert!(data["repositoryReady"].is_boolean());
+        assert!(data["checks"].is_array());
+        assert!(data["diagnostics"].is_array());
         // Discovery either proves the sets or says it could not: an empty list
         // must never stand in for "we did not look".
         assert!(data["sourceSets"].is_array() || data["sourceSets"].is_null());
+    }
+
+    #[test]
+    fn project_status_without_git_separates_source_and_repository_readiness() {
+        let root = temp_project_status_workspace("without-git", "src");
+        let mut args = Map::new();
+        args.insert("cwd".into(), Value::String(root.display().to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.status", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let data = result.data.unwrap();
+        assert_eq!(data["ready"], true);
+        assert_eq!(data["repositoryReady"], false);
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "git.repository_absent" }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_status_reports_workspace_root_source_set_without_mutation() {
+        let root = temp_project_status_workspace("root-source", ".");
+        let before = std::fs::read(root.join("v8project.yaml")).unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".into(), Value::String(root.display().to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.status", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let data = result.data.unwrap();
+        assert_eq!(data["ready"], false);
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "source_set.root_is_workspace" }));
+        assert_eq!(std::fs::read(root.join("v8project.yaml")).unwrap(), before);
+        assert!(!root.join(".build/unica/services").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn temp_project_status_workspace(name: &str, source_path: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "unica-project-status-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_root = if source_path == "." {
+            root.clone()
+        } else {
+            root.join(source_path)
+        };
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            format!(
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: {source_path}\n"
+            ),
+        )
+        .unwrap();
+        root
     }
 
     #[test]
@@ -5959,7 +5980,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_warns_when_config_dump_info_is_tracked_by_git() {
+    fn project_map_does_not_mix_git_health_into_source_map() {
         let root = test_workspace_root("project-map-tracked-cdfi");
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -5993,11 +6014,15 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("src/configdumpinfo.xml")
-                && warning.contains("git rm --cached")));
+        assert!(
+            result.warnings.iter().all(|warning| {
+                !warning.contains("ConfigDumpInfo.xml")
+                    && !warning.contains("git rm")
+                    && !warning.contains("manual review")
+            }),
+            "{:?}",
+            result.warnings
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -6080,7 +6105,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_classifies_config_dump_info_from_git_index_not_worktree() {
+    fn project_map_is_independent_of_config_dump_info_index_and_worktree_content() {
         let runtime_index = test_workspace_root("project-map-cdfi-runtime-index");
         std::fs::create_dir_all(runtime_index.join("epf")).unwrap();
         std::fs::write(
@@ -6121,11 +6146,15 @@ mod tests {
             .call_tool("unica.project.map", &args)
             .unwrap();
 
-        assert!(result.warnings.iter().any(|warning| {
-            warning.contains("epf/ConfigDumpInfo.xml")
-                && warning.contains("git rm --cached")
-                && warning.contains("workspace-relative paths")
-        }));
+        assert!(
+            result.warnings.iter().all(|warning| {
+                !warning.contains("ConfigDumpInfo.xml")
+                    && !warning.contains("git rm")
+                    && !warning.contains("manual review")
+            }),
+            "{:?}",
+            result.warnings
+        );
 
         let external_index = test_workspace_root("project-map-cdfi-external-index");
         std::fs::create_dir_all(external_index.join("epf")).unwrap();
@@ -6227,7 +6256,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_preserves_tracked_config_dump_info_warning_when_map_fails() {
+    fn project_map_failure_does_not_run_git_health_inspection() {
         let root = test_workspace_root("project-map-invalid-with-tracked-cdfi");
         std::fs::write(root.join("v8project.yaml"), "source-set: [").unwrap();
         std::fs::write(root.join("ConfigDumpInfo.xml"), "<ConfigDumpInfo/>").unwrap();
@@ -6249,11 +6278,7 @@ mod tests {
             .unwrap();
 
         assert!(!result.ok);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("ConfigDumpInfo.xml")
-                && warning.contains("git rm --cached")));
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
 
         let _ = std::fs::remove_dir_all(root);
     }
