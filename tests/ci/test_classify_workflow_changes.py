@@ -67,6 +67,11 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         for path in (
             "crates/unica-coder/src/infrastructure/platform/filesystem.rs",
             "crates/unica-coder/src/infrastructure/platform_xml_owner.rs",
+            "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
+            "crates/unica-coder/src/infrastructure/source_roots.rs",
+            "crates/unica-coder/src/infrastructure/path_policy.rs",
+            "crates/unica-coder/src/infrastructure/support_state.rs",
+            "crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs",
             "crates/unica-bootstrap/src/platform/mod.rs",
             "crates/unica-coder/tests/platform/new_contract.rs",
             "crates/unica-coder/tests/platform_external_init.rs",

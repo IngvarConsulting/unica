@@ -3367,7 +3367,12 @@ mod tests {
         assert!(execution.outcome.ok, "{:?}", execution.outcome);
         assert_eq!(
             execution.outcome.artifacts,
-            vec![template_path.canonicalize().unwrap().display().to_string()]
+            vec![
+                crate::infrastructure::source_roots::normalize_path_identity(&template_path)
+                    .unwrap()
+                    .display()
+                    .to_string()
+            ]
         );
         let _ = fs::remove_dir_all(&context.cwd);
     }

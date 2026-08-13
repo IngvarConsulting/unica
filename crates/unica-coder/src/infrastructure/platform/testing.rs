@@ -15,6 +15,16 @@ pub(crate) fn path_text_for_test(path: &Path) -> String {
     normalize_path_text_for_test(&path.display().to_string())
 }
 
+#[cfg(windows)]
+pub(crate) fn windows_extended_length_path_for_test(path: &Path) -> Option<PathBuf> {
+    Some(PathBuf::from(format!(r"\\?\{}", path.display())))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn windows_extended_length_path_for_test(_path: &Path) -> Option<PathBuf> {
+    None
+}
+
 #[cfg(unix)]
 pub(crate) fn can_rename_parent_with_retained_cleanup_child_for_test() -> bool {
     true
