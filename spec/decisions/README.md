@@ -73,10 +73,10 @@
 - [ADR-0052: Аргумент, которого не читает ни один обработчик, не публикуется](0052-nechitaemyy-argument-ne-publikuetsya.md)
 - [ADR-0054: Состояние поддержки читается по логической цели через порт](0054-provider-neutral-support-state-reader.md)
 - [ADR-0055: Дымовая проверка исполняет извлечённый проверенный архив runtime](0055-smoke-proveryaet-upakovannyy-runtime.md)
-- [ADR-0055: Готовность RLM является типизированным состоянием](0055-tipizirovannaya-gotovnost-rlm.md)
-- [ADR-0056: Публичная диагностика адресует логические цели](0056-logicheskie-nablyudeniya-diagnostiki.md)
-- [ADR-0057: Поставщики диагностик сохраняют происхождение и отказывают независимо](0057-neytralnaya-kompoziciya-diagnostik.md)
-- [ADR-0058: Миграция читателя выбирает мост или прямое переключение явно](0058-yavnyy-rezhim-migracii-chitatelya.md)
+- [ADR-0056: Готовность RLM является типизированным состоянием](0056-tipizirovannaya-gotovnost-rlm.md)
+- [ADR-0057: Публичная диагностика адресует логические цели](0057-logicheskie-nablyudeniya-diagnostiki.md)
+- [ADR-0058: Поставщики диагностик сохраняют происхождение и отказывают независимо](0058-neytralnaya-kompoziciya-diagnostik.md)
+- [ADR-0059: Миграция читателя выбирает мост или прямое переключение явно](0059-yavnyy-rezhim-migracii-chitatelya.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

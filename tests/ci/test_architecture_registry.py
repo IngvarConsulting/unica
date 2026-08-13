@@ -1692,7 +1692,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
 
 
 class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
-    """ADR-0055..0058 stay atomic and own separate derived rules."""
+    """ADR-0056..0059 stay atomic and own separate derived rules."""
 
     def setUp(self) -> None:
         self.records = {record.id: record for record in all_records()}
@@ -1706,10 +1706,10 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
             "\n## ", 1
         )[0]
         files = [
-            "0055-tipizirovannaya-gotovnost-rlm.md",
-            "0056-logicheskie-nablyudeniya-diagnostiki.md",
-            "0057-neytralnaya-kompoziciya-diagnostik.md",
-            "0058-yavnyy-rezhim-migracii-chitatelya.md",
+            "0056-tipizirovannaya-gotovnost-rlm.md",
+            "0057-logicheskie-nablyudeniya-diagnostiki.md",
+            "0058-neytralnaya-kompoziciya-diagnostik.md",
+            "0059-yavnyy-rezhim-migracii-chitatelya.md",
         ]
 
         for filename in files:
@@ -1729,17 +1729,17 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            "- Статус: `superseded` — заменено ADR-0055, ADR-0056 и ADR-0057",
+            "- Статус: `superseded` — заменено ADR-0056, ADR-0057 и ADR-0058",
             typed_reader,
         )
         self.assertIn(
-            "- Статус: `superseded` — заменено ADR-0058", reader_bridge
+            "- Статус: `superseded` — заменено ADR-0059", reader_bridge
         )
 
     def test_atomic_diagnostics_rules_have_one_exact_owner_and_real_checks(self) -> None:
         expected = {
             "INV-MCP-DIAGNOSTIC-TARGET": (
-                "ADR-0056",
+                "ADR-0057",
                 ["location", "focus", "абсолют"],
                 [
                     "crates/unica-coder/src/application/tool_contracts.rs",
@@ -1747,7 +1747,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
                 ],
             ),
             "INV-APP-DIAGNOSTIC-PROVIDERS": (
-                "ADR-0057",
+                "ADR-0058",
                 ["provider", "поряд", "дедуп"],
                 [
                     "crates/unica-coder/src/application/diagnostics.rs",
@@ -1755,7 +1755,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
                 ],
             ),
             "INV-SOURCE-READER-MIGRATION": (
-                "ADR-0058",
+                "ADR-0059",
                 ["bridge", "directSwitch", "unica.code.diagnostics"],
                 [
                     "tests/ci/test_architecture_registry.py",
@@ -1782,10 +1782,10 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         typed = self.records["INV-MCP-TYPED-RESULT"]
         decisions = typed.one("Decision") or ""
 
-        self.assertIn("ADR-0055", decisions)
+        self.assertIn("ADR-0056", decisions)
         self.assertNotIn("ADR-0045", decisions)
         rlm = (
-            DECISIONS_DIR / "0055-tipizirovannaya-gotovnost-rlm.md"
+            DECISIONS_DIR / "0056-tipizirovannaya-gotovnost-rlm.md"
         ).read_text(encoding="utf-8")
         for foreign_concern in ("DiagnosticProviderRegistry", "directSwitch"):
             self.assertNotIn(foreign_concern, rlm)
@@ -1795,12 +1795,12 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
             text = (DECISIONS_DIR / filename).read_text(encoding="utf-8")
             return text.split("## Решение", 1)[1].split("## Неграницы", 1)[0]
 
-        target = decision_body("0056-logicheskie-nablyudeniya-diagnostiki.md")
+        target = decision_body("0057-logicheskie-nablyudeniya-diagnostiki.md")
         providers = decision_body(
-            "0057-neytralnaya-kompoziciya-diagnostik.md"
+            "0058-neytralnaya-kompoziciya-diagnostik.md"
         )
         migration = decision_body(
-            "0058-yavnyy-rezhim-migracii-chitatelya.md"
+            "0059-yavnyy-rezhim-migracii-chitatelya.md"
         )
 
         self.assertNotIn("legacy_target_removed", target)
@@ -1819,7 +1819,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         self.assertIn("`action=analyze`", runtime)
         self.assertNotIn("diagnostics` в режиме `analyze`", runtime)
         self.assertEqual(
-            config_snapshot.one("Decision"), "ADR-0040, ADR-0056"
+            config_snapshot.one("Decision"), "ADR-0040, ADR-0057"
         )
         for identifier in (
             "INV-MCP-DIAGNOSTIC-TARGET",
