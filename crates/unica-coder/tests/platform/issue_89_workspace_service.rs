@@ -305,7 +305,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         fixture.log_records()
     );
 
-    let expected_root = canonical_display(&fixture.workspace.join("src/cf"));
+    let expected_root = canonical_display(&fixture.workspace);
     let records = fixture.log_records();
     assert!(records.iter().any(|record| record.kind == "analyzer"));
     assert!(records.iter().any(|record| record.kind == "rlm"));
@@ -337,6 +337,23 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         2,
         "the second persistent RLM process must be reused after cancellation recovery"
     );
+    let indexer_rlm_index_dir = records
+        .iter()
+        .find(|record| record.kind == "rlm-index")
+        .expect("RLM indexer must record its state directory")
+        .rlm_index_dir
+        .clone();
+    let reader_rlm_index_dir = records
+        .iter()
+        .find(|record| record.kind == "rlm")
+        .expect("RLM reader must record its state directory")
+        .rlm_index_dir
+        .clone();
+    assert_eq!(indexer_rlm_index_dir, reader_rlm_index_dir);
+    assert!(!path_starts_with_host_root(
+        Path::new(&indexer_rlm_index_dir),
+        &fixture.workspace,
+    ));
 
     mcp.finish().unwrap();
     fixture.finish(&records).unwrap();
@@ -695,45 +712,47 @@ impl Fixture {
         ));
         let workspace = root.join("workspace");
         let plugin_root = root.join("plugin");
-        let cache = root.join("cache");
+        let cache = workspace.join(".build/unica");
         let log = root.join("tool.log");
         let rlm_state = root.join("rlm-state");
-        fs::create_dir_all(workspace.join("src/cf/Configuration")).unwrap();
-        fs::create_dir_all(workspace.join("src/cf/CommonModules/Test/Ext")).unwrap();
-        fs::create_dir_all(workspace.join("src/cf/Catalogs")).unwrap();
-        fs::create_dir_all(workspace.join("src/cf/Languages")).unwrap();
-        fs::create_dir_all(workspace.join("exts/TESTS/Configuration")).unwrap();
+        fs::create_dir_all(workspace.join("Configuration")).unwrap();
+        fs::create_dir_all(workspace.join("CommonModules/Test/Ext")).unwrap();
+        fs::create_dir_all(workspace.join("Catalogs")).unwrap();
+        fs::create_dir_all(workspace.join("Languages")).unwrap();
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         fs::create_dir_all(plugin_root.join("third-party")).unwrap();
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&rlm_state).unwrap();
-        fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n  TESTS:\n    type: CONFIGURATION\n    path: exts/TESTS\n").unwrap();
         fs::write(
-            workspace.join("src/cf/Configuration.xml"),
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("Configuration.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><InternalInfo/><Properties><Name>Issue89</Name><DefaultLanguage>Russian</DefaultLanguage></Properties><ChildObjects><Language>Russian</Language><Catalog>Test</Catalog><Catalog>LogicalError</Catalog><CommonModule>Test</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            workspace.join("src/cf/Languages/Russian.xml"),
+            workspace.join("Languages/Russian.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="dddddddd-dddd-4ddd-8ddd-dddddddddddd"><Properties><Name>Russian</Name><Synonym/><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            workspace.join("src/cf/Catalogs/Test.xml"),
+            workspace.join("Catalogs/Test.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><InternalInfo/><Properties><Name>Test</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            workspace.join("src/cf/Catalogs/LogicalError.xml"),
+            workspace.join("Catalogs/LogicalError.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><InternalInfo/><Properties><Name>LogicalError</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            workspace.join("src/cf/CommonModules/Test/Ext/Module.bsl"),
+            workspace.join("CommonModules/Test/Ext/Module.bsl"),
             "Procedure Test() Export\nEndProcedure\n",
         )
         .unwrap();
-        fs::write(workspace.join("exts/TESTS/Configuration.xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MetaDataObject><Configuration/></MetaDataObject>").unwrap();
         compile_fake_tools(&root, &plugin_root);
         Self {
             root,
@@ -853,8 +872,8 @@ impl Fixture {
         let text = fs::read_to_string(&self.log).map_err(|error| error.to_string())?;
         text.lines()
             .map(|line| {
-                let fields = line.splitn(5, '|').collect::<Vec<_>>();
-                if fields.len() != 5 {
+                let fields = line.splitn(6, '|').collect::<Vec<_>>();
+                if fields.len() != 6 {
                     return Err(format!("incomplete fake-tool log line: {line}"));
                 }
                 Ok(ToolRecord {
@@ -869,6 +888,7 @@ impl Fixture {
                         .parse::<u32>()
                         .map_err(|error| error.to_string())?,
                     source_root: fields[4].to_string(),
+                    rlm_index_dir: fields[5].to_string(),
                 })
             })
             .collect()
@@ -990,6 +1010,7 @@ struct ToolRecord {
     pid: u32,
     descendant_pid: u32,
     source_root: String,
+    rlm_index_dir: String,
 }
 
 fn compile_fake_tools(root: &Path, plugin_root: &Path) {
@@ -1070,6 +1091,28 @@ fn host_target() -> &'static str {
         ("macos", "aarch64") => "darwin-arm64",
         host => panic!("unsupported integration-test host {host:?}"),
     }
+}
+
+#[cfg(windows)]
+fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
+    fn components(path: &Path) -> Vec<String> {
+        path.display()
+            .to_string()
+            .trim_start_matches(r"\\?\")
+            .split(['\\', '/'])
+            .filter(|component| !component.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    }
+
+    let path = components(path);
+    let root = components(root);
+    path.len() >= root.len() && path.iter().zip(root.iter()).all(|(left, right)| left == right)
+}
+
+#[cfg(not(windows))]
+fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
 }
 
 fn canonical_display(path: &Path) -> String {
@@ -1186,7 +1229,7 @@ fn main() {
     if name.contains("bsl-analyzer") {
         analyzer(&args);
     } else if name.contains("rlm-bsl-index") {
-        rlm_index();
+        rlm_index(&args);
     } else {
         rlm_mcp();
     }
@@ -1203,7 +1246,8 @@ fn spawn_descendant(kind: &str, root: &str) -> Child {
 
 fn record(kind: &str, sequence: u32, descendant: u32, root: &str) {
     let mut file = OpenOptions::new().create(true).append(true).open(env::var("ISSUE89_LOG").unwrap()).unwrap();
-    let line = format!("{}|{}|{}|{}|{}\n", kind, sequence, std::process::id(), descendant, root);
+    let rlm_index_dir = env::var("RLM_INDEX_DIR").unwrap_or_default();
+    let line = format!("{}|{}|{}|{}|{}|{}\n", kind, sequence, std::process::id(), descendant, root, rlm_index_dir);
     file.write_all(line.as_bytes()).unwrap();
     file.flush().unwrap();
 }
@@ -1328,7 +1372,9 @@ fn rlm_mcp() {
     }
 }
 
-fn rlm_index() {
+fn rlm_index(args: &[String]) {
+    let root = args.last().cloned().unwrap_or_default();
+    record("rlm-index", 0, std::process::id(), &root);
     let db = std::path::Path::new(&env::var("RLM_INDEX_DIR").unwrap())
         .join("fake/bsl_index.db");
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();

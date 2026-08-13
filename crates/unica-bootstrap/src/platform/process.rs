@@ -4,10 +4,14 @@ use std::process::Command;
 use crate::error::{BootstrapError, Result};
 
 #[cfg(unix)]
-pub fn launch_runtime(entrypoint: &Path, args: &[String]) -> Result<i32> {
+pub fn launch_runtime(
+    entrypoint: &Path,
+    args: &[String],
+    provider_state_root: &Path,
+) -> Result<i32> {
     use std::os::unix::process::CommandExt;
 
-    let error = Command::new(entrypoint).args(args).exec();
+    let error = runtime_command(entrypoint, args, provider_state_root).exec();
     Err(BootstrapError::new(format!(
         "failed to exec Unica runtime {}: {error}",
         entrypoint.display()
@@ -15,7 +19,11 @@ pub fn launch_runtime(entrypoint: &Path, args: &[String]) -> Result<i32> {
 }
 
 #[cfg(windows)]
-pub fn launch_runtime(entrypoint: &Path, args: &[String]) -> Result<i32> {
+pub fn launch_runtime(
+    entrypoint: &Path,
+    args: &[String],
+    provider_state_root: &Path,
+) -> Result<i32> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use std::ptr;
@@ -26,8 +34,7 @@ pub fn launch_runtime(entrypoint: &Path, args: &[String]) -> Result<i32> {
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
-    let mut child = Command::new(entrypoint)
-        .args(args)
+    let mut child = runtime_command(entrypoint, args, provider_state_root)
         .spawn()
         .map_err(|error| {
             BootstrapError::new(format!(
@@ -73,9 +80,64 @@ pub fn launch_runtime(entrypoint: &Path, args: &[String]) -> Result<i32> {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub fn launch_runtime(entrypoint: &Path, _args: &[String]) -> Result<i32> {
+pub fn launch_runtime(
+    entrypoint: &Path,
+    _args: &[String],
+    _provider_state_root: &Path,
+) -> Result<i32> {
     Err(BootstrapError::new(format!(
         "runtime launch is unsupported on this platform: {}",
         entrypoint.display()
     )))
+}
+
+fn runtime_command(entrypoint: &Path, args: &[String], provider_state_root: &Path) -> Command {
+    let mut command = Command::new(entrypoint);
+    command
+        .args(args)
+        .env("UNICA_PROVIDER_STATE_DIR", provider_state_root);
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_passes_provider_state_root_to_child() {
+        let args = vec![
+            "-c".to_string(),
+            "printf %s \"$UNICA_PROVIDER_STATE_DIR\"".to_string(),
+        ];
+        let output = runtime_command(
+            Path::new("/bin/sh"),
+            &args,
+            Path::new("/private/provider-state"),
+        )
+        .output()
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"/private/provider-state");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_command_passes_provider_state_root_to_child() {
+        let args = vec![
+            "/C".to_string(),
+            "<nul set /p=%UNICA_PROVIDER_STATE_DIR%".to_string(),
+        ];
+        let output = runtime_command(
+            Path::new("cmd.exe"),
+            &args,
+            Path::new(r"C:\private\provider-state"),
+        )
+        .output()
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, br"C:\private\provider-state");
+    }
 }

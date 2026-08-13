@@ -3,6 +3,7 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::platform::filesystem::{path_lock_identity, path_starts_with_host_root};
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
@@ -14,6 +15,7 @@ use crate::infrastructure::source_roots::{
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -28,12 +30,68 @@ const REVISION_VERIFY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 const LOCK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const LOCK_SCHEMA_VERSION: u32 = 1;
-const RLM_INDEX_DIR_NAME: &str = "rlm-tools-bsl";
+const LEGACY_RLM_INDEX_DIR_NAME: &str = "rlm-tools-bsl";
 const STATUS_FILE_NAME: &str = "bsl_index_status.json";
 const LOCK_FILE_NAME: &str = "bsl_index.lock";
 pub(crate) const SOURCE_REVISION_GENERATION_ARG: &str = "__sourceRevisionGeneration";
 pub(crate) const SOURCE_REVISION_ARG: &str = "__sourceRevision";
 pub(crate) const SOURCE_GENERATION_STALE_STATUS: &str = "stale (source generation)";
+
+pub(crate) fn rlm_provider_state_root(
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<PathBuf, String> {
+    rlm_provider_state_root_with(context, source_root, neutral_provider_state_root())
+}
+
+fn rlm_provider_state_root_with(
+    context: &WorkspaceContext,
+    source_root: &Path,
+    external_base: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    let preferred = normalize_path_identity(&context.cache_root)?;
+    let workspace = normalize_path_identity(&context.workspace_root)?;
+    let source = normalize_path_identity(source_root)?;
+    if !path_starts_with_host_root(&preferred, &source) {
+        return Ok(preferred);
+    }
+    let root = external_base.ok_or_else(|| {
+        "UNICA_PROVIDER_STATE_DIR, HOME, or USERPROFILE is required for RLM state outside sourceRoot".to_string()
+    })?;
+    let mut hasher = Sha256::new();
+    for component in [&workspace, &source] {
+        hasher.update(path_lock_identity(component).as_bytes());
+        hasher.update([0]);
+    }
+    let identity = format!("{:x}", hasher.finalize());
+    let root = normalize_path_identity(&root.join(format!("rlm-{identity}")))?;
+    if path_starts_with_host_root(&root, &source) {
+        return Err("failed to place RLM state outside the indexed source tree".to_string());
+    }
+    Ok(root)
+}
+
+fn neutral_provider_state_root() -> Option<PathBuf> {
+    std::env::var_os("UNICA_PROVIDER_STATE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(PathBuf::from)
+                .map(|home| home.join(".unica").join("provider-state"))
+        })
+}
+
+fn rlm_index_dir_with_root(root: &Path) -> PathBuf {
+    root.join(LEGACY_RLM_INDEX_DIR_NAME)
+}
+
+pub(crate) fn rlm_index_dir(
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<PathBuf, String> {
+    rlm_provider_state_root(context, source_root).map(|root| rlm_index_dir_with_root(&root))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IndexReadiness {
@@ -503,11 +561,7 @@ impl<'a> WorkspaceIndexService<'a> {
         let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-index", true)?.program;
         let env = vec![(
             "RLM_INDEX_DIR".to_string(),
-            context
-                .cache_root
-                .join(RLM_INDEX_DIR_NAME)
-                .display()
-                .to_string(),
+            rlm_index_dir(context, source_root)?.display().to_string(),
         )];
         let root = source_root.display().to_string();
         Ok(IndexCommands {
@@ -1791,10 +1845,71 @@ mod tests {
     use super::*;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::infrastructure::platform::testing;
+    use crate::infrastructure::platform::{filesystem::path_starts_with_host_root, testing};
     use crate::infrastructure::source_revision::SourceRevisionService;
     use std::cell::RefCell;
     use std::sync::Arc;
+
+    #[test]
+    fn rlm_provider_state_keeps_the_existing_safe_cache_layout() {
+        let context = test_context("safe-provider-root");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+
+        let actual = rlm_provider_state_root_with(
+            &context,
+            &source_root,
+            Some(context.workspace_root.parent().unwrap().join("host-data")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            actual,
+            normalize_path_identity(&context.cache_root).unwrap()
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_provider_state_moves_outside_a_workspace_wide_source_root() {
+        let mut context = test_context("unsafe-provider-root");
+        context.cache_root = context.workspace_root.join(".build/unica");
+        let external = context.workspace_root.parent().unwrap().join("host-data");
+
+        let first =
+            rlm_provider_state_root_with(&context, &context.workspace_root, Some(external.clone()))
+                .unwrap();
+        let second =
+            rlm_provider_state_root_with(&context, &context.workspace_root, Some(external))
+                .unwrap();
+
+        assert_eq!(first, second);
+        assert!(!path_starts_with_host_root(&first, &context.workspace_root));
+        let identity = first.file_name().unwrap().to_string_lossy();
+        let digest = identity.strip_prefix("rlm-").unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(rlm_index_dir_with_root(&first), first.join("rlm-tools-bsl"));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_provider_state_separates_source_roots() {
+        let mut context = test_context("separate-provider-roots");
+        context.cache_root = context.workspace_root.join(".build/unica");
+        let external = context.workspace_root.parent().unwrap().join("host-data");
+        let first_source = context.workspace_root.clone();
+        let second_source = context.workspace_root.join("src/extension");
+        fs::create_dir_all(&second_source).unwrap();
+
+        let first =
+            rlm_provider_state_root_with(&context, &first_source, Some(external.clone())).unwrap();
+        let second =
+            rlm_provider_state_root_with(&context, &second_source, Some(external)).unwrap();
+
+        assert_ne!(first, second);
+        cleanup(&context);
+    }
 
     #[test]
     fn legacy_status_without_source_generation_remains_readable() {
@@ -2046,7 +2161,9 @@ source-set:
         assert_eq!(backgrounds[0].primary.env[0].0, "RLM_INDEX_DIR");
         assert_eq!(
             PathBuf::from(&backgrounds[0].primary.env[0].1),
-            context.cache_root.join(RLM_INDEX_DIR_NAME)
+            normalize_path_identity(&context.cache_root)
+                .unwrap()
+                .join(LEGACY_RLM_INDEX_DIR_NAME)
         );
         assert!(status_path(&context).is_file());
         cleanup(&context);

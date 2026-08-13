@@ -11,8 +11,8 @@ use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
-    ready_index_for_source_revision, IndexBackgroundTaskTracker, IndexReadiness, SystemIndexRunner,
-    WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS, SOURCE_REVISION_ARG,
+    ready_index_for_source_revision, rlm_index_dir, IndexBackgroundTaskTracker, IndexReadiness,
+    SystemIndexRunner, WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS, SOURCE_REVISION_ARG,
     SOURCE_REVISION_GENERATION_ARG,
 };
 use fs2::FileExt;
@@ -2664,6 +2664,7 @@ impl PersistentMcpSession {
 
     fn start_rlm_transport(
         context: &WorkspaceContext,
+        source_root: &Path,
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
         if cancellation.is_cancelled() {
@@ -2676,7 +2677,7 @@ impl PersistentMcpSession {
         let mut command = Command::new(program);
         command
             .current_dir(&context.cwd)
-            .env("RLM_INDEX_DIR", context.cache_root.join("rlm-tools-bsl"));
+            .env("RLM_INDEX_DIR", rlm_index_dir(context, source_root)?);
         Self::start_with_command(command, cancellation)
     }
 
@@ -2991,7 +2992,11 @@ impl RlmMcpSession {
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
         Ok(Self {
-            transport: PersistentMcpSession::start_rlm_transport(context, cancellation)?,
+            transport: PersistentMcpSession::start_rlm_transport(
+                context,
+                source_root,
+                cancellation,
+            )?,
             source_root: source_root.to_path_buf(),
             session_id: None,
         })

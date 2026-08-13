@@ -9,6 +9,8 @@ use super::descriptor::{PluginHost, KNOWN};
 /// Host-neutral override: whoever installs the plugin may point the runtime
 /// cache anywhere.
 const CACHE_OVERRIDE_ENV: &str = "UNICA_RUNTIME_CACHE_DIR";
+/// Host-neutral persistent provider-state root passed to the runtime child.
+const PROVIDER_STATE_OVERRIDE_ENV: &str = "UNICA_PROVIDER_STATE_DIR";
 /// Shell-style token a host was expected to expand before passing a value on.
 const UNEXPANDED_TOKEN: &str = "${";
 /// User home directory variables, shared by every host.
@@ -27,9 +29,23 @@ type CacheSource = fn(&PluginHost, ReadEnv<'_>) -> Option<PathBuf>;
 /// in [`KNOWN`] order.
 const CACHE_SOURCES: [CacheSource; 3] = [published_data_dir, declared_home_root, user_home_root];
 
+/// One way of deriving persistent provider state from a host descriptor.
+type ProviderStateSource = fn(&PluginHost, ReadEnv<'_>) -> Option<PathBuf>;
+
+const PROVIDER_STATE_SOURCES: [ProviderStateSource; 3] = [
+    published_provider_state,
+    declared_provider_state,
+    user_provider_state,
+];
+
 /// Directory that holds the installed Unica runtimes for the current host.
 pub fn runtime_cache_root() -> Result<PathBuf> {
     resolve_runtime_cache_root(&|name| env::var_os(name))
+}
+
+/// Directory that holds persistent state owned by bundled providers.
+pub fn provider_state_root() -> Result<PathBuf> {
+    resolve_provider_state_root(&|name| env::var_os(name))
 }
 
 fn resolve_runtime_cache_root(read_env: ReadEnv<'_>) -> Result<PathBuf> {
@@ -53,6 +69,26 @@ fn resolve_runtime_cache_root(read_env: ReadEnv<'_>) -> Result<PathBuf> {
     Err(BootstrapError::new(format!(
         "{} is required for the runtime cache",
         required_home_envs()
+    )))
+}
+
+fn resolve_provider_state_root(read_env: ReadEnv<'_>) -> Result<PathBuf> {
+    if let Some(value) = read_env(PROVIDER_STATE_OVERRIDE_ENV) {
+        let value = PathBuf::from(value);
+        if !value.to_string_lossy().contains(UNEXPANDED_TOKEN) {
+            return Ok(value);
+        }
+    }
+    for source in PROVIDER_STATE_SOURCES {
+        for host in KNOWN {
+            if let Some(root) = source(host, read_env) {
+                return Ok(root);
+            }
+        }
+    }
+    Err(BootstrapError::new(format!(
+        "{} is required for persistent provider state",
+        required_provider_state_envs()
     )))
 }
 
@@ -80,6 +116,30 @@ fn user_home_root(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
     ))
 }
 
+fn published_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
+    let data_dir = host.data_dir?;
+    let value = read_env(data_dir.env)?;
+    Some(provider_state_subdirectory(PathBuf::from(value)))
+}
+
+fn declared_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
+    let home_root = host.home_root?;
+    let value = read_env(home_root.env)?;
+    Some(provider_state_subdirectory(PathBuf::from(value)))
+}
+
+fn user_provider_state(host: &PluginHost, read_env: ReadEnv<'_>) -> Option<PathBuf> {
+    let home_root = host.home_root?;
+    let value = USER_HOME_ENVS.iter().find_map(|name| read_env(name))?;
+    Some(provider_state_subdirectory(
+        PathBuf::from(value).join(home_root.user_home_segment),
+    ))
+}
+
+fn provider_state_subdirectory(root: PathBuf) -> PathBuf {
+    root.join("unica").join("provider-state")
+}
+
 fn join_segments(root: PathBuf, segments: &[&str]) -> PathBuf {
     segments
         .iter()
@@ -94,6 +154,26 @@ fn required_home_envs() -> String {
         .filter_map(|host| host.home_root.map(|home_root| home_root.env))
         .collect();
     names.extend(USER_HOME_ENVS);
+    match names.split_last() {
+        Some((last, leading)) if !leading.is_empty() => {
+            format!("{}, or {last}", leading.join(", "))
+        }
+        _ => names.join(", "),
+    }
+}
+
+fn required_provider_state_envs() -> String {
+    let mut names = KNOWN
+        .iter()
+        .filter_map(|host| host.data_dir.map(|data_dir| data_dir.env))
+        .chain(
+            KNOWN
+                .iter()
+                .filter_map(|host| host.home_root.map(|home_root| home_root.env)),
+        )
+        .chain(USER_HOME_ENVS)
+        .collect::<Vec<_>>();
+    names.dedup();
     match names.split_last() {
         Some((last, leading)) if !leading.is_empty() => {
             format!("{}, or {last}", leading.join(", "))
@@ -118,6 +198,106 @@ mod tests {
 
     fn resolve(pairs: &[(&str, &str)]) -> Result<PathBuf> {
         resolve_runtime_cache_root(&environment(pairs))
+    }
+
+    fn resolve_provider_state(pairs: &[(&str, &str)]) -> Result<PathBuf> {
+        resolve_provider_state_root(&environment(pairs))
+    }
+
+    #[test]
+    fn provider_state_explicit_override_outranks_every_host_source() {
+        let root = resolve_provider_state(&[
+            ("UNICA_PROVIDER_STATE_DIR", "/state/unica"),
+            ("CLAUDE_PLUGIN_DATA", "/data/claude"),
+            ("CODEX_HOME", "/home/user/.codex"),
+            ("HOME", "/home/user"),
+        ])
+        .unwrap();
+
+        assert_eq!(root, PathBuf::from("/state/unica"));
+    }
+
+    #[test]
+    fn provider_state_published_data_directory_uses_unica_subdirectory() {
+        let root = resolve_provider_state(&[
+            ("CLAUDE_PLUGIN_DATA", "/data/claude"),
+            ("CODEX_HOME", "/elsewhere/.codex"),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            root,
+            PathBuf::from("/data/claude")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_declared_host_home_uses_unica_subdirectory() {
+        let root = resolve_provider_state(&[("CODEX_HOME", "/elsewhere/.codex")]).unwrap();
+
+        assert_eq!(
+            root,
+            PathBuf::from("/elsewhere/.codex")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_home_fallback_uses_the_host_state_directory() {
+        let root = resolve_provider_state(&[("HOME", "/home/user")]).unwrap();
+
+        assert_eq!(
+            root,
+            PathBuf::from("/home/user")
+                .join(".codex")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_userprofile_fallback_uses_the_host_state_directory() {
+        let root = resolve_provider_state(&[("USERPROFILE", "C:/Users/user")]).unwrap();
+
+        assert_eq!(
+            root,
+            PathBuf::from("C:/Users/user")
+                .join(".codex")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_unexpanded_override_falls_through_to_host_roots() {
+        let root = resolve_provider_state(&[
+            (
+                "UNICA_PROVIDER_STATE_DIR",
+                "${CLAUDE_PLUGIN_DATA}/unica/provider-state",
+            ),
+            ("CLAUDE_PLUGIN_DATA", "/data/claude"),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            root,
+            PathBuf::from("/data/claude")
+                .join("unica")
+                .join("provider-state")
+        );
+    }
+
+    #[test]
+    fn provider_state_empty_environment_names_every_supported_root() {
+        let error = resolve_provider_state(&[]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "CLAUDE_PLUGIN_DATA, CODEX_HOME, HOME, or USERPROFILE is required for persistent provider state"
+        );
     }
 
     #[test]
