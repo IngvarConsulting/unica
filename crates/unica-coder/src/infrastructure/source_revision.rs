@@ -519,12 +519,10 @@ fn digest_source_manifest(manifest: &SourceManifest) -> Result<String, String> {
     let mut corpus = Sha256::new();
     corpus.update(b"unica-source-sha256-v1\0");
     for (relative, entry) in manifest {
-        let path = relative
-            .to_str()
-            .ok_or_else(|| "source revision contains a non-UTF-8 relative path".to_string())?;
+        let path = relative.as_os_str().as_encoded_bytes();
         corpus.update([entry.kind]);
         corpus.update((path.len() as u64).to_le_bytes());
-        corpus.update(path.as_bytes());
+        corpus.update(path);
         corpus.update(entry.digest);
     }
     Ok(format!("{:x}", corpus.finalize()))
@@ -616,6 +614,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::thread;
+    #[cfg(unix)]
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     use tempfile::tempdir;
 
     struct UnsupportedFence;
@@ -1062,6 +1062,24 @@ mod tests {
         assert_ne!(
             baseline,
             scan_source_digest(first.path(), &|| false).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn corpus_digest_accepts_a_non_utf8_relative_path() {
+        let mut manifest = SourceManifest::new();
+        manifest.insert(
+            PathBuf::from(OsString::from_vec(b"Module-\xff.bsl".to_vec())),
+            SourceEntryDigest {
+                kind: 2,
+                digest: [7; 32],
+            },
+        );
+
+        assert!(
+            digest_source_manifest(&manifest).is_ok(),
+            "a valid filesystem name must not disable source revisions"
         );
     }
 
