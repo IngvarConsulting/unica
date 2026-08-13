@@ -87,7 +87,13 @@ impl SourceRevisionService {
                 "source revision fence is unsupported; freshness cannot be proven".to_string(),
             );
         }
-        let needs_reconcile = match self.fence.flush(deadline, cancellation)? {
+        let fence_outcome = self.fence.flush(deadline, cancellation).inspect_err(|_| {
+            self.machine
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+        })?;
+        let needs_reconcile = match fence_outcome {
             FenceOutcome::Proven { dirty } => {
                 dirty
                     || !matches!(
@@ -151,7 +157,13 @@ impl SourceRevisionService {
                     .unwrap_or_else(|error| error.into_inner())
                     .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
             })?;
-            match self.fence.flush(deadline, cancellation)? {
+            let fence_outcome = self.fence.flush(deadline, cancellation).inspect_err(|_| {
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+            })?;
+            match fence_outcome {
                 FenceOutcome::Proven { dirty: true } => continue,
                 FenceOutcome::TrustLost(reason) => {
                     self.machine
@@ -331,6 +343,28 @@ mod tests {
         }
     }
 
+    struct FailOnceFence {
+        calls: AtomicUsize,
+    }
+
+    impl SourceRevisionFence for FailOnceFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::ProvenFast
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, String> {
+            if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                Err("synthetic fence failure".to_string())
+            } else {
+                Ok(FenceOutcome::Proven { dirty: false })
+            }
+        }
+    }
+
     #[test]
     fn unsupported_fence_never_promotes_repeated_scans_to_trusted() {
         let workspace = tempdir().unwrap();
@@ -390,6 +424,45 @@ mod tests {
         let second_error =
             snapshot().expect_err("a revision that was not published must remain untrusted");
         assert!(second_error.contains("cannot be created"), "{second_error}");
+    }
+
+    #[test]
+    fn failed_fence_does_not_leave_the_previous_revision_trusted() {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let module = source_root.join("Module.bsl");
+        fs::write(&module, "Процедура A()\n").unwrap();
+        let initial_digest = scan_source_digest(&source_root, &|| false).unwrap();
+        let mut machine = SourceRevisionMachine::default();
+        let initial_revision = machine.finish_reconcile(initial_digest).unwrap();
+        let service = SourceRevisionService {
+            source_root: fs::canonicalize(&source_root).unwrap(),
+            record_path: workspace.path().join("revision.json"),
+            machine: Mutex::new(machine),
+            fence: Arc::new(FailOnceFence {
+                calls: AtomicUsize::new(0),
+            }),
+            scanner: Arc::new(scan_source_digest),
+        };
+
+        let first_error = service
+            .snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .expect_err("the failed fence must reject the snapshot");
+        assert_eq!(first_error, "synthetic fence failure");
+        fs::write(&module, "Процедура B()\n").unwrap();
+
+        let recovered = service
+            .snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(recovered.generation > initial_revision.generation);
+        assert_ne!(recovered.digest, initial_revision.digest);
     }
 
     #[test]
