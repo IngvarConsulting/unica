@@ -59,6 +59,29 @@ fn stderr_drain_survives_invalid_utf8_and_keeps_the_tail() {
 }
 
 #[test]
+fn search_progress_liveness_does_not_depend_on_a_transient_provider_phase() {
+    let message = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+            "progressToken": "cold-search",
+            "_meta": {
+                "io.unica/searchProgress": {
+                    "providers": [{
+                        "role": "semantic",
+                        "state": "running",
+                        "phase": "preparing",
+                        "detailCode": "buildingIndex"
+                    }]
+                }
+            }
+        }
+    });
+
+    assert!(search_progress_snapshot_for(&message, "cold-search").is_some());
+}
+
+#[test]
 #[ignore = "long search integration; routed by search_integration_changed or ci:full"]
 fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     let mut fixture = Fixture::new();
@@ -103,11 +126,8 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         }),
         "issue-89-cold-search",
     ));
-    let cold_progress = mcp.wait_for_search_progress_detail(
-        "issue-89-cold-search",
-        "reconcilingSources",
-        RESPONSE_DEADLINE,
-    );
+    let cold_progress =
+        mcp.wait_for_search_progress("issue-89-cold-search", RESPONSE_DEADLINE);
     assert_eq!(
         cold_progress["providers"]
             .as_array()
@@ -467,6 +487,16 @@ fn tool_operation(response: &Value) -> Value {
     serde_json::from_str(text).unwrap()
 }
 
+fn search_progress_snapshot_for<'a>(message: &'a Value, progress_token: &str) -> Option<&'a Value> {
+    let snapshot = &message["params"]["_meta"]["io.unica/searchProgress"];
+    (message["method"] == "notifications/progress"
+        && message["params"]["progressToken"] == progress_token
+        && snapshot["providers"]
+            .as_array()
+            .is_some_and(|providers| !providers.is_empty()))
+    .then_some(snapshot)
+}
+
 struct McpProcess {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -529,19 +559,14 @@ impl McpProcess {
         self.receive_ids_timed(ids, timeout, Instant::now()).0
     }
 
-    fn wait_for_search_progress_detail(
-        &self,
-        progress_token: &str,
-        detail_code: &str,
-        timeout: Duration,
-    ) -> Value {
+    fn wait_for_search_progress(&self, progress_token: &str, timeout: Duration) -> Value {
         let deadline = Instant::now() + timeout;
         let mut observed = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
                 !remaining.is_zero(),
-                "timed out waiting for search progress {detail_code}; observed: {observed:#?}"
+                "timed out waiting for search progress; observed: {observed:#?}"
             );
             let line = self.responses.recv_timeout(remaining).unwrap_or_else(|error| {
                 panic!(
@@ -551,17 +576,9 @@ impl McpProcess {
             });
             let message: Value = serde_json::from_str(&line).expect("JSON MCP message");
             if message.get("id").is_some() {
-                panic!("search completed before progress {detail_code}: {message:#}");
+                panic!("search completed before progress: {message:#}");
             }
-            let snapshot = &message["params"]["_meta"]["io.unica/searchProgress"];
-            if message["method"] == "notifications/progress"
-                && message["params"]["progressToken"] == progress_token
-                && snapshot["providers"].as_array().is_some_and(|providers| {
-                    providers
-                        .iter()
-                        .any(|provider| provider["detailCode"] == detail_code)
-                })
-            {
+            if let Some(snapshot) = search_progress_snapshot_for(&message, progress_token) {
                 return snapshot.clone();
             }
             observed.push(message);
