@@ -1325,6 +1325,32 @@ class RegistryCheckTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class OperationalConfigDecisionOwnershipTests(unittest.TestCase):
+    """The fallback amendment keeps the retained snapshot decision active."""
+
+    def test_config_snapshot_names_the_base_decision_and_fallback_amendment(self) -> None:
+        records = {record.id: record for record in all_records()}
+        snapshot = records["INV-APP-CONFIG-SNAPSHOT"]
+        base = (
+            DECISIONS_DIR / "0040-workspace-operational-config-snapshot.md"
+        ).read_text(encoding="utf-8")
+        fallback = (
+            DECISIONS_DIR / "0055-ogranichennyy-rezervnyy-poisk-git-grep.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(snapshot.one("Decision"), "ADR-0040, ADR-0055")
+        self.assertIn("- Статус: `accepted`", base)
+        self.assertIn("Эта запись уточняет ADR-0040", fallback)
+
+    def test_fallback_plan_uses_the_renumbered_amendment_relationship(self) -> None:
+        plan = (
+            REPO_ROOT / "docs" / "plans" / "2026-08-12-bounded-git-grep-fallback.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("ADR-0055, уточняющий ADR-0040", plan)
+        self.assertNotIn("ADR-0040/ADR-0054", plan)
+
+
 class LogicalSourceContractTests(unittest.TestCase):
     """The accepted source contract stays tied to executable evidence."""
 
