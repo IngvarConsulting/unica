@@ -533,6 +533,7 @@ mod tests {
                     "role": "semantic",
                     "provider": "rlm",
                     "status": "unavailable",
+                    "termination": {"code": "providerUnavailable", "retryable": false},
                     "searchComplete": false,
                     "ranking": "none",
                     "ordering": "provider",
@@ -544,6 +545,7 @@ mod tests {
                     "role": "symbol",
                     "provider": "bsl-analyzer",
                     "status": "empty",
+                    "termination": null,
                     "searchComplete": true,
                     "ranking": "provider",
                     "ordering": "provider",
@@ -555,6 +557,7 @@ mod tests {
                     "role": "lexical",
                     "provider": "git-grep",
                     "status": "limitReached",
+                    "termination": {"code": "limitReached", "retryable": false},
                     "searchComplete": false,
                     "ranking": "none",
                     "ordering": "providerTraversal",
@@ -1227,6 +1230,10 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("searchComplete")));
+        assert!(section["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("termination")));
         let location = &section["properties"]["hits"]["items"]["properties"]["location"];
         assert_eq!(location["oneOf"].as_array().unwrap().len(), 2);
 

@@ -485,7 +485,7 @@ Insert or replace BSL in one logically addressed Platform XML Configuration or E
 
 ### `unica.code.search`
 
-Search one logical code scope concurrently through semantic, symbol, and lexical roles. Results preserve role-local ranking, explicit completeness, logical locations, and observable progress; sourceDir remains a mutually exclusive migration selector.
+Search one logical code scope concurrently through semantic, symbol, and lexical roles. Results preserve role-local ranking, explicit completeness and retryability, logical locations, and observable progress; sourceDir remains a mutually exclusive migration selector.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
@@ -500,7 +500,7 @@ Search one logical code scope concurrently through semantic, symbol, and lexical
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `sourceDir`. Ни одной или обе сразу отклоняются.
 `metadataPath` принимается только вместе с `sourceSet`.
 
-**Результат сейчас:** `data`: три ролевые секции с логическими местоположениями, полнотой, ранжированием, счётом и происхождением; ход приходит через typed MCP progress (ADR-0056) (отвечают типизированным `data`)
+**Результат сейчас:** `data`: три ролевые секции с логическими местоположениями, полнотой, машинной причиной завершения и retryability, ранжированием, счётом и происхождением; ход приходит через typed MCP progress (ADR-0056) (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 

@@ -1087,11 +1087,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         server_source = (
             server_source.replace(
                 "__TOOLS__",
-                json.dumps(tool_entries, ensure_ascii=False),
+                json.dumps(tool_entries, ensure_ascii=False, indent=2),
             )
             .replace(
                 "__SOURCE_FLOWS__",
-                json.dumps(source_flows, ensure_ascii=False),
+                json.dumps(source_flows, ensure_ascii=False, indent=2),
             )
             .replace("__READ_WRITES__", repr(read_writes))
             .replace("__CODE_SEARCH_OK__", repr(code_search_ok))
@@ -1271,6 +1271,35 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                                     "role": {"type": "string"},
                                     "provider": {"type": "string"},
                                     "status": {"type": "string"},
+                                    "termination": {
+                                        "oneOf": [
+                                            {"type": "null"},
+                                            {
+                                                "type": "object",
+                                                "additionalProperties": False,
+                                                "properties": {
+                                                    "code": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                            "limitReached",
+                                                            "deadlineExceeded",
+                                                            "dependencyPending",
+                                                            "unsupportedScope",
+                                                            "capacityExhausted",
+                                                            "providerUnavailable",
+                                                            "providerFailed",
+                                                        ],
+                                                    },
+                                                    "retryable": {"type": "boolean"},
+                                                    "detailCode": {
+                                                        "type": "string",
+                                                        "minLength": 1,
+                                                    },
+                                                },
+                                                "required": ["code", "retryable"],
+                                            },
+                                        ]
+                                    },
                                     "searchComplete": {"type": "boolean"},
                                     "ranking": {"type": "string"},
                                     "ordering": {"type": "string"},
@@ -1290,6 +1319,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                                     "role",
                                     "provider",
                                     "status",
+                                    "termination",
                                     "searchComplete",
                                     "ranking",
                                     "ordering",
@@ -1318,6 +1348,24 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         result = self.run_smoke(entries)
 
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_code_search_schema_without_terminal_reason(self) -> None:
+        entries = self.tool_entries()
+        code_search = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
+        )
+        schema = self.typed_code_search_output_schema()
+        section = schema["properties"]["data"]["properties"]["sections"]["items"]
+        section["properties"].pop("termination")
+        section["required"].remove("termination")
+        code_search["outputSchema"] = schema
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("provider-neutral role-section fields", result.stderr)
 
     def test_rejects_code_search_output_schema_that_does_not_require_data(self) -> None:
         entries = self.tool_entries()

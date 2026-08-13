@@ -416,6 +416,85 @@ impl ProviderSectionStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub enum SearchTerminationCode {
+    LimitReached,
+    DeadlineExceeded,
+    DependencyPending,
+    UnsupportedScope,
+    CapacityExhausted,
+    ProviderUnavailable,
+    ProviderFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchTermination {
+    pub code: SearchTerminationCode,
+    pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_code: Option<String>,
+}
+
+impl SearchTermination {
+    pub const fn limit_reached() -> Self {
+        Self {
+            code: SearchTerminationCode::LimitReached,
+            retryable: false,
+            detail_code: None,
+        }
+    }
+
+    pub const fn deadline_exceeded() -> Self {
+        Self {
+            code: SearchTerminationCode::DeadlineExceeded,
+            retryable: true,
+            detail_code: None,
+        }
+    }
+
+    pub fn dependency_pending(detail_code: impl Into<String>) -> Self {
+        Self {
+            code: SearchTerminationCode::DependencyPending,
+            retryable: true,
+            detail_code: Some(detail_code.into()),
+        }
+    }
+
+    pub const fn unsupported_scope() -> Self {
+        Self {
+            code: SearchTerminationCode::UnsupportedScope,
+            retryable: false,
+            detail_code: None,
+        }
+    }
+
+    pub const fn capacity_exhausted() -> Self {
+        Self {
+            code: SearchTerminationCode::CapacityExhausted,
+            retryable: true,
+            detail_code: None,
+        }
+    }
+
+    pub const fn provider_unavailable() -> Self {
+        Self {
+            code: SearchTerminationCode::ProviderUnavailable,
+            retryable: false,
+            detail_code: None,
+        }
+    }
+
+    pub const fn provider_failed() -> Self {
+        Self {
+            code: SearchTerminationCode::ProviderFailed,
+            retryable: false,
+            detail_code: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SearchRanking {
     Provider,
     None,
@@ -475,6 +554,7 @@ pub struct ProviderSearchSection {
     #[serde(flatten)]
     pub identity: ProviderIdentity,
     pub status: ProviderSectionStatus,
+    pub termination: Option<SearchTermination>,
     pub search_complete: bool,
     pub ranking: SearchRanking,
     pub ordering: SearchOrdering,
@@ -496,6 +576,7 @@ impl ProviderSearchSection {
         matches: SearchMatchCount,
         hits: Vec<ProviderSearchHit>,
         diagnostics: Vec<String>,
+        termination: Option<SearchTermination>,
     ) -> Result<Self, String> {
         if matches.returned != hits.len() {
             return Err("search match count must equal the number of returned hits".to_string());
@@ -546,6 +627,7 @@ impl ProviderSearchSection {
                 }
             }
         }
+        validate_search_termination(status, termination.as_ref())?;
         match ranking {
             SearchRanking::None
                 if hits
@@ -569,6 +651,7 @@ impl ProviderSearchSection {
         Ok(Self {
             identity,
             status,
+            termination,
             search_complete,
             ranking,
             ordering,
@@ -605,6 +688,7 @@ impl ProviderSearchSection {
             },
             hits,
             diagnostics,
+            None,
         )
     }
 
@@ -622,6 +706,7 @@ impl ProviderSearchSection {
             ordering,
             hits,
             diagnostics,
+            SearchTermination::limit_reached(),
         )
     }
 
@@ -639,6 +724,26 @@ impl ProviderSearchSection {
             ordering,
             hits,
             diagnostics,
+            SearchTermination::deadline_exceeded(),
+        )
+    }
+
+    pub fn dependency_pending(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+        detail_code: impl Into<String>,
+    ) -> Result<Self, String> {
+        Self::bounded(
+            identity,
+            ProviderSectionStatus::TimedOut,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+            SearchTermination::dependency_pending(detail_code),
         )
     }
 
@@ -649,6 +754,7 @@ impl ProviderSearchSection {
         ordering: SearchOrdering,
         hits: Vec<ProviderSearchHit>,
         diagnostics: Vec<String>,
+        termination: SearchTermination,
     ) -> Result<Self, String> {
         let returned = hits.len();
         Self::new(
@@ -664,15 +770,44 @@ impl ProviderSearchSection {
             },
             hits,
             diagnostics,
+            Some(termination),
         )
     }
 
     pub fn unavailable(identity: ProviderIdentity, diagnostic: String) -> Self {
-        Self::problem(identity, ProviderSectionStatus::Unavailable, diagnostic)
+        Self::problem(
+            identity,
+            ProviderSectionStatus::Unavailable,
+            diagnostic,
+            SearchTermination::provider_unavailable(),
+        )
+    }
+
+    pub fn unsupported_scope(identity: ProviderIdentity, diagnostic: String) -> Self {
+        Self::problem(
+            identity,
+            ProviderSectionStatus::Unavailable,
+            diagnostic,
+            SearchTermination::unsupported_scope(),
+        )
+    }
+
+    pub fn capacity_exhausted(identity: ProviderIdentity, diagnostic: String) -> Self {
+        Self::problem(
+            identity,
+            ProviderSectionStatus::Unavailable,
+            diagnostic,
+            SearchTermination::capacity_exhausted(),
+        )
     }
 
     pub fn failed(identity: ProviderIdentity, diagnostic: String) -> Self {
-        Self::problem(identity, ProviderSectionStatus::Failed, diagnostic)
+        Self::problem(
+            identity,
+            ProviderSectionStatus::Failed,
+            diagnostic,
+            SearchTermination::provider_failed(),
+        )
     }
 
     pub fn failed_with_diagnostics(identity: ProviderIdentity, diagnostics: Vec<String>) -> Self {
@@ -689,6 +824,7 @@ impl ProviderSearchSection {
             },
             Vec::new(),
             diagnostics,
+            Some(SearchTermination::provider_failed()),
         )
         .expect("failed section is a valid closed construction")
     }
@@ -697,6 +833,7 @@ impl ProviderSearchSection {
         identity: ProviderIdentity,
         status: ProviderSectionStatus,
         diagnostic: String,
+        termination: SearchTermination,
     ) -> Self {
         Self::new(
             identity,
@@ -711,8 +848,61 @@ impl ProviderSearchSection {
             },
             Vec::new(),
             vec![diagnostic],
+            Some(termination),
         )
         .expect("problem section is a valid closed construction")
+    }
+}
+
+fn validate_search_termination(
+    status: ProviderSectionStatus,
+    termination: Option<&SearchTermination>,
+) -> Result<(), String> {
+    let valid_shape = termination.is_none_or(|value| match value.code {
+        SearchTerminationCode::DeadlineExceeded | SearchTerminationCode::CapacityExhausted => {
+            value.retryable && value.detail_code.is_none()
+        }
+        SearchTerminationCode::DependencyPending => {
+            value.retryable
+                && value
+                    .detail_code
+                    .as_ref()
+                    .is_some_and(|detail| !detail.is_empty())
+        }
+        SearchTerminationCode::LimitReached
+        | SearchTerminationCode::UnsupportedScope
+        | SearchTerminationCode::ProviderUnavailable
+        | SearchTerminationCode::ProviderFailed => !value.retryable && value.detail_code.is_none(),
+    });
+    let valid_status = matches!(
+        (status, termination.map(|value| value.code)),
+        (
+            ProviderSectionStatus::Ok | ProviderSectionStatus::Empty,
+            None
+        ) | (
+            ProviderSectionStatus::LimitReached,
+            Some(SearchTerminationCode::LimitReached)
+        ) | (
+            ProviderSectionStatus::TimedOut,
+            Some(
+                SearchTerminationCode::DeadlineExceeded | SearchTerminationCode::DependencyPending,
+            ),
+        ) | (
+            ProviderSectionStatus::Unavailable,
+            Some(
+                SearchTerminationCode::UnsupportedScope
+                    | SearchTerminationCode::CapacityExhausted
+                    | SearchTerminationCode::ProviderUnavailable,
+            ),
+        ) | (
+            ProviderSectionStatus::Failed,
+            Some(SearchTerminationCode::ProviderFailed)
+        )
+    );
+    if valid_shape && valid_status {
+        Ok(())
+    } else {
+        Err("search section status and termination reason are inconsistent".to_string())
     }
 }
 
@@ -1139,6 +1329,7 @@ mod tests {
                     "role": "semantic",
                     "provider": "rlm",
                     "status": "ok",
+                    "termination": null,
                     "searchComplete": true,
                     "ranking": "provider",
                     "ordering": "provider",
@@ -1276,6 +1467,7 @@ mod tests {
                 "role": "semantic",
                 "provider": "replacement-semantic",
                 "status": "ok",
+                "termination": null,
                 "searchComplete": true,
                 "ranking": "provider",
                 "ordering": "provider",
@@ -1302,6 +1494,68 @@ mod tests {
     }
 
     #[test]
+    fn timed_out_section_serializes_a_machine_readable_terminal_reason() {
+        let section = ProviderSearchSection::timed_out(
+            ProviderIdentity::new(ProviderRole::Lexical, "git-grep"),
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            Vec::new(),
+            vec!["provider deadline exceeded".to_string()],
+        )
+        .unwrap();
+
+        let value = serde_json::to_value(section).unwrap();
+
+        assert_eq!(
+            value["termination"],
+            json!({
+                "code": "deadlineExceeded",
+                "retryable": true
+            })
+        );
+    }
+
+    #[test]
+    fn section_rejects_an_invalid_terminal_reason_contract() {
+        let invalid_terminations = [
+            SearchTermination {
+                code: SearchTerminationCode::ProviderFailed,
+                retryable: true,
+                detail_code: None,
+            },
+            SearchTermination {
+                code: SearchTerminationCode::ProviderFailed,
+                retryable: false,
+                detail_code: Some("privateProviderDetail".to_string()),
+            },
+        ];
+
+        for termination in invalid_terminations {
+            let error = ProviderSearchSection::new(
+                ProviderIdentity::new(ProviderRole::Semantic, "replacement-semantic"),
+                ProviderSectionStatus::Failed,
+                false,
+                SearchRanking::None,
+                SearchOrdering::Provider,
+                SearchMatchCount {
+                    returned: 0,
+                    total: None,
+                    relation: SearchCountRelation::Unknown,
+                },
+                Vec::new(),
+                vec!["provider failed".to_string()],
+                Some(termination),
+            )
+            .unwrap_err();
+
+            assert_eq!(
+                error,
+                "search section status and termination reason are inconsistent"
+            );
+        }
+    }
+
+    #[test]
     fn empty_section_rejects_an_incomplete_count() {
         let error = ProviderSearchSection::new(
             ProviderIdentity::new(ProviderRole::Lexical, "git-grep"),
@@ -1316,6 +1570,7 @@ mod tests {
             },
             Vec::new(),
             Vec::new(),
+            None,
         )
         .unwrap_err();
 

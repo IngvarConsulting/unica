@@ -337,8 +337,8 @@ pub fn role_edit_output_schema() -> Value {
 /// Closed MCP schema for the provider-neutral code-search result.
 ///
 /// Provider-specific attributes remain an intentionally open JSON object, but
-/// the envelope, role sections, completeness claims, counts, hits, and logical
-/// location algebra are all machine-checkable. Once a search reaches the tool
+/// the envelope, role sections, terminal reasons, completeness claims, counts,
+/// hits, and logical location algebra are all machine-checkable. Once a search reaches the tool
 /// result boundary it always carries `data`, including the three failed or
 /// unavailable role sections when no provider served the request. Failures
 /// before that boundary remain JSON-RPC errors and do not use this schema.
@@ -404,6 +404,28 @@ pub fn code_search_output_schema() -> Value {
                 "type": "string",
                 "enum": ["ok", "empty", "limitReached", "timedOut", "unavailable", "failed"]
             },
+            "termination": {
+                "oneOf": [
+                    {"type": "null"},
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "enum": [
+                                    "limitReached", "deadlineExceeded", "dependencyPending",
+                                    "unsupportedScope", "capacityExhausted",
+                                    "providerUnavailable", "providerFailed"
+                                ]
+                            },
+                            "retryable": {"type": "boolean"},
+                            "detailCode": {"type": "string", "minLength": 1}
+                        },
+                        "required": ["code", "retryable"]
+                    }
+                ]
+            },
             "searchComplete": {"type": "boolean"},
             "ranking": {"type": "string", "enum": ["provider", "none"]},
             "ordering": {"type": "string", "enum": ["provider", "providerTraversal"]},
@@ -422,7 +444,7 @@ pub fn code_search_output_schema() -> Value {
             "artifacts": string_array()
         },
         "required": [
-            "role", "provider", "status", "searchComplete", "ranking", "ordering",
+            "role", "provider", "status", "termination", "searchComplete", "ranking", "ordering",
             "matches", "hits", "diagnostics"
         ]
     });
@@ -820,7 +842,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.search",
-            description: "Search one logical code scope concurrently through semantic, symbol, and lexical roles. Results preserve role-local ranking, explicit completeness, logical locations, and observable progress; sourceDir remains a mutually exclusive migration selector.",
+            description: "Search one logical code scope concurrently through semantic, symbol, and lexical roles. Results preserve role-local ranking, explicit completeness and retryability, logical locations, and observable progress; sourceDir remains a mutually exclusive migration selector.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
@@ -2982,6 +3004,32 @@ mod tests {
 
     fn path_text(path: &std::path::Path) -> String {
         path.display().to_string().replace('\\', "/")
+    }
+
+    #[test]
+    fn code_search_schema_requires_a_machine_readable_section_termination() {
+        let schema = code_search_output_schema();
+        let section = &schema["properties"]["data"]["properties"]["sections"]["items"];
+
+        assert!(section["required"]
+            .as_array()
+            .is_some_and(|required| required.iter().any(|field| field == "termination")));
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["code"]["enum"],
+            json!([
+                "limitReached",
+                "deadlineExceeded",
+                "dependencyPending",
+                "unsupportedScope",
+                "capacityExhausted",
+                "providerUnavailable",
+                "providerFailed"
+            ])
+        );
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["retryable"]["type"],
+            "boolean"
+        );
     }
 
     #[derive(Default)]

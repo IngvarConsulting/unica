@@ -166,6 +166,7 @@ def _code_search_output_schema_shape_error(value: object) -> str | None:
         "role",
         "provider",
         "status",
+        "termination",
         "searchComplete",
         "ranking",
         "ordering",
@@ -182,6 +183,57 @@ def _code_search_output_schema_shape_error(value: object) -> str | None:
         return "must declare the provider-neutral role-section fields"
     if not section_fields.issubset(set(section.get("required", []))):
         return "must require the provider-neutral role-section fields"
+    termination = section_properties["termination"]
+    termination_variants = (
+        termination.get("oneOf") if isinstance(termination, dict) else None
+    )
+    if not isinstance(termination_variants, list) or len(termination_variants) != 2:
+        return "must declare a nullable machine-readable termination reason"
+    null_variant, terminal_variant = termination_variants
+    terminal_properties = (
+        terminal_variant.get("properties")
+        if isinstance(terminal_variant, dict)
+        else None
+    )
+    terminal_code = (
+        terminal_properties.get("code")
+        if isinstance(terminal_properties, dict)
+        else None
+    )
+    retryable = (
+        terminal_properties.get("retryable")
+        if isinstance(terminal_properties, dict)
+        else None
+    )
+    detail_code = (
+        terminal_properties.get("detailCode")
+        if isinstance(terminal_properties, dict)
+        else None
+    )
+    expected_codes = {
+        "limitReached",
+        "deadlineExceeded",
+        "dependencyPending",
+        "unsupportedScope",
+        "capacityExhausted",
+        "providerUnavailable",
+        "providerFailed",
+    }
+    if (
+        null_variant != {"type": "null"}
+        or not isinstance(terminal_variant, dict)
+        or terminal_variant.get("type") != "object"
+        or terminal_variant.get("additionalProperties") is not False
+        or not isinstance(terminal_code, dict)
+        or terminal_code.get("type") != "string"
+        or set(terminal_code.get("enum", [])) != expected_codes
+        or retryable != {"type": "boolean"}
+        or not isinstance(detail_code, dict)
+        or detail_code.get("type") != "string"
+        or detail_code.get("minLength") != 1
+        or set(terminal_variant.get("required", [])) != {"code", "retryable"}
+    ):
+        return "must close the machine-readable termination reason contract"
     matches = section_properties["matches"]
     if not isinstance(matches, dict) or matches.get("type") != "object":
         return "must declare matches as an object"

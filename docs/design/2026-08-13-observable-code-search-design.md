@@ -197,17 +197,17 @@ MCP имеет приоритет, отменяет всех работнико�
 ### Окончательный результат
 
 Финальный `data` содержит `coverage` со значениями `complete`, `partial` или
-`none` и три секции в порядке ролей. Секция содержит роль, происхождение,
-терминальный `status`, `searchComplete`, `elapsedMs`, способ упорядочивания,
-попадания и счёт:
+`none`, общее `elapsedMs` и три секции в порядке ролей. Секция содержит роль,
+происхождение, терминальный `status`, машинную причину `termination`,
+`searchComplete`, способ упорядочивания, попадания и счёт:
 
 ```json
 {
   "role": "lexical",
   "provider": "git-grep",
   "status": "timedOut",
+  "termination": {"code": "deadlineExceeded", "retryable": true},
   "searchComplete": false,
-  "elapsedMs": 310,
   "ranking": "none",
   "ordering": "providerTraversal",
   "matches": {"returned": 0, "total": 0, "relation": "lowerBound"},
@@ -225,6 +225,13 @@ MCP имеет приоритет, отменяет всех работнико�
 только при `searchComplete: true` и точном нуле. `limitReached` и `timedOut`
 могут нести ограниченные уже доказанные попадания, но обязаны иметь
 `searchComplete: false` и `lowerBound`; ноль при timeout не становится empty.
+`termination` обязателен и равен `null` только для `ok` и `empty`. Остальные
+статусы несут согласованный общий код и признак `retryable`: `limitReached`,
+`deadlineExceeded`, `dependencyPending`, `unsupportedScope`,
+`capacityExhausted`, `providerUnavailable` либо `providerFailed`. Если срок
+`RLM` исчерпан ожиданием холодного индекса, секция возвращает
+`timedOut` + `dependencyPending` + `detailCode: buildingIndex`; это предлагает
+модели повторить поиск позднее и не заставляет её разбирать диагностику.
 Общий `ok` истинен, когда хотя бы одна роль доказанно выполнила поиск или
 вернула явно неполные попадания; `coverage` отдельно не позволяет принять
 частичный ответ за полный.
@@ -261,8 +268,9 @@ MCP имеет приоритет, отменяет всех работнико�
    остаётся без heartbeat дольше двух секунд;
 3. вызов без token не отправляет уведомления и возвращает тот же результат;
 4. отмена прерывает работников и не публикует частичный успех;
-5. `limitReached`, `timedOut`, `empty`, точный и нижний счёт сериализуются без
-   двусмысленности, а `ranking: none` запрещает `rank` и `providerScore`;
+5. `limitReached`, `timedOut`, `empty`, причины завершения, retryability,
+   точный и нижний счёт сериализуются без двусмысленности, а `ranking: none`
+   запрещает `rank` и `providerScore`;
 6. `addressed`-местоположение каждого доказанного BSL-попадания принимается
    следующим логическим инструментом без `unica.source.locate`, а физический
    кандидат без доказанного адреса остаётся `unaddressable`;

@@ -673,6 +673,51 @@ def valid_code_search_match_count(section: dict[str, Any]) -> bool:
     return False
 
 
+def valid_code_search_termination(section: dict[str, Any]) -> bool:
+    if "termination" not in section:
+        return False
+    status = section.get("status")
+    termination = section["termination"]
+    if status in {"ok", "empty"}:
+        return termination is None
+    if not isinstance(termination, dict) or set(termination) - {
+        "code",
+        "retryable",
+        "detailCode",
+    }:
+        return False
+    code = termination.get("code")
+    retryable = termination.get("retryable")
+    detail_code = termination.get("detailCode")
+    expected = {
+        "limitReached": ("limitReached", False),
+        "timedOut": ({"deadlineExceeded", "dependencyPending"}, True),
+        "unavailable": (
+            {"unsupportedScope", "capacityExhausted", "providerUnavailable"},
+            None,
+        ),
+        "failed": ("providerFailed", False),
+    }.get(status)
+    if expected is None or not isinstance(retryable, bool):
+        return False
+    expected_codes, expected_retryable = expected
+    if isinstance(expected_codes, set):
+        code_matches = code in expected_codes
+    else:
+        code_matches = code == expected_codes
+    if not code_matches:
+        return False
+    if code == "capacityExhausted":
+        expected_retryable = True
+    elif status == "unavailable":
+        expected_retryable = False
+    if retryable is not expected_retryable:
+        return False
+    if code == "dependencyPending":
+        return isinstance(detail_code, str) and bool(detail_code)
+    return "detailCode" not in termination
+
+
 def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | None) -> None:
     if payload is None:
         return
@@ -703,6 +748,10 @@ def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | Non
     ):
         errors.append(
             "code search role sections must expose status, completeness, ranking, count, hits, and diagnostics"
+        )
+    elif any(not valid_code_search_termination(section) for section in sections):
+        errors.append(
+            "code search role section termination must match status and retryability"
         )
     elif any(not valid_code_search_match_count(section) for section in sections):
         errors.append(

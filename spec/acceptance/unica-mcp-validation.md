@@ -241,7 +241,10 @@ ownership).
 - `unica.code.search` returns fixed `semantic`, `symbol`, and `lexical` role
   sections in that order, with the current implementation named separately as
   `provider`, and may start the workspace service. A section exposes typed
-  completeness, count relation, ranking, and ordering; one failed or
+  completeness, count relation, ranking, ordering, and a required nullable
+  machine-readable termination reason whose code and retryability agree with
+  the status. An RLM deadline exhausted while its index is still building is
+  `timedOut` with retryable `dependencyPending/buildingIndex`; one failed or
   unavailable role remains visible while another successful or empty role
   makes the overall search successful. Cancellation returns no partial success.
 - A search carrying an MCP progress token publishes a typed initial snapshot,

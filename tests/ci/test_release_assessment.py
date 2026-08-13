@@ -247,9 +247,9 @@ for raw in sys.stdin:
                 "coverage": "complete",
                 "elapsedMs": 1,
                 "sections": [
-                    {"role": "semantic", "provider": "rlm", "status": "empty", "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
-                    {"role": "symbol", "provider": "bsl-analyzer", "status": "empty", "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
-                    {"role": "lexical", "provider": "git-grep", "status": "empty", "searchComplete": True, "ranking": "none", "ordering": "providerTraversal", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
+                    {"role": "semantic", "provider": "rlm", "status": "empty", "termination": None, "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
+                    {"role": "symbol", "provider": "bsl-analyzer", "status": "empty", "termination": None, "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
+                    {"role": "lexical", "provider": "git-grep", "status": "empty", "termination": None, "searchComplete": True, "ranking": "none", "ordering": "providerTraversal", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
                 ]
             }
         elif name == "unica.standards.explain":
@@ -625,6 +625,7 @@ for raw in sys.stdin:
                 "role": role,
                 "provider": provider,
                 "status": "empty",
+                "termination": None,
                 "searchComplete": True,
                 "ranking": ranking,
                 "ordering": ordering,
@@ -664,6 +665,59 @@ for raw in sys.stdin:
                 self.assertEqual(scenario["status"], "failed", scenario)
                 self.assertTrue(
                     any("count" in error for error in scenario["errors"]), scenario
+                )
+
+    def test_code_search_rejects_a_missing_or_inconsistent_terminal_reason(self) -> None:
+        module = load_assessment_module()
+
+        def section(role: str, provider: str, ranking: str, ordering: str) -> dict:
+            return {
+                "role": role,
+                "provider": provider,
+                "status": "empty",
+                "termination": None,
+                "searchComplete": True,
+                "ranking": ranking,
+                "ordering": ordering,
+                "matches": {"returned": 0, "total": 0, "relation": "exact"},
+                "hits": [],
+                "diagnostics": [],
+            }
+
+        invalid_termination = object()
+        for termination in (
+            invalid_termination,
+            {"code": "deadlineExceeded", "retryable": True},
+        ):
+            with self.subTest(termination=termination):
+                scenario = module.scenario_result(
+                    scenario_id="code-search",
+                    title="search",
+                    tool="unica.code.search",
+                    arguments={},
+                    status="passed",
+                    duration_ms=1,
+                    blocking=True,
+                )
+                sections = [
+                    section("semantic", "rlm", "provider", "provider"),
+                    section("symbol", "bsl-analyzer", "provider", "provider"),
+                    section("lexical", "git-grep", "none", "providerTraversal"),
+                ]
+                if termination is invalid_termination:
+                    sections[0].pop("termination")
+                else:
+                    sections[0]["termination"] = termination
+
+                module.validate_code_search(
+                    scenario,
+                    {"ok": True, "data": {"sections": sections}},
+                )
+
+                self.assertEqual(scenario["status"], "failed", scenario)
+                self.assertTrue(
+                    any("termination" in error for error in scenario["errors"]),
+                    scenario,
                 )
 
     def test_code_search_call_requests_and_records_typed_progress(self) -> None:

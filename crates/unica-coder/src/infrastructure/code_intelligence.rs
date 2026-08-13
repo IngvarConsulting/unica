@@ -555,6 +555,13 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
         match attempt {
             RlmSearchAttempt::Output(result) => parse_rlm_search(&result, context, cancellation),
             RlmSearchAttempt::Unready(readiness) => {
+                let dependency_detail = match &readiness {
+                    IndexReadiness::Missing | IndexReadiness::Building => Some("buildingIndex"),
+                    IndexReadiness::Stale { .. } => Some("updatingIndex"),
+                    IndexReadiness::Ready { .. }
+                    | IndexReadiness::Failed(_)
+                    | IndexReadiness::Unavailable(_) => None,
+                };
                 let diagnostic = rlm_search_unready_error(readiness);
                 if diagnostic.contains("source revision") {
                     context.report_progress(ProviderProgressUpdate {
@@ -563,7 +570,19 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                         results_found: 0,
                     });
                 }
-                unavailable_section(ProviderId::Rlm, diagnostic)
+                if let Some(detail_code) = dependency_detail {
+                    ProviderSearchSection::dependency_pending(
+                        ProviderId::Rlm.identity(),
+                        SearchRanking::None,
+                        SearchOrdering::Provider,
+                        Vec::new(),
+                        vec![diagnostic],
+                        detail_code,
+                    )
+                    .expect("dependency-pending RLM section is valid")
+                } else {
+                    unavailable_section(ProviderId::Rlm, diagnostic)
+                }
             }
         }
     }
@@ -1184,8 +1203,8 @@ fn has_targeted_search_scope(context: &CodeIntelligenceContext) -> bool {
 }
 
 fn unavailable_targeted_scope_section(provider: ProviderId) -> ProviderSearchSection {
-    unavailable_section(
-        provider,
+    ProviderSearchSection::unsupported_scope(
+        provider.identity(),
         format!(
             "{} cannot constrain search to metadataPath; the role was not searched outside the requested logical scope",
             provider.as_str()
@@ -1224,7 +1243,7 @@ mod tests {
     use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
     use crate::infrastructure::workspace_index::IndexReadiness;
     use crate::infrastructure::workspace_services::WorkspaceServiceBslOutput;
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -2618,9 +2637,48 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
         assert_eq!(section.diagnostics, vec!["rlm index building".to_string()]);
+        assert_eq!(
+            serde_json::to_value(&section).unwrap()["termination"],
+            json!({
+                "code": "dependencyPending",
+                "retryable": true,
+                "detailCode": "buildingIndex"
+            })
+        );
         assert_eq!(client.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rlm_provider_reports_pending_update_as_a_retryable_dependency() {
+        let client = FakeRlmClient {
+            readiness: IndexReadiness::Stale {
+                status: "source revision changed".to_string(),
+            },
+            calls: Mutex::new(Vec::new()),
+            result: "[]".to_string(),
+        };
+
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+        assert_eq!(
+            serde_json::to_value(&section).unwrap()["termination"],
+            json!({
+                "code": "dependencyPending",
+                "retryable": true,
+                "detailCode": "updatingIndex"
+            })
+        );
     }
 
     #[test]

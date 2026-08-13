@@ -791,7 +791,7 @@ fn provider_admission_exhausted_section(
     provider: ProviderIdentity,
     limit: usize,
 ) -> ProviderSearchSection {
-    ProviderSearchSection::unavailable(
+    ProviderSearchSection::capacity_exhausted(
         provider,
         format!("provider worker capacity exhausted (limit {limit})"),
     )

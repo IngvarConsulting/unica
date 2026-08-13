@@ -35,6 +35,12 @@ description: "Поиск и исследование BSL-кода и точек 
   together. `empty` proves exact zero; `limitReached` and `timedOut` preserve a
   lower-bound prefix and are not empty. The lexical role is deliberately
   unranked (`ranking: none`, `ordering: providerTraversal`).
+- Inspect `termination` instead of parsing diagnostics: it is `null` for
+  `ok`/`empty`, otherwise its provider-neutral `code` explains the terminal
+  condition and `retryable` says whether repeating later can help. In
+  particular, `dependencyPending` with `detailCode: buildingIndex` means the
+  RLM deadline ended while the index was still building; keep results from the
+  other roles and retry search later only if semantic evidence is still needed.
 - Reuse an `addressed` hit through its `sourceSet` and `metadataPath`.
   `unaddressable` is an observable source-relative location, not a logical
   target for a following mutation or subject reader.
