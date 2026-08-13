@@ -215,7 +215,12 @@ impl ManagedChild {
             .ok_or_else(|| "process_failed: process stdin is unavailable".to_string())?;
         let writer = thread::spawn(move || stdin.write_all(&input));
         let output = child.wait_for_output();
-        if output.is_err() && !child.terminate_after_wait_error() {
+        if output.is_err() {
+            child.terminate_after_wait_error();
+            // A failed wait no longer proves that every descendant released the
+            // inherited stdin pipe. Joining the producer here would make this
+            // error path unbounded, so preserve the wait error after best-effort
+            // process-tree cleanup and detach the writer handle.
             drop(writer);
             return output;
         }
@@ -426,15 +431,14 @@ impl ManagedChild {
         self.reap_bounded()
     }
 
-    fn terminate_after_wait_error(&mut self) -> bool {
+    fn terminate_after_wait_error(&mut self) {
         if self.state == ChildState::Reaped {
-            return true;
+            return;
         }
-        let tree_terminated = self.process_tree.terminate(&mut self.child).is_ok();
-        let leader_terminated = self.child.kill().is_ok();
+        let _ = self.process_tree.terminate(&mut self.child);
+        let _ = self.child.kill();
         self.state = ChildState::Terminating;
-        let reaped = self.reap_bounded().is_ok() && self.state == ChildState::Reaped;
-        tree_terminated || leader_terminated || reaped
+        let _ = self.reap_bounded();
     }
 
     fn terminate_gracefully(&mut self) -> Result<(), String> {
