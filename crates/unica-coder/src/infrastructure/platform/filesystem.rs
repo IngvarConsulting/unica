@@ -3314,6 +3314,16 @@ pub(crate) fn path_lock_identity(path: &Path) -> String {
     path_lock_identity_text(&path.to_string_lossy())
 }
 
+#[cfg(windows)]
+pub(crate) fn provider_state_path_identity(path: &Path) -> String {
+    path_lock_identity(path)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn provider_state_path_identity(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
 #[cfg(any(windows, target_os = "macos"))]
 fn path_lock_identity_text(path: &str) -> String {
     path.to_lowercase()
@@ -3326,7 +3336,10 @@ fn path_lock_identity_text(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_lock_identity_text, path_starts_with_host_root, windows_api_path_from_utf16};
+    use super::{
+        path_lock_identity_text, path_starts_with_host_root, provider_state_path_identity,
+        windows_api_path_from_utf16,
+    };
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
@@ -4747,6 +4760,16 @@ mod tests {
     fn lock_identity_follows_host_case_policy() {
         let identity = path_lock_identity_text("/Workspace/Configuration.xml");
         if cfg!(any(windows, target_os = "macos")) {
+            assert_eq!(identity, "/workspace/configuration.xml");
+        } else {
+            assert_eq!(identity, "/Workspace/Configuration.xml");
+        }
+    }
+
+    #[test]
+    fn provider_state_identity_preserves_case_except_on_windows() {
+        let identity = provider_state_path_identity(Path::new("/Workspace/Configuration.xml"));
+        if cfg!(windows) {
             assert_eq!(identity, "/workspace/configuration.xml");
         } else {
             assert_eq!(identity, "/Workspace/Configuration.xml");

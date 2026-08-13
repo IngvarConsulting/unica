@@ -3,7 +3,9 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
-use crate::infrastructure::platform::filesystem::{path_lock_identity, path_starts_with_host_root};
+use crate::infrastructure::platform::filesystem::{
+    path_starts_with_host_root, provider_state_path_identity,
+};
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
@@ -61,7 +63,7 @@ fn rlm_provider_state_root_with(
     };
     let mut hasher = Sha256::new();
     for component in [&workspace, &source] {
-        hasher.update(path_lock_identity(component).as_bytes());
+        hasher.update(provider_state_path_identity(component).as_bytes());
         hasher.update([0]);
     }
     let identity = format!("{:x}", hasher.finalize());
@@ -2051,6 +2053,42 @@ mod tests {
 
         assert_ne!(first, second);
         cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_provider_state_identity_preserves_unix_path_case() {
+        // INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE: distinct normalized pairs
+        // must not share persistent provider state on case-sensitive Unix filesystems.
+        let fixture = test_context("provider-state-case-identity");
+        let parent = fixture.workspace_root.parent().unwrap();
+        let external = parent.join("host-data");
+        let Some((upper_workspace, lower_workspace)) =
+            testing::case_distinct_provider_paths_for_test(parent)
+        else {
+            cleanup(&fixture);
+            return;
+        };
+        let context_for = |workspace_root: PathBuf| WorkspaceContext {
+            cwd: workspace_root.clone(),
+            cache_root: workspace_root.join(".build/unica"),
+            workspace_root,
+            workspace_epoch: 1,
+        };
+        let upper = rlm_provider_state_root_with(
+            &context_for(upper_workspace.clone()),
+            &upper_workspace,
+            Some(external.clone()),
+        )
+        .unwrap();
+        let lower = rlm_provider_state_root_with(
+            &context_for(lower_workspace.clone()),
+            &lower_workspace,
+            Some(external),
+        )
+        .unwrap();
+
+        assert_ne!(upper, lower);
+        cleanup(&fixture);
     }
 
     #[test]
