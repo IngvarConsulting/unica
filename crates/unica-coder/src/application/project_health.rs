@@ -16,14 +16,24 @@ pub(crate) fn invoke(
         Err(ProjectHealthInspectionError::Cancelled) => {
             return cancelled();
         }
-        Err(ProjectHealthInspectionError::Fatal(reason)) => return failed(reason),
+        Err(ProjectHealthInspectionError::Fatal(reason)) => {
+            if cancellation.is_cancelled() {
+                return cancelled();
+            }
+            return failed(reason);
+        }
     };
     if cancellation.is_cancelled() {
         return cancelled();
     }
     let report = match evaluate_project_health(snapshot) {
         Ok(report) => report,
-        Err(reason) => return failed(reason),
+        Err(reason) => {
+            if cancellation.is_cancelled() {
+                return cancelled();
+            }
+            return failed(reason);
+        }
     };
     if cancellation.is_cancelled() {
         return cancelled();
@@ -81,6 +91,7 @@ mod tests {
 
     enum ResultKind {
         Cancelled,
+        FatalAfterCancellation,
         CancelledAfterSnapshot,
         InvalidSnapshot,
     }
@@ -115,6 +126,12 @@ mod tests {
         ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
             match self.0 {
                 ResultKind::Cancelled => Err(ProjectHealthInspectionError::Cancelled),
+                ResultKind::FatalAfterCancellation => {
+                    _cancellation.cancel();
+                    Err(ProjectHealthInspectionError::Fatal(
+                        "competing inspection failure".into(),
+                    ))
+                }
                 ResultKind::CancelledAfterSnapshot | ResultKind::InvalidSnapshot => {
                     if matches!(self.0, ResultKind::CancelledAfterSnapshot) {
                         _cancellation.cancel();
@@ -203,6 +220,22 @@ mod tests {
         assert!(!outcome.adapter.ok);
         assert!(outcome.data.is_none());
         assert!(outcome.adapter.summary.contains("cancelled"));
+    }
+
+    #[test]
+    fn cancellation_wins_over_a_competing_fatal_inspection_error() {
+        let cancellation = CancellationToken::new();
+        let outcome = invoke(
+            &FakePorts(ResultKind::FatalAfterCancellation),
+            &context(PathBuf::from("/workspace")),
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        );
+
+        assert!(!outcome.adapter.ok);
+        assert!(outcome.data.is_none());
+        assert!(outcome.adapter.summary.contains("cancelled"));
+        assert!(outcome.adapter.errors[0].starts_with("cancelled:"));
     }
 
     #[test]

@@ -1411,8 +1411,15 @@ fn call_tool_observed(
             Err(result) => return Ok(*result),
         }
     } else {
-        ports.cache_report(&context, &events, mode, spec.cache_access)?
+        let cache = ports.cache_report(&context, &events, mode, spec.cache_access);
+        if cancellation.is_cancelled() {
+            return Ok(cancelled_operation_result(&context, mode));
+        }
+        cache?
     };
+    if cancellation.is_cancelled() {
+        return Ok(cancelled_operation_result(&context, mode));
+    }
     outcome.warnings.append(&mut cache.publication_warnings);
     if spec.execution.is_mutating() && !dry_run && outcome.ok && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
@@ -1438,6 +1445,9 @@ fn call_tool_observed(
     } else {
         outcome.artifacts
     };
+    if cancellation.is_cancelled() {
+        return Ok(cancelled_operation_result(&context, mode));
+    }
     Ok(OperationResult {
         ok: outcome.ok,
         summary: outcome.summary,
@@ -1457,6 +1467,40 @@ fn call_tool_observed(
             handler_outcome.job
         },
     })
+}
+
+fn cancelled_operation_result(context: &WorkspaceContext, mode: InvocationMode) -> OperationResult {
+    OperationResult {
+        ok: false,
+        summary: "operation cancelled".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec!["cancelled: operation stopped before result publication".to_string()],
+        artifacts: Vec::new(),
+        cache: CacheReport {
+            mode: match mode {
+                InvocationMode::Read => "read",
+                InvocationMode::Preview => "preview",
+                InvocationMode::Apply => "apply",
+            }
+            .to_string(),
+            root: context.cache_root.display().to_string(),
+            workspace_epoch: context.workspace_epoch,
+            events: Vec::new(),
+            invalidated: Vec::new(),
+            refreshed: Vec::new(),
+            lazy_rebuilt: Vec::new(),
+            stale: Vec::new(),
+            fresh: Vec::new(),
+            publication_warnings: Vec::new(),
+        },
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        data: None,
+        job: None,
+    }
 }
 
 fn enforce_result_contract(
@@ -10103,6 +10147,175 @@ mod tests {
             .unwrap();
 
         assert!(!result.ok);
+        assert!(result.errors[0].starts_with("cancelled:"));
+    }
+
+    #[test]
+    fn cancellation_during_cache_report_wins_before_public_result_publication() {
+        struct CancellingCachePorts {
+            cancellation: CancellationToken,
+            fail_cache_report: bool,
+        }
+
+        impl ports::ApplicationPorts for CancellingCachePorts {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                let root = requested_cwd.unwrap_or_else(|| PathBuf::from("/workspace"));
+                Ok(WorkspaceContext {
+                    cwd: root.clone(),
+                    workspace_root: root.clone(),
+                    cache_root: root.join(".build/unica"),
+                    workspace_epoch: 1,
+                })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _mode: InvocationMode,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
+            }
+
+            fn inspect_project_health(
+                &self,
+                _context: &WorkspaceContext,
+                _cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<
+                crate::domain::project_health::ProjectHealthSnapshot,
+                crate::domain::project_health::ProjectHealthInspectionError,
+            > {
+                use crate::domain::project_health::{
+                    DiagnosticScope, ProjectCheckId, ProjectCheckObservation, ProjectCheckOutcome,
+                    ProjectHealthSnapshot,
+                };
+                use crate::domain::project_sources::{
+                    ProjectSourceSet, SourceFormat, SourceSetKind,
+                };
+
+                let observation = |id, source_set: Option<&str>| ProjectCheckObservation {
+                    id,
+                    scope: id.scope(),
+                    source_set: source_set.map(str::to_string),
+                    outcome: ProjectCheckOutcome::Completed,
+                };
+                let mut observations = ProjectCheckId::ALL
+                    .into_iter()
+                    .map(|id| {
+                        observation(
+                            id,
+                            (id.scope() == DiagnosticScope::SourceSet).then_some("main"),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                observations.extend(
+                    [
+                        ProjectCheckId::RepositoryIgnore,
+                        ProjectCheckId::RepositoryGeneratedPaths,
+                        ProjectCheckId::RepositoryConfigDumpInfo,
+                        ProjectCheckId::RepositoryAttributes,
+                        ProjectCheckId::RepositoryIndexEol,
+                        ProjectCheckId::RepositoryWorkingEol,
+                        ProjectCheckId::RepositoryLfs,
+                    ]
+                    .into_iter()
+                    .map(|id| observation(id, Some("main"))),
+                );
+                Ok(ProjectHealthSnapshot {
+                    workspace_root: "/workspace".into(),
+                    cache_root: "/workspace/.build/unica".into(),
+                    repository_root: Some("/workspace".into()),
+                    source_sets: Some(vec![ProjectSourceSet {
+                        name: "main".into(),
+                        kind: SourceSetKind::Configuration,
+                        path: "src".into(),
+                        source_format: SourceFormat::PlatformXml,
+                        format_evidence: vec!["src/Configuration.xml".into()],
+                        format_probe_error: None,
+                    }]),
+                    source_targets_complete: true,
+                    observations,
+                    facts: Vec::new(),
+                })
+            }
+
+            fn invoke_handler(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+                _mode: InvocationMode,
+                _cancellation: &CancellationToken,
+            ) -> Result<ports::HandlerOutcome, String> {
+                panic!("project.status must use the typed project-health coordinator")
+            }
+
+            fn cache_report(
+                &self,
+                context: &WorkspaceContext,
+                _events: &[DomainEvent],
+                _mode: InvocationMode,
+                _cache_access: CacheAccess,
+            ) -> Result<CacheReport, String> {
+                self.cancellation.cancel();
+                if self.fail_cache_report {
+                    return Err("competing cache report failure".into());
+                }
+                Ok(CacheReport {
+                    mode: "read".to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: Vec::new(),
+                    invalidated: Vec::new(),
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: Vec::new(),
+                    fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
+                })
+            }
+
+            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+        }
+
+        let cancellation = CancellationToken::new();
+        let ports = Arc::new(CancellingCachePorts {
+            cancellation: cancellation.clone(),
+            fail_cache_report: false,
+        });
+        let result = UnicaApplication::with_ports(ports)
+            .call_tool_cancellable("unica.project.status", &Map::new(), cancellation)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
+        assert!(result.errors[0].starts_with("cancelled:"));
+
+        let cancellation = CancellationToken::new();
+        let ports = Arc::new(CancellingCachePorts {
+            cancellation: cancellation.clone(),
+            fail_cache_report: true,
+        });
+        let result = UnicaApplication::with_ports(ports)
+            .call_tool_cancellable("unica.project.status", &Map::new(), cancellation)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
         assert!(result.errors[0].starts_with("cancelled:"));
     }
 
