@@ -736,6 +736,71 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             ],
         )
 
+    def test_successful_close_reaps_captured_provider_descendants(self) -> None:
+        module = load_module()
+        events: list[object] = []
+        running = {42}
+
+        class Process:
+            pid = 99
+
+            @staticmethod
+            def poll() -> None:
+                return None
+
+        class Session:
+            process = Process()
+
+            @staticmethod
+            def close() -> None:
+                events.append("close")
+
+        cache_root = Path("cache")
+
+        def capture(public_pid: int, service_pids: set[int], *, public_running: bool):
+            events.append(("capture", public_pid, service_pids, public_running))
+            return {99, 41, 42}
+
+        def signal_processes(pids: set[int], signal_number: int) -> None:
+            events.append(("signal", pids, signal_number))
+            running.difference_update(pids)
+
+        with mock.patch.object(module.os, "name", "posix"), mock.patch.object(
+            module, "_workspace_service_pids", return_value={41}
+        ), mock.patch.object(
+            module, "_posix_owned_process_pids", side_effect=capture
+        ), mock.patch.object(
+            module,
+            "_shutdown_workspace_services",
+            side_effect=lambda root, timeout: events.append(
+                ("shutdown", root, timeout)
+            )
+            or {41},
+        ), mock.patch.object(
+            module,
+            "_wait_for_workspace_services",
+            side_effect=lambda root, timeout, pids: events.append(
+                ("wait-services", root, timeout, pids)
+            ),
+        ), mock.patch.object(
+            module,
+            "_wait_for_process_pids",
+            side_effect=lambda pids, timeout: events.append(
+                ("wait-owned", pids, timeout)
+            ),
+        ), mock.patch.object(
+            module, "_process_is_running", side_effect=lambda pid: pid in running
+        ), mock.patch.object(
+            module, "_signal_processes", side_effect=signal_processes
+        ):
+            module._close_session_and_workspace_services(
+                Session(), cache_root, 7.0
+            )
+
+        self.assertEqual(events[0], ("capture", 99, {41}, True))
+        self.assertIn(("signal", {42}, module.signal.SIGTERM), events)
+        self.assertEqual(events[-1], ("wait-owned", {42}, 1.0))
+
     def test_shutdown_failure_emergency_cleanup_kills_recorded_service_pid(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
@@ -1087,11 +1152,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         server_source = (
             server_source.replace(
                 "__TOOLS__",
-                json.dumps(tool_entries, ensure_ascii=False),
+                json.dumps(tool_entries, ensure_ascii=False, indent=2),
             )
             .replace(
                 "__SOURCE_FLOWS__",
-                json.dumps(source_flows, ensure_ascii=False),
+                json.dumps(source_flows, ensure_ascii=False, indent=2),
             )
             .replace("__READ_WRITES__", repr(read_writes))
             .replace("__CODE_SEARCH_OK__", repr(code_search_ok))
@@ -1248,6 +1313,140 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("non-Meta tool", result.stderr)
         self.assertIn("unica.project.status", result.stderr)
+
+    @staticmethod
+    def typed_code_search_output_schema() -> dict[str, object]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "coverage": {"type": "string"},
+                        "elapsedMs": {"type": "integer"},
+                        "sections": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 3,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": {"type": "string"},
+                                    "provider": {"type": "string"},
+                                    "status": {"type": "string"},
+                                    "termination": {
+                                        "oneOf": [
+                                            {"type": "null"},
+                                            {
+                                                "type": "object",
+                                                "additionalProperties": False,
+                                                "properties": {
+                                                    "code": {
+                                                        "type": "string",
+                                                        "enum": [
+                                                            "limitReached",
+                                                            "deadlineExceeded",
+                                                            "dependencyPending",
+                                                            "unsupportedScope",
+                                                            "capacityExhausted",
+                                                            "providerUnavailable",
+                                                            "providerFailed",
+                                                        ],
+                                                    },
+                                                    "retryable": {"type": "boolean"},
+                                                    "detailCode": {
+                                                        "type": "string",
+                                                        "minLength": 1,
+                                                    },
+                                                },
+                                                "required": ["code", "retryable"],
+                                            },
+                                        ]
+                                    },
+                                    "searchComplete": {"type": "boolean"},
+                                    "ranking": {"type": "string"},
+                                    "ordering": {"type": "string"},
+                                    "matches": {
+                                        "type": "object",
+                                        "properties": {
+                                            "returned": {"type": "integer"},
+                                            "total": {"type": "integer"},
+                                            "relation": {"type": "string"},
+                                        },
+                                        "required": ["returned", "relation"],
+                                    },
+                                    "hits": {"type": "array"},
+                                    "diagnostics": {"type": "array"},
+                                },
+                                "required": [
+                                    "role",
+                                    "provider",
+                                    "status",
+                                    "termination",
+                                    "searchComplete",
+                                    "ranking",
+                                    "ordering",
+                                    "matches",
+                                    "hits",
+                                    "diagnostics",
+                                ],
+                            },
+                        },
+                    },
+                    "required": ["coverage", "elapsedMs", "sections"],
+                }
+            },
+            "required": ["data"],
+        }
+
+    def test_accepts_typed_code_search_output_schema(self) -> None:
+        entries = self.tool_entries()
+        code_search = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
+        )
+        code_search["outputSchema"] = self.typed_code_search_output_schema()
+
+        result = self.run_smoke(entries)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_code_search_schema_without_terminal_reason(self) -> None:
+        entries = self.tool_entries()
+        code_search = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
+        )
+        schema = self.typed_code_search_output_schema()
+        section = schema["properties"]["data"]["properties"]["sections"]["items"]
+        section["properties"].pop("termination")
+        section["required"].remove("termination")
+        code_search["outputSchema"] = schema
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("provider-neutral role-section fields", result.stderr)
+
+    def test_rejects_code_search_output_schema_that_does_not_require_data(self) -> None:
+        entries = self.tool_entries()
+        code_search = next(
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("name") == "unica.code.search"
+        )
+        schema = self.typed_code_search_output_schema()
+        schema["required"] = []
+        code_search["outputSchema"] = schema
+
+        result = self.run_smoke(entries)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must require data", result.stderr)
 
     def test_rejects_xdto_info_schema_missing_required_target(self) -> None:
         entries = self.tool_entries()
@@ -1490,7 +1689,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 return {
                     "result": {
                         "content": [{"text": json.dumps(payload)}],
-                        "isError": False,
+                        "isError": not payload["ok"],
                     }
                 }
 

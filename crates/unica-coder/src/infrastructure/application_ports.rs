@@ -17,7 +17,7 @@ use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-    CodeIntelligenceRegistry, ProviderDeadline,
+    CodeIntelligenceRegistry, CodeSearchScope, ProviderDeadline,
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
@@ -180,6 +180,86 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         workspace.cwd =
             crate::infrastructure::source_roots::normalize_path_identity(&workspace.cwd)?;
         Ok(CodeIntelligenceContext::new(workspace, source_root))
+    }
+
+    fn resolve_code_search_context(
+        &self,
+        context: &WorkspaceContext,
+        args: &Map<String, Value>,
+    ) -> Result<(CodeIntelligenceContext, CodeSearchScope), String> {
+        let source_set = args.get("sourceSet").and_then(Value::as_str);
+        let source_dir = args.get("sourceDir").and_then(Value::as_str);
+        let metadata_path = args.get("metadataPath").and_then(Value::as_str);
+        if source_set.is_some() == source_dir.is_some() {
+            return Err(
+                "code search requires exactly one of `sourceSet` or `sourceDir`".to_string(),
+            );
+        }
+        if metadata_path.is_some() && source_set.is_none() {
+            return Err("code search `metadataPath` requires `sourceSet`".to_string());
+        }
+        if let Some(source_set) = source_set {
+            let selected =
+                crate::infrastructure::source_roots::resolve_named_source_set(context, source_set)
+                    .map_err(|error| {
+                        format!("sourceSet `{source_set}` could not be resolved: {error}")
+                    })?;
+            let source_root = crate::domain::source_roots::ResolvedSourceRoot {
+                source_set: Some(source_set.to_string()),
+                path: selected.path,
+            };
+            let mut workspace = context.clone();
+            workspace.workspace_root =
+                crate::infrastructure::source_roots::normalize_path_identity(
+                    &workspace.workspace_root,
+                )?;
+            workspace.cwd =
+                crate::infrastructure::source_roots::normalize_path_identity(&workspace.cwd)?;
+            let filters = metadata_path
+                .map(|raw| {
+                    let address = crate::domain::source_target::MetadataAddress::parse(
+                        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        raw,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let target = crate::domain::source_target::SourceTarget {
+                        source_set: source_set.to_string(),
+                        metadata_path: Some(address),
+                    };
+                    crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_target(
+                        context,
+                        &target,
+                        crate::infrastructure::platform_xml_source_targets::TargetKindPolicy::Any,
+                    )
+                    .and_then(|resolution| resolution.handle.search_filters())
+                    .map_err(|error| error.to_string())
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let scope = CodeSearchScope {
+                source_set: source_set.to_string(),
+                source_root: source_root.path.clone(),
+                filters,
+                legacy_selector: false,
+            };
+            return Ok((
+                CodeIntelligenceContext::new(workspace, source_root)
+                    .with_search_scope(scope.clone()),
+                scope,
+            ));
+        }
+
+        let provider_context = self.resolve_code_intelligence_context(context, args)?;
+        let scope = CodeSearchScope::all(
+            provider_context
+                .source_root
+                .source_set
+                .clone()
+                .unwrap_or_else(|| "legacy".to_string()),
+            provider_context.source_root.path.clone(),
+            true,
+        );
+        Ok((provider_context.with_search_scope(scope.clone()), scope))
     }
 
     fn normalize_code_intelligence_read_request(
@@ -1203,6 +1283,7 @@ mod tests {
         verified_full_dump_invocation,
     };
     use crate::application::metadata::MetaInfoRequest;
+    use crate::application::ports::ApplicationPorts;
     use crate::application::{InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
@@ -1228,6 +1309,52 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn code_search_logical_selector_resolves_one_named_scope_and_fails_closed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace_root = temporary.path().join("workspace");
+        std::fs::create_dir_all(workspace_root.join("src")).unwrap();
+        std::fs::write(
+            workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            workspace_root: workspace_root.clone(),
+            cache_root: workspace_root.join(".build"),
+            workspace_epoch: 1,
+        };
+        let ports = super::InfrastructureApplicationPorts::new();
+        let args = json!({"sourceSet": "main", "query": "needle"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let (provider_context, scope) = ports.resolve_code_search_context(&context, &args).unwrap();
+
+        assert_eq!(scope.source_set, "main");
+        assert!(!scope.legacy_selector);
+        assert!(scope.filters.is_empty());
+        assert_eq!(scope.source_root, provider_context.source_root.path);
+
+        let invalid = json!({
+            "sourceSet": "missing",
+            "sourceDir": "src",
+            "query": "needle"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let error = ports
+            .resolve_code_search_context(&context, &invalid)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "code search requires exactly one of `sourceSet` or `sourceDir`"
+        );
+    }
 
     fn spec(name: &'static str, handler: ToolHandler) -> ToolSpec {
         let mut spec = crate::application::tools()

@@ -2,9 +2,11 @@ use serde::Serialize;
 use std::fmt;
 use std::time::Duration;
 
-const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 120;
-const SEARCH_RLM_DEFAULT_SECONDS: u64 = 45;
-const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 15;
+use crate::domain::code_intelligence::ProviderRole;
+
+const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 300;
+const SEARCH_RLM_DEFAULT_SECONDS: u64 = 300;
+const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 2;
 const PROVIDER_READ_DEFAULT_SECONDS: u64 = 45;
 const DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS: u64 = 120;
 const EXPLICIT_DIAGNOSTICS_ANALYZE_MIN_SECONDS: u64 = 30;
@@ -61,12 +63,12 @@ impl OperationalConfig {
             local.and_then(|layer| layer.search_total_timeout),
             defaults.code_intelligence.search_total_timeout,
         );
-        let rlm = resolve_deadline(
+        let mut rlm = resolve_deadline(
             shared.and_then(|layer| layer.search_rlm_timeout),
             local.and_then(|layer| layer.search_rlm_timeout),
             defaults.code_intelligence.search_rlm_timeout,
         );
-        let git_grep = resolve_deadline(
+        let mut git_grep = resolve_deadline(
             shared.and_then(|layer| layer.search_git_grep_timeout),
             local.and_then(|layer| layer.search_git_grep_timeout),
             defaults.code_intelligence.search_git_grep_timeout,
@@ -81,6 +83,17 @@ impl OperationalConfig {
             local.and_then(|layer| layer.diagnostics_analyze_timeout),
             defaults.code_diagnostics.analyze_timeout,
         );
+
+        // A lower explicit global deadline also bounds providers that kept
+        // their compiled defaults. Only an explicit provider/global conflict
+        // is rejected; otherwise changing the parent budget would make an
+        // otherwise valid configuration unusable after a default bump.
+        if rlm.source == OperationalConfigDiagnosticSource::CompiledDefault {
+            rlm.value = rlm.value.min(total.value);
+        }
+        if git_grep.source == OperationalConfigDiagnosticSource::CompiledDefault {
+            git_grep.value = git_grep.value.min(total.value);
+        }
 
         validate_relationship(
             total,
@@ -147,6 +160,14 @@ impl CodeIntelligenceDeadlines {
 
     pub const fn provider_read_timeout(self) -> Duration {
         self.provider_read_timeout
+    }
+
+    pub const fn search_timeout_for(self, role: ProviderRole) -> Duration {
+        match role {
+            ProviderRole::Semantic => self.search_rlm_timeout,
+            ProviderRole::Symbol => self.search_total_timeout,
+            ProviderRole::Lexical => self.search_git_grep_timeout,
+        }
     }
 
     #[cfg(test)]
@@ -434,9 +455,9 @@ mod tests {
         let config = OperationalConfig::compiled_defaults();
         let code = config.code_intelligence();
 
-        assert_eq!(code.search_total_timeout(), Duration::from_secs(120));
-        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(45));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(15));
+        assert_eq!(code.search_total_timeout(), Duration::from_secs(300));
+        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(300));
+        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(2));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),

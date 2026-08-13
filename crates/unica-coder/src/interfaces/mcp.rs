@@ -7,15 +7,18 @@
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
 use crate::application::{
-    input_schema_for_tool, metadata_argument_failure_result, operation_result_output_schema,
-    role_edit_argument_failure_result, role_edit_output_schema, OperationResult, ToolHandler,
-    ToolSpec, UnicaApplication,
+    code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
+    operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
+    CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec, UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::{
+    NoopSearchProgressSink, SearchProgressSink, SearchProgressSnapshot,
+};
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation,
-    InitializeResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-    ServerInfo, Tool,
+    InitializeResult, ListToolsResult, Meta, PaginatedRequestParams, ProgressNotificationParam,
+    ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -31,14 +34,19 @@ const TOOL_EXECUTION_ERROR: i32 = -32000;
 
 /// Executes one tool call synchronously without leaking SDK types into the application.
 /// Injectable so transport tests can substitute slow or failing tools.
-type ToolCallHandler = dyn Fn(&str, &Map<String, Value>, CancellationToken) -> Result<OperationResult, (i32, String)>
+type ToolCallHandler = dyn Fn(
+        &str,
+        &Map<String, Value>,
+        CancellationToken,
+        Arc<dyn SearchProgressSink>,
+    ) -> Result<OperationResult, (i32, String)>
     + Send
     + Sync;
 
 pub fn run_stdio() {
     let app = Arc::new(UnicaApplication::new());
-    let handler: Arc<ToolCallHandler> = Arc::new(move |name, arguments, cancellation| {
-        call_tool_result(&app, name, arguments, cancellation)
+    let handler: Arc<ToolCallHandler> = Arc::new(move |name, arguments, cancellation, progress| {
+        call_tool_result_observed(&app, name, arguments, cancellation, progress)
     });
     let server = UnicaServer::new(handler);
     let in_flight = server.in_flight();
@@ -123,6 +131,9 @@ fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
             operation: "role-edit",
             ..
         } => Some(role_edit_output_schema()),
+        ToolHandler::CodeIntelligence {
+            operation: CodeIntelligenceOperation::Search,
+        } => Some(code_search_output_schema()),
         _ => None,
     }
 }
@@ -171,10 +182,67 @@ impl ServerHandler for UnicaServer {
         let handler = Arc::clone(&self.handler);
         let name = request.name.to_string();
         let handler_name = name.clone();
+        let progress_token = request
+            .meta
+            .as_ref()
+            .and_then(Meta::get_progress_token)
+            .or_else(|| context.meta.get_progress_token());
         let arguments = request.arguments.unwrap_or_default();
-        let result =
-            tokio::task::spawn_blocking(move || handler(&handler_name, &arguments, cancellation))
-                .await;
+        let progress_forwarding = if let Some(progress_token) = progress_token {
+            let (sender, mut receiver) =
+                tokio::sync::mpsc::unbounded_channel::<Option<SearchProgressSnapshot>>();
+            let sink: Arc<dyn SearchProgressSink> = Arc::new(McpSearchProgressSink {
+                sender: sender.clone(),
+            });
+            let peer = context.peer.clone();
+            let forwarder = tokio::spawn(async move {
+                while let Some(message) = receiver.recv().await {
+                    let Some(snapshot) = message else {
+                        break;
+                    };
+                    let mut meta = Meta::default();
+                    meta.0.insert(
+                        "io.unica/searchProgress".to_string(),
+                        serde_json::to_value(&snapshot).unwrap_or(Value::Null),
+                    );
+                    let notification = ProgressNotificationParam::new(
+                        progress_token.clone(),
+                        snapshot.terminal_roles() as f64,
+                    )
+                    .with_total(snapshot.providers.len() as f64)
+                    .with_message(progress_message(&snapshot));
+                    let mut notification = notification;
+                    notification.meta = Some(meta);
+                    let _ = peer.notify_progress(notification).await;
+                }
+            });
+            McpProgressForwarding {
+                sink,
+                forwarder: Some(forwarder),
+                stop: Some(sender),
+            }
+        } else {
+            McpProgressForwarding {
+                sink: Arc::new(NoopSearchProgressSink),
+                forwarder: None,
+                stop: None,
+            }
+        };
+        let McpProgressForwarding {
+            sink: progress,
+            forwarder: progress_forwarder,
+            stop: progress_stop,
+        } = progress_forwarding;
+        let result = tokio::task::spawn_blocking(move || {
+            handler(&handler_name, &arguments, cancellation, progress)
+        })
+        .await;
+        if let Some(stop) = progress_stop {
+            let _ = stop.send(None);
+        }
+        if let Some(forwarder) = progress_forwarder {
+            let _ = forwarder.await;
+        }
         bridge.abort();
         drop(admission);
 
@@ -190,6 +258,42 @@ impl ServerHandler for UnicaServer {
             )),
         }
     }
+}
+
+struct McpProgressForwarding {
+    sink: Arc<dyn SearchProgressSink>,
+    forwarder: Option<tokio::task::JoinHandle<()>>,
+    stop: Option<tokio::sync::mpsc::UnboundedSender<Option<SearchProgressSnapshot>>>,
+}
+
+struct McpSearchProgressSink {
+    sender: tokio::sync::mpsc::UnboundedSender<Option<SearchProgressSnapshot>>,
+}
+
+impl SearchProgressSink for McpSearchProgressSink {
+    fn publish(&self, snapshot: SearchProgressSnapshot) {
+        let _ = self.sender.send(Some(snapshot));
+    }
+}
+
+fn progress_message(snapshot: &SearchProgressSnapshot) -> String {
+    snapshot
+        .providers
+        .iter()
+        .map(|provider| {
+            let detail = provider
+                .detail_code
+                .as_deref()
+                .unwrap_or_else(|| provider.phase.as_str());
+            format!(
+                "{}: {} {detail} ({} results)",
+                provider.identity.role.as_str(),
+                provider.state.as_str(),
+                provider.results_found
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Data-driven MCP tool definitions from the application descriptor registry.
@@ -235,11 +339,28 @@ fn render_tool_result(
     Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
+#[cfg(test)]
 fn call_tool_result(
     app: &UnicaApplication,
     name: &str,
     args: &Map<String, Value>,
     cancellation: CancellationToken,
+) -> Result<OperationResult, (i32, String)> {
+    call_tool_result_observed(
+        app,
+        name,
+        args,
+        cancellation,
+        Arc::new(NoopSearchProgressSink),
+    )
+}
+
+fn call_tool_result_observed(
+    app: &UnicaApplication,
+    name: &str,
+    args: &Map<String, Value>,
+    cancellation: CancellationToken,
+    progress: Arc<dyn SearchProgressSink>,
 ) -> Result<OperationResult, (i32, String)> {
     if let Some(result) = role_edit_argument_failure_result(name, args) {
         return Ok(result);
@@ -247,7 +368,7 @@ fn call_tool_result(
     if let Some(result) = metadata_argument_failure_result(name, args) {
         return Ok(result);
     }
-    app.call_tool_cancellable(name, args, cancellation)
+    app.call_tool_observed(name, args, cancellation, progress)
         .map_err(|message| (TOOL_EXECUTION_ERROR, message))
 }
 
@@ -402,6 +523,65 @@ mod tests {
         }
     }
 
+    fn code_search_test_result() -> OperationResult {
+        let mut result = successful_test_result("search complete");
+        result.data = Some(json!({
+            "coverage": "partial",
+            "elapsedMs": 12,
+            "sections": [
+                {
+                    "role": "semantic",
+                    "provider": "rlm",
+                    "status": "unavailable",
+                    "termination": {"code": "providerUnavailable", "retryable": false},
+                    "searchComplete": false,
+                    "ranking": "none",
+                    "ordering": "provider",
+                    "matches": {"returned": 0, "relation": "unknown"},
+                    "hits": [],
+                    "diagnostics": ["index unavailable"]
+                },
+                {
+                    "role": "symbol",
+                    "provider": "bsl-analyzer",
+                    "status": "empty",
+                    "termination": null,
+                    "searchComplete": true,
+                    "ranking": "provider",
+                    "ordering": "provider",
+                    "matches": {"returned": 0, "total": 0, "relation": "exact"},
+                    "hits": [],
+                    "diagnostics": []
+                },
+                {
+                    "role": "lexical",
+                    "provider": "git-grep",
+                    "status": "limitReached",
+                    "termination": {"code": "limitReached", "retryable": false},
+                    "searchComplete": false,
+                    "ranking": "none",
+                    "ordering": "providerTraversal",
+                    "matches": {"returned": 1, "total": 1, "relation": "lowerBound"},
+                    "hits": [{
+                        "location": {
+                            "kind": "unaddressable",
+                            "sourceSet": "main",
+                            "path": "CommonModules/Smoke/Ext/Module.bsl"
+                        },
+                        "line": 3,
+                        "endLine": null,
+                        "symbol": null,
+                        "kind": "text",
+                        "snippet": "Needle",
+                        "attributes": {}
+                    }],
+                    "diagnostics": []
+                }
+            ]
+        }));
+        result
+    }
+
     struct McpClient {
         writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
         reader: tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
@@ -492,8 +672,8 @@ mod tests {
 
     fn application_handler() -> Arc<ToolCallHandler> {
         let app = Arc::new(UnicaApplication::new());
-        Arc::new(move |name, arguments, cancellation| {
-            call_tool_result(&app, name, arguments, cancellation)
+        Arc::new(move |name, arguments, cancellation, progress| {
+            call_tool_result_observed(&app, name, arguments, cancellation, progress)
         })
     }
 
@@ -538,6 +718,166 @@ mod tests {
             compact_result_bytes < 1_285_000,
             "tools/list result consumes {compact_result_bytes} compact JSON bytes"
         );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn progress_token_receives_typed_search_snapshot_before_result() {
+        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _, progress| {
+            progress.publish(crate::domain::code_intelligence::SearchProgressSnapshot {
+                schema_version: 1,
+                elapsed_ms: 5,
+                deadline_ms: 300_000,
+                next_update_within_ms: 2_000,
+                providers: vec![crate::domain::code_intelligence::SearchProviderProgress {
+                    identity: crate::domain::code_intelligence::ProviderId::GitGrep.identity(),
+                    state: crate::domain::code_intelligence::SearchProviderState::Running,
+                    phase: crate::domain::code_intelligence::SearchProviderPhase::Searching,
+                    detail_code: None,
+                    results_found: 2,
+                }],
+            });
+            Ok(code_search_test_result())
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "_meta": {"progressToken": "search-17"},
+                    "name": "unica.code.search",
+                    "arguments": {}
+                }
+            }))
+            .await;
+
+        let notification = client.receive().await;
+        assert_eq!(notification["method"], "notifications/progress");
+        assert_eq!(notification["params"]["progressToken"], "search-17");
+        assert_eq!(notification["params"]["progress"], 0.0);
+        assert_eq!(notification["params"]["total"], 1.0);
+        assert_eq!(
+            notification["params"]["_meta"]["io.unica/searchProgress"]["providers"][0]["role"],
+            "lexical"
+        );
+        let response = client.receive().await;
+        assert_eq!(response["id"], 1);
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["coverage"],
+            "partial"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn retained_progress_sink_does_not_hold_the_tool_response_open() {
+        let retained = Arc::new(Mutex::new(None::<Arc<dyn SearchProgressSink>>));
+        let retained_by_handler = Arc::clone(&retained);
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, progress| {
+            *retained_by_handler.lock().unwrap() = Some(progress);
+            Ok(code_search_test_result())
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "_meta": {"progressToken": "search-retained"},
+                    "name": "unica.code.search",
+                    "arguments": {}
+                }
+            }))
+            .await;
+
+        let line = timeout(Duration::from_millis(500), client.reader.next_line())
+            .await
+            .expect("a retained progress sink must not delay the tool response")
+            .expect("MCP transport failed")
+            .expect("MCP server closed the stream before responding");
+        let response: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(response["id"], 1);
+
+        retained.lock().unwrap().take();
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn progress_forwarder_preserves_rapid_phase_transitions() {
+        let retained = Arc::new(Mutex::new(None::<Arc<dyn SearchProgressSink>>));
+        let retained_by_handler = Arc::clone(&retained);
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, progress| {
+            for (elapsed_ms, phase, detail_code) in [
+                (
+                    5,
+                    crate::domain::code_intelligence::SearchProviderPhase::Preparing,
+                    "reconcilingSources",
+                ),
+                (
+                    6,
+                    crate::domain::code_intelligence::SearchProviderPhase::Searching,
+                    "executingQuery",
+                ),
+            ] {
+                progress.publish(crate::domain::code_intelligence::SearchProgressSnapshot {
+                    schema_version: 1,
+                    elapsed_ms,
+                    deadline_ms: 300_000,
+                    next_update_within_ms: 2_000,
+                    providers: vec![crate::domain::code_intelligence::SearchProviderProgress {
+                        identity: crate::domain::code_intelligence::ProviderId::Rlm.identity(),
+                        state: crate::domain::code_intelligence::SearchProviderState::Running,
+                        phase,
+                        detail_code: Some(detail_code.to_string()),
+                        results_found: 0,
+                    }],
+                });
+            }
+            *retained_by_handler.lock().unwrap() = Some(progress);
+            Ok(code_search_test_result())
+        });
+        let (mut client, _) = spawn_server(handler);
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "_meta": {"progressToken": "search-phases"},
+                    "name": "unica.code.search",
+                    "arguments": {}
+                }
+            }))
+            .await;
+
+        let mut messages = Vec::new();
+        for _ in 0..3 {
+            let line = timeout(Duration::from_millis(500), client.reader.next_line())
+                .await
+                .expect("every phase transition and the result must be forwarded")
+                .expect("MCP transport failed")
+                .expect("MCP server closed the stream before responding");
+            messages.push(serde_json::from_str::<Value>(&line).unwrap());
+        }
+        assert_eq!(messages[0]["method"], "notifications/progress");
+        assert_eq!(messages[1]["method"], "notifications/progress");
+        assert_eq!(
+            messages[0]["params"]["_meta"]["io.unica/searchProgress"]["providers"][0]["detailCode"],
+            "reconcilingSources"
+        );
+        assert_eq!(
+            messages[1]["params"]["_meta"]["io.unica/searchProgress"]["providers"][0]["detailCode"],
+            "executingQuery"
+        );
+        assert_eq!(messages[2]["id"], 1);
+
+        retained.lock().unwrap().take();
         client.shutdown().await;
     }
 
@@ -858,9 +1198,56 @@ mod tests {
         assert!(role_info.output_schema.is_none());
     }
 
+    #[test]
+    fn code_search_publishes_a_closed_typed_result_schema() {
+        let listed = tool_definitions(&crate::application::tools());
+        let code_search = listed
+            .iter()
+            .find(|tool| tool.name == "unica.code.search")
+            .expect("code.search must be listed");
+        let output = code_search
+            .output_schema
+            .as_ref()
+            .expect("code.search must publish outputSchema");
+
+        assert_eq!(output["type"], "object");
+        assert_eq!(output["additionalProperties"], false);
+        assert!(output["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("data")));
+        for forbidden in ["stdout", "stderr", "command", "job"] {
+            assert!(output["properties"].get(forbidden).is_none());
+        }
+        assert_eq!(output["properties"]["data"]["additionalProperties"], false);
+        assert_eq!(
+            output["properties"]["data"]["required"],
+            json!(["coverage", "elapsedMs", "sections"])
+        );
+        let section = &output["properties"]["data"]["properties"]["sections"]["items"];
+        assert_eq!(section["additionalProperties"], false);
+        assert!(section["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("searchComplete")));
+        assert!(section["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("termination")));
+        let location = &section["properties"]["hits"]["items"]["properties"]["location"];
+        assert_eq!(location["oneOf"].as_array().unwrap().len(), 2);
+
+        let schema = Value::Object(output.as_ref().clone());
+        let instance = serde_json::to_value(code_search_test_result()).unwrap();
+        jsonschema::validator_for(&schema)
+            .expect("code.search outputSchema must compile")
+            .validate(&instance)
+            .expect("the serialized code.search result must satisfy its advertised schema");
+    }
+
     #[tokio::test]
     async fn role_edit_mcp_calls_return_structured_success_and_error() {
-        let handler: Arc<ToolCallHandler> = Arc::new(|name, arguments, _| {
+        let handler: Arc<ToolCallHandler> = Arc::new(|name, arguments, _, _| {
             assert_eq!(name, "unica.role.edit");
             let rejected = arguments
                 .get("operations")
@@ -1346,7 +1733,7 @@ mod tests {
             .contains("does not accept argument `dryRun`"));
         client.shutdown().await;
 
-        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _| {
+        let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _, _| {
             Err((
                 TOOL_EXECUTION_ERROR,
                 "typed_result_missing: unica.project.status returned ok without OperationResult.data"
@@ -1376,7 +1763,7 @@ mod tests {
     async fn ping_stays_responsive_and_cancellation_reaches_the_tool() {
         let cancellation_seen = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&cancellation_seen);
-        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation| {
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation, _| {
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !cancellation.is_cancelled() {
                 if Instant::now() > give_up {
@@ -1437,7 +1824,7 @@ mod tests {
     async fn eof_cancels_active_calls_within_a_bounded_grace() {
         let cancellation_seen = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&cancellation_seen);
-        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation| {
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation, _| {
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !cancellation.is_cancelled() {
                 if Instant::now() > give_up {
@@ -1575,7 +1962,7 @@ mod tests {
     async fn overloaded_dispatcher_returns_deterministic_json_rpc_error() {
         let release = Arc::new(AtomicBool::new(false));
         let gate = Arc::clone(&release);
-        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _| {
+        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, _| {
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !gate.load(Ordering::SeqCst) {
                 if Instant::now() > give_up {

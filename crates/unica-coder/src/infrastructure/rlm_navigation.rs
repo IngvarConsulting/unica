@@ -128,6 +128,12 @@ impl<'a> RlmNavigationAdapter<'a> {
                     &error,
                 )));
             }
+            Err(error) if error.contains("source revision") => {
+                return Ok(RlmNavigationOutcome::plain(index_unavailable_outcome(
+                    request,
+                    IndexReadiness::Unavailable(error),
+                )))
+            }
             Err(error) => return Err(error),
         };
         let db_path = match readiness {
@@ -940,7 +946,32 @@ mod tests {
         readiness: IndexReadiness,
     }
 
+    struct UnsupportedRevisionFenceClient;
+
     struct PostExecutionUnreadyClient;
+
+    impl RlmNavigationClient for UnsupportedRevisionFenceClient {
+        fn readiness(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<IndexReadiness, String> {
+            Err("source revision fence is unsupported; freshness cannot be proven".to_string())
+        }
+
+        fn call(
+            &self,
+            _context: &WorkspaceContext,
+            _source_root: &Path,
+            _operation: WorkspaceRlmOperation,
+            _timeout: Duration,
+            _cancellation: &CancellationToken,
+        ) -> Result<WorkspaceServiceRlmCall, String> {
+            panic!("an unavailable revision fence must stop before the RLM call")
+        }
+    }
 
     impl RlmNavigationClient for PostExecutionUnreadyClient {
         fn readiness(
@@ -1077,6 +1108,27 @@ mod tests {
             assert!(outcome.stdout.is_none(), "{outcome:?}");
             assert!(result.data.is_none());
         }
+    }
+
+    #[test]
+    fn unsupported_revision_fence_is_a_typed_unavailable_read_not_a_transport_error() {
+        let result = RlmNavigationAdapter::with_client(&UnsupportedRevisionFenceClient)
+            .invoke_resolved_cancellable(
+                &definition_request(),
+                &unready_index_context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
+                &CancellationToken::new(),
+            )
+            .expect("provider availability belongs in the typed tool result");
+
+        assert!(!result.outcome.ok);
+        assert_eq!(result.outcome.errors.len(), 1);
+        assert!(
+            result.outcome.errors[0].starts_with("index_unavailable:"),
+            "{:?}",
+            result.outcome.errors
+        );
+        assert!(result.data.is_none());
     }
 
     #[test]

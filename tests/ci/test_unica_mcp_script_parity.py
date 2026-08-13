@@ -1903,15 +1903,23 @@ network = "allow"
             ]
             called_tools = {call["tool"] for call in standin_calls}
             self.assertIn("graph", called_tools)
-            self.assertIn("rlm_execute", called_tools)
-            self.assertTrue(
-                any(
-                    "find_definition" in str(call["arguments"].get("code", ""))
-                    for call in standin_calls
-                    if call["tool"] == "rlm_execute"
-                ),
-                standin_calls,
-            )
+            self.assertIn("search", called_tools)
+            if sys.platform == "darwin":
+                self.assertIn("rlm_execute", called_tools)
+                self.assertTrue(
+                    any(
+                        "find_definition" in str(call["arguments"].get("code", ""))
+                        for call in standin_calls
+                        if call["tool"] == "rlm_execute"
+                    ),
+                    standin_calls,
+                )
+            else:
+                self.assertNotIn(
+                    "rlm_execute",
+                    called_tools,
+                    "RLM must fail closed where a source-revision fence is unavailable",
+                )
             self.assertGreater(len(v8std.calls), 0)
             self.assertEqual({call["path"] for call in v8std.calls}, {"/mcp"})
             self.assertTrue(
@@ -1949,8 +1957,22 @@ network = "allow"
                         {"provider_unavailable"},
                         json.dumps(result, ensure_ascii=False, indent=2),
                     )
+                elif tool_name == "unica.code.definition" and sys.platform != "darwin":
+                    # The example is still a valid MCP call, but the RLM reader
+                    # must fail closed on platforms where the runtime cannot
+                    # prove source freshness. The assertions above also prove
+                    # that no rlm_execute stand-in was invoked in this state.
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(len(result["errors"]), 1)
+                    self.assertTrue(
+                        result["errors"][0].startswith("index_unavailable:"),
+                        json.dumps(result, ensure_ascii=False, indent=2),
+                    )
+                    self.assertNotIn("data", result)
                 else:
                     self.assertTrue(result["ok"], json.dumps(result, ensure_ascii=False, indent=2))
+                if tool_name == "unica.code.definition" and sys.platform != "darwin":
+                    continue
                 if tool_name == "unica.xdto.info":
                     self.assertEqual(
                         result["summary"],
@@ -3245,7 +3267,10 @@ EndProcedure
             elif extension_path == "src/Configuration.xml":
                 arguments["ExtensionPath"] = "src/cfe/Configuration.xml"
             continue
-        if tool_name in {"unica.code.search", "unica.code.graph", "unica.code.definition"}:
+        if tool_name == "unica.code.search":
+            replace_reader_placeholder(arguments, "sourceSet", example, "main")
+            continue
+        if tool_name in {"unica.code.graph", "unica.code.definition"}:
             continue
         if tool_name in {"unica.meta.info", "unica.xdto.info"}:
             continue
