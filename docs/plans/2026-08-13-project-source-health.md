@@ -1765,7 +1765,7 @@ Expected: focused and full suites PASS.
 
 ```bash
 python3.12 scripts/ci/check-architecture-sync.py --base origin/main
-python3.12 scripts/ci/smoke-unica-mcp.py
+python3.12 scripts/ci/smoke-unica-mcp.py --binary target/debug/unica --plugin-root .
 ```
 
 Expected: accepted ADR/invariants/public payload are synchronized; packaged
