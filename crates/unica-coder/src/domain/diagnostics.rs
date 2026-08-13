@@ -591,6 +591,7 @@ pub enum DiagnosticItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticResult {
+    pub ok: bool,
     pub action: DiagnosticAction,
     pub selection: DiagnosticSelection,
     pub state: DiagnosticResultState,
@@ -764,6 +765,7 @@ mod tests {
             reason: UnaddressableReason::ResourceNotAddressable,
         };
         let result = DiagnosticResult {
+            ok: true,
             action: DiagnosticAction::Findings,
             selection: DiagnosticSelection {
                 source_set: "main".to_string(),

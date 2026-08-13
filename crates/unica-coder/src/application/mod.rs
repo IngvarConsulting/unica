@@ -18,6 +18,7 @@ pub(crate) use tool_contracts::{
 };
 
 pub(crate) mod code_intelligence;
+pub(crate) mod diagnostics;
 pub(crate) mod documentation;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;

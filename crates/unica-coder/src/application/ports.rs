@@ -13,7 +13,7 @@ use crate::domain::code_intelligence::{
 };
 use crate::domain::diagnostics::{
     DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
-    DiagnosticRequest, DiagnosticRequestError,
+    DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
@@ -566,6 +566,10 @@ pub(crate) trait ApplicationPorts: Send + Sync {
 
     fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {
         Err("code intelligence provider registry is not configured".to_string())
+    }
+
+    fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
+        Err("diagnostic provider registry is not configured".to_string())
     }
 
     fn resolve_source_navigation(
