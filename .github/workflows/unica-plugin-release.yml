@@ -134,6 +134,8 @@ jobs:
     if: ${{ needs.classify-changes.outputs.search_integration_changed == 'true' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p unica-coder --test issue_89_workspace_service -- --ignored --test-threads=1
 

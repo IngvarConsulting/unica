@@ -193,6 +193,16 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("ci_changed == 'true'", platforms)
         self.assertEqual(2, platforms.count("if: matrix.runner == 'macos-14'"))
 
+    def test_search_integration_checkout_does_not_persist_credentials(self) -> None:
+        integration = job_block(self.release_text(), "test-search-integration")
+
+        self.assertIn(
+            "      - uses: actions/checkout@v7\n"
+            "        with:\n"
+            "          persist-credentials: false",
+            integration,
+        )
+
     def test_package_contour_and_pr_smoke_do_not_publish_release_assets(self) -> None:
         text = self.release_text()
         build = job_block(text, "build-tools")
