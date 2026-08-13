@@ -4242,7 +4242,7 @@ mod tests {
     }
 
     #[test]
-    fn root_subsystem_compile_validates_supported_format_owner_that_appears_after_probe() {
+    fn root_subsystem_compile_validates_invalid_format_owner_that_appears_after_probe() {
         let context = temp_context("root-invalid-owner-appears-after-probe");
         let detached = temp_context("detached-root-invalid-owner-appears-after-probe");
         let source = detached.cwd.clone();
