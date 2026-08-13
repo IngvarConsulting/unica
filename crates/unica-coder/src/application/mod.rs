@@ -3354,7 +3354,10 @@ mod tests {
         assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 3);
 
         for (tool_name, args) in [
-            ("unica.code.search", json!({"query": "needle"})),
+            (
+                "unica.code.search",
+                json!({"query": "needle", "sourceDir": "."}),
+            ),
             ("unica.code.definition", json!({"name": "Needle"})),
             ("unica.code.outline", json!({"path": "Module.bsl"})),
         ] {
@@ -3375,7 +3378,9 @@ mod tests {
         let result = app
             .call_tool(
                 "unica.code.search",
-                json!({"query": "needle"}).as_object().unwrap(),
+                json!({"query": "needle", "sourceDir": "."})
+                    .as_object()
+                    .unwrap(),
             )
             .expect("prepared handler must serve code search");
 
@@ -3390,7 +3395,10 @@ mod tests {
     #[test]
     fn invalid_operational_config_stops_before_handler_execution() {
         let cases = [
-            ("unica.code.search", json!({"query": "needle"})),
+            (
+                "unica.code.search",
+                json!({"query": "needle", "sourceDir": "."}),
+            ),
             ("unica.code.definition", json!({"name": "Needle"})),
             ("unica.code.outline", json!({"path": "Module.bsl"})),
             ("unica.code.diagnostics", json!({"timeoutSeconds": 900})),
@@ -3426,7 +3434,9 @@ mod tests {
         let error = app
             .call_tool_cancellable(
                 "unica.code.search",
-                json!({"query": "needle"}).as_object().unwrap(),
+                json!({"query": "needle", "sourceDir": "."})
+                    .as_object()
+                    .unwrap(),
                 token,
             )
             .expect_err("cancellation must win over invalid config");
