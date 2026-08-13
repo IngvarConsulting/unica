@@ -484,6 +484,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     context,
                     dry_run,
                     support_reader.as_ref(),
+                    cancellation,
                 )
                 .map(|outcome| HandlerOutcome {
                     adapter: outcome.outcome,
@@ -1262,6 +1263,10 @@ mod tests {
 
     struct StaticConfigurationSupportStateReader(ConfigurationSupportState);
 
+    struct CancellingConfigurationSupportStateReaderFactory(CancellationToken);
+
+    struct CancellingConfigurationSupportStateReader(CancellationToken);
+
     impl SupportStateReaderFactory for RecordingSupportStateReaderFactory {
         fn create<'a>(
             &'a self,
@@ -1405,6 +1410,43 @@ mod tests {
         ) -> Result<ConfigurationSupportData, SupportReadError> {
             Ok(ConfigurationSupportData {
                 state: self.0,
+                editing_enabled: None,
+                objects: None,
+            })
+        }
+
+        fn object_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            unreachable!("runtime build preflight reads configuration support")
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &ResolvedSubsystemTarget,
+        ) -> Result<ObjectSupportData, SupportReadError> {
+            unreachable!("runtime build preflight reads configuration support")
+        }
+    }
+
+    impl SupportStateReaderFactory for CancellingConfigurationSupportStateReaderFactory {
+        fn create<'a>(
+            &'a self,
+            _context: &'a WorkspaceContext,
+        ) -> Box<dyn SupportStateReader + 'a> {
+            Box::new(CancellingConfigurationSupportStateReader(self.0.clone()))
+        }
+    }
+
+    impl SupportStateReader for CancellingConfigurationSupportStateReader {
+        fn configuration_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<ConfigurationSupportData, SupportReadError> {
+            self.0.cancel();
+            Ok(ConfigurationSupportData {
+                state: ConfigurationSupportState::NotSupported,
                 editing_enabled: None,
                 objects: None,
             })
@@ -1644,7 +1686,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_build_entry_points_use_the_injected_support_reader() {
+    fn runtime_build_entry_points_use_the_injected_support_reader_and_cancellation() {
         use crate::application::ports::ApplicationPorts;
 
         let root = tempfile::Builder::new()
@@ -1715,6 +1757,29 @@ mod tests {
                 "{name} must plan with the reader injected through application ports"
             );
         }
+
+        let cancellation = CancellationToken::new();
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            CancellingConfigurationSupportStateReaderFactory(cancellation.clone()),
+        ));
+        let outcome = ports
+            .invoke_handler(
+                spec(
+                    "unica.runtime.job.start",
+                    ToolHandler::RuntimeJob {
+                        action: RuntimeJobAction::Start,
+                    },
+                ),
+                &args,
+                &context,
+                InvocationMode::Apply,
+                &cancellation,
+            )
+            .expect("cancellation is an adapter outcome");
+        assert!(!outcome.adapter.ok);
+        assert!(outcome.adapter.errors[0].starts_with("cancelled:"));
+        assert!(outcome.job.is_none());
+        assert!(!context.cache_root.join("jobs").exists());
     }
 
     fn meta_info_request() -> MetaInfoRequest {

@@ -1590,6 +1590,8 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             }
             for source_root in source_roots.values():
                 source_root.mkdir(parents=True)
+            (workspace / "src" / "external-processors").mkdir(parents=True)
+            (workspace / "src" / "external-reports").mkdir(parents=True)
             (workspace / "v8project.yaml").write_text(
                 """format: DESIGNER
 source-set:
@@ -1599,6 +1601,12 @@ source-set:
   - name: myExtension
     type: EXTENSION
     path: src/cfe
+  - name: external-processors
+    type: EXTERNAL_DATA_PROCESSORS
+    path: src/external-processors
+  - name: external-reports
+    type: EXTERNAL_REPORTS
+    path: src/external-reports
 """,
                 encoding="utf-8",
             )

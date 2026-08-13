@@ -4,11 +4,8 @@ use crate::application::{
 };
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::operational_config::OperationalConfig;
-use crate::domain::project_sources::{
-    config_dump_info_xml_kind, ConfigDumpInfoXmlKind, SourceFormat, SourceSetKind,
-};
-use crate::domain::source_target::{ResolvedTarget, TargetKind};
-use crate::domain::support_state::{ConfigurationSupportState, SupportStateReader};
+use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
+use crate::domain::support_state::SupportStateReader;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
@@ -21,6 +18,9 @@ use crate::infrastructure::platform::{
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
+use crate::infrastructure::runtime_build_preflight::{
+    RuntimeBuildPreflight, RuntimeInvocationPlan,
+};
 use crate::infrastructure::runtime_jobs::{
     self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
 };
@@ -634,141 +634,19 @@ fn format_git_paths<'a>(paths: impl Iterator<Item = &'a str>) -> String {
         .join(", ")
 }
 
-struct RuntimeInvocationPlan {
-    args: Map<String, Value>,
-    warnings: Vec<String>,
-}
-
-/// Designer cannot apply a partial file load to an actively supported
-/// configuration. v8-runner owns the incremental baseline, so this boundary
-/// deliberately makes only the decision it can prove from source evidence:
-/// any selected supported Platform XML configuration takes the runner's full
-/// build path before a platform process is started (#404, ADR-0055).
 fn plan_runtime_invocation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     support_reader: &dyn SupportStateReader,
 ) -> Result<RuntimeInvocationPlan, String> {
-    let mut planned_args = args.clone();
-    if args.get("operation").and_then(Value::as_str) != Some("build") {
-        return Ok(RuntimeInvocationPlan {
-            args: planned_args,
-            warnings: Vec::new(),
-        });
+    if args.get("operation").and_then(Value::as_str) == Some("build") {
+        validate_runtime_mapper_payload("build", args)?;
     }
-    validate_runtime_mapper_payload("build", args)?;
-    if args.contains_key("fullRebuild")
-        && args.get("fullRebuild").and_then(Value::as_bool).is_none()
-    {
-        return Err("operation `build` argument `fullRebuild` must be boolean".to_string());
-    }
-    if args.get("fullRebuild").and_then(Value::as_bool) == Some(true) {
-        return Ok(RuntimeInvocationPlan {
-            args: planned_args,
-            warnings: Vec::new(),
-        });
-    }
-
-    ensure_primary_runtime_config(args, context)?;
-    let selected_source_set = match args.get("sourceSet") {
-        Some(Value::String(value)) => Some(value.as_str()),
-        Some(_) => return Err("operation `build` argument `sourceSet` must be string".to_string()),
-        None => None,
-    };
-    let source_map = crate::infrastructure::project_sources::discover_project_source_map(
-        &context.workspace_root,
+    crate::infrastructure::runtime_build_preflight::plan_runtime_invocation(
+        args,
+        context,
+        support_reader,
     )
-    .map_err(|error| {
-        format!(
-            "incremental build preflight could not read the project source map: {error}; \
-                 retry with `fullRebuild: true`"
-        )
-    })?;
-    let mut supported_source_sets = Vec::new();
-    for source_set in source_map.source_sets.iter().filter(|source_set| {
-        source_set.kind == SourceSetKind::Configuration
-            && source_set.source_format == SourceFormat::PlatformXml
-            && selected_source_set.is_none_or(|selected| selected == source_set.name)
-    }) {
-        let target = ResolvedTarget {
-            source_set: source_set.name.clone(),
-            metadata_path: None,
-            target_kind: TargetKind::SourceRoot,
-        };
-        let support = support_reader
-            .configuration_support(&target)
-            .map_err(|error| {
-                format!(
-                    "incremental build preflight could not determine support state for source-set \
-                 `{}`: {error}; retry with `fullRebuild: true`",
-                    source_set.name
-                )
-            })?;
-        if support.state == ConfigurationSupportState::Supported {
-            supported_source_sets.push(source_set.name.clone());
-        }
-    }
-
-    if supported_source_sets.is_empty() {
-        return Ok(RuntimeInvocationPlan {
-            args: planned_args,
-            warnings: Vec::new(),
-        });
-    }
-
-    supported_source_sets.sort();
-    let source_sets = supported_source_sets
-        .iter()
-        .map(|name| format!("`{name}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    planned_args.insert("fullRebuild".to_string(), Value::Bool(true));
-    Ok(RuntimeInvocationPlan {
-        args: planned_args,
-        warnings: vec![format!(
-            "vendor-supported configuration source-set(s) {source_sets} cannot use Designer \
-             partial loading; Unica selected a full rebuild before starting v8-runner"
-        )],
-    })
-}
-
-fn ensure_primary_runtime_config(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<(), String> {
-    let configured = match args.get("config") {
-        Some(Value::String(path)) => PathBuf::from(path),
-        Some(_) => return Err("operation `build` argument `config` must be string".to_string()),
-        None => PathBuf::from("v8project.yaml"),
-    };
-    let effective = if configured.is_absolute() {
-        configured
-    } else {
-        context.cwd.join(configured)
-    };
-    let primary = context.workspace_root.join("v8project.yaml");
-    let effective = normalize_path_identity(&effective).map_err(|error| {
-        format!(
-            "incremental build preflight could not resolve config `{}`: {error}; retry with \
-             `fullRebuild: true`",
-            effective.display()
-        )
-    })?;
-    let primary = normalize_path_identity(&primary).map_err(|error| {
-        format!(
-            "incremental build preflight could not resolve the workspace config `{}`: {error}; \
-             retry with `fullRebuild: true`",
-            primary.display()
-        )
-    })?;
-    if path_lock_identity(&effective) != path_lock_identity(&primary) {
-        return Err(format!(
-            "incremental build preflight cannot bind non-primary config `{}` to the workspace \
-             support-state reader; retry with `fullRebuild: true`",
-            effective.display()
-        ));
-    }
-    Ok(())
 }
 
 fn merge_warnings(mut left: Vec<String>, right: Vec<String>) -> Vec<String> {
@@ -871,6 +749,11 @@ impl<'a> RuntimeAdapter<'a> {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
         let invocation = plan_runtime_invocation(args, context, support_preflight.reader)?;
+        if cancellation.is_cancelled() {
+            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
+                format!("{tool_name} cancelled during runtime build preflight"),
+            )));
+        }
         let report_args = runtime_args(&invocation.args, true)?;
         let execution_args = runtime_args(&invocation.args, false)?;
         validate_bounded_external_epf_artifact_paths(&invocation.args, &context.cwd)?;
@@ -896,6 +779,15 @@ impl<'a> RuntimeAdapter<'a> {
                 stderr: None,
                 command: Some(command),
             }));
+        }
+
+        if let Some(build_preflight) = &invocation.build_preflight {
+            build_preflight.reauthorize_with_reader(context, support_preflight.reader)?;
+        }
+        if cancellation.is_cancelled() {
+            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
+                format!("{tool_name} cancelled before v8-runner launch"),
+            )));
         }
 
         let process_timeout = None;
@@ -1405,6 +1297,7 @@ impl RuntimeJobAdapter {
             context,
             dry_run,
             support_reader.as_ref(),
+            &CancellationToken::new(),
         )
     }
 
@@ -1415,11 +1308,17 @@ impl RuntimeJobAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
         support_reader: &dyn SupportStateReader,
+        cancellation: &CancellationToken,
     ) -> Result<RuntimeJobAdapterOutcome, String> {
         match action {
-            RuntimeJobAction::Start => {
-                Self::start(tool_name, args, context, dry_run, support_reader)
-            }
+            RuntimeJobAction::Start => Self::start(
+                tool_name,
+                args,
+                context,
+                dry_run,
+                support_reader,
+                cancellation,
+            ),
             RuntimeJobAction::Status => Self::status(tool_name, args, context),
             RuntimeJobAction::Wait => Self::wait(tool_name, args, context),
             RuntimeJobAction::Logs => Self::logs(tool_name, args, context),
@@ -1434,6 +1333,7 @@ impl RuntimeJobAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
         support_reader: &dyn SupportStateReader,
+        cancellation: &CancellationToken,
     ) -> Result<RuntimeJobAdapterOutcome, String> {
         for argument in ["waitForExit", "waitTimeoutMs", "stderrOutput"] {
             if args.contains_key(argument) {
@@ -1448,8 +1348,17 @@ impl RuntimeJobAdapter {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
         let invocation = plan_runtime_invocation(args, context, support_reader)?;
+        if cancellation.is_cancelled() {
+            return Ok(RuntimeJobAdapterOutcome {
+                outcome: AdapterOutcome::cancelled(format!(
+                    "{tool_name} cancelled during runtime build preflight"
+                )),
+                job: None,
+            });
+        }
         let reported_args = runtime_args(&invocation.args, true)?;
         let execution_args = runtime_args(&invocation.args, false)?;
+        let build_preflight = invocation.build_preflight.clone();
         let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
         let mut command = vec![bundled_tool.program.display().to_string()];
         command.extend(reported_args);
@@ -1472,12 +1381,23 @@ impl RuntimeJobAdapter {
             });
         }
 
-        let request = runtime_job_start_request(tool_name, args, context, execution_args)?;
+        if cancellation.is_cancelled() {
+            return Ok(RuntimeJobAdapterOutcome {
+                outcome: AdapterOutcome::cancelled(format!(
+                    "{tool_name} cancelled before durable runtime job start"
+                )),
+                job: None,
+            });
+        }
+
+        let request =
+            runtime_job_start_request(tool_name, args, context, execution_args, build_preflight)?;
         match runtime_jobs::start_detached_worker(
             context.cache_root.clone(),
             bundled_tool.program,
             context.cwd.clone(),
             request,
+            cancellation,
         ) {
             Ok(snapshot) => Ok(RuntimeJobAdapterOutcome {
                 outcome: AdapterOutcome {
@@ -1494,6 +1414,14 @@ impl RuntimeJobAdapter {
                 job: Some(runtime_job_snapshot_value(&snapshot)),
             }),
             Err(error) => {
+                if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) {
+                    return Ok(RuntimeJobAdapterOutcome {
+                        outcome: AdapterOutcome::cancelled(format!(
+                            "{tool_name} cancelled before durable runtime job launch"
+                        )),
+                        job: None,
+                    });
+                }
                 let mut outcome = Self::failure(tool_name, error, Some(command));
                 outcome.outcome.warnings = merge_warnings(warnings, outcome.outcome.warnings);
                 Ok(outcome)
@@ -1674,6 +1602,7 @@ fn runtime_job_start_request(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     execution_args: Vec<String>,
+    build_preflight: Option<RuntimeBuildPreflight>,
 ) -> Result<RuntimeJobRequest, String> {
     let operation_name = args
         .get("operation")
@@ -1687,7 +1616,8 @@ fn runtime_job_start_request(
         args.get("output")
             .and_then(Value::as_str)
             .map(str::to_string),
-    ))
+    )
+    .with_build_preflight(build_preflight))
 }
 
 fn runtime_job_id<'a>(tool_name: &str, args: &'a Map<String, Value>) -> Result<&'a str, String> {
@@ -3445,6 +3375,8 @@ fn _path_list(paths: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::source_target::ResolvedTarget;
+    use crate::domain::support_state::ConfigurationSupportState;
     use crate::infrastructure::platform::testing;
     use serde_json::json;
     use std::cell::RefCell;
@@ -3678,6 +3610,7 @@ mod tests {
     fn config_dump_info_git_check_keeps_unmerged_runtime_path_non_destructive() {
         let context = temp_context("tracked-config-dump-info-unmerged-runtime");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        fs::create_dir_all(context.workspace_root.join("src/Configuration")).unwrap();
         fs::write(
             context.workspace_root.join("v8project.yaml"),
             concat!(
@@ -3687,6 +3620,18 @@ mod tests {
                 "    type: CONFIGURATION\n",
                 "    path: src\n",
             ),
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/.project"),
+            "<projectDescription/>",
+        )
+        .unwrap();
+        fs::write(
+            context
+                .workspace_root
+                .join("src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
         )
         .unwrap();
         fs::write(
@@ -3932,6 +3877,151 @@ mod tests {
         cleanup_context(&context);
     }
 
+    #[test]
+    fn runtime_adapter_trims_supported_configuration_selector_before_preflight() {
+        let context = temp_context("runtime-supported-configuration-trimmed-selector");
+        configure_supported_designer_source(&context);
+        let support_reader_factory = WorkspaceSupportStateReaderFactory;
+        let support_reader = support_reader_factory.create(&context);
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!(" main ")),
+        ]);
+
+        let invocation = plan_runtime_invocation(&args, &context, support_reader.as_ref())
+            .expect("runner-compatible selector must reach support preflight");
+
+        assert_eq!(
+            runtime_args(&invocation.args, false).unwrap(),
+            ["build", "--full-rebuild", "--source-set", "main"]
+        );
+        assert!(invocation.build_preflight.is_none());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_refuses_unknown_build_selector_before_incremental_authorization() {
+        let context = temp_context("runtime-unknown-configuration-selector");
+        configure_designer_source(&context);
+        let support_reader = PanickingConfigurationSupportReader;
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("missing")),
+        ]);
+
+        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
+            Ok(_) => panic!("unknown selector cannot authorize an incremental build"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("source-set `missing`"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_refuses_ambiguous_build_selector_before_incremental_authorization() {
+        let context = temp_context("runtime-ambiguous-configuration-selector");
+        fs::create_dir_all(context.workspace_root.join("first")).unwrap();
+        fs::create_dir_all(context.workspace_root.join("second")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: duplicate\n",
+                "    type: EXTENSION\n",
+                "    path: first\n",
+                "  - name: duplicate\n",
+                "    type: EXTENSION\n",
+                "    path: second\n",
+            ),
+        )
+        .unwrap();
+        let support_reader = PanickingConfigurationSupportReader;
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("duplicate")),
+        ]);
+
+        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
+            Ok(_) => panic!("ambiguous selector cannot authorize an incremental build"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("source-set `duplicate`"), "{error}");
+        assert!(error.contains("exactly one"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_refuses_invalid_selected_configuration_format() {
+        let context = temp_context("runtime-invalid-configuration-format");
+        configure_designer_source(&context);
+        fs::write(
+            context.workspace_root.join("src/.project"),
+            "<projectDescription/>",
+        )
+        .unwrap();
+        let support_reader = PanickingConfigurationSupportReader;
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("main")),
+        ]);
+
+        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
+            Ok(_) => panic!("contradictory source-format evidence must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("source format"), "{error}");
+        assert!(error.contains("source-set `main`"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_ignores_invalid_unselected_configuration_format() {
+        let context = temp_context("runtime-unselected-invalid-configuration-format");
+        configure_designer_source(&context);
+        fs::write(
+            context.workspace_root.join("src/.project"),
+            "<projectDescription/>",
+        )
+        .unwrap();
+        fs::create_dir_all(context.workspace_root.join("extension")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+                "  - name: extension\n",
+                "    type: EXTENSION\n",
+                "    path: extension\n",
+            ),
+        )
+        .unwrap();
+        let support_reader = PanickingConfigurationSupportReader;
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("extension")),
+        ]);
+
+        let invocation = plan_runtime_invocation(&args, &context, &support_reader)
+            .expect("unselected contradictory evidence must not block an extension build");
+
+        assert_eq!(
+            runtime_args(&invocation.args, false).unwrap(),
+            ["build", "--source-set", "extension"]
+        );
+        assert!(invocation.build_preflight.is_some());
+        cleanup_context(&context);
+    }
+
     /// The durable job path maps its argv independently from
     /// `unica.runtime.execute`; keep the same preflight on both public runtime
     /// entry points.
@@ -3974,11 +4064,45 @@ mod tests {
 
         let invocation = plan_runtime_invocation(&args, &context, support_reader.as_ref()).unwrap();
         let execution_args = runtime_args(&invocation.args, false).unwrap();
-        let request =
-            runtime_job_start_request("unica.runtime.job.start", &args, &context, execution_args)
-                .unwrap();
+        let request = runtime_job_start_request(
+            "unica.runtime.job.start",
+            &args,
+            &context,
+            execution_args,
+            invocation.build_preflight,
+        )
+        .unwrap();
 
         assert_eq!(request.raw_argv(), ["build", "--full-rebuild"]);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_job_stops_when_cancelled_during_build_preflight() {
+        let context = temp_context("runtime-job-cancel-during-build-preflight");
+        configure_designer_source(&context);
+        let cancellation = CancellationToken::new();
+        let support_reader = SequencedConfigurationSupportReader {
+            states: std::sync::Mutex::new(vec![ConfigurationSupportState::NotSupported]),
+            cancellation: Some(cancellation.clone()),
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeJobAdapter::invoke_with_support_state(
+            RuntimeJobAction::Start,
+            "unica.runtime.job.start",
+            &args,
+            &context,
+            false,
+            &support_reader,
+            &cancellation,
+        )
+        .expect("cancellation is an adapter outcome");
+
+        assert!(!outcome.outcome.ok);
+        assert!(outcome.outcome.errors[0].starts_with(CANCELLED_PREFIX));
+        assert!(outcome.job.is_none());
+        assert!(!context.cache_root.join("jobs").exists());
         cleanup_context(&context);
     }
 
@@ -4012,6 +4136,100 @@ mod tests {
     }
 
     #[test]
+    fn runtime_adapter_reauthorizes_incremental_build_before_process_start() {
+        let context = temp_context("runtime-support-race-before-process-start");
+        configure_designer_source(&context);
+        let support_reader = SequencedConfigurationSupportReader {
+            states: std::sync::Mutex::new(vec![
+                ConfigurationSupportState::NotSupported,
+                ConfigurationSupportState::Supported,
+            ]),
+            cancellation: None,
+        };
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let error = match RuntimeAdapter::with_runner(&runner)
+            .invoke_cancellable_with_support_state(
+                RuntimeInvocation {
+                    tool_name: "unica.runtime.execute",
+                    args: &args,
+                    context: &context,
+                    dry_run: false,
+                    mutating: true,
+                },
+                &CancellationToken::new(),
+                RuntimeSupportPreflight {
+                    reader: &support_reader,
+                },
+            ) {
+            Ok(_) => panic!("changed support evidence must refuse a stale incremental plan"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("changed before v8-runner launch"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        assert!(runner.commands.borrow().is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_stops_when_cancelled_during_build_preflight() {
+        let context = temp_context("runtime-cancel-during-build-preflight");
+        configure_designer_source(&context);
+        let cancellation = CancellationToken::new();
+        let support_reader = SequencedConfigurationSupportReader {
+            states: std::sync::Mutex::new(vec![ConfigurationSupportState::NotSupported]),
+            cancellation: Some(cancellation.clone()),
+        };
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke_cancellable_with_support_state(
+                RuntimeInvocation {
+                    tool_name: "unica.runtime.execute",
+                    args: &args,
+                    context: &context,
+                    dry_run: false,
+                    mutating: true,
+                },
+                &cancellation,
+                RuntimeSupportPreflight {
+                    reader: &support_reader,
+                },
+            )
+            .expect("cancellation is an adapter outcome");
+
+        assert!(!outcome.outcome.ok);
+        assert!(outcome.outcome.errors[0].starts_with(CANCELLED_PREFIX));
+        assert!(runner.commands.borrow().is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn runtime_adapter_keeps_incremental_build_for_removed_configuration_support() {
         let context = temp_context("runtime-removed-configuration-support");
         configure_supported_designer_source(&context);
@@ -4022,6 +4240,80 @@ mod tests {
 
         assert_eq!(runtime_args(&invocation.args, false).unwrap(), ["build"]);
         assert!(invocation.warnings.is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_skips_designer_support_reader_for_edt_configuration() {
+        let context = temp_context("runtime-edt-configuration-build");
+        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: EDT\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        let support_reader = PanickingConfigurationSupportReader;
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("fullRebuild".to_string(), json!(false)),
+        ]);
+
+        let invocation = plan_runtime_invocation(&args, &context, &support_reader).unwrap();
+
+        assert_eq!(runtime_args(&invocation.args, false).unwrap(), ["build"]);
+        assert!(invocation.build_preflight.is_some());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_refuses_extension_state_for_configuration_target() {
+        let context = temp_context("runtime-inconsistent-configuration-support");
+        configure_supported_designer_source(&context);
+        let support_reader = StaticConfigurationSupportReader(ConfigurationSupportState::Extension);
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+
+        let error = match RuntimeAdapter::with_runner(&runner)
+            .invoke_cancellable_with_support_state(
+                RuntimeInvocation {
+                    tool_name: "unica.runtime.execute",
+                    args: &args,
+                    context: &context,
+                    dry_run: false,
+                    mutating: true,
+                },
+                &CancellationToken::new(),
+                RuntimeSupportPreflight {
+                    reader: &support_reader,
+                },
+            ) {
+            Ok(_) => panic!("an extension state cannot authorize a configuration build"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("inconsistent `Extension` support state"),
+            "{error}"
+        );
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
@@ -4193,8 +4485,152 @@ mod tests {
     }
 
     #[test]
+    fn incremental_build_rejects_case_distinct_nonprimary_config() {
+        let context = temp_context("runtime-case-distinct-nonprimary-config");
+        configure_designer_source(&context);
+        let alternate = context.workspace_root.join("V8PROJECT.YAML");
+        fs::write(
+            &alternate,
+            "format: DESIGNER\nsource-set:\n  - name: alternate\n    type: CONFIGURATION\n    path: other\n",
+        )
+        .unwrap();
+        if fs::canonicalize(&alternate).unwrap()
+            == fs::canonicalize(context.workspace_root.join("v8project.yaml")).unwrap()
+        {
+            cleanup_context(&context);
+            return;
+        }
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            (
+                "config".to_string(),
+                json!(alternate.file_name().unwrap().to_string_lossy()),
+            ),
+        ]);
+
+        let error = match plan_runtime_invocation(
+            &args,
+            &context,
+            &StaticConfigurationSupportReader(ConfigurationSupportState::NotSupported),
+        ) {
+            Ok(_) => panic!("a distinct config inode must never share primary authorization"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("non-primary config"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_refuses_unknown_selected_configuration_format() {
+        let context = temp_context("runtime-unknown-configuration-format");
+        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        let support_reader = PanickingConfigurationSupportReader;
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("main")),
+        ]);
+
+        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
+            Ok(_) => panic!("unknown source format cannot authorize an incremental build"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("source format"), "{error}");
+        assert!(error.contains("source-set `main`"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_refuses_edt_evidence_under_designer_build_mode() {
+        let context = temp_context("runtime-designer-mode-with-edt-evidence");
+        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/.project"),
+            "<projectDescription/>",
+        )
+        .unwrap();
+        let support_reader = PanickingConfigurationSupportReader;
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("main")),
+        ]);
+
+        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
+            Ok(_) => panic!("Designer build mode cannot authorize an EDT-shaped source root"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("source format"), "{error}");
+        assert!(error.contains("source-set `main`"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_uses_global_edt_mode_despite_platform_xml_evidence() {
+        let context = temp_context("runtime-edt-mode-with-platform-evidence");
+        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: EDT\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/Configuration.xml"),
+            "<MetaDataObject/>",
+        )
+        .unwrap();
+        let support_reader = PanickingConfigurationSupportReader;
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("main")),
+        ]);
+
+        let invocation = plan_runtime_invocation(&args, &context, &support_reader)
+            .expect("global EDT mode does not use Designer support state");
+
+        assert_eq!(
+            runtime_args(&invocation.args, false).unwrap(),
+            ["build", "--source-set", "main"]
+        );
+        assert!(invocation.build_preflight.is_some());
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn runtime_adapter_delegates_successful_build_without_wrapper_timeout() {
         let context = temp_context("runtime-build-success");
+        configure_designer_source(&context);
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
@@ -6082,6 +6518,7 @@ analyze_timeout_seconds = 900
     #[test]
     fn cancellation_prefix_is_stable_for_cancelled_runtime_output() {
         let context = temp_context("runtime-cancelled-output");
+        configure_designer_source(&context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -6197,6 +6634,7 @@ analyze_timeout_seconds = 900
     #[test]
     fn runtime_adapter_does_not_report_wrapper_timeout_seconds_without_local_timeout() {
         let context = temp_context("runtime-timeout-no-local-budget");
+        configure_designer_source(&context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -6227,6 +6665,7 @@ analyze_timeout_seconds = 900
     #[test]
     fn runtime_adapter_redacts_non_zero_process_output() {
         let context = temp_context("runtime-non-zero-diagnostics");
+        configure_designer_source(&context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -6306,6 +6745,7 @@ analyze_timeout_seconds = 900
     #[test]
     fn runtime_adapter_returns_failure_outcome_for_spawn_failure() {
         let context = temp_context("runtime-spawn-failure-diagnostics");
+        configure_designer_source(&context);
         let runner = FailingProcessRunner {
             error: "failed to execute process: no such file or directory; apiToken=token-secret"
                 .to_string(),
@@ -6670,6 +7110,85 @@ analyze_timeout_seconds = 900
         > {
             Ok(crate::domain::support_state::ConfigurationSupportData {
                 state: self.0,
+                editing_enabled: None,
+                objects: None,
+            })
+        }
+
+        fn object_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<
+            crate::domain::support_state::ObjectSupportData,
+            crate::domain::support_state::SupportReadError,
+        > {
+            unreachable!("runtime build preflight reads configuration support")
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &crate::domain::support_state::ResolvedSubsystemTarget,
+        ) -> Result<
+            crate::domain::support_state::ObjectSupportData,
+            crate::domain::support_state::SupportReadError,
+        > {
+            unreachable!("runtime build preflight reads configuration support")
+        }
+    }
+
+    struct SequencedConfigurationSupportReader {
+        states: std::sync::Mutex<Vec<ConfigurationSupportState>>,
+        cancellation: Option<CancellationToken>,
+    }
+
+    struct PanickingConfigurationSupportReader;
+
+    impl SupportStateReader for PanickingConfigurationSupportReader {
+        fn configuration_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<
+            crate::domain::support_state::ConfigurationSupportData,
+            crate::domain::support_state::SupportReadError,
+        > {
+            panic!("EDT configurations do not have Designer support-state evidence")
+        }
+
+        fn object_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<
+            crate::domain::support_state::ObjectSupportData,
+            crate::domain::support_state::SupportReadError,
+        > {
+            unreachable!("runtime build preflight reads configuration support")
+        }
+
+        fn subsystem_support(
+            &self,
+            _target: &crate::domain::support_state::ResolvedSubsystemTarget,
+        ) -> Result<
+            crate::domain::support_state::ObjectSupportData,
+            crate::domain::support_state::SupportReadError,
+        > {
+            unreachable!("runtime build preflight reads configuration support")
+        }
+    }
+
+    impl SupportStateReader for SequencedConfigurationSupportReader {
+        fn configuration_support(
+            &self,
+            _target: &ResolvedTarget,
+        ) -> Result<
+            crate::domain::support_state::ConfigurationSupportData,
+            crate::domain::support_state::SupportReadError,
+        > {
+            if let Some(cancellation) = &self.cancellation {
+                cancellation.cancel();
+            }
+            let state = self.states.lock().unwrap().remove(0);
+            Ok(crate::domain::support_state::ConfigurationSupportData {
+                state,
                 editing_enabled: None,
                 objects: None,
             })

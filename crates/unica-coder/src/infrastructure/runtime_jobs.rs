@@ -1,7 +1,9 @@
 //! Durable runtime-job state used by the runtime-job worker and transport adapter.
 
 use super::redaction;
+use super::runtime_build_preflight::RuntimeBuildPreflight;
 use crate::domain::cache::CacheAccess;
+use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::events::{runtime_event_kind, DomainEvent};
 use crate::infrastructure::platform::filesystem::{replace_file_atomically, sync_parent_directory};
 use crate::infrastructure::platform::{
@@ -114,6 +116,7 @@ pub(crate) struct RuntimeJobRequest {
     safe_target: String,
     artifact_path: Option<String>,
     timeout_reason: Option<String>,
+    build_preflight: Option<RuntimeBuildPreflight>,
 }
 
 impl RuntimeJobRequest {
@@ -129,7 +132,39 @@ impl RuntimeJobRequest {
             safe_target: safe_target.into(),
             artifact_path,
             timeout_reason: None,
+            build_preflight: None,
         }
+    }
+
+    pub(crate) fn with_build_preflight(
+        mut self,
+        build_preflight: Option<RuntimeBuildPreflight>,
+    ) -> Self {
+        self.build_preflight = build_preflight;
+        self
+    }
+
+    fn validate_build_preflight(&self) -> JobResult<()> {
+        let full_rebuild = self
+            .raw_argv
+            .iter()
+            .any(|argument| argument == "--full-rebuild");
+        if self.operation == RuntimeJobOperation::Build
+            && !full_rebuild
+            && self.build_preflight.is_none()
+        {
+            return Err(redacted_error(
+                "incremental build worker request is missing prelaunch authorization; retry with \
+                 `fullRebuild: true`",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn without_build_preflight_for_test(mut self) -> Self {
+        self.build_preflight = None;
+        self
     }
 
     #[allow(dead_code)]
@@ -141,6 +176,11 @@ impl RuntimeJobRequest {
     #[cfg(test)]
     pub(crate) fn raw_argv(&self) -> &[String] {
         &self.raw_argv
+    }
+
+    #[cfg(test)]
+    pub(crate) fn build_preflight(&self) -> Option<&RuntimeBuildPreflight> {
+        self.build_preflight.as_ref()
     }
 }
 
@@ -214,9 +254,38 @@ struct WorkerStartRequest {
     safe_target: String,
     artifact_path: Option<String>,
     timeout_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    build_preflight: Option<RuntimeBuildPreflight>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkerStartCommit {
+    cancelled: bool,
 }
 
 impl WorkerStartRequest {
+    fn new(
+        cache_root: PathBuf,
+        job_id: String,
+        program: PathBuf,
+        cwd: PathBuf,
+        request: &RuntimeJobRequest,
+    ) -> Self {
+        Self {
+            cache_root,
+            job_id,
+            program,
+            cwd,
+            operation: request.operation.label().to_string(),
+            argv: request.raw_argv.clone(),
+            safe_target: request.safe_target.clone(),
+            artifact_path: request.artifact_path.clone(),
+            timeout_reason: request.timeout_reason.clone(),
+            build_preflight: request.build_preflight.clone(),
+        }
+    }
+
     fn runtime_request(&self) -> JobResult<RuntimeJobRequest> {
         let operation = RuntimeJobOperation::from_label(&self.operation)?;
         let mut request = RuntimeJobRequest::new(
@@ -226,6 +295,8 @@ impl WorkerStartRequest {
             self.artifact_path.clone(),
         );
         request.timeout_reason = self.timeout_reason.clone();
+        request.build_preflight = self.build_preflight.clone();
+        request.validate_build_preflight()?;
         Ok(request)
     }
 }
@@ -920,20 +991,21 @@ impl RuntimeJobService {
         id: &str,
         request: &RuntimeJobRequest,
     ) -> JobResult<RuntimeJobSnapshot> {
+        self.activate_enqueued_after_preflight(id, request, || {})
+    }
+
+    fn activate_enqueued_after_preflight(
+        &self,
+        id: &str,
+        request: &RuntimeJobRequest,
+        after_preflight: impl FnOnce(),
+    ) -> JobResult<RuntimeJobSnapshot> {
         let mut record = self.store.read_record(id)?;
-        // A cancellation that arrived before the worker claimed the record is
-        // safe to complete without starting the child process. A cancellation
-        // that races after this read is observed by poll() through cancel.json.
-        let cancelled_before_start =
-            self.store.has_cancel_marker(id)? && record.cancel_policy == CancelPolicy::Safe;
-        if record.phase == RuntimeJobPhase::CancelRequested || cancelled_before_start {
-            record.cancelled = true;
-            record.finished_at_ms = Some(now_millis());
-            record.heartbeat_at_ms = Some(now_millis());
-            record.transition(RuntimeJobPhase::Cancelled)?;
-            self.store.write_record(&record)?;
-            self.store.release_active_lock_for(id)?;
-            return Ok(record.snapshot(false));
+        // No platform process has started while the record is still queued, so
+        // every operation can honor cancellation safely at this boundary. The
+        // critical policy applies only after the worker owns a running process.
+        if let Some(cancelled) = self.cancel_enqueued_before_start(&mut record)? {
+            return Ok(cancelled);
         }
         if record.phase != RuntimeJobPhase::Queued {
             return Err(redacted_error("runtime job worker expected a queued job"));
@@ -943,7 +1015,16 @@ impl RuntimeJobService {
                 "runtime job worker operation does not match queued job",
             ));
         }
-        let mut process = match self.runner.spawn(request) {
+        let preflight_result = match &request.build_preflight {
+            Some(build_preflight) => build_preflight.reauthorize_current_workspace(),
+            None => Ok(()),
+        };
+        after_preflight();
+        if let Some(cancelled) = self.cancel_enqueued_before_start(&mut record)? {
+            return Ok(cancelled);
+        }
+        let spawn_result = preflight_result.and_then(|()| self.runner.spawn(request));
+        let mut process = match spawn_result {
             Ok(process) => process,
             Err(error) => {
                 let error = redacted_error(&error);
@@ -969,6 +1050,23 @@ impl RuntimeJobService {
         };
         processes.insert(id.to_string(), process);
         Ok(record.snapshot(false))
+    }
+
+    fn cancel_enqueued_before_start(
+        &self,
+        record: &mut RuntimeJobRecord,
+    ) -> JobResult<Option<RuntimeJobSnapshot>> {
+        let id = record.id.clone();
+        if record.phase != RuntimeJobPhase::CancelRequested && !self.store.has_cancel_marker(&id)? {
+            return Ok(None);
+        }
+        record.cancelled = true;
+        record.finished_at_ms = Some(now_millis());
+        record.heartbeat_at_ms = Some(now_millis());
+        record.transition(RuntimeJobPhase::Cancelled)?;
+        self.store.write_record(record)?;
+        self.store.release_active_lock_for(&id)?;
+        Ok(Some(record.snapshot(false)))
     }
 
     #[cfg(test)]
@@ -1295,8 +1393,13 @@ impl RuntimeJobService {
 }
 
 pub(crate) fn run_worker_from_args(_args: &[String]) -> Result<(), String> {
-    let handoff: WorkerStartRequest = serde_json::from_reader(io::stdin())
-        .map_err(|error| redacted_error(&format!("read runtime job worker request: {error}")))?;
+    let mut stdin = io::stdin().lock();
+    let handoff: WorkerStartRequest = read_worker_frame(&mut stdin, "runtime job worker request")?;
+    let commit = read_worker_commit(&mut stdin, &handoff)?;
+    if commit.cancelled {
+        cancel_queued_job(&handoff.cache_root, &handoff.job_id)?;
+        return Ok(());
+    }
     let runner = Arc::new(SystemRuntimeJobRunner {
         program: handoff.program.clone(),
         cwd: handoff.cwd.clone(),
@@ -1304,24 +1407,46 @@ pub(crate) fn run_worker_from_args(_args: &[String]) -> Result<(), String> {
     run_worker_request(handoff, runner)
 }
 
+fn read_worker_commit(
+    reader: &mut impl std::io::BufRead,
+    handoff: &WorkerStartRequest,
+) -> JobResult<WorkerStartCommit> {
+    match read_worker_frame(reader, "runtime job worker commit") {
+        Ok(commit) => Ok(commit),
+        Err(error) => {
+            fail_queued_job(&handoff.cache_root, &handoff.job_id, &error)?;
+            Err(error)
+        }
+    }
+}
+
 pub(crate) fn start_detached_worker(
     cache_root: PathBuf,
     program: PathBuf,
     cwd: PathBuf,
     request: RuntimeJobRequest,
+    cancellation: &CancellationToken,
 ) -> JobResult<RuntimeJobSnapshot> {
-    let queued = RuntimeJobService::enqueue(cache_root.clone(), &request)?;
-    let handoff = WorkerStartRequest {
-        cache_root: cache_root.clone(),
-        job_id: queued.id.clone(),
+    request.validate_build_preflight()?;
+    if cancellation.is_cancelled() {
+        return Err(cancelled_error(
+            "runtime job start stopped before durable enqueue",
+        ));
+    }
+    let queued = enqueue_cancellable_runtime_job(&cache_root, &request, cancellation)?;
+    let handoff = WorkerStartRequest::new(
+        cache_root.clone(),
+        queued.id.clone(),
         program,
         cwd,
-        operation: request.operation.label().to_string(),
-        argv: request.raw_argv.clone(),
-        safe_target: request.safe_target.clone(),
-        artifact_path: request.artifact_path.clone(),
-        timeout_reason: request.timeout_reason.clone(),
-    };
+        &request,
+    );
+    if cancellation.is_cancelled() {
+        cancel_queued_job(&cache_root, &queued.id)?;
+        return Err(cancelled_error(
+            "runtime job start stopped before detached worker launch",
+        ));
+    }
     let mut worker = match Command::new(std::env::current_exe().map_err(|error| {
         redacted_error(&format!("resolve runtime job worker executable: {error}"))
     })?)
@@ -1343,20 +1468,81 @@ pub(crate) fn start_detached_worker(
         .take()
         .ok_or_else(|| redacted_error("runtime job worker stdin is unavailable"))
         .and_then(|mut stdin| {
-            serde_json::to_writer(&mut stdin, &handoff).map_err(|error| {
-                redacted_error(&format!("write runtime job worker request: {error}"))
-            })?;
-            stdin
-                .flush()
-                .map_err(|error| io_error("flush runtime job worker request", &error))
+            write_worker_handoff_after_request(&mut stdin, &handoff, cancellation, || {})
         });
-    if let Err(error) = write_result {
-        let _ = worker.kill();
-        let _ = worker.wait();
-        fail_queued_job(&cache_root, &queued.id, &error)?;
-        return Err(error);
+    let commit_cancelled = match write_result {
+        Ok(commit_cancelled) => commit_cancelled,
+        Err(error) => {
+            let _ = worker.kill();
+            let _ = worker.wait();
+            fail_queued_job(&cache_root, &queued.id, &error)?;
+            return Err(error);
+        }
+    };
+    worker_start_result(&cache_root, queued, commit_cancelled)
+}
+
+fn write_worker_handoff_after_request(
+    writer: &mut impl Write,
+    handoff: &WorkerStartRequest,
+    cancellation: &CancellationToken,
+    after_request: impl FnOnce(),
+) -> JobResult<bool> {
+    write_worker_frame(writer, handoff, "runtime job worker request")?;
+    after_request();
+    let commit_cancelled = cancellation.is_cancelled();
+    write_worker_frame(
+        writer,
+        &WorkerStartCommit {
+            cancelled: commit_cancelled,
+        },
+        "runtime job worker commit",
+    )?;
+    Ok(commit_cancelled)
+}
+
+fn write_worker_frame(
+    writer: &mut impl Write,
+    value: &impl Serialize,
+    label: &str,
+) -> JobResult<()> {
+    serde_json::to_writer(&mut *writer, value)
+        .map_err(|error| redacted_error(&format!("write {label}: {error}")))?;
+    writer
+        .write_all(b"\n")
+        .map_err(|error| io_error(&format!("write {label} delimiter"), &error))?;
+    writer
+        .flush()
+        .map_err(|error| io_error(&format!("flush {label}"), &error))
+}
+
+fn worker_start_result(
+    cache_root: &Path,
+    queued: RuntimeJobSnapshot,
+    commit_cancelled: bool,
+) -> JobResult<RuntimeJobSnapshot> {
+    if commit_cancelled {
+        cancel_queued_job(cache_root, &queued.id)?;
+        Err(cancelled_error(
+            "runtime job start stopped before detached worker activation",
+        ))
+    } else {
+        Ok(queued)
     }
-    Ok(queued)
+}
+
+fn read_worker_frame<T: for<'de> Deserialize<'de>>(
+    reader: &mut impl std::io::BufRead,
+    label: &str,
+) -> JobResult<T> {
+    let mut frame = String::new();
+    reader
+        .read_line(&mut frame)
+        .map_err(|error| io_error(&format!("read {label}"), &error))?;
+    if frame.is_empty() {
+        return Err(redacted_error(&format!("read {label}: unexpected EOF")));
+    }
+    serde_json::from_str(&frame).map_err(|error| redacted_error(&format!("read {label}: {error}")))
 }
 
 fn run_worker_request(
@@ -1364,7 +1550,13 @@ fn run_worker_request(
     runner: Arc<dyn RuntimeJobRunner>,
 ) -> Result<(), String> {
     let job_id = canonical_job_id(&handoff.job_id)?;
-    let request = handoff.runtime_request()?;
+    let request = match handoff.runtime_request() {
+        Ok(request) => request,
+        Err(error) => {
+            fail_queued_job(&handoff.cache_root, &job_id, &error)?;
+            return Err(error);
+        }
+    };
     let worker_cwd = handoff.cwd.clone();
     let operation = request.operation.label();
     let service = RuntimeJobService::new(handoff.cache_root, runner);
@@ -1425,6 +1617,53 @@ fn fail_queued_job(cache_root: &Path, id: &str, error: &str) -> JobResult<()> {
     record.warnings.push(redact_text(error));
     store.write_record(&record)?;
     store.release_active_lock_for(id)
+}
+
+fn cancel_queued_job(cache_root: &Path, id: &str) -> JobResult<()> {
+    let store = RuntimeJobStore::new(cache_root.to_path_buf(), DEFAULT_STALE_AFTER);
+    let mut record = store.read_record(id)?;
+    if record.phase != RuntimeJobPhase::Queued {
+        return Ok(());
+    }
+    record.cancelled = true;
+    record.transition(RuntimeJobPhase::Cancelled)?;
+    record.finished_at_ms = Some(now_millis());
+    record.heartbeat_at_ms = Some(now_millis());
+    store.write_record(&record)?;
+    store.release_active_lock_for(id)
+}
+
+fn enqueue_cancellable_runtime_job(
+    cache_root: &Path,
+    request: &RuntimeJobRequest,
+    cancellation: &CancellationToken,
+) -> JobResult<RuntimeJobSnapshot> {
+    let queued = RuntimeJobService::enqueue(cache_root.to_path_buf(), request)?;
+    if cancellation.is_cancelled() {
+        cancel_queued_job(cache_root, &queued.id)?;
+        return Err(cancelled_error(
+            "runtime job start stopped before detached worker launch",
+        ));
+    }
+    Ok(queued)
+}
+
+#[cfg(test)]
+fn enqueue_cancellable_runtime_job_after_hook(
+    cache_root: &Path,
+    request: &RuntimeJobRequest,
+    cancellation: &CancellationToken,
+    after_enqueue: impl FnOnce(),
+) -> JobResult<RuntimeJobSnapshot> {
+    let queued = RuntimeJobService::enqueue(cache_root.to_path_buf(), request)?;
+    after_enqueue();
+    if cancellation.is_cancelled() {
+        cancel_queued_job(cache_root, &queued.id)?;
+        return Err(cancelled_error(
+            "runtime job start stopped before detached worker launch",
+        ));
+    }
+    Ok(queued)
 }
 
 fn cancel_and_reap(process: &mut dyn RuntimeJobProcess) -> JobResult<()> {
@@ -1584,6 +1823,7 @@ pub(crate) use tests::assert_system_cancellation_reaps_process_tree;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Map};
     use std::{
         collections::HashMap,
         io::Cursor,
@@ -2120,6 +2360,372 @@ mod tests {
     }
 
     #[test]
+    fn worker_does_not_spawn_a_critical_job_cancelled_while_queued() {
+        let cache = TestCache::new();
+        let runner = Arc::new(FakeRunner::success_after(2));
+        let service = RuntimeJobService::new(cache.path(), runner.clone());
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build job");
+        service
+            .store
+            .write_cancel_marker(&queued.id)
+            .expect("cancel queued critical job");
+
+        let cancelled = service
+            .activate_enqueued(&queued.id, &request)
+            .expect("worker observes pre-start cancellation");
+
+        assert_eq!(cancelled.phase, RuntimeJobPhase::Cancelled);
+        assert!(cancelled.cancelled);
+        assert!(cancelled.pid.is_none());
+        assert!(!service.store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+    }
+
+    #[test]
+    fn worker_observes_cancellation_after_build_reauthorization_before_spawn() {
+        let cache = TestCache::new();
+        let workspace = cache.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set: []\n",
+        )
+        .expect("write workspace config");
+        let context = discover_workspace(Some(workspace)).expect("discover workspace");
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Build,
+            vec!["build".to_string()],
+            "workspace:test",
+            None,
+        )
+        .with_build_preflight(Some(
+            RuntimeBuildPreflight::capture(&args, &context).unwrap(),
+        ));
+        let state_root = cache.path().join("state");
+        let runner = Arc::new(FakeRunner::success_after(1));
+        let service = RuntimeJobService::new(state_root.clone(), runner.clone());
+        let queued = RuntimeJobService::enqueue(&state_root, &request).expect("queue build job");
+
+        let cancelled = service
+            .activate_enqueued_after_preflight(&queued.id, &request, || {
+                service
+                    .store
+                    .write_cancel_marker(&queued.id)
+                    .expect("cancel after build reauthorization");
+            })
+            .expect("worker observes pre-spawn cancellation");
+
+        assert_eq!(cancelled.phase, RuntimeJobPhase::Cancelled);
+        assert!(cancelled.cancelled);
+        assert!(cancelled.pid.is_none());
+        assert!(!service.store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+    }
+
+    #[test]
+    fn worker_reauthorizes_incremental_build_after_support_state_changes() {
+        let cache = TestCache::new();
+        let workspace = cache.path().join("workspace");
+        let source_root = workspace.join("src");
+        fs::create_dir_all(&source_root).expect("create source root");
+        fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .expect("write project config");
+        fs::write(
+            source_root.join("Configuration.xml"),
+            include_bytes!(
+                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+            ),
+        )
+        .expect("write configuration root");
+        let context = discover_workspace(Some(workspace.clone())).expect("discover workspace");
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+        let build_preflight = RuntimeBuildPreflight::capture(&args, &context).unwrap();
+        build_preflight
+            .reauthorize_current_workspace()
+            .expect("unsupported configuration initially authorizes incremental build");
+        let marker = source_root.join("Ext/ParentConfigurations.bin");
+        fs::create_dir_all(marker.parent().unwrap()).expect("create support directory");
+        fs::write(
+            marker,
+            include_bytes!(
+                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
+            ),
+        )
+        .expect("activate configuration support");
+        let runner = Arc::new(FakeRunner::success_after(1));
+        let state_root = cache.path().join("state");
+        let service = RuntimeJobService::new(state_root.clone(), runner.clone());
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Build,
+            vec!["build".to_string()],
+            "workspace:test",
+            None,
+        )
+        .with_build_preflight(Some(build_preflight));
+
+        let error = service
+            .start(request)
+            .expect_err("worker must reject stale incremental authorization");
+
+        assert!(error.contains("changed before v8-runner launch"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+        let id = fs::read_dir(service.store.jobs_root())
+            .expect("list job directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .find(|name| Uuid::parse_str(name).is_ok())
+            .expect("failed job id");
+        let record = service
+            .store
+            .read_record(&id)
+            .expect("read failed job record");
+        assert_eq!(record.phase, RuntimeJobPhase::Failed);
+        assert!(!service.store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn worker_handoff_preserves_incremental_build_authorization() {
+        let cache = TestCache::new();
+        let workspace = cache.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set: []\n",
+        )
+        .expect("write workspace config");
+        let context = discover_workspace(Some(workspace)).expect("discover workspace");
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("main")),
+        ]);
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Build,
+            vec![
+                "build".to_string(),
+                "--source-set".to_string(),
+                "main".to_string(),
+            ],
+            "workspace:test",
+            None,
+        )
+        .with_build_preflight(Some(
+            RuntimeBuildPreflight::capture(&args, &context).unwrap(),
+        ));
+        let handoff = worker_request(&cache, &Uuid::new_v4().to_string(), &request);
+
+        let encoded = serde_json::to_vec(&handoff).expect("serialize handoff");
+        let decoded: WorkerStartRequest =
+            serde_json::from_slice(&encoded).expect("deserialize handoff");
+        let restored = decoded.runtime_request().expect("restore runtime request");
+
+        assert_eq!(restored.build_preflight(), request.build_preflight());
+    }
+
+    #[test]
+    fn worker_handoff_waits_for_commit_and_cancels_before_activation() {
+        let cache = TestCache::new();
+        let runner = Arc::new(FakeRunner::success_after(1));
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+
+        let mut framed = Vec::new();
+        write_worker_frame(&mut framed, &handoff, "test worker request").unwrap();
+        write_worker_frame(
+            &mut framed,
+            &WorkerStartCommit { cancelled: true },
+            "test worker commit",
+        )
+        .unwrap();
+        let mut reader = io::BufReader::new(framed.as_slice());
+        let decoded: WorkerStartRequest =
+            read_worker_frame(&mut reader, "test worker request").unwrap();
+        let commit: WorkerStartCommit =
+            read_worker_frame(&mut reader, "test worker commit").unwrap();
+        if commit.cancelled {
+            cancel_queued_job(&decoded.cache_root, &decoded.job_id).unwrap();
+        } else {
+            run_worker_request(decoded, runner.clone()).unwrap();
+        }
+
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let record = store.read_record(&queued.id).expect("read cancelled job");
+        assert_eq!(record.phase, RuntimeJobPhase::Cancelled);
+        assert!(record.cancelled);
+        assert!(!store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+        assert!(worker_start_result(&cache.path(), queued, true)
+            .expect_err("cancelled commit must not report a queued success")
+            .starts_with("cancelled:"));
+    }
+
+    #[test]
+    fn parent_terminalizes_a_cancelled_commit_without_worker_acknowledgement() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build job");
+
+        let error = worker_start_result(&cache.path(), queued.clone(), true)
+            .expect_err("cancelled commit must not report a queued success");
+
+        assert!(error.starts_with("cancelled:"), "{error}");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let record = store.read_record(&queued.id).expect("read cancelled job");
+        assert_eq!(record.phase, RuntimeJobPhase::Cancelled);
+        assert!(record.cancelled);
+        assert!(!store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn worker_request_without_commit_fails_the_queued_record() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let mut framed = Vec::new();
+        write_worker_frame(&mut framed, &handoff, "test worker request").unwrap();
+        let mut reader = io::BufReader::new(framed.as_slice());
+        let decoded: WorkerStartRequest =
+            read_worker_frame(&mut reader, "test worker request").unwrap();
+
+        let error = read_worker_commit(&mut reader, &decoded)
+            .expect_err("EOF before commit must fail the queued job");
+
+        assert!(error.contains("unexpected EOF"), "{error}");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let record = store.read_record(&queued.id).expect("read failed job");
+        assert_eq!(record.phase, RuntimeJobPhase::Failed);
+        assert!(!store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn worker_handoff_observes_cancellation_after_request_frame() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let handoff = worker_request(&cache, &Uuid::new_v4().to_string(), &request);
+        let cancellation = CancellationToken::new();
+        let mut framed = Vec::new();
+
+        let commit_cancelled =
+            write_worker_handoff_after_request(&mut framed, &handoff, &cancellation, || {
+                cancellation.cancel()
+            })
+            .expect("write worker handoff");
+
+        assert!(commit_cancelled);
+        let mut reader = io::BufReader::new(framed.as_slice());
+        let _: WorkerStartRequest = read_worker_frame(&mut reader, "test worker request").unwrap();
+        let commit: WorkerStartCommit =
+            read_worker_frame(&mut reader, "test worker commit").unwrap();
+        assert!(commit.cancelled);
+    }
+
+    #[test]
+    fn incremental_build_handoff_without_authorization_is_rejected() {
+        let cache = TestCache::new();
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Build,
+            vec!["build".to_string()],
+            "workspace:test",
+            None,
+        )
+        .without_build_preflight_for_test();
+        let handoff = worker_request(&cache, &Uuid::new_v4().to_string(), &request);
+
+        let error = handoff
+            .runtime_request()
+            .expect_err("incremental build handoff must fail closed");
+
+        assert!(error.contains("missing prelaunch authorization"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+    }
+
+    #[test]
+    fn invalid_incremental_handoff_fails_the_queued_record() {
+        let cache = TestCache::new();
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Build,
+            vec!["build".to_string()],
+            "workspace:test",
+            None,
+        )
+        .without_build_preflight_for_test();
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue invalid job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let runner = Arc::new(FakeRunner::success_after(1));
+
+        let error = run_worker_request(handoff, runner.clone())
+            .expect_err("invalid handoff must fail before process spawn");
+
+        assert!(error.contains("missing prelaunch authorization"), "{error}");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let record = store.read_record(&queued.id).expect("read failed job");
+        assert_eq!(record.phase, RuntimeJobPhase::Failed);
+        assert!(!store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+    }
+
+    #[test]
+    fn cancellation_after_enqueue_terminalizes_job_before_worker_launch() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let cancellation = CancellationToken::new();
+
+        let error = enqueue_cancellable_runtime_job_after_hook(
+            &cache.path(),
+            &request,
+            &cancellation,
+            || cancellation.cancel(),
+        )
+        .expect_err("cancelled handoff must not launch a worker");
+
+        assert!(error.starts_with("cancelled:"), "{error}");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let id = fs::read_dir(store.jobs_root())
+            .expect("list job directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .find(|name| Uuid::parse_str(name).is_ok())
+            .expect("cancelled job id");
+        let record = store.read_record(&id).expect("read cancelled job record");
+        assert_eq!(record.phase, RuntimeJobPhase::Cancelled);
+        assert!(record.cancelled);
+        assert!(!store.active_lock_path().exists());
+    }
+
+    #[test]
     fn worker_handoff_never_persists_actual_argv_or_output_secrets() {
         const REQUEST_SECRET: &str = "request-secret";
         const OUTPUT_SECRET: &str = "output-secret";
@@ -2136,17 +2742,13 @@ mod tests {
             None,
         );
         let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
-        let handoff = WorkerStartRequest {
-            cache_root: cache.path().to_path_buf(),
-            job_id: queued.id.clone(),
-            program: PathBuf::from("fake-v8-runner"),
-            cwd: cache.path().to_path_buf(),
-            operation: "make".to_string(),
-            argv: request.raw_argv.clone(),
-            safe_target: request.safe_target.clone(),
-            artifact_path: None,
-            timeout_reason: None,
-        };
+        let handoff = WorkerStartRequest::new(
+            cache.path(),
+            queued.id.clone(),
+            PathBuf::from("fake-v8-runner"),
+            cache.path(),
+            &request,
+        );
         let runner = Arc::new(FakeRunner::exits_after(
             0,
             0,
@@ -2201,12 +2803,11 @@ mod tests {
     }
 
     fn fake_request(operation: RuntimeJobOperation) -> RuntimeJobRequest {
-        RuntimeJobRequest::new(
-            operation,
-            vec!["unica".to_string(), "test".to_string()],
-            "workspace:demo",
-            None,
-        )
+        let mut argv = vec!["unica".to_string(), "test".to_string()];
+        if operation == RuntimeJobOperation::Build {
+            argv.push("--full-rebuild".to_string());
+        }
+        RuntimeJobRequest::new(operation, argv, "workspace:demo", None)
     }
 
     fn worker_request(
@@ -2214,17 +2815,13 @@ mod tests {
         job_id: &str,
         request: &RuntimeJobRequest,
     ) -> WorkerStartRequest {
-        WorkerStartRequest {
-            cache_root: cache.path(),
-            job_id: job_id.to_string(),
-            program: PathBuf::from("fake-runtime"),
-            cwd: cache.path(),
-            operation: request.operation.label().to_string(),
-            argv: request.raw_argv.clone(),
-            safe_target: request.safe_target.clone(),
-            artifact_path: request.artifact_path.clone(),
-            timeout_reason: request.timeout_reason.clone(),
-        }
+        WorkerStartRequest::new(
+            cache.path(),
+            job_id.to_string(),
+            PathBuf::from("fake-runtime"),
+            cache.path(),
+            request,
+        )
     }
 
     struct TestCache {

@@ -25,6 +25,14 @@ def load_contract_module():
 
 
 class ProductContractTests(unittest.TestCase):
+    def test_runtime_worker_handoff_documentation_names_both_frames(self) -> None:
+        runtime = (REPO_ROOT / "spec/architecture/runtime.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("два JSON-документа", runtime)
+        self.assertIn("подтверждение запуска", runtime)
+
     def test_native_validators_do_not_expose_internal_local_owner_only_switch(
         self,
     ) -> None:
