@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 const GENERATED_DIR_NAME: &str = ".build";
 const MAX_SOURCE_DEPTH: usize = 64;
-const REVISION_RECORD_SCHEMA_VERSION: u32 = 1;
+const REVISION_RECORD_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone)]
 struct SourceEntryDigest {
@@ -33,6 +33,7 @@ type SourceManifestScanner =
 type SourceFileReader = dyn Fn(&Path) -> Result<Vec<u8>, String> + Send + Sync;
 
 pub(crate) struct SourceRevisionService {
+    workspace_root: PathBuf,
     source_root: PathBuf,
     record_path: PathBuf,
     machine: Mutex<SourceRevisionMachine>,
@@ -47,6 +48,7 @@ impl fmt::Debug for SourceRevisionService {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SourceRevisionService")
+            .field("workspace_root", &self.workspace_root)
             .field("source_root", &self.source_root)
             .field("record_path", &self.record_path)
             .field("fence", &self.fence.capability())
@@ -58,26 +60,32 @@ impl fmt::Debug for SourceRevisionService {
 #[serde(rename_all = "camelCase")]
 struct SourceRevisionRecord {
     schema_version: u32,
+    workspace_root: String,
     source_root: String,
     revision: SourceRevision,
 }
 
 impl SourceRevisionService {
     pub(crate) fn new(context: &WorkspaceContext, source_root: &Path) -> Result<Self, String> {
+        let workspace_root = fs::canonicalize(&context.workspace_root)
+            .map_err(|error| format!("workspace revision root cannot be normalized: {error}"))?;
         let source_root = fs::canonicalize(source_root)
             .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
         let mut identity = Sha256::new();
-        identity.update(source_root.as_os_str().as_encoded_bytes());
+        update_identity_path(&mut identity, &workspace_root);
+        identity.update([0]);
+        update_identity_path(&mut identity, &source_root);
         let identity = format!("{:x}", identity.finalize());
         let record_path = context
             .cache_root
             .join("source-revisions")
             .join(format!("{identity}.json"));
-        let machine = load_revision_record(&record_path, &source_root)
+        let machine = load_revision_record(&record_path, &workspace_root, &source_root)
             .and_then(|revision| SourceRevisionMachine::from_revision(revision).ok())
             .unwrap_or_default();
         let fence = platform_fence(&source_root, &context.cache_root)?;
         Ok(Self {
+            workspace_root,
             source_root,
             record_path,
             machine: Mutex::new(machine),
@@ -345,14 +353,18 @@ impl SourceRevisionService {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .finish_reconcile(digest)?;
-        persist_revision_record(&self.record_path, &self.source_root, &revision).inspect_err(
-            |_| {
-                self.machine
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
-            },
-        )?;
+        persist_revision_record(
+            &self.record_path,
+            &self.workspace_root,
+            &self.source_root,
+            &revision,
+        )
+        .inspect_err(|_| {
+            self.machine
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .lose_trust(SourceRevisionTrustLoss::ReconcileFailed);
+        })?;
         *self
             .manifest
             .lock()
@@ -361,15 +373,27 @@ impl SourceRevisionService {
     }
 }
 
-fn load_revision_record(path: &Path, source_root: &Path) -> Option<SourceRevision> {
+fn update_identity_path(identity: &mut Sha256, path: &Path) {
+    let bytes = path.as_os_str().as_encoded_bytes();
+    identity.update((bytes.len() as u64).to_le_bytes());
+    identity.update(bytes);
+}
+
+fn load_revision_record(
+    path: &Path,
+    workspace_root: &Path,
+    source_root: &Path,
+) -> Option<SourceRevision> {
     let record: SourceRevisionRecord = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
     (record.schema_version == REVISION_RECORD_SCHEMA_VERSION
+        && Path::new(&record.workspace_root) == workspace_root
         && Path::new(&record.source_root) == source_root)
         .then_some(record.revision)
 }
 
 fn persist_revision_record(
     path: &Path,
+    workspace_root: &Path,
     source_root: &Path,
     revision: &SourceRevision,
 ) -> Result<(), String> {
@@ -380,6 +404,7 @@ fn persist_revision_record(
         .map_err(|error| format!("source revision record directory cannot be created: {error}"))?;
     let record = SourceRevisionRecord {
         schema_version: REVISION_RECORD_SCHEMA_VERSION,
+        workspace_root: workspace_root.to_string_lossy().into_owned(),
         source_root: source_root.to_string_lossy().into_owned(),
         revision: revision.clone(),
     };
@@ -606,6 +631,7 @@ mod tests {
         fs::write(source_root.join("Module.bsl"), "Процедура A()\n").unwrap();
         let full_scans = Arc::new(AtomicUsize::new(0));
         let service = SourceRevisionService {
+            workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
             machine: Mutex::new(SourceRevisionMachine::default()),
@@ -634,6 +660,32 @@ mod tests {
     }
 
     #[test]
+    fn revision_record_identity_includes_workspace_and_source_roots() {
+        let sandbox = tempdir().unwrap();
+        let workspace_a = sandbox.path().join("workspace-a");
+        let workspace_b = sandbox.path().join("workspace-b");
+        let source_root = sandbox.path().join("shared-source");
+        let cache_root = sandbox.path().join("shared-cache");
+        for path in [&workspace_a, &workspace_b, &source_root, &cache_root] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let context = |workspace_root: &Path| WorkspaceContext {
+            cwd: workspace_root.to_path_buf(),
+            workspace_root: workspace_root.to_path_buf(),
+            cache_root: cache_root.clone(),
+            workspace_epoch: 0,
+        };
+
+        let first = SourceRevisionService::new(&context(&workspace_a), &source_root).unwrap();
+        let second = SourceRevisionService::new(&context(&workspace_b), &source_root).unwrap();
+
+        assert_ne!(
+            first.record_path, second.record_path,
+            "a shared cache must not alias revision records from different workspaces"
+        );
+    }
+
+    #[test]
     fn failed_revision_record_publication_does_not_leave_a_trusted_snapshot() {
         let workspace = tempdir().unwrap();
         let source_root = workspace.path().join("src");
@@ -642,6 +694,7 @@ mod tests {
         let record_parent = workspace.path().join("record-parent");
         fs::write(&record_parent, "not a directory").unwrap();
         let service = SourceRevisionService {
+            workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: record_parent.join("revision.json"),
             machine: Mutex::new(SourceRevisionMachine::default()),
@@ -676,6 +729,7 @@ mod tests {
         let mut machine = SourceRevisionMachine::default();
         let initial_revision = machine.finish_reconcile(initial_digest).unwrap();
         let service = SourceRevisionService {
+            workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
             machine: Mutex::new(machine),
@@ -717,6 +771,7 @@ mod tests {
         let full_scans = Arc::new(AtomicUsize::new(0));
         let incremental_reads = Arc::new(AtomicUsize::new(0));
         let service = SourceRevisionService {
+            workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
             machine: Mutex::new(SourceRevisionMachine::default()),

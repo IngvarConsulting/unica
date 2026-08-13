@@ -126,7 +126,7 @@ pub enum SourcePathEventKind {
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "workspaceRoot": "/normalized/workspace",
   "sourceRoot": "/normalized/workspace/src",
   "generation": 17,
