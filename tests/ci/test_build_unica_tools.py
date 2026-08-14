@@ -86,6 +86,24 @@ RUNTIME_ENTRYPOINTS = {
     "rlm-bsl-index": "rlm-bsl-index",
     "rlm-bsl-mcp": "rlm-bsl-mcp",
 }
+RUNTIME_TARGETS = ("darwin-arm64", "linux-x64", "win-x64")
+RUNTIME_ARCHIVES = {
+    "darwin-arm64": {
+        "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
+        "sha256": "55caf6a245b3bb47344e2191408841f45aefb614b23480d9941f2cb3e2d8af2c",
+        "size": 72_708_783,
+    },
+    "linux-x64": {
+        "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+        "sha256": "1a27e1305c159c01f4b928fa63358567236197844af4663188bd5b30aa780f40",
+        "size": 106_083_876,
+    },
+    "win-x64": {
+        "assetName": "rlm-tools-bsl-win-x64.tar.gz",
+        "sha256": "9655a8d052ae3d033ea8761e7a503ffd1d9a7e4f303b17ed6c8bc9fd86e5abb2",
+        "size": 75_235_914,
+    },
+}
 
 
 def runtime_manifest(binary: bytes = b"multidist") -> dict:
@@ -183,15 +201,20 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
             existing_tag = tags_by_source.setdefault(source_identity, tool["assetTag"])
             self.assertEqual(tool["assetTag"], existing_tag)
-            self.assertEqual(tool["assetStrategy"], "direct-release-asset")
             self.assertEqual(
                 tool["assetRepository"], "https://github.com/IngvarConsulting/unica-toolchain"
             )
             for target, asset in tool["assets"].items():
                 exe = ".exe" if target == "win-x64" else ""
-                self.assertEqual(asset["assetName"], f"{tool['binaryName']}-{target}{exe}")
                 self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
-                self.assertNotIn("archiveBinary", asset)
+                if tool["name"] in RUNTIME_ENTRYPOINTS:
+                    self.assertEqual(tool["assetStrategy"], "archive-release-asset")
+                    self.assertEqual(asset["assetName"], f"rlm-tools-bsl-{target}.tar.gz")
+                    self.assertEqual(asset["archiveBinary"], tool["binaryName"] + exe)
+                else:
+                    self.assertEqual(tool["assetStrategy"], "direct-release-asset")
+                    self.assertEqual(asset["assetName"], f"{tool['binaryName']}-{target}{exe}")
+                    self.assertNotIn("archiveBinary", asset)
 
         self.assertEqual(len(set(tags_by_source.values())), len(tags_by_source))
 
@@ -249,14 +272,17 @@ class BuildUnicaToolsTests(unittest.TestCase):
             tool["assetTag"] = f"{release_name}-{source_label}-build.{build_revision}"
         self.assert_external_toolchain_contract(updated_tools)
 
-    def test_checked_in_rlm_assets_match_build_2_release_provenance(self) -> None:
+    def test_historical_build_2_release_provenance_is_immutable(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        lock = json.loads(
-            (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
-                encoding="utf-8"
-            )
+        review = json.loads(
+            (
+                repo_root
+                / "docs"
+                / "provenance"
+                / "reviews"
+                / "2026-08-13-rlm-v1-33-product-update.json"
+            ).read_text(encoding="utf-8")
         )
-        tools = {tool["name"]: tool for tool in lock["tools"]}
 
         expected_assets = {
             "rlm-bsl-index": {
@@ -297,8 +323,42 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         for name, assets in expected_assets.items():
             with self.subTest(tool=name):
-                self.assertEqual(tools[name]["assetTag"], "rlm-tools-bsl-v1.33.0-build.2")
-                self.assertEqual(tools[name]["assets"], assets)
+                self.assertEqual(review["toolchain"]["releaseTag"], "rlm-tools-bsl-v1.33.0-build.2")
+                self.assertEqual(review["tools"][name]["assets"], assets)
+
+    def test_checked_in_rlm_tools_select_one_build_3_archive_per_target(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        lock = json.loads(
+            (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        tools = {
+            tool["name"]: tool
+            for tool in lock["tools"]
+            if tool["name"] in RUNTIME_ENTRYPOINTS
+        }
+
+        self.assertEqual(set(tools), set(RUNTIME_ENTRYPOINTS))
+        for name, tool in tools.items():
+            self.assertEqual(tool["assetStrategy"], "archive-release-asset")
+            self.assertEqual(tool["assetTag"], RUNTIME_RELEASE)
+            for target, asset in tool["assets"].items():
+                expected = RUNTIME_ARCHIVES[target]
+                self.assertEqual(asset["assetName"], expected["assetName"])
+                self.assertEqual(asset["archiveBinary"], name + (".exe" if target == "win-x64" else ""))
+                self.assertEqual(asset["sha256"], expected["sha256"])
+                self.assertEqual(asset["size"], expected["size"])
+        for target in RUNTIME_TARGETS:
+            archive_identities = {
+                (
+                    tool["assets"][target]["assetName"],
+                    tool["assets"][target]["sha256"],
+                    tool["assets"][target]["size"],
+                )
+                for tool in tools.values()
+            }
+            self.assertEqual(len(archive_identities), 1)
 
     def test_release_asset_checksum_mismatch_fails_before_use(self) -> None:
         module = load_build_module()

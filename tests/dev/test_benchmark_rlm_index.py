@@ -136,7 +136,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         packaged = copy.deepcopy(source)
         packaged["label"] = "packaged-v1.33.0"
         packaged["executableSha256"] = (
-            "d48bd7a0186e46b6d2a48476bc9926fb638882544e7be201293f89db9e654a63"
+            "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e"
         )
         return [packaged, source]
 
@@ -376,7 +376,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         summary = MODULE.markdown_summary(documents)
 
         self.assertTrue(summary.startswith("## Замер RLM v1.33.0\n"))
-        self.assertIn("`rlm-tools-bsl-v1.33.0-build.2`", summary)
+        self.assertIn("`rlm-tools-bsl-v1.33.0-build.3`", summary)
         self.assertIn("| source-v1.33.0 | No-op update | 5 | 3,00 с | 1,00–5,00 с |", summary)
         self.assertIn("12 290", summary)
         self.assertIn("220 748", summary)
@@ -412,14 +412,26 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "exact source commit"):
             MODULE.markdown_summary(documents)
 
-    def test_summary_rejects_the_packaged_build_1_executable_digest(self) -> None:
+    def test_standalone_executable_identity_is_distinct_from_archive_identity(self) -> None:
+        self.assertEqual(
+            MODULE._locked_packaged_index_sha256(),
+            "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e",
+        )
+        lock = json.loads(MODULE.TOOLS_LOCK.read_text(encoding="utf-8"))
+        tool = next(item for item in lock["tools"] if item["name"] == "rlm-bsl-index")
+        self.assertNotEqual(
+            MODULE._locked_packaged_index_sha256(),
+            tool["assets"]["darwin-arm64"]["sha256"],
+        )
+
+    def test_summary_rejects_the_packaged_build_2_executable_digest(self) -> None:
         documents = self.paired_documents()
         documents[0]["executableSha256"] = (
-            "d5ed39a9cec302791ecb391959a52fcb84d09ca9e10ac826a3c9641c7ce17ec8"
+            "d48bd7a0186e46b6d2a48476bc9926fb638882544e7be201293f89db9e654a63"
         )
 
         with self.assertRaisesRegex(
-            RuntimeError, "exact build.2 Darwin rlm-bsl-index SHA-256"
+            RuntimeError, "exact build.3 Darwin rlm-bsl-index SHA-256"
         ):
             MODULE.markdown_summary(documents)
 
