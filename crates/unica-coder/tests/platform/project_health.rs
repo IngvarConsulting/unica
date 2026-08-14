@@ -242,6 +242,57 @@ fn project_health_reports_case_variant_build_path_from_index() {
 }
 
 #[test]
+fn project_health_owns_a_filesystem_caseless_unicode_staged_path() {
+    let root = temp_root("caseless-unicode-staged-path");
+    git(&root, &["init"]);
+    create_platform_workspace(&root, "ß");
+    let sharp_identity = fs::canonicalize(root.join("ß")).unwrap();
+    let Ok(capital_sharp_identity) = fs::canonicalize(root.join("ẞ")) else {
+        let _ = fs::remove_dir_all(root);
+        return;
+    };
+    if sharp_identity != capital_sharp_identity {
+        let _ = fs::remove_dir_all(root);
+        return;
+    }
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(&root, &["add", ".gitignore", "v8project.yaml"]);
+    let oid = git_with_input(
+        &root,
+        &["hash-object", "-w", "--stdin"],
+        b"<MetaDataObject/>\n",
+    );
+    git(
+        &root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{},ẞ/Configuration.xml", oid.trim()),
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.attributes", None, "failed");
+    assert_repository_check_status(&data, "repository.attributes", Some("main"), "failed");
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|item| {
+        item["code"] == "git.text_policy_missing"
+            && item["sourceSet"] == "main"
+            && item["paths"]
+                .as_array()
+                .is_some_and(|paths| paths.iter().any(|path| path == "ẞ/Configuration.xml"))
+    }));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_health_uses_staged_external_descriptor_for_repository_resource_policy() {
     let root = temp_root("staged-external-descriptor");
     git(&root, &["init"]);

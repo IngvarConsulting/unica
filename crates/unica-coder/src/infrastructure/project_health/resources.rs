@@ -14,7 +14,9 @@ use crate::infrastructure::platform::filesystem::{
 };
 use crate::infrastructure::project_health::git::GitIndexEntry;
 use crate::infrastructure::project_health::layout::InspectedSourceRoot;
-use crate::infrastructure::project_health::{SourceRootOwnerIndex, SourceRootOwnerIndexError};
+use crate::infrastructure::project_health::{
+    SourceRootOwnerIndex, SourceRootOwnerIndexError, SourceRootOwnerLookupError,
+};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -234,8 +236,17 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             if excluded_runtime_sidecars.contains(&entry.repo_path) {
                 continue;
             }
-            let Some((owners, prefix_depth)) =
-                owners.deepest_owners_with_checkpoint(&entry.repo_path, checkpoint)?
+            let Some((owners, prefix_depth)) = owners
+                .deepest_owners_with_checkpoint(&entry.repo_path, checkpoint)
+                .map_err(|error| match error {
+                    SourceRootOwnerLookupError::Checkpoint(error) => error,
+                    SourceRootOwnerLookupError::Path(reason) => {
+                        ResourceClassificationError::Ownership(ResourceOwnershipError {
+                            repo_path: reason,
+                            source_sets: Vec::new(),
+                        })
+                    }
+                })?
             else {
                 continue;
             };

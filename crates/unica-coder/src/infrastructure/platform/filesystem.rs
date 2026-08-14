@@ -187,7 +187,7 @@ pub(crate) struct PortablePermissions {
     key: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct FileIdentity {
     volume: u64,
     file: u64,
@@ -2915,27 +2915,186 @@ pub(crate) fn host_filesystem_case_sensitive(_path: &Path) -> io::Result<bool> {
     ))
 }
 
-pub(crate) fn host_path_component_identity_key(
-    component: &std::ffi::OsStr,
+#[cfg(windows)]
+pub(crate) fn host_path_components_equal(
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
     case_sensitive: bool,
-) -> String {
+) -> io::Result<bool> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+
+    if case_sensitive {
+        return Ok(left == right);
+    }
+    let left = left.encode_wide().collect::<Vec<_>>();
+    let right = right.encode_wide().collect::<Vec<_>>();
+    let left_len = i32::try_from(left.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "left path component is too long",
+        )
+    })?;
+    let right_len = i32::try_from(right.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "right path component is too long",
+        )
+    })?;
+    // SAFETY: both vectors remain live for the call and their explicit lengths
+    // bound every read. CompareStringOrdinal is the identity relation used by
+    // case-insensitive Windows path lookup; a userspace Unicode transform is
+    // not equivalent because it may expand one component into several chars.
+    let comparison =
+        unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) };
+    if comparison == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(comparison == CSTR_EQUAL)
+    }
+}
+
+pub(crate) fn host_directory_child_names_equal(
+    parent_path: &Path,
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
+    if left == right {
+        return Ok(true);
+    }
+    if left.as_encoded_bytes().is_ascii() && right.as_encoded_bytes().is_ascii() {
+        return if case_sensitive {
+            Ok(false)
+        } else {
+            Ok(left
+                .as_encoded_bytes()
+                .eq_ignore_ascii_case(right.as_encoded_bytes()))
+        };
+    }
+    if case_sensitive && !cfg!(target_vendor = "apple") {
+        return Ok(false);
+    }
+    let parent = match open_absolute_directory_path_nofollow(parent_path) {
+        Ok(parent) => parent,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            #[cfg(target_vendor = "apple")]
+            if !case_sensitive {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "case-insensitive Apple path identity needs an existing parent directory",
+                ));
+            }
+            return host_path_components_equal(left, right, case_sensitive);
+        }
+        Err(error) => return Err(error),
+    };
+    let left_child = open_directory_child_nofollow(&parent, left);
+    let right_child = open_directory_child_nofollow(&parent, right);
+    match (left_child, right_child) {
+        (Ok(left_child), Ok(right_child)) => {
+            Ok(file_identity(&left_child)? == file_identity(&right_child)?)
+        }
+        (Err(left_error), Err(right_error))
+            if left_error.kind() == io::ErrorKind::NotFound
+                && right_error.kind() == io::ErrorKind::NotFound =>
+        {
+            #[cfg(target_vendor = "apple")]
+            if !case_sensitive {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "case-insensitive Apple path identity needs an existing child directory",
+                ));
+            }
+            host_path_components_equal(left, right, case_sensitive)
+        }
+        (Err(error), _) | (_, Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
+}
+
+pub(crate) fn host_directory_child_identity(
+    parent_path: &Path,
+    child: &std::ffi::OsStr,
+) -> io::Result<Option<FileIdentity>> {
+    let parent = match open_absolute_directory_path_nofollow(parent_path) {
+        Ok(parent) => parent,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match open_directory_child_nofollow(&parent, child) {
+        Ok(child) => file_identity(&child).map(Some),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn host_path_components_equal(
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
     use unicode_normalization::UnicodeNormalization;
 
-    let text = component.to_string_lossy().into_owned();
-    let text = if cfg!(target_vendor = "apple") {
-        text.nfd().collect()
-    } else {
-        text
+    if case_sensitive && !cfg!(target_vendor = "apple") {
+        return Ok(left == right);
+    }
+    let left = left.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "left path component is not valid UTF-8",
+        )
+    })?;
+    let right = right.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "right path component is not valid UTF-8",
+        )
+    })?;
+    let normalize = |text: &str| {
+        if cfg!(target_vendor = "apple") {
+            text.nfd().collect::<String>()
+        } else {
+            text.to_owned()
+        }
     };
+    let left = normalize(left);
+    let right = normalize(right);
     if case_sensitive {
-        text
-    } else {
-        // Windows ordinal matching and Unicode caseless matching fold the two
-        // lowercase sigma forms through their common uppercase form. A simple
-        // lowercase key would keep them distinct and could lose an owned Git
-        // resource. Linux kernel-casefold directories are rejected above
-        // because their exact Unicode table cannot be proven in userspace.
-        text.to_uppercase()
+        return Ok(left == right);
+    }
+    #[cfg(target_vendor = "apple")]
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "case-insensitive Apple path identity needs an existing directory object",
+    ));
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        // Linux casefold directories never reach this branch: their kernel Unicode
+        // table is rejected as unprovable by host_filesystem_case_sensitive. This
+        // simple, non-expanding fold models only injected case-insensitive policy
+        // in tests without conflating `ß` and `ss`.
+        let simple_upper = |text: &str| {
+            text.chars()
+                .flat_map(|character| {
+                    let uppercase = character.to_uppercase().collect::<Vec<_>>();
+                    if uppercase.len() == 1 {
+                        uppercase
+                    } else {
+                        vec![character]
+                    }
+                })
+                .collect::<String>()
+        };
+        Ok(simple_upper(&left) == simple_upper(&right))
     }
 }
 
@@ -5222,6 +5381,29 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn apple_caseless_child_identity_uses_the_filesystem_object() {
+        let root = unique_temp_root("apple-caseless-child-identity");
+        fs::create_dir_all(&root).unwrap();
+        let root_identity = fs::canonicalize(&root).unwrap();
+        if super::host_filesystem_case_sensitive(&root_identity).unwrap() {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        fs::create_dir(root_identity.join("ß")).unwrap();
+
+        assert!(super::host_directory_child_names_equal(
+            &root_identity,
+            std::ffi::OsStr::new("ß"),
+            std::ffi::OsStr::new("ẞ"),
+            false,
+        )
+        .unwrap());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn linux_filesystem_case_policy_is_mount_aware_and_fails_closed() {
         const EXT4_SUPER_MAGIC: u64 = 0x0000_ef53;
@@ -5252,13 +5434,21 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_vendor = "apple"))]
     #[test]
     fn case_insensitive_component_identity_collapses_final_sigma() {
-        let ordinary_sigma =
-            super::host_path_component_identity_key(std::ffi::OsStr::new("σ"), false);
-        let final_sigma = super::host_path_component_identity_key(std::ffi::OsStr::new("ς"), false);
-
-        assert_eq!(ordinary_sigma, final_sigma);
+        assert!(super::host_path_components_equal(
+            std::ffi::OsStr::new("σ"),
+            std::ffi::OsStr::new("ς"),
+            false,
+        )
+        .unwrap());
+        assert!(!super::host_path_components_equal(
+            std::ffi::OsStr::new("ß"),
+            std::ffi::OsStr::new("ss"),
+            false,
+        )
+        .unwrap());
     }
 
     #[cfg(windows)]

@@ -13,10 +13,13 @@ use crate::infrastructure::internal_adapters::{
 };
 use crate::infrastructure::platform::filesystem::{host_path_text, path_starts_with_host_root};
 use crate::infrastructure::project_health::layout::{InspectedSourceRoot, SourceLayoutInspection};
-use crate::infrastructure::project_health::{SourceRootOwnerIndex, SourceRootOwnerIndexError};
+use crate::infrastructure::project_health::{
+    SourceRootOwnerIndex, SourceRootOwnerIndexError, SourceRootOwnerLookupError,
+};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use tempfile::TempDir;
 
@@ -149,15 +152,23 @@ impl<'a> SourceRootOwners<'a> {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<Option<&[&'a InspectedSourceRoot]>, GeneratedPathInspectionError> {
-        let owners = self.index.deepest_owners_with_checkpoint(path, &mut || {
-            if cancellation.is_cancelled() {
-                return Err(GeneratedPathInspectionError::Cancelled);
-            }
-            if deadline.remaining().is_zero() {
-                return Err(GeneratedPathInspectionError::TimedOut);
-            }
-            Ok(())
-        })?;
+        let owners = self
+            .index
+            .deepest_owners_with_checkpoint(path, &mut || {
+                if cancellation.is_cancelled() {
+                    return Err(GeneratedPathInspectionError::Cancelled);
+                }
+                if deadline.remaining().is_zero() {
+                    return Err(GeneratedPathInspectionError::TimedOut);
+                }
+                Ok(())
+            })
+            .map_err(|error| match error {
+                SourceRootOwnerLookupError::Checkpoint(error) => error,
+                SourceRootOwnerLookupError::Path(reason) => {
+                    GeneratedPathInspectionError::Incomplete(reason)
+                }
+            })?;
         Ok(owners.map(|(owners, _depth)| owners))
     }
 }
@@ -2110,7 +2121,6 @@ fn materialize_staged_ignore_files(
     if let StagedBlobReadSafety::Blocked(reason) = blob_read_safety {
         return Err(ProjectHealthInspectionError::Fatal(reason.clone()));
     }
-    reject_staged_ignore_host_identity_collisions(root.path(), &staged_ignore_files)?;
     let mut total_bytes = 0_usize;
     for (path, oid) in staged_ignore_files {
         if cancellation.is_cancelled() {
@@ -2121,6 +2131,41 @@ fn materialize_staged_ignore_files(
                 "staged .gitignore blob inspection timed out".into(),
             ));
         }
+        let relative = Path::new(path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(ProjectHealthInspectionError::Fatal(format!(
+                "staged .gitignore path is not a safe repository-relative path: {path}"
+            )));
+        }
+        let target = root.path().join(relative);
+        let parent = target.parent().ok_or_else(|| {
+            ProjectHealthInspectionError::Fatal(format!(
+                "staged .gitignore path has no parent: {path}"
+            ))
+        })?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            ProjectHealthInspectionError::Fatal(format!(
+                "create staged .gitignore parent for {path}: {error}"
+            ))
+        })?;
+        let mut target_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .map_err(|error| {
+                let reason = if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    format!(
+                        "staged .gitignore path {path} collides with another host path identity"
+                    )
+                } else {
+                    format!("create staged .gitignore blob {path}: {error}")
+                };
+                ProjectHealthInspectionError::Fatal(reason)
+            })?;
         let command = process_command_vec(
             repository_root,
             vec![
@@ -2164,86 +2209,15 @@ fn materialize_staged_ignore_files(
                 "staged .gitignore policy exceeds {MAX_STAGED_IGNORE_TOTAL_BYTES} bytes"
             )));
         }
-        let relative = Path::new(path);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(ProjectHealthInspectionError::Fatal(format!(
-                "staged .gitignore path is not a safe repository-relative path: {path}"
-            )));
-        }
-        let target = root.path().join(relative);
-        let parent = target.parent().ok_or_else(|| {
-            ProjectHealthInspectionError::Fatal(format!(
-                "staged .gitignore path has no parent: {path}"
-            ))
-        })?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            ProjectHealthInspectionError::Fatal(format!(
-                "create staged .gitignore parent for {path}: {error}"
-            ))
-        })?;
-        std::fs::write(&target, output.stdout.as_bytes()).map_err(|error| {
-            ProjectHealthInspectionError::Fatal(format!(
-                "write staged .gitignore blob {path}: {error}"
-            ))
-        })?;
+        target_file
+            .write_all(output.stdout.as_bytes())
+            .map_err(|error| {
+                ProjectHealthInspectionError::Fatal(format!(
+                    "write staged .gitignore blob {path}: {error}"
+                ))
+            })?;
     }
     Ok(root)
-}
-
-fn reject_staged_ignore_host_identity_collisions(
-    materialization_root: &Path,
-    staged_ignore_files: &[(&str, &str)],
-) -> Result<(), ProjectHealthInspectionError> {
-    let materialization_identity =
-        normalize_path_identity(materialization_root).map_err(|reason| {
-            ProjectHealthInspectionError::Fatal(format!(
-                "failed to normalize staged .gitignore materialization root: {reason}"
-            ))
-        })?;
-    let case_sensitive =
-        crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(
-            &materialization_identity,
-        )
-        .map_err(|error| {
-            ProjectHealthInspectionError::Fatal(format!(
-                "failed to determine staged .gitignore materialization path identity at {}: {error}",
-                materialization_identity.display()
-            ))
-        })?;
-    let mut identities = BTreeMap::<String, &str>::new();
-    for (path, _) in staged_ignore_files {
-        let relative = Path::new(path);
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(ProjectHealthInspectionError::Fatal(format!(
-                "staged .gitignore path is not a safe repository-relative path: {path}"
-            )));
-        }
-        let mut identity = String::new();
-        for component in relative.components() {
-            let key = crate::infrastructure::platform::filesystem::host_path_component_identity_key(
-                component.as_os_str(),
-                case_sensitive,
-            );
-            identity.push('/');
-            identity.push_str(&key);
-        }
-        if let Some(previous) = identities.insert(identity, path) {
-            if previous != *path {
-                return Err(ProjectHealthInspectionError::Fatal(format!(
-                    "staged .gitignore paths {previous} and {path} resolve to the same host path identity"
-                )));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn inspect_working_ignore_matches(
@@ -2923,7 +2897,7 @@ mod tests {
         {
             return;
         }
-        let runner = SequenceRunner::outputs(Vec::new());
+        let runner = SequenceRunner::outputs(vec![process_output(true, "")]);
         let entries = [
             GitIndexEntry {
                 repo_path: "src/A/.gitignore".into(),
@@ -2950,9 +2924,9 @@ mod tests {
         assert!(matches!(
             error,
             ProjectHealthInspectionError::Fatal(ref reason)
-                if reason.contains("same host path identity")
+                if reason.contains("collides with another host path identity")
         ));
-        assert!(runner.commands.borrow().is_empty());
+        assert_eq!(runner.commands.borrow().len(), 1);
     }
 
     #[test]

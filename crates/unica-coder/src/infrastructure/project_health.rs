@@ -19,6 +19,7 @@ use resources::{resource_observations, SourceResourcePolicyInspector};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::path::Path;
 
 #[cfg(test)]
@@ -28,10 +29,18 @@ thread_local! {
 
 #[derive(Default)]
 struct SourceRootOwnerNode<'a> {
-    children: BTreeMap<String, usize>,
+    exact_children: BTreeMap<OsString, usize>,
+    identity_children: BTreeMap<crate::infrastructure::platform::filesystem::FileIdentity, usize>,
+    missing_children: Vec<SourceRootOwnerChild>,
     owners: Vec<&'a layout::InspectedSourceRoot>,
     depth: usize,
     case_sensitive: bool,
+    path: std::path::PathBuf,
+}
+
+struct SourceRootOwnerChild {
+    component: OsString,
+    node: usize,
 }
 
 pub(super) struct SourceRootOwnerIndex<'a> {
@@ -39,6 +48,57 @@ pub(super) struct SourceRootOwnerIndex<'a> {
 }
 
 impl<'a> SourceRootOwnerIndex<'a> {
+    fn child_for_component(
+        &self,
+        node: usize,
+        component: &std::ffi::OsStr,
+    ) -> std::io::Result<Option<usize>> {
+        if let Some(child) = self.nodes[node].exact_children.get(component) {
+            return Ok(Some(*child));
+        }
+        if self.nodes[node].case_sensitive {
+            for (candidate, child) in &self.nodes[node].exact_children {
+                if crate::infrastructure::platform::filesystem::host_path_components_equal(
+                    candidate, component, true,
+                )? {
+                    return Ok(Some(*child));
+                }
+            }
+            return Ok(None);
+        }
+        if let Some(identity) =
+            crate::infrastructure::platform::filesystem::host_directory_child_identity(
+                &self.nodes[node].path,
+                component,
+            )?
+        {
+            if let Some(child) = self.nodes[node].identity_children.get(&identity) {
+                return Ok(Some(*child));
+            }
+            for child in &self.nodes[node].missing_children {
+                if crate::infrastructure::platform::filesystem::host_directory_child_names_equal(
+                    &self.nodes[node].path,
+                    &child.component,
+                    component,
+                    self.nodes[node].case_sensitive,
+                )? {
+                    return Ok(Some(child.node));
+                }
+            }
+            return Ok(None);
+        }
+        for child in &self.nodes[node].missing_children {
+            if crate::infrastructure::platform::filesystem::host_path_components_equal(
+                &child.component,
+                component,
+                self.nodes[node].case_sensitive,
+            )? {
+                return Ok(Some(child.node));
+            }
+        }
+        Ok(None)
+    }
+
     pub(super) fn new(
         repository_root: &Path,
         roots: impl IntoIterator<Item = &'a layout::InspectedSourceRoot>,
@@ -79,6 +139,7 @@ impl<'a> SourceRootOwnerIndex<'a> {
                     repository_root.display()
                 ))
             })?,
+            path: repository_root.clone(),
             ..SourceRootOwnerNode::default()
         };
         let mut result = Self {
@@ -100,13 +161,29 @@ impl<'a> SourceRootOwnerIndex<'a> {
                 if component_index % 256 == 0 {
                     checkpoint().map_err(SourceRootOwnerIndexError::Checkpoint)?;
                 }
-                let key =
-                    crate::infrastructure::platform::filesystem::host_path_component_identity_key(
+                let child_identity =
+                    crate::infrastructure::platform::filesystem::host_directory_child_identity(
+                        &result.nodes[node].path,
                         component.as_os_str(),
-                        result.nodes[node].case_sensitive,
-                    );
-                let child = if let Some(child) = result.nodes[node].children.get(&key) {
-                    *child
+                    )
+                    .map_err(|error| {
+                        SourceRootOwnerIndexError::Path(format!(
+                            "failed to inspect filesystem path identity at {}: {error}",
+                            parent_path.display()
+                        ))
+                    })?;
+                let child = if let Some(child) = result
+                    .child_for_component(node, component.as_os_str())
+                    .map_err(|error| {
+                        SourceRootOwnerIndexError::Path(format!(
+                            "failed to compare filesystem path identity at {}: {error}",
+                            parent_path.display()
+                        ))
+                    })? {
+                    result.nodes[node]
+                        .exact_children
+                        .insert(component.as_os_str().to_os_string(), child);
+                    child
                 } else {
                     let child = result.nodes.len();
                     let mut child_path = parent_path.clone();
@@ -128,9 +205,22 @@ impl<'a> SourceRootOwnerIndex<'a> {
                     };
                     result.nodes.push(SourceRootOwnerNode {
                         case_sensitive,
+                        path: child_path,
                         ..SourceRootOwnerNode::default()
                     });
-                    result.nodes[node].children.insert(key, child);
+                    result.nodes[node]
+                        .exact_children
+                        .insert(component.as_os_str().to_os_string(), child);
+                    if let Some(identity) = child_identity {
+                        result.nodes[node].identity_children.insert(identity, child);
+                    } else {
+                        result.nodes[node]
+                            .missing_children
+                            .push(SourceRootOwnerChild {
+                                component: component.as_os_str().to_os_string(),
+                                node: child,
+                            });
+                    }
                     child
                 };
                 parent_path.push(component.as_os_str());
@@ -147,18 +237,22 @@ impl<'a> SourceRootOwnerIndex<'a> {
         &self,
         repo_path: &str,
         checkpoint: &mut dyn FnMut() -> Result<(), E>,
-    ) -> Result<Option<(&[&'a layout::InspectedSourceRoot], usize)>, E> {
+    ) -> Result<Option<(&[&'a layout::InspectedSourceRoot], usize)>, SourceRootOwnerLookupError<E>>
+    {
         let mut node = 0_usize;
         let mut deepest = (!self.nodes[0].owners.is_empty()).then_some(0);
         for (component_index, component) in Path::new(repo_path).components().enumerate() {
             if component_index % 256 == 0 {
-                checkpoint()?;
+                checkpoint().map_err(SourceRootOwnerLookupError::Checkpoint)?;
             }
-            let key = crate::infrastructure::platform::filesystem::host_path_component_identity_key(
-                component.as_os_str(),
-                self.nodes[node].case_sensitive,
-            );
-            let Some(child) = self.nodes[node].children.get(&key).copied() else {
+            let Some(child) = self
+                .child_for_component(node, component.as_os_str())
+                .map_err(|error| {
+                    SourceRootOwnerLookupError::Path(format!(
+                        "failed to compare repository path identity at {repo_path}: {error}"
+                    ))
+                })?
+            else {
                 break;
             };
             node = child;
@@ -172,6 +266,12 @@ impl<'a> SourceRootOwnerIndex<'a> {
 
 #[derive(Debug)]
 pub(super) enum SourceRootOwnerIndexError<E> {
+    Checkpoint(E),
+    Path(String),
+}
+
+#[derive(Debug)]
+pub(super) enum SourceRootOwnerLookupError<E> {
     Checkpoint(E),
     Path(String),
 }
@@ -232,8 +332,14 @@ fn eligible_resource_roots_from_staged_index(
         if entry_index.is_multiple_of(256) {
             checkpoint()?;
         }
-        let Some((entry_owners, prefix_depth)) =
-            owners.deepest_owners_with_checkpoint(&entry.repo_path, &mut checkpoint)?
+        let Some((entry_owners, prefix_depth)) = owners
+            .deepest_owners_with_checkpoint(&entry.repo_path, &mut checkpoint)
+            .map_err(|error| match error {
+                SourceRootOwnerLookupError::Checkpoint(error) => error,
+                SourceRootOwnerLookupError::Path(reason) => {
+                    ResourceRootEligibilityError::Incomplete(reason)
+                }
+            })?
         else {
             continue;
         };
@@ -885,7 +991,9 @@ mod tests {
 
     #[test]
     fn source_owner_index_applies_case_policy_per_parent_directory() {
-        let repository_root = Path::new("/repository");
+        let temp = TempDir::new().unwrap();
+        let repository_root = temp.path();
+        fs::create_dir_all(repository_root.join("modules/SRC")).unwrap();
         let root = crate::infrastructure::project_health::layout::InspectedSourceRoot {
             source_set: ProjectSourceSet {
                 name: "upper".into(),
@@ -985,17 +1093,13 @@ mod tests {
 
     #[test]
     fn source_owner_index_uses_apple_canonical_unicode_path_identity() {
-        let composed =
-            crate::infrastructure::platform::filesystem::host_path_component_identity_key(
-                std::ffi::OsStr::new("é"),
-                true,
-            );
-        let decomposed =
-            crate::infrastructure::platform::filesystem::host_path_component_identity_key(
-                std::ffi::OsStr::new("e\u{301}"),
-                true,
-            );
-        if composed != decomposed {
+        if !crate::infrastructure::platform::filesystem::host_path_components_equal(
+            std::ffi::OsStr::new("é"),
+            std::ffi::OsStr::new("e\u{301}"),
+            true,
+        )
+        .unwrap()
+        {
             return;
         }
         let repository_root = Path::new("/repository");
