@@ -18,7 +18,7 @@ execution. Applied `config-init`, `init`, `build`, `dump`, `load`, `test`,
 | Preview bringing infobase changes back to files | `operation=dump`, `mode=full`, optional `sourceSet`, `extension`, `dryRun=true`; applied post-run validation/publication has no proved receipt bound |
 | Preview Designer/EDT conversion | `operation=convert`, optional `sourceSet`, `output`, `dryRun=true` |
 | Preview artifact export | `operation=make`, required `output`, optional `sourceSet`, `extension`, `dryRun=true` |
-| Preview artifact load | `operation=load`, required `path`, optional `mode=load|merge`, `settings`, `extension`, `dryRun=true` |
+| Preview artifact load | `operation=load`, required `path`, optional `mode=load` or `mode=merge`, `settings`, `extension`, `dryRun=true` |
 | Preview syntax check | `operation=syntax`, required `mode`, `dryRun=true`; EDT optionally accepts `projects` |
 | Preview tests | `operation=test`, required `testRunner`, optional YaXUnit `testScope`/`module`, `fullOutput`, VA filters, `dryRun=true` |
 | Preview detached client launch | `operation=launch`, required `clientMode`, optional MCP or direct launch flags, `dryRun=true` |

@@ -3080,6 +3080,18 @@ mod tests {
         UnicaApplication::new().call_tool(name, args)
     }
 
+    fn call_tool_after_runtime_admission_for_downstream_test(
+        app: &UnicaApplication,
+        name: &str,
+        args: &Map<String, Value>,
+    ) -> Result<OperationResult, String> {
+        if name == "unica.runtime.execute" {
+            app.call_tool_after_runtime_admission_for_test(name, args)
+        } else {
+            app.call_tool(name, args)
+        }
+    }
+
     fn path_text(path: &std::path::Path) -> String {
         path.display().to_string().replace('\\', "/")
     }
@@ -4909,12 +4921,8 @@ mod tests {
                 args.insert("operation".to_string(), json!("dump"));
             }
 
-            let result = if tool == "unica.runtime.execute" {
-                app.call_tool_after_runtime_admission_for_test(tool, &args)
-                    .unwrap()
-            } else {
-                app.call_tool(tool, &args).unwrap()
-            };
+            let result =
+                call_tool_after_runtime_admission_for_downstream_test(&app, tool, &args).unwrap();
             assert!(!result.ok, "{tool} must be fail-closed");
             assert!(result.summary.contains("source sync guard"));
         }
@@ -4942,12 +4950,8 @@ mod tests {
                 args.insert("operation".to_string(), json!("dump"));
             }
 
-            let result = if tool == "unica.runtime.execute" {
-                app.call_tool_after_runtime_admission_for_test(tool, &args)
-                    .unwrap()
-            } else {
-                app.call_tool(tool, &args).unwrap()
-            };
+            let result =
+                call_tool_after_runtime_admission_for_downstream_test(&app, tool, &args).unwrap();
             assert!(!result.ok, "{tool} must require explicit mode=full");
             assert!(result.summary.contains("source sync guard"));
         }
@@ -5018,12 +5022,8 @@ mod tests {
                 args.insert("operation".to_string(), json!("dump"));
             }
 
-            let result = if tool == "unica.runtime.execute" {
-                app.call_tool_after_runtime_admission_for_test(tool, &args)
-                    .unwrap()
-            } else {
-                app.call_tool(tool, &args).unwrap()
-            };
+            let result =
+                call_tool_after_runtime_admission_for_downstream_test(&app, tool, &args).unwrap();
             assert!(result.ok, "{tool}: {result:?}");
             assert_eq!(
                 result.summary, "verified synchronous dump adapter invoked",
@@ -5065,12 +5065,9 @@ mod tests {
             convert.insert("dryRun".to_string(), json!(false));
             convert.insert("operation".to_string(), json!("convert"));
             convert.insert("output".to_string(), json!("designer-out"));
-            let result = if tool == "unica.runtime.execute" {
-                app.call_tool_after_runtime_admission_for_test(tool, &convert)
-                    .unwrap()
-            } else {
-                app.call_tool(tool, &convert).unwrap()
-            };
+            let result =
+                call_tool_after_runtime_admission_for_downstream_test(&app, tool, &convert)
+                    .unwrap();
             assert!(!result.ok, "{tool}: {result:?}");
             assert!(
                 result.summary.contains("runtime XML route guard"),
@@ -5086,12 +5083,9 @@ mod tests {
                 launch.insert("operation".to_string(), json!("launch"));
                 launch.insert("clientMode".to_string(), json!("designer"));
                 launch.insert("rawKeys".to_string(), json!([reserved, "git-visible-src"]));
-                let result = if tool == "unica.runtime.execute" {
-                    app.call_tool_after_runtime_admission_for_test(tool, &launch)
-                        .unwrap()
-                } else {
-                    app.call_tool(tool, &launch).unwrap()
-                };
+                let result =
+                    call_tool_after_runtime_admission_for_downstream_test(&app, tool, &launch)
+                        .unwrap();
                 assert!(!result.ok, "{tool} {reserved}: {result:?}");
                 assert!(
                     result.summary.contains("runtime XML route guard"),
@@ -5172,12 +5166,8 @@ mod tests {
                 args.insert("operation".to_string(), json!(operation));
             }
 
-            let applied = if tool == "unica.runtime.execute" {
-                app.call_tool_after_runtime_admission_for_test(tool, &args)
-                    .unwrap()
-            } else {
-                app.call_tool(tool, &args).unwrap()
-            };
+            let applied =
+                call_tool_after_runtime_admission_for_downstream_test(&app, tool, &args).unwrap();
             assert!(applied.ok, "{tool}: {applied:?}");
             assert_eq!(applied.summary, "runtime adapter invoked");
         }

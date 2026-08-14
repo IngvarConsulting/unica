@@ -130,13 +130,13 @@ runtime operation arguments.
 | Preview a full source load | `operation=build`, `fullRebuild=true`, `dryRun=true` |
 | Preview configuration/extension XML dump | synchronous `operation=dump`, `mode=full`, `dryRun=true`; applied post-run validation/publication has no proved receipt bound |
 | Preview external source-set dump | `operation=dump`, `mode=full`, `sourceSet=<external>`, `dryRun=true`; applied external dump is fail-closed |
-| Preview incremental/selected dump | `operation=dump`, `mode=incremental|partial`, `dryRun=true`; partial also requires `object=TYPE:NAME` or `objects=[...]` |
-| Preview `.cf` / `.cfe` artifact load | `operation=load`, `path=<file>`, `mode=load|merge`, `dryRun=true` |
+| Preview incremental/selected dump | `operation=dump`, `mode=incremental` or `mode=partial`, `dryRun=true`; partial also requires `object=TYPE:NAME` or `objects=[...]` |
+| Preview `.cf` / `.cfe` artifact load | `operation=load`, `path=<file>`, `mode=load` or `mode=merge`, `dryRun=true` |
 | Preview `.cf` / `.cfe` artifact export | `operation=make`, `output=<file>`, `dryRun=true` |
-| Preview 1C launch arguments | `operation=launch`, `clientMode=thin|thick|designer|ordinary`, `dryRun=true` |
-| Preview syntax arguments | `operation=syntax`, `mode=designer-config|designer-modules|edt`, `dryRun=true` |
-| Preview test arguments | `operation=test`, `testRunner=yaxunit|va`, `dryRun=true` |
-| Preview configured tool download | `operation=tools-download`, `tool=yaxunit|vanessa|client-mcp`, `dryRun=true` |
+| Preview 1C launch arguments | `operation=launch`, one of `clientMode=thin`, `clientMode=thick`, `clientMode=designer`, or `clientMode=ordinary`, `dryRun=true` |
+| Preview syntax arguments | `operation=syntax`, one of `mode=designer-config`, `mode=designer-modules`, or `mode=edt`, `dryRun=true` |
+| Preview test arguments | `operation=test`, one of `testRunner=yaxunit` or `testRunner=va`, `dryRun=true` |
+| Preview configured tool download | `operation=tools-download`, one of `tool=yaxunit`, `tool=vanessa`, or `tool=client-mcp`, `dryRun=true` |
 
 All current applied modes are fail-closed before workspace discovery and
 process spawn. Operation-specific blockers include non-interruptible phases,

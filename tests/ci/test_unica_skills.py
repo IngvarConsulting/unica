@@ -1936,6 +1936,68 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 ]
                 self.assertEqual(violating, [])
 
+    def test_runtime_reference_tables_do_not_hide_alternatives_as_separators(
+        self,
+    ) -> None:
+        docs = (
+            self.reference_root() / "tooling" / "v8project.md",
+            self.skill_root()
+            / "v8-runner"
+            / "references"
+            / "command-selection.md",
+        )
+        for doc in docs:
+            for line_number, line in enumerate(
+                doc.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if not line.lstrip().startswith("|"):
+                    continue
+                with self.subTest(
+                    path=doc.relative_to(self.repo_root()), line=line_number
+                ):
+                    for code_span in re.findall(r"`([^`]*)`", line):
+                        self.assertNotIn("|", code_span)
+
+    def test_code_quality_runtime_preview_preserves_test_first_order(self) -> None:
+        doc = self.reference_root() / "use-cases" / "code-quality-review.md"
+        text = doc.read_text(encoding="utf-8")
+        test_first = re.search(
+            r"write a reproducing test.{0,160}confirm that it fails.{0,160}before changing",
+            text,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(test_first)
+        self.assertLess(test_first.start(), text.index("preview intended syntax/test"))
+
+    def test_vanessa_preview_never_claims_to_create_the_epf(self) -> None:
+        skill = self.skill_root() / "v8-runner" / "SKILL.md"
+        text = skill.read_text(encoding="utf-8")
+        self.assertIsNotNone(
+            re.search(r"Vanessa EPF.{0,100}уже существовать", text, flags=re.DOTALL)
+        )
+        self.assertIsNotNone(
+            re.search(
+                r"`tools-download`.{0,160}`dryRun: true`.{0,160}не (?:создаёт|сохраняет)",
+                text,
+                flags=re.DOTALL,
+            )
+        )
+
+        workflows = (
+            self.skill_root()
+            / "v8-runner"
+            / "references"
+            / "project-workflows.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("the preview does not prepare the extension", workflows)
+        self.assertIsNotNone(
+            re.search(
+                r"`tools-download`.{0,240}preview, but not publish, that artifact",
+                workflows,
+                flags=re.DOTALL,
+            )
+        )
+
     def test_v8_runner_examples_respect_single_call_runtime_admission(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
         text = skill_doc.read_text(encoding="utf-8")

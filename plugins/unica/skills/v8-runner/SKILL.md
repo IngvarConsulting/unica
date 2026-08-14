@@ -711,9 +711,13 @@ fail-closed до появления прерываемой атомарной п
 }
 ```
 
-При стандартной конфигурации runner сохраняет EPF как
-`build/tools/vanessa-automation-single.epf`. Если effective project config
-переопределяет `tools.va.epf_path`, используй в `execute` именно это значение.
+Для любого preview запуска Vanessa EPF по effective `tools.va.epf_path` должна
+уже существовать. Предпросмотр `tools-download` с `dryRun: true` только
+проверяет типизированные аргументы и не создаёт и не сохраняет артефакт.
+Будущая применённая загрузка со стандартной конфигурацией должна была бы
+сохранить EPF как `build/tools/vanessa-automation-single.epf`; если project
+config переопределяет путь, в `execute` можно использовать только уже
+существующий файл по этому пути.
 
 ### Download client MCP extension
 

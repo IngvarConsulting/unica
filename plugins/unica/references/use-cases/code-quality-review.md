@@ -32,9 +32,10 @@ workspace discovery и process spawn. Preview не является runtime veri
   form module.
 - Avoid query-in-loop, unnecessary server round trips, hidden broad rights, and
   unbounded selections.
-- Keep refactors incremental: map callers, change the smallest coherent unit,
-  preview intended syntax/test arguments after each meaningful change, and
-  retain explicit residual runtime risk.
+- Keep refactors test-first: write a reproducing test and confirm that it fails
+  for the defect before changing the code. Then map callers, make the smallest
+  coherent fix, preview intended syntax/test arguments as a separate typed-
+  argument check, and retain explicit residual runtime risk.
 
 ## Related references
 

@@ -2182,6 +2182,30 @@ def _resolved_for_report_protection(path: Path) -> Path:
         raise SourceError(f"cannot resolve protected report path: {error}") from error
 
 
+def _validate_gate_preconditions(
+    *,
+    builder: str,
+    platform_version: str,
+    timeout_seconds: float,
+    execute: bool,
+    allow_empty_password: bool,
+) -> None:
+    """Validate the shared opt-in and bounded live-flow arguments."""
+
+    if execute is not True or allow_empty_password is not True:
+        raise SourceError("both live mutation opt-ins must be explicit")
+    if builder not in {"DESIGNER", "IBCMD"}:
+        raise SourceError("builder must be DESIGNER or IBCMD")
+    if PLATFORM_VERSION_RE.fullmatch(platform_version) is None:
+        raise SourceError("platform version must be exact 8.3.27.x")
+    if (
+        not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+        or timeout_seconds > MAX_TIMEOUT_SECONDS
+    ):
+        raise SourceError("timeout must be finite, positive, and no more than 24 hours")
+
+
 def _execute_gate_legacy_for_test(
     *,
     binary: Path,
@@ -2209,18 +2233,13 @@ def _execute_gate_legacy_for_test(
     call it while applied ``unica.runtime.execute`` is fail-closed.
     """
 
-    if execute is not True or allow_empty_password is not True:
-        raise SourceError("both live mutation opt-ins must be explicit")
-    if builder not in {"DESIGNER", "IBCMD"}:
-        raise SourceError("builder must be DESIGNER or IBCMD")
-    if PLATFORM_VERSION_RE.fullmatch(platform_version) is None:
-        raise SourceError("platform version must be exact 8.3.27.x")
-    if (
-        not math.isfinite(timeout_seconds)
-        or timeout_seconds <= 0
-        or timeout_seconds > MAX_TIMEOUT_SECONDS
-    ):
-        raise SourceError("timeout must be finite, positive, and no more than 24 hours")
+    _validate_gate_preconditions(
+        builder=builder,
+        platform_version=platform_version,
+        timeout_seconds=timeout_seconds,
+        execute=execute,
+        allow_empty_password=allow_empty_password,
+    )
 
     initial_redactions = [
         (database, "$DATABASE_INPUT"),
@@ -2623,18 +2642,13 @@ def execute_gate(
     """Write a refusal without reading input contents or starting runtime work."""
 
     del binary_args, evidence_dir, db_user, session_factory
-    if execute is not True or allow_empty_password is not True:
-        raise SourceError("both live mutation opt-ins must be explicit")
-    if builder not in {"DESIGNER", "IBCMD"}:
-        raise SourceError("builder must be DESIGNER or IBCMD")
-    if PLATFORM_VERSION_RE.fullmatch(platform_version) is None:
-        raise SourceError("platform version must be exact 8.3.27.x")
-    if (
-        not math.isfinite(timeout_seconds)
-        or timeout_seconds <= 0
-        or timeout_seconds > MAX_TIMEOUT_SECONDS
-    ):
-        raise SourceError("timeout must be finite, positive, and no more than 24 hours")
+    _validate_gate_preconditions(
+        builder=builder,
+        platform_version=platform_version,
+        timeout_seconds=timeout_seconds,
+        execute=execute,
+        allow_empty_password=allow_empty_password,
+    )
 
     protected_report_paths = tuple(
         (_resolved_for_report_protection(path), label)
