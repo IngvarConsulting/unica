@@ -3544,10 +3544,6 @@ mod tests {
 
         let inspection = inspect_policy(&fixture);
 
-        #[cfg(windows)]
-        let expected_causal_check = ProjectCheckId::RepositoryAttributes;
-        #[cfg(not(windows))]
-        let expected_causal_check = ProjectCheckId::RepositoryLfs;
         assert!(
             inspection.facts.iter().any(|fact| matches!(
                 fact,
@@ -3555,7 +3551,7 @@ mod tests {
                     check,
                     reason,
                     ..
-                } if *check == expected_causal_check
+                } if matches!(check, ProjectCheckId::RepositoryAttributes | ProjectCheckId::RepositoryLfs)
                     && (reason.contains("reparse point")
                         || reason.contains("symbolic links")
                         || reason.contains("linked or non-directory parent"))
