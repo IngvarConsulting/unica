@@ -2,14 +2,13 @@
 
 Use `dump` to bring database changes into Git-visible files. Check the worktree before dump and review the diff after dump.
 
-For an applied dump:
+For a dump preview, use `dryRun=true`; select an extension with matching
+`sourceSet` and `extension` names.
 
-- use synchronous `mode=full` for a DESIGNER `CONFIGURATION` or `EXTENSION`;
-- select an extension with matching `sourceSet` and `extension` names.
-
-On Windows, macOS, and Linux, verified transactional publication supports the
-synchronous applied full dump (`mode=full`) for a DESIGNER `CONFIGURATION` or
-`EXTENSION` source-set. Unica independently resolves an exact 8.3.27
+On Windows, macOS, and Linux, verified transactional publication describes the
+synchronous full dump (`mode=full`) for a DESIGNER `CONFIGURATION` or
+`EXTENSION` source-set. It is currently preview-only because post-run
+validation/publication has no proved receipt bound. Unica independently resolves an exact 8.3.27
 installation, redirects the selected source-set to a private stage, validates
 the required owner and every XML version-bearing root as the raw literal 2.20,
 then publishes the complete tree with preimage checks and rollback. ADR-0016
@@ -18,8 +17,8 @@ owns this publication contract;
 verified transaction behavior, while OS-specific mechanics stay behind
 `INV-PLATFORM-OS-BEHIND-FACADE`.
 
-Async full dumps and applied dumps for external source-sets remain preview-only.
-`mode=incremental` and `mode=partial` are also available only as read-only
+All applied dump modes remain fail-closed. Async full dumps and dumps for
+external source-sets remain preview-only. `mode=incremental` and `mode=partial` are also available only as read-only
 previews with `dryRun=true`; they need shadow/staging publication with exact
 path/hash receipts.
 Partial preview also requires `object` or `objects`.
@@ -47,9 +46,17 @@ User-owned or otherwise mutable installs are rejected before `ibcmd` or
 `v8-runner` starts; other Unix hosts fail closed.
 
 `convert` is repository-aware and does not require an infobase, but applied
-conversion is currently fail-closed because it can publish Designer XML outside
-the verified dump boundary. Use `dryRun=true`.
+conversion remains fail-closed because it can publish Designer XML outside the
+verified dump boundary. Use `dryRun=true`.
 
-Use `make` for `.cf`, `.cfe`, `.epf`, or `.erf` artifacts. Provide `output`; add `sourceSet` or `extension` when the target is not the default source. For external processors/reports, `output` is a publish directory, not a single `.epf`/`.erf` filename.
+Preview `make` with `dryRun=true` for `.cf`, `.cfe`, `.epf`, or `.erf`
+artifacts. Applied publication is fail-closed until the runner exposes a
+bounded rollback contract. Provide `output`; add `sourceSet` or `extension`
+when the target is not the default source. For external processors/reports,
+`output` is a publish directory, not a single `.epf`/`.erf` filename.
 
-Use `load` for applying `.cf` or `.cfe` artifacts. Supported modes are `load` and `merge`; `merge` requires `settings`, and `update` is not a supported load mode. v8-runner rejects `.epf` and `.erf` for `load`; external processors/reports are handled through external source-sets with `build`, `dump`, and `make`.
+Preview `load` with `dryRun=true` for `.cf` or `.cfe` artifacts; applied load is
+not currently admitted. Supported argument modes are `load` and `merge`;
+`merge` requires `settings`, and `update` is not supported. v8-runner rejects
+`.epf` and `.erf` for `load`; external processors/reports are handled through
+external source-sets with preview-only `build`, `dump`, and `make`.

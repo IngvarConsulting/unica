@@ -8,15 +8,16 @@ description: "Автономный сервер отладки 1С. Исполь
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.runtime.execute`, `unica.meta.info`, `unica.code.search`, and `unica.code.diagnostics`.
+- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Do not call internal runtime, server, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow
 
 1. Identify the debug target: HTTP service, web service, web client scenario, client MCP session, or isolated infobase startup.
 2. Map project source-sets with `unica.project.map`; inspect HTTP/WebService metadata with `unica.meta.info` and handlers with `unica.code.search`.
-3. Prepare the infobase through `unica.runtime.execute` operations in order: `config-init` if needed, `init`, `build`, then `syntax`.
-4. Launch the isolated client/debug surface with `unica.runtime.execute` and `operation=launch`. Use `clientMode=mcp` or `clientMode=mcp-va` when browser/client automation is the goal.
-5. If the user provides or the runtime returns a web URL, report it as the hand-off point for an external browser-testing tool; otherwise report that no public MCP `unica` operation currently produced a web-client URL.
+3. Preview the intended infobase sequence through `unica.runtime.execute`: `config-init` if needed, `init`, `build`, then `syntax`; this does not prepare or verify the infobase.
+4. Preview `operation=launch` with the intended `clientMode=mcp` or `clientMode=mcp-va`, then stop: no isolated client/debug surface is started by the current public contract.
+5. If the user independently provides a web URL, report it as the hand-off point for an external browser-testing tool; otherwise report that no public MCP `unica` operation currently produces a web-client URL.
 6. Analyze server artifacts: startup command/result, URL, source-set, platform mode, handler metadata, diagnostics, event log or technological log files if provided.
 
 ## Diagnostics
@@ -47,7 +48,7 @@ description: "Автономный сервер отладки 1С. Исполь
       "clientMode": "mcp",
       "mode": "thin",
       "mcpPort": 1550,
-      "dryRun": false
+      "dryRun": true
     }
   }
 }

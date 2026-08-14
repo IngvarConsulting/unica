@@ -8,6 +8,7 @@ description: "Фоновые и регламентные задания 1С. И�
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.meta.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `unica.role.info` when job behavior depends on user context or permissions.
 - Do not call internal runtime, analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -23,7 +24,7 @@ description: "Фоновые и регламентные задания 1С. И�
 2. Find entry points with `unica.code.search`; inspect related metadata with `unica.meta.info` and project layout with `unica.project.map`.
 3. Define execution contract: parameters, user context, transaction scope, idempotency key, lock strategy, timeout, retry count, and logging fields.
 4. Check failure behavior before implementation: duplicate launch, partial write, stale lock, external service failure, session termination, and restart after crash.
-5. Run `unica.code.diagnostics` and `unica.runtime.execute` for syntax/tests/launch verification when the project runtime is available.
+5. Run `unica.code.diagnostics`; use `unica.runtime.execute` only to preview typed syntax/test/launch arguments, and record runtime verification as unavailable unless separate evidence is supplied.
 6. For diagnosis, build a timeline from ЖР/ТЖ and map the first failure back to module code.
 
 ## Review checklist

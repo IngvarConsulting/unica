@@ -426,7 +426,7 @@ const RUNTIME_ARGS: &[&str] = &[
     "workdir",
 ];
 
-const RUNTIME_OPERATIONS: &[&str] = &[
+pub(super) const RUNTIME_OPERATIONS: &[&str] = &[
     "config-init",
     "init",
     "build",
@@ -483,7 +483,7 @@ const RUNTIME_TEST_SCOPES: &[&str] = &["all", "module"];
 const RUNTIME_TOOLS: &[&str] = &["yaxunit", "vanessa", "client-mcp"];
 const RUNTIME_DUMP_MODES: &[&str] = &["full", "incremental", "partial"];
 const RUNTIME_LOAD_MODES: &[&str] = &["load", "merge"];
-const RUNTIME_SYNTAX_MODES: &[&str] = &["designer-config", "designer-modules", "edt"];
+pub(super) const RUNTIME_SYNTAX_MODES: &[&str] = &["designer-config", "designer-modules", "edt"];
 
 const RUNTIME_CONFIG_INIT_ARGS: &[&str] = &[
     "operation",

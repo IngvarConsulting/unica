@@ -14,6 +14,7 @@ description: "Справка платформы 1С и объектной мод
 - `language` секции — локаль, которой источник ответил на самом деле, а не запрошенная. Если они расходятся, назовите подстановку локали в ответе: справка поставляется не во всех локалях, и запрос `en` на русскоязычной установке молча отвечал бы русскими страницами.
 - Секция со смыслом источника `development-standard` не закрывает вопрос о сигнатуре или механике платформы, каким бы уместным ни выглядел её текст. Это правило чтения, а не правило вызова. Симметрично: секция `configuration-documentation` описывает прикладную конфигурацию и не доказывает поведение самой платформы.
 - For project context, use `unica.code.search`, `unica.project.map`, and `unica.runtime.execute`.
+- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use object-specific `unica.*.info` tools when the API question depends on metadata structure.
 - Do not call internal standards, runtime, or package adapters directly.
 
@@ -24,7 +25,7 @@ description: "Справка платформы 1С и объектной мод
 3. Read `applicableVersion` in the hit. Если она расходится с версией проекта, назовите расхождение в ответе.
 4. Подтвердите ответ текстом открытой страницы: передайте `documentId` попадания в `unica.documentation.get` дословно и опирайтесь на поле `text`. Заголовок и фрагмент выдачи доказательством не является — доказательство только текст документа.
 5. Validate against local project context with `unica.project.map` and targeted `unica.code.search` if the answer depends on project conventions.
-6. For code examples, run `unica.runtime.execute` with `operation=syntax` when feasible.
+6. For code examples, use `unica.runtime.execute` only to preview `operation=syntax`; report actual syntax and runtime behavior as unverified.
 
 ## Platform context
 

@@ -5,29 +5,31 @@
 Typical empty workspace order:
 
 1. Create `src/` if there are no source files.
-2. Call `unica.runtime.execute` with `operation=config-init`.
-3. Call `operation=init` only when the runtime state must be materialized.
-4. If the database is the source of truth, call synchronous `operation=dump` with `mode=full`; for a DESIGNER configuration/extension Unica verifies platform 8.3.27 and staged exact 2.20 before publishing.
-5. If Git sources are the source of truth, ask before calling `operation=build`.
+2. Preview `operation=config-init` with `dryRun=true`; applied config writes are fail-closed, so stop and ask for a project config instead of bypassing MCP.
+3. Preview `operation=init` with `dryRun=true` when runtime state must be materialized; applied init is fail-closed before spawn.
+4. If the database is the source of truth, preview synchronous `operation=dump` with `mode=full`; applied dump remains fail-closed because its post-run validation/publication has no proved receipt bound.
+5. If Git sources are the source of truth, ask before previewing `operation=build` with `dryRun=true`; applied build is not currently admitted.
 
-Async full dump and external source-set dump remain preview-only. Applied
-`convert` and Designer `rawKeys` containing `DumpConfigToFiles` or
+All dump modes and applied `convert` remain preview-only. Designer `rawKeys` containing `DumpConfigToFiles` or
 `LoadConfigFromFiles` are fail-closed until they share the verified publication
 boundary.
 
-`build` also prepares configured client MCP tool extensions when the project has `tools.client_mcp.extension`. Use `fullRebuild=true` if that generated state may be stale.
+`build` also prepares configured client MCP tool extensions when the project has `tools.client_mcp.extension`. Preview with `fullRebuild=true` if that generated state may be stale.
 
-Use `extensions` when only extension properties need synchronization.
+Preview `extensions` with `dryRun=true` when only extension properties need synchronization; applied synchronization is not currently admitted.
 
-Use `tools-download` when the project needs v8-runner-managed YaXUnit, Vanessa, or client MCP tool payloads refreshed.
+Preview `tools-download` with `dryRun=true` when the project needs
+v8-runner-managed YaXUnit, Vanessa, or client MCP payloads. Applied download is
+fail-closed until the runner exposes bounded atomic publication; require an
+already prepared managed artifact before continuing.
 
-Use `launch` with `clientMode=mcp` or `clientMode=mcp-va` for client-side MCP workflows; do not hand-assemble platform launch strings.
+Preview `launch` with `clientMode=mcp` or `clientMode=mcp-va` for client-side MCP workflows; detached applied launch is not admitted, and platform launch strings must not be hand-assembled.
 
-For a local external `.epf` whose exit status is required, use direct
-`clientMode=thin` with `waitForExit=true`, bounded `waitTimeoutMs`, and distinct
-paths: `output` is the platform `/Out` log, while `stderrOutput` captures stderr
-from the 1C client process. Without this explicit opt-in, launch remains
-asynchronous. Before launching Vanessa Automation, prepare it with
-`operation=tools-download`, `tool=vanessa`; use the default managed
+For a local external `.epf`, preview direct `clientMode=thin` with
+`waitForExit=true`, bounded `waitTimeoutMs`, `dryRun=true`, and distinct paths:
+`output` is the platform `/Out` log, while `stderrOutput` captures stderr from
+the 1C client process. Applied launch fails closed before spawn even with this
+opt-in. Launch Vanessa Automation only when the default managed
 `build/tools/vanessa-automation-single.epf` or the effective
-`tools.va.epf_path` override.
+`tools.va.epf_path` override already exists; `tools-download` can currently
+preview, but not publish, that artifact.

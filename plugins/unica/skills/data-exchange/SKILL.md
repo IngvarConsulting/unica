@@ -8,6 +8,7 @@ description: "Обмен данными 1С. Используй когда ну�
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.meta.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `unica.role.info` when exchange behavior depends on rights, privileged mode, or separated data.
 - Do not call internal metadata, runtime, analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -23,7 +24,7 @@ description: "Обмен данными 1С. Используй когда ну�
 2. Inspect metadata and modules with `unica.meta.info` and `unica.code.search`: plans, nodes, registration rules, message numbers, loading handlers, and conflict resolution.
 3. Define the exchange contract: node identity, external ids, schema version, ordering, idempotency, retry behavior, duplicate detection, and compatibility rules.
 4. Check change registration deliberately: keep регистрация изменений explicit, state which objects are registered, when registration is suppressed, how deletes are represented, and how retries avoid double writes.
-5. Verify syntax/tests with `unica.runtime.execute`; for live failures, collect ЖР/ТЖ and correlate message id, node, user/session, and object ids.
+5. Use `unica.runtime.execute` only to preview typed syntax/test arguments and report runtime verification as unavailable; for live failures, rely on supplied ЖР/ТЖ and correlate message id, node, user/session, and object ids.
 
 ## Review checklist
 

@@ -86,7 +86,7 @@ Load/build XML source set through the internal build/runtime adapter.
 
 ### `unica.build.make`
 
-Export a CF/CFE artifact out of the infobase through the internal build/runtime adapter; it does not build one from sources — load them into the infobase first with unica.runtime.execute operation `build`.
+Export a CF/CFE artifact out of the current infobase through the internal build/runtime adapter; it does not load source changes into that infobase first.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
@@ -1170,7 +1170,7 @@ Validate role Rights.xml.
 
 ### `unica.runtime.execute`
 
-Execute typed v8-runner runtime workflows through the single Unica MCP boundary.
+Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
@@ -1178,14 +1178,14 @@ Execute typed v8-runner runtime workflows through the single Unica MCP boundary.
 
 Публикует **64** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** `data` по операции (типизированы частично: часть результата всё ещё текст)
+**Результат сейчас:** preview сохраняется; любой текущий applied-вызов возвращает терминальный fail-closed отказ до workspace discovery и process spawn (ADR-0059) (типизированы частично: часть результата всё ещё текст)
 
 **Вне границ: семейство runtime и build изучается отдельно.**
 
 **Сценарии:**
 
-- Прогнать синтаксическую проверку конфигурации
-- Запустить модульные тесты YAxUnit в базе
+- Предпросмотреть синтаксическую проверку конфигурации
+- Получить терминальный fail-closed результат applied-вызова без запуска процесса и перехода в runtime.job
 
 ### `unica.runtime.job.cancel`
 

@@ -395,6 +395,25 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Scope:** runtime
 
+### INV-MCP-RUNTIME-RECEIPT — Жизненный цикл runtime принадлежит одному вызову
+
+- **Rule:** Любая текущая применённая операция `unica.runtime.execute` до
+  обнаружения рабочего пространства и запуска процесса возвращает в исходном
+  `tools/call` терминальный `OperationResult` с кодом
+  `runtime_operation_unbounded`; предпросмотр сохраняется, а автоматический
+  переход в `unica.runtime.job.*` не выполняется. Поставляемые инструкции не
+  предлагают унаследованные `unica.build.*` как запасной путь вокруг этого
+  отказа. Новая применённая ветвь по умолчанию также отказывает и требует
+  отдельного решения с доказательствами сохранения исходного вызова хостом,
+  крайнего срока ответа, владения всем деревом процессов и безопасного
+  восстановления записи.
+- **Decision:** ADR-0059
+- **Check:** `ci-test` — `crates/unica-coder/src/application/runtime_admission.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
+- **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
+- **Scope:** source, runtime
+
 ### INV-MCP-SURFACE-SYNC — Изменения публичной поверхности синхронны
 
 - **Rule:** Добавление, удаление или переименование публичного MCP-инструмента

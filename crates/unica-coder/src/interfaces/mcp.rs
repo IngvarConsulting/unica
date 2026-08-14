@@ -694,6 +694,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn applied_runtime_refusal_is_one_terminal_result_without_input_disclosure() {
+        const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-workspace";
+        const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": "runtime-refusal",
+                "method": "tools/call",
+                "params": {
+                    "name": "unica.runtime.execute",
+                    "arguments": {
+                        "cwd": CWD_SENTINEL,
+                        "dryRun": false,
+                        "operation": "config-init",
+                        "config": "v8project.yaml",
+                        "connection": CONNECTION_SENTINEL
+                    }
+                }
+            }))
+            .await;
+
+        let response = client.receive().await;
+        assert_eq!(response["id"], "runtime-refusal", "{response}");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        let receipt: Value = serde_json::from_str(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("terminal refusal text"),
+        )
+        .unwrap();
+        assert_eq!(receipt["ok"], false, "{receipt}");
+        assert!(receipt["errors"][0]
+            .as_str()
+            .is_some_and(|error| error.starts_with("runtime_operation_unbounded:")));
+        let serialized = response.to_string();
+        assert!(!serialized.contains(CWD_SENTINEL), "{response}");
+        assert!(!serialized.contains(CONNECTION_SENTINEL), "{response}");
+        assert!(
+            timeout(Duration::from_millis(50), client.reader.next_line())
+                .await
+                .is_err(),
+            "one tools/call must produce exactly one terminal response"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn tools_list_round_trips_the_data_driven_registry() {
         let (mut client, _) = spawn_server(application_handler());
         client.initialize().await;

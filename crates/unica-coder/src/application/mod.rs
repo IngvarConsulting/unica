@@ -26,6 +26,7 @@ pub(crate) mod operational_config;
 mod outcome;
 pub(crate) mod ports;
 pub(crate) mod project_health;
+pub(crate) mod runtime_admission;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
@@ -606,6 +607,28 @@ impl UnicaApplication {
             progress.as_ref(),
         )
     }
+
+    #[cfg(test)]
+    fn call_tool_after_runtime_admission_for_test(
+        &self,
+        name: &str,
+        args: &Map<String, Value>,
+    ) -> Result<OperationResult, String> {
+        let deadline = ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE);
+        let spec = tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .ok_or_else(|| format!("unknown unica tool: {name}"))?;
+        call_tool_with_runtime_admission(
+            spec,
+            args,
+            self.ports.as_ref(),
+            &CancellationToken::new(),
+            deadline,
+            &NoopSearchProgressSink,
+            false,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -747,7 +770,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.build.make",
-            description: "Export a CF/CFE artifact out of the infobase through the internal build/runtime adapter; it does not build one from sources — load them into the infobase first with unica.runtime.execute operation `build`.",
+            description: "Export a CF/CFE artifact out of the current infobase through the internal build/runtime adapter; it does not load source changes into that infobase first.",
             execution: ToolExecution::Mutation,
             result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess::default(),
@@ -771,7 +794,7 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.runtime.execute",
             description:
-                "Execute typed v8-runner runtime workflows through the single Unica MCP boundary.",
+                "Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn.",
             execution: ToolExecution::Mutation,
             result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess {
@@ -1007,12 +1030,29 @@ fn call_tool_observed(
     deadline: ProviderDeadline,
     progress: &dyn SearchProgressSink,
 ) -> Result<OperationResult, String> {
+    call_tool_with_runtime_admission(spec, args, ports, cancellation, deadline, progress, true)
+}
+
+fn call_tool_with_runtime_admission(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    ports: &dyn ApplicationPorts,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+    progress: &dyn SearchProgressSink,
+    enforce_runtime_admission: bool,
+) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
     tool_contracts::validate_tool_argument_shape(spec, args)?;
     let mode = InvocationMode::from_validated_args(spec, args)?;
     tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
     let dry_run = mode.is_preview();
+    if enforce_runtime_admission && matches!(spec.handler, ToolHandler::RuntimeAdapter) && !dry_run
+    {
+        let failure = runtime_admission::runtime_receipt_admission_failure(spec.name, args)?;
+        return Ok(runtime_receipt_admission_result(spec, failure));
+    }
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
     ports.validate_tool_context(spec, args, mode, &context)?;
@@ -1526,6 +1566,38 @@ fn enforce_result_contract(
         }
     }
     Ok(())
+}
+
+fn runtime_receipt_admission_result(
+    spec: ToolSpec,
+    failure: runtime_admission::RuntimeAdmissionFailure,
+) -> OperationResult {
+    OperationResult {
+        ok: false,
+        summary: format!("{} refused before runtime process spawn", spec.name),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![format!("{}: {}", failure.code, failure.message)],
+        artifacts: Vec::new(),
+        cache: CacheReport {
+            mode: "read".to_string(),
+            root: String::new(),
+            workspace_epoch: 0,
+            events: Vec::new(),
+            invalidated: Vec::new(),
+            refreshed: Vec::new(),
+            lazy_rebuilt: Vec::new(),
+            stale: Vec::new(),
+            fresh: Vec::new(),
+            publication_warnings: Vec::new(),
+        },
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        data: None,
+        job: None,
+    }
 }
 
 fn invalid_metadata_arguments_result(failure: metadata::MetaFailure) -> OperationResult {
@@ -2090,7 +2162,7 @@ fn source_sync_dump_guard(
                 action: RuntimeJobAction::Start
             }
         ) {
-            let message = "asynchronous applied full dump is not supported yet because the background job boundary cannot return the private staged tree to Unica for the required platform 8.3.27 and exact export format 2.20 validation before publication; use synchronous unica.runtime.execute or unica.build.dump".to_string();
+            let message = "asynchronous applied full dump is not supported yet because the background job boundary cannot return the private staged tree to Unica for the required platform 8.3.27 and exact export format 2.20 validation before publication; no applied runtime route is an admitted fallback, so inspect the command with dryRun=true and wait for a verified terminal-receipt contract".to_string();
             return Some(AdapterOutcome {
                 ok: false,
                 summary: format!("{} blocked by source sync guard", spec.name),
@@ -3114,6 +3186,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn applied_runtime_fails_closed_before_workspace_discovery() {
+        let ports = Arc::new(RejectDiscoveryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        for args in [
+            json!({"operation": "config-init"}),
+            json!({"operation": "init"}),
+            json!({"operation": "build"}),
+            json!({"operation": "dump", "mode": "full"}),
+            json!({"operation": "convert"}),
+            json!({"operation": "make", "output": "build/config.cf"}),
+            json!({"operation": "load", "path": "build/config.cf"}),
+            json!({"operation": "syntax", "mode": "designer-config"}),
+            json!({"operation": "syntax", "mode": "designer-modules"}),
+            json!({"operation": "syntax", "mode": "edt"}),
+            json!({"operation": "test", "testRunner": "va"}),
+            json!({"operation": "launch", "clientMode": "thin"}),
+            json!({"operation": "launch", "clientMode": "thin", "waitForExit": true}),
+            json!({"operation": "extensions"}),
+            json!({"operation": "tools-download", "tool": "yaxunit"}),
+        ] {
+            let mut args = args.as_object().unwrap().clone();
+            args.insert("dryRun".to_string(), Value::Bool(false));
+            let operation = args["operation"].as_str().unwrap();
+
+            let result = app
+                .call_tool("unica.runtime.execute", &args)
+                .expect("runtime admission is an OperationResult, not a transport error");
+
+            assert!(!result.ok, "{operation}: {result:?}");
+            assert!(
+                result
+                    .errors
+                    .iter()
+                    .any(|error| error.starts_with("runtime_operation_unbounded:")),
+                "{operation}: {result:?}"
+            );
+        }
+
+        assert_eq!(ports.discovery_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -4742,7 +4856,7 @@ mod tests {
             outcome: AdapterOutcome::ok("runtime adapter must not be invoked"),
             data: None,
         }))
-        .call_tool("unica.runtime.execute", &args)
+        .call_tool_after_runtime_admission_for_test("unica.runtime.execute", &args)
         .unwrap();
 
         assert!(!result.ok);
@@ -4778,7 +4892,12 @@ mod tests {
                 args.insert("operation".to_string(), json!("dump"));
             }
 
-            let result = app.call_tool(tool, &args).unwrap();
+            let result = if tool == "unica.runtime.execute" {
+                app.call_tool_after_runtime_admission_for_test(tool, &args)
+                    .unwrap()
+            } else {
+                app.call_tool(tool, &args).unwrap()
+            };
             assert!(!result.ok, "{tool} must be fail-closed");
             assert!(result.summary.contains("source sync guard"));
         }
@@ -4806,7 +4925,12 @@ mod tests {
                 args.insert("operation".to_string(), json!("dump"));
             }
 
-            let result = app.call_tool(tool, &args).unwrap();
+            let result = if tool == "unica.runtime.execute" {
+                app.call_tool_after_runtime_admission_for_test(tool, &args)
+                    .unwrap()
+            } else {
+                app.call_tool(tool, &args).unwrap()
+            };
             assert!(!result.ok, "{tool} must require explicit mode=full");
             assert!(result.summary.contains("source sync guard"));
         }
@@ -4837,9 +4961,19 @@ mod tests {
         let cancellation = CancellationToken::new();
         cancellation.cancel();
 
-        let result = app
-            .call_tool_cancellable("unica.runtime.execute", &args, cancellation)
-            .unwrap();
+        let result = call_tool_with_runtime_admission(
+            tools()
+                .into_iter()
+                .find(|tool| tool.name == "unica.runtime.execute")
+                .unwrap(),
+            &args,
+            app.ports.as_ref(),
+            &cancellation,
+            ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE),
+            &NoopSearchProgressSink,
+            false,
+        )
+        .unwrap();
 
         assert!(!result.ok);
         assert!(result.errors[0].starts_with("cancelled:"));
@@ -4867,7 +5001,12 @@ mod tests {
                 args.insert("operation".to_string(), json!("dump"));
             }
 
-            let result = app.call_tool(tool, &args).unwrap();
+            let result = if tool == "unica.runtime.execute" {
+                app.call_tool_after_runtime_admission_for_test(tool, &args)
+                    .unwrap()
+            } else {
+                app.call_tool(tool, &args).unwrap()
+            };
             assert!(result.ok, "{tool}: {result:?}");
             assert_eq!(
                 result.summary, "verified synchronous dump adapter invoked",
@@ -4887,7 +5026,8 @@ mod tests {
         assert!(errors.contains("asynchronous"), "{job:?}");
         assert!(errors.contains("8.3.27"), "{job:?}");
         assert!(errors.contains("2.20"), "{job:?}");
-        assert!(errors.contains("unica.runtime.execute"), "{job:?}");
+        assert!(!errors.contains("unica.build.dump"), "{job:?}");
+        assert!(!errors.contains("unica.runtime.execute"), "{job:?}");
         assert!(job.changes.is_empty(), "{job:?}");
         assert!(job.job.is_none(), "{job:?}");
 
@@ -4908,7 +5048,12 @@ mod tests {
             convert.insert("dryRun".to_string(), json!(false));
             convert.insert("operation".to_string(), json!("convert"));
             convert.insert("output".to_string(), json!("designer-out"));
-            let result = app.call_tool(tool, &convert).unwrap();
+            let result = if tool == "unica.runtime.execute" {
+                app.call_tool_after_runtime_admission_for_test(tool, &convert)
+                    .unwrap()
+            } else {
+                app.call_tool(tool, &convert).unwrap()
+            };
             assert!(!result.ok, "{tool}: {result:?}");
             assert!(
                 result.summary.contains("runtime XML route guard"),
@@ -4924,7 +5069,12 @@ mod tests {
                 launch.insert("operation".to_string(), json!("launch"));
                 launch.insert("clientMode".to_string(), json!("designer"));
                 launch.insert("rawKeys".to_string(), json!([reserved, "git-visible-src"]));
-                let result = app.call_tool(tool, &launch).unwrap();
+                let result = if tool == "unica.runtime.execute" {
+                    app.call_tool_after_runtime_admission_for_test(tool, &launch)
+                        .unwrap()
+                } else {
+                    app.call_tool(tool, &launch).unwrap()
+                };
                 assert!(!result.ok, "{tool} {reserved}: {result:?}");
                 assert!(
                     result.summary.contains("runtime XML route guard"),
@@ -5005,7 +5155,12 @@ mod tests {
                 args.insert("operation".to_string(), json!(operation));
             }
 
-            let applied = app.call_tool(tool, &args).unwrap();
+            let applied = if tool == "unica.runtime.execute" {
+                app.call_tool_after_runtime_admission_for_test(tool, &args)
+                    .unwrap()
+            } else {
+                app.call_tool(tool, &args).unwrap()
+            };
             assert!(applied.ok, "{tool}: {applied:?}");
             assert_eq!(applied.summary, "runtime adapter invoked");
         }
@@ -11680,7 +11835,7 @@ mod tests {
             outcome,
             data: None,
         }))
-        .call_tool("unica.runtime.execute", &args)
+        .call_tool_after_runtime_admission_for_test("unica.runtime.execute", &args)
         .unwrap()
     }
 
@@ -11708,7 +11863,7 @@ mod tests {
             Value::String(workspace.display().to_string()),
         );
         UnicaApplication::with_ports(Arc::new(FixedOutcomePorts { outcome, data }))
-            .call_tool("unica.runtime.execute", &args)
+            .call_tool_after_runtime_admission_for_test("unica.runtime.execute", &args)
             .unwrap()
     }
 

@@ -8,6 +8,7 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.meta.info`, `unica.standards.explain`, `unica.standards.search`, `unica.project.map`, and `unica.runtime.execute`.
+- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `unica.*.info` tools before reviewing code that depends on metadata shape, form structure, rights, DCS, MXL, or interfaces.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -24,7 +25,7 @@ Lead with findings. Order them by severity and ground each finding in a file/lin
 5. Inspect metadata with `unica.*.info` when code depends on object structure.
 6. Run `unica.code.diagnostics` when the review includes BSL code. Use `mode=file` for touched modules and `mode=workspace` only when the review scope is broad. Use `unica.standards.explain` for diagnostic codes or standards-sensitive claims.
 7. Check high-risk 1C patterns: transaction boundaries, query-in-loop, server/client context, privileged mode, broad rights, background jobs, external calls, temporary files, and silent exception handling.
-8. Verify with `unica.runtime.execute` syntax/tests when feasible; otherwise state the exact unverified risk.
+8. Use `unica.runtime.execute` only to preview typed syntax/test arguments; always state the exact unverified runtime risk unless separate execution evidence is supplied.
 
 ## Output
 

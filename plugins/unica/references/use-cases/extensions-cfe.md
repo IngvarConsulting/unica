@@ -20,7 +20,13 @@ Use native CFE tools through MCP `unica`:
 - `unica.cfe.patch_method`
 
 Runtime export or loading of `.cfe` artifacts is handled by `v8-runner`
-with `operation=make` or `operation=load`.
+only as a preview of `unica.runtime.execute` with `operation=make` or
+`operation=load` and explicit `dryRun: true`.
+
+Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
+только с `dryRun: true`; любой applied-режим возвращает fail-closed до
+workspace discovery и process spawn. Preview не является runtime verification.
+Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 
 ## Related references
 

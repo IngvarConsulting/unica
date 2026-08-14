@@ -8,6 +8,7 @@ description: "Проектирование регистров 1С. Исполь�
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.code.search`, `unica.code.outline`, `unica.dcs.info`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `unica.standards.search` and `unica.standards.explain` for a development-standard about registers: 447, 477, 657, 661, 663, 664, 708, 733, 792, and diagnostics АПК:123, АПК:229, BSLLS:DenyIncompleteValues, BSLLS:VirtualTableCallWithoutParameters. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.role.info` when the register is subordinate to a recorder or carries access restrictions.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
@@ -38,7 +39,7 @@ Totals separation is the decision that pulls both ways: std664 wants it for writ
 5. Decide `EnableTotalsSplitting` against the read paths found in step 3, not in the abstract.
 6. Set `DenyIncompleteValues` on dimensions that must always carry a value, and decide `Master` deliberately: it makes record lifetime follow the master value.
 7. Create with `unica.meta.add` and refine with `unica.meta.edit`, one verifiable step at a time.
-8. Verify with `unica.code.diagnostics` and `unica.runtime.execute` for syntax and tests, and re-check the read paths that step 5 traded against.
+8. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` only to preview typed syntax/test arguments, report runtime behavior as unverified, and re-check the read paths that step 5 traded against.
 
 ## Design rules
 

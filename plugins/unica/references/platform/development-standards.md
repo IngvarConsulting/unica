@@ -29,6 +29,13 @@ Use these standards during BSL implementation, review, and refactoring.
 
 ## Validation
 
+Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
+только с `dryRun: true`; любой applied-режим возвращает fail-closed до
+workspace discovery и process spawn. Preview не является runtime verification.
+Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+
 - Run object-specific validation after metadata changes.
-- Run `v8-runner` syntax/tests for BSL changes.
+- Use `v8-runner` only to preview `unica.runtime.execute` syntax/test arguments
+  with `dryRun: true`; retain an explicit residual risk because preview does not
+  validate BSL in the runtime.
 - For risky changes, inspect metadata shape before and after the edit.

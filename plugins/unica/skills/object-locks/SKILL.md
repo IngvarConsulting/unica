@@ -8,8 +8,9 @@ description: "Объектные блокировки 1С — пессимист
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.patch`, `unica.form.info`, `unica.code.diagnostics`, and `unica.runtime.execute`.
+- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `unica.standards.search` and `unica.standards.explain` for the one development-standard here, 490, and for related ones 648 and 783. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
-- Use `unica.runtime.execute` and the runtime evidence path when a conflict has to be reproduced rather than reasoned about.
+- Use `unica.runtime.execute` only to preview typed arguments; reproducing a conflict requires separate runtime evidence and cannot be inferred from preview.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Scope boundary
@@ -42,7 +43,7 @@ Two facts decide most reviews:
 4. Decide the form id question. With a form id the lock follows the form's lifetime; without one it follows the session, the server call, or the transaction. Do not mix both for the same object — that combination raises.
 5. Inspect a non-standard editing form with `unica.form.info` and reproduce the standard behaviour with the form lock and unlock methods.
 6. Decide what the version conflict says to the user before it happens; the platform's own message names nothing useful.
-7. Apply with `unica.code.patch`, then verify with `unica.code.diagnostics` and `unica.runtime.execute`, and reproduce the conflict on two sessions rather than reasoning about it.
+7. Apply with `unica.code.patch`, verify statically with `unica.code.diagnostics`, and preview the intended runtime request with `unica.runtime.execute`; require separate two-session evidence before calling the conflict reproduced.
 
 ## Design rules
 

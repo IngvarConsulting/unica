@@ -202,7 +202,9 @@ allowed-tools:
 
 ## Дальнейшие шаги
 
+- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+
 - Добавить ещё команду: `/epf-bsp-add-command`
 - Добавить форму: `/form-add`
 - Добавить макет: `/template-add`
-- Собрать EPF: `v8-runner` skill, MCP `unica.runtime.execute`, `operation=make`, `sourceSet=<external-processors>`, `output=build/external`
+- Предпросмотреть команду сборки EPF: `v8-runner` skill, MCP `unica.runtime.execute`, `operation=make`, `sourceSet=<external-processors>`, `output=build/external`, `dryRun=true`; сам `.epf` этот preview не собирает.

@@ -401,6 +401,92 @@ class ScriptedSession(ScriptedClient):
 
 
 class Issue76RoundTripTests(unittest.TestCase):
+    def test_execute_gate_refuses_before_workspace_discovery_or_mcp_start(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = root / "report.json"
+            evidence_path = root / "missing-evidence"
+            session = mock.Mock(side_effect=AssertionError("MCP must not start"))
+
+            with mock.patch.object(
+                verifier,
+                "_resolved_absolute",
+                side_effect=AssertionError("workspace discovery must not start"),
+            ) as discover:
+                exit_code, report = verifier.execute_gate(
+                    binary=root / "missing-unica",
+                    binary_args=[],
+                    plugin_root=root / "missing-plugin",
+                    database=root / "missing-database",
+                    sources=root / "missing-sources",
+                    parent_configuration=root / "missing-parent.cf",
+                    platform_path=root / "missing-platform",
+                    platform_version="8.3.27.2214",
+                    report_path=report_path,
+                    evidence_dir=evidence_path,
+                    builder="DESIGNER",
+                    db_user="Администратор",
+                    timeout_seconds=60,
+                    execute=True,
+                    allow_empty_password=True,
+                    session_factory=session,
+                )
+
+            persisted = json.loads(report_path.read_text(encoding="utf-8"))
+            evidence_created = evidence_path.exists()
+
+        self.assertEqual(exit_code, 1, report)
+        self.assertEqual(persisted, report)
+        self.assertEqual((report["status"], report["exitCode"]), ("blocked", 1))
+        self.assertIs(report["summary"]["passed"], False)
+        self.assertEqual(report["summary"]["stepCount"], 0)
+        self.assertEqual(
+            report["capability"]["code"],
+            "runtime_operation_unbounded",
+        )
+        self.assertIs(report["capability"]["previewOnly"], True)
+        self.assertIs(report["capability"]["mutationsAttempted"], False)
+        self.assertIs(report["capability"]["processStarted"], False)
+        self.assertIs(report["capability"]["jobFallbackUsed"], False)
+        self.assertIs(report["roundTrip"]["verified"], False)
+        self.assertIs(evidence_created, False)
+        discover.assert_not_called()
+        session.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "symlink safety test is POSIX-only")
+    def test_runtime_block_report_cannot_overwrite_symlinked_binary(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "unica"
+            binary.write_bytes(b"binary-payload")
+            binary_alias = root / "unica-alias"
+            binary_alias.symlink_to(binary)
+
+            with self.assertRaises(verifier.SourceError):
+                verifier.execute_gate(
+                    binary=binary_alias,
+                    binary_args=[],
+                    plugin_root=root / "missing-plugin",
+                    database=root / "missing-database",
+                    sources=root / "missing-sources",
+                    parent_configuration=root / "missing-parent.cf",
+                    platform_path=root / "missing-platform",
+                    platform_version="8.3.27.2214",
+                    report_path=binary,
+                    evidence_dir=None,
+                    builder="DESIGNER",
+                    db_user="Администратор",
+                    timeout_seconds=60,
+                    execute=True,
+                    allow_empty_password=True,
+                )
+
+            payload = binary.read_bytes()
+
+        self.assertEqual(payload, b"binary-payload")
+
     def test_input_state_digest_includes_root_directory_metadata(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
@@ -488,7 +574,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 sessions.append(session)
                 return session
 
-            exit_code, report = verifier.execute_gate(
+            exit_code, report = verifier._execute_gate_legacy_for_test(
                 **inputs,
                 evidence_dir=evidence,
                 session_factory=session_factory,
@@ -576,7 +662,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 "TemporaryDirectory",
                 return_value=temporary,
             ):
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                     session_factory=lambda *_args, cwd, **_kwargs: ScriptedSession(
@@ -613,7 +699,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 "TemporaryDirectory",
                 return_value=temporary,
             ):
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                     session_factory=lambda *_args, cwd, **_kwargs: CloseFailingSession(
@@ -651,7 +737,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 "TemporaryDirectory",
                 return_value=temporary,
             ):
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                     session_factory=lambda *_args, cwd, **_kwargs: StartFailingSession(
@@ -700,7 +786,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 "_stat_tree_digest",
                 side_effect=flaky_digest,
             ):
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                     session_factory=lambda *_args, cwd, **_kwargs: StartFailingSession(
@@ -733,7 +819,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 "TemporaryDirectory",
                 return_value=temporary,
             ):
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                     session_factory=lambda *_args, cwd, **_kwargs: ScriptedSession(
@@ -762,7 +848,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                         diagnostic=f"authenticated user {db_user}",
                     )
 
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                     session_factory=session_factory,
@@ -822,7 +908,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 {**secret_environment, **hostile_temporary_environment},
                 clear=False,
             ):
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                     session_factory=session_factory,
@@ -876,7 +962,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                     original.write_bytes(original.read_bytes() + b" ")
                     raise verifier.SourceError("synthetic MCP start failure")
 
-            exit_code, report = verifier.execute_gate(
+            exit_code, report = verifier._execute_gate_legacy_for_test(
                 **inputs,
                 evidence_dir=evidence,
                 session_factory=lambda *_args, cwd, **_kwargs: StartFailingSession(
@@ -917,7 +1003,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 (BSL_MARKER + "\r\nФункция ЛинияПоддержки()").encode("utf-8"),
             )
 
-            exit_code, report = verifier.run_roundtrip_flow(
+            exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                 client,
                 workspace=workspace,
                 redactions=[(workspace, "$EVIDENCE")],
@@ -960,7 +1046,7 @@ class Issue76RoundTripTests(unittest.TestCase):
 
             client = NoopSupportClient(workspace)
 
-            exit_code, report = verifier.run_roundtrip_flow(
+            exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                 client,
                 workspace=workspace,
                 redactions=[(workspace, "$EVIDENCE")],
@@ -992,7 +1078,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                     return super().call(name, arguments, **kwargs)
 
             client = LockedRuleClient(workspace)
-            exit_code, report = verifier.run_roundtrip_flow(
+            exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                 client,
                 workspace=workspace,
                 redactions=[(workspace, "$EVIDENCE")],
@@ -1030,7 +1116,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 inputs["report_path"] = report_path
 
                 with self.assertRaises(verifier.SourceError):
-                    verifier.execute_gate(
+                    verifier._execute_gate_legacy_for_test(
                         **inputs,
                         evidence_dir=None,
                         session_factory=lambda *_args, cwd, **_kwargs: ScriptedSession(
@@ -1052,7 +1138,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 evidence = inputs[protected] / "unsafe-evidence"
                 evidence.mkdir()
 
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=evidence,
                     session_factory=lambda *_args, cwd, **_kwargs: ScriptedSession(
@@ -1074,7 +1160,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 unica_sha256="a" * 64,
             )
 
-            exit_code, report = verifier.execute_gate(
+            exit_code, report = verifier._execute_gate_legacy_for_test(
                 **inputs,
                 evidence_dir=None,
                 session_factory=lambda *_args, cwd, **_kwargs: ScriptedSession(cwd),
@@ -1132,7 +1218,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 sessions.append(session)
                 return session
 
-            exit_code, report = verifier.execute_gate(
+            exit_code, report = verifier._execute_gate_legacy_for_test(
                 **inputs,
                 evidence_dir=evidence,
                 session_factory=session_factory,
@@ -1170,7 +1256,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 evidence_roots.append(Path(cwd).parent)
                 return ScriptedSession(cwd)
 
-            exit_code, report = verifier.execute_gate(
+            exit_code, report = verifier._execute_gate_legacy_for_test(
                 **inputs,
                 evidence_dir=None,
                 session_factory=session_factory,
@@ -1205,7 +1291,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 self.assertEqual(cwd, evidence.resolve() / "workspace")
                 raise verifier.SourceError("synthetic process launch failure")
 
-            exit_code, report = verifier.execute_gate(
+            exit_code, report = verifier._execute_gate_legacy_for_test(
                 **inputs,
                 evidence_dir=evidence,
                 session_factory=session_factory,
@@ -1271,7 +1357,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 "_copy_regular_tree",
                 side_effect=AssertionError("copy must not start for unsafe evidence"),
             ) as copy_tree:
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                 )
@@ -1296,7 +1382,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 "TemporaryDirectory",
                 return_value=temporary,
             ):
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                 )
@@ -1322,7 +1408,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 "tempdir",
                 str(inputs["sources"]),
             ):
-                exit_code, report = verifier.execute_gate(
+                exit_code, report = verifier._execute_gate_legacy_for_test(
                     **inputs,
                     evidence_dir=None,
                     session_factory=lambda *_args, cwd, **_kwargs: ScriptedSession(
@@ -1362,7 +1448,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                     )
                 client = ScriptedClient(workspace)
 
-                exit_code, report = verifier.run_roundtrip_flow(
+                exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                     client,
                     workspace=workspace,
                     redactions=[(workspace, "$EVIDENCE")],
@@ -1544,7 +1630,7 @@ class Issue76RoundTripTests(unittest.TestCase):
             workspace = write_workspace(Path(tmp))
             client = ScriptedClient(workspace)
 
-            exit_code, report = verifier.run_roundtrip_flow(
+            exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                 client,
                 workspace=workspace,
                 redactions=[(workspace, "$EVIDENCE")],
@@ -1609,7 +1695,7 @@ class Issue76RoundTripTests(unittest.TestCase):
             workspace = write_workspace(Path(tmp))
             client = ScriptedClient(workspace, full_dump_noop=True)
 
-            exit_code, report = verifier.run_roundtrip_flow(
+            exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                 client,
                 workspace=workspace,
                 redactions=[(workspace, "$EVIDENCE")],
@@ -1626,7 +1712,7 @@ class Issue76RoundTripTests(unittest.TestCase):
             workspace = write_workspace(Path(tmp))
             client = ScriptedClient(workspace, cdfi_build_changes={1})
 
-            exit_code, report = verifier.run_roundtrip_flow(
+            exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                 client,
                 workspace=workspace,
                 redactions=[(workspace, "$EVIDENCE")],
@@ -1643,7 +1729,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 workspace = write_workspace(Path(tmp))
                 client = ScriptedClient(workspace, mutate_on_partial=mutate)
 
-                exit_code, report = verifier.run_roundtrip_flow(
+                exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                     client,
                     workspace=workspace,
                     redactions=[(workspace, "$EVIDENCE")],
@@ -1678,7 +1764,7 @@ class Issue76RoundTripTests(unittest.TestCase):
                 workspace = write_workspace(Path(tmp))
                 client = ScriptedClient(workspace, lose_after_full_dump=lost)
 
-                exit_code, report = verifier.run_roundtrip_flow(
+                exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                     client,
                     workspace=workspace,
                     redactions=[(workspace, "$EVIDENCE")],
@@ -1703,7 +1789,7 @@ class Issue76RoundTripTests(unittest.TestCase):
             )
             client = ScriptedClient(workspace, diagnostic=diagnostic)
 
-            exit_code, report = verifier.run_roundtrip_flow(
+            exit_code, report = verifier._run_roundtrip_flow_legacy_for_test(
                 client,
                 workspace=workspace,
                 redactions=[

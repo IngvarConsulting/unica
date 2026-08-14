@@ -1736,6 +1736,124 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn('"sourceSet": "external-reports"', text)
         self.assertIn('"output": "build/external"', text)
 
+    def test_all_runtime_execute_skill_guidance_is_preview_only(self) -> None:
+        runtime_docs = []
+        runtime_examples = []
+        shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
+            self.reference_root().glob("**/*.md")
+        )
+        for doc in sorted(shipped_docs):
+            text = doc.read_text(encoding="utf-8")
+            if "unica.runtime.execute" not in text:
+                continue
+            runtime_docs.append((doc, text))
+            for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
+                try:
+                    payload = json.loads(block)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    payload.get("method") == "tools/call"
+                    and payload.get("params", {}).get("name")
+                    == "unica.runtime.execute"
+                ):
+                    runtime_examples.append((doc, payload["params"]["arguments"]))
+
+        required_runtime_references = {
+            self.reference_root() / relative_path
+            for relative_path in (
+                "use-cases/workspace-runtime.md",
+                "use-cases/autonomous-server-debug.md",
+                "use-cases/reports-printing.md",
+                "use-cases/integrations.md",
+                "use-cases/code-quality-review.md",
+                "use-cases/extensions-cfe.md",
+                "tooling/v8project.md",
+                "tooling/runtime-build.md",
+            )
+        }
+        self.assertTrue(
+            required_runtime_references.issubset(
+                {doc for doc, _text in runtime_docs}
+            )
+        )
+        self.assertGreater(len(runtime_docs), 30)
+        self.assertGreater(len(runtime_examples), 20)
+        for doc, arguments in runtime_examples:
+            with self.subTest(
+                path=doc.relative_to(self.repo_root()),
+                operation=arguments.get("operation"),
+            ):
+                self.assertIs(arguments.get("dryRun"), True)
+
+        contract_tokens = (
+            "preview-only",
+            "`dryRun: true`",
+            "fail-closed",
+            "workspace discovery",
+            "process spawn",
+            "Preview не является runtime verification",
+            "прямым runner-ом",
+            "`unica.build.*`",
+            "`unica.runtime.job.*`",
+        )
+        forbidden_applied_claims = (
+            r"Verify with `unica\.runtime\.execute`",
+            r"Verify syntax/tests with `unica\.runtime\.execute`",
+            r"syntax/tests through `unica\.runtime\.execute`",
+            r"Run `unica\.runtime\.execute`",
+            r"use `unica\.runtime\.execute` for (?:related )?syntax/tests",
+            r"through `unica\.runtime\.execute` operations in order",
+            r"Launch .* with `unica\.runtime\.execute`",
+            r"[Сс]обрать .*`unica\.runtime\.execute`",
+            r"для публикации .*`unica\.runtime\.execute`",
+        )
+        for doc, text in runtime_docs:
+            with self.subTest(path=doc.relative_to(self.repo_root())):
+                for token in contract_tokens:
+                    self.assertIn(token, text)
+                for claim in forbidden_applied_claims:
+                    self.assertNotRegex(text, claim)
+
+    def test_v8_runner_examples_respect_single_call_runtime_admission(self) -> None:
+        skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
+        text = skill_doc.read_text(encoding="utf-8")
+        calls = [
+            json.loads(block)
+            for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
+        ]
+        arguments = [
+            call["params"]["arguments"]
+            for call in calls
+            if call.get("method") == "tools/call"
+            and call.get("params", {}).get("name") == "unica.runtime.execute"
+        ]
+
+        for example in arguments:
+            operation = example["operation"]
+            with self.subTest(operation=operation, example=example):
+                self.assertIs(example.get("dryRun"), True)
+
+        applied_operations = {
+            example["operation"]
+            for example in arguments
+            if example.get("dryRun") is False
+        }
+        self.assertEqual(applied_operations, set())
+
+        for required in (
+            r"исходн\w* `tools/call`",
+            r"`notifications/progress`",
+            r"не увеличивает крайний срок",
+            r"терминальн\w* fail-closed результат",
+            r"`unica\.runtime\.job\.\*`",
+        ):
+            with self.subTest(required=required):
+                self.assertRegex(text, required)
+
+        self.assertNotIn("Для долгих операций меняй `execution_timeout`", text)
+        self.assertIn("Для будущей допущенной операции", text)
+
     def test_v8_runner_documents_bounded_vanessa_launch_contract(self) -> None:
         skill_dir = self.skill_root() / "v8-runner"
         skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
@@ -1765,14 +1883,16 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             skill_text,
         )
         self.assertIn("`tools.va.epf_path`", skill_text)
+        self.assertRegex(
+            skill_text,
+            r'(?s)"waitForExit": true.{0,400}"dryRun": true',
+        )
+        self.assertIn("Любой применённый launch отказывает", skill_text)
         self.assertIn("платформенный `/Out`", all_text)
         self.assertIn("stderr клиентского процесса 1\u0421", all_text)
-        self.assertIn(
-            "`unica.runtime.job.start` не принимает bounded-поля",
-            skill_text,
-        )
-        self.assertIn("`data.external_epf_wait`", skill_text)
-        self.assertIn("`diagnostics.external_epf_wait`", skill_text)
+        self.assertIn("Не обходи отказ через `unica.runtime.job.start`", skill_text)
+        self.assertNotIn("`data.external_epf_wait`", skill_text)
+        self.assertNotIn("`diagnostics.external_epf_wait`", skill_text)
 
     def test_v8_runner_leads_client_mcp_download_with_the_prebuilt_artifact(
         self,
@@ -2380,9 +2500,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertNotIn("V8_PATH", runtime_build)
         self.assertNotIn("V8_BASE", runtime_build)
 
-    def test_verified_applied_full_dump_documents_supported_hosts_and_verified_publication(
-        self,
-    ) -> None:
+    def test_verified_full_dump_documents_preview_only_publication_contract(self) -> None:
         docs = [
             self.skill_root() / "v8-runner" / "SKILL.md",
             self.skill_root()
@@ -2400,7 +2518,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                 r"\b(?:synchronous|синхронн\w*)\b",
                 re.IGNORECASE,
             ),
-            "applied": re.compile(r"\bapplied\b", re.IGNORECASE),
             "full dump": re.compile(
                 r"(?:\bfull\s+dump\b|\bmode\s*=\s*full\b)",
                 re.IGNORECASE,
@@ -2412,35 +2529,23 @@ Use `.claude/commands/xdto.md` as the execution route.
                 re.IGNORECASE,
             ),
         }
-        stale_restriction = re.compile(
-            r"(?:fail(?:ed)?[- ]closed|blocked|unsupported)",
-            re.IGNORECASE,
-        )
+        preview_only = re.compile(r"(?:preview[- ]only|предпросмотр|fail[- ]closed)", re.I)
 
         def markdown_paragraphs(text: str) -> list[str]:
             return re.split(r"\n(?:[ \t]*|>[ \t]*)\n", text)
 
-        def support_paragraphs(text: str) -> list[str]:
+        def contract_paragraphs(text: str) -> list[str]:
             return [
                 paragraph
                 for paragraph in markdown_paragraphs(text)
                 if all(pattern.search(paragraph) for pattern in required.values())
+                and preview_only.search(paragraph)
             ]
 
         def contract_errors(text: str) -> list[str]:
             errors = []
-            if not support_paragraphs(text):
-                errors.append("missing complete applied full dump support paragraph")
-            for paragraph in markdown_paragraphs(text):
-                for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
-                    if (
-                        required["Windows"].search(sentence)
-                        and required["full dump"].search(sentence)
-                        and stale_restriction.search(sentence)
-                    ):
-                        errors.append(
-                            "Windows applied full dump is documented as restricted"
-                        )
+            if not contract_paragraphs(text):
+                errors.append("missing complete preview-only full dump contract paragraph")
             return errors
 
         document_texts = {
@@ -2452,19 +2557,18 @@ Use `.claude/commands/xdto.md` as the execution route.
                 self.assertEqual([], contract_errors(document_texts[path]))
 
         mixed_claims = (
-            "Windows, macOS, and Linux support synchronous applied full dump "
-            "for CONFIGURATION and EXTENSION through verified transactional "
-            "publication. Incremental dump without receipts remains fail-closed "
-            "on Linux."
+            "On Windows, macOS, and Linux, synchronous full dump mode=full for "
+            "CONFIGURATION and EXTENSION remains preview-only while verified "
+            "transactional publication lacks a bounded terminal receipt."
         )
         self.assertEqual(
             [],
             contract_errors(mixed_claims),
-            "a restriction on a different operation is not a Windows full-dump restriction",
+            "the full-dump contract must combine publication and lifecycle scope",
         )
 
         for path, text in document_texts.items():
-            complete_paragraphs = support_paragraphs(text)
+            complete_paragraphs = contract_paragraphs(text)
             for missing, pattern in required.items():
                 mutated = text
                 for paragraph in complete_paragraphs:
@@ -2472,24 +2576,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                     mutated = mutated.replace(paragraph, mutated_paragraph, 1)
                 with self.subTest(document=path.name, missing=missing):
                     self.assertTrue(contract_errors(mutated), missing)
-
-        stale_mutations = {
-            "natural fail-closed wording": (
-                "Windows applied full dump is currently fail-closed."
-            ),
-            "unsupported wording": "Windows full dump is unsupported.",
-            "blocked mode wording": "Windows mode=full is blocked.",
-            "reversed fail-closed wording": (
-                "Fail-closed: Windows applied full dump."
-            ),
-        }
-        for path, text in document_texts.items():
-            for mutation, stale_claim in stale_mutations.items():
-                with self.subTest(document=path.name, mutation=mutation):
-                    self.assertTrue(
-                        contract_errors(f"{text}\n\n{stale_claim}\n"),
-                        mutation,
-                    )
 
     def test_code_patch_skill_uses_only_logical_configuration_and_extension_targets(
         self,

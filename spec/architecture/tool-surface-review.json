@@ -776,12 +776,12 @@
   "unica.runtime.execute": {
     "result": {
       "contract": "partial",
-      "now": "`data` по операции",
-      "target": "вне границ работы"
+      "now": "preview сохраняется; любой текущий applied-вызов возвращает терминальный fail-closed отказ до workspace discovery и process spawn (ADR-0059)",
+      "target": "повторный applied admission требует доказанного process ownership; предметная surface и Tasks принадлежат #465/#497"
     },
     "scenarios": [
-      "Прогнать синтаксическую проверку конфигурации",
-      "Запустить модульные тесты YAxUnit в базе"
+      "Предпросмотреть синтаксическую проверку конфигурации",
+      "Получить терминальный fail-closed результат applied-вызова без запуска процесса и перехода в runtime.job"
     ],
     "scope": "runtime"
   },
