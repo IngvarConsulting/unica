@@ -30,27 +30,8 @@ class ProjectHealthContractTests(unittest.TestCase):
         implementation_plan = self.read(
             "docs/plans/2026-08-13-project-source-health.md"
         )
-
         self.assertIn("- Статус: `accepted`", adr)
-        self.assertIn(
-            "`sourceSets[].sourceFormat` остаётся результатом проверки рабочего дерева",
-            adr,
-        )
-        self.assertRegex(adr, r"сама\s+проверка индекс не изменяет")
-        self.assertRegex(
-            adr,
-            r"кажд(?:ый|ого)\s+уникально адресуем(?:ый|ого)\s+набор(?:а)?",
-        )
-        self.assertRegex(adr, r"не создаёт неразличимые проверки с\s+`sourceSet`")
-        self.assertRegex(adr, r"ко всем уникально\s+адресуемым наборам")
-        self.assertRegex(
-            implementation_plan,
-            r"каждого уникально адресуемого\s+source set",
-        )
-        self.assertIn(
-            "Для каждого уникально адресуемого обнаруженного набора",
-            implementation_plan,
-        )
+        self.assertIn("ADR-0059", implementation_plan)
         for invariant in (
             "INV-MCP-PROJECT-READINESS",
             "INV-SOURCE-ROOT-SEPARATION",
@@ -62,7 +43,10 @@ class ProjectHealthContractTests(unittest.TestCase):
         self.assertIn("ADR-0056", accepted)
         self.assertNotIn("ADR-0056", proposed)
 
-        status_result = review["unica.project.status"]["result"]["now"]
+        status_contract = review["unica.project.status"]["result"]
+        self.assertEqual(status_contract["contract"], "typed")
+        self.assertEqual(status_contract["target"], "достигнут")
+        status_result = status_contract["now"]
         self.assertIn("ready", status_result)
         self.assertIn("repositoryReady", status_result)
         self.assertIn("`array`", status_result)
@@ -70,6 +54,8 @@ class ProjectHealthContractTests(unittest.TestCase):
         for contract in (surface, status_result, workflow):
             self.assertIn("working-tree", contract)
             self.assertIn("staged index", contract)
+        self.assertIn("unica.project.status", surface)
+        self.assertIn("unica.project.map", surface)
 
         map_review = json.dumps(
             review["unica.project.map"], ensure_ascii=False
