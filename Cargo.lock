@@ -1872,6 +1872,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "unsafe-libyaml",
  "ureq",
  "url",
  "uuid",

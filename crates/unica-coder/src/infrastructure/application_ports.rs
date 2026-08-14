@@ -10,8 +10,8 @@ use crate::application::source_navigation::{
 };
 use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::application::{
-    project_map, project_status, AdapterOutcome, InvocationMode, ToolExecution, ToolHandler,
-    ToolSpec, TypedReadOutcome,
+    project_map, AdapterOutcome, InvocationMode, ToolExecution, ToolHandler, ToolSpec,
+    TypedReadOutcome,
 };
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
@@ -32,8 +32,7 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
 use crate::infrastructure::diagnostics::BslAnalyzerDiagnosticProvider;
 use crate::infrastructure::internal_adapters::{
-    BslAnalyzerMcpAdapter, CliAdapter, ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter,
-    RuntimeJobAdapter, StandardsAdapter,
+    BslAnalyzerMcpAdapter, CliAdapter, RuntimeAdapter, RuntimeJobAdapter, StandardsAdapter,
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
 use crate::infrastructure::native_operations::subsystem;
@@ -114,6 +113,22 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
     ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
         crate::infrastructure::operational_config::load_operational_config(&context.workspace_root)
+    }
+
+    fn inspect_project_health(
+        &self,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<
+        crate::domain::project_health::ProjectHealthSnapshot,
+        crate::domain::project_health::ProjectHealthInspectionError,
+    > {
+        crate::infrastructure::project_health::inspect_project_health(
+            context,
+            cancellation,
+            deadline,
+        )
     }
 
     fn read_metadata_local(
@@ -515,28 +530,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     handler
                 })
             }
-            ToolHandler::ProjectStatus => {
-                let source_map =
-                    crate::infrastructure::project_sources::discover_project_source_map(
-                        &context.workspace_root,
-                    );
-                if cancellation.is_cancelled() {
-                    return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
-                        "unica.project.status source-set discovery stopped",
-                    )));
-                }
-                let warning = match GitTrackingAdapter::new()
-                    .config_dump_info_warning(context, cancellation)
-                {
-                    ConfigDumpInfoGitCheck::Complete(warning) => warning,
-                    ConfigDumpInfoGitCheck::Cancelled => {
-                        return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
-                            "unica.project.status Git tracking check stopped",
-                        )));
-                    }
-                };
-                Ok(typed_read(project_status(context, source_map, warning)))
-            }
+            ToolHandler::ProjectStatus => Err(
+                "unica.project.status must be dispatched through the project health coordinator"
+                    .into(),
+            ),
             ToolHandler::ProjectMap => {
                 let source_map =
                     crate::infrastructure::project_sources::discover_project_source_map(
@@ -547,17 +544,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         "unica.project.map source-set discovery stopped",
                     )));
                 }
-                let warning = match GitTrackingAdapter::new()
-                    .config_dump_info_warning(context, cancellation)
-                {
-                    ConfigDumpInfoGitCheck::Complete(warning) => warning,
-                    ConfigDumpInfoGitCheck::Cancelled => {
-                        return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
-                            "unica.project.map Git tracking check stopped",
-                        )));
-                    }
-                };
-                Ok(typed_read(project_map(source_map, warning)))
+                Ok(typed_read(project_map(source_map)))
             }
             ToolHandler::BuildRuntime { command, .. } => {
                 CliAdapter::new("v8-runner", command, "build/runtime")

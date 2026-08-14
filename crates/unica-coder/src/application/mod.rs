@@ -26,6 +26,7 @@ pub(crate) mod operation_descriptors;
 pub(crate) mod operational_config;
 mod outcome;
 pub(crate) mod ports;
+pub(crate) mod project_health;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
@@ -621,7 +622,7 @@ pub fn tools() -> Vec<ToolSpec> {
     specs.extend([
         ToolSpec {
             name: "unica.project.status",
-            description: "Inspect current Unica workspace, source set, and cache state.",
+            description: "Inspect typed workspace, source-set, and portable Git readiness without changing the project.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
@@ -1332,6 +1333,9 @@ fn call_tool_observed(
                 operational_config.as_ref(),
                 cancellation,
             )?,
+            ToolHandler::ProjectStatus => {
+                project_health::invoke(ports, &context, cancellation, deadline)
+            }
             _ => ports.invoke_handler_with_operational_config(
                 spec,
                 args,
@@ -1414,8 +1418,15 @@ fn call_tool_observed(
             Err(result) => return Ok(*result),
         }
     } else {
-        ports.cache_report(&context, &events, mode, spec.cache_access)?
+        let cache = ports.cache_report(&context, &events, mode, spec.cache_access);
+        if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
+            return Ok(cancelled_operation_result(&context, mode));
+        }
+        cache?
     };
+    if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
+        return Ok(cancelled_operation_result(&context, mode));
+    }
     outcome.warnings.append(&mut cache.publication_warnings);
     if spec.execution.is_mutating() && !dry_run && outcome.ok && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
@@ -1442,6 +1453,9 @@ fn call_tool_observed(
     } else {
         outcome.artifacts
     };
+    if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
+        return Ok(cancelled_operation_result(&context, mode));
+    }
     Ok(OperationResult {
         ok: outcome.ok,
         summary: outcome.summary,
@@ -1461,6 +1475,40 @@ fn call_tool_observed(
             handler_outcome.job
         },
     })
+}
+
+fn cancelled_operation_result(context: &WorkspaceContext, mode: InvocationMode) -> OperationResult {
+    OperationResult {
+        ok: false,
+        summary: "operation cancelled".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec!["cancelled: operation stopped before result publication".to_string()],
+        artifacts: Vec::new(),
+        cache: CacheReport {
+            mode: match mode {
+                InvocationMode::Read => "read",
+                InvocationMode::Preview => "preview",
+                InvocationMode::Apply => "apply",
+            }
+            .to_string(),
+            root: context.cache_root.display().to_string(),
+            workspace_epoch: context.workspace_epoch,
+            events: Vec::new(),
+            invalidated: Vec::new(),
+            refreshed: Vec::new(),
+            lazy_rebuilt: Vec::new(),
+            stale: Vec::new(),
+            fresh: Vec::new(),
+            publication_warnings: Vec::new(),
+        },
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        data: None,
+        job: None,
+    }
 }
 
 fn enforce_result_contract(
@@ -2322,64 +2370,8 @@ pub(crate) struct TypedReadOutcome {
     pub(crate) data: Option<Value>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProjectStatusData {
-    workspace_root: String,
-    cache_root: String,
-    /// `null` when discovery failed: the caller must not read an empty list as
-    /// a workspace that has no source sets.
-    source_sets: Option<Vec<crate::domain::project_sources::ProjectSourceSet>>,
-}
-
-pub(crate) fn project_status(
-    context: &WorkspaceContext,
-    source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
-    tracked_config_dump_info_warning: Option<String>,
-) -> TypedReadOutcome {
-    let mut outcome = AdapterOutcome::ok(format!(
-        "workspace root: {}; cache root: {}",
-        context.workspace_root.display(),
-        context.cache_root.display()
-    ));
-    outcome
-        .artifacts
-        .push(context.workspace_root.display().to_string());
-    outcome
-        .artifacts
-        .push(context.cache_root.display().to_string());
-    let source_sets = match source_map {
-        Ok(source_map) => {
-            outcome
-                .summary
-                .push_str(&format!("; source sets: {}", source_map.source_sets.len()));
-            Some(source_map.source_sets)
-        }
-        Err(error) => {
-            outcome
-                .warnings
-                .push(format!("source-set discovery failed: {error}"));
-            None
-        }
-    };
-    if let Some(warning) = tracked_config_dump_info_warning {
-        outcome.warnings.push(warning);
-    }
-    let data = serde_json::to_value(ProjectStatusData {
-        workspace_root: context.workspace_root.display().to_string(),
-        cache_root: context.cache_root.display().to_string(),
-        source_sets,
-    })
-    .expect("project status data serializes");
-    TypedReadOutcome {
-        outcome,
-        data: Some(data),
-    }
-}
-
 pub(crate) fn project_map(
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
-    tracked_config_dump_info_warning: Option<String>,
 ) -> TypedReadOutcome {
     match source_map {
         Ok(source_map) => {
@@ -2389,9 +2381,6 @@ pub(crate) fn project_map(
             ));
             if let Some(error) = &source_map.source_selection_error {
                 outcome.warnings.push(error.clone());
-            }
-            if let Some(warning) = tracked_config_dump_info_warning {
-                outcome.warnings.push(warning);
             }
             // The map used to be serialized into `stdout`, which put a JSON
             // string inside the JSON envelope -- exactly the shape ADR-0020
@@ -2407,7 +2396,7 @@ pub(crate) fn project_map(
                 ok: false,
                 summary: "project map discovery failed".to_string(),
                 changes: Vec::new(),
-                warnings: tracked_config_dump_info_warning.into_iter().collect(),
+                warnings: Vec::new(),
                 errors: vec![error],
                 artifacts: Vec::new(),
                 stdout: None,
@@ -3268,6 +3257,7 @@ mod tests {
                     path: "src".to_string(),
                     source_format: crate::domain::project_sources::SourceFormat::PlatformXml,
                     format_evidence: Vec::new(),
+                    format_probe_error: None,
                 },
                 crate::domain::source_roots::ResolvedSourceRoot {
                     source_set: Some(request.source_set.clone()),
@@ -3458,6 +3448,7 @@ mod tests {
         load_calls: AtomicUsize,
         prepare_calls: AtomicUsize,
         handler_calls: AtomicUsize,
+        project_health_calls: AtomicUsize,
         code_context_calls: AtomicUsize,
         fail_load: bool,
         cancellation_on_load: Option<CancellationToken>,
@@ -3630,6 +3621,23 @@ mod tests {
                 );
             }
             Ok(crate::domain::operational_config::OperationalConfig::compiled_defaults())
+        }
+
+        fn inspect_project_health(
+            &self,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+            _deadline: ProviderDeadline,
+        ) -> Result<
+            crate::domain::project_health::ProjectHealthSnapshot,
+            crate::domain::project_health::ProjectHealthInspectionError,
+        > {
+            self.project_health_calls.fetch_add(1, Ordering::SeqCst);
+            Err(
+                crate::domain::project_health::ProjectHealthInspectionError::Fatal(
+                    "recording project health inspector stopped".into(),
+                ),
+            )
         }
 
         fn prepare_tool_invocation(
@@ -3821,9 +3829,11 @@ mod tests {
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
 
-        app.call_tool("unica.project.status", &Map::new()).unwrap();
+        let status = app.call_tool("unica.project.status", &Map::new()).unwrap();
+        assert!(!status.ok);
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ports.project_health_calls.load(Ordering::SeqCst), 1);
 
         for (tool_name, args) in [
             (
@@ -6219,13 +6229,89 @@ mod tests {
             .unwrap();
         assert!(result.ok);
         assert_eq!(result.cache.mode, "read");
-        assert!(result.summary.contains("workspace root"));
+        assert!(result.summary.contains("project health inspected"));
         let data = result.data.unwrap();
         assert!(data["workspaceRoot"].is_string());
         assert!(data["cacheRoot"].is_string());
+        assert!(data["ready"].is_boolean());
+        assert!(data["repositoryReady"].is_boolean());
+        assert!(data["checks"].is_array());
+        assert!(data["diagnostics"].is_array());
         // Discovery either proves the sets or says it could not: an empty list
         // must never stand in for "we did not look".
         assert!(data["sourceSets"].is_array() || data["sourceSets"].is_null());
+    }
+
+    #[test]
+    fn project_status_without_git_separates_source_and_repository_readiness() {
+        let root = temp_project_status_workspace("without-git", "src");
+        let mut args = Map::new();
+        args.insert("cwd".into(), Value::String(root.display().to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.status", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let data = result.data.unwrap();
+        assert_eq!(data["ready"], true);
+        assert_eq!(data["repositoryReady"], false);
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "git.repository_absent" }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_status_reports_workspace_root_source_set_without_mutation() {
+        let root = temp_project_status_workspace("root-source", ".");
+        let before = std::fs::read(root.join("v8project.yaml")).unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".into(), Value::String(root.display().to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.status", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let data = result.data.unwrap();
+        assert_eq!(data["ready"], false);
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "source_set.root_is_workspace" }));
+        assert_eq!(std::fs::read(root.join("v8project.yaml")).unwrap(), before);
+        assert!(!root.join(".build/unica/services").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn temp_project_status_workspace(name: &str, source_path: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "unica-project-status-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_root = if source_path == "." {
+            root.clone()
+        } else {
+            root.join(source_path)
+        };
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            format!(
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: {source_path}\n"
+            ),
+        )
+        .unwrap();
+        root
     }
 
     #[test]
@@ -6267,7 +6353,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_warns_when_config_dump_info_is_tracked_by_git() {
+    fn project_map_does_not_mix_git_health_into_source_map() {
         let root = test_workspace_root("project-map-tracked-cdfi");
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -6301,11 +6387,15 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("src/configdumpinfo.xml")
-                && warning.contains("git rm --cached")));
+        assert!(
+            result.warnings.iter().all(|warning| {
+                !warning.contains("ConfigDumpInfo.xml")
+                    && !warning.contains("git rm")
+                    && !warning.contains("manual review")
+            }),
+            "{:?}",
+            result.warnings
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -6388,7 +6478,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_classifies_config_dump_info_from_git_index_not_worktree() {
+    fn project_map_is_independent_of_config_dump_info_index_and_worktree_content() {
         let runtime_index = test_workspace_root("project-map-cdfi-runtime-index");
         std::fs::create_dir_all(runtime_index.join("epf")).unwrap();
         std::fs::write(
@@ -6429,11 +6519,15 @@ mod tests {
             .call_tool("unica.project.map", &args)
             .unwrap();
 
-        assert!(result.warnings.iter().any(|warning| {
-            warning.contains("epf/ConfigDumpInfo.xml")
-                && warning.contains("git rm --cached")
-                && warning.contains("workspace-relative paths")
-        }));
+        assert!(
+            result.warnings.iter().all(|warning| {
+                !warning.contains("ConfigDumpInfo.xml")
+                    && !warning.contains("git rm")
+                    && !warning.contains("manual review")
+            }),
+            "{:?}",
+            result.warnings
+        );
 
         let external_index = test_workspace_root("project-map-cdfi-external-index");
         std::fs::create_dir_all(external_index.join("epf")).unwrap();
@@ -6535,7 +6629,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_preserves_tracked_config_dump_info_warning_when_map_fails() {
+    fn project_map_failure_does_not_run_git_health_inspection() {
         let root = test_workspace_root("project-map-invalid-with-tracked-cdfi");
         std::fs::write(root.join("v8project.yaml"), "source-set: [").unwrap();
         std::fs::write(root.join("ConfigDumpInfo.xml"), "<ConfigDumpInfo/>").unwrap();
@@ -6557,11 +6651,7 @@ mod tests {
             .unwrap();
 
         assert!(!result.ok);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("ConfigDumpInfo.xml")
-                && warning.contains("git rm --cached")));
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -10285,23 +10375,37 @@ mod tests {
                 Ok(SupportGuardCheck::Allow)
             }
 
+            fn inspect_project_health(
+                &self,
+                _context: &WorkspaceContext,
+                cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<
+                crate::domain::project_health::ProjectHealthSnapshot,
+                crate::domain::project_health::ProjectHealthInspectionError,
+            > {
+                *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
+                if cancellation.is_cancelled() {
+                    return Err(
+                        crate::domain::project_health::ProjectHealthInspectionError::Cancelled,
+                    );
+                }
+                Err(
+                    crate::domain::project_health::ProjectHealthInspectionError::Fatal(
+                        "recording project health inspector expected cancellation".into(),
+                    ),
+                )
+            }
+
             fn invoke_handler(
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
                 _mode: InvocationMode,
-                cancellation: &CancellationToken,
+                _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
-                *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
-                if cancellation.is_cancelled() {
-                    return Ok(ports::HandlerOutcome::plain(AdapterOutcome::cancelled(
-                        "recording port stopped",
-                    )));
-                }
-                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                    "recording port completed",
-                )))
+                panic!("project.status must use inspect_project_health")
             }
 
             fn cache_report(
@@ -10351,6 +10455,175 @@ mod tests {
             .unwrap();
 
         assert!(!result.ok);
+        assert!(result.errors[0].starts_with("cancelled:"));
+    }
+
+    #[test]
+    fn cancellation_during_cache_report_wins_before_public_result_publication() {
+        struct CancellingCachePorts {
+            cancellation: CancellationToken,
+            fail_cache_report: bool,
+        }
+
+        impl ports::ApplicationPorts for CancellingCachePorts {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                let root = requested_cwd.unwrap_or_else(|| PathBuf::from("/workspace"));
+                Ok(WorkspaceContext {
+                    cwd: root.clone(),
+                    workspace_root: root.clone(),
+                    cache_root: root.join(".build/unica"),
+                    workspace_epoch: 1,
+                })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _mode: InvocationMode,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
+            }
+
+            fn inspect_project_health(
+                &self,
+                _context: &WorkspaceContext,
+                _cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<
+                crate::domain::project_health::ProjectHealthSnapshot,
+                crate::domain::project_health::ProjectHealthInspectionError,
+            > {
+                use crate::domain::project_health::{
+                    DiagnosticScope, ProjectCheckId, ProjectCheckObservation, ProjectCheckOutcome,
+                    ProjectHealthSnapshot,
+                };
+                use crate::domain::project_sources::{
+                    ProjectSourceSet, SourceFormat, SourceSetKind,
+                };
+
+                let observation = |id, source_set: Option<&str>| ProjectCheckObservation {
+                    id,
+                    scope: id.scope(),
+                    source_set: source_set.map(str::to_string),
+                    outcome: ProjectCheckOutcome::Completed,
+                };
+                let mut observations = ProjectCheckId::ALL
+                    .into_iter()
+                    .map(|id| {
+                        observation(
+                            id,
+                            (id.scope() == DiagnosticScope::SourceSet).then_some("main"),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                observations.extend(
+                    [
+                        ProjectCheckId::RepositoryIgnore,
+                        ProjectCheckId::RepositoryGeneratedPaths,
+                        ProjectCheckId::RepositoryConfigDumpInfo,
+                        ProjectCheckId::RepositoryAttributes,
+                        ProjectCheckId::RepositoryIndexEol,
+                        ProjectCheckId::RepositoryWorkingEol,
+                        ProjectCheckId::RepositoryLfs,
+                    ]
+                    .into_iter()
+                    .map(|id| observation(id, Some("main"))),
+                );
+                Ok(ProjectHealthSnapshot {
+                    workspace_root: "/workspace".into(),
+                    cache_root: "/workspace/.build/unica".into(),
+                    repository_root: Some("/workspace".into()),
+                    source_sets: Some(vec![ProjectSourceSet {
+                        name: "main".into(),
+                        kind: SourceSetKind::Configuration,
+                        path: "src".into(),
+                        source_format: SourceFormat::PlatformXml,
+                        format_evidence: vec!["src/Configuration.xml".into()],
+                        format_probe_error: None,
+                    }]),
+                    source_targets_complete: true,
+                    observations,
+                    facts: Vec::new(),
+                })
+            }
+
+            fn invoke_handler(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+                _mode: InvocationMode,
+                _cancellation: &CancellationToken,
+            ) -> Result<ports::HandlerOutcome, String> {
+                panic!("project.status must use the typed project-health coordinator")
+            }
+
+            fn cache_report(
+                &self,
+                context: &WorkspaceContext,
+                _events: &[DomainEvent],
+                _mode: InvocationMode,
+                _cache_access: CacheAccess,
+            ) -> Result<CacheReport, String> {
+                self.cancellation.cancel();
+                if self.fail_cache_report {
+                    return Err("competing cache report failure".into());
+                }
+                Ok(CacheReport {
+                    mode: "read".to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: Vec::new(),
+                    invalidated: Vec::new(),
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: Vec::new(),
+                    fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
+                })
+            }
+
+            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+        }
+
+        let cancellation = CancellationToken::new();
+        let ports = Arc::new(CancellingCachePorts {
+            cancellation: cancellation.clone(),
+            fail_cache_report: false,
+        });
+        let result = UnicaApplication::with_ports(ports)
+            .call_tool_cancellable("unica.project.status", &Map::new(), cancellation)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
+        assert!(result.errors[0].starts_with("cancelled:"));
+
+        let cancellation = CancellationToken::new();
+        let ports = Arc::new(CancellingCachePorts {
+            cancellation: cancellation.clone(),
+            fail_cache_report: true,
+        });
+        let result = UnicaApplication::with_ports(ports)
+            .call_tool_cancellable("unica.project.status", &Map::new(), cancellation)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
         assert!(result.errors[0].starts_with("cancelled:"));
     }
 
@@ -11616,12 +11889,12 @@ mod tests {
             outcome: AdapterOutcome::ok("reader omitted its typed payload"),
             data: None,
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect_err("successful typed reader without data must fail closed");
 
         assert_eq!(
             error,
-            "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+            "typed_result_missing: unica.project.map returned ok without OperationResult.data"
         );
     }
 
@@ -11634,12 +11907,12 @@ mod tests {
             outcome,
             data: Some(json!({"fixture": true})),
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect_err("successful typed reader must not duplicate data in stdout");
 
         assert_eq!(
             error,
-            "typed_result_textual: unica.project.status returned ok with a stdout duplicate"
+            "typed_result_textual: unica.project.map returned ok with a stdout duplicate"
         );
     }
 
@@ -11653,7 +11926,7 @@ mod tests {
             outcome,
             data: None,
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect("typed reader failure may omit data");
 
         assert!(!result.ok);

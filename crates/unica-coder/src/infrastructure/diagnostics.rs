@@ -747,6 +747,7 @@ mod bsl_diagnostics_provider_tests {
                 path: "src".to_string(),
                 source_format: SourceFormat::PlatformXml,
                 format_evidence: Vec::new(),
+                format_probe_error: None,
             };
             Self {
                 context: DiagnosticContext::new(

@@ -2,9 +2,8 @@ use crate::application::{
     AdapterOutcome, RuntimeJobAction, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
     DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
-use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::operational_config::OperationalConfig;
-use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
@@ -26,18 +25,20 @@ use crate::infrastructure::source_roots::resolve_source_root;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
-const GIT_TRACKING_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ProcessCommand {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    pub env: Vec<(OsString, OsString)>,
+    pub env_remove: Vec<OsString>,
+    pub capture_limits: Option<(usize, usize)>,
     pub timeout: Option<Duration>,
     pub cancellation: CancellationToken,
 }
@@ -51,6 +52,9 @@ pub struct ProcessOutput {
     pub timed_out: bool,
     pub cancelled: bool,
     pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_had_invalid_utf8: bool,
+    pub stderr_had_invalid_utf8: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +70,18 @@ pub struct ProcessStreamOutput {
 
 pub trait ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
+
+    fn run_with_input(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+    ) -> Result<ProcessOutput, String> {
+        if input.is_empty() {
+            self.run(command)
+        } else {
+            Err("process_failed: process runner does not support stdin".to_string())
+        }
+    }
 
     fn run_streaming(
         &self,
@@ -179,30 +195,6 @@ pub struct RuntimeJobAdapterOutcome {
 
 pub struct RuntimeJobAdapter;
 
-pub(crate) struct GitTrackingAdapter<'a> {
-    runner: &'a dyn ProcessRunner,
-    timeout: Duration,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ConfigDumpInfoGitCheck {
-    Complete(Option<String>),
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GitIndexPath {
-    path: String,
-    blob_oid: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GitBlobClassification {
-    Classified(ConfigDumpInfoXmlKind),
-    Inconclusive,
-    Cancelled,
-}
-
 pub struct BslAnalyzerMcpAdapter<'a> {
     runner: &'a dyn BslMcpRunner,
     process_runner: &'a dyn ProcessRunner,
@@ -314,6 +306,9 @@ impl<'a> CliAdapter<'a> {
             program: bundled_tool.program.clone(),
             args: process_args,
             cwd: context.cwd.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         })?;
@@ -364,268 +359,6 @@ impl<'a> CliAdapter<'a> {
             command: Some(command),
         })
     }
-}
-
-impl<'a> GitTrackingAdapter<'a> {
-    pub(crate) fn new() -> Self {
-        Self {
-            runner: &SYSTEM_PROCESS_RUNNER,
-            timeout: GIT_TRACKING_TIMEOUT,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_runner(runner: &'a dyn ProcessRunner) -> Self {
-        Self {
-            runner,
-            timeout: GIT_TRACKING_TIMEOUT,
-        }
-    }
-
-    pub(crate) fn config_dump_info_warning(
-        &self,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-    ) -> ConfigDumpInfoGitCheck {
-        if cancellation.is_cancelled() {
-            return ConfigDumpInfoGitCheck::Cancelled;
-        }
-        let started = Instant::now();
-        let deadline = started.checked_add(self.timeout).unwrap_or(started);
-
-        let output = match self.runner.run(&ProcessCommand {
-            program: PathBuf::from("git"),
-            args: [
-                "ls-files",
-                "--cached",
-                "--stage",
-                "-z",
-                "--",
-                ":(icase)ConfigDumpInfo.xml",
-                ":(icase,glob)**/ConfigDumpInfo.xml",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            cwd: context.workspace_root.clone(),
-            timeout: Some(self.timeout),
-            cancellation: cancellation.clone(),
-        }) {
-            Ok(output) => output,
-            Err(error) if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) => {
-                return ConfigDumpInfoGitCheck::Cancelled;
-            }
-            Err(_) => return ConfigDumpInfoGitCheck::Complete(None),
-        };
-
-        if output.cancelled || cancellation.is_cancelled() {
-            return ConfigDumpInfoGitCheck::Cancelled;
-        }
-        if output.timed_out {
-            return ConfigDumpInfoGitCheck::Complete(Some(format!(
-                "ConfigDumpInfo.xml Git tracking check timed out after {} seconds; project inspection continued without tracking diagnostics",
-                self.timeout.as_secs()
-            )));
-        }
-        if output.stdout_truncated {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check exceeded its bounded output capture; inspect the Git index manually because the tracked-path list is incomplete"
-                    .to_string(),
-            ));
-        }
-        if output.stdout.contains('\u{fffd}') {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check returned non-UTF-8 paths; inspect the Git index manually because matching paths cannot be classified safely"
-                    .to_string(),
-            ));
-        }
-        if !output.status_success {
-            return ConfigDumpInfoGitCheck::Complete(None);
-        }
-
-        let Some(index_paths) = parse_git_index_paths(&output.stdout) else {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check returned an unrecognized index record; inspect matching tracked paths manually"
-                    .to_string(),
-            ));
-        };
-        if index_paths.is_empty() {
-            return ConfigDumpInfoGitCheck::Complete(None);
-        }
-
-        let mut runtime_paths = Vec::new();
-        let mut ambiguous_paths = Vec::new();
-        let mut blob_cache = BTreeMap::new();
-        let mut entries = index_paths.into_iter();
-        while let Some(entry) = entries.next() {
-            if cancellation.is_cancelled() {
-                return ConfigDumpInfoGitCheck::Cancelled;
-            }
-            if Instant::now() >= deadline {
-                ambiguous_paths.push(entry.path);
-                ambiguous_paths.extend(entries.map(|remaining| remaining.path));
-                break;
-            }
-            let Some(oid) = entry.blob_oid else {
-                ambiguous_paths.push(entry.path);
-                continue;
-            };
-            let classification = if let Some(cached) = blob_cache.get(&oid) {
-                *cached
-            } else {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let Some(remaining) = (!remaining.is_zero()).then_some(remaining) else {
-                    ambiguous_paths.push(entry.path);
-                    continue;
-                };
-                let classification = self.classify_git_blob(context, &oid, remaining, cancellation);
-                if classification != GitBlobClassification::Cancelled {
-                    blob_cache.insert(oid, classification);
-                }
-                classification
-            };
-            match classification {
-                GitBlobClassification::Cancelled => {
-                    return ConfigDumpInfoGitCheck::Cancelled;
-                }
-                GitBlobClassification::Classified(ConfigDumpInfoXmlKind::RuntimeSidecar) => {
-                    runtime_paths.push(entry.path);
-                }
-                GitBlobClassification::Classified(
-                    ConfigDumpInfoXmlKind::ExternalProcessor
-                    | ConfigDumpInfoXmlKind::ExternalReport
-                    | ConfigDumpInfoXmlKind::MetadataDescriptor,
-                ) => {}
-                GitBlobClassification::Classified(ConfigDumpInfoXmlKind::Other)
-                | GitBlobClassification::Inconclusive => {
-                    ambiguous_paths.push(entry.path);
-                }
-            }
-        }
-
-        ConfigDumpInfoGitCheck::Complete(config_dump_info_warnings(runtime_paths, ambiguous_paths))
-    }
-
-    fn classify_git_blob(
-        &self,
-        context: &WorkspaceContext,
-        oid: &str,
-        timeout: Duration,
-        cancellation: &CancellationToken,
-    ) -> GitBlobClassification {
-        let output = match self.runner.run(&ProcessCommand {
-            program: PathBuf::from("git"),
-            args: ["--no-replace-objects", "cat-file", "blob", oid]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            cwd: context.workspace_root.clone(),
-            timeout: Some(timeout),
-            cancellation: cancellation.clone(),
-        }) {
-            Ok(output) => output,
-            Err(error) if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) => {
-                return GitBlobClassification::Cancelled;
-            }
-            Err(_) => return GitBlobClassification::Inconclusive,
-        };
-        if output.cancelled || cancellation.is_cancelled() {
-            return GitBlobClassification::Cancelled;
-        }
-        if output.timed_out
-            || output.stdout_truncated
-            || output.stdout.contains('\u{fffd}')
-            || !output.status_success
-        {
-            return GitBlobClassification::Inconclusive;
-        }
-        GitBlobClassification::Classified(config_dump_info_xml_kind(output.stdout.as_bytes()))
-    }
-}
-
-fn parse_git_index_paths(stdout: &str) -> Option<Vec<GitIndexPath>> {
-    #[derive(Default)]
-    struct EntryState {
-        records: usize,
-        blob_oid: Option<String>,
-    }
-
-    let mut entries = BTreeMap::<String, EntryState>::new();
-    for record in stdout.split('\0').filter(|record| !record.is_empty()) {
-        let (metadata, path) = record.split_once('\t')?;
-        if path.is_empty() {
-            return None;
-        }
-        let fields = metadata.split_whitespace().collect::<Vec<_>>();
-        if fields.len() != 3 {
-            return None;
-        }
-        let mode = fields[0];
-        let oid = fields[1];
-        let stage = fields[2];
-        let usable_blob = matches!(mode, "100644" | "100755")
-            && stage == "0"
-            && !oid.is_empty()
-            && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
-            && oid.bytes().any(|byte| byte != b'0');
-        let entry = entries.entry(path.to_string()).or_default();
-        entry.records += 1;
-        if entry.records == 1 && usable_blob {
-            entry.blob_oid = Some(oid.to_string());
-        } else {
-            entry.blob_oid = None;
-        }
-    }
-    Some(
-        entries
-            .into_iter()
-            .map(|(path, state)| GitIndexPath {
-                path,
-                blob_oid: state.blob_oid,
-            })
-            .collect(),
-    )
-}
-
-fn config_dump_info_warnings(
-    mut runtime_paths: Vec<String>,
-    mut ambiguous_paths: Vec<String>,
-) -> Option<String> {
-    runtime_paths.sort();
-    runtime_paths.dedup();
-    ambiguous_paths.sort();
-    ambiguous_paths.dedup();
-    let mut warnings = Vec::new();
-    if !runtime_paths.is_empty() {
-        warnings.push(format!(
-            "per-infobase ConfigDumpInfo.xml runtime state is tracked by Git at {}; from the workspace root, remove only these paths with `git rm --cached -- <path>` and add the same workspace-relative paths to that workspace's .gitignore",
-            format_git_paths(runtime_paths.iter().map(String::as_str))
-        ));
-    }
-    if !ambiguous_paths.is_empty() {
-        warnings.push(manual_config_dump_info_warning(
-            ambiguous_paths.iter().map(String::as_str),
-            "the staged blob classification is inconclusive",
-        ));
-    }
-    (!warnings.is_empty()).then(|| warnings.join("; "))
-}
-
-fn manual_config_dump_info_warning<'a>(
-    paths: impl Iterator<Item = &'a str>,
-    reason: &str,
-) -> String {
-    format!(
-        "tracked ConfigDumpInfo.xml paths require manual review at {} because {reason}; keep platform-generated runtime sidecars out of Git, but do not untrack legitimate metadata object descriptors with the same filename",
-        format_git_paths(paths)
-    )
-}
-
-fn format_git_paths<'a>(paths: impl Iterator<Item = &'a str>) -> String {
-    paths
-        .map(|path| serde_json::to_string(path).expect("Git path serializes as JSON string"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 impl<'a> RuntimeAdapter<'a> {
@@ -724,6 +457,9 @@ impl<'a> RuntimeAdapter<'a> {
             program: bundled_tool.program.clone(),
             args: execution_args,
             cwd: context.cwd.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
@@ -1801,6 +1537,9 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 program: bundled_tool.program,
                 args: process_args,
                 cwd: context.cwd.clone(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(process_timeout),
                 cancellation: cancellation.clone(),
             },
@@ -2090,10 +1829,33 @@ impl ProcessRunner for SystemProcessRunner {
             program: command.program.clone(),
             args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
-            env: Vec::new(),
+            env: command.env.clone(),
+            env_remove: command.env_remove.clone(),
+            capture_limits: command.capture_limits,
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
         })?;
+        Ok(map_managed_process_output(output))
+    }
+
+    fn run_with_input(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+    ) -> Result<ProcessOutput, String> {
+        let output = ManagedChild::run_with_input(
+            ManagedCommand {
+                program: command.program.clone(),
+                args: command.args.iter().map(Into::into).collect(),
+                cwd: command.cwd.clone(),
+                env: command.env.clone(),
+                env_remove: command.env_remove.clone(),
+                capture_limits: command.capture_limits,
+                timeout: command.timeout,
+                cancellation: command.cancellation.clone(),
+            },
+            input.to_vec(),
+        )?;
         Ok(map_managed_process_output(output))
     }
 
@@ -2107,7 +1869,9 @@ impl ProcessRunner for SystemProcessRunner {
             program: command.program.clone(),
             args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
-            env: Vec::new(),
+            env: command.env.clone(),
+            env_remove: command.env_remove.clone(),
+            capture_limits: command.capture_limits,
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
         })?;
@@ -2118,6 +1882,9 @@ impl ProcessRunner for SystemProcessRunner {
 
 fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
     let stdout_truncated = output.stdout_truncated;
+    let stderr_truncated = output.stderr_truncated;
+    let stdout_had_invalid_utf8 = output.stdout_had_invalid_utf8;
+    let stderr_had_invalid_utf8 = output.stderr_had_invalid_utf8;
     ensure_truncation_diagnostics(&mut output);
     let output = ProcessOutput {
         status_success: output.status_success,
@@ -2127,6 +1894,9 @@ fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
         timed_out: output.timed_out,
         cancelled: output.cancelled,
         stdout_truncated,
+        stderr_truncated,
+        stdout_had_invalid_utf8,
+        stderr_had_invalid_utf8,
     };
     debug_assert!(!(output.timed_out && output.cancelled));
     output
@@ -3180,361 +2950,6 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn config_dump_info_git_check_uses_bounded_cancellable_process() {
-        let context = temp_context("tracked-config-dump-info");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "100644 0000000000000000000000000000000000000000 0\tnested/ConfigDumpInfo.xml\0",
-                    "100644 0000000000000000000000000000000000000000 0\tsrc/ConfigDumpInfo.xml\0",
-                )
-                .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-        let cancellation = CancellationToken::new();
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &cancellation);
-
-        assert_eq!(
-            result,
-            ConfigDumpInfoGitCheck::Complete(Some(
-                "tracked ConfigDumpInfo.xml paths require manual review at \"nested/ConfigDumpInfo.xml\", \"src/ConfigDumpInfo.xml\" because the staged blob classification is inconclusive; keep platform-generated runtime sidecars out of Git, but do not untrack legitimate metadata object descriptors with the same filename"
-                    .to_string()
-            ))
-        );
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].program, PathBuf::from("git"));
-        assert_eq!(
-            commands[0].args,
-            [
-                "ls-files",
-                "--cached",
-                "--stage",
-                "-z",
-                "--",
-                ":(icase)ConfigDumpInfo.xml",
-                ":(icase,glob)**/ConfigDumpInfo.xml",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-        );
-        assert_eq!(commands[0].cwd, context.workspace_root);
-        assert_eq!(commands[0].timeout, Some(GIT_TRACKING_TIMEOUT));
-        assert!(!commands[0].cancellation.is_cancelled());
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_reports_truncated_index_output_as_incomplete() {
-        let context = temp_context("tracked-config-dump-info-truncated");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: false,
-                status: "exit status: 0".to_string(),
-                stdout: "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tConfigDumpInfo.xml"
-                    .to_string(),
-                stderr: "stdout capture truncated".to_string(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: true,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("truncated Git output must remain visible");
-        };
-        assert!(warning.contains("tracked-path list is incomplete"));
-        assert!(!warning.contains("git rm --cached"));
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_does_not_suggest_removal_when_blob_is_truncated() {
-        let context = temp_context("tracked-config-dump-info-truncated-blob");
-        fs::create_dir_all(context.workspace_root.join("epf")).unwrap();
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-            ),
-        )
-        .unwrap();
-        let runner = SequenceProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tepf/ConfigDumpInfo.xml\0"
-                        .to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                },
-                ProcessOutput {
-                    status_success: false,
-                    status: "exit status: 0".to_string(),
-                    stdout: "<MetaDataObject>".to_string(),
-                    stderr: "stdout capture truncated".to_string(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: true,
-                },
-            ]),
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("truncated index blob must require manual review");
-        };
-        assert!(warning.contains("manual review"));
-        assert!(!warning.contains("git rm --cached"));
-        assert_eq!(runner.commands.borrow().len(), 2);
-        assert_eq!(
-            runner.commands.borrow()[1].args,
-            [
-                "--no-replace-objects",
-                "cat-file",
-                "blob",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-        );
-
-        let lossy_runner = SequenceProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tepf/ConfigDumpInfo.xml\0"
-                        .to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                },
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "<MetaDataObject><ExternalDataProcessor><Comment>\u{fffd}</Comment></ExternalDataProcessor></MetaDataObject>"
-                        .to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                },
-            ]),
-        };
-
-        let result = GitTrackingAdapter::with_runner(&lossy_runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("lossy index blob must require manual review");
-        };
-        assert!(warning.contains("manual review"));
-        assert!(!warning.contains("git rm --cached"));
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_index_parser_marks_unmerged_and_intent_to_add_as_ambiguous() {
-        let entries = parse_git_index_paths(concat!(
-            "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tconflict/ConfigDumpInfo.xml\0",
-            "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\tconflict/ConfigDumpInfo.xml\0",
-            "100644 0000000000000000000000000000000000000000 0\tnew/ConfigDumpInfo.xml\0",
-            "100644 cccccccccccccccccccccccccccccccccccccccc 0\tvalid/ConfigDumpInfo.xml\0",
-        ))
-        .unwrap();
-
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].path, "conflict/ConfigDumpInfo.xml");
-        assert_eq!(entries[0].blob_oid, None);
-        assert_eq!(entries[1].path, "new/ConfigDumpInfo.xml");
-        assert_eq!(entries[1].blob_oid, None);
-        assert_eq!(
-            entries[2].blob_oid.as_deref(),
-            Some("cccccccccccccccccccccccccccccccccccccccc")
-        );
-    }
-
-    #[test]
-    fn config_dump_info_warning_escapes_unusual_git_paths() {
-        assert_eq!(
-            format_git_paths(
-                [
-                    "line\nbreak/ConfigDumpInfo.xml",
-                    "comma,path/ConfigDumpInfo.xml"
-                ]
-                .into_iter()
-            ),
-            r#""line\nbreak/ConfigDumpInfo.xml", "comma,path/ConfigDumpInfo.xml""#
-        );
-    }
-
-    #[test]
-    fn config_dump_info_git_check_keeps_unmerged_runtime_path_non_destructive() {
-        let context = temp_context("tracked-config-dump-info-unmerged-runtime");
-        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: main\n",
-                "    type: CONFIGURATION\n",
-                "    path: src\n",
-            ),
-        )
-        .unwrap();
-        fs::write(
-            context.workspace_root.join("src/Configuration.xml"),
-            "<MetaDataObject/>",
-        )
-        .unwrap();
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tsrc/ConfigDumpInfo.xml\0",
-                    "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\tsrc/ConfigDumpInfo.xml\0",
-                )
-                .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("unmerged index stages must require manual review");
-        };
-        assert!(warning.contains("manual review"));
-        assert!(warning.contains("src/ConfigDumpInfo.xml"));
-        assert!(!warning.contains("git rm --cached"));
-        assert_eq!(runner.commands.borrow().len(), 1);
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_rejects_lossy_index_paths() {
-        let context = temp_context("tracked-config-dump-info-lossy-path");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tbad\u{fffd}/ConfigDumpInfo.xml\0"
-                    .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("lossy Git paths must remain visible");
-        };
-        assert!(warning.contains("non-UTF-8 paths"));
-        assert!(!warning.contains("git rm --cached"));
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_propagates_process_cancellation() {
-        let context = temp_context("tracked-config-dump-info-cancelled");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: false,
-                status: "cancelled".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: true,
-                stdout_truncated: false,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        assert_eq!(result, ConfigDumpInfoGitCheck::Cancelled);
-        assert_eq!(
-            runner.commands.borrow()[0].timeout,
-            Some(GIT_TRACKING_TIMEOUT)
-        );
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_reports_timeout_without_failing_inspection() {
-        let context = temp_context("tracked-config-dump-info-timeout");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: false,
-                status: "timed out".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: true,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("timeout should remain a non-fatal project warning");
-        };
-        assert!(warning.contains("timed out after 5 seconds"));
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
     fn standards_search_maps_to_v8std_search_request() {
         let mut args = Map::new();
         args.insert("query".to_string(), json!("modal windows"));
@@ -3591,6 +3006,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3631,6 +3049,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3771,6 +3192,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3820,6 +3244,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3916,6 +3343,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -4110,6 +3540,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = json!({
@@ -4172,6 +3605,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = json!({
@@ -4231,6 +3667,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = bounded_external_epf_args();
@@ -4276,6 +3715,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = bounded_external_epf_args();
@@ -4832,6 +4274,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5230,6 +4675,9 @@ analyze_timeout_seconds = 900
             timed_out: false,
             cancelled: false,
             stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
         }
     }
 
@@ -5464,6 +4912,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5494,6 +4945,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let cancellation = CancellationToken::new();
@@ -5526,6 +4980,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: true,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5549,6 +5006,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: true,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5575,6 +5035,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5606,6 +5069,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5637,6 +5103,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5664,6 +5133,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5696,6 +5168,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5737,6 +5212,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5825,6 +5303,9 @@ analyze_timeout_seconds = 900
                     "--nocapture".to_string(),
                 ],
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: CancellationToken::new(),
             })
@@ -5860,6 +5341,33 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
+    fn system_process_runner_honors_larger_bounded_capture_limit() {
+        let output = SYSTEM_PROCESS_RUNNER
+            .run(&ProcessCommand {
+                program: std::env::current_exe().unwrap(),
+                args: vec![
+                    "--ignored".to_string(),
+                    "--exact".to_string(),
+                    "infrastructure::internal_adapters::tests::system_process_runner_large_stdout_helper"
+                        .to_string(),
+                    "--nocapture".to_string(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: Some((8 * 1024 * 1024, 256 * 1024)),
+                timeout: Some(Duration::from_secs(10)),
+                cancellation: CancellationToken::new(),
+            })
+            .unwrap();
+
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.stdout_truncated);
+        assert!(output.stdout.len() > 1024 * 1024);
+        assert!(output.stdout.contains("large-stdout-complete"));
+    }
+
+    #[test]
     fn system_process_runner_drains_large_stderr_while_running() {
         let output = SYSTEM_PROCESS_RUNNER
             .run(&ProcessCommand {
@@ -5872,6 +5380,9 @@ analyze_timeout_seconds = 900
                     "--nocapture".to_string(),
                 ],
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: CancellationToken::new(),
             })
@@ -5904,6 +5415,9 @@ analyze_timeout_seconds = 900
                 program: command.program,
                 args: command.args,
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: None,
                 cancellation: CancellationToken::new(),
             })
@@ -5925,6 +5439,9 @@ analyze_timeout_seconds = 900
                 program: command.program,
                 args: command.args,
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: token,
             })
@@ -6026,6 +5543,41 @@ analyze_timeout_seconds = 900
         }
     }
 
+    #[test]
+    fn default_process_runner_rejects_nonempty_stdin_without_running_command() {
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let command = ProcessCommand {
+            program: PathBuf::from("unused"),
+            args: Vec::new(),
+            cwd: PathBuf::from("."),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        };
+
+        let error = runner.run_with_input(&command, b"nonempty").unwrap_err();
+
+        assert_eq!(
+            error,
+            "process_failed: process runner does not support stdin"
+        );
+    }
+
     struct FailingProcessRunner {
         error: String,
     }
@@ -6045,18 +5597,6 @@ analyze_timeout_seconds = 900
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.commands.borrow_mut().push(command.clone());
             Ok(self.output.clone())
-        }
-    }
-
-    struct SequenceProcessRunner {
-        commands: RefCell<Vec<ProcessCommand>>,
-        outputs: RefCell<Vec<ProcessOutput>>,
-    }
-
-    impl ProcessRunner for SequenceProcessRunner {
-        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-            self.commands.borrow_mut().push(command.clone());
-            Ok(self.outputs.borrow_mut().remove(0))
         }
     }
 
@@ -6208,7 +5748,13 @@ fn managed_truncation_is_visible_at_process_adapter_boundary() {
         cancelled: false,
         stdout_truncated: true,
         stderr_truncated: true,
+        stdout_had_invalid_utf8: true,
+        stderr_had_invalid_utf8: true,
     });
     assert!(output.stderr.contains("stdout capture truncated"));
     assert!(output.stderr.contains("earlier stderr diagnostics omitted"));
+    assert!(output.stdout_truncated);
+    assert!(output.stderr_truncated);
+    assert!(output.stdout_had_invalid_utf8);
+    assert!(output.stderr_had_invalid_utf8);
 }

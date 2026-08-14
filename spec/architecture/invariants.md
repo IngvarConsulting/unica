@@ -428,7 +428,7 @@ Unica. Каждая запись формулирует одно нормати�
   `building` возвращает `index_pending`, остальные неготовые состояния —
   `index_unavailable`, а пустой список при `ready` означает доказанное
   отсутствие совпадений.
-- **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0060
+- **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0061
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`
@@ -444,11 +444,26 @@ Unica. Каждая запись формулирует одно нормати�
   публичные поля не содержат абсолютный физический путь, а безопасное
   относительное наблюдение без доказуемой цели явно имеет
   `location.kind=unaddressable`.
-- **Decision:** ADR-0061
+- **Decision:** ADR-0062
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
 - **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
+- **Scope:** source, packaged, runtime
+
+### INV-MCP-PROJECT-READINESS — Готовность проекта публикуется двумя независимыми контурами
+
+- **Rule:** `unica.project.status` остаётся единственной полной читающей
+  инспекцией проекта и при достоверном снимке возвращает в типизированных
+  `data` независимые `ready` и `repositoryReady`, полные общие и адресные по
+  уникально адресуемому набору `checks[]`, а также `diagnostics[]` с `ok=true`
+  даже при найденных проблемах проекта, тогда как
+  `unica.project.map` возвращает только карту наборов исходников и не запускает
+  проверки Git.
+- **Decision:** ADR-0060
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
+- **Check:** `doc-assert` — `tests/ci/test_project_health_contract.py`
 - **Scope:** source, packaged, runtime
 
 ### INV-MCP-PREVIEW-MUTATION-ONLY — Предпросмотр принадлежит мутации
@@ -787,7 +802,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0040, ADR-0056, ADR-0058, ADR-0061
+- **Decision:** ADR-0040, ADR-0056, ADR-0058, ADR-0062
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
@@ -816,7 +831,7 @@ Unica. Каждая запись формулирует одно нормати�
   отдельных секциях; полезный ответ одного поставщика допускает только явно
   частичный общий результат другого, а отмена всего вызова не публикует
   частичный набор.
-- **Decision:** ADR-0062
+- **Decision:** ADR-0063
 - **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
 - **Scope:** source, runtime
@@ -991,6 +1006,35 @@ Unica. Каждая запись формулирует одно нормати�
 
 ## SOURCE — наборы исходников рабочего пространства
 
+### INV-SOURCE-ROOT-SEPARATION — Корень исходников отделён от рабочего пространства
+
+- **Rule:** Полная инспекция считает каждый уникально адресуемый корень набора
+  исходников строгим потомком корня рабочего пространства, поэтому равенство
+  после нормализации или разрешения физической идентичности, включая `path: .`,
+  `./` и ссылочный псевдоним, даёт одну первичную ошибку
+  `source_set.root_is_workspace`, закрывает `ready` и не порождает производные
+  ошибки о служебных путях внутри того же корня.
+- **Decision:** ADR-0060
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/layout.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
+- **Scope:** source, runtime
+
+### INV-SOURCE-PORTABLE-GIT — Переносимость Git доказывается содержимым репозитория
+
+- **Rule:** `repositoryReady` вычисляется отдельно от `ready` и требует
+  отслеживаемых правил исключений, ролевой классификации атрибутов и окончаний
+  строк выгрузки платформы и безопасной классификации подготовленного
+  `ConfigDumpInfo.xml`; локальные правила не считаются переносимыми, а отдельное
+  хранилище больших файлов предлагается только как необязательная подсказка и
+  не меняет ни один флаг.
+- **Decision:** ADR-0060
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/project_health.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/git.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
+- **Scope:** source, runtime
+
 ### INV-SOURCE-PER-SET-FORMAT — Формат — свойство набора исходников
 
 - **Rule:** `unica.project.map` сообщает `sourceSets[]`, и каждая запись несёт
@@ -1036,11 +1080,17 @@ Unica. Каждая запись формулирует одно нормати�
   запроса, иначе побеждает набор исходников с именем `main`, а за ним —
   единственный набор исходников конфигурации; разрешённый корень нормализуется,
   остаётся внутри рабочего пространства и служит тем же корнем для анализатора,
-  индекса, идентичности сервиса, `unica.project.status` и `unica.project.map`.
-- **Decision:** ADR-0006
+  индекса и идентичности сервиса. Этот выбор не сужает карту проекта:
+  `unica.project.map` публикует все наборы, а `unica.project.status` проверяет
+  каждый уникально адресуемый набор. Группа с повторяющимся именем получает
+  одну диагностику рабочего пространства с полным `count` и не создаёт
+  неразличимые проверки с `sourceSet`, потому что этот ключ не различает записи
+  этой группы.
+- **Decision:** ADR-0006, ADR-0060
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/tool_context.rs`
-- **Scope:** runtime
+- **Check:** `ci-test` — `tests/ci/test_project_health_contract.py`
+- **Scope:** source, runtime
 
 ### INV-SOURCE-LOGICAL-IDENTITY — Точная цель не зависит от файловой раскладки
 
@@ -1079,7 +1129,7 @@ Unica. Каждая запись формулирует одно нормати�
   них, отклоняет одновременную передачу обоих стабильным `selector_conflict` до
   вызова обработчика и отвечает на логический вызов теми же типизированными
   данными, что на файловый.
-- **Decision:** ADR-0063
+- **Decision:** ADR-0064
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs`
 - **Scope:** source, runtime
@@ -1092,7 +1142,7 @@ Unica. Каждая запись формулирует одно нормати�
   `directSwitch` требует поинструментного решения и атомарной смены всего
   публичного контура; единственный действующий прямой переход принадлежит
   `unica.code.diagnostics`, остальные читатели остаются в режиме `bridge`.
-- **Decision:** ADR-0063
+- **Decision:** ADR-0064
 - **Check:** `ci-test` — `tests/ci/test_architecture_registry.py`
 - **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`

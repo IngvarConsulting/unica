@@ -57,7 +57,7 @@
 
 | Группа | Назначение | Где реализована |
 | --- | --- | --- |
-| `unica.project.*` | состояние рабочего пространства и карта наборов исходников | `infrastructure/application_ports.rs` поверх `infrastructure/project_sources.rs` и `GitTrackingAdapter` |
+| `unica.project.*` | типизированная готовность проекта и карта наборов исходников | координатор `application/project_health.rs` через порт `application/ports.rs`, инспекторы `infrastructure/project_health/` и отдельная карта `infrastructure/project_sources.rs` (INV-MCP-PROJECT-READINESS) |
 | `unica.cf.*` | контейнер конфигурации: создание, чтение, правка, валидация | `infrastructure/native_operations/cf.rs` |
 | `unica.cfe.*` | расширения конфигурации: создание, заимствование, перехват, сравнение | `native_operations/cfe.rs` |
 | `unica.meta.*` | создание, чтение, типизированная правка и удаление объектов метаданных | координатор `application/metadata.rs` поверх `infrastructure/metadata_operations.rs`; индексное обогащение `meta.info` остаётся приватной возможностью `infrastructure/rlm_navigation.rs` (ADR-0025, INV-MCP-META-SURFACE) |
@@ -213,10 +213,13 @@ runtime для операций платформы, поставляемый а�
 - `application_ports` — `InfrastructureApplicationPorts`, единственная
   реализация `ApplicationPorts`, связываемая композиционным корнем (INV-APP-NO-ADAPTER-BYPASS).
 - `internal_adapters` — `CliAdapter`, `RuntimeAdapter`, `RuntimeJobAdapter`,
-  `GitTrackingAdapter`, `BslAnalyzerMcpAdapter` и `StandardsAdapter`.
-  `GitTrackingAdapter`
-  крейт-приватен: `unica.project.status` и `unica.project.map` читают состояние
-  отслеживания в git через него, а не запускают `git` сами (INV-APP-NO-DIRECT-GIT).
+  `BslAnalyzerMcpAdapter` и `StandardsAdapter`.
+- `project_health` — читающий инфраструктурный композитор топологии,
+  переносимого Git-состояния и ролевой политики ресурсов. Слой application
+  получает только типизированный снимок через порт и не запускает `git`.
+  `unica.project.status` использует этот композитор; `unica.project.map` не выполняет Git-проверок
+  (INV-APP-NO-DIRECT-GIT,
+  INV-MCP-PROJECT-READINESS, INV-SOURCE-PORTABLE-GIT).
 - `code_intelligence` — инфраструктурные адаптеры текущих реализаций ролей
   `semantic`, `symbol`, `lexical` (`rlm`, `bsl-analyzer`, `git-grep`), их
   команды, разбор ответов, локализация попаданий и отображение состояний.

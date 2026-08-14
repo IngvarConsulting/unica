@@ -1480,6 +1480,7 @@ mod tests {
                     path: "src".to_string(),
                     source_format: SourceFormat::PlatformXml,
                     format_evidence: Vec::new(),
+                    format_probe_error: None,
                 },
                 ResolvedSourceRoot {
                     source_set: Some(request.source_set.clone()),

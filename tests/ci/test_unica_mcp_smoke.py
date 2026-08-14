@@ -358,6 +358,63 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 else:
                     self.assertNotIn("dryRun", properties)
 
+    def test_project_status_publishes_typed_readiness_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            (root / "src").mkdir(parents=True)
+            (root / "src/Configuration.xml").write_text(
+                "<MetaDataObject/>\n", encoding="utf-8"
+            )
+            (root / "v8project.yaml").write_text(
+                "format: DESIGNER\n"
+                "source-set:\n"
+                "  - name: main\n"
+                "    type: CONFIGURATION\n"
+                "    path: src\n",
+                encoding="utf-8",
+            )
+            before = snapshot_workspace_files(root)
+            with self.mcp_session(
+                cache_dir=Path(tmp) / "cache", workdir=root
+            ) as request:
+                response = request(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "unica.project.status",
+                            "arguments": {"cwd": str(root)},
+                        },
+                    }
+                )
+
+            self.assertNotIn("error", response, response)
+            self.assertFalse(response["result"]["isError"])
+            payload = json.loads(response["result"]["content"][0]["text"])
+            if "structuredContent" in response["result"]:
+                self.assertEqual(payload, response["result"]["structuredContent"])
+            self.assertTrue(payload["ok"])
+            self.assertEqual(
+                set(payload["data"]),
+                {
+                    "workspaceRoot",
+                    "cacheRoot",
+                    "ready",
+                    "repositoryReady",
+                    "checks",
+                    "sourceSets",
+                    "diagnostics",
+                },
+            )
+            self.assertTrue(payload["data"]["ready"])
+            self.assertFalse(payload["data"]["repositoryReady"])
+            self.assertIn(
+                "git.repository_absent",
+                {item["code"] for item in payload["data"]["diagnostics"]},
+            )
+            self.assertEqual(snapshot_workspace_files(root), before)
+
     def test_reader_dry_run_rejection_precedes_workspace_and_target_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "missing-workspace"
