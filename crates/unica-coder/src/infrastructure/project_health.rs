@@ -992,17 +992,17 @@ mod tests {
         {
             return;
         }
-        fs::create_dir_all(repository_root.join("modules/SRC")).unwrap();
+        fs::create_dir_all(repository_root.join("modules")).unwrap();
         let root = crate::infrastructure::project_health::layout::InspectedSourceRoot {
             source_set: ProjectSourceSet {
                 name: "upper".into(),
                 kind: SourceSetKind::Configuration,
-                path: "modules/SRC".into(),
+                path: "modules/MISSING/SRC".into(),
                 source_format: SourceFormat::PlatformXml,
                 format_evidence: Vec::new(),
                 format_probe_error: None,
             },
-            path: repository_root.join("modules/SRC"),
+            path: repository_root.join("modules/MISSING/SRC"),
         };
         let index = SourceRootOwnerIndex::new_with_case_policy(
             repository_root,
@@ -1013,12 +1013,17 @@ mod tests {
         .unwrap();
 
         assert!(index
-            .deepest_owners_with_checkpoint("MODULES/src/Hidden.xml", &mut || Ok::<_, ()>(()))
+            .deepest_owners_with_checkpoint("modules/missing/SRC/Hidden.xml", &mut || Ok::<_, ()>(
+                ()
+            ),)
             .unwrap()
             .is_none());
         assert_eq!(
             index
-                .deepest_owners_with_checkpoint("MODULES/SRC/Hidden.xml", &mut || Ok::<_, ()>(()))
+                .deepest_owners_with_checkpoint(
+                    "modules/MISSING/SRC/Hidden.xml",
+                    &mut || Ok::<_, ()>(()),
+                )
                 .unwrap()
                 .unwrap()
                 .0[0]
