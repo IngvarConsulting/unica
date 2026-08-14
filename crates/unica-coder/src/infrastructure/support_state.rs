@@ -7,9 +7,8 @@ use crate::domain::support_state::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::common::{
-    parse_support_state_strict_bytes, support_root_uuid_from_bytes, SupportState,
+    read_support_state_strict, support_root_uuid_from_bytes, SupportState,
 };
-use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::platform_xml_source_targets::{
     platform_xml_resource_evidence, resolve_platform_xml_target_in, TargetKindPolicy,
 };
@@ -17,13 +16,8 @@ use crate::infrastructure::source_roots::{resolve_named_source_set, ResolvedName
 use crate::infrastructure::subsystem_topology::{
     capture_registered_subsystem_topology, SubsystemTopologyNode,
 };
-use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-
-const CONFIGURATION_SUPPORT_MARKER: &str = "Ext/ParentConfigurations.bin";
-const CONFIGURATION_SUPPORT_MARKER_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) trait SupportStateReaderFactory: Send + Sync {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a>;
@@ -39,76 +33,6 @@ impl SupportStateReaderFactory for WorkspaceSupportStateReaderFactory {
 
 pub(crate) struct WorkspaceSupportStateReader<'a> {
     context: &'a WorkspaceContext,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ConfigurationSupportMarkerSnapshot {
-    sha256: Option<[u8; 32]>,
-    supported: bool,
-}
-
-struct ConfigurationSupportMarkerCapture {
-    state: Option<SupportState>,
-    snapshot: ConfigurationSupportMarkerSnapshot,
-}
-
-#[derive(Debug)]
-pub(crate) struct WorkspaceConfigurationSupportEvidence {
-    source_root: PathBuf,
-    snapshot: ConfigurationSupportMarkerSnapshot,
-}
-
-impl WorkspaceConfigurationSupportEvidence {
-    pub(crate) fn revalidate(&self) -> Result<(), SupportReadError> {
-        if read_configuration_support_marker(&self.source_root)?.snapshot != self.snapshot {
-            return Err(SupportReadError::new(
-                SupportReadErrorCode::EvidenceUnavailable,
-                "configuration support evidence changed during runtime build preflight",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn permits_observation(&self, state: ConfigurationSupportState) -> bool {
-        !self.snapshot.supported || state == ConfigurationSupportState::Supported
-    }
-}
-
-fn read_configuration_support_marker(
-    source_root: &Path,
-) -> Result<ConfigurationSupportMarkerCapture, SupportReadError> {
-    let marker = source_root.join(CONFIGURATION_SUPPORT_MARKER);
-    let bytes =
-        match read_root_relative_regular_file(
-            source_root,
-            &marker,
-            CONFIGURATION_SUPPORT_MARKER_MAX_BYTES,
-            |_| {},
-        ) {
-            Ok(read) => Some(read.bytes),
-            Err(error) if error.kind() == ErrorKind::NotFound => None,
-            Err(_) => return Err(SupportReadError::new(
-                SupportReadErrorCode::StateUnreadable,
-                "configuration support evidence cannot be safely snapshotted within its byte limit",
-            )),
-        };
-    let Some(bytes) = bytes else {
-        return Ok(ConfigurationSupportMarkerCapture {
-            state: None,
-            snapshot: ConfigurationSupportMarkerSnapshot {
-                sha256: None,
-                supported: false,
-            },
-        });
-    };
-    let state = parse_support_state_strict_bytes(&bytes)?;
-    Ok(ConfigurationSupportMarkerCapture {
-        snapshot: ConfigurationSupportMarkerSnapshot {
-            sha256: Some(Sha256::digest(&bytes).into()),
-            supported: !state.removed(),
-        },
-        state: Some(state),
-    })
 }
 
 impl<'a> WorkspaceSupportStateReader<'a> {
@@ -186,49 +110,8 @@ impl<'a> WorkspaceSupportStateReader<'a> {
         &self,
         source_root: &Path,
     ) -> Result<Option<SupportState>, SupportReadError> {
-        Ok(read_configuration_support_marker(source_root)?.state)
+        read_support_state_strict(&source_root.join("Ext").join("ParentConfigurations.bin"))
     }
-
-    pub(crate) fn configuration_support_evidence(
-        &self,
-        target: &ResolvedTarget,
-        expected_source_root: &Path,
-    ) -> Result<WorkspaceConfigurationSupportEvidence, SupportReadError> {
-        if target.target_kind != TargetKind::SourceRoot {
-            return Err(SupportReadError::new(
-                SupportReadErrorCode::TargetUnsupported,
-                "configuration support requires a source-root target",
-            ));
-        }
-        let selected = self.selected_source_set(target)?;
-        let resolution = self.resolve_platform_target(target, selected)?;
-        let evidence =
-            platform_xml_resource_evidence(self.context, &resolution.handle).map_err(|_| {
-                SupportReadError::new(
-                    SupportReadErrorCode::EvidenceUnavailable,
-                    "configuration support-state evidence is unavailable",
-                )
-            })?;
-        if evidence.source_root != expected_source_root {
-            return Err(SupportReadError::new(
-                SupportReadErrorCode::EvidenceUnavailable,
-                "configuration support evidence did not bind to the project source-map root",
-            ));
-        }
-        Ok(WorkspaceConfigurationSupportEvidence {
-            snapshot: read_configuration_support_marker(&evidence.source_root)?.snapshot,
-            source_root: evidence.source_root,
-        })
-    }
-}
-
-pub(crate) fn capture_workspace_configuration_support_evidence(
-    context: &WorkspaceContext,
-    target: &ResolvedTarget,
-    expected_source_root: &Path,
-) -> Result<WorkspaceConfigurationSupportEvidence, SupportReadError> {
-    WorkspaceSupportStateReader::new(context)
-        .configuration_support_evidence(target, expected_source_root)
 }
 
 fn subsystem_node_is_registered(
@@ -551,26 +434,6 @@ mod tests {
             .configuration_support(&root_target())
             .expect_err("an unknown non-empty marker is not removed support");
         assert_eq!(invalid.code, SupportReadErrorCode::StateInvalid);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn platform_xml_configuration_support_rejects_an_oversized_marker_before_parsing() {
-        let context = fixture("oversized-marker", "DESIGNER", "CONFIGURATION");
-        let marker = context
-            .workspace_root
-            .join("src/Ext/ParentConfigurations.bin");
-        fs::create_dir_all(marker.parent().expect("support marker parent")).unwrap();
-        fs::File::create(&marker)
-            .unwrap()
-            .set_len((CONFIGURATION_SUPPORT_MARKER_MAX_BYTES + 1) as u64)
-            .unwrap();
-
-        let error = WorkspaceSupportStateReader::new(&context)
-            .configuration_support(&root_target())
-            .expect_err("oversized support evidence must fail before allocation or parsing");
-
-        assert_eq!(error.code, SupportReadErrorCode::StateUnreadable);
         cleanup(&context);
     }
 

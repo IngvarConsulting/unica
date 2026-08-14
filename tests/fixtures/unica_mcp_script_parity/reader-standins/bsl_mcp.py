@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Deterministic stdio MCP stand-in for bsl-analyzer and rlm-tools-bsl."""
+"""Deterministic stdio MCP stand-in for bsl-analyzer and rlm-bsl-mcp."""
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -28,6 +30,7 @@ def text_result(request_id: object, payload: object) -> dict[str, object]:
 
 def tool_payload(tool: str, arguments: dict[str, object]) -> object:
     log_call(tool, arguments)
+    mode = os.environ.get("UNICA_RLM_CONTRACT_STANDIN_MODE", "")
     if tool == "search":
         return "No results found."
     if tool == "graph":
@@ -39,18 +42,47 @@ def tool_payload(tool: str, arguments: dict[str, object]) -> object:
     if tool == "rlm_execute":
         code = str(arguments.get("code", ""))
         if "find_definition" in code:
-            stdout: object = {
-                "definitions": [
-                    {
-                        "file": "CommonModules/ParitySearch/Ext/Module.bsl",
-                        "line": 1,
-                        "kind": "procedure",
-                        "name": "ОбработкаПроведения",
-                        "params": [],
-                        "export": True,
-                    }
-                ]
+            if mode == "definition_list":
+                stdout = []
+            else:
+                params: object = []
+                if mode == "string_params":
+                    params = "Argument"
+                elif mode:
+                    params = ["Argument"]
+                stdout = {
+                    "definitions": [
+                        {
+                            "file": "CommonModules/ParitySearch/Ext/Module.bsl",
+                            "line": 1,
+                            "kind": "procedure",
+                            "name": "ОбработкаПроведения",
+                            "params": params,
+                            "export": True,
+                        }
+                    ],
+                    "_meta": {"total_is_lower_bound": False},
+                }
+        elif "get_object_profile" in code and mode in {
+            "profile_error",
+            "profile_list",
+        }:
+            stdout = {"error": "object not found"} if mode == "profile_error" else []
+        elif "get_object_profile" in code and mode:
+            stdout = {
+                "object_name": "ContractOne",
+                "sections": {},
+                "_meta": {"truncated": False},
             }
+        elif mode == "search_object":
+            stdout = {}
+        elif mode:
+            metadata: object = {"truncated": False}
+            if mode == "string_boolean":
+                metadata = {"truncated": "false"}
+            elif mode == "scalar_metadata":
+                metadata = "invalid"
+            stdout = [{"text": "ContractTest1", "_meta": metadata}]
         else:
             stdout = []
         return {"stdout": json.dumps(stdout, ensure_ascii=False), "stderr": ""}
@@ -60,8 +92,24 @@ def tool_payload(tool: str, arguments: dict[str, object]) -> object:
 
 
 def main() -> int:
+    mode = os.environ.get("UNICA_RLM_CONTRACT_STANDIN_MODE", "")
+    if mode == "hang":
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+        )
+        Path(os.environ["UNICA_RLM_CONTRACT_PID_LOG"]).write_text(
+            f"{os.getpid()}\n{child.pid}\n",
+            encoding="utf-8",
+        )
     for raw_line in sys.stdin:
         request = json.loads(raw_line)
+        rpc_log = os.environ.get("UNICA_RLM_CONTRACT_RPC_LOG")
+        if rpc_log:
+            with Path(rpc_log).open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(request, ensure_ascii=False) + "\n")
+        if mode == "hang":
+            time.sleep(30)
+            continue
         request_id = request.get("id")
         method = request.get("method")
         if request_id is None:

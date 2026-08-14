@@ -76,7 +76,7 @@ fn runtime_job_io_error(context: &str, error: &io::Error) -> String {
 #[derive(Debug, Clone)]
 pub struct ManagedCommand {
     pub program: PathBuf,
-    pub args: Vec<String>,
+    pub args: Vec<OsString>,
     pub cwd: PathBuf,
     pub env: Vec<(OsString, OsString)>,
     pub timeout: Option<Duration>,
@@ -1511,9 +1511,9 @@ mod tests {
         ManagedChild::run(ManagedCommand {
             program: std::env::current_exe().map_err(|error| error.to_string())?,
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().map_err(|error| error.to_string())?,
             env: vec![(OsString::from(HELPER_ENV), OsString::from(mode))],
@@ -1695,9 +1695,9 @@ mod tests {
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("sleep"))],
@@ -1719,9 +1719,9 @@ mod tests {
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_forever"))],
@@ -1756,9 +1756,9 @@ mod tests {
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("success"))],
@@ -1777,9 +1777,9 @@ mod tests {
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("sleep"))],
@@ -1807,9 +1807,9 @@ mod tests {
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![
@@ -1858,9 +1858,9 @@ mod tests {
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![
@@ -1909,9 +1909,9 @@ mod tests {
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![

@@ -1590,8 +1590,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             }
             for source_root in source_roots.values():
                 source_root.mkdir(parents=True)
-            (workspace / "src" / "external-processors").mkdir(parents=True)
-            (workspace / "src" / "external-reports").mkdir(parents=True)
             (workspace / "v8project.yaml").write_text(
                 """format: DESIGNER
 source-set:
@@ -1601,12 +1599,6 @@ source-set:
   - name: myExtension
     type: EXTENSION
     path: src/cfe
-  - name: external-processors
-    type: EXTERNAL_DATA_PROCESSORS
-    path: src/external-processors
-  - name: external-reports
-    type: EXTERNAL_REPORTS
-    path: src/external-reports
 """,
                 encoding="utf-8",
             )
@@ -3414,7 +3406,7 @@ def prepare_reader_standins(temp_root: Path) -> tuple[Path, dict[str, str], Path
     binary_dir.mkdir(parents=True)
     binaries = {
         f"bsl-analyzer{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
-        f"rlm-tools-bsl{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
+        f"rlm-bsl-mcp{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
         f"rlm-bsl-index{suffix}": READER_STANDINS_ROOT / "rlm_index.py",
     }
     manifest_tools = []

@@ -166,7 +166,7 @@ literal token, and the bootstrap discards any value that still contains `${`
 rather than creating a directory named after it.
 
 The runtime archive contains the target's `unica`, `bsl-analyzer`, `v8-runner`,
-`rlm-tools-bsl`, and `rlm-bsl-index` binaries plus the generated
+`rlm-bsl-mcp`, and `rlm-bsl-index` binaries plus the generated
 `third-party/manifest.json`. Internal launches re-check the pinned binary hash.
 
 ## Skills

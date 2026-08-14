@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use unica_bootstrap::{
-    launch_runtime, runtime_cache_root, verify_installed_plugin_metadata, verify_mcp_runtime,
-    HostTarget, HttpDownloader, Result, RuntimeInstaller, RuntimeManifest,
+    launch_runtime, provider_state_root, runtime_cache_root, verify_installed_plugin_metadata,
+    verify_mcp_runtime, HostTarget, HttpDownloader, Result, RuntimeInstaller, RuntimeManifest,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -31,13 +31,14 @@ fn run(args: Vec<String>) -> Result<i32> {
         return Ok(0);
     }
     let (command, plugin_root) = parse_command(&args)?;
+    let provider_state_root = provider_state_root()?;
     match command {
         Command::Run => {
             let installed = install_runtime(&plugin_root)?;
-            launch_runtime(&installed.entrypoint, &[])
+            launch_runtime(&installed.entrypoint, &[], &provider_state_root)
         }
         Command::Verify => {
-            install_and_verify_runtime(&plugin_root)?;
+            install_and_verify_runtime(&plugin_root, &provider_state_root)?;
             Ok(0)
         }
     }
@@ -51,12 +52,13 @@ fn install_runtime(plugin_root: &Path) -> Result<unica_bootstrap::RuntimeInstall
     installer.ensure(&manifest, host)
 }
 
-fn install_and_verify_runtime(plugin_root: &Path) -> Result<()> {
+fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) -> Result<()> {
     verify_installed_skill_package(plugin_root)?;
     let installed = install_runtime(plugin_root)?;
     verify_mcp_runtime(
         &installed.entrypoint,
         &installed.root,
+        provider_state_root,
         Duration::from_secs(20),
     )?;
     eprintln!(

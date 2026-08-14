@@ -739,14 +739,14 @@ impl<'a> RuntimeAdapter<'a> {
                 format!("{tool_name} cancelled before adapter work"),
             )));
         }
-        reject_missing_client_mcp_extension(args, context)?;
+        let invocation = plan_runtime_invocation(args, context)?;
+        reject_missing_client_mcp_extension(&invocation.args, context)?;
         if let Some(outcome) = bind_external_processor_config(args, context, dry_run)? {
             return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
-        let invocation = plan_runtime_invocation(args, context)?;
         if cancellation.is_cancelled() {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
                 format!("{tool_name} cancelled during runtime build preflight"),
@@ -2407,7 +2407,7 @@ impl ProcessRunner for SystemProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         let output = ManagedChild::run(ManagedCommand {
             program: command.program.clone(),
-            args: command.args.clone(),
+            args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
             env: Vec::new(),
             timeout: command.timeout,
@@ -2424,7 +2424,7 @@ impl ProcessRunner for SystemProcessRunner {
     ) -> Result<ProcessStreamOutput, String> {
         let mut child = ManagedChild::spawn(ManagedCommand {
             program: command.program.clone(),
-            args: command.args.clone(),
+            args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
             env: Vec::new(),
             timeout: command.timeout,
@@ -4884,6 +4884,46 @@ mod tests {
 
         std::fs::write(context.cwd.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
         reject_missing_client_mcp_extension(&args, &context).unwrap();
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_rejects_external_config_before_reading_its_declared_artifacts() {
+        let context = temp_context("external-runtime-config-containment");
+        let outside = tempfile::tempdir().unwrap();
+        let outside_config = outside.path().join("v8project.yaml");
+        std::fs::write(
+            &outside_config,
+            "format: DESIGNER\ntools:\n  client_mcp:\n    extension:\n      artifact:\n        path: outside.cfe\n",
+        )
+        .unwrap();
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            (
+                "config".to_string(),
+                json!(outside_config.to_string_lossy().into_owned()),
+            ),
+        ]);
+
+        let error = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .expect_err("external config must be rejected before its YAML is inspected");
+
+        assert!(error.contains("outside the workspace"), "{error}");
+        assert!(!error.contains("outside.cfe"), "{error}");
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 

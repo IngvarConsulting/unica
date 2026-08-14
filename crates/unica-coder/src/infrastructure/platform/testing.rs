@@ -15,6 +15,39 @@ pub(crate) fn path_text_for_test(path: &Path) -> String {
     normalize_path_text_for_test(&path.display().to_string())
 }
 
+#[cfg(windows)]
+pub(crate) fn case_distinct_provider_paths_for_test(_parent: &Path) -> Option<(PathBuf, PathBuf)> {
+    None
+}
+
+#[cfg(not(windows))]
+pub(crate) fn case_distinct_provider_paths_for_test(parent: &Path) -> Option<(PathBuf, PathBuf)> {
+    Some((
+        parent.join("CaseSensitiveWorkspace"),
+        parent.join("casesensitiveworkspace"),
+    ))
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+pub(crate) fn distinct_non_utf8_provider_paths_for_test(
+    parent: &Path,
+) -> Option<(PathBuf, PathBuf)> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    Some((
+        parent.join(OsString::from_vec(b"provider-\x80".to_vec())),
+        parent.join(OsString::from_vec(b"provider-\x81".to_vec())),
+    ))
+}
+
+#[cfg(not(all(unix, not(target_vendor = "apple"))))]
+pub(crate) fn distinct_non_utf8_provider_paths_for_test(
+    _parent: &Path,
+) -> Option<(PathBuf, PathBuf)> {
+    None
+}
+
 #[cfg(unix)]
 pub(crate) fn non_utf8_relative_path_for_test() -> Option<PathBuf> {
     use std::ffi::OsString;

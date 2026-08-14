@@ -747,8 +747,9 @@ Unica. Каждая запись формулирует одно нормати�
   частичном шаге `Designer`; явный полный режим, ошибка шага `edt_export`, отмена,
   превышение срока, обрезанная, повреждённая, неизвестная или несвязанная
   квитанция повтора не допускают, а
-  путь и точные байты `config`, идентичность корня и эпоха рабочего пространства
-  проверяются перед первой обычной и полной повторной попытками. Синхронный и
+  путь `config` обязан оставаться внутри того же рабочего пространства, а его
+  точные байты, идентичность корня и эпоха рабочего пространства проверяются
+  перед первой обычной и полной повторной попытками. Синхронный и
   долговременный пути используют одну классификацию; долговременный повтор
   сохраняет один `jobId` и `active.lock`, под блокировкой жизненного цикла
   заменяет `PID`,
@@ -757,7 +758,8 @@ Unica. Каждая запись формулирует одно нормати�
   `v8-runner` не читается, а двухпроцессный разрыв его внутренней блокировки и
   новый срок исполнения второй команды признаются временным ограничением до
   переработки поколения `v14`.
-- **Decision:** ADR-0059, ADR-0003
+- **Decision:** ADR-0060, ADR-0003
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/internal_adapters.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_build_fallback.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_build_preflight.rs`
@@ -894,6 +896,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Scope:** runtime
+
+### INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE — Постоянное состояние поставщика не индексирует само себя
+
+- **Rule:** Постоянное состояние `RLM` выводится из нормализованных `workspaceRoot + sourceRoot`, остаётся вне индексируемого `sourceRoot`, изолирует разные рабочие пространства, `worktree` и корни исходников и передаётся одинаково индексатору и читающему процессу.
+- **Decision:** ADR-0018
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
+- **Scope:** runtime
+
+### INV-CACHE-GENERATION-CUTOVER — Несовместимый индекс получает новое поколение
+
+- **Rule:** Для постоянного корня нормализованной пары `workspaceRoot + sourceRoot` несовместимая версия построителя `RLM` получает каталог данных `rlm-bsl/index-v15`, маркер состояния `caches/rlm-bsl/index-v15/bsl_index_status.json` и маркер блокировки `locks/rlm-bsl/index-v15/bsl_index.lock`; новая версия строит это поколение с нуля, не открывает, не обновляет и не удаляет предыдущее поколение, а состояния `building` и `incomplete` запрещают чтение, поддерживаемое `RLM`.
+- **Decision:** ADR-0059
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
+- **Scope:** runtime, packaged
 
 ### INV-CACHE-WRITE-FREE-PREVIEW — Сухой прогон сообщает о последствиях, не записывая состояние
 
@@ -1651,4 +1669,4 @@ Unica. Каждая запись формулирует одно нормати�
   больше не определяет роль владельца; правило заменено новым по ADR-0031.
 - `INV-APP-SUPPORT-SAFE-BUILD`, `2026-08-14` — предварительный выбор полного
   режима по состоянию поддержки отклонён до слияния; правило заменено
-  новым по ADR-0059.
+  новым по ADR-0060.
