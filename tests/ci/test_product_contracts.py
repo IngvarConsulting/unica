@@ -919,12 +919,13 @@ class ProductContractTests(unittest.TestCase):
 
     def kill_process_tree_best_effort(self, parent_pid: int, child_pid: int) -> None:
         if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(parent_pid), "/T", "/F"],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            for pid in dict.fromkeys((parent_pid, child_pid)):
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
             return
         try:
             if os.getpgid(parent_pid) == parent_pid:
@@ -937,6 +938,23 @@ class ProductContractTests(unittest.TestCase):
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+    def test_windows_best_effort_cleanup_targets_surviving_child_independently(
+        self,
+    ) -> None:
+        with patch.object(os, "name", "nt"), patch.object(
+            subprocess,
+            "run",
+        ) as run:
+            self.kill_process_tree_best_effort(101, 202)
+
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                ["taskkill", "/PID", "101", "/T", "/F"],
+                ["taskkill", "/PID", "202", "/T", "/F"],
+            ],
+        )
 
     def test_tool_help_contracts_pass_with_expected_cli_surface(self) -> None:
         module = load_contract_module()
