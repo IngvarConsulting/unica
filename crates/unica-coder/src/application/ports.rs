@@ -645,6 +645,18 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         })
     }
 
+    fn map_diagnostic_observations(
+        &self,
+        observations: Vec<DiagnosticObservation>,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+        observations
+            .into_iter()
+            .map(|observation| self.map_diagnostic_observation(observation, context, cancellation))
+            .collect()
+    }
+
     fn source_resources(
         &self,
         _request: SourceResourcesRequest,

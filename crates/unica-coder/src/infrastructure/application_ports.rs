@@ -370,6 +370,19 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         )
     }
 
+    fn map_diagnostic_observations(
+        &self,
+        observations: Vec<DiagnosticObservation>,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+        crate::infrastructure::diagnostics::map_diagnostic_observations(
+            observations,
+            context,
+            cancellation,
+        )
+    }
+
     fn source_resources(
         &self,
         request: SourceResourcesRequest,

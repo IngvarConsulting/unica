@@ -1,6 +1,6 @@
 ---
 name: code-diagnostics
-description: "Use when требуется запустить или разобрать диагностики BSL, АПК, EDT, BSL LS, отключения правил или стандарт v8std за диагностикой."
+description: "Диагностика BSL и объяснение отключений правил. Используй, когда нужно запустить или разобрать диагностики BSL, АПК, EDT, BSL LS, inline/range disable markers, suppression-комментарии или стандарт v8std за диагностикой."
 ---
 
 # Code Diagnostics
@@ -10,10 +10,10 @@ description: "Use when требуется запустить или разобр
 - Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.source.locate`, `unica.project.map`, `unica.code.graph`, `unica.code.definition`, `unica.code.outline`, `unica.code.search`, `unica.standards.explain`, `unica.standards.search`, and `unica.runtime.execute`.
 - Every diagnostics call names an exact `sourceSet`; `cwd` selects the workspace only and never identifies the target. Use `unica.project.map` when the source-set name is unknown.
 - Use `action=status` before resident `findings` when readiness is uncertain. A completed status request is not proof that a provider is ready: read each `providers[].readiness.state` and call `findings` only for `ready`; `building`, `notStarted`, and `stale` are not clean results.
-- Use `action=findings` with a logical `metadataPath` for one module or metadata object, `action=analyze` for a complete one-shot source-set scan, and `action=catalog` to discover provider-qualified rules. The current live provider `bsl-analyzer` supports module findings only. Until a metadata provider is registered, an automatic metadata-object request (without `providers`) fails at request level with `no_applicable_provider`. An explicit `providers: ["bsl-analyzer"]` request instead returns that provider with `status=unsupported` and `error.code=target_not_supported`. Neither result means clean metadata or a bad logical address.
+- Use `action=findings` with a logical `metadataPath` for one module or metadata object, `action=analyze` for a complete one-shot source-set scan, and `action=catalog` to discover provider-qualified rules. Provider execution is routed internally; do not pass a provider selector. The current live provider `bsl-analyzer` supports module findings only. Until a metadata provider is registered, a metadata-object request fails at request level with `no_applicable_provider`; this means neither clean metadata nor a bad logical address.
 - `action=analyze` may set `timeoutSeconds` from 30 to 3600. Without it the call uses `operational.code_diagnostics.analyze_timeout_seconds` from `<workspaceRoot>/unica.local.toml`, then `unica.toml`, then the compiled 120-second fallback. `findings`, `status`, and `catalog` do not read this operational config and do not accept `timeoutSeconds`.
 - Put severity and exact case-sensitive codes under `filter`. Every code is `{provider, code}`; obtain provider ids and codes from `catalog`. `limit` is global across providers after normalization and deterministic ordering.
-- Read `location` as the logical navigation target and `focus` as the position inside it. `location.kind=addressed` carries `sourceSet`, optional `metadataPath`, and derived `targetKind`; `focus.kind` is `target`, `sourceRange`, or `metadata`.
+- Read `location` as the shared logical navigation target and `focus` as the position inside it. `location.kind=addressed` carries `sourceSet`, optional `metadataPath`, and derived `targetKind`; `location.kind=unaddressable` carries a safe relative `path` and the item carries `locationReason`. `focus.kind` is `target`, `sourceRange`, or `metadata`.
 - Treat `state=partial` as useful but incomplete. A `resourceFailure` is one provider's failure for one logical resource. `location.kind=unaddressable` means the observation is safe to report but cannot be navigated as its own logical target. Neither means clean code.
 - For actions that return `items`, only `state=completed`, `complete=true`, `truncated=false`, and provider sections without failures prove an exhaustive answer. Check `itemsTotal` and `itemsReturned` before treating `items` as complete. `status` has no `truncated` field; its evidence is each provider's readiness.
 - `unica.code.definition` returns `index_pending:` only while an RLM index is building and `index_unavailable:` for missing, stale, failed, or unavailable indexes. Neither means “no definitions”.
@@ -38,7 +38,7 @@ This verification gate is mandatory:
 
 ## Suppression and range-disable comments
 
-When comments отключают diagnostics over a line or range, treat the exact marker as evidence.
+Когда inline/range disable markers или suppression-комментарии отключают диагностику строки или диапазона, считайте точный маркер частью доказательства.
 
 - Extract literal rule codes from АПК, EDT, BSL LS, analyzer, or suppression comments.
 - Explain an отключение only when the code, surrounding range, and standard support the reason.

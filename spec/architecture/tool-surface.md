@@ -387,7 +387,6 @@ Read provider-neutral diagnostics addressed by logical 1C source targets.
 | `filter` | object | только в ветви | Strict diagnostic severity and provider-qualified code filter applied after normalization. |
 | `limit` | integer | только в ветви | Maximum number of diagnostic entities returned after filtering and deterministic ordering. |
 | `metadataPath` | string | по ветви | Exact logical 1C target address inside sourceSet; required only by findings. |
-| `providers` | array | нет | Optional non-empty provider selection; omission selects all providers applicable to the action and target. |
 | `range` | object | только в ветви | Zero-based, end-exclusive source range accepted only by findings for a module target. |
 | `sourceSet` | string | да | Exact source-set name from the workspace project map; no implicit fallback is used. |
 | `timeoutSeconds` | integer | только в ветви | Total action=analyze budget. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config. |

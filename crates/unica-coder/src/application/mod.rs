@@ -3144,13 +3144,17 @@ mod tests {
         crate::domain::diagnostics::DiagnosticProviderDescriptor =
         crate::domain::diagnostics::DiagnosticProviderDescriptor {
             id: crate::domain::diagnostics::BSL_ANALYZER_PROVIDER,
-            actions: &[crate::domain::diagnostics::DiagnosticAction::Status],
+            actions: &[
+                crate::domain::diagnostics::DiagnosticAction::Analyze,
+                crate::domain::diagnostics::DiagnosticAction::Status,
+            ],
             findings_target_kinds: &[],
             emits_focus_kinds: &[],
         };
 
     struct DiagnosticsBoundaryProvider {
         calls: Arc<AtomicUsize>,
+        observed_budget: Arc<Mutex<Option<Duration>>>,
         fail: bool,
     }
 
@@ -3161,12 +3165,13 @@ mod tests {
 
         fn execute(
             &self,
-            _request: &crate::domain::diagnostics::DiagnosticProviderRequest,
+            request: &crate::domain::diagnostics::DiagnosticProviderRequest,
             _context: &crate::domain::diagnostics::DiagnosticContext,
-            _deadline: crate::domain::diagnostics::ProviderDeadline,
+            deadline: crate::domain::diagnostics::ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> crate::domain::diagnostics::DiagnosticProviderOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.observed_budget.lock().unwrap() = Some(deadline.remaining());
             if self.fail {
                 return crate::domain::diagnostics::DiagnosticProviderOutcome {
                     status: crate::domain::diagnostics::DiagnosticProviderStatus::Failed,
@@ -3183,15 +3188,20 @@ mod tests {
                 };
             }
             crate::domain::diagnostics::DiagnosticProviderOutcome {
-                status: crate::domain::diagnostics::DiagnosticProviderStatus::Completed,
+                status: if request.action == crate::domain::diagnostics::DiagnosticAction::Analyze {
+                    crate::domain::diagnostics::DiagnosticProviderStatus::Empty
+                } else {
+                    crate::domain::diagnostics::DiagnosticProviderStatus::Completed
+                },
                 complete: true,
                 version: Some("test".to_string()),
                 observations: Vec::new(),
                 rules: Vec::new(),
-                readiness: Some(crate::domain::diagnostics::DiagnosticReadiness {
-                    state: crate::domain::diagnostics::DiagnosticReadinessState::Ready,
-                    retryable: false,
-                }),
+                readiness: (request.action == crate::domain::diagnostics::DiagnosticAction::Status)
+                    .then_some(crate::domain::diagnostics::DiagnosticReadiness {
+                        state: crate::domain::diagnostics::DiagnosticReadinessState::Ready,
+                        retryable: false,
+                    }),
                 error: None,
             }
         }
@@ -3201,6 +3211,7 @@ mod tests {
     struct DiagnosticsBoundaryPorts {
         handler_calls: AtomicUsize,
         provider_calls: Arc<AtomicUsize>,
+        observed_budget: Arc<Mutex<Option<Duration>>>,
         fail_provider: bool,
     }
 
@@ -3234,6 +3245,7 @@ mod tests {
             crate::domain::diagnostics::DiagnosticProviderRegistry::new(vec![Arc::new(
                 DiagnosticsBoundaryProvider {
                     calls: Arc::clone(&self.provider_calls),
+                    observed_budget: Arc::clone(&self.observed_budget),
                     fail: self.fail_provider,
                 },
             )])
@@ -3392,6 +3404,27 @@ mod tests {
         assert!(result.stdout.is_none());
         assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
         assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_analyze_timeout_override_reaches_provider_deadline() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({
+            "action": "analyze",
+            "sourceSet": "main",
+            "timeoutSeconds": 900
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+        let observed = ports.observed_budget.lock().unwrap().unwrap();
+
+        assert!(result.ok, "{result:?}");
+        assert!(observed <= Duration::from_secs(900), "{observed:?}");
+        assert!(observed > Duration::from_secs(899), "{observed:?}");
     }
 
     #[test]

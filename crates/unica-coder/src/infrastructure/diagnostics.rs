@@ -2,17 +2,18 @@ use crate::application::source_navigation::LocateRejection;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::diagnostics::{
     DiagnosticAction, DiagnosticContext, DiagnosticError, DiagnosticFocus, DiagnosticFocusKind,
-    DiagnosticItem, DiagnosticLocation, DiagnosticMapError, DiagnosticObservation,
-    DiagnosticObservationFocus, DiagnosticObservationLocation, DiagnosticProvider,
-    DiagnosticProviderDescriptor, DiagnosticProviderOutcome, DiagnosticProviderRequest,
-    DiagnosticProviderStatus, DiagnosticReadiness, DiagnosticReadinessState, DiagnosticRequest,
-    DiagnosticRequestError, DiagnosticRuleObservation, DiagnosticSeverity, DiagnosticTag,
-    MetadataFocus, ProviderDeadline, UnaddressableReason, BSL_ANALYZER_PROVIDER,
+    DiagnosticItem, DiagnosticMapError, DiagnosticObservation, DiagnosticObservationFocus,
+    DiagnosticObservationLocation, DiagnosticProvider, DiagnosticProviderDescriptor,
+    DiagnosticProviderOutcome, DiagnosticProviderRequest, DiagnosticProviderStatus,
+    DiagnosticReadiness, DiagnosticReadinessState, DiagnosticRequest, DiagnosticRequestError,
+    DiagnosticRuleObservation, DiagnosticSeverity, DiagnosticTag, MetadataFocus, ProviderDeadline,
+    UnaddressableReason, BSL_ANALYZER_PROVIDER,
 };
 use crate::domain::metadata::{
     diagnostic_metadata_focus_route, diagnostic_metadata_property_is_canonical,
 };
 use crate::domain::project_sources::SourceFormat;
+use crate::domain::source_location::SourceLocation;
 use crate::domain::source_roots::ResolvedSourceRoot;
 use crate::domain::source_target::{SourceTarget, SourceTargetErrorCode, TargetKind};
 use crate::domain::workspace::WorkspaceContext;
@@ -31,6 +32,7 @@ use crate::infrastructure::workspace_services::{WorkspaceServiceBslCall, Workspa
 use roxmltree::Node;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use url::Url;
@@ -481,7 +483,7 @@ fn parse_resident_findings(
         });
     }
     Ok(DiagnosticProviderOutcome {
-        status: if observations.is_empty() {
+        status: if observations.is_empty() && !envelope.result.truncated {
             DiagnosticProviderStatus::Empty
         } else {
             DiagnosticProviderStatus::Completed
@@ -944,6 +946,24 @@ mod bsl_diagnostics_provider_tests {
     }
 
     #[test]
+    fn truncated_empty_resident_findings_are_incomplete_not_empty() {
+        let fixture = ProviderFixture::new();
+        let backend = FakeBackend::new(vec![FakeBackend::resident(json!({
+            "revision": 1,
+            "stale": false,
+            "reload": "none",
+            "result": {"kind": "full", "truncated": true, "findings": []}
+        }))]);
+        let provider = BslAnalyzerDiagnosticProvider::with_backend(&backend);
+
+        let outcome = execute(&provider, &fixture, DiagnosticAction::Findings);
+
+        assert_eq!(outcome.status, DiagnosticProviderStatus::Completed);
+        assert!(!outcome.complete);
+        assert!(outcome.observations.is_empty());
+    }
+
+    #[test]
     fn bsl_diagnostics_provider_maps_findings_and_loading_to_common_outcomes() {
         let fixture = ProviderFixture::new();
         let backend = FakeBackend::new(vec![
@@ -1078,6 +1098,34 @@ pub(crate) fn map_diagnostic_observation(
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
 ) -> Result<DiagnosticItem, DiagnosticMapError> {
+    map_diagnostic_observation_cached(observation, context, cancellation, &mut HashMap::new())
+}
+
+pub(crate) fn map_diagnostic_observations(
+    observations: Vec<DiagnosticObservation>,
+    context: &DiagnosticContext,
+    cancellation: &CancellationToken,
+) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+    let mut resource_locations = HashMap::new();
+    observations
+        .into_iter()
+        .map(|observation| {
+            map_diagnostic_observation_cached(
+                observation,
+                context,
+                cancellation,
+                &mut resource_locations,
+            )
+        })
+        .collect()
+}
+
+fn map_diagnostic_observation_cached(
+    observation: DiagnosticObservation,
+    context: &DiagnosticContext,
+    cancellation: &CancellationToken,
+    resource_locations: &mut HashMap<String, Result<MappedDiagnosticLocation, DiagnosticMapError>>,
+) -> Result<DiagnosticItem, DiagnosticMapError> {
     if cancellation.is_cancelled() {
         return Err(map_error(
             "cancelled",
@@ -1094,11 +1142,12 @@ pub(crate) fn map_diagnostic_observation(
             message,
             tags,
         } => {
-            let location = map_location(location, context, cancellation)?;
-            let focus = map_focus(focus, &location, context, cancellation);
+            let mapped = map_location_cached(location, context, cancellation, resource_locations)?;
+            let focus = map_focus(focus, &mapped.location, context, cancellation);
             Ok(DiagnosticItem::Diagnostic {
                 provider: provider.as_str(),
-                location,
+                location: mapped.location,
+                location_reason: mapped.reason,
                 focus,
                 code,
                 severity,
@@ -1110,19 +1159,29 @@ pub(crate) fn map_diagnostic_observation(
             provider,
             location,
             error,
-        } => Ok(DiagnosticItem::ResourceFailure {
-            provider: provider.as_str(),
-            location: map_location(location, context, cancellation)?,
-            error,
-        }),
+        } => {
+            let mapped = map_location_cached(location, context, cancellation, resource_locations)?;
+            Ok(DiagnosticItem::ResourceFailure {
+                provider: provider.as_str(),
+                location: mapped.location,
+                location_reason: mapped.reason,
+                error,
+            })
+        }
     }
+}
+
+#[derive(Debug, Clone)]
+struct MappedDiagnosticLocation {
+    location: SourceLocation,
+    reason: Option<UnaddressableReason>,
 }
 
 fn map_location(
     location: DiagnosticObservationLocation,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
-) -> Result<DiagnosticLocation, DiagnosticMapError> {
+) -> Result<MappedDiagnosticLocation, DiagnosticMapError> {
     match location {
         DiagnosticObservationLocation::Logical { metadata_path } => {
             let target = SourceTarget {
@@ -1137,10 +1196,13 @@ fn map_location(
                 &context.source_root.path,
             )
             .map_err(|error| map_source_target_error(error.code))?;
-            Ok(DiagnosticLocation::Addressed {
-                source_set: resolution.resolved.source_set,
-                metadata_path: resolution.resolved.metadata_path,
-                target_kind: resolution.resolved.target_kind,
+            Ok(MappedDiagnosticLocation {
+                location: SourceLocation::Addressed {
+                    source_set: resolution.resolved.source_set,
+                    metadata_path: resolution.resolved.metadata_path,
+                    target_kind: resolution.resolved.target_kind,
+                },
+                reason: None,
             })
         }
         DiagnosticObservationLocation::Resource { handle } => {
@@ -1149,11 +1211,30 @@ fn map_location(
     }
 }
 
+fn map_location_cached(
+    location: DiagnosticObservationLocation,
+    context: &DiagnosticContext,
+    cancellation: &CancellationToken,
+    resource_locations: &mut HashMap<String, Result<MappedDiagnosticLocation, DiagnosticMapError>>,
+) -> Result<MappedDiagnosticLocation, DiagnosticMapError> {
+    match location {
+        DiagnosticObservationLocation::Resource { handle } => {
+            if let Some(mapped) = resource_locations.get(&handle) {
+                return mapped.clone();
+            }
+            let mapped = map_resource_location(&handle, context, cancellation);
+            resource_locations.insert(handle, mapped.clone());
+            mapped
+        }
+        logical => map_location(logical, context, cancellation),
+    }
+}
+
 fn map_resource_location(
     handle: &str,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
-) -> Result<DiagnosticLocation, DiagnosticMapError> {
+) -> Result<MappedDiagnosticLocation, DiagnosticMapError> {
     let path = provider_resource_path(handle)?;
     let relative = source_set_relative_path(
         &context.workspace,
@@ -1168,11 +1249,13 @@ fn map_resource_location(
     })?;
     let observed_path = portable_relative(&relative);
     if context.source_set.source_format != SourceFormat::PlatformXml {
-        return Ok(DiagnosticLocation::Unaddressable {
-            source_set: context.target.source_set.clone(),
-            owner_metadata_path: None,
-            observed_path,
-            reason: UnaddressableReason::SourceFormatUnsupported,
+        return Ok(MappedDiagnosticLocation {
+            location: SourceLocation::Unaddressable {
+                source_set: context.target.source_set.clone(),
+                owner_metadata_path: None,
+                path: observed_path,
+            },
+            reason: Some(UnaddressableReason::SourceFormatUnsupported),
         });
     }
     let located = locate_platform_xml_source_path_in(
@@ -1189,27 +1272,34 @@ fn map_resource_location(
         )
     })?;
     match located.rejection {
-        None => Ok(DiagnosticLocation::Addressed {
-            source_set: located.source_set,
-            metadata_path: located.metadata_path,
-            target_kind: located.target_kind.ok_or_else(|| {
-                map_error(
-                    "provider_contract_invalid",
-                    "addressed provider resource has no target kind",
-                )
-            })?,
+        None => Ok(MappedDiagnosticLocation {
+            location: SourceLocation::Addressed {
+                source_set: located.source_set,
+                metadata_path: located.metadata_path,
+                target_kind: located.target_kind.ok_or_else(|| {
+                    map_error(
+                        "provider_contract_invalid",
+                        "addressed provider resource has no target kind",
+                    )
+                })?,
+            },
+            reason: None,
         }),
-        Some(LocateRejection::NotAddressable) => Ok(DiagnosticLocation::Unaddressable {
-            source_set: located.source_set,
-            owner_metadata_path: located.owner_metadata_path,
-            observed_path: located.relative_path,
-            reason: UnaddressableReason::ResourceNotAddressable,
+        Some(LocateRejection::NotAddressable) => Ok(MappedDiagnosticLocation {
+            location: SourceLocation::Unaddressable {
+                source_set: located.source_set,
+                owner_metadata_path: located.owner_metadata_path,
+                path: located.relative_path,
+            },
+            reason: Some(UnaddressableReason::ResourceNotAddressable),
         }),
-        Some(LocateRejection::OwnerUnproven) => Ok(DiagnosticLocation::Unaddressable {
-            source_set: located.source_set,
-            owner_metadata_path: located.owner_metadata_path,
-            observed_path: located.relative_path,
-            reason: UnaddressableReason::OwnerUnproven,
+        Some(LocateRejection::OwnerUnproven) => Ok(MappedDiagnosticLocation {
+            location: SourceLocation::Unaddressable {
+                source_set: located.source_set,
+                owner_metadata_path: located.owner_metadata_path,
+                path: located.relative_path,
+            },
+            reason: Some(UnaddressableReason::OwnerUnproven),
         }),
         Some(LocateRejection::OutsideSourceSet) => Err(map_error(
             "location_outside_source_set",
@@ -1262,7 +1352,7 @@ fn looks_like_windows_drive_path(value: &str) -> bool {
 
 fn map_focus(
     focus: DiagnosticObservationFocus,
-    location: &DiagnosticLocation,
+    location: &SourceLocation,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
 ) -> DiagnosticFocus {
@@ -1283,14 +1373,14 @@ fn map_focus(
 
 fn metadata_focus_is_proven(
     focus: &MetadataFocus,
-    location: &DiagnosticLocation,
+    location: &SourceLocation,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
 ) -> bool {
     if cancellation.is_cancelled() {
         return false;
     }
-    let DiagnosticLocation::Addressed {
+    let SourceLocation::Addressed {
         metadata_path: Some(metadata_path),
         target_kind: TargetKind::MetadataObject,
         ..
@@ -1468,6 +1558,7 @@ mod tests {
         DiagnosticTag, MetadataElement, MetadataFocus, UnaddressableReason,
     };
     use crate::domain::project_sources::SourceFormat;
+    use crate::domain::source_location::SourceLocation;
     use crate::domain::source_target::{
         MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
@@ -1573,7 +1664,6 @@ mod tests {
             action: DiagnosticAction::Findings,
             source_set: "main".to_string(),
             metadata_path: metadata_path.map(address),
-            requested_providers: None,
             filter: DiagnosticFilter {
                 min_severity: Some(DiagnosticSeverity::Warning),
                 codes: Vec::<DiagnosticCodeFilter>::new(),
@@ -1599,9 +1689,13 @@ mod tests {
         }
     }
 
-    fn mapped_location(item: DiagnosticItem) -> crate::domain::diagnostics::DiagnosticLocation {
+    fn mapped_location(item: DiagnosticItem) -> (SourceLocation, Option<UnaddressableReason>) {
         match item {
-            DiagnosticItem::Diagnostic { location, .. } => location,
+            DiagnosticItem::Diagnostic {
+                location,
+                location_reason,
+                ..
+            } => (location, location_reason),
             item => panic!("expected diagnostic item, got {item:?}"),
         }
     }
@@ -1628,8 +1722,8 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            mapped_location(root),
-            crate::domain::diagnostics::DiagnosticLocation::Addressed {
+            mapped_location(root).0,
+            SourceLocation::Addressed {
                 target_kind: TargetKind::SourceRoot,
                 ..
             }
@@ -1647,8 +1741,8 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            mapped_location(object),
-            crate::domain::diagnostics::DiagnosticLocation::Addressed {
+            mapped_location(object).0,
+            SourceLocation::Addressed {
                 target_kind: TargetKind::MetadataObject,
                 ..
             }
@@ -1674,8 +1768,8 @@ mod tests {
                 &cancellation,
             )
             .unwrap();
-            match mapped_location(item) {
-                crate::domain::diagnostics::DiagnosticLocation::Addressed {
+            match mapped_location(item).0 {
+                SourceLocation::Addressed {
                     metadata_path: Some(actual),
                     target_kind: TargetKind::Module,
                     ..
@@ -1729,20 +1823,20 @@ mod tests {
                 &cancellation,
             )
             .unwrap();
-            match mapped_location(item) {
-                crate::domain::diagnostics::DiagnosticLocation::Unaddressable {
+            let (location, reason) = mapped_location(item);
+            match location {
+                SourceLocation::Unaddressable {
                     owner_metadata_path,
-                    observed_path,
-                    reason,
+                    path,
                     ..
                 } => {
-                    assert_eq!(reason, expected_reason);
+                    assert_eq!(reason, Some(expected_reason));
                     assert_eq!(
                         owner_metadata_path.as_ref().map(MetadataAddress::as_str),
                         expected_owner
                     );
-                    assert!(!observed_path.contains('\\'));
-                    assert!(!Path::new(&observed_path).is_absolute());
+                    assert!(!path.contains('\\'));
+                    assert!(!Path::new(&path).is_absolute());
                 }
                 location => panic!("unexpected unaddressable location: {location:?}"),
             }
@@ -1894,8 +1988,8 @@ mod tests {
                 &cancellation,
             )
             .unwrap();
-            match mapped_location(item) {
-                crate::domain::diagnostics::DiagnosticLocation::Addressed {
+            match mapped_location(item).0 {
+                SourceLocation::Addressed {
                     metadata_path: Some(address),
                     ..
                 } => assert_eq!(address.as_str(), "CommonModule.Модуль с пробелом.Module"),
@@ -1947,13 +2041,12 @@ mod tests {
         )
         .unwrap();
 
+        let (location, reason) = mapped_location(item);
+        assert_eq!(reason, Some(UnaddressableReason::SourceFormatUnsupported));
         assert!(matches!(
-            mapped_location(item),
-            crate::domain::diagnostics::DiagnosticLocation::Unaddressable {
-                reason: UnaddressableReason::SourceFormatUnsupported,
-                observed_path,
-                ..
-            } if observed_path == "CommonModules/Any/Ext/Module.bsl"
+            location,
+            SourceLocation::Unaddressable { path, .. }
+                if path == "CommonModules/Any/Ext/Module.bsl"
         ));
     }
 

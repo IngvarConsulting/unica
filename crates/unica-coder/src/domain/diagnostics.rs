@@ -2,6 +2,7 @@ pub use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::{
     cancellation::CancellationToken,
     project_sources::ProjectSourceSet,
+    source_location::SourceLocation,
     source_roots::ResolvedSourceRoot,
     source_target::{MetadataAddress, ResolvedTarget, TargetKind},
     workspace::WorkspaceContext,
@@ -65,7 +66,6 @@ pub struct DiagnosticRequest {
     pub action: DiagnosticAction,
     pub source_set: String,
     pub metadata_path: Option<MetadataAddress>,
-    pub requested_providers: Option<Vec<String>>,
     pub filter: DiagnosticFilter,
     pub range: Option<DiagnosticRange>,
     pub limit: usize,
@@ -274,28 +274,6 @@ pub enum UnaddressableReason {
     ResourceNotAddressable,
     OwnerUnproven,
     SourceFormatUnsupported,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum DiagnosticLocation {
-    Addressed {
-        source_set: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        metadata_path: Option<MetadataAddress>,
-        target_kind: TargetKind,
-    },
-    Unaddressable {
-        source_set: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        owner_metadata_path: Option<MetadataAddress>,
-        observed_path: String,
-        reason: UnaddressableReason,
-    },
 }
 
 /// Provider-private location. A resource handle may be a relative path, an
@@ -565,7 +543,9 @@ pub struct DiagnosticProviderSection {
 pub enum DiagnosticItem {
     Diagnostic {
         provider: &'static str,
-        location: DiagnosticLocation,
+        location: SourceLocation,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        location_reason: Option<UnaddressableReason>,
         focus: DiagnosticFocus,
         code: String,
         severity: DiagnosticSeverity,
@@ -574,7 +554,9 @@ pub enum DiagnosticItem {
     },
     ResourceFailure {
         provider: &'static str,
-        location: DiagnosticLocation,
+        location: SourceLocation,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        location_reason: Option<UnaddressableReason>,
         error: DiagnosticError,
     },
     DiagnosticRule {
@@ -696,7 +678,7 @@ mod tests {
     #[test]
     fn addressed_diagnostic_location_matches_source_location_wire_shape() {
         let metadata_path = metadata_address("CommonModule.Diagnostics.Module");
-        let diagnostic = DiagnosticLocation::Addressed {
+        let diagnostic = SourceLocation::Addressed {
             source_set: "main".to_string(),
             metadata_path: Some(metadata_path),
             target_kind: TargetKind::Module,
@@ -757,11 +739,10 @@ mod tests {
 
     #[test]
     fn public_diagnostic_result_does_not_expose_provider_transport_details() {
-        let location = DiagnosticLocation::Unaddressable {
+        let location = SourceLocation::Unaddressable {
             source_set: "main".to_string(),
             owner_metadata_path: Some(metadata_address("Catalog.Products")),
-            observed_path: "Catalogs/Products/Ext/Unknown.xml".to_string(),
-            reason: UnaddressableReason::ResourceNotAddressable,
+            path: "Catalogs/Products/Ext/Unknown.xml".to_string(),
         };
         let result = DiagnosticResult {
             ok: true,
@@ -795,6 +776,7 @@ mod tests {
             items: vec![DiagnosticItem::Diagnostic {
                 provider: "bsl-language-server",
                 location,
+                location_reason: Some(UnaddressableReason::ResourceNotAddressable),
                 focus: DiagnosticFocus::Target,
                 code: "LS001".to_string(),
                 severity: DiagnosticSeverity::Warning,
@@ -806,9 +788,15 @@ mod tests {
         let value = serde_json::to_value(result).unwrap();
         assert_public_keys_are_transport_neutral(&value);
         assert_eq!(
-            value["items"][0]["location"]["observedPath"],
+            value["items"][0]["location"]["path"],
             json!("Catalogs/Products/Ext/Unknown.xml")
         );
+        assert_eq!(
+            value["items"][0]["locationReason"],
+            json!("resourceNotAddressable")
+        );
+        assert!(value["items"][0]["location"].get("observedPath").is_none());
+        assert!(value["items"][0]["location"].get("reason").is_none());
     }
 
     fn assert_public_keys_are_transport_neutral(value: &Value) {
@@ -818,7 +806,7 @@ mod tests {
                     assert!(
                         !matches!(
                             key.as_str(),
-                            "path" | "uri" | "transport" | "command" | "stdout" | "stderr"
+                            "observedPath" | "uri" | "transport" | "command" | "stdout" | "stderr"
                         ),
                         "public diagnostics leaked transport field `{key}`: {value}"
                     );

@@ -227,8 +227,9 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         all_arguments = {
             argument for branch in branches for argument in branch["properties"]
         }
-        for required in ("action", "sourceSet", "providers", "filter"):
+        for required in ("action", "sourceSet", "filter"):
             self.assertIn(required, all_arguments)
+        self.assertNotIn("providers", all_arguments)
         self.assertIn("range", all_arguments)
         for legacy in ("mode", "sourceDir", "path", "codes", "rangeStart", "rangeEnd"):
             self.assertNotIn(legacy, all_arguments)

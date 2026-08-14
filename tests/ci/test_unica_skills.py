@@ -1516,16 +1516,16 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("compiled 120-second fallback", text)
         self.assertIn("do not read this operational config", text)
 
-    def test_code_diagnostics_distinguishes_automatic_and_explicit_unsupported_selection(
-        self,
-    ) -> None:
+    def test_code_diagnostics_routes_providers_internally(self) -> None:
         text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("no_applicable_provider", text)
-        self.assertIn('providers: ["bsl-analyzer"]', text)
-        self.assertIn("target_not_supported", text)
+        self.assertIn("Provider execution is routed internally", text)
+        self.assertNotIn('providers: ["bsl-analyzer"]', text)
+        self.assertIn("inline/range disable markers", text)
+        self.assertIn("suppression-комментарии", text)
 
     def test_code_diagnostics_examples_use_logical_action_contract(self) -> None:
         calls = []

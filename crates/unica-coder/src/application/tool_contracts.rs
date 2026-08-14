@@ -890,13 +890,6 @@ fn diagnostics_input_schema() -> Value {
                         "type": "string",
                         "description": "Absolute path selecting the workspace context; it never identifies a diagnostic target and is not echoed in result data."
                     }),
-                    "providers" => json!({
-                        "type": "array",
-                        "minItems": 1,
-                        "uniqueItems": true,
-                        "items": {"type": "string", "enum": provider_ids},
-                        "description": "Optional non-empty provider selection; omission selects all providers applicable to the action and target."
-                    }),
                     "filter" => {
                         let mut schema = filter(descriptor.action);
                         schema["description"] = json!("Strict diagnostic severity and provider-qualified code filter applied after normalization.");
@@ -2032,31 +2025,6 @@ fn validate_diagnostics_arguments(
                 "{tool_name} action `{}` does not accept `{field}` argument",
                 action.as_str()
             ));
-        }
-    }
-    if let Some(providers) = args.get("providers") {
-        let providers = providers
-            .as_array()
-            .filter(|providers| !providers.is_empty())
-            .ok_or_else(|| format!("{tool_name} argument `providers` must be a non-empty array"))?;
-        let mut seen = BTreeSet::new();
-        for provider in providers {
-            let provider = provider
-                .as_str()
-                .ok_or_else(|| format!("{tool_name} argument `providers` must contain strings"))?;
-            if !LIVE_DIAGNOSTIC_PROVIDERS
-                .iter()
-                .any(|candidate| candidate.as_str() == provider)
-            {
-                return Err(format!(
-                    "{tool_name} unknown diagnostic provider `{provider}`"
-                ));
-            }
-            if !seen.insert(provider) {
-                return Err(format!(
-                    "{tool_name} argument `providers` must contain unique IDs"
-                ));
-            }
         }
     }
     validate_integer_bound(tool_name, args, "limit", 1, 200)?;
@@ -7413,6 +7381,10 @@ mod tests {
         for branch in branches {
             assert_eq!(branch["additionalProperties"], false);
             let properties = branch["properties"].as_object().unwrap();
+            assert!(
+                !properties.contains_key("providers"),
+                "provider execution is routed internally: {branch}"
+            );
             for removed in [
                 "mode",
                 "sourceDir",
@@ -7448,7 +7420,6 @@ mod tests {
             json!({
                 "action": "analyze",
                 "sourceSet": "main",
-                "providers": ["bsl-analyzer"],
                 "filter": {
                     "minSeverity": "warning",
                     "codes": [{"provider": "bsl-analyzer", "code": "LineLength"}]
@@ -7485,6 +7456,7 @@ mod tests {
             json!({"action": "status", "sourceSet": "main", "range": {}}),
             json!({"action": "findings", "sourceSet": "main", "metadataPath": "Catalog.Товары", "timeoutSeconds": 30}),
             json!({"action": "catalog", "sourceSet": "main", "filter": {"minSeverity": "warning"}}),
+            json!({"action": "status", "sourceSet": "main", "providers": ["bsl-analyzer"]}),
             json!({"action": "status", "sourceSet": "main", "providers": []}),
             json!({"action": "status", "sourceSet": "main", "providers": ["bsl-analyzer", "bsl-analyzer"]}),
             json!({"action": "analyze", "sourceSet": "main", "filter": {"codes": [

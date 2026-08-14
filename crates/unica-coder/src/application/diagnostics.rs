@@ -3,6 +3,7 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::diagnostics::*;
 use crate::domain::operational_config::OperationalConfig;
+use crate::domain::source_location::SourceLocation;
 use crate::domain::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
@@ -90,6 +91,18 @@ pub(crate) trait DiagnosticMapping: Send + Sync {
         context: &DiagnosticContext,
         cancellation: &CancellationToken,
     ) -> Result<DiagnosticItem, DiagnosticMapError>;
+
+    fn map_observations(
+        &self,
+        observations: Vec<DiagnosticObservation>,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+        observations
+            .into_iter()
+            .map(|observation| self.map_observation(observation, context, cancellation))
+            .collect()
+    }
 }
 
 impl<T: ApplicationPorts + ?Sized> DiagnosticMapping for T {
@@ -109,6 +122,15 @@ impl<T: ApplicationPorts + ?Sized> DiagnosticMapping for T {
         cancellation: &CancellationToken,
     ) -> Result<DiagnosticItem, DiagnosticMapError> {
         ApplicationPorts::map_diagnostic_observation(self, observation, context, cancellation)
+    }
+
+    fn map_observations(
+        &self,
+        observations: Vec<DiagnosticObservation>,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+        ApplicationPorts::map_diagnostic_observations(self, observations, context, cancellation)
     }
 }
 
@@ -176,29 +198,22 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                 continue;
             };
             sanitize_provider_outcome(&mut outcome, &context);
-            let mut provider_items = Vec::new();
-            let mut mapping_error = None;
-            for observation in outcome.observations {
+            let mut provider_items =
                 match self
                     .mapping
-                    .map_observation(observation, &context, cancellation)
+                    .map_observations(outcome.observations, &context, cancellation)
                 {
-                    Ok(item) => provider_items.push(item),
+                    Ok(items) => items,
                     Err(error) => {
-                        mapping_error = Some(error);
-                        break;
+                        sections.push(failed_mapping_section(
+                            selected_provider.descriptor,
+                            outcome.version,
+                            error,
+                            request.action,
+                        ));
+                        continue;
                     }
-                }
-            }
-            if let Some(error) = mapping_error {
-                sections.push(failed_mapping_section(
-                    selected_provider.descriptor,
-                    outcome.version,
-                    error,
-                    request.action,
-                ));
-                continue;
-            }
+                };
             if request.action == DiagnosticAction::Catalog {
                 provider_items.extend(outcome.rules.into_iter().map(|rule| {
                     DiagnosticItem::DiagnosticRule {
@@ -241,10 +256,7 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
             ));
         }
 
-        all_items.sort_by(|left, right| {
-            diagnostic_sort_key(left, &provider_order)
-                .cmp(&diagnostic_sort_key(right, &provider_order))
-        });
+        all_items.sort_by_cached_key(|item| diagnostic_sort_key(item, &provider_order));
         let items_total = all_items.len();
         all_items.truncate(request.limit);
         let items_returned = all_items.len();
@@ -879,47 +891,25 @@ fn select_providers(
         .descriptors()
         .map(|descriptor| descriptor.id.as_str())
         .collect::<HashSet<_>>();
-    if let Some(requested) = &request.requested_providers {
-        if requested.iter().any(|id| !registered.contains(id.as_str())) {
-            return Err(request_error(
-                "provider_unknown",
-                Some("providers"),
-                "providers contains an unregistered diagnostics provider",
-            ));
-        }
-        if request
-            .filter
-            .codes
-            .iter()
-            .any(|code| !requested.iter().any(|provider| provider == &code.provider))
-        {
-            return Err(request_error(
-                "filter_provider_not_selected",
-                Some("filter.codes"),
-                "filter.codes names a provider absent from providers",
-            ));
-        }
-    }
-    let code_providers = request
+    if request
         .filter
         .codes
         .iter()
-        .map(|filter| filter.provider.as_str())
-        .collect::<HashSet<_>>();
+        .any(|code| !registered.contains(code.provider.as_str()))
+    {
+        return Err(request_error(
+            "provider_unknown",
+            Some("filter.codes"),
+            "filter.codes contains an unregistered diagnostics provider namespace",
+        ));
+    }
     let mut selected = Vec::new();
     for provider in registry.providers() {
         let descriptor = provider.descriptor();
-        let explicitly_selected = request
-            .requested_providers
-            .as_ref()
-            .is_some_and(|requested| requested.iter().any(|id| id == descriptor.id.as_str()));
         let applicable = descriptor.supports_action(request.action)
             && (request.action != DiagnosticAction::Findings
                 || descriptor.supports_findings_target(target_kind));
-        let auto_selected = request.requested_providers.is_none()
-            && (code_providers.is_empty() || code_providers.contains(descriptor.id.as_str()))
-            && applicable;
-        if explicitly_selected || auto_selected {
+        if applicable {
             selected.push(SelectedProvider {
                 descriptor,
                 provider: Arc::clone(provider),
@@ -930,7 +920,7 @@ fn select_providers(
     if selected.is_empty() {
         return Err(request_error(
             "no_applicable_provider",
-            Some("providers"),
+            None,
             "no registered diagnostics provider supports the selected action and target",
         ));
     }
@@ -1080,7 +1070,7 @@ fn item_matches_request(
 }
 
 fn location_within_findings_target(
-    location: &DiagnosticLocation,
+    location: &SourceLocation,
     target: &crate::domain::source_target::ResolvedTarget,
 ) -> bool {
     if location_matches_target(location, target) {
@@ -1088,7 +1078,7 @@ fn location_within_findings_target(
     }
     matches!(
         location,
-        DiagnosticLocation::Unaddressable {
+        SourceLocation::Unaddressable {
             source_set,
             owner_metadata_path,
             ..
@@ -1108,12 +1098,12 @@ fn severity_rank(severity: DiagnosticSeverity) -> u8 {
 }
 
 fn location_matches_target(
-    location: &DiagnosticLocation,
+    location: &SourceLocation,
     target: &crate::domain::source_target::ResolvedTarget,
 ) -> bool {
     matches!(
         location,
-        DiagnosticLocation::Addressed {
+        SourceLocation::Addressed {
             source_set,
             metadata_path,
             target_kind,
@@ -1123,7 +1113,7 @@ fn location_matches_target(
     )
 }
 
-fn item_location(item: &DiagnosticItem) -> Option<&DiagnosticLocation> {
+fn item_location(item: &DiagnosticItem) -> Option<&SourceLocation> {
     match item {
         DiagnosticItem::Diagnostic { location, .. }
         | DiagnosticItem::ResourceFailure { location, .. } => Some(location),
@@ -1136,7 +1126,7 @@ fn diagnostic_sort_key(
     provider_order: &HashMap<&str, usize>,
 ) -> (String, String, usize, u8, String, String) {
     let location = match item_location(item) {
-        Some(DiagnosticLocation::Addressed {
+        Some(SourceLocation::Addressed {
             source_set,
             metadata_path,
             target_kind,
@@ -1145,13 +1135,13 @@ fn diagnostic_sort_key(
             metadata_path.as_ref().map_or("", MetadataAddress::as_str),
             target_kind
         ),
-        Some(DiagnosticLocation::Unaddressable {
+        Some(SourceLocation::Unaddressable {
             source_set,
             owner_metadata_path,
-            observed_path,
+            path,
             ..
         }) => format!(
-            "1|{source_set}|{}|{observed_path}",
+            "1|{source_set}|{}|{path}",
             owner_metadata_path
                 .as_ref()
                 .map_or("", MetadataAddress::as_str)
@@ -1246,15 +1236,6 @@ pub(crate) fn parse_diagnostic_request(
                 "metadataPath is not a valid logical address",
             )
         })?;
-    let requested_providers = args.get("providers").map(|providers| {
-        providers
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-    });
     let default_minimum = matches!(
         action,
         DiagnosticAction::Analyze | DiagnosticAction::Findings
@@ -1306,7 +1287,6 @@ pub(crate) fn parse_diagnostic_request(
         action,
         source_set,
         metadata_path,
-        requested_providers,
         filter: DiagnosticFilter {
             min_severity,
             codes,
@@ -1317,10 +1297,9 @@ pub(crate) fn parse_diagnostic_request(
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(DIAGNOSTIC_LIMIT_DEFAULT),
-        timeout: args
-            .get("timeoutSeconds")
-            .and_then(Value::as_u64)
-            .map(Duration::from_secs),
+        // The operational snapshot is the single owner of the analyze budget.
+        // `invoke` installs it after schema validation and config resolution.
+        timeout: None,
     })
 }
 
@@ -1390,6 +1369,7 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::diagnostics::*;
     use crate::domain::project_sources::{ProjectSourceSet, SourceFormat, SourceSetKind};
+    use crate::domain::source_location::SourceLocation;
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::source_target::{
         MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -1520,15 +1500,16 @@ mod tests {
                     location,
                     error,
                 } => {
-                    let location = fake_location(location, context)?;
+                    let (location, location_reason) = fake_location(location, context)?;
                     return Ok(DiagnosticItem::ResourceFailure {
                         provider: provider.as_str(),
                         location,
+                        location_reason,
                         error,
                     });
                 }
             };
-            let location = fake_location(observation_location, context)?;
+            let (location, location_reason) = fake_location(observation_location, context)?;
             let focus = match focus {
                 DiagnosticObservationFocus::Target => DiagnosticFocus::Target,
                 DiagnosticObservationFocus::SourceRange(range) => {
@@ -1540,6 +1521,7 @@ mod tests {
             Ok(DiagnosticItem::Diagnostic {
                 provider: provider.as_str(),
                 location,
+                location_reason,
                 focus,
                 code,
                 severity,
@@ -1552,7 +1534,7 @@ mod tests {
     fn fake_location(
         location: DiagnosticObservationLocation,
         context: &DiagnosticContext,
-    ) -> Result<DiagnosticLocation, DiagnosticMapError> {
+    ) -> Result<(SourceLocation, Option<UnaddressableReason>), DiagnosticMapError> {
         let metadata_path = match location {
             DiagnosticObservationLocation::Logical { metadata_path } => metadata_path,
             DiagnosticObservationLocation::Resource { handle } if handle == "outside" => {
@@ -1565,12 +1547,14 @@ mod tests {
                 context.target.metadata_path.clone()
             }
             DiagnosticObservationLocation::Resource { handle } if handle == "inner" => {
-                return Ok(DiagnosticLocation::Unaddressable {
-                    source_set: context.target.source_set.clone(),
-                    owner_metadata_path: context.target.metadata_path.clone(),
-                    observed_path: "Catalogs/Selected/Ext/Unknown.xml".to_string(),
-                    reason: UnaddressableReason::ResourceNotAddressable,
-                });
+                return Ok((
+                    SourceLocation::Unaddressable {
+                        source_set: context.target.source_set.clone(),
+                        owner_metadata_path: context.target.metadata_path.clone(),
+                        path: "Catalogs/Selected/Ext/Unknown.xml".to_string(),
+                    },
+                    Some(UnaddressableReason::ResourceNotAddressable),
+                ));
             }
             DiagnosticObservationLocation::Resource { handle } => {
                 Some(address(&format!("CommonModule.{handle}.Module")))
@@ -1579,11 +1563,14 @@ mod tests {
         let target_kind = metadata_path
             .as_ref()
             .map_or(TargetKind::SourceRoot, MetadataAddress::target_kind);
-        Ok(DiagnosticLocation::Addressed {
-            source_set: context.target.source_set.clone(),
-            metadata_path,
-            target_kind,
-        })
+        Ok((
+            SourceLocation::Addressed {
+                source_set: context.target.source_set.clone(),
+                metadata_path,
+                target_kind,
+            },
+            None,
+        ))
     }
 
     fn provider(
@@ -1688,7 +1675,6 @@ mod tests {
             action: DiagnosticAction::Findings,
             source_set: "main".to_string(),
             metadata_path: Some(address("CommonModule.Selected.Module")),
-            requested_providers: None,
             filter: DiagnosticFilter::default(),
             range: None,
             limit: 200,
@@ -1728,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_provider_selection_uses_registry_order_and_keeps_explicit_unsupported() {
+    fn diagnostics_provider_selection_uses_registry_order_and_skips_inapplicable_providers() {
         let empty = successful(Vec::new());
         let (registry, calls) = fake_registry([empty.clone(), empty.clone(), empty]);
         let automatic = run(registry, &findings_request()).unwrap();
@@ -1739,29 +1725,10 @@ mod tests {
         assert_eq!(automatic.state, DiagnosticResultState::Completed);
         assert!(automatic.complete);
         assert_eq!(calls[2].load(Ordering::SeqCst), 0);
-
-        let empty = successful(Vec::new());
-        let (registry, calls) = fake_registry([empty.clone(), empty.clone(), empty]);
-        let mut explicit = findings_request();
-        explicit.requested_providers = Some(vec![
-            "metadata-validator".to_string(),
-            "bsl-language-server".to_string(),
-            "bsl-analyzer".to_string(),
-        ]);
-        let result = run(registry, &explicit).unwrap();
-        assert_eq!(
-            result.selection.providers,
-            vec!["bsl-analyzer", "bsl-language-server", "metadata-validator"]
-        );
-        assert_eq!(
-            result.providers[2].status,
-            DiagnosticProviderStatus::Unsupported
-        );
-        assert_eq!(calls[2].load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn diagnostics_provider_selection_honors_code_filters_before_execution() {
+    fn diagnostics_code_filters_do_not_select_execution_providers() {
         let empty = successful(Vec::new());
         let (registry, calls) = fake_registry([empty.clone(), empty.clone(), empty]);
         let mut narrowed = findings_request();
@@ -1770,22 +1737,13 @@ mod tests {
             code: "UNKNOWN".to_string(),
         }];
         let result = run(registry, &narrowed).unwrap();
-        assert_eq!(result.selection.providers, vec!["bsl-language-server"]);
+        assert_eq!(
+            result.selection.providers,
+            vec!["bsl-analyzer", "bsl-language-server"]
+        );
         assert_eq!(result.items_total, Some(0));
-        assert_eq!(calls[0].load(Ordering::SeqCst), 0);
+        assert_eq!(calls[0].load(Ordering::SeqCst), 1);
         assert_eq!(calls[1].load(Ordering::SeqCst), 1);
-
-        let empty = successful(Vec::new());
-        let (registry, calls) = fake_registry([empty.clone(), empty.clone(), empty]);
-        let mut inconsistent = findings_request();
-        inconsistent.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
-        inconsistent.filter.codes = vec![DiagnosticCodeFilter {
-            provider: "bsl-language-server".to_string(),
-            code: "LS001".to_string(),
-        }];
-        let error = run(registry, &inconsistent).unwrap_err();
-        assert_eq!(error.code, "filter_provider_not_selected");
-        assert!(calls.iter().all(|calls| calls.load(Ordering::SeqCst) == 0));
     }
 
     #[test]
@@ -1845,16 +1803,13 @@ mod tests {
     #[test]
     fn diagnostics_provider_selection_rejects_no_automatic_applicable_provider() {
         let empty = successful(Vec::new());
-        let (registry, calls) = fake_registry([empty.clone(), empty.clone(), empty]);
+        let (analyzer, calls) = provider(&ANALYZER_DESCRIPTOR, empty);
+        let registry = DiagnosticProviderRegistry::new(vec![analyzer]).unwrap();
         let mut request = findings_request();
         request.metadata_path = Some(address("Catalog.Items"));
-        request.filter.codes = vec![DiagnosticCodeFilter {
-            provider: "bsl-analyzer".to_string(),
-            code: "ANY".to_string(),
-        }];
         let error = run(registry, &request).unwrap_err();
         assert_eq!(error.code, "no_applicable_provider");
-        assert!(calls.iter().all(|calls| calls.load(Ordering::SeqCst) == 0));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -2311,7 +2266,6 @@ mod tests {
         )]);
         let mut request = findings_request();
         request.timeout = Some(Duration::from_millis(30));
-        request.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
         let started = Instant::now();
         let result = run(registry, &request).unwrap();
         assert!(started.elapsed() < Duration::from_millis(120));
@@ -2376,8 +2330,7 @@ mod tests {
         )]);
         let (registry, _) =
             fake_registry([mismatched, successful(Vec::new()), successful(Vec::new())]);
-        let mut request = findings_request();
-        request.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
+        let request = findings_request();
         let normalized = run(registry, &request).unwrap();
         assert!(matches!(
             &normalized.items[0],
@@ -2422,7 +2375,6 @@ mod tests {
         let mut status_request = findings_request();
         status_request.action = DiagnosticAction::Status;
         status_request.metadata_path = None;
-        status_request.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
         status_request.filter.min_severity = None;
         let status = run(registry, &status_request).unwrap();
         assert_eq!(
@@ -2454,7 +2406,6 @@ mod tests {
         let mut analyze_request = findings_request();
         analyze_request.action = DiagnosticAction::Analyze;
         analyze_request.metadata_path = None;
-        analyze_request.requested_providers = Some(vec!["bsl-analyzer".to_string()]);
         let analyze = run(registry, &analyze_request).unwrap();
         assert_eq!(
             analyze.providers[0].error.as_ref().unwrap().code,
@@ -2613,7 +2564,6 @@ mod tests {
             fake_registry([successful(Vec::new()), successful(Vec::new()), outcome]);
         let mut request = findings_request();
         request.metadata_path = Some(address("Catalog.Selected"));
-        request.requested_providers = Some(vec!["metadata-validator".to_string()]);
 
         let result = run(registry, &request).unwrap();
         let codes = result
@@ -2635,7 +2585,6 @@ mod tests {
             action: DiagnosticAction::Findings,
             source_set: "main".to_string(),
             metadata_path: Some(address("CommonModule.Документы Обмена.Module")),
-            requested_providers: Some(vec!["bsl-analyzer".to_string()]),
             filter: DiagnosticFilter::default(),
             range: None,
             limit: 200,
@@ -2678,7 +2627,6 @@ mod tests {
             action: DiagnosticAction::Findings,
             source_set: "main".to_string(),
             metadata_path: Some(address("CommonModule.Документы Обмена.Module")),
-            requested_providers: Some(vec!["bsl-language-server".to_string()]),
             filter: DiagnosticFilter::default(),
             range: None,
             limit: 200,
@@ -2710,7 +2658,6 @@ mod tests {
             action: DiagnosticAction::Findings,
             source_set: "main".to_string(),
             metadata_path: Some(address("Catalog.Номенклатура")),
-            requested_providers: Some(vec!["metadata-validator".to_string()]),
             filter: DiagnosticFilter::default(),
             range: None,
             limit: 200,

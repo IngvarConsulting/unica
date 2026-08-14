@@ -63,7 +63,6 @@ const DIAGNOSTIC_ANALYZE_ARGS: &[&str] = &[
     "action",
     "sourceSet",
     "cwd",
-    "providers",
     "filter",
     "limit",
     "timeoutSeconds",
@@ -73,14 +72,12 @@ const DIAGNOSTIC_FINDINGS_ARGS: &[&str] = &[
     "sourceSet",
     "cwd",
     "metadataPath",
-    "providers",
     "filter",
     "range",
     "limit",
 ];
-const DIAGNOSTIC_STATUS_ARGS: &[&str] = &["action", "sourceSet", "cwd", "providers"];
-const DIAGNOSTIC_CATALOG_ARGS: &[&str] =
-    &["action", "sourceSet", "cwd", "providers", "filter", "limit"];
+const DIAGNOSTIC_STATUS_ARGS: &[&str] = &["action", "sourceSet", "cwd"];
+const DIAGNOSTIC_CATALOG_ARGS: &[&str] = &["action", "sourceSet", "cwd", "filter", "limit"];
 
 pub(crate) const DIAGNOSTIC_ACTION_DESCRIPTORS: &[DiagnosticActionDescriptor] = &[
     DiagnosticActionDescriptor {
