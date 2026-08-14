@@ -29,6 +29,9 @@ pub(crate) struct GitIndexEntry {
 
 const MAX_STAGED_IGNORE_FILES: usize = 1024;
 const MAX_STAGED_IGNORE_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EXPANDED_REPOSITORY_FACTS: usize = 4096;
+const MAX_EXPANDED_REPOSITORY_FACT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_AMBIGUOUS_OWNER_REASON_BYTES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IgnoreMatch {
@@ -62,6 +65,7 @@ pub(crate) struct GitRepositoryInspection {
     pub(crate) repository_root: Option<PathBuf>,
     pub(crate) entries: Vec<GitIndexEntry>,
     pub(crate) resource_inspection_blocker: Option<String>,
+    pub(crate) staged_config_dump_info_kinds: BTreeMap<String, ConfigDumpInfoXmlKind>,
     pub(crate) observations: Vec<ProjectCheckObservation>,
     pub(crate) facts: Vec<ProjectHealthFact>,
 }
@@ -69,6 +73,21 @@ pub(crate) struct GitRepositoryInspection {
 pub(crate) struct ConfigDumpInfoIndexInspection {
     pub(crate) runtime_paths: Vec<String>,
     pub(crate) inconclusive_paths: Vec<String>,
+    pub(crate) classifications: BTreeMap<String, ConfigDumpInfoXmlKind>,
+}
+
+#[derive(Debug)]
+struct ConfigDumpInfoEvaluation {
+    facts: Vec<ProjectHealthFact>,
+    classifications: BTreeMap<String, ConfigDumpInfoXmlKind>,
+}
+
+impl std::ops::Deref for ConfigDumpInfoEvaluation {
+    type Target = [ProjectHealthFact];
+
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
 }
 
 #[derive(Debug)]
@@ -328,6 +347,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     repository_root: Some(repository_root),
                     entries: Vec::new(),
                     resource_inspection_blocker: None,
+                    staged_config_dump_info_kinds: BTreeMap::new(),
                     observations,
                     facts,
                 });
@@ -354,6 +374,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 repository_root: Some(repository_root),
                 entries: Vec::new(),
                 resource_inspection_blocker: None,
+                staged_config_dump_info_kinds: BTreeMap::new(),
                 observations,
                 facts,
             });
@@ -379,6 +400,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 repository_root: Some(repository_root),
                 entries: Vec::new(),
                 resource_inspection_blocker: None,
+                staged_config_dump_info_kinds: BTreeMap::new(),
                 observations,
                 facts,
             });
@@ -407,6 +429,7 @@ impl<'a> GitRepositoryInspector<'a> {
                         repository_root: Some(repository_root),
                         entries: Vec::new(),
                         resource_inspection_blocker: None,
+                        staged_config_dump_info_kinds: BTreeMap::new(),
                         observations,
                         facts,
                     });
@@ -427,6 +450,7 @@ impl<'a> GitRepositoryInspector<'a> {
                         repository_root: Some(repository_root),
                         entries: Vec::new(),
                         resource_inspection_blocker: None,
+                        staged_config_dump_info_kinds: BTreeMap::new(),
                         observations,
                         facts,
                     });
@@ -444,6 +468,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 repository_root: Some(repository_root),
                 entries,
                 resource_inspection_blocker: None,
+                staged_config_dump_info_kinds: BTreeMap::new(),
                 observations,
                 facts,
             });
@@ -507,6 +532,7 @@ impl<'a> GitRepositoryInspector<'a> {
                         repository_root: Some(repository_root),
                         entries,
                         resource_inspection_blocker,
+                        staged_config_dump_info_kinds: BTreeMap::new(),
                         observations,
                         facts,
                     });
@@ -529,6 +555,7 @@ impl<'a> GitRepositoryInspector<'a> {
                         repository_root: Some(repository_root),
                         entries,
                         resource_inspection_blocker,
+                        staged_config_dump_info_kinds: BTreeMap::new(),
                         observations,
                         facts,
                     });
@@ -584,6 +611,7 @@ impl<'a> GitRepositoryInspector<'a> {
             }
         }
 
+        let mut staged_config_dump_info_kinds = BTreeMap::new();
         match self.inspect_config_dump_info(
             &entries,
             &repository_root,
@@ -592,14 +620,15 @@ impl<'a> GitRepositoryInspector<'a> {
             cancellation,
             deadline,
         )? {
-            Ok(config_dump_facts) => {
+            Ok(config_dump_evaluation) => {
                 observations.push(completed(ProjectCheckId::RepositoryConfigDumpInfo));
                 append_completed_for_roots(
                     &mut observations,
                     ProjectCheckId::RepositoryConfigDumpInfo,
                     &layout.roots,
                 );
-                facts.extend(config_dump_facts);
+                staged_config_dump_info_kinds = config_dump_evaluation.classifications;
+                facts.extend(config_dump_evaluation.facts);
             }
             Err(ConfigDumpInfoIndexInspectionError::TimedOut) => {
                 let reason = "staged ConfigDumpInfo inspection timed out";
@@ -683,6 +712,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     repository_root: Some(repository_root),
                     entries,
                     resource_inspection_blocker,
+                    staged_config_dump_info_kinds,
                     observations,
                     facts,
                 });
@@ -730,6 +760,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     repository_root: Some(repository_root),
                     entries,
                     resource_inspection_blocker,
+                    staged_config_dump_info_kinds,
                     observations,
                     facts,
                 });
@@ -944,6 +975,7 @@ impl<'a> GitRepositoryInspector<'a> {
             repository_root: Some(repository_root),
             entries,
             resource_inspection_blocker,
+            staged_config_dump_info_kinds,
             observations,
             facts,
         })
@@ -958,7 +990,7 @@ impl<'a> GitRepositoryInspector<'a> {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<
-        Result<Vec<ProjectHealthFact>, ConfigDumpInfoIndexInspectionError>,
+        Result<ConfigDumpInfoEvaluation, ConfigDumpInfoIndexInspectionError>,
         ProjectHealthInspectionError,
     > {
         if entries.iter().any(is_config_dump_info_entry) {
@@ -983,7 +1015,13 @@ impl<'a> GitRepositoryInspector<'a> {
             Err(error) => return Ok(Err(error)),
         };
         let mut facts = Vec::new();
-        for path in inspection.runtime_paths {
+        let mut fact_bytes = 0_usize;
+        let ConfigDumpInfoIndexInspection {
+            runtime_paths,
+            inconclusive_paths,
+            classifications,
+        } = inspection;
+        for path in runtime_paths {
             let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
                 Ok(owners) => owners,
                 Err(GeneratedPathInspectionError::Cancelled) => {
@@ -997,6 +1035,18 @@ impl<'a> GitRepositoryInspector<'a> {
                 }
             };
             if let Some([root]) = owners {
+                fact_bytes = match reserve_expanded_repository_fact_budget(
+                    facts.len(),
+                    fact_bytes,
+                    1,
+                    path.len().saturating_add(root.source_set.name.len()),
+                    "ConfigDumpInfo",
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(reason) => {
+                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
+                    }
+                };
                 facts.push(ProjectHealthFact::RuntimeSidecarTracked {
                     source_set: root.source_set.name.clone(),
                     path,
@@ -1004,40 +1054,59 @@ impl<'a> GitRepositoryInspector<'a> {
             } else {
                 let ambiguous_owners = owners.filter(|owners| owners.len() > 1);
                 let reason = ambiguous_owners
-                    .map(|owners| {
-                        let mut names = owners
-                            .iter()
-                            .map(|root| root.source_set.name.clone())
-                            .collect::<Vec<_>>();
-                        names.sort();
-                        names.dedup();
-                        format!(
-                            "runtime sidecar has ambiguous equal-depth source-set owners: {}",
-                            names.join(", ")
-                        )
-                    })
+                    .map(ambiguous_owner_reason)
                     .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
+                let additional_count =
+                    1_usize.saturating_add(ambiguous_owners.map_or(0, |owners| owners.len()));
+                let additional_bytes = path.len().saturating_add(reason.len()).saturating_add(
+                    ambiguous_owners.map_or(0, |owners| {
+                        owners.iter().fold(0_usize, |total, root| {
+                            total
+                                .saturating_add(path.len())
+                                .saturating_add(reason.len())
+                                .saturating_add(root.source_set.name.len())
+                        })
+                    }),
+                );
+                fact_bytes = match reserve_expanded_repository_fact_budget(
+                    facts.len(),
+                    fact_bytes,
+                    additional_count,
+                    additional_bytes,
+                    "ConfigDumpInfo",
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(reason) => {
+                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
+                    }
+                };
                 facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
                     source_set: None,
                     path: path.clone(),
                     reason: reason.clone(),
                 });
                 if let Some(owners) = ambiguous_owners {
-                    facts.extend(owners.iter().map(|root| {
-                        ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    for (owner_index, root) in owners.iter().enumerate() {
+                        if owner_index.is_multiple_of(256) {
+                            if cancellation.is_cancelled() {
+                                return Err(ProjectHealthInspectionError::Cancelled);
+                            }
+                            if deadline.remaining().is_zero() {
+                                return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
+                            }
+                        }
+                        facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
                             source_set: Some(root.source_set.name.clone()),
                             path: path.clone(),
                             reason: reason.clone(),
-                        }
-                    }));
+                        });
+                    }
                 }
             }
         }
-        for path in inspection.inconclusive_paths {
-            let source_set = match source_owners.owners_for_repo_path(&path, cancellation, deadline)
-            {
-                Ok(Some([root])) => Some(root.source_set.name.clone()),
-                Ok(_) => None,
+        for path in inconclusive_paths {
+            let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
+                Ok(owners) => owners,
                 Err(GeneratedPathInspectionError::Cancelled) => {
                     return Err(ProjectHealthInspectionError::Cancelled)
                 }
@@ -1048,13 +1117,74 @@ impl<'a> GitRepositoryInspector<'a> {
                     return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
                 }
             };
-            facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
-                source_set,
-                path,
-                reason: "staged blob classification is inconclusive".into(),
-            });
+            let reason = "staged blob classification is inconclusive";
+            let additional_count = match owners {
+                Some([_]) | None => 1,
+                Some(owners) => 1_usize.saturating_add(owners.len()),
+            };
+            let owner_bytes = match owners {
+                Some([root]) => root.source_set.name.len(),
+                Some(owners) => owners.iter().fold(0_usize, |total, root| {
+                    total
+                        .saturating_add(path.len())
+                        .saturating_add(reason.len())
+                        .saturating_add(root.source_set.name.len())
+                }),
+                None => 0,
+            };
+            fact_bytes = match reserve_expanded_repository_fact_budget(
+                facts.len(),
+                fact_bytes,
+                additional_count,
+                path.len()
+                    .saturating_add(reason.len())
+                    .saturating_add(owner_bytes),
+                "ConfigDumpInfo",
+            ) {
+                Ok(bytes) => bytes,
+                Err(reason) => {
+                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
+                }
+            };
+            match owners {
+                Some([root]) => facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: Some(root.source_set.name.clone()),
+                    path,
+                    reason: reason.into(),
+                }),
+                Some(owners) => {
+                    facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                        source_set: None,
+                        path: path.clone(),
+                        reason: reason.into(),
+                    });
+                    for (owner_index, root) in owners.iter().enumerate() {
+                        if owner_index.is_multiple_of(256) {
+                            if cancellation.is_cancelled() {
+                                return Err(ProjectHealthInspectionError::Cancelled);
+                            }
+                            if deadline.remaining().is_zero() {
+                                return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
+                            }
+                        }
+                        facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: path.clone(),
+                            reason: reason.into(),
+                        });
+                    }
+                }
+                None => facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: None,
+                    path,
+                    reason: reason.into(),
+                }),
+            }
         }
-        Ok(Ok(facts))
+        Ok(Ok(ConfigDumpInfoEvaluation {
+            facts,
+            classifications,
+        }))
     }
 
     fn run<const N: usize>(
@@ -1246,6 +1376,7 @@ pub(crate) fn classify_staged_config_dump_info(
 ) -> Result<ConfigDumpInfoIndexInspection, ConfigDumpInfoIndexInspectionError> {
     let mut runtime_paths = Vec::new();
     let mut inconclusive_paths = Vec::new();
+    let mut classifications = BTreeMap::new();
     let mut blob_cache = BTreeMap::<String, Option<ConfigDumpInfoXmlKind>>::new();
     for entry in entries
         .iter()
@@ -1298,6 +1429,9 @@ pub(crate) fn classify_staged_config_dump_info(
             blob_cache.insert(oid.clone(), classified);
             classified
         };
+        if let Some(classification) = classification {
+            classifications.insert(entry.repo_path.clone(), classification);
+        }
         match classification {
             Some(ConfigDumpInfoXmlKind::RuntimeSidecar) => {
                 runtime_paths.push(entry.repo_path.clone())
@@ -1319,6 +1453,7 @@ pub(crate) fn classify_staged_config_dump_info(
     Ok(ConfigDumpInfoIndexInspection {
         runtime_paths,
         inconclusive_paths,
+        classifications,
     })
 }
 
@@ -1561,6 +1696,7 @@ fn discovery_failed(
         repository_root: None,
         entries: Vec::new(),
         resource_inspection_blocker: None,
+        staged_config_dump_info_kinds: BTreeMap::new(),
         observations,
         facts: vec![fact],
     }
@@ -2128,6 +2264,7 @@ fn tracked_generated_facts(
 ) -> Result<Vec<ProjectHealthFact>, GeneratedPathInspectionError> {
     let cache = repo_path(repository_root, &context.cache_root);
     let mut facts = Vec::new();
+    let mut fact_bytes = 0_usize;
     for (entry_index, entry) in entries.iter().enumerate() {
         if entry_index % 256 == 0 {
             if cancellation.is_cancelled() {
@@ -2163,21 +2300,93 @@ fn tracked_generated_facts(
         if generated {
             match source_owners.owners_for_repo_path(&entry.repo_path, cancellation, deadline)? {
                 Some(owners) if !owners.is_empty() => {
-                    facts.extend(owners.iter().map(|root| {
-                        ProjectHealthFact::GeneratedPathTracked {
+                    let additional_bytes = owners.iter().fold(0_usize, |total, root| {
+                        total
+                            .saturating_add(entry.repo_path.len())
+                            .saturating_add(root.source_set.name.len())
+                    });
+                    fact_bytes = reserve_expanded_repository_fact_budget(
+                        facts.len(),
+                        fact_bytes,
+                        owners.len(),
+                        additional_bytes,
+                        "generated path",
+                    )
+                    .map_err(GeneratedPathInspectionError::Incomplete)?;
+                    for (owner_index, root) in owners.iter().enumerate() {
+                        if owner_index.is_multiple_of(256) {
+                            if cancellation.is_cancelled() {
+                                return Err(GeneratedPathInspectionError::Cancelled);
+                            }
+                            if deadline.remaining().is_zero() {
+                                return Err(GeneratedPathInspectionError::TimedOut);
+                            }
+                        }
+                        facts.push(ProjectHealthFact::GeneratedPathTracked {
                             source_set: Some(root.source_set.name.clone()),
                             path: entry.repo_path.clone(),
-                        }
-                    }));
+                        });
+                    }
                 }
-                _ => facts.push(ProjectHealthFact::GeneratedPathTracked {
-                    source_set: None,
-                    path: entry.repo_path.clone(),
-                }),
+                _ => {
+                    fact_bytes = reserve_expanded_repository_fact_budget(
+                        facts.len(),
+                        fact_bytes,
+                        1,
+                        entry.repo_path.len(),
+                        "generated path",
+                    )
+                    .map_err(GeneratedPathInspectionError::Incomplete)?;
+                    facts.push(ProjectHealthFact::GeneratedPathTracked {
+                        source_set: None,
+                        path: entry.repo_path.clone(),
+                    });
+                }
             }
         }
     }
     Ok(facts)
+}
+
+fn reserve_expanded_repository_fact_budget(
+    current_count: usize,
+    current_bytes: usize,
+    additional_count: usize,
+    additional_bytes: usize,
+    fact_kind: &str,
+) -> Result<usize, String> {
+    let next_count = current_count.saturating_add(additional_count);
+    let next_bytes = current_bytes.saturating_add(additional_bytes);
+    if next_count > MAX_EXPANDED_REPOSITORY_FACTS || next_bytes > MAX_EXPANDED_REPOSITORY_FACT_BYTES
+    {
+        return Err(format!(
+            "{fact_kind} fact budget exceeded while expanding source-set ownership"
+        ));
+    }
+    Ok(next_bytes)
+}
+
+fn ambiguous_owner_reason(owners: &[&InspectedSourceRoot]) -> String {
+    const PREFIX: &str = "runtime sidecar has ambiguous equal-depth source-set owners";
+    let mut names = owners
+        .iter()
+        .map(|root| root.source_set.name.as_str())
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    let joined_bytes = names.iter().fold(0_usize, |total, name| {
+        total.saturating_add(name.len()).saturating_add(2)
+    });
+    if PREFIX.len().saturating_add(2).saturating_add(joined_bytes)
+        <= MAX_AMBIGUOUS_OWNER_REASON_BYTES
+    {
+        format!("{PREFIX}: {}", names.join(", "))
+    } else {
+        format!(
+            "{PREFIX}: {} owners; names omitted because the bounded diagnostic limit was reached",
+            names.len()
+        )
+    }
 }
 
 fn repo_path(repository_root: &Path, path: &Path) -> Option<String> {
@@ -2362,6 +2571,52 @@ mod tests {
     }
 
     #[test]
+    fn generated_equal_root_fact_expansion_is_bounded() {
+        let fixture = health_fixture(false);
+        let source_sets = (0..5)
+            .map(|index| {
+                format!("  - name: owner-{index}\n    type: CONFIGURATION\n    path: src\n")
+            })
+            .collect::<String>();
+        fs::write(
+            fixture.context.workspace_root.join("v8project.yaml"),
+            format!("format: DESIGNER\nsource-set:\n{source_sets}"),
+        )
+        .unwrap();
+        let layout = inspect_layout(&fixture.context);
+        let cancellation = CancellationToken::new();
+        let owners = super::SourceRootOwners::new(
+            fixture.context.workspace_root.as_path(),
+            &layout.roots,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap();
+        let entries = (0..820)
+            .map(|index| GitIndexEntry {
+                repo_path: format!("src/.build/generated-{index}.bin"),
+                blob_oid: Some(format!("{index:040x}")),
+                mode: Some("100644".into()),
+            })
+            .collect::<Vec<_>>();
+
+        let result = super::tracked_generated_facts(
+            &entries,
+            fixture.context.workspace_root.as_path(),
+            &fixture.context,
+            &owners,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::GeneratedPathInspectionError::Incomplete(reason))
+                if reason.contains("fact budget")
+        ));
+    }
+
+    #[test]
     fn equal_root_runtime_sidecar_reports_ambiguous_owners() {
         let fixture = health_fixture(false);
         fs::write(
@@ -2412,6 +2667,109 @@ mod tests {
                         && reason.contains("second")
                 )),
                 "missing ambiguous fact for {source_set:?}: {facts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn equal_root_runtime_sidecar_reason_is_bounded() {
+        let fixture = health_fixture(false);
+        let first = format!("first-{}", "a".repeat(4_096));
+        let second = format!("second-{}", "b".repeat(4_096));
+        fs::write(
+            fixture.context.workspace_root.join("v8project.yaml"),
+            format!(
+                "format: DESIGNER\nsource-set:\n  - name: {first}\n    type: CONFIGURATION\n    path: src\n  - name: {second}\n    type: CONFIGURATION\n    path: src\n"
+            ),
+        )
+        .unwrap();
+        let layout = inspect_layout(&fixture.context);
+        let cancellation = CancellationToken::new();
+        let owners = super::SourceRootOwners::new(
+            fixture.context.workspace_root.as_path(),
+            &layout.roots,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap();
+        let entries = vec![GitIndexEntry {
+            repo_path: "src/ConfigDumpInfo.xml".into(),
+            blob_oid: Some("a".repeat(40)),
+            mode: Some("100644".into()),
+        }];
+        let runner = SequenceRunner::outputs(vec![process_output(true, "<ConfigDumpInfo/>")]);
+
+        let facts = GitRepositoryInspector::with_runner(&runner)
+            .inspect_config_dump_info(
+                &entries,
+                fixture.context.workspace_root.as_path(),
+                &owners,
+                &StagedBlobReadSafety::LocalOnlyGuaranteed,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(1)),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(facts.len(), 3);
+        assert!(
+            facts.iter().all(|fact| matches!(
+                fact,
+                ProjectHealthFact::ConfigDumpInfoUnclassified { reason, .. }
+                    if reason.len() <= 512
+            )),
+            "{facts:?}"
+        );
+    }
+
+    #[test]
+    fn equal_root_inconclusive_config_dump_info_reports_every_owner() {
+        let fixture = health_fixture(false);
+        fs::write(
+            fixture.context.workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: first\n    type: CONFIGURATION\n    path: src\n  - name: second\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let layout = inspect_layout(&fixture.context);
+        let cancellation = CancellationToken::new();
+        let owners = super::SourceRootOwners::new(
+            fixture.context.workspace_root.as_path(),
+            &layout.roots,
+            &cancellation,
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap();
+        let entries = vec![GitIndexEntry {
+            repo_path: "src/ConfigDumpInfo.xml".into(),
+            blob_oid: Some("a".repeat(40)),
+            mode: Some("100644".into()),
+        }];
+        let runner = SequenceRunner::outputs(vec![process_output(true, "<not-config-dump/> ")]);
+
+        let facts = GitRepositoryInspector::with_runner(&runner)
+            .inspect_config_dump_info(
+                &entries,
+                fixture.context.workspace_root.as_path(),
+                &owners,
+                &StagedBlobReadSafety::LocalOnlyGuaranteed,
+                &cancellation,
+                ProviderDeadline::from_budget(Duration::from_secs(1)),
+            )
+            .unwrap()
+            .unwrap();
+
+        for source_set in [None, Some("first"), Some("second")] {
+            assert!(
+                facts.iter().any(|fact| matches!(
+                    fact,
+                    ProjectHealthFact::ConfigDumpInfoUnclassified {
+                        source_set: actual,
+                        reason,
+                        ..
+                    } if actual.as_deref() == source_set
+                        && reason == "staged blob classification is inconclusive"
+                )),
+                "missing inconclusive fact for {source_set:?}: {facts:?}"
             );
         }
     }

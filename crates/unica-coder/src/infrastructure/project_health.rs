@@ -7,8 +7,10 @@ pub(crate) const PROJECT_HEALTH_STDOUT_CAPTURE_LIMIT: usize = 64 * 1024 * 1024;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::project_health::{
-    ProjectCheckId, ProjectCheckOutcome, ProjectHealthInspectionError, ProjectHealthSnapshot,
+    ProjectCheckId, ProjectCheckOutcome, ProjectHealthFact, ProjectHealthInspectionError,
+    ProjectHealthSnapshot,
 };
+use crate::domain::project_sources::{ConfigDumpInfoXmlKind, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{system_process_runner, ProcessRunner};
 use git::GitRepositoryInspector;
@@ -16,7 +18,7 @@ use layout::SourceLayoutInspector;
 use resources::{resource_observations, SourceResourcePolicyInspector};
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 #[cfg(test)]
@@ -174,6 +176,178 @@ pub(super) enum SourceRootOwnerIndexError<E> {
     Path(String),
 }
 
+#[derive(Debug)]
+enum ResourceRootEligibilityError {
+    Cancelled,
+    TimedOut,
+    Incomplete(String),
+}
+
+struct ResourceRootEligibility {
+    roots: Vec<layout::InspectedSourceRoot>,
+    incomplete_source_sets: BTreeSet<String>,
+}
+
+enum StagedPlatformFormatMarker {
+    Present,
+    Absent,
+    Incomplete,
+}
+
+fn eligible_resource_roots_from_staged_index(
+    repository_root: &Path,
+    roots: &[layout::InspectedSourceRoot],
+    entries: &[git::GitIndexEntry],
+    staged_config_dump_info_kinds: &BTreeMap<String, ConfigDumpInfoXmlKind>,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<ResourceRootEligibility, ResourceRootEligibilityError> {
+    let mut checkpoint = || {
+        if cancellation.is_cancelled() {
+            Err(ResourceRootEligibilityError::Cancelled)
+        } else if deadline.remaining().is_zero() {
+            Err(ResourceRootEligibilityError::TimedOut)
+        } else {
+            Ok(())
+        }
+    };
+    let owners =
+        SourceRootOwnerIndex::new_with_checkpoint(repository_root, roots.iter(), &mut checkpoint)
+            .map_err(|error| match error {
+            SourceRootOwnerIndexError::Checkpoint(error) => error,
+            SourceRootOwnerIndexError::Path(reason) => {
+                ResourceRootEligibilityError::Incomplete(reason)
+            }
+        })?;
+    let mut eligible = roots
+        .iter()
+        .filter(|root| {
+            root.source_set.source_format
+                == crate::domain::project_sources::SourceFormat::PlatformXml
+        })
+        .map(|root| root.source_set.name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut incomplete_source_sets = BTreeSet::new();
+    for (entry_index, entry) in entries.iter().enumerate() {
+        if entry_index.is_multiple_of(256) {
+            checkpoint()?;
+        }
+        let Some((entry_owners, prefix_depth)) =
+            owners.deepest_owners_with_checkpoint(&entry.repo_path, &mut checkpoint)?
+        else {
+            continue;
+        };
+        let mut relative = String::new();
+        for (component_index, component) in Path::new(&entry.repo_path)
+            .components()
+            .skip(prefix_depth)
+            .enumerate()
+        {
+            if component_index.is_multiple_of(256) {
+                checkpoint()?;
+            }
+            if !relative.is_empty() {
+                relative.push('/');
+            }
+            relative.push_str(&component.as_os_str().to_string_lossy());
+        }
+        for (owner_index, root) in entry_owners.iter().enumerate() {
+            if owner_index.is_multiple_of(256) {
+                checkpoint()?;
+            }
+            match staged_platform_format_marker(
+                &root.source_set,
+                &relative,
+                &entry.repo_path,
+                staged_config_dump_info_kinds,
+            ) {
+                StagedPlatformFormatMarker::Present => {
+                    if !eligible.contains(root.source_set.name.as_str()) {
+                        eligible.insert(root.source_set.name.clone());
+                    }
+                    incomplete_source_sets.remove(&root.source_set.name);
+                }
+                StagedPlatformFormatMarker::Incomplete
+                    if !eligible.contains(&root.source_set.name) =>
+                {
+                    if !incomplete_source_sets.contains(root.source_set.name.as_str()) {
+                        incomplete_source_sets.insert(root.source_set.name.clone());
+                    }
+                }
+                StagedPlatformFormatMarker::Absent | StagedPlatformFormatMarker::Incomplete => {}
+            }
+        }
+    }
+    checkpoint()?;
+    Ok(ResourceRootEligibility {
+        roots: roots
+            .iter()
+            .filter(|root| eligible.contains(&root.source_set.name))
+            .cloned()
+            .map(|mut root| {
+                root.source_set.source_format =
+                    crate::domain::project_sources::SourceFormat::PlatformXml;
+                root
+            })
+            .collect(),
+        incomplete_source_sets,
+    })
+}
+
+fn staged_platform_format_marker(
+    source_set: &crate::domain::project_sources::ProjectSourceSet,
+    relative: &str,
+    repo_path: &str,
+    staged_config_dump_info_kinds: &BTreeMap<String, ConfigDumpInfoXmlKind>,
+) -> StagedPlatformFormatMarker {
+    match source_set.kind {
+        SourceSetKind::Configuration | SourceSetKind::Extension => {
+            if relative == "Configuration.xml" {
+                StagedPlatformFormatMarker::Present
+            } else {
+                StagedPlatformFormatMarker::Absent
+            }
+        }
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
+            if relative.contains('/')
+                || !Path::new(relative)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+            {
+                return StagedPlatformFormatMarker::Absent;
+            }
+            if !Path::new(relative)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
+            {
+                return StagedPlatformFormatMarker::Present;
+            }
+            match staged_config_dump_info_kinds.get(repo_path) {
+                Some(ConfigDumpInfoXmlKind::ExternalProcessor)
+                    if source_set.kind == SourceSetKind::ExternalProcessor =>
+                {
+                    StagedPlatformFormatMarker::Present
+                }
+                Some(ConfigDumpInfoXmlKind::ExternalReport)
+                    if source_set.kind == SourceSetKind::ExternalReport =>
+                {
+                    StagedPlatformFormatMarker::Present
+                }
+                Some(
+                    ConfigDumpInfoXmlKind::RuntimeSidecar
+                    | ConfigDumpInfoXmlKind::ExternalProcessor
+                    | ConfigDumpInfoXmlKind::ExternalReport
+                    | ConfigDumpInfoXmlKind::MetadataDescriptor
+                    | ConfigDumpInfoXmlKind::Other,
+                ) => StagedPlatformFormatMarker::Absent,
+                None => StagedPlatformFormatMarker::Incomplete,
+            }
+        }
+    }
+}
+
 pub(crate) fn inspect_project_health(
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
@@ -231,7 +405,59 @@ fn inspect_project_health_with(
         &declared_source_sets,
         repository_matrix_reason,
     );
-    let resource_reason = if !repository_index_complete {
+    let fallback_resource_roots = layout
+        .roots
+        .iter()
+        .filter(|root| {
+            root.source_set.source_format
+                == crate::domain::project_sources::SourceFormat::PlatformXml
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let (eligible_resource_roots, incomplete_resource_source_sets, resource_eligibility_reason) =
+        if repository_index_complete {
+            if let Some(repository_root) = git.repository_root.as_ref() {
+                match eligible_resource_roots_from_staged_index(
+                    repository_root,
+                    &layout.roots,
+                    &git.entries,
+                    &git.staged_config_dump_info_kinds,
+                    cancellation,
+                    deadline,
+                ) {
+                    Ok(eligibility) => {
+                        (eligibility.roots, eligibility.incomplete_source_sets, None)
+                    }
+                    Err(ResourceRootEligibilityError::Cancelled) => {
+                        return Err(ProjectHealthInspectionError::Cancelled)
+                    }
+                    Err(ResourceRootEligibilityError::TimedOut) => {
+                        let reason =
+                            "staged source-format evidence exceeded the inspection deadline";
+                        facts.push(ProjectHealthFact::GitInspectionTimeout {
+                            check: ProjectCheckId::RepositoryAttributes,
+                            source_set: None,
+                        });
+                        (Vec::new(), BTreeSet::new(), Some(reason.to_string()))
+                    }
+                    Err(ResourceRootEligibilityError::Incomplete(reason)) => {
+                        facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                            check: ProjectCheckId::RepositoryAttributes,
+                            source_set: None,
+                            reason: reason.clone(),
+                        });
+                        (Vec::new(), BTreeSet::new(), Some(reason))
+                    }
+                }
+            } else {
+                (fallback_resource_roots.clone(), BTreeSet::new(), None)
+            }
+        } else {
+            (fallback_resource_roots, BTreeSet::new(), None)
+        };
+    let resource_reason = if let Some(reason) = resource_eligibility_reason.as_deref() {
+        reason
+    } else if !repository_index_complete {
         "Git index snapshot is unavailable"
     } else if let Some(reason) = git.resource_inspection_blocker.as_deref() {
         reason
@@ -245,28 +471,76 @@ fn inspect_project_health_with(
         resource_reason,
         layout.source_targets_complete,
     );
-    let eligible_resource_roots = layout
-        .roots
+    if !eligible_resource_roots.is_empty() {
+        let eligible_names = eligible_resource_roots
+            .iter()
+            .map(|root| root.source_set.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for observation in &mut resource_matrix {
+            if observation
+                .source_set
+                .as_deref()
+                .is_none_or(|source_set| eligible_names.contains(source_set))
+                && matches!(
+                    observation.outcome,
+                    ProjectCheckOutcome::NotApplicable { .. }
+                )
+            {
+                observation.outcome = ProjectCheckOutcome::NotRun {
+                    reason: resource_reason.into(),
+                };
+            }
+        }
+    }
+    if !incomplete_resource_source_sets.is_empty() {
+        let reason = git
+            .resource_inspection_blocker
+            .as_deref()
+            .unwrap_or("staged ConfigDumpInfo source-format classification is incomplete");
+        for observation in &mut resource_matrix {
+            if observation
+                .source_set
+                .as_deref()
+                .is_none_or(|source_set| incomplete_resource_source_sets.contains(source_set))
+            {
+                observation.outcome = ProjectCheckOutcome::NotRun {
+                    reason: reason.into(),
+                };
+            }
+        }
+    }
+    if let Some(reason) = resource_eligibility_reason.as_deref() {
+        for observation in &mut resource_matrix {
+            observation.outcome = ProjectCheckOutcome::NotRun {
+                reason: reason.into(),
+            };
+        }
+    }
+    let excluded_config_dump_info_paths = git
+        .entries
         .iter()
-        .filter(|root| {
-            root.source_set.source_format
-                == crate::domain::project_sources::SourceFormat::PlatformXml
+        .filter(|entry| {
+            Path::new(&entry.repo_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
         })
-        .cloned()
-        .collect::<Vec<_>>();
-    let runtime_sidecars = facts
-        .iter()
-        .filter_map(|fact| match fact {
-            crate::domain::project_health::ProjectHealthFact::RuntimeSidecarTracked {
-                path,
-                ..
-            } => Some(path.clone()),
-            _ => None,
+        .filter(|entry| {
+            !matches!(
+                git.staged_config_dump_info_kinds.get(&entry.repo_path),
+                Some(
+                    ConfigDumpInfoXmlKind::ExternalProcessor
+                        | ConfigDumpInfoXmlKind::ExternalReport
+                        | ConfigDumpInfoXmlKind::MetadataDescriptor
+                )
+            )
         })
-        .collect::<std::collections::BTreeSet<_>>();
+        .map(|entry| entry.repo_path.clone())
+        .collect::<BTreeSet<_>>();
     if let Some(repository_root) = git.repository_root.as_ref().filter(|_| {
         repository_index_complete
             && git.resource_inspection_blocker.is_none()
+            && resource_eligibility_reason.is_none()
             && !eligible_resource_roots.is_empty()
     }) {
         let resources = SourceResourcePolicyInspector::with_process_runner(runner)
@@ -274,7 +548,7 @@ fn inspect_project_health_with(
                 repository_root,
                 &eligible_resource_roots,
                 &git.entries,
-                &runtime_sidecars,
+                &excluded_config_dump_info_paths,
                 cancellation,
                 deadline,
             )?;
@@ -282,22 +556,23 @@ fn inspect_project_health_with(
             &mut resource_matrix,
             resources.observations,
             &eligible_resource_roots,
-            layout.source_targets_complete,
+            layout.source_targets_complete && incomplete_resource_source_sets.is_empty(),
         );
         facts.extend(resources.facts);
     } else {
-        let platform_resource_policy_required = declared_source_sets.iter().any(|source_set| {
-            source_set.source_format == crate::domain::project_sources::SourceFormat::PlatformXml
-        });
+        let platform_resource_policy_required = !eligible_resource_roots.is_empty()
+            || !incomplete_resource_source_sets.is_empty()
+            || declared_source_sets.iter().any(|source_set| {
+                source_set.source_format
+                    == crate::domain::project_sources::SourceFormat::PlatformXml
+            });
         if platform_resource_policy_required {
             if let Some(reason) = git.resource_inspection_blocker.as_ref() {
-                facts.push(
-                    crate::domain::project_health::ProjectHealthFact::GitInspectionIncomplete {
-                        check: ProjectCheckId::RepositoryAttributes,
-                        source_set: None,
-                        reason: reason.clone(),
-                    },
-                );
+                facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryAttributes,
+                    source_set: None,
+                    reason: reason.clone(),
+                });
             }
         }
     }
@@ -1172,6 +1447,113 @@ mod tests {
                     && reported.status
                         == crate::domain::project_health::ProjectCheckStatus::NotApplicable
             }));
+        }
+    }
+
+    #[test]
+    fn staged_platform_marker_makes_old_partial_clone_resource_checks_not_run() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/.project"), "<projectDescription/>").unwrap();
+        fs::write(root.join(".gitignore"), "**/.build/\n").unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let runner = OldPartialCloneRunner {
+            repository_root: root,
+            commands: RefCell::new(Vec::new()),
+            index_paths: vec![
+                "src/.project".into(),
+                "src/Configuration.xml".into(),
+                ".gitignore".into(),
+            ],
+        };
+
+        let snapshot = inspect_project_health_with_runner(
+            &context,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+            &runner,
+        )
+        .unwrap();
+        let report = crate::domain::project_health::evaluate_project_health(snapshot).unwrap();
+
+        for check in [
+            ProjectCheckId::RepositoryAttributes,
+            ProjectCheckId::RepositoryIndexEol,
+            ProjectCheckId::RepositoryWorkingEol,
+            ProjectCheckId::RepositoryLfs,
+        ] {
+            assert!(
+                report.checks.iter().any(|reported| {
+                    reported.id == check.as_str()
+                        && reported.source_set.as_deref() == Some("main")
+                        && reported.status
+                            == crate::domain::project_health::ProjectCheckStatus::NotRun
+                }),
+                "{check:?}: {:?}",
+                report.checks
+            );
+        }
+    }
+
+    #[test]
+    fn unclassified_staged_config_dump_marker_keeps_old_partial_resource_checks_not_run() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join("reports")).unwrap();
+        fs::write(root.join(".gitignore"), "**/.build/\n").unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: reports\n    type: EXTERNAL_REPORTS\n    path: reports\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let runner = OldPartialCloneRunner {
+            repository_root: root,
+            commands: RefCell::new(Vec::new()),
+            index_paths: vec!["reports/ConfigDumpInfo.xml".into(), ".gitignore".into()],
+        };
+
+        let snapshot = inspect_project_health_with_runner(
+            &context,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+            &runner,
+        )
+        .unwrap();
+        let report = crate::domain::project_health::evaluate_project_health(snapshot).unwrap();
+
+        for check in [
+            ProjectCheckId::RepositoryAttributes,
+            ProjectCheckId::RepositoryIndexEol,
+            ProjectCheckId::RepositoryWorkingEol,
+            ProjectCheckId::RepositoryLfs,
+        ] {
+            assert!(
+                report.checks.iter().any(|reported| {
+                    reported.id == check.as_str()
+                        && reported.source_set.as_deref() == Some("reports")
+                        && reported.status
+                            == crate::domain::project_health::ProjectCheckStatus::NotRun
+                }),
+                "{check:?}: {:?}",
+                report.checks
+            );
         }
     }
 

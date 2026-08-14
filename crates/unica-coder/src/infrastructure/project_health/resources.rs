@@ -31,6 +31,9 @@ const MAX_STAGED_POLICY_FILES: usize = 1024;
 const MAX_STAGED_POLICY_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INDEX_EOL_FILE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INDEX_EOL_TOTAL_BYTES: usize = 256 * 1024 * 1024;
+const MAX_CLASSIFIED_RESOURCES: usize = 65_536;
+const MAX_RESOURCE_OWNER_EXPANSION_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RESOURCE_OWNERSHIP_REASON_BYTES: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RepositoryResourceKind {
@@ -56,12 +59,51 @@ pub(crate) struct ResourceOwnershipError {
 enum ResourceClassificationError {
     Cancelled,
     TimedOut,
+    Incomplete(String),
     Ownership(ResourceOwnershipError),
 }
 
 struct ResourceClassification {
     resources: Vec<RepositoryResource>,
     ownership_errors: Vec<ResourceOwnershipError>,
+}
+
+fn reserve_resource_owner_expansion(
+    retained_count: usize,
+    retained: usize,
+    additional_count: usize,
+    additional: usize,
+) -> Result<(usize, usize), ResourceClassificationError> {
+    let next_count = retained_count.saturating_add(additional_count);
+    if next_count > MAX_CLASSIFIED_RESOURCES {
+        return Err(ResourceClassificationError::Incomplete(format!(
+            "resource classification count exceeds {MAX_CLASSIFIED_RESOURCES} entries"
+        )));
+    }
+    let next = retained.saturating_add(additional);
+    if next > MAX_RESOURCE_OWNER_EXPANSION_BYTES {
+        return Err(ResourceClassificationError::Incomplete(format!(
+            "resource owner expansion budget exceeds {MAX_RESOURCE_OWNER_EXPANSION_BYTES} bytes"
+        )));
+    }
+    Ok((next_count, next))
+}
+
+fn bounded_resource_ownership_reason(error: &ResourceOwnershipError) -> String {
+    let detailed = format!(
+        "resource {} does not have one regular stage-0 blob or has ambiguous source-set owners: {}",
+        error.repo_path,
+        error.source_sets.join(", ")
+    );
+    if detailed.len() <= MAX_RESOURCE_OWNERSHIP_REASON_BYTES {
+        detailed
+    } else {
+        format!(
+            "resource ownership is ambiguous or non-regular; path bytes={}, owners={} (details omitted by inspection budget)",
+            error.repo_path.len(),
+            error.source_sets.len()
+        )
+    }
 }
 
 pub(crate) struct RepositoryPolicyInspection {
@@ -135,6 +177,10 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             ResourceClassificationError::Cancelled | ResourceClassificationError::TimedOut => {
                 unreachable!("uncontrolled resource classification cannot stop")
             }
+            ResourceClassificationError::Incomplete(reason) => ResourceOwnershipError {
+                repo_path: reason,
+                source_sets: Vec::new(),
+            },
             ResourceClassificationError::Ownership(error) => error,
         })?;
         if let Some(error) = classification.ownership_errors.into_iter().next() {
@@ -170,6 +216,8 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             })?;
         let mut resources = Vec::new();
         let mut ownership_errors = Vec::new();
+        let mut retained_owner_count = 0_usize;
+        let mut retained_owner_bytes = 0_usize;
         checkpoint()?;
         for (entry_index, entry) in entries.iter().enumerate() {
             if entry_index % 256 == 0 {
@@ -184,6 +232,14 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 continue;
             };
             if owners.len() > 1 {
+                (retained_owner_count, retained_owner_bytes) = reserve_resource_owner_expansion(
+                    retained_owner_count,
+                    retained_owner_bytes,
+                    owners.len(),
+                    owners.iter().fold(0_usize, |total, root| {
+                        total.saturating_add(root.source_set.name.len())
+                    }),
+                )?;
                 let mut source_sets = owners
                     .iter()
                     .map(|root| root.source_set.name.clone())
@@ -221,12 +277,25 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                         .as_deref()
                         .is_some_and(|mode| matches!(mode, "100644" | "100755"))
                 {
+                    (retained_owner_count, retained_owner_bytes) =
+                        reserve_resource_owner_expansion(
+                            retained_owner_count,
+                            retained_owner_bytes,
+                            1,
+                            root.source_set.name.len(),
+                        )?;
                     ownership_errors.push(ResourceOwnershipError {
                         repo_path: entry.repo_path.clone(),
                         source_sets: vec![root.source_set.name.clone()],
                     });
                     continue;
                 }
+                (retained_owner_count, retained_owner_bytes) = reserve_resource_owner_expansion(
+                    retained_owner_count,
+                    retained_owner_bytes,
+                    1,
+                    root.source_set.name.len(),
+                )?;
                 resources.push(RepositoryResource {
                     source_set: root.source_set.name.clone(),
                     repo_path: entry.repo_path.clone(),
@@ -314,6 +383,19 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     }],
                 });
             }
+            Err(ResourceClassificationError::Incomplete(reason)) => {
+                for check in resource_check_ids() {
+                    mark_check_not_run(&mut observations, check, &reason);
+                }
+                return Ok(RepositoryPolicyInspection {
+                    observations,
+                    facts: vec![ProjectHealthFact::GitInspectionIncomplete {
+                        check: ProjectCheckId::RepositoryAttributes,
+                        source_set: None,
+                        reason,
+                    }],
+                });
+            }
             Err(ResourceClassificationError::Ownership(error)) => {
                 let reason = format!(
                     "resource ownership could not be proven from repository root {}",
@@ -335,11 +417,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         let mut facts = Vec::new();
         let mut incomplete_source_sets = BTreeSet::new();
         for error in classification.ownership_errors {
-            let reason = format!(
-                "resource {} does not have one regular stage-0 blob or has ambiguous source-set owners: {}",
-                error.repo_path,
-                error.source_sets.join(", ")
-            );
+            let reason = bounded_resource_ownership_reason(&error);
             for source_set in &error.source_sets {
                 incomplete_source_sets.insert(source_set.clone());
                 for check in resource_check_ids() {
@@ -2303,6 +2381,37 @@ mod tests {
 
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].source_set, "main");
+    }
+
+    #[test]
+    fn resource_owner_name_expansion_is_bounded_before_policy_facts() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join("src")).unwrap();
+        let roots = vec![InspectedSourceRoot {
+            source_set: ProjectSourceSet {
+                name: "owner-".to_string() + &"x".repeat(40_000),
+                kind: SourceSetKind::Configuration,
+                path: "src".into(),
+                source_format: SourceFormat::PlatformXml,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            path: root.join("src"),
+        }];
+        let entries = (0..256)
+            .map(|index| GitIndexEntry {
+                repo_path: format!("src/Module{index}.bsl"),
+                blob_oid: Some(format!("{index:040x}")),
+                mode: Some("100644".into()),
+            })
+            .collect::<Vec<_>>();
+
+        let error =
+            SourceResourcePolicyInspector::classify(&root, &roots, &entries, &Default::default())
+                .unwrap_err();
+
+        assert!(error.repo_path.contains("expansion budget"), "{error:?}");
     }
 
     #[test]

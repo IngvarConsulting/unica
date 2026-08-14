@@ -242,6 +242,169 @@ fn project_health_reports_case_variant_build_path_from_index() {
 }
 
 #[test]
+fn project_health_uses_staged_external_descriptor_for_repository_resource_policy() {
+    let root = temp_root("staged-external-descriptor");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("reports")).unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: EDT\nsource-set:\n  - name: reports\n    type: EXTERNAL_REPORTS\n    path: reports\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(&root, &["add", "v8project.yaml", ".gitignore"]);
+    let oid = git_with_input(
+        &root,
+        &["hash-object", "-w", "--stdin"],
+        b"<MetaDataObject><ExternalReport/></MetaDataObject>\n",
+    );
+    git(
+        &root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{},reports/Report.xml", oid.trim()),
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_eq!(data["repositoryReady"], false, "{data}");
+    assert_repository_check_status(&data, "repository.attributes", None, "failed");
+    assert_repository_check_status(
+        &data,
+        "repository.attributes",
+        Some("reports"),
+        "failed",
+    );
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.text_policy_missing"
+            && diagnostic["sourceSet"] == "reports"
+            && diagnostic["paths"].as_array().is_some_and(|paths| {
+                paths.iter().any(|path| path == "reports/Report.xml")
+            })
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_uses_staged_config_dump_descriptor_for_repository_resource_policy() {
+    let root = temp_root("staged-config-dump-descriptor");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("reports")).unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: EDT\nsource-set:\n  - name: reports\n    type: EXTERNAL_REPORTS\n    path: reports\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(&root, &["add", "v8project.yaml", ".gitignore"]);
+    let oid = git_with_input(
+        &root,
+        &["hash-object", "-w", "--stdin"],
+        b"<MetaDataObject><ExternalReport/></MetaDataObject>\n",
+    );
+    git(
+        &root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{},reports/ConfigDumpInfo.xml", oid.trim()),
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_eq!(data["repositoryReady"], false, "{data}");
+    assert_repository_check_status(&data, "repository.attributes", None, "failed");
+    assert_repository_check_status(
+        &data,
+        "repository.attributes",
+        Some("reports"),
+        "failed",
+    );
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.text_policy_missing"
+            && diagnostic["sourceSet"] == "reports"
+            && diagnostic["paths"].as_array().is_some_and(|paths| {
+                paths
+                    .iter()
+                    .any(|path| path == "reports/ConfigDumpInfo.xml")
+            })
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_does_not_emit_resource_derivatives_for_inconclusive_config_dump_info() {
+    let root = temp_root("inconclusive-config-dump-role");
+    git(&root, &["init"]);
+    create_platform_workspace(&root, "src");
+    fs::write(
+        root.join("src/ConfigDumpInfo.xml"),
+        "<not-a-platform-descriptor/>\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitattributes"),
+        "src/Configuration.xml text eol=lf\n",
+    )
+    .unwrap();
+    git(
+        &root,
+        &[
+            "add",
+            "v8project.yaml",
+            "src/Configuration.xml",
+            ".gitignore",
+            ".gitattributes",
+        ],
+    );
+    git(&root, &["add", "-f", "src/ConfigDumpInfo.xml"]);
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.config_dump_info_unclassified"
+            && diagnostic["paths"].as_array().is_some_and(|paths| {
+                paths
+                    .iter()
+                    .any(|path| path == "src/ConfigDumpInfo.xml")
+            })
+    }), "{data}");
+    assert!(data["diagnostics"].as_array().unwrap().iter().all(|diagnostic| {
+        diagnostic["code"] == "git.config_dump_info_unclassified"
+            || !diagnostic["paths"].as_array().is_some_and(|paths| {
+                paths
+                    .iter()
+                    .any(|path| path == "src/ConfigDumpInfo.xml")
+            })
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_health_full_portable_repository_is_ready() {
     let root = temp_root("full-ready");
     git(&root, &["init"]);
