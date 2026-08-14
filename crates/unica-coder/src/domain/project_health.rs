@@ -1092,7 +1092,12 @@ fn remediation_for(
     match kind {
         RemediationKind::RuntimeSidecar => {
             let commands = if count <= MAX_PROJECT_DIAGNOSTIC_PATHS && count == paths.len() {
-                let mut argv = vec!["rm".into(), "--cached".into(), "--".into()];
+                let mut argv = vec![
+                    "--literal-pathspecs".into(),
+                    "rm".into(),
+                    "--cached".into(),
+                    "--".into(),
+                ];
                 argv.extend(paths.iter().cloned());
                 vec![RemediationCommand {
                     program: "git".into(),
@@ -1542,13 +1547,19 @@ mod tests {
         assert_eq!(command.cwd, "/repo");
         assert_eq!(
             command.argv,
-            ["rm", "--cached", "--", "src/line\nbreak/ConfigDumpInfo.xml"]
+            [
+                "--literal-pathspecs",
+                "rm",
+                "--cached",
+                "--",
+                "src/line\nbreak/ConfigDumpInfo.xml"
+            ]
         );
 
         let serialized = serde_json::to_value(&report).unwrap();
         let serialized_command = &serialized["diagnostics"][0]["remediation"]["commands"][0];
         assert_eq!(
-            serialized_command["argv"][3],
+            serialized_command["argv"][4],
             "src/line\nbreak/ConfigDumpInfo.xml"
         );
         assert!(serialized_command.get("args").is_none());

@@ -57,9 +57,187 @@ fn project_health_parent_repository_reports_repository_relative_remediation() {
         root.canonicalize().unwrap()
     );
     assert_eq!(
-        diagnostic["remediation"]["commands"][0]["argv"][3],
+        diagnostic["remediation"]["commands"][0]["argv"][4],
         "workspace/src/ConfigDumpInfo.xml"
     );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_sidecar_remediation_executes_with_literal_git_pathspecs() {
+    let root = temp_root("literal-runtime-sidecar-remediation");
+    git(&root, &["init"]);
+    create_platform_workspace(&root, ":(glob)*");
+    fs::create_dir_all(root.join("safe")).unwrap();
+    fs::write(
+        root.join(":(glob)*/ConfigDumpInfo.xml"),
+        "<ConfigDumpInfo/>\n",
+    )
+    .unwrap();
+    fs::write(root.join("safe/ConfigDumpInfo.xml"), "<ConfigDumpInfo/>\n").unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+    git(
+        &root,
+        &[
+            "--literal-pathspecs",
+            "add",
+            ".gitignore",
+            ".gitattributes",
+            "v8project.yaml",
+            ":(glob)*/Configuration.xml",
+        ],
+    );
+    git(
+        &root,
+        &[
+            "--literal-pathspecs",
+            "add",
+            "-f",
+            ":(glob)*/ConfigDumpInfo.xml",
+            "safe/ConfigDumpInfo.xml",
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    let command = data["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| {
+            diagnostic["code"] == "git.runtime_sidecar_tracked"
+                && diagnostic["paths"].as_array().is_some_and(|paths| {
+                    paths
+                        .iter()
+                        .any(|path| path == ":(glob)*/ConfigDumpInfo.xml")
+                })
+        })
+        .expect("runtime sidecar diagnostic")["remediation"]["commands"][0]
+        .clone();
+    let argv = command["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+    let output = git_output(&root, &argv);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let staged = git_with_input(&root, &["ls-files", "-z"], b"");
+    assert!(!staged
+        .split('\0')
+        .any(|path| path == ":(glob)*/ConfigDumpInfo.xml"));
+    assert!(staged
+        .split('\0')
+        .any(|path| path == "safe/ConfigDumpInfo.xml"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_fails_each_equal_root_owner_for_shared_generated_paths() {
+    let root = temp_root("equal-root-generated-paths");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("src/.build")).unwrap();
+    fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+    fs::write(root.join("src/.build/generated.bin"), "generated\n").unwrap();
+    fs::write(root.join("src/ConfigDumpInfo.xml"), "<ConfigDumpInfo/>\n").unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: first\n    type: CONFIGURATION\n    path: src\n  - name: second\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+    git(
+        &root,
+        &[
+            "add",
+            ".gitignore",
+            ".gitattributes",
+            "v8project.yaml",
+            "src/Configuration.xml",
+        ],
+    );
+    git(
+        &root,
+        &[
+            "add",
+            "-f",
+            "src/.build/generated.bin",
+            "src/ConfigDumpInfo.xml",
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    for check in ["repository.generated_paths", "repository.config_dump_info"] {
+        for source_set in [None, Some("first"), Some("second")] {
+            assert_repository_check_status(&data, check, source_set, "failed");
+        }
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_reports_case_variant_build_path_from_index() {
+    let root = temp_root("case-variant-build-path");
+    git(&root, &["init"]);
+    create_platform_workspace(&root, "src");
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["config", "core.ignorecase", "true"]);
+    let oid = git_with_input(&root, &["hash-object", "-w", "--stdin"], b"generated\n");
+    git(
+        &root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{},src/.BUILD/generated.bin", oid.trim()),
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.generated_paths", None, "failed");
+    assert_repository_check_status(
+        &data,
+        "repository.generated_paths",
+        Some("main"),
+        "failed",
+    );
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.generated_path_tracked"
+            && diagnostic["paths"].as_array().is_some_and(|paths| {
+                paths
+                    .iter()
+                    .any(|path| path == "src/.BUILD/generated.bin")
+            })
+    }), "{data}");
     let _ = fs::remove_dir_all(root);
 }
 

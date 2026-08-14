@@ -1321,6 +1321,12 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
 pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
     use std::path::Component;
 
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path must be absolute",
+        ));
+    }
     let absolute = std::path::absolute(path)?;
     let mut components = absolute.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
@@ -5021,6 +5027,16 @@ mod tests {
             Path::new(r"C:\WORKSPACE\src\Module.bsl"),
             Path::new(r"c:\workspace")
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn secure_windows_directory_open_rejects_relative_path() {
+        let error = super::open_absolute_directory_path_nofollow(Path::new("relative"))
+            .expect_err("relative path must not be converted through the process cwd");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("must be absolute"));
     }
 
     #[cfg(windows)]

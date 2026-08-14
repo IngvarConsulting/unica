@@ -1368,16 +1368,21 @@ fn health_format_evidence(
         for name in names {
             checkpoint()?;
             let path = Path::new(&name);
-            if path.extension().and_then(|extension| extension.to_str()) != Some("xml") {
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+            {
                 continue;
             }
-            let mut file =
-                open_regular_child_nofollow(&source_directory, &name).map_err(|error| {
-                    format!(
-                        "failed to open source format marker {} securely: {error}",
-                        source_root.join(&name).display()
-                    )
-                })?;
+            let mut file = match open_regular_child_nofollow(&source_directory, &name) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => match marker_probe_open_error("file", error) {
+                    SecureMarkerProbeError::UnsafeOrWrongKind(_) => continue,
+                    SecureMarkerProbeError::Incomplete(reason) => return Err(reason),
+                },
+            };
             if has_config_dump_info_filename(path)
                 && !secure_config_dump_info_is_source_descriptor(&mut file, kind, checkpoint)?
             {
@@ -2124,6 +2129,69 @@ source-set:
             &["epf/PriceLoader.xml"],
         );
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn controlled_discovery_accepts_uppercase_external_xml_extension() {
+        let root = temp_workspace("unica-source-map-uppercase-external-xml");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+format: EDT
+source-set:
+  - name: external-reports
+    type: EXTERNAL_REPORTS
+    path: erf
+"#,
+        );
+        write(
+            &root.join("erf/Report.XML"),
+            "<MetaDataObject><ExternalReport/></MetaDataObject>",
+        );
+        let mut checkpoint = || Ok(());
+
+        let map = discover_project_source_map_controlled(&root, &mut checkpoint).unwrap();
+
+        assert_source_set(
+            &map,
+            "external-reports",
+            SourceSetKind::ExternalReport,
+            SourceFormat::PlatformXml,
+            &["erf/Report.XML"],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn controlled_discovery_skips_directory_with_external_xml_name() {
+        let root = temp_workspace("unica-source-map-external-xml-directory");
+        write(
+            &root.join("v8project.yaml"),
+            r#"
+source-set:
+  - name: external-reports
+    type: EXTERNAL_REPORTS
+    path: erf
+"#,
+        );
+        write(
+            &root.join("erf/Report.xml"),
+            "<MetaDataObject><ExternalReport/></MetaDataObject>",
+        );
+        fs::create_dir_all(root.join("erf/Archive.xml")).unwrap();
+        let mut checkpoint = || Ok(());
+
+        let map = discover_project_source_map_controlled(&root, &mut checkpoint).unwrap();
+
+        assert_source_set(
+            &map,
+            "external-reports",
+            SourceSetKind::ExternalReport,
+            SourceFormat::PlatformXml,
+            &["erf/Report.xml"],
+        );
+        assert!(map.source_sets[0].format_probe_error.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 

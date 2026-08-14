@@ -1002,8 +1002,8 @@ impl<'a> GitRepositoryInspector<'a> {
                     path,
                 });
             } else {
-                let reason = owners
-                    .filter(|owners| owners.len() > 1)
+                let ambiguous_owners = owners.filter(|owners| owners.len() > 1);
+                let reason = ambiguous_owners
                     .map(|owners| {
                         let mut names = owners
                             .iter()
@@ -1019,9 +1019,18 @@ impl<'a> GitRepositoryInspector<'a> {
                     .unwrap_or_else(|| "runtime sidecar is outside a proven source root".into());
                 facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
                     source_set: None,
-                    path,
-                    reason,
+                    path: path.clone(),
+                    reason: reason.clone(),
                 });
+                if let Some(owners) = ambiguous_owners {
+                    facts.extend(owners.iter().map(|root| {
+                        ProjectHealthFact::ConfigDumpInfoUnclassified {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: path.clone(),
+                            reason: reason.clone(),
+                        }
+                    }));
+                }
             }
         }
         for path in inspection.inconclusive_paths {
@@ -2135,13 +2144,15 @@ fn tracked_generated_facts(
         {
             continue;
         }
-        let generated = entry.repo_path == ".build"
-            || entry.repo_path.starts_with(".build/")
-            || entry.repo_path.contains("/.build/")
-            || Path::new(&entry.repo_path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("DumpFilesIndex.txt"))
+        let generated = Path::new(&entry.repo_path).components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|component| component.eq_ignore_ascii_case(".build"))
+        }) || Path::new(&entry.repo_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("DumpFilesIndex.txt"))
             || cache.as_ref().is_some_and(|cache| {
                 entry.repo_path == *cache
                     || entry
@@ -2150,14 +2161,20 @@ fn tracked_generated_facts(
                         .is_some_and(|suffix| suffix.starts_with('/'))
             });
         if generated {
-            facts.push(ProjectHealthFact::GeneratedPathTracked {
-                source_set: source_owners
-                    .owners_for_repo_path(&entry.repo_path, cancellation, deadline)?
-                    .and_then(|owners| {
-                        (owners.len() == 1).then(|| owners[0].source_set.name.clone())
-                    }),
-                path: entry.repo_path.clone(),
-            });
+            match source_owners.owners_for_repo_path(&entry.repo_path, cancellation, deadline)? {
+                Some(owners) if !owners.is_empty() => {
+                    facts.extend(owners.iter().map(|root| {
+                        ProjectHealthFact::GeneratedPathTracked {
+                            source_set: Some(root.source_set.name.clone()),
+                            path: entry.repo_path.clone(),
+                        }
+                    }));
+                }
+                _ => facts.push(ProjectHealthFact::GeneratedPathTracked {
+                    source_set: None,
+                    path: entry.repo_path.clone(),
+                }),
+            }
         }
     }
     Ok(facts)
@@ -2380,11 +2397,23 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(matches!(
-            facts.as_slice(),
-            [ProjectHealthFact::ConfigDumpInfoUnclassified { reason, .. }]
-                if reason.contains("ambiguous") && reason.contains("first") && reason.contains("second")
-        ));
+        assert_eq!(facts.len(), 3, "{facts:?}");
+        for source_set in [None, Some("first"), Some("second")] {
+            assert!(
+                facts.iter().any(|fact| matches!(
+                    fact,
+                    ProjectHealthFact::ConfigDumpInfoUnclassified {
+                        source_set: actual,
+                        reason,
+                        ..
+                    } if actual.as_deref() == source_set
+                        && reason.contains("ambiguous")
+                        && reason.contains("first")
+                        && reason.contains("second")
+                )),
+                "missing ambiguous fact for {source_set:?}: {facts:?}"
+            );
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@
 > failing test, records the observed RED reason, and ends with the narrow GREEN
 > command before broader verification.
 
-**Goal:** Реализовать ADR-0056: `unica.project.status` одним read-only вызовом
+**Goal:** Реализовать ADR-0060: `unica.project.status` одним read-only вызовом
 публикует типизированные `ready`, `repositoryReady`, `checks[]` и
 `diagnostics[]` для workspace, Git-репозитория и каждого source set, а AI
 получает доказанную безопасную инструкцию исправления.
@@ -26,9 +26,10 @@ CLI с NUL-протоколами, Python 3.12 contract tests, Markdown ADR/inva
 
 ## Global Constraints
 
-- ADR-0056 и
-  `docs/design/2026-08-13-project-source-health-design.md` владеют границей
-  реализации. До последнего task ADR остаётся `proposed`; в `accepted` она
+- ADR-0060 и выведенные из него `INV-MCP-PROJECT-READINESS`,
+  `INV-SOURCE-ROOT-SEPARATION`, `INV-SOURCE-PORTABLE-GIT` владеют действующей
+  границей реализации; датированная design-записка фиксирует только происхождение
+  решения. До последнего task ADR остаётся `proposed`; в `accepted` она
   переводится только вместе с работающим кодом, тестами и выведенными правилами.
 - Публичный инструмент остаётся один: `unica.project.status`. Новый
   `unica.project.check`, новые аргументы и `outputSchema` не добавляются.
@@ -498,6 +499,7 @@ fn snapshot_with(
             path: "src".into(),
             source_format: SourceFormat::PlatformXml,
             format_evidence: vec!["Configuration.xml".into()],
+            format_probe_error: None,
         }]),
         source_targets_complete: true,
         observations,
