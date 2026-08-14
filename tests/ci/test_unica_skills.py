@@ -1774,6 +1774,55 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("`data.external_epf_wait`", skill_text)
         self.assertIn("`diagnostics.external_epf_wait`", skill_text)
 
+    def test_v8_runner_leads_client_mcp_download_with_the_prebuilt_artifact(
+        self,
+    ) -> None:
+        """#346. Pinned v8-runner 0.5.1 downloads the prebuilt
+        `build/tools/client_mcp.cfe` when `sources` is left off, and an EDT
+        source tree with no `.cfe` when it is passed. The skill published only
+        the `sources: true` recipe, so a caller who wanted the ready extension
+        took a `1cedtcli` dependency and still failed the `build` preflight that
+        wants `tools.client_mcp.extension.artifact.path`.
+        """
+        skill_dir = self.skill_root() / "v8-runner"
+        skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        command_selection = (
+            skill_dir / "references" / "command-selection.md"
+        ).read_text(encoding="utf-8")
+
+        client_mcp_calls = [
+            payload["params"]["arguments"]
+            for payload in (
+                json.loads(block)
+                for block in re.findall(
+                    r"```json\n(.*?)\n```", skill_text, flags=re.S
+                )
+                if '"method": "tools/call"' in block
+            )
+            if payload["params"]["arguments"].get("operation") == "tools-download"
+            and payload["params"]["arguments"].get("tool") == "client-mcp"
+        ]
+        self.assertTrue(
+            client_mcp_calls, "the skill has to show how to prepare client MCP"
+        )
+
+        artifact_calls = [
+            call for call in client_mcp_calls if not call.get("sources")
+        ]
+        self.assertTrue(
+            artifact_calls,
+            "the default call returns the prebuilt client_mcp.cfe and has to be "
+            f"published: {client_mcp_calls}",
+        )
+        self.assertIn("build/tools/client_mcp.cfe", skill_text)
+
+        # The EDT route may stay, but never unlabelled: it replaces the
+        # artifact and needs a toolchain the workspace may not have.
+        if any(call.get("sources") for call in client_mcp_calls):
+            self.assertIn("1cedtcli", skill_text)
+
+        self.assertIn("1cedtcli", command_selection)
+
     def test_v8_runner_metadata_describes_runtime_trigger_surface(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
         text = skill_doc.read_text(encoding="utf-8")

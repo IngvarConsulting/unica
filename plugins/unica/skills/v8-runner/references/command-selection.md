@@ -40,4 +40,4 @@ Operation-specific guardrails:
 - Bounded external EPF launch requires distinct paths: `output` is the platform `/Out` log, while `stderrOutput` captures stderr from the 1C client process. It rejects `/C`, `/Execute`, and `/Out` aliases in `rawKeys`; ordinary launch remains asynchronous.
 - Put the external processor command-line payload in typed `c` (mapped to `/C`), not in `rawKeys`; Vanessa Automation commonly uses `StartFeaturePlayer;VAParams=<path>`.
 - Prepare Vanessa Automation with `operation=tools-download`, `tool=vanessa`, then launch the default managed `build/tools/vanessa-automation-single.epf` or the effective `tools.va.epf_path` override.
-- `tools-download` supports `sources=true` only for `tool=yaxunit` or `tool=client-mcp`.
+- `tools-download` supports `sources=true` only for `tool=yaxunit` or `tool=client-mcp`, and it replaces the prebuilt release artifact rather than adding to it: the runner switches to `mode: sources`, writes an EDT tree that only `1cedtcli` can build, and produces no `.cfe`. Omit `sources` to get `build/tools/client_mcp.cfe`, which is what `tools.client_mcp.extension.artifact.path` and the `build` preflight expect.

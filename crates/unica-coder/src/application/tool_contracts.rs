@@ -3176,7 +3176,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "sources",
-        "Boolean that also downloads tool sources on operation tools-download; supported only for tool yaxunit or client-mcp and rejected for vanessa",
+        "Boolean that on operation tools-download fetches the extension source tree instead of the prebuilt release artifact; omit it to get the ready artifact such as build/tools/client_mcp.cfe, because the source tree is EDT and still has to be built with 1cedtcli; supported only for tool yaxunit or client-mcp and rejected for vanessa",
     ),
     (
         "srcDir",
@@ -4309,6 +4309,41 @@ mod tests {
         assert!(
             description.contains("unica.code.diagnostics"),
             "{description}"
+        );
+    }
+
+    /// #346. `sources` is exclusive, not additive. Pinned v8-runner 0.5.1
+    /// reports `mode: artifacts` without it and writes the prebuilt
+    /// `build/tools/client_mcp.cfe`; with it the runner reports `mode: sources`
+    /// and writes an EDT tree under `build/tools/onec-client-mcp-devkit/exts/`
+    /// and no `.cfe` at all. The description said the flag "also" downloads
+    /// sources, which reads as artifact plus sources, so a caller who wanted
+    /// the ready extension asked for the EDT path, took a `1cedtcli` dependency
+    /// it never announced, and still lacked the artifact that
+    /// `tools.client_mcp.extension.artifact.path` and the `build` preflight
+    /// require.
+    #[test]
+    fn sources_description_says_it_replaces_the_prebuilt_artifact() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "sources")
+            .expect("sources must have a shared description");
+
+        assert!(
+            !description.contains("also"),
+            "`also` reads as artifact plus sources, but the flag replaces one with the other: {description}"
+        );
+        assert!(
+            description.contains("instead of"),
+            "the description has to say the source tree replaces the release artifact: {description}"
+        );
+        assert!(
+            description.contains("1cedtcli"),
+            "the source tree is EDT and still has to be built, so the description names that cost: {description}"
+        );
+        assert!(
+            description.contains("omit"),
+            "a caller who wants the prebuilt artifact needs to be told to leave the flag off: {description}"
         );
     }
 
