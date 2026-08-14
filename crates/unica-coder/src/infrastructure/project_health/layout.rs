@@ -494,6 +494,7 @@ mod tests {
     };
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
@@ -809,10 +810,11 @@ mod tests {
     }
 
     static DISCOVERY_DEADLINE_TICKS: AtomicUsize = AtomicUsize::new(0);
+    static DISCOVERY_DEADLINE_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
     fn advancing_discovery_clock() -> Instant {
         let tick = DISCOVERY_DEADLINE_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
-        Instant::now() + Duration::from_millis(tick)
+        *DISCOVERY_DEADLINE_ORIGIN.get_or_init(Instant::now) + Duration::from_millis(tick)
     }
 
     #[test]
@@ -840,10 +842,11 @@ mod tests {
     }
 
     static LAYOUT_DEADLINE_TICKS: AtomicUsize = AtomicUsize::new(0);
+    static LAYOUT_DEADLINE_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
     fn advancing_layout_clock() -> Instant {
         let tick = LAYOUT_DEADLINE_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
-        Instant::now() + Duration::from_millis(tick)
+        *LAYOUT_DEADLINE_ORIGIN.get_or_init(Instant::now) + Duration::from_millis(tick)
     }
 
     #[test]

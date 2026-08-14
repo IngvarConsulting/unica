@@ -2440,6 +2440,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
@@ -3393,10 +3394,11 @@ mod tests {
     }
 
     static DEADLINE_CLOCK_TICKS: AtomicUsize = AtomicUsize::new(0);
+    static DEADLINE_CLOCK_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
     fn advancing_deadline_clock() -> Instant {
         let tick = DEADLINE_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
-        Instant::now() + Duration::from_millis(tick)
+        *DEADLINE_CLOCK_ORIGIN.get_or_init(Instant::now) + Duration::from_millis(tick)
     }
 
     #[test]

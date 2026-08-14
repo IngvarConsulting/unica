@@ -11,7 +11,10 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
-use crate::infrastructure::platform::filesystem::{host_path_text, path_starts_with_host_root};
+use crate::infrastructure::platform::filesystem::{
+    file_identity, host_path_text, open_directory_nofollow, path_starts_with_host_root,
+    FileIdentity,
+};
 use crate::infrastructure::project_health::layout::{InspectedSourceRoot, SourceLayoutInspection};
 use crate::infrastructure::project_health::{
     SourceRootOwnerIndex, SourceRootOwnerIndexError, SourceRootOwnerLookupError,
@@ -55,6 +58,28 @@ enum WorkingIgnoreInspection {
     Complete(Vec<IgnoreMatch>),
     TimedOut,
     Incomplete(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MaterializedGitPath {
+    path: String,
+    role: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct MaterializedGitDirectories {
+    logical_paths: BTreeSet<PathBuf>,
+    identities: BTreeMap<FileIdentity, MaterializedGitPath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StagedIgnoreMaterializationError {
+    Cancelled,
+    Incomplete(String),
+    PathIdentityCollision {
+        first: MaterializedGitPath,
+        second: MaterializedGitPath,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -705,10 +730,40 @@ impl<'a> GitRepositoryInspector<'a> {
             deadline,
         ) {
             Ok(root) => root,
-            Err(ProjectHealthInspectionError::Cancelled) => {
+            Err(StagedIgnoreMaterializationError::Cancelled) => {
                 return Err(ProjectHealthInspectionError::Cancelled)
             }
-            Err(ProjectHealthInspectionError::Fatal(reason)) => {
+            Err(StagedIgnoreMaterializationError::PathIdentityCollision { first, second }) => {
+                let reason = format!(
+                    "staged Git ignore paths collide through host path identity: {} ({}) and {} ({})",
+                    first.path, first.role, second.path, second.role
+                );
+                observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
+                append_not_run_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryIgnore,
+                    &layout.roots,
+                    &reason,
+                );
+                facts.push(ProjectHealthFact::GitPathIdentityCollision {
+                    check: ProjectCheckId::RepositoryIgnore,
+                    source_set: None,
+                    reason,
+                    first_path: first.path,
+                    first_role: first.role.into(),
+                    second_path: second.path,
+                    second_role: second.role.into(),
+                });
+                return Ok(GitRepositoryInspection {
+                    repository_root: Some(repository_root),
+                    entries,
+                    resource_inspection_blocker,
+                    staged_config_dump_info_kinds,
+                    observations,
+                    facts,
+                });
+            }
+            Err(StagedIgnoreMaterializationError::Incomplete(reason)) => {
                 observations.push(not_run(ProjectCheckId::RepositoryIgnore, &reason));
                 append_not_run_for_roots(
                     &mut observations,
@@ -2112,9 +2167,9 @@ fn materialize_staged_ignore_files(
     blob_read_safety: &StagedBlobReadSafety,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-) -> Result<TempDir, ProjectHealthInspectionError> {
+) -> Result<TempDir, StagedIgnoreMaterializationError> {
     let root = TempDir::new().map_err(|error| {
-        ProjectHealthInspectionError::Fatal(format!(
+        StagedIgnoreMaterializationError::Incomplete(format!(
             "create staged ignore inspection directory: {error}"
         ))
     })?;
@@ -2133,7 +2188,7 @@ fn materialize_staged_ignore_files(
                 .as_deref()
                 .is_some_and(|mode| matches!(mode, "100644" | "100755"))
         }) else {
-            return Err(ProjectHealthInspectionError::Fatal(format!(
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged .gitignore path does not have one regular stage-0 blob: {}",
                 entry.repo_path
             )));
@@ -2144,22 +2199,22 @@ fn materialize_staged_ignore_files(
         return Ok(root);
     }
     if staged_ignore_files.len() > MAX_STAGED_IGNORE_FILES {
-        return Err(ProjectHealthInspectionError::Fatal(format!(
+        return Err(StagedIgnoreMaterializationError::Incomplete(format!(
             "staged ignore policy contains {} .gitignore files; inspection supports at most {MAX_STAGED_IGNORE_FILES}",
             staged_ignore_files.len()
         )));
     }
     if let StagedBlobReadSafety::Blocked(reason) = blob_read_safety {
-        return Err(ProjectHealthInspectionError::Fatal(reason.clone()));
+        return Err(StagedIgnoreMaterializationError::Incomplete(reason.clone()));
     }
     let mut total_bytes = 0_usize;
-    let mut materialized_directories = BTreeSet::new();
+    let mut materialized_directories = MaterializedGitDirectories::default();
     for (path, oid) in staged_ignore_files {
         if cancellation.is_cancelled() {
-            return Err(ProjectHealthInspectionError::Cancelled);
+            return Err(StagedIgnoreMaterializationError::Cancelled);
         }
         if deadline.remaining().is_zero() {
-            return Err(ProjectHealthInspectionError::Fatal(
+            return Err(StagedIgnoreMaterializationError::Incomplete(
                 "staged .gitignore blob inspection timed out".into(),
             ));
         }
@@ -2169,20 +2224,25 @@ fn materialize_staged_ignore_files(
                 .components()
                 .any(|component| !matches!(component, Component::Normal(_)))
         {
-            return Err(ProjectHealthInspectionError::Fatal(format!(
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged .gitignore path is not a safe repository-relative path: {path}"
             )));
         }
         let target = root.path().join(relative);
         let relative_parent = relative.parent().ok_or_else(|| {
-            ProjectHealthInspectionError::Fatal(format!(
+            StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged .gitignore path has no parent: {path}"
             ))
         })?;
+        let policy_path = MaterializedGitPath {
+            path: path.into(),
+            role: "staged ignore policy",
+        };
         materialize_exact_git_directories(
             root.path(),
             relative_parent,
             &mut materialized_directories,
+            &policy_path,
             cancellation,
             deadline,
         )?;
@@ -2198,7 +2258,7 @@ fn materialize_staged_ignore_files(
                 } else {
                     format!("create staged .gitignore blob {path}: {error}")
                 };
-                ProjectHealthInspectionError::Fatal(reason)
+                StagedIgnoreMaterializationError::Incomplete(reason)
             })?;
         let command = process_command_vec(
             repository_root,
@@ -2220,12 +2280,12 @@ fn materialize_staged_ignore_files(
         let output = match sticky_process_result(runner.run(&command), cancellation) {
             Ok(output) => output,
             Err(_) if cancellation.is_cancelled() => {
-                return Err(ProjectHealthInspectionError::Cancelled)
+                return Err(StagedIgnoreMaterializationError::Cancelled)
             }
-            Err(reason) => return Err(ProjectHealthInspectionError::Fatal(reason)),
+            Err(reason) => return Err(StagedIgnoreMaterializationError::Incomplete(reason)),
         };
         if output.cancelled || cancellation.is_cancelled() {
-            return Err(ProjectHealthInspectionError::Cancelled);
+            return Err(StagedIgnoreMaterializationError::Cancelled);
         }
         if !output.status_success || output.timed_out || output_incomplete(&output) {
             let reason = if output.timed_out {
@@ -2235,18 +2295,18 @@ fn materialize_staged_ignore_files(
             } else {
                 nonzero_reason(&output)
             };
-            return Err(ProjectHealthInspectionError::Fatal(reason));
+            return Err(StagedIgnoreMaterializationError::Incomplete(reason));
         }
         total_bytes = total_bytes.saturating_add(output.stdout.len());
         if total_bytes > MAX_STAGED_IGNORE_TOTAL_BYTES {
-            return Err(ProjectHealthInspectionError::Fatal(format!(
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged .gitignore policy exceeds {MAX_STAGED_IGNORE_TOTAL_BYTES} bytes"
             )));
         }
         target_file
             .write_all(output.stdout.as_bytes())
             .map_err(|error| {
-                ProjectHealthInspectionError::Fatal(format!(
+                StagedIgnoreMaterializationError::Incomplete(format!(
                     "write staged .gitignore blob {path}: {error}"
                 ))
             })?;
@@ -2254,15 +2314,20 @@ fn materialize_staged_ignore_files(
     for candidate in candidates {
         let candidate = Path::new(&candidate.repo_path);
         let parent = candidate.parent().ok_or_else(|| {
-            ProjectHealthInspectionError::Fatal(format!(
+            StagedIgnoreMaterializationError::Incomplete(format!(
                 "Git ignore candidate has no parent: {}",
                 candidate.display()
             ))
         })?;
+        let candidate_path = MaterializedGitPath {
+            path: candidate.to_string_lossy().into_owned(),
+            role: "required ignore candidate",
+        };
         materialize_exact_git_directories(
             root.path(),
             parent,
             &mut materialized_directories,
+            &candidate_path,
             cancellation,
             deadline,
         )?;
@@ -2273,44 +2338,81 @@ fn materialize_staged_ignore_files(
 fn materialize_exact_git_directories(
     root: &Path,
     relative: &Path,
-    materialized: &mut BTreeSet<PathBuf>,
+    materialized: &mut MaterializedGitDirectories,
+    subject: &MaterializedGitPath,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-) -> Result<(), ProjectHealthInspectionError> {
+) -> Result<(), StagedIgnoreMaterializationError> {
     let mut logical = PathBuf::new();
     let mut physical = root.to_path_buf();
     for component in relative.components() {
         if cancellation.is_cancelled() {
-            return Err(ProjectHealthInspectionError::Cancelled);
+            return Err(StagedIgnoreMaterializationError::Cancelled);
         }
         if deadline.remaining().is_zero() {
-            return Err(ProjectHealthInspectionError::Fatal(
+            return Err(StagedIgnoreMaterializationError::Incomplete(
                 "staged Git ignore path identity inspection timed out".into(),
             ));
         }
         let Component::Normal(component) = component else {
-            return Err(ProjectHealthInspectionError::Fatal(format!(
+            return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                 "staged Git ignore path is not repository-relative: {}",
                 relative.display()
             )));
         };
         logical.push(component);
         physical.push(component);
-        if materialized.contains(&logical) {
+        if materialized.logical_paths.contains(&logical) {
             continue;
         }
         match std::fs::create_dir(&physical) {
             Ok(()) => {
-                materialized.insert(logical.clone());
+                let directory = open_directory_nofollow(&physical).map_err(|error| {
+                    StagedIgnoreMaterializationError::Incomplete(format!(
+                        "open staged Git ignore path {} after creation: {error}",
+                        logical.display()
+                    ))
+                })?;
+                let identity = file_identity(&directory).map_err(|error| {
+                    StagedIgnoreMaterializationError::Incomplete(format!(
+                        "identify staged Git ignore path {}: {error}",
+                        logical.display()
+                    ))
+                })?;
+                if let Some(first) = materialized.identities.insert(identity, subject.clone()) {
+                    return Err(StagedIgnoreMaterializationError::PathIdentityCollision {
+                        first,
+                        second: subject.clone(),
+                    });
+                }
+                materialized.logical_paths.insert(logical.clone());
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(ProjectHealthInspectionError::Fatal(format!(
-                    "staged Git ignore paths collide through host path identity at {}",
-                    logical.display()
-                )));
+                let directory = open_directory_nofollow(&physical).map_err(|error| {
+                    StagedIgnoreMaterializationError::Incomplete(format!(
+                        "open colliding staged Git ignore path {}: {error}",
+                        logical.display()
+                    ))
+                })?;
+                let identity = file_identity(&directory).map_err(|error| {
+                    StagedIgnoreMaterializationError::Incomplete(format!(
+                        "identify colliding staged Git ignore path {}: {error}",
+                        logical.display()
+                    ))
+                })?;
+                let Some(first) = materialized.identities.get(&identity).cloned() else {
+                    return Err(StagedIgnoreMaterializationError::Incomplete(format!(
+                        "staged Git ignore path {} unexpectedly resolves to an untracked host identity",
+                        logical.display()
+                    )));
+                };
+                return Err(StagedIgnoreMaterializationError::PathIdentityCollision {
+                    first,
+                    second: subject.clone(),
+                });
             }
             Err(error) => {
-                return Err(ProjectHealthInspectionError::Fatal(format!(
+                return Err(StagedIgnoreMaterializationError::Incomplete(format!(
                     "create staged Git ignore path {}: {error}",
                     logical.display()
                 )));
@@ -2550,7 +2652,7 @@ mod tests {
         declared_source_repo_path, git_environment_removals_from, materialize_staged_ignore_files,
         normalize_path_identity, parse_check_ignore_verbose_z, parse_git_index_entries,
         partial_clone_config_is_enabled, GitIndexEntry, GitRepositoryInspector, IgnoreMatch,
-        StagedBlobReadSafety,
+        MaterializedGitPath, StagedBlobReadSafety, StagedIgnoreMaterializationError,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -2567,21 +2669,32 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::OnceLock;
     use std::time::{Duration, Instant};
     use tempfile::TempDir;
 
     static CONFIG_DUMP_OWNERSHIP_CLOCK_TICKS: AtomicUsize = AtomicUsize::new(0);
+    static CONFIG_DUMP_OWNERSHIP_CLOCK_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
     fn advancing_config_dump_ownership_clock() -> Instant {
         let tick = CONFIG_DUMP_OWNERSHIP_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
-        Instant::now() + Duration::from_millis(tick)
+        *CONFIG_DUMP_OWNERSHIP_CLOCK_ORIGIN.get_or_init(Instant::now) + Duration::from_millis(tick)
     }
 
     static OWNER_INDEX_CLOCK_TICKS: AtomicUsize = AtomicUsize::new(0);
+    static OWNER_INDEX_CLOCK_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
     fn advancing_owner_index_clock() -> Instant {
         let tick = OWNER_INDEX_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
-        Instant::now() + Duration::from_millis(tick)
+        *OWNER_INDEX_CLOCK_ORIGIN.get_or_init(Instant::now) + Duration::from_millis(tick)
+    }
+
+    static GENERATED_PATH_CLOCK_TICKS: AtomicUsize = AtomicUsize::new(0);
+    static GENERATED_PATH_CLOCK_ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+    fn advancing_generated_path_clock() -> Instant {
+        let tick = GENERATED_PATH_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
+        *GENERATED_PATH_CLOCK_ORIGIN.get_or_init(Instant::now) + Duration::from_millis(tick)
     }
 
     #[test]
@@ -2719,10 +2832,10 @@ mod tests {
             blob_oid: Some(format!("{index:040x}")),
             mode: Some("100644".into()),
         }));
-        CONFIG_DUMP_OWNERSHIP_CLOCK_TICKS.store(0, Ordering::SeqCst);
+        GENERATED_PATH_CLOCK_TICKS.store(0, Ordering::SeqCst);
         let deadline = ProviderDeadline::with_clock(
-            advancing_config_dump_ownership_clock() + Duration::from_millis(3),
-            advancing_config_dump_ownership_clock,
+            advancing_generated_path_clock() + Duration::from_millis(3),
+            advancing_generated_path_clock,
         );
 
         let result = super::tracked_generated_facts(
@@ -3000,7 +3113,7 @@ mod tests {
         assert!(
             matches!(
                 error,
-                crate::domain::project_health::ProjectHealthInspectionError::Fatal(ref reason)
+                StagedIgnoreMaterializationError::Incomplete(ref reason)
                     if reason.contains("does not have one regular stage-0 blob")
             ),
             "{error:?}"
@@ -3044,11 +3157,19 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(
+        assert_eq!(
             error,
-            ProjectHealthInspectionError::Fatal(ref reason)
-                if reason.contains("host path identity")
-        ));
+            StagedIgnoreMaterializationError::PathIdentityCollision {
+                first: MaterializedGitPath {
+                    path: "src/A/.gitignore".into(),
+                    role: "staged ignore policy",
+                },
+                second: MaterializedGitPath {
+                    path: "src/a/.gitignore".into(),
+                    role: "staged ignore policy",
+                },
+            }
+        );
         assert_eq!(runner.commands.borrow().len(), 1);
     }
 
@@ -3078,7 +3199,7 @@ mod tests {
         assert!(
             matches!(
                 error,
-                crate::domain::project_health::ProjectHealthInspectionError::Fatal(ref reason)
+                StagedIgnoreMaterializationError::Incomplete(ref reason)
                     if reason.contains("at most 1024")
             ),
             "{error:?}"
@@ -3112,7 +3233,7 @@ mod tests {
         assert!(
             matches!(
                 error,
-                crate::domain::project_health::ProjectHealthInspectionError::Fatal(ref reason)
+                StagedIgnoreMaterializationError::Incomplete(ref reason)
                     if reason.contains("exceeds 8388608 bytes")
             ),
             "{error:?}"

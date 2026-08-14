@@ -253,6 +253,15 @@ pub(crate) enum ProjectHealthFact {
         reason: String,
         count: usize,
     },
+    GitPathIdentityCollision {
+        check: ProjectCheckId,
+        source_set: Option<String>,
+        reason: String,
+        first_path: String,
+        first_role: String,
+        second_path: String,
+        second_role: String,
+    },
     IgnoreRuleMissing {
         source_set: Option<String>,
         path: String,
@@ -470,7 +479,8 @@ fn incomplete_fact_reason(fact: &ProjectHealthFact) -> Option<&str> {
     match fact {
         ProjectHealthFact::GitInspectionTimeout { .. } => Some("Git inspection timed out"),
         ProjectHealthFact::GitInspectionIncomplete { reason, .. }
-        | ProjectHealthFact::GitInspectionIncompleteCounted { reason, .. } => Some(reason),
+        | ProjectHealthFact::GitInspectionIncompleteCounted { reason, .. }
+        | ProjectHealthFact::GitPathIdentityCollision { reason, .. } => Some(reason),
         ProjectHealthFact::SourceInspectionIncomplete { reason } => Some(reason),
         _ => None,
     }
@@ -534,6 +544,7 @@ enum RemediationKind {
     InstallGit,
     RetryInspection,
     UpgradeGitForPartialClone,
+    ResolveGitPathIdentityConflict,
     TrackIgnorePolicy,
     ReviewTrackedGeneratedPath,
     TrackPortableAttributes,
@@ -644,7 +655,8 @@ fn validate_snapshot(snapshot: &ProjectHealthSnapshot) -> Result<(), String> {
     for fact in &snapshot.facts {
         if let ProjectHealthFact::GitInspectionTimeout { check, .. }
         | ProjectHealthFact::GitInspectionIncomplete { check, .. }
-        | ProjectHealthFact::GitInspectionIncompleteCounted { check, .. } = fact
+        | ProjectHealthFact::GitInspectionIncompleteCounted { check, .. }
+        | ProjectHealthFact::GitPathIdentityCollision { check, .. } = fact
         {
             if check.scope() != DiagnosticScope::Repository {
                 return snapshot_error(format!(
@@ -869,11 +881,7 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             1,
             "Git inspection did not produce a complete trustworthy result",
             vec![reason.clone()],
-            if reason.contains("partial clone") && reason.contains("Git 2.46") {
-                RemediationKind::UpgradeGitForPartialClone
-            } else {
-                RemediationKind::RetryInspection
-            },
+            incomplete_git_remediation_kind(reason),
         ),
         GitInspectionIncompleteCounted {
             check,
@@ -889,11 +897,29 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             *count,
             "Git inspection did not produce a complete trustworthy result",
             vec![reason.clone()],
-            if reason.contains("partial clone") && reason.contains("Git 2.46") {
-                RemediationKind::UpgradeGitForPartialClone
-            } else {
-                RemediationKind::RetryInspection
-            },
+            incomplete_git_remediation_kind(reason),
+        ),
+        GitPathIdentityCollision {
+            check,
+            source_set,
+            reason,
+            first_path,
+            first_role,
+            second_path,
+            second_role,
+        } => seed(
+            "git.path_identity_collision",
+            incomplete_severity(*check),
+            *check,
+            source_set.clone(),
+            vec![first_path.clone(), second_path.clone()],
+            1,
+            "Distinct Git paths resolve to the same host filesystem identity",
+            vec![
+                reason.clone(),
+                format!("{first_role}: {first_path}; {second_role}: {second_path}"),
+            ],
+            RemediationKind::ResolveGitPathIdentityConflict,
         ),
         IgnoreRuleMissing { source_set, path } => seed(
             "git.ignore_rule_missing",
@@ -1072,6 +1098,14 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             ],
             RemediationKind::Advisory,
         ),
+    }
+}
+
+fn incomplete_git_remediation_kind(reason: &str) -> RemediationKind {
+    if reason.contains("partial clone") && reason.contains("Git 2.46") {
+        RemediationKind::UpgradeGitForPartialClone
+    } else {
+        RemediationKind::RetryInspection
     }
 }
 
@@ -1271,6 +1305,15 @@ fn remediation_for(
                 "Confirm that this repository is intentionally configured as a partial/promisor clone".into(),
                 "Use Git 2.46 or newer from the same environment that launches Unica, or inspect a complete local non-promisor clone according to the repository owner's policy".into(),
                 "Run unica.project.status again; do not infer a pass from the blocked inspection".into(),
+            ],
+            commands: Vec::new(),
+        },
+        RemediationKind::ResolveGitPathIdentityConflict => Remediation {
+            summary: "Make staged Git paths unambiguous on this filesystem".into(),
+            steps: vec![
+                "Review the reported collision and choose one canonical spelling for each logical directory component".into(),
+                "Rename or remove the conflicting tracked entries so distinct Git paths no longer resolve to the same host path identity".into(),
+                "Stage the corrected paths and portable policy files, then run unica.project.status again".into(),
             ],
             commands: Vec::new(),
         },
@@ -1475,6 +1518,56 @@ mod tests {
             .steps
             .iter()
             .any(|step| step.contains("non-promisor clone")));
+        assert!(diagnostic.remediation.commands.is_empty());
+    }
+
+    #[test]
+    fn host_path_identity_collision_explains_the_canonical_path_correction() {
+        let reason = "staged Git ignore paths collide through host path identity";
+        let snapshot = snapshot_with(
+            vec![ProjectHealthFact::GitPathIdentityCollision {
+                check: ProjectCheckId::RepositoryIgnore,
+                source_set: None,
+                reason: reason.into(),
+                first_path: "A/.gitignore".into(),
+                first_role: "staged ignore policy".into(),
+                second_path: "a/src/ConfigDumpInfo.xml".into(),
+                second_role: "required ignore candidate".into(),
+            }],
+            vec![observation(
+                ProjectCheckId::RepositoryIgnore,
+                None,
+                ProjectCheckOutcome::NotRun {
+                    reason: reason.into(),
+                },
+            )],
+        );
+
+        let report = evaluate_project_health(snapshot).unwrap();
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "git.path_identity_collision")
+            .unwrap();
+
+        assert_eq!(
+            diagnostic.paths,
+            vec!["A/.gitignore", "a/src/ConfigDumpInfo.xml"]
+        );
+        assert!(diagnostic.evidence.iter().any(|evidence| {
+            evidence.contains("staged ignore policy")
+                && evidence.contains("required ignore candidate")
+        }));
+        assert!(diagnostic
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains("canonical spelling")));
+        assert!(diagnostic
+            .remediation
+            .steps
+            .iter()
+            .any(|step| step.contains("distinct Git paths")));
         assert!(diagnostic.remediation.commands.is_empty());
     }
 

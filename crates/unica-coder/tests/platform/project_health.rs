@@ -343,14 +343,31 @@ fn project_health_does_not_apply_a_host_alias_gitignore_to_another_git_path() {
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.ignore", None, "notRun");
     assert_repository_check_status(&data, "repository.ignore", Some("main"), "notRun");
-    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
-        diagnostic["code"] == "git.inspection_incomplete"
-            && diagnostic["evidence"]
-                .as_array()
-                .is_some_and(|evidence| evidence.iter().any(|item| {
-                    item.as_str().is_some_and(|text| text.contains("host path identity"))
-                }))
-    }), "{data}");
+    let diagnostic = data["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "git.path_identity_collision")
+        .unwrap_or_else(|| panic!("missing typed path collision diagnostic: {data}"));
+    let paths = diagnostic["paths"].as_array().unwrap();
+    assert!(paths.iter().any(|path| path == "A/.gitignore"), "{data}");
+    assert!(
+        paths.iter().any(|path| path
+            .as_str()
+            .is_some_and(|path| path.starts_with("a/src/"))),
+        "{data}"
+    );
+    assert!(diagnostic["evidence"]
+        .as_array()
+        .is_some_and(|evidence| evidence.iter().any(|item| {
+            item.as_str().is_some_and(|text| {
+                text.contains("staged ignore policy")
+                    && text.contains("required ignore candidate")
+            })
+        })), "{data}");
+    assert!(diagnostic["remediation"]["commands"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
     let _ = fs::remove_dir_all(root);
 }
 
