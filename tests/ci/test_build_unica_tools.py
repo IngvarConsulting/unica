@@ -24,7 +24,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         expected_names = {
             "bsl-analyzer",
             "v8-runner",
-            "rlm-tools-bsl",
+            "rlm-bsl-mcp",
             "rlm-bsl-index",
         }
         self.assertEqual({tool["name"] for tool in external_tools}, expected_names)
@@ -49,9 +49,12 @@ class BuildUnicaToolsTests(unittest.TestCase):
             source_suffix = f"-{source_label}"
             self.assertTrue(release_tag.endswith(source_suffix))
             release_name = release_tag[: -len(source_suffix)]
+            declared_release_name = tool.get("releaseName", tool["name"])
+            self.assertEqual(release_name, declared_release_name)
             self.assertTrue(
                 any(
-                    candidate["name"] == release_name
+                    candidate.get("releaseName", candidate["name"])
+                    == declared_release_name
                     and (
                         candidate["repository"],
                         candidate["sourceTag"],
