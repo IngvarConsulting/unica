@@ -1545,6 +1545,67 @@ class RuntimeArtifactFlowContractTests(unittest.TestCase):
         )
 
 
+class RlmGenerationCutoverContractTests(unittest.TestCase):
+    """The builder-15 layout and transition wording stay unambiguous."""
+
+    def setUp(self) -> None:
+        self.records = {
+            record.id: record for record in parse_records(INVARIANTS)
+        }
+
+    def test_generation_rule_owns_the_complete_pair_scoped_layout(self) -> None:
+        record = self.records.get("INV-CACHE-GENERATION-CUTOVER")
+        self.assertIsNotNone(record, "missing generation-cutover invariant")
+        rule = record.one("Rule") or ""
+
+        for token in [
+            "`workspaceRoot + sourceRoot`",
+            "`rlm-bsl/index-v15`",
+            "`caches/rlm-bsl/index-v15/bsl_index_status.json`",
+            "`locks/rlm-bsl/index-v15/bsl_index.lock`",
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, rule)
+
+    def test_glossary_delegates_generation_policy_to_its_normative_owners(self) -> None:
+        glossary = (ARCHITECTURE_DIR / "glossary.md").read_text(encoding="utf-8")
+        rlm_entry = glossary.split("- **RLM**", 1)[1].split("\n- **", 1)[0]
+
+        self.assertIn("`ADR-0059`", rlm_entry)
+        self.assertIn("`INV-CACHE-GENERATION-CUTOVER`", rlm_entry)
+        for duplicated_policy in (
+            "`rlm-bsl/index-v15`",
+            "маркерами состояния и блокировки",
+            "поколение построителя 14",
+        ):
+            with self.subTest(duplicated_policy=duplicated_policy):
+                self.assertNotIn(duplicated_policy, rlm_entry)
+
+    def test_provenance_keeps_rlm_mcp_internal_and_unica_public(self) -> None:
+        provenance = (REPO_ROOT / "spec/provenance/README.md").read_text(
+            encoding="utf-8"
+        )
+        normalized = " ".join(provenance.split())
+        self.assertNotIn("опубликованный MCP API `rlm-bsl-mcp`", normalized)
+        self.assertIn("внутренний MCP API поставляемого процесса", normalized)
+        self.assertIn("Единственный публичный MCP-сервер — `unica`", normalized)
+
+    def test_decision_context_marks_the_old_executable_as_pre_transition(self) -> None:
+        decision = (
+            DECISIONS_DIR / "0059-rlm-generacionnyy-perehod.md"
+        ).read_text(encoding="utf-8")
+        context = decision.split("## Контекст", 1)[1].split("## Решение", 1)[0]
+
+        self.assertRegex(
+            context,
+            r"До перехода Unica поставляла[^.]*`rlm-tools-bsl`",
+        )
+        self.assertNotRegex(
+            context,
+            r"(?m)^Unica поставляет[^.]*`rlm-tools-bsl`",
+        )
+
+
 class ReaderInvocationContractTests(unittest.TestCase):
     """ADR-0044 stays activated through derived executable rules."""
 
@@ -1692,7 +1753,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
 
 
 class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
-    """ADR-0056..0059 stay atomic and own separate derived rules."""
+    """ADR-0060..0063 stay atomic and own separate derived rules."""
 
     def setUp(self) -> None:
         self.records = {record.id: record for record in all_records()}
@@ -1706,10 +1767,10 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
             "\n## ", 1
         )[0]
         files = [
-            "0056-tipizirovannaya-gotovnost-rlm.md",
-            "0057-logicheskie-nablyudeniya-diagnostiki.md",
-            "0058-neytralnaya-kompoziciya-diagnostik.md",
-            "0059-yavnyy-rezhim-migracii-chitatelya.md",
+            "0060-tipizirovannaya-gotovnost-rlm.md",
+            "0061-logicheskie-nablyudeniya-diagnostiki.md",
+            "0062-neytralnaya-kompoziciya-diagnostik.md",
+            "0063-yavnyy-rezhim-migracii-chitatelya.md",
         ]
 
         for filename in files:
@@ -1729,17 +1790,17 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            "- Статус: `superseded` — заменено ADR-0056, ADR-0057 и ADR-0058",
+            "- Статус: `superseded` — заменено ADR-0060, ADR-0061 и ADR-0062",
             typed_reader,
         )
         self.assertIn(
-            "- Статус: `superseded` — заменено ADR-0059", reader_bridge
+            "- Статус: `superseded` — заменено ADR-0063", reader_bridge
         )
 
     def test_atomic_diagnostics_rules_have_one_exact_owner_and_real_checks(self) -> None:
         expected = {
             "INV-MCP-DIAGNOSTIC-TARGET": (
-                "ADR-0057",
+                "ADR-0061",
                 ["location", "focus", "абсолют"],
                 [
                     "crates/unica-coder/src/application/tool_contracts.rs",
@@ -1747,7 +1808,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
                 ],
             ),
             "INV-APP-DIAGNOSTIC-PROVIDERS": (
-                "ADR-0058",
+                "ADR-0062",
                 ["provider", "поряд", "дедуп"],
                 [
                     "crates/unica-coder/src/application/diagnostics.rs",
@@ -1755,7 +1816,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
                 ],
             ),
             "INV-SOURCE-READER-MIGRATION": (
-                "ADR-0059",
+                "ADR-0063",
                 ["bridge", "directSwitch", "unica.code.diagnostics"],
                 [
                     "tests/ci/test_architecture_registry.py",
@@ -1782,10 +1843,10 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         typed = self.records["INV-MCP-TYPED-RESULT"]
         decisions = typed.one("Decision") or ""
 
-        self.assertIn("ADR-0056", decisions)
+        self.assertIn("ADR-0060", decisions)
         self.assertNotIn("ADR-0045", decisions)
         rlm = (
-            DECISIONS_DIR / "0056-tipizirovannaya-gotovnost-rlm.md"
+            DECISIONS_DIR / "0060-tipizirovannaya-gotovnost-rlm.md"
         ).read_text(encoding="utf-8")
         for foreign_concern in ("DiagnosticProviderRegistry", "directSwitch"):
             self.assertNotIn(foreign_concern, rlm)
@@ -1795,12 +1856,12 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
             text = (DECISIONS_DIR / filename).read_text(encoding="utf-8")
             return text.split("## Решение", 1)[1].split("## Неграницы", 1)[0]
 
-        target = decision_body("0057-logicheskie-nablyudeniya-diagnostiki.md")
+        target = decision_body("0061-logicheskie-nablyudeniya-diagnostiki.md")
         providers = decision_body(
-            "0058-neytralnaya-kompoziciya-diagnostik.md"
+            "0062-neytralnaya-kompoziciya-diagnostik.md"
         )
         migration = decision_body(
-            "0059-yavnyy-rezhim-migracii-chitatelya.md"
+            "0063-yavnyy-rezhim-migracii-chitatelya.md"
         )
 
         self.assertNotIn("legacy_target_removed", target)
@@ -1819,7 +1880,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         self.assertIn("`action=analyze`", runtime)
         self.assertNotIn("diagnostics` в режиме `analyze`", runtime)
         self.assertEqual(
-            config_snapshot.one("Decision"), "ADR-0040, ADR-0057"
+            config_snapshot.one("Decision"), "ADR-0040, ADR-0056, ADR-0058, ADR-0061"
         )
         for identifier in (
             "INV-MCP-DIAGNOSTIC-TARGET",

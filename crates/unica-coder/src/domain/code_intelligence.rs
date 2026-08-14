@@ -1,8 +1,10 @@
 use crate::domain::{
-    cancellation::CancellationToken, source_roots::ResolvedSourceRoot, workspace::WorkspaceContext,
+    cancellation::CancellationToken, source_location::SourceLocation,
+    source_roots::ResolvedSourceRoot, workspace::WorkspaceContext,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,6 +16,167 @@ pub enum ProviderId {
     BslAnalyzer,
     #[serde(rename = "git-grep")]
     GitGrep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderRole {
+    Semantic,
+    Symbol,
+    Lexical,
+}
+
+impl ProviderRole {
+    pub const ALL: [Self; 3] = [Self::Semantic, Self::Symbol, Self::Lexical];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Semantic => "semantic",
+            Self::Symbol => "symbol",
+            Self::Lexical => "lexical",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderIdentity {
+    pub role: ProviderRole,
+    pub provider: String,
+}
+
+impl ProviderIdentity {
+    pub fn new(role: ProviderRole, provider: impl Into<String>) -> Self {
+        Self {
+            role,
+            provider: provider.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchProviderState {
+    Queued,
+    Running,
+    Completed,
+    Unavailable,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+impl SearchProviderState {
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Unavailable | Self::Failed | Self::TimedOut | Self::Cancelled
+        )
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Unavailable => "unavailable",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed out",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchProviderPhase {
+    Preparing,
+    Searching,
+    Ranking,
+}
+
+impl SearchProviderPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Searching => "searching",
+            Self::Ranking => "ranking",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchProviderProgress {
+    #[serde(flatten)]
+    pub identity: ProviderIdentity,
+    pub state: SearchProviderState,
+    pub phase: SearchProviderPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_code: Option<String>,
+    pub results_found: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchProgressSnapshot {
+    pub schema_version: u32,
+    pub elapsed_ms: u64,
+    pub deadline_ms: u64,
+    pub next_update_within_ms: u64,
+    pub providers: Vec<SearchProviderProgress>,
+}
+
+impl SearchProgressSnapshot {
+    pub fn terminal_roles(&self) -> usize {
+        self.providers
+            .iter()
+            .filter(|provider| provider.state.is_terminal())
+            .count()
+    }
+}
+
+pub trait SearchProgressSink: Send + Sync {
+    fn publish(&self, snapshot: SearchProgressSnapshot);
+}
+
+#[derive(Debug, Default)]
+pub struct NoopSearchProgressSink;
+
+impl SearchProgressSink for NoopSearchProgressSink {
+    fn publish(&self, _snapshot: SearchProgressSnapshot) {}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderProgressUpdate {
+    pub phase: SearchProviderPhase,
+    pub detail_code: Option<String>,
+    pub results_found: usize,
+}
+
+pub trait ProviderProgressSink: Send + Sync {
+    fn publish(&self, update: ProviderProgressUpdate);
+}
+
+#[derive(Debug, Default)]
+struct NoopProviderProgressSink;
+
+impl ProviderProgressSink for NoopProviderProgressSink {
+    fn publish(&self, _update: ProviderProgressUpdate) {}
+}
+
+impl ProviderId {
+    pub const fn role(self) -> ProviderRole {
+        match self {
+            Self::Rlm => ProviderRole::Semantic,
+            Self::BslAnalyzer => ProviderRole::Symbol,
+            Self::GitGrep => ProviderRole::Lexical,
+        }
+    }
+
+    pub fn identity(self) -> ProviderIdentity {
+        ProviderIdentity::new(self.role(), self.as_str())
+    }
 }
 
 impl ProviderId {
@@ -69,10 +232,68 @@ impl CodeIntelligenceReadRequest {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CodeIntelligenceContext {
     pub workspace: WorkspaceContext,
     pub source_root: ResolvedSourceRoot,
+    pub search_scope: Option<CodeSearchScope>,
+    provider_progress: Arc<dyn ProviderProgressSink>,
+}
+
+impl std::fmt::Debug for CodeIntelligenceContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CodeIntelligenceContext")
+            .field("workspace", &self.workspace)
+            .field("source_root", &self.source_root)
+            .field("search_scope", &self.search_scope)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelativeSearchFilter {
+    Exact(PathBuf),
+    Subtree(PathBuf),
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeSearchScope {
+    pub source_set: String,
+    pub source_root: PathBuf,
+    pub filters: Vec<RelativeSearchFilter>,
+    pub legacy_selector: bool,
+}
+
+impl CodeSearchScope {
+    pub fn all(source_set: String, source_root: PathBuf, legacy_selector: bool) -> Self {
+        Self {
+            source_set,
+            source_root,
+            filters: Vec::new(),
+            legacy_selector,
+        }
+    }
+
+    pub fn accepts(&self, relative_path: &Path) -> bool {
+        if relative_path.is_absolute()
+            || relative_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return false;
+        }
+        self.filters.is_empty()
+            || self.filters.iter().any(|filter| match filter {
+                RelativeSearchFilter::Exact(path) => relative_path == path,
+                RelativeSearchFilter::Subtree(path) => relative_path.starts_with(path),
+            })
+    }
 }
 
 impl CodeIntelligenceContext {
@@ -80,7 +301,23 @@ impl CodeIntelligenceContext {
         Self {
             workspace,
             source_root,
+            search_scope: None,
+            provider_progress: Arc::new(NoopProviderProgressSink),
         }
+    }
+
+    pub fn with_search_scope(mut self, scope: CodeSearchScope) -> Self {
+        self.search_scope = Some(scope);
+        self
+    }
+
+    pub(crate) fn with_provider_progress(mut self, sink: Arc<dyn ProviderProgressSink>) -> Self {
+        self.provider_progress = sink;
+        self
+    }
+
+    pub fn report_progress(&self, update: ProviderProgressUpdate) {
+        self.provider_progress.publish(update);
     }
 }
 
@@ -154,10 +391,12 @@ impl ProviderDeadline {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum ProviderSectionStatus {
     Ok,
     Empty,
+    LimitReached,
+    TimedOut,
     Unavailable,
     Failed,
 }
@@ -167,18 +406,140 @@ impl ProviderSectionStatus {
         match self {
             Self::Ok => "ok",
             Self::Empty => "empty",
+            Self::LimitReached => "limitReached",
+            Self::TimedOut => "timedOut",
             Self::Unavailable => "unavailable",
             Self::Failed => "failed",
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchTerminationCode {
+    LimitReached,
+    DeadlineExceeded,
+    DependencyPending,
+    UnsupportedScope,
+    CapacityExhausted,
+    ProviderUnavailable,
+    ProviderFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchTermination {
+    pub code: SearchTerminationCode,
+    pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_code: Option<String>,
+}
+
+impl SearchTermination {
+    pub const fn limit_reached() -> Self {
+        Self {
+            code: SearchTerminationCode::LimitReached,
+            retryable: false,
+            detail_code: None,
+        }
+    }
+
+    pub const fn deadline_exceeded() -> Self {
+        Self {
+            code: SearchTerminationCode::DeadlineExceeded,
+            retryable: true,
+            detail_code: None,
+        }
+    }
+
+    pub fn dependency_pending(detail_code: impl Into<String>) -> Self {
+        Self {
+            code: SearchTerminationCode::DependencyPending,
+            retryable: true,
+            detail_code: Some(detail_code.into()),
+        }
+    }
+
+    pub const fn unsupported_scope() -> Self {
+        Self {
+            code: SearchTerminationCode::UnsupportedScope,
+            retryable: false,
+            detail_code: None,
+        }
+    }
+
+    pub const fn capacity_exhausted() -> Self {
+        Self {
+            code: SearchTerminationCode::CapacityExhausted,
+            retryable: true,
+            detail_code: None,
+        }
+    }
+
+    pub const fn provider_unavailable() -> Self {
+        Self {
+            code: SearchTerminationCode::ProviderUnavailable,
+            retryable: false,
+            detail_code: None,
+        }
+    }
+
+    pub const fn provider_failed() -> Self {
+        Self {
+            code: SearchTerminationCode::ProviderFailed,
+            retryable: false,
+            detail_code: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchRanking {
+    Provider,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchOrdering {
+    Provider,
+    ProviderTraversal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchCountRelation {
+    Exact,
+    LowerBound,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatchCount {
+    pub returned: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    pub relation: SearchCountRelation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchCoverage {
+    Complete,
+    Partial,
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSearchHit {
-    pub rank: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_score: Option<f64>,
-    pub path: String,
+    pub location: SourceLocation,
     pub line: usize,
     pub end_line: Option<usize>,
     pub symbol: Option<String>,
@@ -190,16 +551,366 @@ pub struct ProviderSearchHit {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSearchSection {
-    pub provider: ProviderId,
+    #[serde(flatten)]
+    pub identity: ProviderIdentity,
     pub status: ProviderSectionStatus,
+    pub termination: Option<SearchTermination>,
+    pub search_complete: bool,
+    pub ranking: SearchRanking,
+    pub ordering: SearchOrdering,
+    pub matches: SearchMatchCount,
     pub hits: Vec<ProviderSearchHit>,
     pub diagnostics: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
+}
+
+impl ProviderSearchSection {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        identity: ProviderIdentity,
+        status: ProviderSectionStatus,
+        search_complete: bool,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        matches: SearchMatchCount,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+        termination: Option<SearchTermination>,
+    ) -> Result<Self, String> {
+        if matches.returned != hits.len() {
+            return Err("search match count must equal the number of returned hits".to_string());
+        }
+        match status {
+            ProviderSectionStatus::Ok => {
+                if !search_complete
+                    || hits.is_empty()
+                    || matches.relation != SearchCountRelation::Exact
+                    || matches.total != Some(hits.len())
+                {
+                    return Err(
+                        "ok search section must be complete with an exact non-zero count"
+                            .to_string(),
+                    );
+                }
+            }
+            ProviderSectionStatus::Empty => {
+                if !search_complete
+                    || !hits.is_empty()
+                    || matches.relation != SearchCountRelation::Exact
+                    || matches.total != Some(0)
+                {
+                    return Err("empty search section must carry an exact zero count".to_string());
+                }
+            }
+            ProviderSectionStatus::LimitReached | ProviderSectionStatus::TimedOut => {
+                if search_complete
+                    || matches.relation != SearchCountRelation::LowerBound
+                    || matches.total.is_none_or(|total| total < hits.len())
+                {
+                    return Err(
+                        "bounded search section must be incomplete with a valid lower bound"
+                            .to_string(),
+                    );
+                }
+            }
+            ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => {
+                if search_complete
+                    || !hits.is_empty()
+                    || matches.relation != SearchCountRelation::Unknown
+                    || matches.total.is_some()
+                {
+                    return Err(
+                        "failed search section must be incomplete without result claims"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        validate_search_termination(status, termination.as_ref())?;
+        match ranking {
+            SearchRanking::None
+                if hits
+                    .iter()
+                    .any(|hit| hit.rank.is_some() || hit.provider_score.is_some()) =>
+            {
+                return Err("unranked search hits cannot carry rank or provider score".to_string());
+            }
+            SearchRanking::Provider
+                if hits
+                    .iter()
+                    .enumerate()
+                    .any(|(index, hit)| hit.rank != Some(index + 1)) =>
+            {
+                return Err(
+                    "provider-ranked hits must carry consecutive ranks from one".to_string()
+                );
+            }
+            _ => {}
+        }
+        Ok(Self {
+            identity,
+            status,
+            termination,
+            search_complete,
+            ranking,
+            ordering,
+            matches,
+            hits,
+            diagnostics,
+            artifacts: Vec::new(),
+        })
+    }
+
+    pub fn complete(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        let returned = hits.len();
+        let status = if returned == 0 {
+            ProviderSectionStatus::Empty
+        } else {
+            ProviderSectionStatus::Ok
+        };
+        Self::new(
+            identity,
+            status,
+            true,
+            ranking,
+            ordering,
+            SearchMatchCount {
+                returned,
+                total: Some(returned),
+                relation: SearchCountRelation::Exact,
+            },
+            hits,
+            diagnostics,
+            None,
+        )
+    }
+
+    pub fn limit_reached(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        Self::bounded(
+            identity,
+            ProviderSectionStatus::LimitReached,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+            SearchTermination::limit_reached(),
+        )
+    }
+
+    pub fn timed_out(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+    ) -> Result<Self, String> {
+        Self::bounded(
+            identity,
+            ProviderSectionStatus::TimedOut,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+            SearchTermination::deadline_exceeded(),
+        )
+    }
+
+    pub fn dependency_pending(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+        detail_code: impl Into<String>,
+    ) -> Result<Self, String> {
+        Self::bounded(
+            identity,
+            ProviderSectionStatus::TimedOut,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+            SearchTermination::dependency_pending(detail_code),
+        )
+    }
+
+    fn bounded(
+        identity: ProviderIdentity,
+        status: ProviderSectionStatus,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+        termination: SearchTermination,
+    ) -> Result<Self, String> {
+        let returned = hits.len();
+        Self::new(
+            identity,
+            status,
+            false,
+            ranking,
+            ordering,
+            SearchMatchCount {
+                returned,
+                total: Some(returned),
+                relation: SearchCountRelation::LowerBound,
+            },
+            hits,
+            diagnostics,
+            Some(termination),
+        )
+    }
+
+    pub fn unavailable(identity: ProviderIdentity, diagnostic: String) -> Self {
+        Self::problem(
+            identity,
+            ProviderSectionStatus::Unavailable,
+            diagnostic,
+            SearchTermination::provider_unavailable(),
+        )
+    }
+
+    pub fn unsupported_scope(identity: ProviderIdentity, diagnostic: String) -> Self {
+        Self::problem(
+            identity,
+            ProviderSectionStatus::Unavailable,
+            diagnostic,
+            SearchTermination::unsupported_scope(),
+        )
+    }
+
+    pub fn capacity_exhausted(identity: ProviderIdentity, diagnostic: String) -> Self {
+        Self::problem(
+            identity,
+            ProviderSectionStatus::Unavailable,
+            diagnostic,
+            SearchTermination::capacity_exhausted(),
+        )
+    }
+
+    pub fn failed(identity: ProviderIdentity, diagnostic: String) -> Self {
+        Self::problem(
+            identity,
+            ProviderSectionStatus::Failed,
+            diagnostic,
+            SearchTermination::provider_failed(),
+        )
+    }
+
+    pub fn failed_with_diagnostics(identity: ProviderIdentity, diagnostics: Vec<String>) -> Self {
+        Self::new(
+            identity,
+            ProviderSectionStatus::Failed,
+            false,
+            SearchRanking::None,
+            SearchOrdering::Provider,
+            SearchMatchCount {
+                returned: 0,
+                total: None,
+                relation: SearchCountRelation::Unknown,
+            },
+            Vec::new(),
+            diagnostics,
+            Some(SearchTermination::provider_failed()),
+        )
+        .expect("failed section is a valid closed construction")
+    }
+
+    fn problem(
+        identity: ProviderIdentity,
+        status: ProviderSectionStatus,
+        diagnostic: String,
+        termination: SearchTermination,
+    ) -> Self {
+        Self::new(
+            identity,
+            status,
+            false,
+            SearchRanking::None,
+            SearchOrdering::Provider,
+            SearchMatchCount {
+                returned: 0,
+                total: None,
+                relation: SearchCountRelation::Unknown,
+            },
+            Vec::new(),
+            vec![diagnostic],
+            Some(termination),
+        )
+        .expect("problem section is a valid closed construction")
+    }
+}
+
+fn validate_search_termination(
+    status: ProviderSectionStatus,
+    termination: Option<&SearchTermination>,
+) -> Result<(), String> {
+    let valid_shape = termination.is_none_or(|value| match value.code {
+        SearchTerminationCode::DeadlineExceeded | SearchTerminationCode::CapacityExhausted => {
+            value.retryable && value.detail_code.is_none()
+        }
+        SearchTerminationCode::DependencyPending => {
+            value.retryable
+                && value
+                    .detail_code
+                    .as_ref()
+                    .is_some_and(|detail| !detail.is_empty())
+        }
+        SearchTerminationCode::LimitReached
+        | SearchTerminationCode::UnsupportedScope
+        | SearchTerminationCode::ProviderUnavailable
+        | SearchTerminationCode::ProviderFailed => !value.retryable && value.detail_code.is_none(),
+    });
+    let valid_status = matches!(
+        (status, termination.map(|value| value.code)),
+        (
+            ProviderSectionStatus::Ok | ProviderSectionStatus::Empty,
+            None
+        ) | (
+            ProviderSectionStatus::LimitReached,
+            Some(SearchTerminationCode::LimitReached)
+        ) | (
+            ProviderSectionStatus::TimedOut,
+            Some(
+                SearchTerminationCode::DeadlineExceeded | SearchTerminationCode::DependencyPending,
+            ),
+        ) | (
+            ProviderSectionStatus::Unavailable,
+            Some(
+                SearchTerminationCode::UnsupportedScope
+                    | SearchTerminationCode::CapacityExhausted
+                    | SearchTerminationCode::ProviderUnavailable,
+            ),
+        ) | (
+            ProviderSectionStatus::Failed,
+            Some(SearchTerminationCode::ProviderFailed)
+        )
+    );
+    if valid_shape && valid_status {
+        Ok(())
+    } else {
+        Err("search section status and termination reason are inconsistent".to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeSearchResult {
+    pub coverage: SearchCoverage,
+    pub elapsed_ms: u64,
     pub sections: Vec<ProviderSearchSection>,
 }
 
@@ -306,7 +1017,7 @@ pub struct CodeDefinition {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderReadOutcome {
-    pub provider: ProviderId,
+    pub provider: ProviderIdentity,
     pub ok: bool,
     pub summary: String,
     pub warnings: Vec<String>,
@@ -318,7 +1029,7 @@ pub struct ProviderReadOutcome {
 }
 
 pub trait CodeIntelligenceProvider: Send + Sync {
-    fn id(&self) -> ProviderId;
+    fn identity(&self) -> ProviderIdentity;
     fn capabilities(&self) -> &[ProviderCapability];
     fn search(
         &self,
@@ -337,7 +1048,7 @@ pub trait CodeIntelligenceProvider: Send + Sync {
     ) -> Result<ProviderReadOutcome, String> {
         Err(format!(
             "provider {} does not implement {:?}",
-            self.id().as_str(),
+            self.identity().provider,
             request.capability()
         ))
     }
@@ -350,11 +1061,23 @@ pub struct CodeIntelligenceRegistry {
 impl CodeIntelligenceRegistry {
     pub fn new(providers: Vec<Arc<dyn CodeIntelligenceProvider>>) -> Result<Self, String> {
         let mut ids = std::collections::HashSet::new();
+        let mut search_roles = std::collections::HashSet::new();
         for provider in &providers {
-            if !ids.insert(provider.id()) {
+            let identity = provider.identity();
+            if !ids.insert(identity.provider.clone()) {
                 return Err(format!(
                     "duplicate code intelligence provider: {}",
-                    provider.id().as_str()
+                    identity.provider
+                ));
+            }
+            if provider
+                .capabilities()
+                .contains(&ProviderCapability::Search)
+                && !search_roles.insert(identity.role)
+            {
+                return Err(format!(
+                    "duplicate code intelligence search role: {}",
+                    identity.role.as_str()
                 ));
             }
         }
@@ -394,7 +1117,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     struct FakeProvider {
-        id: ProviderId,
+        identity: ProviderIdentity,
         capabilities: Vec<ProviderCapability>,
     }
 
@@ -414,8 +1137,8 @@ mod tests {
     }
 
     impl CodeIntelligenceProvider for FakeProvider {
-        fn id(&self) -> ProviderId {
-            self.id
+        fn identity(&self) -> ProviderIdentity {
+            self.identity.clone()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -429,13 +1152,14 @@ mod tests {
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
-            ProviderSearchSection {
-                provider: self.id,
-                status: ProviderSectionStatus::Empty,
-                hits: Vec::new(),
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            }
+            ProviderSearchSection::complete(
+                self.identity.clone(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap()
         }
 
         fn read(
@@ -446,7 +1170,7 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> Result<ProviderReadOutcome, String> {
             Ok(ProviderReadOutcome {
-                provider: self.id,
+                provider: self.identity.clone(),
                 ok: true,
                 summary: format!("{} handled", request.operation_name()),
                 warnings: Vec::new(),
@@ -463,15 +1187,15 @@ mod tests {
     fn registry_preserves_injected_search_provider_order() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
-                id: ProviderId::Rlm,
+                identity: ProviderId::Rlm.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
             Arc::new(FakeProvider {
-                id: ProviderId::BslAnalyzer,
+                identity: ProviderId::BslAnalyzer.identity(),
                 capabilities: Vec::new(),
             }),
             Arc::new(FakeProvider {
-                id: ProviderId::GitGrep,
+                identity: ProviderId::GitGrep.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
         ])
@@ -479,21 +1203,21 @@ mod tests {
 
         let ids = registry
             .search_providers()
-            .map(|provider| provider.id())
+            .map(|provider| provider.identity().provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, vec![ProviderId::Rlm, ProviderId::GitGrep]);
+        assert_eq!(ids, vec!["rlm", "git-grep"]);
     }
 
     #[test]
     fn registry_rejects_duplicate_provider_ids() {
         let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
             Arc::new(FakeProvider {
-                id: ProviderId::Rlm,
+                identity: ProviderId::Rlm.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
             Arc::new(FakeProvider {
-                id: ProviderId::Rlm,
+                identity: ProviderId::Rlm.identity(),
                 capabilities: Vec::new(),
             }),
         ];
@@ -507,10 +1231,31 @@ mod tests {
     }
 
     #[test]
+    fn registry_rejects_two_search_implementations_for_the_same_role() {
+        let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
+            Arc::new(FakeProvider {
+                identity: ProviderIdentity::new(ProviderRole::Semantic, "semantic-a"),
+                capabilities: vec![ProviderCapability::Search],
+            }),
+            Arc::new(FakeProvider {
+                identity: ProviderIdentity::new(ProviderRole::Semantic, "semantic-b"),
+                capabilities: vec![ProviderCapability::Search],
+            }),
+        ];
+
+        let error = match CodeIntelligenceRegistry::new(providers) {
+            Ok(_) => panic!("duplicate search roles must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "duplicate code intelligence search role: semantic");
+    }
+
+    #[test]
     fn registry_resolves_an_executable_provider_for_read_capabilities() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
-                id: ProviderId::Rlm,
+                identity: ProviderId::Rlm.identity(),
                 capabilities: vec![
                     ProviderCapability::Search,
                     ProviderCapability::Definition,
@@ -519,7 +1264,7 @@ mod tests {
                 ],
             }),
             Arc::new(FakeProvider {
-                id: ProviderId::GitGrep,
+                identity: ProviderId::GitGrep.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
         ])
@@ -542,20 +1287,27 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(outcome.provider, ProviderId::Rlm);
+        assert_eq!(outcome.provider, ProviderId::Rlm.identity());
         assert_eq!(outcome.summary, "code definition handled");
     }
 
     #[test]
     fn canonical_result_serializes_the_reader_facing_contract() {
         let result = CodeSearchResult {
-            sections: vec![ProviderSearchSection {
-                provider: ProviderId::Rlm,
-                status: ProviderSectionStatus::Ok,
-                hits: vec![ProviderSearchHit {
-                    rank: 1,
+            coverage: SearchCoverage::Complete,
+            elapsed_ms: 12,
+            sections: vec![ProviderSearchSection::complete(
+                ProviderId::Rlm.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                vec![ProviderSearchHit {
+                    rank: Some(1),
                     provider_score: Some(0.91),
-                    path: "CommonModules/Sales/Ext/Module.bsl".to_string(),
+                    location: SourceLocation::Unaddressable {
+                        source_set: "main".to_string(),
+                        owner_metadata_path: None,
+                        path: "CommonModules/Sales/Ext/Module.bsl".to_string(),
+                    },
                     line: 42,
                     end_line: Some(58),
                     symbol: Some("Post".to_string()),
@@ -563,21 +1315,33 @@ mod tests {
                     snippet: "Procedure Post()".to_string(),
                     attributes: Map::new(),
                 }],
-                diagnostics: Vec::new(),
-                artifacts: Vec::new(),
-            }],
+                Vec::new(),
+            )
+            .unwrap()],
         };
 
         assert_eq!(
             serde_json::to_value(result).unwrap(),
             json!({
+                "coverage": "complete",
+                "elapsedMs": 12,
                 "sections": [{
+                    "role": "semantic",
                     "provider": "rlm",
                     "status": "ok",
+                    "termination": null,
+                    "searchComplete": true,
+                    "ranking": "provider",
+                    "ordering": "provider",
+                    "matches": {"returned": 1, "total": 1, "relation": "exact"},
                     "hits": [{
                         "rank": 1,
                         "providerScore": 0.91,
-                        "path": "CommonModules/Sales/Ext/Module.bsl",
+                        "location": {
+                            "kind": "unaddressable",
+                            "sourceSet": "main",
+                            "path": "CommonModules/Sales/Ext/Module.bsl"
+                        },
                         "line": 42,
                         "endLine": 58,
                         "symbol": "Post",
@@ -585,8 +1349,41 @@ mod tests {
                         "snippet": "Procedure Post()",
                         "attributes": {}
                     }],
-                    "diagnostics": [],
-                    "artifacts": []
+                    "diagnostics": []
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn progress_snapshot_serializes_role_state_for_an_ai_client() {
+        let snapshot = SearchProgressSnapshot {
+            schema_version: 1,
+            elapsed_ms: 2_100,
+            deadline_ms: 300_000,
+            next_update_within_ms: 2_000,
+            providers: vec![SearchProviderProgress {
+                identity: ProviderId::GitGrep.identity(),
+                state: SearchProviderState::Running,
+                phase: SearchProviderPhase::Searching,
+                detail_code: None,
+                results_found: 4,
+            }],
+        };
+
+        assert_eq!(
+            serde_json::to_value(snapshot).unwrap(),
+            serde_json::json!({
+                "schemaVersion": 1,
+                "elapsedMs": 2100,
+                "deadlineMs": 300000,
+                "nextUpdateWithinMs": 2000,
+                "providers": [{
+                    "role": "lexical",
+                    "provider": "git-grep",
+                    "state": "running",
+                    "phase": "searching",
+                    "resultsFound": 4
                 }]
             })
         );
@@ -625,5 +1422,158 @@ mod tests {
             ProviderDeadline::new(deadline),
             ProviderDeadline::new(deadline)
         );
+    }
+
+    #[test]
+    fn search_section_serializes_role_provenance_completeness_and_logical_location() {
+        use crate::domain::source_location::SourceLocation;
+        use crate::domain::source_target::{
+            MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+        };
+
+        let location = SourceLocation::Addressed {
+            source_set: "main".to_string(),
+            metadata_path: Some(
+                MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "CommonModule.Sales.Module",
+                )
+                .unwrap(),
+            ),
+            target_kind: TargetKind::Module,
+        };
+        let section = ProviderSearchSection::complete(
+            ProviderIdentity::new(ProviderRole::Semantic, "replacement-semantic"),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            vec![ProviderSearchHit {
+                rank: Some(1),
+                provider_score: Some(0.91),
+                location,
+                line: 42,
+                end_line: Some(58),
+                symbol: Some("Post".to_string()),
+                kind: Some("procedure".to_string()),
+                snippet: "Procedure Post()".to_string(),
+                attributes: Map::new(),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(section).unwrap(),
+            json!({
+                "role": "semantic",
+                "provider": "replacement-semantic",
+                "status": "ok",
+                "termination": null,
+                "searchComplete": true,
+                "ranking": "provider",
+                "ordering": "provider",
+                "matches": {"returned": 1, "total": 1, "relation": "exact"},
+                "hits": [{
+                    "rank": 1,
+                    "providerScore": 0.91,
+                    "location": {
+                        "kind": "addressed",
+                        "sourceSet": "main",
+                        "metadataPath": "CommonModule.Sales.Module",
+                        "targetKind": "module"
+                    },
+                    "line": 42,
+                    "endLine": 58,
+                    "symbol": "Post",
+                    "kind": "procedure",
+                    "snippet": "Procedure Post()",
+                    "attributes": {}
+                }],
+                "diagnostics": []
+            })
+        );
+    }
+
+    #[test]
+    fn timed_out_section_serializes_a_machine_readable_terminal_reason() {
+        let section = ProviderSearchSection::timed_out(
+            ProviderIdentity::new(ProviderRole::Lexical, "git-grep"),
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            Vec::new(),
+            vec!["provider deadline exceeded".to_string()],
+        )
+        .unwrap();
+
+        let value = serde_json::to_value(section).unwrap();
+
+        assert_eq!(
+            value["termination"],
+            json!({
+                "code": "deadlineExceeded",
+                "retryable": true
+            })
+        );
+    }
+
+    #[test]
+    fn section_rejects_an_invalid_terminal_reason_contract() {
+        let invalid_terminations = [
+            SearchTermination {
+                code: SearchTerminationCode::ProviderFailed,
+                retryable: true,
+                detail_code: None,
+            },
+            SearchTermination {
+                code: SearchTerminationCode::ProviderFailed,
+                retryable: false,
+                detail_code: Some("privateProviderDetail".to_string()),
+            },
+        ];
+
+        for termination in invalid_terminations {
+            let error = ProviderSearchSection::new(
+                ProviderIdentity::new(ProviderRole::Semantic, "replacement-semantic"),
+                ProviderSectionStatus::Failed,
+                false,
+                SearchRanking::None,
+                SearchOrdering::Provider,
+                SearchMatchCount {
+                    returned: 0,
+                    total: None,
+                    relation: SearchCountRelation::Unknown,
+                },
+                Vec::new(),
+                vec!["provider failed".to_string()],
+                Some(termination),
+            )
+            .unwrap_err();
+
+            assert_eq!(
+                error,
+                "search section status and termination reason are inconsistent"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_section_rejects_an_incomplete_count() {
+        let error = ProviderSearchSection::new(
+            ProviderIdentity::new(ProviderRole::Lexical, "git-grep"),
+            ProviderSectionStatus::Empty,
+            true,
+            SearchRanking::None,
+            SearchOrdering::ProviderTraversal,
+            SearchMatchCount {
+                returned: 0,
+                total: Some(0),
+                relation: SearchCountRelation::LowerBound,
+            },
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "empty search section must carry an exact zero count");
     }
 }

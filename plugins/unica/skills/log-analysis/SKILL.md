@@ -48,6 +48,7 @@ Accept explicit journal registration exports, technological log files, copied lo
     "name": "unica.code.search",
     "arguments": {
       "cwd": "<workspace>",
+      "sourceSet": "<source-set-from-project-map>",
       "query": "ВыполнитьОбменСКонтрагентом",
       "limit": 20
     }

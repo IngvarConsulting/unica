@@ -53,15 +53,16 @@ Unica поставляет LSP-бинарник `bsl-analyzer`. Его лице�
 распространяемый бинарник и исходный код действует AGPL-3.0-only; лицензия
 LGPL-3.0-or-later проекта Unica не заменяет эти условия.
 
-### rlm-tools-bsl и rlm-bsl-index
+### rlm-bsl-mcp и rlm-bsl-index
 
-<!-- unica-attribution: tool rlm-tools-bsl -->
+<!-- unica-attribution: tool rlm-bsl-mcp -->
 <!-- unica-attribution: tool rlm-bsl-index -->
 
 - Репозиторий: [Dach-Coin/rlm-tools-bsl](https://github.com/Dach-Coin/rlm-tools-bsl)
 - Автор: [Roman Starchenko](https://github.com/Dach-Coin); исходный проект
   `rlm-tools` — [Stefan O'Shea](https://github.com/stefanoshea)
-- Закреплённая версия: `1.29.1`, commit `8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed`
+- Закреплённая версия: `1.33.0`, commit `3e6920cd015a61af4ba7aa1a5f1fedd8bc935549`
+- Набор бинарников: `rlm-tools-bsl-v1.33.0-build.2`
 - Лицензия: [MIT](third-party/licenses/rlm-tools-bsl/LICENSE)
 
 Оба бинарника собираются из одного репозитория. MIT notice сохраняет

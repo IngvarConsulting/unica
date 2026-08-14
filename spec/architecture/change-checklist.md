@@ -37,8 +37,9 @@
   нового или изменённого инструмента есть запись в `tool-surface-review.json` с
   контрактом результата и сценариями
   (`python3.12 scripts/ci/generate-tool-surface.py`).
-- [ ] `unica.code.search` сохраняет три независимые секции, их порядок и
-  политику частичного успеха (`INV-MCP-CODE-SEARCH-SECTIONS`).
+- [ ] `unica.code.search` сохраняет логический селектор, три ролевые секции,
+  наблюдаемый ход, полноту и политику частичного успеха
+  (`INV-MCP-CODE-SEARCH-ROLES`).
 - [ ] `unica.code.diagnostics` принимает логическую цель, публикует только
   `location + focus` и не возвращает абсолютные физические пути
   (`INV-MCP-DIAGNOSTIC-TARGET`).

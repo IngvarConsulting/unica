@@ -14,6 +14,7 @@ use crate::infrastructure::diagnostics_jsonl::{
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
+    StreamControl,
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
@@ -59,6 +60,7 @@ pub struct ProcessStreamOutput {
     pub stderr: String,
     pub timed_out: bool,
     pub cancelled: bool,
+    pub stopped_by_consumer: bool,
     pub line_error: Option<(usize, String)>,
 }
 
@@ -69,7 +71,7 @@ pub trait ProcessRunner {
         &self,
         command: &ProcessCommand,
         max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]),
+        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
     ) -> Result<ProcessStreamOutput, String> {
         let output = self.run(command)?;
         let mut line_error = None;
@@ -88,7 +90,17 @@ pub trait ProcessRunner {
                     (index + 1, "line exceeds configured byte limit".to_string())
                 });
             } else {
-                on_line(index + 1, bytes);
+                if on_line(index + 1, bytes) == StreamControl::Stop {
+                    return Ok(ProcessStreamOutput {
+                        status_success: false,
+                        status: "stopped by consumer".to_string(),
+                        stderr: output.stderr,
+                        timed_out: false,
+                        cancelled: output.cancelled,
+                        stopped_by_consumer: true,
+                        line_error,
+                    });
+                }
             }
         }
         Ok(ProcessStreamOutput {
@@ -97,6 +109,7 @@ pub trait ProcessRunner {
             stderr: output.stderr,
             timed_out: output.timed_out,
             cancelled: output.cancelled,
+            stopped_by_consumer: false,
             line_error,
         })
     }
@@ -1779,7 +1792,10 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         let mut process_args = vec!["analyze".to_string()];
         process_args.extend(execution_args);
         let mut parser = DiagnosticsJsonlParser::new(&source_dir)?;
-        let mut consume = |line_number, bytes: &[u8]| parser.push_line(line_number, bytes);
+        let mut consume = |line_number, bytes: &[u8]| {
+            parser.push_line(line_number, bytes);
+            StreamControl::Continue
+        };
         let output = self.process_runner.run_streaming(
             &ProcessCommand {
                 program: bundled_tool.program,
@@ -2072,7 +2088,7 @@ impl ProcessRunner for SystemProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         let output = ManagedChild::run(ManagedCommand {
             program: command.program.clone(),
-            args: command.args.clone(),
+            args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
             env: Vec::new(),
             timeout: command.timeout,
@@ -2085,11 +2101,11 @@ impl ProcessRunner for SystemProcessRunner {
         &self,
         command: &ProcessCommand,
         max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]),
+        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
     ) -> Result<ProcessStreamOutput, String> {
         let mut child = ManagedChild::spawn(ManagedCommand {
             program: command.program.clone(),
-            args: command.args.clone(),
+            args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
             env: Vec::new(),
             timeout: command.timeout,
@@ -2123,6 +2139,7 @@ fn map_managed_line_output(output: ManagedLineOutput) -> ProcessStreamOutput {
         stderr: output.stderr,
         timed_out: output.timed_out,
         cancelled: output.cancelled,
+        stopped_by_consumer: output.stopped_by_consumer,
         line_error: output.line_error,
     }
 }

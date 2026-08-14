@@ -9,7 +9,7 @@ use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
-    ProviderDeadline,
+    CodeSearchScope, ProviderDeadline,
 };
 use crate::domain::diagnostics::{
     DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
@@ -554,6 +554,14 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _args: &Map<String, Value>,
     ) -> Result<CodeIntelligenceContext, String> {
         Err("code intelligence context resolver is not configured".to_string())
+    }
+
+    fn resolve_code_search_context(
+        &self,
+        _context: &WorkspaceContext,
+        _args: &Map<String, Value>,
+    ) -> Result<(CodeIntelligenceContext, CodeSearchScope), String> {
+        Err("code search context resolver is not configured".to_string())
     }
 
     fn normalize_code_intelligence_read_request(

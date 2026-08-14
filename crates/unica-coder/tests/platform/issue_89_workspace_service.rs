@@ -18,9 +18,71 @@ use windows_sys::Win32::System::Threading::{
 };
 
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(10);
+const INDEX_BUILD_DEADLINE: Duration = Duration::from_secs(60);
+const STDERR_TAIL_LIMIT: usize = 32 * 1024;
 static FIXTURE_NONCE: AtomicU64 = AtomicU64::new(0);
 
+fn drain_stderr(reader: impl Read, tail: &Arc<Mutex<String>>) -> std::io::Result<()> {
+    let mut reader = BufReader::new(reader);
+    let mut bytes = Vec::new();
+    loop {
+        bytes.clear();
+        if reader.read_until(b'\n', &mut bytes)? == 0 {
+            return Ok(());
+        }
+
+        let mut tail = tail.lock().unwrap();
+        tail.push_str(&String::from_utf8_lossy(&bytes));
+        if tail.len() > STDERR_TAIL_LIMIT {
+            let mut remove = tail.len() - STDERR_TAIL_LIMIT;
+            while !tail.is_char_boundary(remove) {
+                remove += 1;
+            }
+            tail.drain(..remove);
+        }
+    }
+}
+
 #[test]
+fn stderr_drain_survives_invalid_utf8_and_keeps_the_tail() {
+    let mut input = vec![b'a'; STDERR_TAIL_LIMIT];
+    input.extend_from_slice(&[0xff, b'\n']);
+    input.extend_from_slice(b"diagnostic after invalid byte\n");
+    let tail = Arc::new(Mutex::new(String::new()));
+
+    drain_stderr(std::io::Cursor::new(input), &tail).unwrap();
+
+    let tail = tail.lock().unwrap();
+    assert!(tail.contains('\u{fffd}'));
+    assert!(tail.ends_with("diagnostic after invalid byte\n"));
+    assert!(tail.len() <= STDERR_TAIL_LIMIT);
+}
+
+#[test]
+fn search_progress_liveness_does_not_depend_on_a_transient_provider_phase() {
+    let message = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {
+            "progressToken": "cold-search",
+            "_meta": {
+                "io.unica/searchProgress": {
+                    "providers": [{
+                        "role": "semantic",
+                        "state": "running",
+                        "phase": "preparing",
+                        "detailCode": "buildingIndex"
+                    }]
+                }
+            }
+        }
+    });
+
+    assert!(search_progress_snapshot_for(&message, "cold-search").is_some());
+}
+
+#[test]
+#[ignore = "long search integration; routed by search_integration_changed or ci:full"]
 fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     let mut fixture = Fixture::new();
     let mut mcp = McpProcess::start(&fixture);
@@ -36,6 +98,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "unica.code.search",
         json!({
             "cwd": fixture.workspace,
+            "sourceSet": "main",
             "query": "Procedure",
             "dryRun": true
         }),
@@ -53,25 +116,28 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "rejected code.search preview must not start workspace services"
     );
 
-    mcp.send(tool_call(
-        11,
-        "unica.code.search",
-        json!({
-            "cwd": fixture.workspace,
-            "query": "Procedure"
-        }),
-    ));
-    let _ = mcp.receive_ids(&[11], RESPONSE_DEADLINE);
-    fixture.wait_for_index_ready(RESPONSE_DEADLINE);
-
-    mcp.send(tool_call(
+    mcp.send(tool_call_with_progress(
         2,
         "unica.code.search",
         json!({
             "cwd": fixture.workspace,
+            "sourceSet": "main",
             "query": "Procedure"
         }),
+        "issue-89-cold-search",
     ));
+    let cold_progress =
+        mcp.wait_for_search_progress("issue-89-cold-search", RESPONSE_DEADLINE);
+    assert_eq!(
+        cold_progress["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|provider| provider["role"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["semantic", "symbol", "lexical"]
+    );
+    fixture.wait_for_index_ready(INDEX_BUILD_DEADLINE);
     fixture.wait_for_log("rlm|", RESPONSE_DEADLINE);
     let initial_owner = fixture.single_service_owner();
 
@@ -115,6 +181,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "unica.code.search",
         json!({
             "cwd": fixture.workspace,
+            "sourceSet": "main",
             "query": "Procedure"
         }),
     ));
@@ -194,6 +261,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         "unica.code.search",
         json!({
             "cwd": fixture.workspace,
+            "sourceSet": "main",
             "query": "Procedure"
         }),
     ));
@@ -204,9 +272,9 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
     assert_eq!(
         search_sections
             .iter()
-            .map(|section| section["provider"].as_str().unwrap())
+            .map(|section| section["role"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["rlm", "bsl-analyzer", "git-grep"]
+        vec!["semantic", "symbol", "lexical"]
     );
     let rlm_status = search_sections
         .iter()
@@ -237,7 +305,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         fixture.log_records()
     );
 
-    let expected_root = canonical_display(&fixture.workspace.join("src/cf"));
+    let expected_root = canonical_display(&fixture.workspace);
     let records = fixture.log_records();
     assert!(records.iter().any(|record| record.kind == "analyzer"));
     assert!(records.iter().any(|record| record.kind == "rlm"));
@@ -269,12 +337,40 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         2,
         "the second persistent RLM process must be reused after cancellation recovery"
     );
+    let indexer = records
+        .iter()
+        .find(|record| record.kind == "rlm-index")
+        .expect("RLM indexer must record its process environment");
+    let reader = records
+        .iter()
+        .find(|record| record.kind == "rlm")
+        .expect("RLM reader must record its process environment");
+    let indexer_environment = (
+        &indexer.rlm_index_dir,
+        &indexer.python_utf8,
+        &indexer.python_io_encoding,
+    );
+    let reader_environment = (
+        &reader.rlm_index_dir,
+        &reader.python_utf8,
+        &reader.python_io_encoding,
+    );
+    assert_eq!(indexer_environment, reader_environment);
+    assert_eq!(indexer.python_utf8, "1");
+    assert_eq!(indexer.python_io_encoding, "utf-8:surrogateescape");
+    let indexer_rlm_index_dir = indexer.rlm_index_dir.clone();
+    assert!(Path::new(&indexer_rlm_index_dir).ends_with("rlm-bsl/index-v15"));
+    assert!(!path_starts_with_host_root(
+        Path::new(&indexer_rlm_index_dir),
+        &fixture.workspace,
+    ));
 
     mcp.finish().unwrap();
     fixture.finish(&records).unwrap();
 }
 
 #[test]
+#[ignore = "long search integration; routed by search_integration_changed or ci:full"]
 fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
     let tracked = Arc::new(Mutex::new(Vec::<ToolRecord>::new()));
     let fixture_root = Arc::new(Mutex::new(None::<PathBuf>));
@@ -290,17 +386,11 @@ fn issue_89_fixture_cleanup_is_bounded_during_assertion_unwind() {
         let _ = mcp.receive_ids(&[1], RESPONSE_DEADLINE);
         mcp.send(json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}));
         mcp.send(tool_call(
-            10,
-            "unica.code.search",
-            json!({"cwd":fixture.workspace,"query":"Procedure"}),
-        ));
-        let _ = mcp.receive_ids(&[10], RESPONSE_DEADLINE);
-        fixture.wait_for_index_ready(RESPONSE_DEADLINE);
-        mcp.send(tool_call(
             2,
             "unica.code.search",
-            json!({"cwd":fixture.workspace,"query":"Procedure"}),
+            json!({"cwd":fixture.workspace,"sourceSet":"main","query":"Procedure"}),
         ));
+        fixture.wait_for_index_ready(INDEX_BUILD_DEADLINE);
         fixture.wait_for_log("rlm|", RESPONSE_DEADLINE);
         *tracked_inside.lock().unwrap() = fixture.log_records();
         *cleanup_started_inside.lock().unwrap() = Some(Instant::now());
@@ -341,6 +431,24 @@ fn initialize_request() -> Value {
 
 fn tool_call(id: u64, name: &str, arguments: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})
+}
+
+fn tool_call_with_progress(
+    id: u64,
+    name: &str,
+    arguments: Value,
+    progress_token: &str,
+) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": name,
+            "arguments": arguments,
+            "_meta": {"progressToken": progress_token}
+        }
+    })
 }
 
 fn send_service_request(record: &Value, kind: Value) -> Result<Value, String> {
@@ -406,10 +514,21 @@ fn tool_operation(response: &Value) -> Value {
     serde_json::from_str(text).unwrap()
 }
 
+fn search_progress_snapshot_for<'a>(message: &'a Value, progress_token: &str) -> Option<&'a Value> {
+    let snapshot = &message["params"]["_meta"]["io.unica/searchProgress"];
+    (message["method"] == "notifications/progress"
+        && message["params"]["progressToken"] == progress_token
+        && snapshot["providers"]
+            .as_array()
+            .is_some_and(|providers| !providers.is_empty()))
+    .then_some(snapshot)
+}
+
 struct McpProcess {
     child: Child,
     stdin: Option<ChildStdin>,
     responses: mpsc::Receiver<String>,
+    stderr: Arc<Mutex<String>>,
 }
 
 impl McpProcess {
@@ -420,8 +539,8 @@ impl McpProcess {
             .env("UNICA_CACHE_DIR", &fixture.cache)
             .env("ISSUE89_LOG", &fixture.log)
             .env("ISSUE89_RLM_STATE", &fixture.rlm_state)
-            .env("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "30")
-            .env("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS", "60")
+            .env("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "120")
+            .env("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS", "300")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -429,6 +548,12 @@ impl McpProcess {
             .expect("start unica MCP");
         let stdin = child.stdin.take().expect("MCP stdin");
         let stdout = child.stdout.take().expect("MCP stdout");
+        let stderr = child.stderr.take().expect("MCP stderr");
+        let stderr_tail = Arc::new(Mutex::new(String::new()));
+        let stderr_tail_writer = Arc::clone(&stderr_tail);
+        thread::spawn(move || {
+            let _ = drain_stderr(stderr, &stderr_tail_writer);
+        });
         let (tx, responses) = mpsc::channel();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -446,6 +571,7 @@ impl McpProcess {
             child,
             stdin: Some(stdin),
             responses,
+            stderr: stderr_tail,
         }
     }
 
@@ -460,6 +586,35 @@ impl McpProcess {
         self.receive_ids_timed(ids, timeout, Instant::now()).0
     }
 
+    fn wait_for_search_progress(&self, progress_token: &str, timeout: Duration) -> Value {
+        let deadline = Instant::now() + timeout;
+        let mut observed = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for search progress; observed: {observed:#?}"
+            );
+            let line = self.responses.recv_timeout(remaining).unwrap_or_else(|error| {
+                panic!(
+                    "search progress before deadline: {error}; observed: {observed:#?}; stderr: {}",
+                    self.stderr.lock().unwrap(),
+                )
+            });
+            let message: Value = serde_json::from_str(&line).expect("JSON MCP message");
+            if message.get("id").is_some() {
+                panic!("search completed before progress: {message:#}");
+            }
+            if let Some(snapshot) = search_progress_snapshot_for(&message, progress_token) {
+                return snapshot.clone();
+            }
+            observed.push(message);
+            if observed.len() > 32 {
+                observed.remove(0);
+            }
+        }
+    }
+
     fn receive_ids_timed(
         &self,
         ids: &[u64],
@@ -470,17 +625,24 @@ impl McpProcess {
         let expected = ids.iter().copied().collect::<HashSet<_>>();
         let mut found = HashMap::new();
         let mut response_times = HashMap::new();
+        let mut observed_lines = Vec::new();
         while found.len() < expected.len() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
                 !remaining.is_zero(),
                 "timed out waiting for MCP ids {expected:?}; got {found:?}"
             );
-            let line = self
-                .responses
-                .recv_timeout(remaining)
-                .expect("MCP response before deadline");
+            let line = self.responses.recv_timeout(remaining).unwrap_or_else(|error| {
+                panic!(
+                    "MCP response before deadline: {error}; observed: {observed_lines:#?}; stderr: {}",
+                    self.stderr.lock().unwrap(),
+                )
+            });
             let response: Value = serde_json::from_str(&line).expect("JSON MCP response");
+            observed_lines.push(response.clone());
+            if observed_lines.len() > 32 {
+                observed_lines.remove(0);
+            }
             if let Some(id) = response.get("id").and_then(Value::as_u64) {
                 if expected.contains(&id) {
                     response_times.insert(id, started.elapsed());
@@ -560,45 +722,53 @@ impl Fixture {
         ));
         let workspace = root.join("workspace");
         let plugin_root = root.join("plugin");
-        let cache = root.join("cache");
+        let cache = workspace.join(".build/unica");
         let log = root.join("tool.log");
         let rlm_state = root.join("rlm-state");
-        fs::create_dir_all(workspace.join("src/cf/Configuration")).unwrap();
-        fs::create_dir_all(workspace.join("src/cf/CommonModules/Test/Ext")).unwrap();
-        fs::create_dir_all(workspace.join("src/cf/Catalogs")).unwrap();
-        fs::create_dir_all(workspace.join("src/cf/Languages")).unwrap();
-        fs::create_dir_all(workspace.join("exts/TESTS/Configuration")).unwrap();
+        fs::create_dir_all(workspace.join("Configuration")).unwrap();
+        fs::create_dir_all(workspace.join("CommonModules/Test/Ext")).unwrap();
+        fs::create_dir_all(workspace.join("Catalogs")).unwrap();
+        fs::create_dir_all(workspace.join("Languages")).unwrap();
+        fs::create_dir_all(workspace.join("src/extension/Configuration")).unwrap();
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         fs::create_dir_all(plugin_root.join("third-party")).unwrap();
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&rlm_state).unwrap();
-        fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src/cf\n  TESTS:\n    type: CONFIGURATION\n    path: exts/TESTS\n").unwrap();
         fs::write(
-            workspace.join("src/cf/Configuration.xml"),
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n  - name: extension\n    type: EXTENSION\n    path: src/extension\n",
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("Configuration.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><InternalInfo/><Properties><Name>Issue89</Name><DefaultLanguage>Russian</DefaultLanguage></Properties><ChildObjects><Language>Russian</Language><Catalog>Test</Catalog><Catalog>LogicalError</Catalog><CommonModule>Test</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            workspace.join("src/cf/Languages/Russian.xml"),
+            workspace.join("src/extension/Configuration.xml"),
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MetaDataObject><Configuration/></MetaDataObject>",
+        )
+        .unwrap();
+        fs::write(
+            workspace.join("Languages/Russian.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="dddddddd-dddd-4ddd-8ddd-dddddddddddd"><Properties><Name>Russian</Name><Synonym/><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            workspace.join("src/cf/Catalogs/Test.xml"),
+            workspace.join("Catalogs/Test.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><InternalInfo/><Properties><Name>Test</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            workspace.join("src/cf/Catalogs/LogicalError.xml"),
+            workspace.join("Catalogs/LogicalError.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><InternalInfo/><Properties><Name>LogicalError</Name><Synonym/><Comment/></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
         fs::write(
-            workspace.join("src/cf/CommonModules/Test/Ext/Module.bsl"),
+            workspace.join("CommonModules/Test/Ext/Module.bsl"),
             "Procedure Test() Export\nEndProcedure\n",
         )
         .unwrap();
-        fs::write(workspace.join("exts/TESTS/Configuration.xml"), "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MetaDataObject><Configuration/></MetaDataObject>").unwrap();
         compile_fake_tools(&root, &plugin_root);
         Self {
             root,
@@ -627,11 +797,32 @@ impl Fixture {
     }
 
     fn wait_for_index_ready(&self, timeout: Duration) {
-        let status_path = self.cache.join("caches/bsl_index_status.json");
         let deadline = Instant::now() + timeout;
+        let mut status_path = None;
         let mut last_status = "status file was not observed".to_string();
         while Instant::now() < deadline {
-            let ready = match fs::read_to_string(&status_path) {
+            if status_path.is_none() {
+                status_path = self
+                    .try_log_records()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|record| record.kind == "rlm-index")
+                    .and_then(|record| {
+                        PathBuf::from(record.rlm_index_dir)
+                            .parent()
+                            .and_then(Path::parent)
+                            .map(|pair_root| {
+                                pair_root.join(
+                                    "caches/rlm-bsl/index-v15/bsl_index_status.json",
+                                )
+                            })
+                    });
+            }
+            let Some(current_status_path) = status_path.as_ref() else {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            let ready = match fs::read_to_string(current_status_path) {
                 Ok(text) => {
                     last_status = text.clone();
                     serde_json::from_str::<Value>(&text)
@@ -656,7 +847,10 @@ impl Fixture {
         }
         panic!(
             "timed out waiting for generation-bound RLM index status at {}; last status: {last_status}",
-            status_path.display(),
+            status_path
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unreported pair root>".to_string()),
         );
     }
 
@@ -718,8 +912,8 @@ impl Fixture {
         let text = fs::read_to_string(&self.log).map_err(|error| error.to_string())?;
         text.lines()
             .map(|line| {
-                let fields = line.splitn(5, '|').collect::<Vec<_>>();
-                if fields.len() != 5 {
+                let fields = line.splitn(8, '|').collect::<Vec<_>>();
+                if fields.len() != 8 {
                     return Err(format!("incomplete fake-tool log line: {line}"));
                 }
                 Ok(ToolRecord {
@@ -734,6 +928,9 @@ impl Fixture {
                         .parse::<u32>()
                         .map_err(|error| error.to_string())?,
                     source_root: fields[4].to_string(),
+                    rlm_index_dir: fields[5].to_string(),
+                    python_utf8: fields[6].to_string(),
+                    python_io_encoding: fields[7].to_string(),
                 })
             })
             .collect()
@@ -855,6 +1052,9 @@ struct ToolRecord {
     pid: u32,
     descendant_pid: u32,
     source_root: String,
+    rlm_index_dir: String,
+    python_utf8: String,
+    python_io_encoding: String,
 }
 
 fn compile_fake_tools(root: &Path, plugin_root: &Path) {
@@ -884,7 +1084,7 @@ fn compile_fake_tools(root: &Path, plugin_root: &Path) {
     fs::create_dir_all(&bin).unwrap();
     let sha256 = sha256_file(&fake);
     let mut manifest_tools = Vec::new();
-    for name in ["bsl-analyzer", "rlm-tools-bsl", "rlm-bsl-index"] {
+    for name in ["bsl-analyzer", "rlm-bsl-mcp", "rlm-bsl-index"] {
         let contract = lock["tools"]
             .as_array()
             .unwrap()
@@ -935,6 +1135,28 @@ fn host_target() -> &'static str {
         ("macos", "aarch64") => "darwin-arm64",
         host => panic!("unsupported integration-test host {host:?}"),
     }
+}
+
+#[cfg(windows)]
+fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
+    fn components(path: &Path) -> Vec<String> {
+        path.display()
+            .to_string()
+            .trim_start_matches(r"\\?\")
+            .split(['\\', '/'])
+            .filter(|component| !component.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    }
+
+    let path = components(path);
+    let root = components(root);
+    path.len() >= root.len() && path.iter().zip(root.iter()).all(|(left, right)| left == right)
+}
+
+#[cfg(not(windows))]
+fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
 }
 
 fn canonical_display(path: &Path) -> String {
@@ -1051,7 +1273,7 @@ fn main() {
     if name.contains("bsl-analyzer") {
         analyzer(&args);
     } else if name.contains("rlm-bsl-index") {
-        rlm_index();
+        rlm_index(&args);
     } else {
         rlm_mcp();
     }
@@ -1068,7 +1290,10 @@ fn spawn_descendant(kind: &str, root: &str) -> Child {
 
 fn record(kind: &str, sequence: u32, descendant: u32, root: &str) {
     let mut file = OpenOptions::new().create(true).append(true).open(env::var("ISSUE89_LOG").unwrap()).unwrap();
-    let line = format!("{}|{}|{}|{}|{}\n", kind, sequence, std::process::id(), descendant, root);
+    let rlm_index_dir = env::var("RLM_INDEX_DIR").unwrap_or_default();
+    let python_utf8 = env::var("PYTHONUTF8").unwrap_or_default();
+    let python_io_encoding = env::var("PYTHONIOENCODING").unwrap_or_default();
+    let line = format!("{}|{}|{}|{}|{}|{}|{}|{}\n", kind, sequence, std::process::id(), descendant, root, rlm_index_dir, python_utf8, python_io_encoding);
     file.write_all(line.as_bytes()).unwrap();
     file.flush().unwrap();
 }
@@ -1193,7 +1418,9 @@ fn rlm_mcp() {
     }
 }
 
-fn rlm_index() {
+fn rlm_index(args: &[String]) {
+    let root = args.last().cloned().unwrap_or_default();
+    record("rlm-index", 0, std::process::id(), &root);
     let db = std::path::Path::new(&env::var("RLM_INDEX_DIR").unwrap())
         .join("fake/bsl_index.db");
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();

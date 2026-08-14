@@ -37,6 +37,11 @@ uuid.workspace = true
 flate2.workspace = true
 zip.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-services.workspace = true
+objc2-core-foundation.workspace = true
+dispatch2.workspace = true
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 cap-primitives.workspace = true

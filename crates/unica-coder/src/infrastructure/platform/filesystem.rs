@@ -2759,6 +2759,18 @@ pub(crate) fn strip_windows_extended_length_prefix(path: &Path) -> std::path::Pa
 }
 
 #[cfg(windows)]
+pub(crate) fn is_foreign_absolute_path(_path: &str) -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub(crate) fn is_foreign_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/')
+        || path.starts_with("//")
+}
+
+#[cfg(windows)]
 pub(crate) fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
     let path = strip_windows_extended_length_prefix(path);
     let root = strip_windows_extended_length_prefix(root);
@@ -3302,6 +3314,23 @@ pub(crate) fn path_lock_identity(path: &Path) -> String {
     path_lock_identity_text(&path.to_string_lossy())
 }
 
+#[cfg(windows)]
+pub(crate) fn provider_state_path_identity(path: &Path) -> Vec<u8> {
+    path_lock_identity(path).into_bytes()
+}
+
+#[cfg(unix)]
+pub(crate) fn provider_state_path_identity(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn provider_state_path_identity(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
+}
+
 #[cfg(any(windows, target_os = "macos"))]
 fn path_lock_identity_text(path: &str) -> String {
     path.to_lowercase()
@@ -3314,7 +3343,10 @@ fn path_lock_identity_text(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{path_lock_identity_text, path_starts_with_host_root, windows_api_path_from_utf16};
+    use super::{
+        path_lock_identity_text, path_starts_with_host_root, provider_state_path_identity,
+        windows_api_path_from_utf16,
+    };
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
@@ -4738,6 +4770,16 @@ mod tests {
             assert_eq!(identity, "/workspace/configuration.xml");
         } else {
             assert_eq!(identity, "/Workspace/Configuration.xml");
+        }
+    }
+
+    #[test]
+    fn provider_state_identity_preserves_case_except_on_windows() {
+        let identity = provider_state_path_identity(Path::new("/Workspace/Configuration.xml"));
+        if cfg!(windows) {
+            assert_eq!(identity, b"/workspace/configuration.xml");
+        } else {
+            assert_eq!(identity, b"/Workspace/Configuration.xml");
         }
     }
 

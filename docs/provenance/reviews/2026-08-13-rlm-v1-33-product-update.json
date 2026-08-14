@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "id": "2026-08-13-rlm-v1-33-product-update",
+  "generatedAt": "2026-08-14",
+  "source": {
+    "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
+    "tag": "v1.33.0",
+    "commit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+    "tree": "4b321de0454d4d0998762659891374a3a1326cd0",
+    "patches": []
+  },
+  "toolchain": {
+    "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+    "releaseTag": "rlm-tools-bsl-v1.33.0-build.2",
+    "buildRevision": 2
+  },
+  "tools": {
+    "rlm-bsl-mcp": {
+      "assets": {
+        "darwin-arm64": {
+          "assetName": "rlm-bsl-mcp-darwin-arm64",
+          "sha256": "312fe35fa211dee1137cf4aef7e52a2bb1eb161ad903a87257342257985efe00",
+          "size": 22384192
+        },
+        "linux-x64": {
+          "assetName": "rlm-bsl-mcp-linux-x64",
+          "sha256": "f81cf7776fc6bf0bda6290f86a665593ce4daa6b04ec5d02d00f158345bfd277",
+          "size": 36846384
+        },
+        "win-x64": {
+          "assetName": "rlm-bsl-mcp-win-x64.exe",
+          "sha256": "c198b3539769c207f4d0d0f95848ff47d8f892f499ec04f300f2d7538c658c11",
+          "size": 23834848
+        }
+      }
+    },
+    "rlm-bsl-index": {
+      "assets": {
+        "darwin-arm64": {
+          "assetName": "rlm-bsl-index-darwin-arm64",
+          "sha256": "d48bd7a0186e46b6d2a48476bc9926fb638882544e7be201293f89db9e654a63",
+          "size": 22384192
+        },
+        "linux-x64": {
+          "assetName": "rlm-bsl-index-linux-x64",
+          "sha256": "94ffdcf44330ed5ad6121682fcefd7560adfdc9ebe09ee2a1476666e21c33996",
+          "size": 36846384
+        },
+        "win-x64": {
+          "assetName": "rlm-bsl-index-win-x64.exe",
+          "sha256": "1e64e9436ea2fa69212b27ebe3f6d349fc53acc56250a79d1d2cf67c4570d69b",
+          "size": 23834846
+        }
+      }
+    }
+  },
+  "compatibility": {
+    "builder": "15",
+    "previousBuilder": "14",
+    "strategy": "cold-generation-cutover",
+    "legacyStateDeleted": false,
+    "publicMcpChanged": false
+  }
+}
