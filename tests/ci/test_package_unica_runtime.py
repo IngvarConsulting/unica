@@ -192,7 +192,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             ).write_bytes(b"legacy"),
             "digest": lambda bundle: (
                 bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
-            ).write_bytes(b"drift"),
+            ).write_bytes(b"drifted-payloa"),
         }
         for label, mutate in mutations.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:

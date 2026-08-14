@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import tarfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -11,6 +12,12 @@ from typing import Any
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+WINDOWS_FORBIDDEN_CHARS = frozenset('<>:"|?*')
+WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
 
 
 @dataclass(frozen=True)
@@ -53,10 +60,26 @@ def _safe_path(value: Any, *, field: str) -> PurePosixPath:
     parts = value.split("/")
     if any(part in ("", ".", "..") for part in parts):
         raise SystemExit(f"unsafe {field}: {value!r}")
+    for part in parts:
+        normalized = unicodedata.normalize("NFKC", part)
+        device_name = normalized.split(".", maxsplit=1)[0].upper()
+        if (
+            part.endswith((".", " "))
+            or any(character in WINDOWS_FORBIDDEN_CHARS for character in part)
+            or any(ord(character) < 32 for character in part)
+            or device_name in WINDOWS_RESERVED_NAMES
+        ):
+            raise SystemExit(f"unsafe portable path in {field}: {value!r}")
     path = PurePosixPath(value)
     if path.is_absolute() or path.as_posix() != value:
         raise SystemExit(f"unsafe {field}: {value!r}")
     return path
+
+
+def _portable_path_key(path: PurePosixPath) -> str:
+    return "/".join(
+        unicodedata.normalize("NFKC", part).casefold() for part in path.parts
+    )
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -155,6 +178,7 @@ def _files(value: Any) -> tuple[DeclaredFile, ...]:
         raise SystemExit("files must be a non-empty array")
     result: list[DeclaredFile] = []
     paths: set[PurePosixPath] = set()
+    portable_paths: dict[str, PurePosixPath] = {}
     for index, raw_item in enumerate(value):
         item = _object(raw_item, field=f"files[{index}]")
         _exact_fields(
@@ -166,6 +190,14 @@ def _files(value: Any) -> tuple[DeclaredFile, ...]:
         if path in paths:
             raise SystemExit(f"duplicate file path in manifest: {path.as_posix()}")
         paths.add(path)
+        portable_key = _portable_path_key(path)
+        conflicting = portable_paths.get(portable_key)
+        if conflicting is not None:
+            raise SystemExit(
+                "portable path collision in manifest: "
+                f"{conflicting.as_posix()} and {path.as_posix()}"
+            )
+        portable_paths[portable_key] = path
         digest = item["sha256"]
         if not isinstance(digest, str) or not SHA256.fullmatch(digest):
             raise SystemExit(

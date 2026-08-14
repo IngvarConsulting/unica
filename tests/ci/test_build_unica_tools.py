@@ -574,6 +574,52 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "unsafe|duplicate|ordinary"):
                     load(archive(f"unsafe-{label}", payload=members))
 
+        windows_aliases = {
+            "device": "payload/CON",
+            "device-extension": "payload/nul.txt",
+            "alternate-stream": "payload/library.dll:metadata",
+            "trailing-dot": "payload/library.dll.",
+            "trailing-space": "payload/library.dll ",
+        }
+        for label, member_name in windows_aliases.items():
+            with self.subTest(windows_alias=label):
+                with self.assertRaisesRegex(SystemExit, "unsafe portable path"):
+                    load(
+                        archive(
+                            f"windows-alias-{label}",
+                            payload=base_payload
+                            + [(member_name, b"x", 0o644, tarfile.REGTYPE, "")],
+                        )
+                    )
+
+        case_collision = runtime_manifest()
+        case_collision["files"].append(
+            {
+                "path": "RLM-BSL-INDEX",
+                "sha256": hashlib.sha256(b"multidist").hexdigest(),
+                "size": len(b"multidist"),
+                "executable": True,
+            }
+        )
+        case_collision["files"].sort(key=lambda item: item["path"])
+        with self.assertRaisesRegex(SystemExit, "portable path collision"):
+            load(
+                archive(
+                    "case-collision",
+                    manifest=case_collision,
+                    payload=base_payload
+                    + [
+                        (
+                            "payload/RLM-BSL-INDEX",
+                            b"multidist",
+                            0o755,
+                            tarfile.REGTYPE,
+                            "",
+                        )
+                    ],
+                )
+            )
+
         mutations: list[
             tuple[
                 str,
