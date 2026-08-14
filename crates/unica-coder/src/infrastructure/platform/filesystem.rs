@@ -2882,14 +2882,21 @@ fn linux_filesystem_case_sensitive_from_metadata(
     directory_flags: Option<u32>,
 ) -> io::Result<bool> {
     match filesystem_type {
-        LINUX_EXT4_SUPER_MAGIC | LINUX_F2FS_SUPER_MAGIC => directory_flags
-            .map(|flags| flags & LINUX_FS_CASEFOLD_FL == 0)
-            .ok_or_else(|| {
+        LINUX_EXT4_SUPER_MAGIC | LINUX_F2FS_SUPER_MAGIC => {
+            let flags = directory_flags.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::Unsupported,
                     "Linux filesystem did not expose directory casefold flags",
                 )
-            }),
+            })?;
+            if flags & LINUX_FS_CASEFOLD_FL != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "kernel Unicode casefold semantics cannot be proven by a userspace key",
+                ));
+            }
+            Ok(true)
+        }
         LINUX_BTRFS_SUPER_MAGIC | LINUX_TMPFS_MAGIC | LINUX_RAMFS_MAGIC => Ok(true),
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -2923,7 +2930,12 @@ pub(crate) fn host_path_component_identity_key(
     if case_sensitive {
         text
     } else {
-        text.to_lowercase()
+        // Windows ordinal matching and Unicode caseless matching fold the two
+        // lowercase sigma forms through their common uppercase form. A simple
+        // lowercase key would keep them distinct and could lose an owned Git
+        // resource. Linux kernel-casefold directories are rejected above
+        // because their exact Unicode table cannot be proven in userspace.
+        text.to_uppercase()
     }
 }
 
@@ -5222,11 +5234,12 @@ mod tests {
             super::linux_filesystem_case_sensitive_from_metadata(EXT4_SUPER_MAGIC, Some(0),)
                 .unwrap()
         );
-        assert!(!super::linux_filesystem_case_sensitive_from_metadata(
+        let casefold_error = super::linux_filesystem_case_sensitive_from_metadata(
             EXT4_SUPER_MAGIC,
             Some(FS_CASEFOLD_FL),
         )
-        .unwrap());
+        .expect_err("kernel Unicode casefold semantics must not be approximated");
+        assert_eq!(casefold_error.kind(), io::ErrorKind::Unsupported);
         for filesystem_type in [
             XFS_SUPER_MAGIC,
             OVERLAYFS_SUPER_MAGIC,
@@ -5237,6 +5250,15 @@ mod tests {
                 .expect_err("unproven Linux filesystem semantics must fail closed");
             assert_eq!(error.kind(), io::ErrorKind::Unsupported);
         }
+    }
+
+    #[test]
+    fn case_insensitive_component_identity_collapses_final_sigma() {
+        let ordinary_sigma =
+            super::host_path_component_identity_key(std::ffi::OsStr::new("σ"), false);
+        let final_sigma = super::host_path_component_identity_key(std::ffi::OsStr::new("ς"), false);
+
+        assert_eq!(ordinary_sigma, final_sigma);
     }
 
     #[cfg(windows)]

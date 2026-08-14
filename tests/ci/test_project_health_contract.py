@@ -27,6 +27,9 @@ class ProjectHealthContractTests(unittest.TestCase):
         workflow = self.read(
             "plugins/unica/references/use-cases/workspace-runtime.md"
         )
+        implementation_plan = self.read(
+            "docs/plans/2026-08-13-project-source-health.md"
+        )
 
         self.assertIn("- Статус: `accepted`", adr)
         self.assertIn(
@@ -39,6 +42,15 @@ class ProjectHealthContractTests(unittest.TestCase):
             r"кажд(?:ый|ого)\s+уникально адресуем(?:ый|ого)\s+набор(?:а)?",
         )
         self.assertRegex(adr, r"не создаёт неразличимые проверки с\s+`sourceSet`")
+        self.assertRegex(adr, r"ко всем уникально\s+адресуемым наборам")
+        self.assertRegex(
+            implementation_plan,
+            r"каждого уникально адресуемого\s+source set",
+        )
+        self.assertIn(
+            "Для каждого уникально адресуемого обнаруженного набора",
+            implementation_plan,
+        )
         for invariant in (
             "INV-MCP-PROJECT-READINESS",
             "INV-SOURCE-ROOT-SEPARATION",
@@ -76,6 +88,9 @@ class ProjectHealthContractTests(unittest.TestCase):
         resolved_root = invariants.split(
             "### INV-SOURCE-SINGLE-RESOLVED-ROOT", maxsplit=1
         )[1].split("\n### ", maxsplit=1)[0]
+        separated_root = invariants.split(
+            "### INV-SOURCE-ROOT-SEPARATION", maxsplit=1
+        )[1].split("\n### ", maxsplit=1)[0]
 
         self.assertRegex(
             resolved_root,
@@ -88,6 +103,7 @@ class ProjectHealthContractTests(unittest.TestCase):
         self.assertNotIn(
             "`unica.project.status` и `unica.project.map`", resolved_root
         )
+        self.assertIn("каждый уникально адресуемый корень", separated_root)
 
 
 if __name__ == "__main__":

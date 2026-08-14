@@ -9,8 +9,8 @@
 
 **Goal:** Реализовать ADR-0060: `unica.project.status` одним read-only вызовом
 публикует типизированные `ready`, `repositoryReady`, `checks[]` и
-`diagnostics[]` для workspace, Git-репозитория и каждого source set, а AI
-получает доказанную безопасную инструкцию исправления.
+`diagnostics[]` для workspace, Git-репозитория и каждого уникально адресуемого
+source set, а AI получает доказанную безопасную инструкцию исправления.
 
 **Architecture:** Application-координатор получает один immutable
 `ProjectHealthSnapshot` через `ApplicationPorts` и передаёт его чистому
@@ -49,9 +49,11 @@ CLI с NUL-протоколами, Python 3.12 contract tests, Markdown ADR/inva
   health policy. `.`, `./`, абсолютный alias и symlink/reparse на workspace
   дают `source_set.root_is_workspace`; предметные инструменты не получают
   скрытый preflight и не блокируются автоматически.
-- Общие layout/Git проверки применяются ко всем source sets. Форматный профиль
-  первого среза — только Platform XML; EDT получает `notApplicable` для
-  специальных resource checks.
+- Общие layout/Git проверки применяются ко всем уникально адресуемым source
+  sets. Группа с повторяющимся именем получает одну workspace-диагностику и не
+  создаёт неразличимые строки `sourceSet`. Форматный профиль первого среза —
+  только Platform XML; EDT получает `notApplicable` для специальных resource
+  checks.
 - Переносимый ignore доказывается только правилом из tracked `.gitignore`.
   `.git/info/exclude`, global excludes и untracked `.gitignore` недостаточны.
 - Переносимые attributes доказываются только staged `.gitattributes` из index;
@@ -319,7 +321,7 @@ pub(crate) fn evaluate_project_health(
 | --- | --- | --- |
 | `source.discovery` | `workspace` | Ровно один раз на попытку разобрать source map. |
 | `source.layout` | `sourceSet` | Для каждого однозначно обнаруженного набора. |
-| `source.format` | `sourceSet` | Для каждого обнаруженного набора. |
+| `source.format` | `sourceSet` | Для каждого уникально адресуемого обнаруженного набора. |
 | `source.generated_paths` | `sourceSet` | Для каждого безопасно адресуемого root. |
 | `repository.discovery` | `repository` | Ровно один раз. |
 | `repository.index` | `repository` | После доказанного Git work tree. |
@@ -619,7 +621,7 @@ path требует:
 
 ```rust
 assert_eq!(command.program, "git");
-assert_eq!(command.argv, ["rm", "--cached", "--", "line\nbreak/ConfigDumpInfo.xml"]);
+assert_eq!(command.argv, ["--literal-pathspecs", "rm", "--cached", "--", "line\nbreak/ConfigDumpInfo.xml"]);
 ```
 
 - [ ] **Step 5: Run GREEN and commit.**
