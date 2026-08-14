@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import gzip
+import hashlib
 import importlib.util
+import io
 import json
 import re
+import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +22,116 @@ def load_build_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_runtime_archive_module():
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "ci"
+        / "unica_runtime_archive.py"
+    )
+    spec = importlib.util.spec_from_file_location("unica_runtime_archive", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def add_archive_member(
+    archive: tarfile.TarFile,
+    name: str,
+    payload: bytes,
+    *,
+    mode: int = 0o644,
+    type_: bytes = tarfile.REGTYPE,
+    linkname: str = "",
+) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(payload) if type_ == tarfile.REGTYPE else 0
+    info.mode = mode
+    info.type = type_
+    info.linkname = linkname
+    archive.addfile(info, io.BytesIO(payload) if type_ == tarfile.REGTYPE else None)
+
+
+def write_raw_archive(
+    path: Path,
+    members: list[tuple[str, bytes, int, bytes, str]],
+) -> None:
+    with path.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w") as archive:
+                for name, payload, mode, type_, linkname in members:
+                    add_archive_member(
+                        archive,
+                        name,
+                        payload,
+                        mode=mode,
+                        type_=type_,
+                        linkname=linkname,
+                    )
+
+
+RUNTIME_RELEASE = "rlm-tools-bsl-v1.33.0-build.3"
+RUNTIME_SOURCE_COMMIT = "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549"
+RUNTIME_TARGET = {
+    "key": "linux-x64",
+    "triple": "x86_64-unknown-linux-gnu",
+}
+RUNTIME_ENTRYPOINTS = {
+    "rlm-bsl-index": "rlm-bsl-index",
+    "rlm-bsl-mcp": "rlm-bsl-mcp",
+}
+
+
+def runtime_manifest(binary: bytes = b"multidist") -> dict:
+    files = [
+        {
+            "path": "libpython3.12.so.1.0",
+            "sha256": hashlib.sha256(b"shared").hexdigest(),
+            "size": len(b"shared"),
+            "executable": False,
+        },
+        {
+            "path": "rlm-bsl-index",
+            "sha256": hashlib.sha256(binary).hexdigest(),
+            "size": len(binary),
+            "executable": True,
+        },
+        {
+            "path": "rlm-bsl-mcp",
+            "sha256": hashlib.sha256(binary).hexdigest(),
+            "size": len(binary),
+            "executable": True,
+        },
+    ]
+    return {
+        "schemaVersion": 1,
+        "releaseTag": RUNTIME_RELEASE,
+        "source": {
+            "ref": "v1.33.0",
+            "commit": RUNTIME_SOURCE_COMMIT,
+            "tree": "4b321de0454d4d0998762659891374a3a1326cd0",
+            "patches": [],
+        },
+        "target": RUNTIME_TARGET,
+        "entrypoints": RUNTIME_ENTRYPOINTS,
+        "builder": {
+            "kind": "python-nuitka-standalone",
+            "python": "3.12.10",
+            "uv": "0.11.29",
+            "nuitka": "4.1.3",
+            "compiler": {
+                "cCompiler": "gcc",
+                "ccName": "gcc",
+                "compiler": "gcc",
+            },
+        },
+        "files": files,
+    }
 
 
 class BuildUnicaToolsTests(unittest.TestCase):
@@ -208,6 +323,155 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertFalse(hasattr(module, "extract_v8_runner"))
         self.assertNotIn("archive-release-asset", source)
         self.assertNotIn("archiveBinary", source)
+
+    def test_verified_archive_rejects_unsafe_and_drifted_members(self) -> None:
+        module = load_runtime_archive_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        base_payload = [
+            ("payload/libpython3.12.so.1.0", b"shared", 0o644, tarfile.REGTYPE, ""),
+            ("payload/rlm-bsl-index", b"multidist", 0o755, tarfile.REGTYPE, ""),
+            ("payload/rlm-bsl-mcp", b"multidist", 0o755, tarfile.REGTYPE, ""),
+        ]
+
+        def archive(
+            name: str,
+            *,
+            manifest: dict | None = None,
+            payload: list[tuple[str, bytes, int, bytes, str]] | None = None,
+        ) -> Path:
+            path = root / f"{name}.tar.gz"
+            document = runtime_manifest() if manifest is None else manifest
+            members = [
+                (
+                    "manifest.json",
+                    json.dumps(document, separators=(",", ":")).encode(),
+                    0o644,
+                    tarfile.REGTYPE,
+                    "",
+                ),
+                *(base_payload if payload is None else payload),
+            ]
+            write_raw_archive(path, members)
+            return path
+
+        def load(path: Path):
+            return module.load_verified_archive(
+                path,
+                release_tag=RUNTIME_RELEASE,
+                source_commit=RUNTIME_SOURCE_COMMIT,
+                target=RUNTIME_TARGET,
+                entrypoints=RUNTIME_ENTRYPOINTS,
+            )
+
+        files = load(archive("valid"))
+        by_path = {item.path.as_posix(): item for item in files}
+        self.assertEqual(set(by_path), {item[0].removeprefix("payload/") for item in base_payload})
+        self.assertEqual(by_path["rlm-bsl-index"].payload, b"multidist")
+        self.assertTrue(by_path["rlm-bsl-mcp"].executable)
+        self.assertFalse(by_path["libpython3.12.so.1.0"].executable)
+
+        unsafe_members = {
+            "absolute": base_payload + [("/absolute", b"x", 0o644, tarfile.REGTYPE, "")],
+            "parent": base_payload + [("payload/../escape", b"x", 0o644, tarfile.REGTYPE, "")],
+            "backslash": base_payload + [("payload\\escape", b"x", 0o644, tarfile.REGTYPE, "")],
+            "duplicate": base_payload + [base_payload[1]],
+            "symlink": base_payload + [("payload/link", b"", 0o777, tarfile.SYMTYPE, "rlm-bsl-index")],
+            "hardlink": base_payload + [("payload/link", b"", 0o777, tarfile.LNKTYPE, "rlm-bsl-index")],
+            "fifo": base_payload + [("payload/fifo", b"", 0o644, tarfile.FIFOTYPE, "")],
+        }
+        for label, members in unsafe_members.items():
+            with self.subTest(unsafe=label):
+                with self.assertRaisesRegex(SystemExit, "unsafe|duplicate|ordinary"):
+                    load(archive(f"unsafe-{label}", payload=members))
+
+        mutations: list[
+            tuple[
+                str,
+                dict,
+                list[tuple[str, bytes, int, bytes, str]],
+                str,
+            ]
+        ] = []
+        wrong_release = runtime_manifest()
+        wrong_release["releaseTag"] = "other"
+        mutations.append(("release", wrong_release, base_payload, "releaseTag"))
+        wrong_source = runtime_manifest()
+        wrong_source["source"] = dict(wrong_source["source"], commit="a" * 40)
+        mutations.append(("source", wrong_source, base_payload, "source.commit"))
+        wrong_target = runtime_manifest()
+        wrong_target["target"] = dict(RUNTIME_TARGET, key="win-x64")
+        mutations.append(("target", wrong_target, base_payload, "target"))
+        missing_entrypoint = runtime_manifest()
+        missing_entrypoint["entrypoints"] = {"rlm-bsl-index": "rlm-bsl-index"}
+        mutations.append(("entrypoint", missing_entrypoint, base_payload, "entrypoints"))
+        wrong_digest = runtime_manifest()
+        wrong_digest["files"][1]["sha256"] = "0" * 64
+        mutations.append(("digest", wrong_digest, base_payload, "sha256"))
+        wrong_size = runtime_manifest()
+        wrong_size["files"][1]["size"] = 99
+        mutations.append(("size", wrong_size, base_payload, "size"))
+        wrong_mode = runtime_manifest()
+        mutations.append(
+            (
+                "mode",
+                wrong_mode,
+                [base_payload[0], (base_payload[1][0], b"multidist", 0o644, tarfile.REGTYPE, ""), base_payload[2]],
+                "mode|executable",
+            )
+        )
+        non_executable_entrypoint = runtime_manifest()
+        non_executable_entrypoint["files"][1]["executable"] = False
+        mutations.append(
+            (
+                "non-executable-entrypoint",
+                non_executable_entrypoint,
+                [
+                    base_payload[0],
+                    (
+                        base_payload[1][0],
+                        b"multidist",
+                        0o644,
+                        tarfile.REGTYPE,
+                        "",
+                    ),
+                    base_payload[2],
+                ],
+                "entrypoints.*not executable",
+            )
+        )
+        mutations.append(("missing", runtime_manifest(), base_payload[:-1], "file set"))
+        mutations.append(
+            (
+                "extra",
+                runtime_manifest(),
+                base_payload + [("payload/extra", b"x", 0o644, tarfile.REGTYPE, "")],
+                "file set",
+            )
+        )
+        unequal = runtime_manifest(binary=b"index")
+        unequal["files"][2] = {
+            "path": "rlm-bsl-mcp",
+            "sha256": hashlib.sha256(b"mcp").hexdigest(),
+            "size": 3,
+            "executable": True,
+        }
+        mutations.append(
+            (
+                "unequal",
+                unequal,
+                [
+                    base_payload[0],
+                    ("payload/rlm-bsl-index", b"index", 0o755, tarfile.REGTYPE, ""),
+                    ("payload/rlm-bsl-mcp", b"mcp", 0o755, tarfile.REGTYPE, ""),
+                ],
+                "byte-identical",
+            )
+        )
+
+        for label, manifest, payload, message in mutations:
+            with self.subTest(drift=label):
+                with self.assertRaisesRegex(SystemExit, message):
+                    load(archive(f"drift-{label}", manifest=manifest, payload=payload))
 
     def test_workspace_binaries_share_one_locked_cargo_build(self) -> None:
         module = load_build_module()
