@@ -1,15 +1,19 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::{
     short_private_runtime_dir, ManagedChild, ManagedStartupChild,
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
+use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
-    ready_index_for_source_generation, IndexBackgroundTaskTracker, IndexReadiness,
-    SystemIndexRunner, WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS,
+    ready_index_for_source_revision, rlm_generation_root, rlm_process_environment,
+    IndexBackgroundTaskTracker, IndexReadiness, SystemIndexRunner, WorkspaceIndexService,
+    SOURCE_GENERATION_STALE_STATUS, SOURCE_REVISION_ARG, SOURCE_REVISION_GENERATION_ARG,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -512,6 +516,8 @@ impl<'a> WorkspaceServiceManager<'a> {
                 kind: ServiceRequestKind::RlmReady {
                     operation_id: Uuid::new_v4().to_string(),
                     args: Value::Object(args.clone()),
+                    timeout_seconds: send_budget.as_secs(),
+                    timeout_nanos: send_budget.subsec_nanos(),
                 },
             },
             cancellation,
@@ -1479,6 +1485,7 @@ struct WorkspaceServiceRuntime {
     session_teardowns: SessionTeardownLifecycle,
     analyzer_source_generation: Mutex<Option<u64>>,
     rlm_source_generation: Mutex<Option<u64>>,
+    rlm_source_revisions: Mutex<Option<Arc<SourceRevisionService>>>,
     analyzer_invalidated: AtomicBool,
     rlm_invalidated: AtomicBool,
     operations: Mutex<HashMap<String, CancellationToken>>,
@@ -1498,8 +1505,9 @@ type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) ->
 type RlmSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<RlmMcpSession, String>
     + Send
     + Sync;
-type RlmIndexMaintenanceRequester =
-    dyn Fn(WorkspaceContext, PathBuf, CancellationToken) + Send + Sync;
+type RlmIndexMaintenanceRequester = dyn Fn(WorkspaceContext, PathBuf, SourceRevision, Arc<SourceRevisionService>, CancellationToken)
+    + Send
+    + Sync;
 
 struct RlmMaintenanceRequestGuard(Arc<AtomicBool>);
 
@@ -1544,22 +1552,35 @@ impl WorkspaceServiceRuntime {
             rlm_lane: AnalyzerLane::default(),
             rlm: Mutex::new(None),
             rlm_starter: Arc::new(RlmMcpSession::start),
-            rlm_maintenance_requester: Arc::new(move |context, source_root, cancellation| {
-                let mut args = Map::new();
-                args.insert(
-                    "sourceDir".to_string(),
-                    Value::String(source_root.display().to_string()),
-                );
-                let runner = SystemIndexRunner::tracked(requester_tasks.clone());
-                let _ = WorkspaceIndexService::with_runner(&runner)
-                    .start_for_workspace_cancellable(&context, &args, false, &cancellation);
-            }),
+            rlm_maintenance_requester: Arc::new(
+                move |context, source_root, revision, revision_service, cancellation| {
+                    let mut args = Map::new();
+                    args.insert(
+                        "sourceDir".to_string(),
+                        Value::String(source_root.display().to_string()),
+                    );
+                    args.insert(
+                        SOURCE_REVISION_GENERATION_ARG.to_string(),
+                        Value::from(revision.generation),
+                    );
+                    args.insert(
+                        SOURCE_REVISION_ARG.to_string(),
+                        serde_json::to_value(revision)
+                            .expect("source revision is always serializable"),
+                    );
+                    let runner = SystemIndexRunner::tracked(requester_tasks.clone());
+                    let _ = WorkspaceIndexService::with_runner(&runner)
+                        .with_source_revision_service(revision_service)
+                        .start_for_workspace_cancellable(&context, &args, false, &cancellation);
+                },
+            ),
             rlm_maintenance_pending: Arc::new(AtomicBool::new(false)),
             rlm_maintenance_cancellation: CancellationToken::new(),
             rlm_maintenance_tasks,
             session_teardowns: SessionTeardownLifecycle::default(),
             analyzer_source_generation: Mutex::new(None),
             rlm_source_generation: Mutex::new(None),
+            rlm_source_revisions: Mutex::new(None),
             analyzer_invalidated: AtomicBool::new(false),
             rlm_invalidated: AtomicBool::new(false),
             operations: Mutex::new(HashMap::new()),
@@ -1716,6 +1737,14 @@ impl WorkspaceServiceRuntime {
         if events.iter().any(|event| invalidates_analyzer(event.kind)) {
             self.analyzer_invalidated.store(true, Ordering::Release);
             self.rlm_invalidated.store(true, Ordering::Release);
+            if let Some(revisions) = self
+                .rlm_source_revisions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+            {
+                revisions.mark_dirty();
+            }
         }
         ServiceResponse {
             ok: true,
@@ -1847,7 +1876,17 @@ impl WorkspaceServiceRuntime {
         }
     }
 
-    fn handle_rlm_ready(&self, args: Value, cancellation: &CancellationToken) -> ServiceResponse {
+    fn handle_rlm_ready(
+        &self,
+        args: Value,
+        timeout_seconds: u64,
+        timeout_nanos: u32,
+        cancellation: &CancellationToken,
+    ) -> ServiceResponse {
+        let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
+            Ok(timeout) => timeout,
+            Err(error) => return ServiceResponse::error(error),
+        };
         if cancellation.is_cancelled() {
             return ServiceResponse::error(cancelled_error(
                 "rlm index operation stopped before work",
@@ -1858,8 +1897,26 @@ impl WorkspaceServiceRuntime {
             "sourceDir".to_string(),
             Value::String(self.identity.source_root.clone()),
         );
+        let revisions = match self.rlm_source_revision_service() {
+            Ok(revisions) => revisions,
+            Err(error) => return ServiceResponse::error(error),
+        };
+        let revision =
+            match revisions.snapshot(ProviderDeadline::from_budget(timeout), cancellation) {
+                Ok(revision) => revision,
+                Err(error) => return ServiceResponse::error(error),
+            };
+        args.insert(
+            SOURCE_REVISION_GENERATION_ARG.to_string(),
+            Value::from(revision.generation),
+        );
+        args.insert(
+            SOURCE_REVISION_ARG.to_string(),
+            serde_json::to_value(&revision).expect("source revision is always serializable"),
+        );
         let runner = SystemIndexRunner::tracked(self.rlm_maintenance_tasks.clone());
-        let service = WorkspaceIndexService::with_runner(&runner);
+        let service = WorkspaceIndexService::with_runner(&runner)
+            .with_source_revision_service(Arc::clone(&revisions));
         let start_report = service.start_for_workspace_cancellable(
             &self.context,
             &args,
@@ -1870,7 +1927,28 @@ impl WorkspaceServiceRuntime {
         ServiceResponse::from_readiness(readiness, start_report.warnings)
     }
 
-    fn request_rlm_index_maintenance(&self, cancellation: &CancellationToken) -> Vec<String> {
+    fn rlm_source_revision_service(&self) -> Result<Arc<SourceRevisionService>, String> {
+        let mut revisions = self
+            .rlm_source_revisions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(service) = revisions.as_ref() {
+            return Ok(Arc::clone(service));
+        }
+        let service = Arc::new(SourceRevisionService::new(
+            &self.context,
+            Path::new(&self.identity.source_root),
+        )?);
+        *revisions = Some(Arc::clone(&service));
+        Ok(service)
+    }
+
+    fn request_rlm_index_maintenance(
+        &self,
+        revision: SourceRevision,
+        revision_service: Arc<SourceRevisionService>,
+        cancellation: &CancellationToken,
+    ) -> Vec<String> {
         if cancellation.is_cancelled() {
             return vec![cancelled_error("rlm index operation stopped before work")];
         }
@@ -1890,7 +1968,13 @@ impl WorkspaceServiceRuntime {
             .name("unica-rlm-index-maintenance".to_string())
             .spawn(move || {
                 let _pending = RlmMaintenanceRequestGuard(pending);
-                requester(context, source_root, cancellation);
+                requester(
+                    context,
+                    source_root,
+                    revision,
+                    revision_service,
+                    cancellation,
+                );
             }) {
             Ok(handle) => {
                 self.rlm_maintenance_tasks.track(handle);
@@ -1930,11 +2014,20 @@ impl WorkspaceServiceRuntime {
         let mut rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
         let source_root = Path::new(&self.identity.source_root);
-        let pre_execution_generation =
-            match source_generation_with_deadline(source_root, &deadline, cancellation) {
-                Ok(generation) => generation,
+        let revisions = match self.rlm_source_revision_service() {
+            Ok(revisions) => revisions,
+            Err(error) => return ServiceResponse::error(error),
+        };
+        let pre_execution_revision =
+            match deadline
+                .remaining_cancellable(cancellation)
+                .and_then(|remaining| {
+                    revisions.snapshot(ProviderDeadline::from_budget(remaining), cancellation)
+                }) {
+                Ok(revision) => revision,
                 Err(error) => return ServiceResponse::error(error),
             };
+        let pre_execution_generation = pre_execution_revision.generation;
         if observe_source_generation(
             &self.rlm_source_generation,
             &self.rlm_invalidated,
@@ -1951,14 +2044,18 @@ impl WorkspaceServiceRuntime {
             rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
         }
         let pre_execution_readiness =
-            ready_index_for_source_generation(&self.context, source_root, pre_execution_generation);
+            ready_index_for_source_revision(&self.context, source_root, &pre_execution_revision);
         if !matches!(pre_execution_readiness, IndexReadiness::Ready { .. }) {
             let stale_session = rlm.take();
             drop(rlm);
             if let Some(stale_session) = stale_session {
                 self.retire_session(stale_session);
             }
-            let warnings = self.request_rlm_index_maintenance(cancellation);
+            let warnings = self.request_rlm_index_maintenance(
+                pre_execution_revision.clone(),
+                Arc::clone(&revisions),
+                cancellation,
+            );
             return ServiceResponse::unavailable_rlm_execution(pre_execution_readiness, warnings);
         }
         let result = (|| {
@@ -1977,23 +2074,26 @@ impl WorkspaceServiceRuntime {
         })();
         match result {
             Ok(output) => {
-                let post_execution_generation =
-                    match source_generation_with_deadline(source_root, &deadline, cancellation) {
-                        Ok(generation) => generation,
-                        Err(error) => return ServiceResponse::error(error),
-                    };
+                let post_execution_revision = match deadline
+                    .remaining_cancellable(cancellation)
+                    .and_then(|remaining| {
+                        revisions.snapshot(ProviderDeadline::from_budget(remaining), cancellation)
+                    }) {
+                    Ok(revision) => revision,
+                    Err(error) => return ServiceResponse::error(error),
+                };
                 // Deliberately re-checked against the generation this read was
                 // admitted under, not the one observed just now: a background
                 // job that landed a newer marker mid-execute discards this
                 // output rather than blessing it. That costs a repeated read
                 // and never returns an answer built on sources RLM did not see.
-                let boundary_readiness = ready_index_for_source_generation(
+                let boundary_readiness = ready_index_for_source_revision(
                     &self.context,
                     source_root,
-                    pre_execution_generation,
+                    &pre_execution_revision,
                 );
                 let post_execution_readiness = match (
-                    post_execution_generation == pre_execution_generation,
+                    post_execution_revision == pre_execution_revision,
                     boundary_readiness,
                 ) {
                     (false, IndexReadiness::Ready { .. }) => IndexReadiness::Stale {
@@ -2007,7 +2107,11 @@ impl WorkspaceServiceRuntime {
                     if let Some(stale_session) = stale_session {
                         self.retire_session(stale_session);
                     }
-                    let warnings = self.request_rlm_index_maintenance(cancellation);
+                    let warnings = self.request_rlm_index_maintenance(
+                        post_execution_revision,
+                        Arc::clone(&revisions),
+                        cancellation,
+                    );
                     return ServiceResponse::unavailable_rlm_execution(
                         post_execution_readiness,
                         warnings,
@@ -2221,9 +2325,12 @@ impl WorkspaceServiceOperationExecutor for SystemWorkspaceServiceOperationExecut
                 timeout_nanos,
                 cancellation,
             ),
-            ServiceRequestKind::RlmReady { args, .. } => {
-                runtime.handle_rlm_ready(args, cancellation)
-            }
+            ServiceRequestKind::RlmReady {
+                args,
+                timeout_seconds,
+                timeout_nanos,
+                ..
+            } => runtime.handle_rlm_ready(args, timeout_seconds, timeout_nanos, cancellation),
             ServiceRequestKind::RlmMcp {
                 operation,
                 timeout_seconds,
@@ -2255,6 +2362,8 @@ enum ServiceRequestKind {
     RlmReady {
         operation_id: String,
         args: Value,
+        timeout_seconds: u64,
+        timeout_nanos: u32,
     },
     RlmMcp {
         operation_id: String,
@@ -2347,6 +2456,12 @@ impl ServiceResponse {
                 warnings,
                 ..Self::default()
             },
+            IndexReadiness::Incomplete => Self {
+                ok: true,
+                index_status: Some("incomplete".to_string()),
+                warnings,
+                ..Self::default()
+            },
             IndexReadiness::Failed(error) => Self {
                 ok: true,
                 index_status: Some("failed".to_string()),
@@ -2371,6 +2486,7 @@ impl ServiceResponse {
             response.error = Some(match response.index_status.as_deref() {
                 Some("missing") => "rlm index is missing".to_string(),
                 Some("building") => "rlm index building".to_string(),
+                Some("incomplete") => "rlm index recovery pending".to_string(),
                 _ => "rlm index unavailable at execution boundary".to_string(),
             });
         }
@@ -2397,6 +2513,7 @@ impl ServiceResponse {
                 status: self.error.clone().unwrap_or_else(|| "stale".to_string()),
             },
             Some("building") => IndexReadiness::Building,
+            Some("incomplete") => IndexReadiness::Incomplete,
             Some("failed") => IndexReadiness::Failed(self.error.clone().unwrap_or_default()),
             Some("unavailable") => {
                 IndexReadiness::Unavailable(self.error.clone().unwrap_or_default())
@@ -2542,6 +2659,7 @@ impl PersistentMcpSession {
 
     fn start_rlm_transport(
         context: &WorkspaceContext,
+        source_root: &Path,
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
         if cancellation.is_cancelled() {
@@ -2550,11 +2668,8 @@ impl PersistentMcpSession {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for workspace RLM service".to_string()
         })?;
-        let program = resolve_bundled_tool(&plugin_root, "rlm-tools-bsl", true)?.program;
-        let mut command = Command::new(program);
-        command
-            .current_dir(&context.cwd)
-            .env("RLM_INDEX_DIR", context.cache_root.join("rlm-tools-bsl"));
+        let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-mcp", true)?.program;
+        let command = rlm_transport_command(program, context, source_root)?;
         Self::start_with_command(command, cancellation)
     }
 
@@ -2791,6 +2906,21 @@ impl PersistentMcpSession {
     }
 }
 
+fn rlm_transport_command(
+    program: PathBuf,
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<Command, String> {
+    let mut command = Command::new(program);
+    command
+        .current_dir(&context.cwd)
+        .envs(rlm_process_environment(rlm_generation_root(
+            context,
+            source_root,
+        )?));
+    Ok(command)
+}
+
 impl Drop for PersistentMcpSession {
     fn drop(&mut self) {
         self.invalidate();
@@ -2828,7 +2958,11 @@ impl RlmMcpSession {
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
         Ok(Self {
-            transport: PersistentMcpSession::start_rlm_transport(context, cancellation)?,
+            transport: PersistentMcpSession::start_rlm_transport(
+                context,
+                source_root,
+                cancellation,
+            )?,
             source_root: source_root.to_path_buf(),
             session_id: None,
         })
@@ -4312,6 +4446,21 @@ mod tests {
     }
 
     #[test]
+    fn rlm_readiness_protocol_roundtrips_full_positive_i64_seconds() {
+        let wire = json!({
+            "type": "rlm-ready",
+            "operation_id": "max-timeout",
+            "args": {},
+            "timeout_seconds": i64::MAX,
+            "timeout_nanos": 123_456_789
+        });
+
+        let request: ServiceRequestKind = serde_json::from_value(wire.clone()).unwrap();
+
+        assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    }
+
+    #[test]
     fn service_timeout_parts_reject_seconds_outside_positive_i64_config_domain() {
         let error = duration_from_timeout_parts(u64::MAX, 1)
             .expect_err("wire timeout must stay inside the accepted config domain");
@@ -4354,6 +4503,23 @@ mod tests {
     }
 
     #[test]
+    fn rlm_readiness_wire_boundary_rejects_out_of_domain_timeout_before_runtime_work() {
+        let context = test_context("rlm-readiness-out-of-domain-wire-timeout");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+
+        let response = runtime.handle_rlm_ready(json!({}), u64::MAX, 1, &CancellationToken::new());
+
+        cleanup(&context);
+        assert!(!response.ok, "{response:?}");
+        let error = response.error.expect("protocol error");
+        assert!(error.contains("exceeds"), "{error}");
+        assert!(error.contains(&i64::MAX.to_string()), "{error}");
+    }
+
+    #[test]
     fn fixed_rlm_helper_keeps_untrusted_values_inside_json_data() {
         let query = "x'); __import__('os').system('boom')\n#";
         let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::Search {
@@ -4377,6 +4543,96 @@ mod tests {
                 limit: 7
             }
         );
+    }
+
+    #[test]
+    fn rlm_transport_requires_renamed_manifest_identity_without_legacy_fallback() {
+        let context = test_context("renamed-rlm-mcp-only");
+        let plugin_root = context.workspace_root.join("plugins/unica");
+        fs::create_dir_all(plugin_root.join("skills")).unwrap();
+        fs::create_dir_all(plugin_root.join("third-party")).unwrap();
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "tools": [
+    {"name": "rlm-tools-bsl", "version": "legacy", "binaries": {}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = match PersistentMcpSession::start_rlm_transport(
+            &context,
+            &context.workspace_root.join("src"),
+            &CancellationToken::new(),
+        ) {
+            Ok(mut session) => {
+                session.invalidate();
+                panic!("legacy RLM MCP manifest identity must not be accepted")
+            }
+            Err(error) => error,
+        };
+
+        cleanup(&context);
+        assert_eq!(error, "tool not found in manifest: rlm-bsl-mcp");
+    }
+
+    #[test]
+    fn rlm_reader_command_preserves_native_generation_environment_bytes() {
+        let mut context = test_context("rlm-reader-native-generation-environment");
+        let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
+            cleanup(&context);
+            return;
+        };
+        context.cache_root = context.workspace_root.join(invalid_component);
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let expected = rlm_generation_root(&context, &source_root).unwrap();
+
+        let command =
+            rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
+        let env = command.get_envs().collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            env[std::ffi::OsStr::new("RLM_INDEX_DIR")],
+            Some(expected.as_os_str())
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONUTF8")],
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONIOENCODING")],
+            Some(std::ffi::OsStr::new("utf-8:surrogateescape"))
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_reader_command_uses_native_generation_environment_on_normal_paths() {
+        let context = test_context("rlm-reader-normal-generation-environment");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let expected = rlm_generation_root(&context, &source_root).unwrap();
+
+        let command =
+            rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
+        let env = command.get_envs().collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            env[std::ffi::OsStr::new("RLM_INDEX_DIR")],
+            Some(expected.as_os_str())
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONUTF8")],
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONIOENCODING")],
+            Some(std::ffi::OsStr::new("utf-8:surrogateescape"))
+        );
+        cleanup(&context);
     }
 
     /// #204. A persistent session outlives its tool call, so a working
@@ -4571,6 +4827,23 @@ mod tests {
     }
 
     #[test]
+    fn service_response_preserves_incomplete_as_retryable_and_never_as_output() {
+        let response = ServiceResponse::from_readiness(IndexReadiness::Incomplete, Vec::new());
+
+        assert_eq!(response.index_status.as_deref(), Some("incomplete"));
+        assert_eq!(response.index_readiness(), IndexReadiness::Incomplete);
+        let unavailable =
+            ServiceResponse::unavailable_rlm_execution(IndexReadiness::Incomplete, Vec::new());
+        assert!(!unavailable.ok);
+        assert!(unavailable
+            .error
+            .as_deref()
+            .is_some_and(|message| message.contains("pending")));
+        assert!(unavailable.result_text.is_none());
+        assert!(unavailable.stderr.is_none());
+    }
+
+    #[test]
     fn service_response_preserves_failed_index_message() {
         let response = ServiceResponse::from_readiness(
             IndexReadiness::Failed(
@@ -4585,6 +4858,61 @@ mod tests {
                 "update left stale (content); recovery build failed".to_string(),
             )
         );
+    }
+
+    #[test]
+    fn rlm_ready_execution_barrier_preserves_safe_root_failure_as_unavailable() {
+        let context = test_context("rlm-ready-safe-root-failure");
+        let source_root = context.workspace_root.join("src");
+        let revisions = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
+        );
+        revisions
+            .snapshot(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let first = context.workspace_root.join("provider-state-cycle-a");
+        let second = context.workspace_root.join("provider-state-cycle-b");
+        let Some(first_link) = testing::create_dir_symlink_for_test(&second, &first) else {
+            cleanup(&context);
+            return;
+        };
+        first_link.unwrap();
+        testing::create_dir_symlink_for_test(&first, &second)
+            .expect("the platform that created the first link must expose the second fixture")
+            .unwrap();
+        identity.service_dir = first.join("services").join(&identity.key);
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revisions);
+
+        let response = runtime.handle_rlm_ready(json!({}), 5, 0, &CancellationToken::new());
+
+        assert!(
+            matches!(
+                response.index_readiness(),
+                IndexReadiness::Unavailable(message)
+                    if message.contains("failed to resolve existing path ancestor")
+            ),
+            "{response:?}"
+        );
+        assert!(response.warnings.iter().any(|warning| {
+            warning.starts_with("rlm index unavailable:")
+                && warning.contains("failed to resolve existing path ancestor")
+        }));
+        assert!(!source_root.join("rlm-bsl/index-v15/bsl_index.db").exists());
+        assert!(!source_root
+            .join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            .exists());
+        assert!(!source_root
+            .join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            .exists());
+        testing::remove_dir_symlink_for_test(&second).unwrap();
+        testing::remove_dir_symlink_for_test(&first).unwrap();
+        cleanup(&context);
     }
 
     #[derive(Default)]
@@ -4879,6 +5207,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "blocked-1".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -4905,6 +5235,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "success-2".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(recovered.ok);
@@ -5053,6 +5385,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "header-overload".into(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(!overloaded.ok);
@@ -5100,6 +5434,8 @@ mod tests {
                 ServiceRequestKind::RlmReady {
                     operation_id: format!("blocked-{index}"),
                     args: json!({}),
+                    timeout_seconds: 5,
+                    timeout_nanos: 0,
                 },
             ));
         }
@@ -5109,6 +5445,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "overloaded".into(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(!overloaded.ok);
@@ -5144,6 +5482,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "blocked-first".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         let mut second = open_test_request(
@@ -5151,6 +5491,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "blocked-second".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(2);
@@ -5228,6 +5570,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "late-maintenance".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         before_registration_rx
@@ -5330,6 +5674,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "late-session".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         before_retirement_rx
@@ -5379,6 +5725,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "blocked-disconnected".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -5396,6 +5744,8 @@ mod tests {
                 ServiceRequestKind::RlmReady {
                     operation_id: "success-after-disconnect".to_string(),
                     args: json!({}),
+                    timeout_seconds: 5,
+                    timeout_nanos: 0,
                 },
             );
             if recovered.ok {
@@ -5432,6 +5782,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "duplicate-id".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -5441,6 +5793,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "duplicate-id".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(!duplicate.ok);
@@ -5473,6 +5827,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "held-after-cancel-1".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -5708,19 +6064,26 @@ mod tests {
         let (cancelled_tx, cancelled_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let release_rx = Mutex::new(release_rx);
-        runtime.rlm_maintenance_requester =
-            Arc::new(move |_context, _source_root, cancellation| {
+        runtime.rlm_maintenance_requester = Arc::new(
+            move |_context, _source_root, _revision, _revision_service, cancellation| {
                 started_tx.send(()).unwrap();
                 while !cancellation.is_cancelled() {
                     thread::sleep(Duration::from_millis(5));
                 }
                 cancelled_tx.send(()).unwrap();
                 release_rx.lock().unwrap().recv().unwrap();
-            });
+            },
+        );
+        let revision_service = runtime.rlm_source_revision_service().unwrap();
+        let revision = SourceRevision {
+            generation: 1,
+            digest: "0".repeat(64),
+            algorithm: crate::domain::source_revision::SOURCE_REVISION_ALGORITHM.to_string(),
+        };
         let runtime = Arc::new(runtime);
 
         assert!(runtime
-            .request_rlm_index_maintenance(&CancellationToken::new())
+            .request_rlm_index_maintenance(revision, revision_service, &CancellationToken::new(),)
             .is_empty());
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         runtime.begin_shutdown();
@@ -5789,6 +6152,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "panic-worker-1".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         assert!(!panic_response.ok);
@@ -5803,6 +6168,8 @@ mod tests {
                 ServiceRequestKind::RlmReady {
                     operation_id: "success-after-panic".to_string(),
                     args: json!({}),
+                    timeout_seconds: 5,
+                    timeout_nanos: 0,
                 },
             )
             .ok
@@ -6026,6 +6393,8 @@ mod tests {
             ServiceRequestKind::RlmReady {
                 operation_id: "held-after-cancel-zero-grace".to_string(),
                 args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
             },
         );
         executor.wait_started(1);
@@ -6493,8 +6862,22 @@ fn main() {
         testing::wait_for_process_exit(pid, timeout)
     }
 
-    fn write_ready_rlm_status_for_current_source(context: &WorkspaceContext, source_root: &Path) {
-        let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
+    fn write_ready_rlm_status_for_current_source(
+        context: &WorkspaceContext,
+        source_root: &Path,
+    ) -> (SourceRevision, Arc<SourceRevisionService>) {
+        let revision_service = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(context, source_root).unwrap(),
+        );
+        let revision = revision_service
+            .snapshot(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let db_path = rlm_generation_root(context, source_root)
+            .unwrap()
+            .join("test/bsl_index.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, "ready index").unwrap();
         let status = crate::infrastructure::workspace_index::BslIndexStatus {
@@ -6503,21 +6886,29 @@ fn main() {
             db_path: Some(db_path.display().to_string()),
             message: None,
             failure_class: None,
-            source_generation: Some(source_generation(source_root)),
+            source_generation: Some(revision.generation),
+            indexed_revision: Some(revision.clone()),
+            observed_revision: None,
+            next_action: None,
             updated_at: now_secs_for_test(),
             last_run: None,
         };
-        let status_path = crate::infrastructure::workspace_index::status_path(context);
+        let status_path =
+            crate::infrastructure::workspace_index::status_path(context, source_root).unwrap();
         fs::create_dir_all(status_path.parent().unwrap()).unwrap();
         fs::write(
             status_path,
             serde_json::to_string_pretty(&status).unwrap() + "\n",
         )
         .unwrap();
+        (revision, revision_service)
     }
 
     fn write_active_rlm_index_lock(context: &WorkspaceContext, source_root: &Path) {
-        let lock_path = context.cache_root.join("locks/bsl_index.lock");
+        let lock_path =
+            crate::infrastructure::workspace_index::rlm_provider_state_root(context, source_root)
+                .unwrap()
+                .join("locks/rlm-bsl/index-v15/bsl_index.lock");
         fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         let now = now_secs_for_test();
         fs::write(
@@ -6542,6 +6933,8 @@ fn main() {
         response: ServiceResponse,
         session_retired: bool,
         maintenance_requests: usize,
+        pre_execution_revision: SourceRevision,
+        maintenance_revisions: Vec<SourceRevision>,
         teardown_drained: bool,
     }
 
@@ -6553,7 +6946,8 @@ fn main() {
         let source_root = context.workspace_root.join("src");
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let (pre_execution_revision, revision_service) =
+            write_ready_rlm_status_for_current_source(&context, &source_root);
         let fixture = blocking_rlm_fixture();
         fs::create_dir_all(&context.cache_root).unwrap();
         let execute_started = context.cache_root.join("blocking-rlm-execute-started.txt");
@@ -6561,10 +6955,14 @@ fn main() {
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revision_service);
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
+        let maintenance_revisions = Arc::new(Mutex::new(Vec::new()));
         runtime.rlm_maintenance_requester = Arc::new({
             let maintenance_requests = Arc::clone(&maintenance_requests);
-            move |_context, _source_root, _cancellation| {
+            let maintenance_revisions = Arc::clone(&maintenance_revisions);
+            move |_context, _source_root, revision, _revision_service, _cancellation| {
+                maintenance_revisions.lock().unwrap().push(revision);
                 maintenance_requests.fetch_add(1, Ordering::AcqRel);
             }
         });
@@ -6609,6 +7007,7 @@ fn main() {
         let session_retired = runtime.rlm.lock().unwrap().is_none();
         wait_for_atomic_value(&maintenance_requests, 1, Duration::from_secs(2));
         let maintenance_requests = maintenance_requests.load(Ordering::Acquire);
+        let maintenance_revisions = maintenance_revisions.lock().unwrap().clone();
         let teardown_drained = runtime.session_teardowns.drain(SESSION_TEARDOWN_GRACE);
         drop(runtime);
         cleanup(&context);
@@ -6617,6 +7016,8 @@ fn main() {
             response,
             session_retired,
             maintenance_requests,
+            pre_execution_revision,
+            maintenance_revisions,
             teardown_drained,
         }
     }
@@ -7441,6 +7842,8 @@ fn main() {
         let rlm = ServiceRequestKind::RlmReady {
             operation_id: Uuid::new_v4().to_string(),
             args: json!({"sourceDir": "src"}),
+            timeout_seconds: 5,
+            timeout_nanos: 123,
         };
         assert_ne!(bsl.operation_id(), rlm.operation_id());
         for (kind, expected_tag) in [
@@ -7724,10 +8127,12 @@ fn main() {
             "Процедура Тест()\nКонецПроцедуры\n",
         )
         .unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let (_, revision_service) =
+            write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revision_service);
         let starts = Arc::new(AtomicUsize::new(0));
         runtime.rlm_starter = Arc::new({
             let starts = Arc::clone(&starts);
@@ -7764,15 +8169,17 @@ fn main() {
         let source_root = context.workspace_root.join("src");
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let (_, revision_service) =
+            write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revision_service);
         let starts = Arc::new(AtomicUsize::new(0));
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
         runtime.rlm_maintenance_requester = Arc::new({
             let maintenance_requests = Arc::clone(&maintenance_requests);
-            move |_context, _source_root, _cancellation| {
+            move |_context, _source_root, _generation, _revision_service, _cancellation| {
                 maintenance_requests.fetch_add(1, Ordering::AcqRel);
             }
         });
@@ -7790,7 +8197,7 @@ fn main() {
                 query: "Smoke".to_string(),
                 limit: 20,
             },
-            1,
+            5,
             0,
             &CancellationToken::new(),
         );
@@ -7816,10 +8223,12 @@ fn main() {
         let source_root = context.workspace_root.join("src");
         let module = source_root.join("CommonModules/SmokeModule.bsl");
         fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
+        let (_, revision_service) =
+            write_ready_rlm_status_for_current_source(&context, &source_root);
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
         let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revision_service);
         let maintenance_requests = Arc::new(AtomicUsize::new(0));
         let (maintenance_started_tx, maintenance_started_rx) = mpsc::channel();
         let (maintenance_release_tx, maintenance_release_rx) = mpsc::channel();
@@ -7827,7 +8236,7 @@ fn main() {
         runtime.rlm_maintenance_requester = Arc::new({
             let maintenance_requests = Arc::clone(&maintenance_requests);
             let maintenance_release_rx = Arc::clone(&maintenance_release_rx);
-            move |_context, _source_root, _cancellation| {
+            move |_context, _source_root, _generation, _revision_service, _cancellation| {
                 let request_index = maintenance_requests.fetch_add(1, Ordering::AcqRel);
                 maintenance_started_tx.send(request_index).unwrap();
                 if request_index == 0 {
@@ -7845,7 +8254,7 @@ fn main() {
                     query: "Smoke".to_string(),
                     limit: 20,
                 },
-                1,
+                5,
                 0,
                 &CancellationToken::new(),
             );
@@ -7869,7 +8278,7 @@ fn main() {
                     query: "Smoke".to_string(),
                     limit: 20,
                 },
-                1,
+                5,
                 0,
                 &CancellationToken::new(),
             );
@@ -7925,6 +8334,11 @@ fn main() {
             "stale logical RLM session was retained"
         );
         assert_eq!(observation.maintenance_requests, 1);
+        assert_eq!(observation.maintenance_revisions.len(), 1);
+        assert_ne!(
+            observation.maintenance_revisions[0], observation.pre_execution_revision,
+            "maintenance was scheduled for the already stale pre-execution revision"
+        );
         assert!(
             observation.teardown_drained,
             "retired fake RLM session teardown exceeded the shutdown grace"
@@ -8842,15 +9256,21 @@ fn main() {
                 &context,
                 &source_root,
                 &Map::new(),
-                Duration::from_secs(300),
+                Duration::new(300, 123_456_789),
                 &CancellationToken::new(),
             )
             .unwrap();
 
         let budget = *connector.budgets.borrow().last().unwrap();
+        let request = serde_json::to_value(connector.requests.borrow().last().unwrap()).unwrap();
+        let wire_timeout = Duration::new(
+            request["timeout_seconds"].as_u64().unwrap(),
+            request["timeout_nanos"].as_u64().unwrap() as u32,
+        );
         cleanup(&context);
         assert!(budget > Duration::from_secs(299), "{budget:?}");
-        assert!(budget <= Duration::from_secs(300), "{budget:?}");
+        assert!(budget <= Duration::new(300, 123_456_789), "{budget:?}");
+        assert_eq!(wire_timeout, budget);
     }
 
     #[test]

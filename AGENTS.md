@@ -219,6 +219,48 @@
 Подробности жизненного цикла решений — в
 [`spec/decisions/README.md`](spec/decisions/README.md).
 
+## Обязательные навыки разработки MCP
+
+При любой задаче, которая проектирует, создаёт или развивает MCP-сервер Unica,
+до проектирования и реализации обязательно используйте `build-mcp-server`.
+После выбора ветки работы применяйте специализированные навыки:
+
+- `build-mcp-app` обязателен для MCP Apps, UI-ресурсов и интерактивных виджетов;
+- `build-mcpb` обязателен для MCPB, локальной упаковки и поставки MCP-сервера;
+- работа, совмещающая интерактивный интерфейс и MCPB-поставку, использует
+  навыки в порядке `build-mcp-server` → `build-mcp-app` → `build-mcpb`.
+
+Не применяйте `build-mcp-app` или `build-mcpb` к работе, которая не затрагивает
+их контур. Канонический источник комплекта — официальный пакет Anthropic
+[`mcp-server-dev`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/mcp-server-dev).
+
+Если хотя бы один обязательный навык недоступен, не начинайте MCP-работу, пока
+не доступен весь комплект. В Codex явно вызовите `$skill-installer` и установите
+только отсутствующие навыки из repository
+`anthropics/claude-plugins-official`, ref `main`, передав соответствующие пути:
+
+- `plugins/mcp-server-dev/skills/build-mcp-server`;
+- `plugins/mcp-server-dev/skills/build-mcp-app`;
+- `plugins/mcp-server-dev/skills/build-mcpb`.
+
+Не передавайте установщику путь уже установленного навыка: он не перезаписывает
+существующий каталог. Ожидаемое назначение каждого навыка —
+`$CODEX_HOME/skills/<имя>/SKILL.md`. После установки завершите текущий ход. На
+следующем ходе проверьте, что все три навыка доступны для явного вызова и их
+`SKILL.md` читаются. Если навык не появился, перезапустите Codex и повторите
+проверку; до успешной проверки MCP-работу не продолжайте.
+
+В Claude Code установите официальный плагин:
+
+```text
+/plugin marketplace add anthropics/claude-plugins-official
+/plugin install mcp-server-dev
+```
+
+Для другого совместимого агента скопируйте каждый каталог навыка целиком —
+`SKILL.md` вместе с `references/` — в каталог skills этого агента. Официальное
+руководство: [Build with Agent Skills](https://modelcontextprotocol.io/docs/2026-07-28/develop/build-with-agent-skills).
+
 ## Правила разработки
 
 - Устраняйте причины, а не симптомы.

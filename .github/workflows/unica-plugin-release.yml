@@ -23,6 +23,7 @@ jobs:
       rust_changed: ${{ steps.scope.outputs.rust_changed }}
       platform_changed: ${{ steps.scope.outputs.platform_changed }}
       toolchain_changed: ${{ steps.scope.outputs.toolchain_changed }}
+      search_integration_changed: ${{ steps.scope.outputs.search_integration_changed }}
       package_changed: ${{ steps.scope.outputs.package_changed }}
       plugin_content_changed: ${{ steps.scope.outputs.plugin_content_changed }}
       ci_changed: ${{ steps.scope.outputs.ci_changed }}
@@ -125,11 +126,28 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace -- --test-threads=1
 
+  test-search-integration:
+    name: Search integration (macos-14)
+    runs-on: macos-14
+    timeout-minutes: 30
+    needs: classify-changes
+    if: >-
+      ${{
+        needs.classify-changes.outputs.search_integration_changed == 'true' ||
+        needs.classify-changes.outputs.ci_changed == 'true'
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p unica-coder --test issue_89_workspace_service -- --ignored --test-threads=1
+
   build-tools:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: [classify-changes, verify-source, test-rust-primary, test-rust-platforms]
+    needs: [classify-changes, verify-source, test-rust-primary, test-rust-platforms, test-search-integration]
     if: >-
       ${{
         always() &&
@@ -137,6 +155,7 @@ jobs:
         needs.verify-source.result == 'success' &&
         (needs.test-rust-primary.result == 'success' || needs.test-rust-primary.result == 'skipped') &&
         (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
+        (needs.test-search-integration.result == 'success' || needs.test-search-integration.result == 'skipped') &&
         (needs.classify-changes.outputs.release_required == 'true' ||
          needs.classify-changes.outputs.ci_changed == 'true')
       }}
@@ -541,6 +560,7 @@ jobs:
       - verify-source
       - test-rust-primary
       - test-rust-platforms
+      - test-search-integration
       - build-tools
       - package-thin
       - probe-thin-bootstrap

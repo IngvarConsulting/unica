@@ -406,6 +406,7 @@ pub(crate) fn is_retryable_cache_state_conflict(error: &str, paths: &[PathBuf]) 
 mod tests {
     use super::*;
     use crate::domain::events::{DomainEvent, DomainEventKind};
+    use crate::infrastructure::workspace_index::rlm_provider_state_root;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -447,6 +448,61 @@ mod tests {
         assert!(reported.lazy_rebuilt.is_empty());
         assert!(reported.stale.contains(&"bsl_index".to_string()));
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bsl_index_cache_report_ignores_pair_scoped_builder_14_marker() {
+        let root = temp_root("unica-cache-builder14-ignored");
+        let source_root = root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".cache"),
+            workspace_epoch: 1,
+        };
+        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
+        let legacy_db = pair_root.join("rlm-tools-bsl/index/bsl_index.db");
+        let legacy_status = pair_root.join("caches/bsl_index_status.json");
+        fs::create_dir_all(legacy_db.parent().unwrap()).unwrap();
+        fs::create_dir_all(legacy_status.parent().unwrap()).unwrap();
+        fs::write(&legacy_db, b"builder-14-db").unwrap();
+        fs::write(
+            &legacy_status,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "ready",
+                "source_root": source_root.display().to_string(),
+                "db_path": legacy_db.display().to_string(),
+                "message": null,
+                "updated_at": 1
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        let legacy_bytes = fs::read(&legacy_status).unwrap();
+
+        let reported = WorkspaceStateRepository::new(&context)
+            .report(
+                &context,
+                &[],
+                false,
+                CacheAccess {
+                    reads: &["bsl_index"],
+                    writes: &[],
+                },
+            )
+            .unwrap();
+
+        assert!(reported.stale.contains(&"bsl_index".to_string()));
+        assert!(!reported.lazy_rebuilt.contains(&"bsl_index".to_string()));
+        assert_eq!(fs::read(&legacy_status).unwrap(), legacy_bytes);
         let _ = fs::remove_dir_all(root);
     }
 

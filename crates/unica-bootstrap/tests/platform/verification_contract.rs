@@ -10,22 +10,36 @@ use unica_bootstrap::verify_mcp_runtime;
 #[test]
 fn verify_requires_initialize_and_the_three_public_tools() {
     let root = temp_root("valid");
-    let runtime = write_fake_runtime(&root, true);
+    let record = root.join("provider-state.txt");
+    let runtime = write_fake_runtime(&root, &record, true);
+    let provider_state = root.join("private-provider-state");
 
-    verify_mcp_runtime(&runtime, &root, Duration::from_secs(2)).unwrap();
+    verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(record).unwrap(),
+        provider_state.display().to_string()
+    );
 }
 
 #[test]
 fn verify_rejects_incomplete_tools_list() {
     let root = temp_root("missing-tool");
-    let runtime = write_fake_runtime(&root, false);
+    let record = root.join("provider-state.txt");
+    let runtime = write_fake_runtime(&root, &record, false);
+    let provider_state = root.join("private-provider-state");
 
-    let error = verify_mcp_runtime(&runtime, &root, Duration::from_secs(2)).unwrap_err();
+    let error =
+        verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap_err();
 
     assert!(error.to_string().contains("unica.standards.explain"));
+    assert_eq!(
+        fs::read_to_string(record).unwrap(),
+        provider_state.display().to_string()
+    );
 }
 
-fn write_fake_runtime(root: &Path, complete: bool) -> PathBuf {
+fn write_fake_runtime(root: &Path, provider_state_record: &Path, complete: bool) -> PathBuf {
     let path = root.join("fake-unica");
     let explain = if complete {
         r#",{"name":"unica.standards.explain"}"#
@@ -36,13 +50,15 @@ fn write_fake_runtime(root: &Path, complete: bool) -> PathBuf {
         &path,
         format!(
             r#"#!/bin/sh
+printf '%s' "$UNICA_PROVIDER_STATE_DIR" > '{}'
 while IFS= read -r line; do
   case "$line" in
     *'"id":1'*) printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"unica","version":"0.7.0"}}}}}}' ;;
     *'"id":2'*) printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"unica.project.status"}},{{"name":"unica.standards.search"}}{explain}]}}}}' ;;
   esac
 done
-"#
+"#,
+            provider_state_record.display()
         ),
     )
     .unwrap();
