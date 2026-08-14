@@ -128,6 +128,15 @@ class LayoutTests(unittest.TestCase):
             "rlm-tools-bsl-v1.33.0-build.2",
         )
 
+    def test_rlm_standalone_design_preserves_the_pyinstaller_baseline(self) -> None:
+        design = (
+            DESIGN_DIR / "2026-08-14-rlm-nuitka-standalone-multidist-design.md"
+        ).read_text(encoding="utf-8")
+        context = design.split("## Цели", maxsplit=1)[0]
+        self.assertIn("`rlm-tools-bsl-v1.33.0-build.2`", context)
+        self.assertNotIn("`rlm-tools-bsl-v1.33.0-build.3`", context)
+        self.assertIn("PyInstaller", context)
+
     def test_both_archive_trees_exist_and_are_marked(self) -> None:
         offenders = []
         for directory in (DESIGN_DIR, PLANS_DIR):

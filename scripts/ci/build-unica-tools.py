@@ -6,13 +6,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -145,7 +148,7 @@ def materialize_archive_group(
     downloads_dir: Path,
     target_bin_dir: Path,
     reserved_paths: dict[str, str],
-) -> tuple[dict[str, Path], list[dict]]:
+) -> tuple[dict[str, Path], list[dict], float]:
     first = tools[0]
     first_asset = first["assets"][target]
     identity = archive_identity(first, first_asset, target=target)
@@ -174,7 +177,9 @@ def materialize_archive_group(
         entrypoints[tool["name"]] = archive_binary
 
     downloaded = downloads_dir / f"{identity[4][:16]}-{identity[3]}"
+    download_started_at = time.monotonic()
     download(release_asset_url(first, first_asset), downloaded)
+    download_seconds = time.monotonic() - download_started_at
     verify_asset_checksum(downloaded, first_asset, tool_name=first["name"], target=target)
     verify_asset_size(downloaded, first_asset, tool_name=first["name"], target=target)
     files = load_verified_archive(
@@ -216,7 +221,7 @@ def materialize_archive_group(
         tool["name"]: by_archive_path[tool["assets"][target]["archiveBinary"]]
         for tool in tools
     }
-    return built_paths, runtime_files
+    return built_paths, runtime_files, download_seconds
 
 
 def assert_host(target: str, targets: dict) -> None:
@@ -302,6 +307,7 @@ def write_build_metrics(
     *,
     target: str,
     cargo_build_seconds: float,
+    archive_download_seconds: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -310,6 +316,7 @@ def write_build_metrics(
                 "schemaVersion": 1,
                 "target": target,
                 "cargoBuildSeconds": round(cargo_build_seconds, 3),
+                "archiveDownloadSeconds": round(archive_download_seconds, 3),
             },
             indent=2,
         )
@@ -346,29 +353,39 @@ def tool_entry(
     }
 
 
-def main() -> None:
-    if sys.version_info < (3, 10):
-        raise SystemExit("build-unica-tools.py requires Python >= 3.10 because rlm-tools-bsl requires >= 3.10")
+def build_bundle_atomically(
+    output_dir: Path,
+    build: Callable[[Path], object],
+) -> object:
+    """Build outside the visible output path and publish it with one rename."""
+    if output_dir.exists():
+        raise SystemExit(f"bundle output already exists: {output_dir}")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{output_dir.name}.staging-",
+            dir=output_dir.parent,
+        )
+    )
+    try:
+        result = build(staging)
+        os.replace(staging, output_dir)
+        return result
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True)
-    parser.add_argument("--lock-file", type=Path, default=Path("plugins/unica/third-party/tools.lock.json"))
-    parser.add_argument("--repo-root", type=Path, default=Path("."))
-    parser.add_argument("--out-dir", type=Path, required=True)
-    parser.add_argument("--work-dir", type=Path, default=Path(".build/unica-tools"))
-    parser.add_argument("--metrics-file", type=Path)
-    args = parser.parse_args()
 
-    lock = load_lock(args.lock_file)
-    targets = lock["targets"]
-    if args.target not in targets:
-        raise SystemExit(f"unknown target {args.target}; expected one of {', '.join(sorted(targets))}")
-
-    assert_host(args.target, targets)
-    cfg = targets[args.target]
+def build_locked_bundle(
+    args: argparse.Namespace,
+    lock: dict,
+    cfg: dict,
+    *,
+    output_dir: Path,
+) -> tuple[float, float]:
     exe = cfg["exe"]
 
-    target_bin_dir = args.out_dir / "bin" / args.target
+    target_bin_dir = output_dir / "bin" / args.target
     downloads_dir = args.work_dir / args.target / "downloads"
     target_bin_dir.mkdir(parents=True, exist_ok=True)
     downloads_dir.mkdir(parents=True, exist_ok=True)
@@ -380,6 +397,7 @@ def main() -> None:
     archive_release_identities: dict[tuple[str, str, str], tuple[str, str, int]] = {}
     reserved_paths: dict[str, str] = {}
     runtime_files: list[dict] = []
+    archive_download_seconds = 0.0
     for tool in lock["tools"]:
         strategy = tool["assetStrategy"]
         if strategy in ("direct-release-asset", "cargo-workspace"):
@@ -437,7 +455,7 @@ def main() -> None:
         )
 
     for identity in sorted(archive_groups):
-        archive_paths, archive_files = materialize_archive_group(
+        archive_paths, archive_files, group_download_seconds = materialize_archive_group(
             archive_groups[identity],
             target=args.target,
             target_triple=cfg["targetTriple"],
@@ -447,13 +465,14 @@ def main() -> None:
         )
         built_paths.update(archive_paths)
         runtime_files.extend(archive_files)
+        archive_download_seconds += group_download_seconds
 
     cargo_paths, _, cargo_build_seconds = build_cargo_workspace_binaries(
         cargo_tools,
         repo_root=args.repo_root.resolve(),
         target_dir=args.work_dir / args.target / "cargo-target",
         target_bin_dir=target_bin_dir,
-        bundle_root=args.out_dir,
+        bundle_root=output_dir,
         target=args.target,
         exe=exe,
         workspace_binary_owners=load_cargo_workspace_binary_owners(args.repo_root.resolve()),
@@ -469,13 +488,6 @@ def main() -> None:
                 executable=True,
             )
         )
-    if args.metrics_file is not None:
-        write_build_metrics(
-            args.metrics_file,
-            target=args.target,
-            cargo_build_seconds=cargo_build_seconds,
-        )
-
     tools = [
         tool_entry(
             target=args.target,
@@ -492,7 +504,7 @@ def main() -> None:
         for tool in lock["tools"]
     ]
 
-    (args.out_dir / "tools.json").write_text(
+    (output_dir / "tools.json").write_text(
         json.dumps(
             {
                 "schemaVersion": 2,
@@ -508,6 +520,45 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
+    return cargo_build_seconds, archive_download_seconds
+
+
+def main() -> None:
+    if sys.version_info < (3, 10):
+        raise SystemExit("build-unica-tools.py requires Python >= 3.10 because rlm-tools-bsl requires >= 3.10")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--lock-file", type=Path, default=Path("plugins/unica/third-party/tools.lock.json"))
+    parser.add_argument("--repo-root", type=Path, default=Path("."))
+    parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--work-dir", type=Path, default=Path(".build/unica-tools"))
+    parser.add_argument("--metrics-file", type=Path)
+    args = parser.parse_args()
+
+    lock = load_lock(args.lock_file)
+    targets = lock["targets"]
+    if args.target not in targets:
+        raise SystemExit(f"unknown target {args.target}; expected one of {', '.join(sorted(targets))}")
+
+    assert_host(args.target, targets)
+    cfg = targets[args.target]
+    cargo_build_seconds, archive_download_seconds = build_bundle_atomically(
+        args.out_dir,
+        lambda output_dir: build_locked_bundle(
+            args,
+            lock,
+            cfg,
+            output_dir=output_dir,
+        ),
+    )
+    if args.metrics_file is not None:
+        write_build_metrics(
+            args.metrics_file,
+            target=args.target,
+            cargo_build_seconds=cargo_build_seconds,
+            archive_download_seconds=archive_download_seconds,
+        )
 
 
 if __name__ == "__main__":

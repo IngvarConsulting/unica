@@ -243,12 +243,15 @@ jobs:
           fi
           cargo_seconds="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["cargoBuildSeconds"])' "$METRICS_FILE" 2>/dev/null || true)"
           if [ -z "$cargo_seconds" ]; then cargo_seconds=unavailable; fi
+          archive_download_seconds="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["archiveDownloadSeconds"])' "$METRICS_FILE" 2>/dev/null || true)"
+          if [ -z "$archive_download_seconds" ]; then archive_download_seconds=unavailable; fi
           {
             echo "### Cargo build ($TARGET)"
             echo
             echo "- Target: \`$TARGET\`"
             echo "- Cache outcome: \`$cache_outcome\`"
             echo "- Cargo build duration: \`$cargo_seconds\` seconds"
+            echo "- RLM archive download duration: \`$archive_download_seconds\` seconds"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Check bundled tool contracts
         run: >

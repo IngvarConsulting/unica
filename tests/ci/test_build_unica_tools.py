@@ -497,6 +497,23 @@ class BuildUnicaToolsTests(unittest.TestCase):
             b"multidist",
         )
 
+    def test_bundle_publication_leaves_no_partial_output_after_build_failure(self) -> None:
+        module = load_build_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        out_dir = root / "bundle"
+
+        def fail_after_partial_write(staging: Path) -> None:
+            partial = staging / "bin" / "linux-x64" / "rlm-bsl-index"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(b"partial")
+            raise OSError("injected materialization failure")
+
+        with self.assertRaisesRegex(OSError, "injected materialization failure"):
+            module.build_bundle_atomically(out_dir, fail_after_partial_write)
+
+        self.assertFalse(out_dir.exists())
+        self.assertEqual(list(root.glob(".bundle.staging-*")), [])
+
     def test_verified_archive_rejects_unsafe_and_drifted_members(self) -> None:
         module = load_runtime_archive_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -950,6 +967,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 metrics_file,
                 target="linux-x64",
                 cargo_build_seconds=12.34567,
+                archive_download_seconds=4.56789,
             )
 
             self.assertEqual(
@@ -958,6 +976,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     "schemaVersion": 1,
                     "target": "linux-x64",
                     "cargoBuildSeconds": 12.346,
+                    "archiveDownloadSeconds": 4.568,
                 },
             )
             self.assertTrue(metrics_file.read_bytes().endswith(b"\n"))

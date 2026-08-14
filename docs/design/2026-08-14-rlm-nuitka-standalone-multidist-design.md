@@ -7,7 +7,7 @@
 ## Контекст
 
 Unica закрепляет `rlm-bsl-index` и `rlm-bsl-mcp` `v1.33.0` как два прямых
-исполняемых asset релиза `rlm-tools-bsl-v1.33.0-build.3` в
+исполняемых asset релиза `rlm-tools-bsl-v1.33.0-build.2` в
 `plugins/unica/third-party/tools.lock.json`. Репозиторий
 `IngvarConsulting/unica-toolchain` собирает каждый asset через PyInstaller
 `--onefile`, а `scripts/ci/build-unica-tools.py` скачивает, проверяет и копирует
