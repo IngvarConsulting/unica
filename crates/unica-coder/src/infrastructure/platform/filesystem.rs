@@ -187,7 +187,7 @@ pub(crate) struct PortablePermissions {
     key: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct FileIdentity {
     volume: u64,
     file: u64,
@@ -422,6 +422,34 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
         // SAFETY: descriptor is a newly owned successful open result.
         Ok(unsafe { fs::File::from_raw_fd(descriptor) })
     }
+}
+
+#[cfg(unix)]
+pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path must be absolute",
+        ));
+    }
+    let mut current = open_directory_nofollow(Path::new("/"))?;
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(name) => {
+                current = open_directory_child_nofollow(&current, name)?;
+            }
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secure directory path contains a non-normal component",
+                ));
+            }
+        }
+    }
+    Ok(current)
 }
 
 #[cfg(unix)]
@@ -1290,6 +1318,58 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
 }
 
 #[cfg(windows)]
+pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path must be absolute",
+        ));
+    }
+    let absolute = std::path::absolute(path)?;
+    let mut components = absolute.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure Windows directory path has no prefix",
+        ));
+    };
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure Windows directory path has no root component",
+        ));
+    }
+    let mut anchor = PathBuf::from(prefix.as_os_str());
+    anchor.push(r"\");
+    let mut current = open_directory_nofollow(&anchor)?;
+    for component in components {
+        match component {
+            Component::Normal(name) => {
+                current = open_directory_child_nofollow(&current, name)?;
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secure directory path contains a non-normal component",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn open_absolute_directory_path_nofollow(_path: &Path) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "secure no-follow directory paths are unavailable on this host",
+    ))
+}
+
+#[cfg(windows)]
 #[repr(C)]
 struct NtUnicodeString {
     length: u16,
@@ -1664,7 +1744,6 @@ pub(crate) fn open_regular_child_nofollow(
     name: &std::ffi::OsStr,
 ) -> io::Result<fs::File> {
     const FILE_OPEN: u32 = 0x0000_0001;
-    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1677,7 +1756,7 @@ pub(crate) fn open_regular_child_nofollow(
         GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         0,
         FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        FILE_OPEN_REPARSE_POINT,
         None,
     )?;
     let attributes = windows_file_information(&file)?.dwFileAttributes;
@@ -1702,16 +1781,20 @@ pub(crate) fn open_any_child_nofollow(
     name: &std::ffi::OsStr,
 ) -> io::Result<(fs::File, OpenedChildKind)> {
     const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_OPEN_FOR_BACKUP_INTENT: u32 = 0x0000_4000;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
 
+    // FILE_OPEN_FOR_BACKUP_INTENT is required for an untyped handle to a directory entry.
+    // Without it, NtCreateFile reports a directory symlink as not found instead of returning
+    // the reparse-point handle that opened_child_kind must reject.
     let file = open_relative_child(
         parent,
         name,
         FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         0,
         FILE_OPEN,
-        FILE_OPEN_REPARSE_POINT,
+        FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT,
         None,
     )?;
     let kind = opened_child_kind(&file)?;
@@ -2730,6 +2813,300 @@ pub(crate) fn host_path_text(path: String) -> String {
 #[cfg(not(windows))]
 pub(crate) fn host_path_text(path: String) -> String {
     path
+}
+
+#[cfg(windows)]
+pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
+    open_absolute_directory_path_nofollow(path)
+        .and_then(|directory| relative_child_object_attributes(&directory))
+        .map(|attributes| attributes == 0)
+}
+
+#[cfg(target_vendor = "apple")]
+pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    // SAFETY: directory owns a valid descriptor and fpathconf only queries it.
+    let result = unsafe { libc::fpathconf(directory.as_raw_fd(), libc::_PC_CASE_SENSITIVE) };
+    if result == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(result != 0)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
+    use std::mem::MaybeUninit;
+    use std::os::fd::AsRawFd;
+
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    let mut filesystem = MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: directory owns a valid descriptor and fstatfs initializes the
+    // pointed structure on success.
+    if unsafe { libc::fstatfs(directory.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fstatfs succeeded above.
+    let filesystem_type = unsafe { filesystem.assume_init() }.f_type as u32 as u64;
+    let directory_flags = if matches!(
+        filesystem_type,
+        LINUX_EXT4_SUPER_MAGIC | LINUX_F2FS_SUPER_MAGIC
+    ) {
+        let mut flags: libc::c_long = 0;
+        // SAFETY: the descriptor is an open directory and flags points to
+        // writable storage of the type required by FS_IOC_GETFLAGS.
+        if unsafe { libc::ioctl(directory.as_raw_fd(), libc::FS_IOC_GETFLAGS, &mut flags) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Some(flags as u32)
+    } else {
+        None
+    };
+    linux_filesystem_case_sensitive_from_metadata(filesystem_type, directory_flags)
+}
+
+#[cfg(any(target_os = "linux", test))]
+const LINUX_EXT4_SUPER_MAGIC: u64 = 0x0000_ef53;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_F2FS_SUPER_MAGIC: u64 = 0xf2f5_2010;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_BTRFS_SUPER_MAGIC: u64 = 0x9123_683e;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_TMPFS_MAGIC: u64 = 0x0102_1994;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_RAMFS_MAGIC: u64 = 0x8584_58f6;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_FS_CASEFOLD_FL: u32 = 0x4000_0000;
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_filesystem_case_sensitive_from_metadata(
+    filesystem_type: u64,
+    directory_flags: Option<u32>,
+) -> io::Result<bool> {
+    match filesystem_type {
+        LINUX_EXT4_SUPER_MAGIC | LINUX_F2FS_SUPER_MAGIC => {
+            let flags = directory_flags.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Linux filesystem did not expose directory casefold flags",
+                )
+            })?;
+            if flags & LINUX_FS_CASEFOLD_FL != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "kernel Unicode casefold semantics cannot be proven by a userspace key",
+                ));
+            }
+            Ok(true)
+        }
+        LINUX_BTRFS_SUPER_MAGIC | LINUX_TMPFS_MAGIC | LINUX_RAMFS_MAGIC => Ok(true),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "case-sensitivity cannot be proven for Linux filesystem type {filesystem_type:#x}"
+            ),
+        )),
+    }
+}
+
+#[cfg(all(not(windows), not(target_vendor = "apple"), not(target_os = "linux")))]
+pub(crate) fn host_filesystem_case_sensitive(_path: &Path) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "filesystem case-sensitivity cannot be proven on this host",
+    ))
+}
+
+#[cfg(windows)]
+pub(crate) fn host_path_components_equal(
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+
+    if case_sensitive {
+        return Ok(left == right);
+    }
+    let left = left.encode_wide().collect::<Vec<_>>();
+    let right = right.encode_wide().collect::<Vec<_>>();
+    let left_len = i32::try_from(left.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "left path component is too long",
+        )
+    })?;
+    let right_len = i32::try_from(right.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "right path component is too long",
+        )
+    })?;
+    // SAFETY: both vectors remain live for the call and their explicit lengths
+    // bound every read. CompareStringOrdinal is the identity relation used by
+    // case-insensitive Windows path lookup; a userspace Unicode transform is
+    // not equivalent because it may expand one component into several chars.
+    let comparison =
+        unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) };
+    if comparison == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(comparison == CSTR_EQUAL)
+    }
+}
+
+pub(crate) fn host_directory_child_names_equal(
+    parent_path: &Path,
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
+    if left == right {
+        return Ok(true);
+    }
+    if left.as_encoded_bytes().is_ascii() && right.as_encoded_bytes().is_ascii() {
+        return if case_sensitive {
+            Ok(false)
+        } else {
+            Ok(left
+                .as_encoded_bytes()
+                .eq_ignore_ascii_case(right.as_encoded_bytes()))
+        };
+    }
+    if case_sensitive && !cfg!(target_vendor = "apple") {
+        return Ok(false);
+    }
+    let parent = match open_absolute_directory_path_nofollow(parent_path) {
+        Ok(parent) => parent,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            #[cfg(target_vendor = "apple")]
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Apple path identity needs an existing parent directory",
+                ));
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                return host_path_components_equal(left, right, case_sensitive);
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    let left_child = open_directory_child_nofollow(&parent, left);
+    let right_child = open_directory_child_nofollow(&parent, right);
+    match (left_child, right_child) {
+        (Ok(left_child), Ok(right_child)) => {
+            Ok(file_identity(&left_child)? == file_identity(&right_child)?)
+        }
+        (Err(left_error), Err(right_error))
+            if left_error.kind() == io::ErrorKind::NotFound
+                && right_error.kind() == io::ErrorKind::NotFound =>
+        {
+            #[cfg(target_vendor = "apple")]
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Apple path identity needs an existing child directory",
+                ))
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                host_path_components_equal(left, right, case_sensitive)
+            }
+        }
+        (Err(error), _) | (_, Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
+}
+
+pub(crate) fn host_directory_child_identity(
+    parent_path: &Path,
+    child: &std::ffi::OsStr,
+) -> io::Result<Option<FileIdentity>> {
+    let parent = match open_absolute_directory_path_nofollow(parent_path) {
+        Ok(parent) => parent,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match open_directory_child_nofollow(&parent, child) {
+        Ok(child) => file_identity(&child).map(Some),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn host_path_components_equal(
+    left: &std::ffi::OsStr,
+    right: &std::ffi::OsStr,
+    case_sensitive: bool,
+) -> io::Result<bool> {
+    #[cfg(target_vendor = "apple")]
+    let _ = case_sensitive;
+    if left == right {
+        return Ok(true);
+    }
+    #[cfg(target_vendor = "apple")]
+    return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Apple path identity needs an existing directory object",
+    ));
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        if case_sensitive {
+            return Ok(false);
+        }
+        let left = left.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "left path component is not valid UTF-8",
+            )
+        })?;
+        let right = right.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "right path component is not valid UTF-8",
+            )
+        })?;
+        // Linux casefold directories never reach this branch: their kernel Unicode
+        // table is rejected as unprovable by host_filesystem_case_sensitive. This
+        // simple, non-expanding fold models only injected case-insensitive policy
+        // in tests without conflating `ß` and `ss`.
+        let simple_upper = |text: &str| {
+            text.chars()
+                .flat_map(|character| {
+                    let uppercase = character.to_uppercase().collect::<Vec<_>>();
+                    if uppercase.len() == 1 {
+                        uppercase
+                    } else {
+                        vec![character]
+                    }
+                })
+                .collect::<String>()
+        };
+        Ok(simple_upper(&left) == simple_upper(&right))
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn is_link_loop_error(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ELOOP)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn is_link_loop_error(_error: &io::Error) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -3846,6 +4223,20 @@ mod tests {
         }
 
         #[test]
+        fn windows_regular_child_open_reports_directory_as_wrong_kind() {
+            let root = unique_temp_root("regular-child-directory");
+            fs::create_dir_all(root.join("Archive.xml")).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let error = open_regular_child_nofollow(&parent, std::ffi::OsStr::new("Archive.xml"))
+                .expect_err("a directory must not be returned as a regular child");
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
         fn owner_only_directory_child_can_be_reopened_for_delete() {
             let root = unique_temp_root("owner-only-directory-delete-reopen");
             fs::create_dir_all(&root).unwrap();
@@ -3989,6 +4380,34 @@ mod tests {
 
             let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link.txt"))
                 .expect("a no-follow open must return the reparse point itself");
+
+            assert_eq!(kind, OpenedChildKind::ReparsePoint);
+            assert_eq!(opened_child_kind(&opened).unwrap(), kind);
+            drop(opened);
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_open_any_child_nofollow_classifies_a_directory_reparse_point() {
+            const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+
+            let root = unique_temp_root("open-any-directory-reparse");
+            fs::create_dir_all(&root).unwrap();
+            let target = root.join("target");
+            fs::create_dir(&target).unwrap();
+            let link = root.join("link");
+            if let Err(error) = std::os::windows::fs::symlink_dir(&target, &link) {
+                if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) {
+                    fs::remove_dir_all(root).unwrap();
+                    return;
+                }
+                panic!("failed to create directory symlink: {error}");
+            }
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link"))
+                .expect("a no-follow open must return the directory reparse point itself");
 
             assert_eq!(kind, OpenedChildKind::ReparsePoint);
             assert_eq!(opened_child_kind(&opened).unwrap(), kind);
@@ -4896,6 +5315,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn secure_windows_directory_open_rejects_relative_path() {
+        let error = super::open_absolute_directory_path_nofollow(Path::new("relative"))
+            .expect_err("relative path must not be converted through the process cwd");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("must be absolute"));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn extended_length_unc_prefix_is_stripped_without_filesystem_access() {
         use std::path::PathBuf;
 
@@ -4959,6 +5388,126 @@ mod tests {
         assert_eq!(regular, normalize_path_identity(&extended).unwrap());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn filesystem_case_policy_does_not_follow_a_linked_directory() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_temp_root("case-policy-linked-directory");
+        let target = root.join("target");
+        let linked = root.join("linked");
+        fs::create_dir_all(&target).unwrap();
+        symlink(&target, &linked).unwrap();
+
+        let result = super::host_filesystem_case_sensitive(&linked);
+
+        assert!(
+            result.is_err(),
+            "linked directory must fail closed: {result:?}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn apple_caseless_child_identity_uses_the_filesystem_object() {
+        let root = unique_temp_root("apple-caseless-child-identity");
+        fs::create_dir_all(&root).unwrap();
+        let root_identity = fs::canonicalize(&root).unwrap();
+        if super::host_filesystem_case_sensitive(&root_identity).unwrap() {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        fs::create_dir(root_identity.join("ß")).unwrap();
+
+        assert!(super::host_directory_child_names_equal(
+            &root_identity,
+            std::ffi::OsStr::new("ß"),
+            std::ffi::OsStr::new("ẞ"),
+            false,
+        )
+        .unwrap());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn apple_missing_unicode_alias_is_not_approximated_in_userspace() {
+        let error = super::host_path_components_equal(
+            std::ffi::OsStr::new("é"),
+            std::ffi::OsStr::new("e\u{301}"),
+            true,
+        )
+        .expect_err("a missing Apple path component has no proven host identity");
+
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn linux_filesystem_case_policy_is_mount_aware_and_fails_closed() {
+        const EXT4_SUPER_MAGIC: u64 = 0x0000_ef53;
+        const XFS_SUPER_MAGIC: u64 = 0x5846_5342;
+        const OVERLAYFS_SUPER_MAGIC: u64 = 0x794c_7630;
+        const CIFS_SUPER_MAGIC: u64 = 0xff53_4d42;
+        const FS_CASEFOLD_FL: u32 = 0x4000_0000;
+
+        assert!(
+            super::linux_filesystem_case_sensitive_from_metadata(EXT4_SUPER_MAGIC, Some(0),)
+                .unwrap()
+        );
+        let casefold_error = super::linux_filesystem_case_sensitive_from_metadata(
+            EXT4_SUPER_MAGIC,
+            Some(FS_CASEFOLD_FL),
+        )
+        .expect_err("kernel Unicode casefold semantics must not be approximated");
+        assert_eq!(casefold_error.kind(), io::ErrorKind::Unsupported);
+        for filesystem_type in [
+            XFS_SUPER_MAGIC,
+            OVERLAYFS_SUPER_MAGIC,
+            CIFS_SUPER_MAGIC,
+            0x1234_5678,
+        ] {
+            let error = super::linux_filesystem_case_sensitive_from_metadata(filesystem_type, None)
+                .expect_err("unproven Linux filesystem semantics must fail closed");
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        }
+    }
+
+    #[cfg(all(not(target_vendor = "apple"), not(windows)))]
+    #[test]
+    fn injected_case_insensitive_component_identity_collapses_final_sigma() {
+        assert!(super::host_path_components_equal(
+            std::ffi::OsStr::new("σ"),
+            std::ffi::OsStr::new("ς"),
+            false,
+        )
+        .unwrap());
+        assert!(!super::host_path_components_equal(
+            std::ffi::OsStr::new("ß"),
+            std::ffi::OsStr::new("ss"),
+            false,
+        )
+        .unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_component_identity_uses_compare_string_ordinal() {
+        assert!(!super::host_path_components_equal(
+            std::ffi::OsStr::new("σ"),
+            std::ffi::OsStr::new("ς"),
+            false,
+        )
+        .unwrap());
+        assert!(super::host_path_components_equal(
+            std::ffi::OsStr::new("a"),
+            std::ffi::OsStr::new("A"),
+            false,
+        )
+        .unwrap());
     }
 
     #[cfg(windows)]

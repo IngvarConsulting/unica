@@ -1872,6 +1872,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "unsafe-libyaml",
  "ureq",
  "uuid",
  "windows-sys 0.59.0",

@@ -2196,6 +2196,27 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("sourceFormat=mixed", joined)
         self.assertNotIn("source_format=mixed", joined)
 
+    def test_workspace_runtime_routes_project_health_without_granting_mutation(self) -> None:
+        reference = (
+            self.reference_root() / "use-cases" / "workspace-runtime.md"
+        ).read_text(encoding="utf-8")
+        skill = (self.skill_root() / "v8-runner" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        joined = reference + "\n" + skill
+
+        for token in (
+            "unica.project.status",
+            "ready",
+            "repositoryReady",
+            "remediation",
+            "sourceSet.path: .",
+        ):
+            self.assertIn(token, joined)
+        self.assertIn("does not mean Unica is unusable without Git", joined)
+        self.assertIn("never execute them automatically", joined)
+        self.assertIn("call `unica.project.status` again", joined)
+
     def test_references_do_not_contain_stale_upstream_instructions(self) -> None:
         forbidden_patterns = [
             r"references/(cc-1c-skills|ai-rules-1c)",

@@ -21,6 +21,12 @@ pub(crate) struct ResolvedNamedSourceSet {
     pub(crate) path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct DeclaredSourceRootRoute {
+    pub(crate) lexical_path: PathBuf,
+    pub(crate) identity_path: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NamedSourceSetErrorKind {
     NotFound,
@@ -107,15 +113,32 @@ pub(crate) fn resolve_named_source_set(
             format!("project source set `{name}` was not found"),
         )
     })?;
+    let containment =
+        |detail: String| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, detail);
     let lexical_path = lexical_contained_source_root(&context.workspace_root, &source_set.path)
-        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
+        .map_err(containment)?;
     reject_linked_source_root_route(&context.workspace_root, &lexical_path)?;
-    let path = normalize_contained_source_root(&context.workspace_root, &source_set.path)
-        .map_err(|error| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, error))?;
+    let route = inspect_declared_source_root_route(&context.workspace_root, &source_set.path)?;
     Ok(ResolvedNamedSourceSet {
         source_set,
+        lexical_path: route.lexical_path,
+        path: route.identity_path,
+    })
+}
+
+pub(crate) fn inspect_declared_source_root_route(
+    workspace_root: &Path,
+    configured_path: &str,
+) -> Result<DeclaredSourceRootRoute, NamedSourceSetError> {
+    let containment =
+        |detail: String| NamedSourceSetError::new(NamedSourceSetErrorKind::Containment, detail);
+    let lexical_path =
+        lexical_contained_source_root(workspace_root, configured_path).map_err(containment)?;
+    let identity_path =
+        normalize_contained_source_root(workspace_root, configured_path).map_err(containment)?;
+    Ok(DeclaredSourceRootRoute {
         lexical_path,
-        path,
+        identity_path,
     })
 }
 
@@ -145,7 +168,7 @@ fn lexical_contained_source_root(
     Ok(candidate)
 }
 
-fn reject_linked_source_root_route(
+pub(crate) fn reject_linked_source_root_route(
     workspace_root: &Path,
     source_root: &Path,
 ) -> Result<(), NamedSourceSetError> {
@@ -609,7 +632,8 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_path_identity, resolve_source_root, source_generation, source_generation_until,
+        normalize_path_identity, resolve_named_source_set, resolve_source_root, source_generation,
+        source_generation_until,
     };
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::workspace::discover_workspace;
@@ -870,6 +894,38 @@ mod tests {
 
         assert!(error.starts_with("invalid_source_root:"));
         assert!(error.contains("workspace"));
+        cleanup(&context);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn declared_source_root_reports_link_before_normalized_containment() {
+        let context = fixture(&[("main", "CONFIGURATION", "src/cf")]);
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: external/new-source\n",
+        )
+        .unwrap();
+        let outside = temp_workspace("unica-declared-source-root-outside");
+        let Some(symlink_result) =
+            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
+                &outside,
+                context.workspace_root.join("external"),
+            )
+        else {
+            cleanup(&context);
+            let _ = fs::remove_dir_all(outside);
+            return;
+        };
+        symlink_result.unwrap();
+
+        let error = resolve_named_source_set(&context, "main").unwrap_err();
+
+        assert!(
+            error.to_string().contains("symbolic link")
+                || error.to_string().contains("reparse point"),
+            "{error}"
+        );
         cleanup(&context);
         let _ = fs::remove_dir_all(outside);
     }
