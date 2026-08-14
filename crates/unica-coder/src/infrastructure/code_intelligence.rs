@@ -1579,8 +1579,15 @@ mod tests {
         let source_root = root.join("src");
         let database = source_root.join(".build/bsl-graph.db");
         let sidecar = source_root.join(".build/entries.txt");
+        // The walks skip a directory of that name at any depth, so the corpus
+        // rule is recursive too. Without this one a top-level-only pathspec —
+        // the shorter thing to write — passes the test: `Catalogs` sorts after
+        // `.build` and before `CommonModules`, so a nested cache that survived
+        // exclusion would take the single result the module expects.
+        let nested = source_root.join("Catalogs/.build/entries.txt");
         let module = source_root.join("CommonModules/Продажи/Ext/Module.bsl");
         std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
         std::fs::create_dir_all(module.parent().unwrap()).unwrap();
         // The two shapes the real cache produces, in the order `git grep`
         // reaches them: a database whose NUL bytes make it "Binary file …
@@ -1590,6 +1597,7 @@ mod tests {
         database_bytes.extend_from_slice("index ПолитикаУчетаСерий\n".as_bytes());
         std::fs::write(&database, &database_bytes).unwrap();
         std::fs::write(&sidecar, "index entry ПолитикаУчетаСерий\n").unwrap();
+        std::fs::write(&nested, "index entry ПолитикаУчетаСерий\n").unwrap();
         std::fs::write(&module, "// ПолитикаУчетаСерий\n").unwrap();
         assert!(std::process::Command::new("git")
             .args(["init", "--quiet"])
