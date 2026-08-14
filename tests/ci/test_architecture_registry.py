@@ -1671,6 +1671,16 @@ class ReaderInvocationContractTests(unittest.TestCase):
         self.assertNotIn("признак мутации", building_blocks)
         self.assertNotIn("Сегодня таких две", building_blocks)
 
+    def test_building_blocks_describe_the_typed_project_health_git_boundary(self) -> None:
+        building_blocks = (
+            REPO_ROOT / "spec" / "architecture" / "building-blocks.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("GitTrackingAdapter", building_blocks)
+        self.assertIn("`project_health`", building_blocks)
+        self.assertIn("`unica.project.status`", building_blocks)
+        self.assertIn("`unica.project.map` не выполняет Git-проверок", building_blocks)
+
     def test_checklist_cites_only_records_that_exist(self) -> None:
         """The change checklist attributes each item to a registry record.
 

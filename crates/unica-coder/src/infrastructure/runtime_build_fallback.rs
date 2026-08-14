@@ -12,6 +12,7 @@ pub(crate) struct BuildAttempt<'a> {
     pub(crate) timed_out: bool,
     pub(crate) cancelled: bool,
     pub(crate) stdout_truncated: bool,
+    pub(crate) stdout_had_invalid_utf8: bool,
     pub(crate) stdout: &'a str,
 }
 
@@ -119,6 +120,7 @@ pub(crate) fn classify_partial_platform_failure(
         || attempt.timed_out
         || attempt.cancelled
         || attempt.stdout_truncated
+        || attempt.stdout_had_invalid_utf8
         || attempt.process_exit_code != Some(4)
     {
         return None;
@@ -241,6 +243,7 @@ mod tests {
             timed_out: false,
             cancelled: false,
             stdout_truncated: false,
+            stdout_had_invalid_utf8: false,
             stdout,
         }
     }

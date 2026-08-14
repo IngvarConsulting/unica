@@ -18,6 +18,24 @@ allowed-tools:
 - Direct shell runner calls are allowed only for maintainer/debug investigation when MCP itself is broken; do not use them as task examples.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested execution. Default dry run is the safe preview.
 
+## Project health preflight
+
+After clone or workspace initialization, and before `build` or `dump`, call
+`unica.project.status` for the workspace. Read its two flags independently:
+
+- `ready: false` blocks source operations until the source-set diagnostics are
+  fixed; `sourceSet.path: .` is an error and should be replaced with a strict
+  child such as `src/` in `v8project.yaml` after the sources are moved safely;
+- `repositoryReady: false` means portable Git policy has not been proved. It
+  does not mean that Unica is unusable without Git, but it blocks a claim that
+  the project is ready for team work or another clone.
+
+Explain `diagnostics[].remediation.steps` to the user. Entries under
+`diagnostics[].remediation.commands` are structured suggestions, not permission
+to edit `.gitignore`, `.gitattributes`, the Git index, or files. Never execute
+them automatically; obtain the authority required for the particular change,
+then call `unica.project.status` again after the approved fix.
+
 ## Быстрый выбор операции
 
 | Намерение | MCP `operation` | Cache/event после успешного non-dry-run |

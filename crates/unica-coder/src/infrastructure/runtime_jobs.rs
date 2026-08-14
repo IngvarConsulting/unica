@@ -1438,6 +1438,7 @@ impl RuntimeJobService {
                             timed_out: false,
                             cancelled: false,
                             stdout_truncated: output.fallback_receipt_truncated,
+                            stdout_had_invalid_utf8: false,
                             stdout,
                         })
                         .is_some()
@@ -2442,6 +2443,7 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: truncated,
+                stdout_had_invalid_utf8: false,
                 stdout: &output,
             })
             .is_none(),
@@ -2471,6 +2473,7 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: receipt_truncated,
+                stdout_had_invalid_utf8: false,
                 stdout: &receipt,
             })
             .is_some(),
@@ -2500,6 +2503,7 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: receipt_truncated,
+                stdout_had_invalid_utf8: false,
                 stdout: &receipt,
             })
             .is_some(),
@@ -2529,6 +2533,7 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: receipt_truncated,
+                stdout_had_invalid_utf8: false,
                 stdout: &receipt,
             })
             .is_some(),
@@ -2558,6 +2563,7 @@ mod tests {
             timed_out: false,
             cancelled: false,
             stdout_truncated: false,
+            stdout_had_invalid_utf8: false,
             stdout: &receipt,
         })
         .is_some());

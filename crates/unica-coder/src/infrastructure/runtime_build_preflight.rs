@@ -172,7 +172,7 @@ impl RuntimeBuildPreflight {
 /// Normalizes build identity without inspecting configuration support. A
 /// default build remains a default v8-runner build; Unica decides about one
 /// full fallback only from the structured result of an actually failed partial
-/// step (#404, ADR-0060).
+/// step (#404, ADR-0061).
 pub(crate) fn plan_runtime_invocation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,

@@ -1456,6 +1456,8 @@ fn run_index_command_with_heartbeat(
         args: command.args.clone(),
         cwd: command.cwd.clone(),
         env: command.env.clone(),
+        env_remove: Vec::new(),
+        capture_limits: None,
         timeout: Some(command.timeout),
         cancellation: command.cancellation.clone(),
     })
@@ -4697,6 +4699,8 @@ source-set:
                 cancelled: true,
                 stdout_truncated: false,
                 stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             Duration::from_millis(1),
         );
@@ -4718,6 +4722,8 @@ source-set:
                 cancelled: false,
                 stdout_truncated: false,
                 stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             Duration::from_millis(1),
         );
@@ -4739,6 +4745,8 @@ source-set:
                 cancelled: false,
                 stdout_truncated: true,
                 stderr_truncated: true,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
             Duration::from_millis(1),
         );

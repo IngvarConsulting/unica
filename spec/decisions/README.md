@@ -77,7 +77,8 @@
 - [ADR-0057: Свежесть RLM доказывается доверенным поколением исходников](0057-rlm-source-revision-freshness.md)
 - [ADR-0058: `git-grep` возвращает ограниченный неранжируемый префикс](0058-bounded-unranked-git-grep-search.md)
 - [ADR-0059: Несовместимая версия RLM получает новое поколение состояния](0059-rlm-generacionnyy-perehod.md)
-- [ADR-0060: Доказанный отказ частичной runtime-сборки один раз повторяется полным путём](0060-failed-partial-runtime-build-fallback.md)
+- [ADR-0060: `unica.project.status` публикует типизированную готовность проекта](0060-project-status-publikuet-gotovnost-proekta.md)
+- [ADR-0061: Доказанный отказ частичной runtime-сборки один раз повторяется полным путём](0061-failed-partial-runtime-build-fallback.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе
