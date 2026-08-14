@@ -13,7 +13,7 @@ pub use archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files};
 pub use cache::{RuntimeInstallation, RuntimeInstaller};
 pub use download::{Downloader, HttpDownloader};
 pub use error::{BootstrapError, Result};
-pub use host::{runtime_cache_root, verify_installed_plugin_metadata};
+pub use host::{provider_state_root, runtime_cache_root, verify_installed_plugin_metadata};
 pub use manifest::{
     ReleaseIdentity, RuntimeAsset, RuntimeFile, RuntimeManifest, SourceIdentity, TargetRuntime,
 };

@@ -400,7 +400,7 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
             ) {
                 return Ok(RlmSearchAttempt::Unready(readiness));
             }
-            let detail = rlm_index_progress_detail(&context.workspace);
+            let detail = rlm_index_progress_detail(&context.workspace, &context.source_root.path);
             if reported_detail.as_deref() != Some(detail) {
                 context.report_progress(ProviderProgressUpdate {
                     phase: SearchProviderPhase::Preparing,
@@ -421,8 +421,8 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
     }
 }
 
-fn rlm_index_progress_detail(context: &WorkspaceContext) -> &'static str {
-    let is_update = read_bsl_index_status(context)
+fn rlm_index_progress_detail(context: &WorkspaceContext, source_root: &Path) -> &'static str {
+    let is_update = read_bsl_index_status(context, source_root)
         .and_then(|status| status.message)
         .is_some_and(|message| message.contains("update"));
     if is_update {

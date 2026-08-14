@@ -16,9 +16,15 @@ const REQUIRED_TOOLS: [&str; 3] = [
     "unica.standards.explain",
 ];
 
-pub fn verify_mcp_runtime(entrypoint: &Path, runtime_root: &Path, timeout: Duration) -> Result<()> {
+pub fn verify_mcp_runtime(
+    entrypoint: &Path,
+    runtime_root: &Path,
+    provider_state_root: &Path,
+    timeout: Duration,
+) -> Result<()> {
     let mut child = Command::new(entrypoint)
         .env("UNICA_PLUGIN_ROOT", runtime_root)
+        .env("UNICA_PROVIDER_STATE_DIR", provider_state_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

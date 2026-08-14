@@ -866,6 +866,14 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Scope:** runtime
 
+### INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE — Постоянное состояние поставщика не индексирует само себя
+
+- **Rule:** Постоянное состояние `RLM` выводится из нормализованных `workspaceRoot + sourceRoot`, остаётся вне индексируемого `sourceRoot`, изолирует разные рабочие пространства, `worktree` и корни исходников и передаётся одинаково индексатору и читающему процессу.
+- **Decision:** ADR-0018
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
+- **Scope:** runtime
+
 ### INV-CACHE-WRITE-FREE-PREVIEW — Сухой прогон сообщает о последствиях, не записывая состояние
 
 - **Rule:** Вызов в режиме сухого прогона сообщает о своём влиянии на кеш и не
