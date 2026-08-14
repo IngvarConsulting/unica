@@ -79,8 +79,11 @@ python3.12 scripts/ci/check-tool-contracts.py --target darwin-arm64 --tools-dir 
 
 Unica проверяет исполняемый жизненный цикл `rlm-bsl-index` (`build`, `update`,
 `info`), а чтения анализа кода выполняет только через опубликованный MCP API
-`rlm-tools-bsl`. Проверка не принимает путь к базе и не зависит от частной
-SQLite-схемы поставщика (INV-CACHE-ORCHESTRATOR-OWNED).
+`rlm-bsl-mcp`. Оба исполняемых файла принадлежат апстриму и группе релиза
+`rlm-tools-bsl`; текущее закрепление — `v1.33.0`, коммит
+`3e6920cd015a61af4ba7aa1a5f1fedd8bc935549`. Проверка не принимает путь к базе
+и не зависит от частной SQLite-схемы поставщика
+(INV-CACHE-ORCHESTRATOR-OWNED).
 
 Для записей `runtime-tool-contract` индекс отслеживает skill и MCP-контракт,
 выведенные из репозитория runtime-инструмента. Версия бинарника здесь не

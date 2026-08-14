@@ -146,20 +146,25 @@ INV-MCP-CODE-SEARCH-ROLES).
 
 Здесь и далее RLM — внутренний индекс и движок чтения BSL. Unica строит индекс
 поставляемым инструментом `rlm-bsl-index`, а читает его через MCP-процесс
-`rlm-tools-bsl`
-(`Dach-Coin/rlm-tools-bsl`, MIT, версия закреплена в
-`plugins/unica/third-party/tools.lock.json`). Аббревиатура пришла из
-апстрим-проекта и в репозитории не расшифровывается. Индекс — файл SQLite в
-каталоге `rlm-tools-bsl/` под постоянным корнем состояния поставщика. Этот
-корень всегда выводится из нормализованной пары `workspaceRoot + sourceRoot`.
+`rlm-bsl-mcp`. Оба исполняемых файла принадлежат апстриму и группе релиза
+`rlm-tools-bsl` (`Dach-Coin/rlm-tools-bsl`, MIT) и закреплены на `v1.33.0`,
+коммит `3e6920cd015a61af4ba7aa1a5f1fedd8bc935549`, в
+`plugins/unica/third-party/tools.lock.json`. Аббревиатура пришла из
+апстрим-проекта и в репозитории не расшифровывается. Индекс построителя 15 —
+файл SQLite в каталоге `rlm-bsl/index-v15` под постоянным корнем состояния
+поставщика. Этот корень всегда выводится из нормализованной пары
+`workspaceRoot + sourceRoot`.
 Если корень кеша рабочего пространства лежит вне выбранного корня исходников,
 парный корень помещается под `<cacheRoot>/provider-state`; иначе он помещается
-под внешний `UNICA_PROVIDER_STATE_DIR`. Старые каталоги не переносятся и не
-удаляются; общие `bsl_index_status.json` и `bsl_index.lock` под корнем кеша
-рабочего пространства остаются нетронутыми и больше не учитываются. Текущие
-`bsl_index_status.json` и `bsl_index.lock` координируют только ту же
-нормализованную пару и находятся в её постоянном корне
-(INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE). Публичных инструментов
+под внешний `UNICA_PROVIDER_STATE_DIR`. Каталог, маркер состояния и маркер
+блокировки построителя 14 не переносятся, не открываются и не удаляются;
+построитель 15 начинает холодное поколение. Его `bsl_index_status.json` и
+`bsl_index.lock` координируют только ту же нормализованную пару и поколение и
+находятся соответственно под
+`caches/rlm-bsl/index-v15` и `locks/rlm-bsl/index-v15` её постоянного корня.
+Состояния `building` и `incomplete` запрещают чтение с опорой на `RLM`
+(INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE,
+INV-CACHE-GENERATION-CUTOVER). Публичных инструментов
 `unica.rlm.*` не существует: индекс скрыт за `unica.code.*`, а связанные секции
 метаданных доступны только как обогащение `unica.meta.info`
 (INV-PRODUCT-NO-ENGINE-ROUTING, INV-MCP-META-SURFACE); его частную SQLite-схему Unica не читает

@@ -874,6 +874,14 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Scope:** runtime
 
+### INV-CACHE-GENERATION-CUTOVER — Несовместимый индекс получает новое поколение
+
+- **Rule:** Несовместимая версия построителя `RLM` получает отдельные каталог данных, маркер состояния и маркер блокировки; новая версия строит своё поколение с нуля, не открывает, не обновляет и не удаляет предыдущее, а состояния `building` и `incomplete` запрещают чтение, поддерживаемое `RLM`.
+- **Decision:** ADR-0059
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
+- **Scope:** runtime, packaged
+
 ### INV-CACHE-WRITE-FREE-PREVIEW — Сухой прогон сообщает о последствиях, не записывая состояние
 
 - **Rule:** Вызов в режиме сухого прогона сообщает о своём влиянии на кеш и не
