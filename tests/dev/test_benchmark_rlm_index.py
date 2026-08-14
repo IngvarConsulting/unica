@@ -1,4 +1,7 @@
+import copy
+import contextlib
 import importlib.util
+import io
 import json
 import stat
 import subprocess
@@ -6,6 +9,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from collections import Counter
 from pathlib import Path
 
 
@@ -121,8 +125,18 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             selected=selected
             or {"bsl-1": [Path("src/CommonModules/One/Module.bsl")]},
             samples=samples,
+            command_evidence=[],
             final_clean=True,
         )
+
+    def paired_documents(
+        self, *, selected: dict[str, list[Path]] | None = None
+    ) -> list[dict]:
+        source = self.sample_document(selected=selected)
+        packaged = copy.deepcopy(source)
+        packaged["label"] = "packaged-v1.33.0"
+        packaged["executableSha256"] = "c" * 64
+        return [packaged, source]
 
     def test_refuses_a_dirty_tracked_tree(self) -> None:
         repo = self.git_fixture()
@@ -184,6 +198,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             samples={
                 "bsl-1": [MODULE.Sample(5.2, 120_000_000, True, "fresh")]
             },
+            command_evidence=[],
             final_clean=True,
         )
         self.assertEqual(result["schemaVersion"], 1)
@@ -225,6 +240,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
                     )
                 ]
             },
+            command_evidence=[],
             final_clean=True,
         )
 
@@ -246,27 +262,93 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             },
         )
 
-    def test_markdown_summary_rejects_absolute_workspace_paths(self) -> None:
-        document = MODULE.result_document(
+    def test_result_serializes_reverse_and_final_command_evidence(self) -> None:
+        self.assertTrue(
+            hasattr(MODULE, "CommandEvidence"), "command evidence type is missing"
+        )
+        command_evidence = [
+            MODULE.CommandEvidence(
+                scenario="bsl-1",
+                iteration=1,
+                phase="reverse",
+                action="update",
+                duration_seconds=1.25,
+                stdout_tail="Fast path: True",
+                stderr_tail="",
+                status="unknown",
+                git_fast_path=True,
+            ),
+            MODULE.CommandEvidence(
+                scenario="final",
+                iteration=None,
+                phase="final-info",
+                action="info",
+                duration_seconds=0.5,
+                stdout_tail="Status: fresh",
+                stderr_tail="",
+                status="fresh",
+                git_fast_path=None,
+            ),
+        ]
+        sample = MODULE.Sample(5.2, 120_000_000, True, "fresh")
+
+        result = MODULE.result_document(
             label="packaged-v1.33.0",
             source_commit="3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
             executable_sha256="a" * 64,
             repo_head="b" * 40,
-            selected={"bsl-1": [Path("/client/workspace/Secret/Module.bsl")]},
-            samples={
-                "bsl-1": [MODULE.Sample(5.2, 120_000_000, True, "fresh")]
-            },
+            selected={"bsl-1": [Path("src/CommonModules/One/Module.bsl")]},
+            samples={"bsl-1": [sample]},
+            command_evidence=command_evidence,
             final_clean=True,
         )
+
+        self.assertEqual(
+            result["commands"],
+            [
+                {
+                    "sequence": 1,
+                    "scenario": "bsl-1",
+                    "iteration": 1,
+                    "phase": "reverse",
+                    "action": "update",
+                    "durationSeconds": 1.25,
+                    "stdoutTail": "Fast path: True",
+                    "stderrTail": "",
+                    "status": "unknown",
+                    "gitFastPath": True,
+                },
+                {
+                    "sequence": 2,
+                    "scenario": "final",
+                    "iteration": None,
+                    "phase": "final-info",
+                    "action": "info",
+                    "durationSeconds": 0.5,
+                    "stdoutTail": "Status: fresh",
+                    "stderrTail": "",
+                    "status": "fresh",
+                    "gitFastPath": None,
+                },
+            ],
+        )
+        self.assertEqual(
+            result["samples"]["bsl-1"][0]["durationSeconds"], 5.2
+        )
+
+    def test_markdown_summary_rejects_absolute_workspace_paths(self) -> None:
+        documents = self.paired_documents(
+            selected={"bsl-1": [Path("/client/workspace/Secret/Module.bsl")]}
+        )
         with self.assertRaisesRegex(RuntimeError, "summary contains an absolute path"):
-            MODULE.markdown_summary([document])
+            MODULE.markdown_summary(documents)
 
     def test_markdown_summary_uses_raw_samples_without_selected_names(self) -> None:
-        document = self.sample_document(
+        documents = self.paired_documents(
             selected={"bsl-1": [Path("src/Clients/SecretObject/Module.bsl")]}
         )
 
-        summary = MODULE.markdown_summary([document])
+        summary = MODULE.markdown_summary(documents)
 
         self.assertTrue(summary.startswith("## Замер RLM v1.33.0\n"))
         self.assertIn("`rlm-tools-bsl-v1.33.0-build.1`", summary)
@@ -277,7 +359,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         self.assertNotIn("src/", summary)
 
     def test_summary_section_replacement_is_idempotent(self) -> None:
-        summary = MODULE.markdown_summary([self.sample_document()])
+        summary = MODULE.markdown_summary(self.paired_documents())
         original = "# Existing issue\n\n## Existing section\n\nKeep me.\n"
 
         once = MODULE.replace_summary_section(original, summary)
@@ -286,6 +368,55 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         self.assertEqual(once, twice)
         self.assertEqual(once.count("## Замер RLM v1.33.0"), 1)
         self.assertIn("Keep me.", once)
+
+    def test_summary_requires_exactly_one_packaged_and_one_source_result(self) -> None:
+        source = self.sample_document()
+        with self.assertRaisesRegex(RuntimeError, "exactly one packaged-v1.33.0"):
+            MODULE.markdown_summary([source])
+
+        duplicate_source = copy.deepcopy(source)
+        with self.assertRaisesRegex(RuntimeError, "exactly one packaged-v1.33.0"):
+            MODULE.markdown_summary([source, duplicate_source])
+
+    def test_summary_requires_the_exact_source_commit_for_both_results(self) -> None:
+        documents = self.paired_documents()
+        for document in documents:
+            document["sourceCommit"] = "d" * 40
+
+        with self.assertRaisesRegex(RuntimeError, "exact source commit"):
+            MODULE.markdown_summary(documents)
+
+    def test_summary_requires_identical_repository_heads(self) -> None:
+        documents = self.paired_documents()
+        documents[0]["repoHead"] = "d" * 40
+
+        with self.assertRaisesRegex(RuntimeError, "identical repoHead"):
+            MODULE.markdown_summary(documents)
+
+    def test_summary_requires_identical_selected_mappings(self) -> None:
+        documents = self.paired_documents()
+        documents[0]["selected"] = {
+            "bsl-1": ["src/CommonModules/Different/Module.bsl"]
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "identical selected mapping"):
+            MODULE.markdown_summary(documents)
+
+    def test_summary_requires_fast_path_for_every_update_sample(self) -> None:
+        for scenario_name in ("noop-update", "bsl-1"):
+            for invalid_fast_path in (False, None):
+                with self.subTest(
+                    scenario=scenario_name, git_fast_path=invalid_fast_path
+                ):
+                    documents = self.paired_documents()
+                    documents[1]["samples"][scenario_name][0][
+                        "gitFastPath"
+                    ] = invalid_fast_path
+
+                    with self.assertRaisesRegex(
+                        RuntimeError, "gitFastPath=True"
+                    ):
+                        MODULE.markdown_summary(documents)
 
     def test_rejects_overlapping_or_nonempty_index_directories(self) -> None:
         repo = self.git_fixture()
@@ -303,6 +434,34 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         (sibling / "existing.db").write_text("occupied", encoding="utf-8")
         with self.assertRaisesRegex(RuntimeError, "must be empty"):
             MODULE.validate_index_dir(repo, sibling)
+
+    def test_benchmark_mode_rejects_append_to_at_the_cli_boundary(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                MODULE.main(
+                    [
+                        "--repo",
+                        str(self.root / "missing-repo"),
+                        "--executable",
+                        str(self.root / "missing-executable"),
+                        "--label",
+                        "packaged-v1.33.0",
+                        "--source-commit",
+                        "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+                        "--index-dir",
+                        str(self.root / "missing-index"),
+                        "--output",
+                        str(self.root / "result.json"),
+                        "--append-to",
+                        str(self.root / "issue-body.md"),
+                    ]
+                )
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn(
+            "--append-to can only be used with --summarize", stderr.getvalue()
+        )
 
     def test_run_benchmark_executes_all_scenarios_and_restores_the_repo(self) -> None:
         repo = self.git_fixture(bsl_count=120, root_xml_count=12, form_xml_count=2)
@@ -376,6 +535,84 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         ]
         self.assertEqual(commands[0]["action"], "build")
         self.assertTrue(all(command["repo"] == str(repo.resolve()) for command in commands))
+
+        self.assertIn("commands", document, "raw command evidence ledger is missing")
+        evidence = document["commands"]
+        self.assertEqual(len(evidence), len(commands))
+        self.assertEqual(
+            [record["action"] for record in evidence],
+            [record["action"] for record in commands],
+        )
+        self.assertEqual(
+            [record["sequence"] for record in evidence],
+            list(range(1, len(evidence) + 1)),
+        )
+        self.assertEqual(
+            Counter(record["phase"] for record in evidence),
+            Counter(
+                {
+                    "measured": 36,
+                    "measured-info": 36,
+                    "reverse": 30,
+                    "reverse-info": 30,
+                    "final-info": 1,
+                }
+            ),
+        )
+        self.assertEqual(
+            {
+                key: evidence[0][key]
+                for key in (
+                    "sequence",
+                    "scenario",
+                    "iteration",
+                    "phase",
+                    "action",
+                    "stderrTail",
+                    "status",
+                    "gitFastPath",
+                )
+            },
+            {
+                "sequence": 1,
+                "scenario": "cold-build",
+                "iteration": 1,
+                "phase": "measured",
+                "action": "build",
+                "stderrTail": "",
+                "status": "unknown",
+                "gitFastPath": None,
+            },
+        )
+        self.assertIn("Index built", evidence[0]["stdoutTail"])
+        first_incremental = [
+            record
+            for record in evidence
+            if record["scenario"] == "bsl-1" and record["iteration"] == 1
+        ]
+        self.assertEqual(
+            [(record["phase"], record["action"]) for record in first_incremental],
+            [
+                ("measured", "update"),
+                ("measured-info", "info"),
+                ("reverse", "update"),
+                ("reverse-info", "info"),
+            ],
+        )
+        self.assertEqual(
+            (evidence[-1]["scenario"], evidence[-1]["phase"], evidence[-1]["action"]),
+            ("final", "final-info", "info"),
+        )
+        self.assertEqual(evidence[-1]["status"], "fresh")
+        self.assertTrue(
+            all(
+                isinstance(record["durationSeconds"], float)
+                and record["durationSeconds"] >= 0
+                and isinstance(record["stdoutTail"], str)
+                and isinstance(record["stderrTail"], str)
+                for record in evidence
+            )
+        )
 
 
 if __name__ == "__main__":

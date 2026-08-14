@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 MARKER = "UNICA_RLM_BENCHMARK_MARKER"
 SECTION_HEADING = "## Замер RLM v1.33.0"
 RELEASE_TAG = "rlm-tools-bsl-v1.33.0-build.1"
+SOURCE_COMMIT = "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549"
 TAIL_LIMIT = 4_000
 HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -63,6 +64,19 @@ class Sample:
     stderr_tail: str = ""
     info_stdout_tail: str = ""
     info_stderr_tail: str = ""
+
+
+@dataclass(frozen=True)
+class CommandEvidence:
+    scenario: str
+    iteration: int | None
+    phase: str
+    action: str
+    duration_seconds: float
+    stdout_tail: str
+    stderr_tail: str
+    status: str
+    git_fast_path: bool | None
 
 
 @dataclass(frozen=True)
@@ -331,12 +345,40 @@ def _recursive_size(path: Path) -> int:
     return sum(entry.stat().st_size for entry in path.rglob("*") if entry.is_file())
 
 
+def _record_command(
+    command_evidence: list[CommandEvidence],
+    *,
+    scenario: str,
+    iteration: int | None,
+    phase: str,
+    action: str,
+    result: _CommandResult,
+) -> None:
+    command_evidence.append(
+        CommandEvidence(
+            scenario=scenario,
+            iteration=iteration,
+            phase=phase,
+            action=action,
+            duration_seconds=result.duration_seconds,
+            stdout_tail=result.stdout_tail,
+            stderr_tail=result.stderr_tail,
+            status=_parse_status(result.stdout_tail),
+            git_fast_path=_parse_fast_path(result.stdout_tail),
+        )
+    )
+
+
 def _measure_action(
     executable: Path,
     action: str,
     repo: Path,
     index_dir: Path,
     *,
+    scenario: str,
+    iteration: int,
+    phase: str,
+    command_evidence: list[CommandEvidence],
     capture_peak_rss: bool = False,
 ) -> Sample:
     measured = _run_rlm(
@@ -346,7 +388,23 @@ def _measure_action(
         index_dir,
         capture_peak_rss=capture_peak_rss,
     )
+    _record_command(
+        command_evidence,
+        scenario=scenario,
+        iteration=iteration,
+        phase=phase,
+        action=action,
+        result=measured,
+    )
     info = _run_rlm(executable, "info", repo, index_dir)
+    _record_command(
+        command_evidence,
+        scenario=scenario,
+        iteration=iteration,
+        phase=f"{phase}-info",
+        action="info",
+        result=info,
+    )
     combined = f"{measured.stdout_tail}\n{info.stdout_tail}"
     return Sample(
         duration_seconds=measured.duration_seconds,
@@ -402,6 +460,23 @@ def _sample_dict(sample: Sample) -> dict[str, object]:
     }
 
 
+def _command_evidence_dict(
+    evidence: CommandEvidence, sequence: int
+) -> dict[str, object]:
+    return {
+        "sequence": sequence,
+        "scenario": evidence.scenario,
+        "iteration": evidence.iteration,
+        "phase": evidence.phase,
+        "action": evidence.action,
+        "durationSeconds": evidence.duration_seconds,
+        "stdoutTail": evidence.stdout_tail,
+        "stderrTail": evidence.stderr_tail,
+        "status": evidence.status,
+        "gitFastPath": evidence.git_fast_path,
+    }
+
+
 def result_document(
     *,
     label: str,
@@ -410,6 +485,7 @@ def result_document(
     repo_head: str,
     selected: dict[str, list[Path]],
     samples: dict[str, list[Sample]],
+    command_evidence: list[CommandEvidence],
     final_clean: bool,
 ) -> dict[str, object]:
     """Build the stable raw-result schema without discarding individual samples."""
@@ -435,6 +511,10 @@ def result_document(
             name: [_sample_dict(sample) for sample in raw_samples]
             for name, raw_samples in samples.items()
         },
+        "commands": [
+            _command_evidence_dict(evidence, sequence)
+            for sequence, evidence in enumerate(command_evidence, start=1)
+        ],
         "finalClean": final_clean,
     }
 
@@ -464,19 +544,24 @@ def run_benchmark(
         raise RuntimeError(f"repository HEAD is not a 40-character Git object ID: {repo_head}")
 
     samples: dict[str, list[Sample]] = {scenario.name: [] for scenario in SCENARIOS}
+    command_evidence: list[CommandEvidence] = []
     cold = _require_fresh(
         _measure_action(
             resolved_executable,
             "build",
             resolved_repo,
             resolved_index,
+            scenario="cold-build",
+            iteration=1,
+            phase="measured",
+            command_evidence=command_evidence,
             capture_peak_rss=True,
         ),
         "build",
     )
     samples["cold-build"].append(cold)
 
-    for _ in range(5):
+    for iteration in range(1, 6):
         samples["noop-update"].append(
             _require_fresh(
                 _measure_action(
@@ -484,25 +569,33 @@ def run_benchmark(
                     "update",
                     resolved_repo,
                     resolved_index,
+                    scenario="noop-update",
+                    iteration=iteration,
+                    phase="measured",
+                    command_evidence=command_evidence,
                 ),
                 "noop update",
             )
         )
 
-    def reverse_update() -> None:
-        _require_fresh(
-            _measure_action(
-                resolved_executable,
-                "update",
-                resolved_repo,
-                resolved_index,
-            ),
-            "reverse update",
-        )
-
     for scenario in SCENARIOS[2:]:
         paths = selected[scenario.paths_key]
-        for _ in range(scenario.repeats):
+        for iteration in range(1, scenario.repeats + 1):
+            def reverse_update() -> None:
+                _require_fresh(
+                    _measure_action(
+                        resolved_executable,
+                        "update",
+                        resolved_repo,
+                        resolved_index,
+                        scenario=scenario.name,
+                        iteration=iteration,
+                        phase="reverse",
+                        command_evidence=command_evidence,
+                    ),
+                    "reverse update",
+                )
+
             sample = run_incremental_scenario(
                 repo=resolved_repo,
                 paths=paths,
@@ -513,6 +606,10 @@ def run_benchmark(
                         "update",
                         resolved_repo,
                         resolved_index,
+                        scenario=scenario.name,
+                        iteration=iteration,
+                        phase="measured",
+                        command_evidence=command_evidence,
                     ),
                     scenario.name,
                 ),
@@ -521,6 +618,14 @@ def run_benchmark(
             samples[scenario.name].append(sample)
 
     final_info = _run_rlm(resolved_executable, "info", resolved_repo, resolved_index)
+    _record_command(
+        command_evidence,
+        scenario="final",
+        iteration=None,
+        phase="final-info",
+        action="info",
+        result=final_info,
+    )
     final_status = _parse_status(final_info.stdout_tail)
     marker_absent = _marker_absent(resolved_repo, MARKER)
     try:
@@ -541,6 +646,7 @@ def run_benchmark(
         repo_head=repo_head,
         selected=selected,
         samples=samples,
+        command_evidence=command_evidence,
         final_clean=final_clean,
     )
 
@@ -558,6 +664,8 @@ def _validate_summary_document(document: dict[str, object]) -> None:
         raise RuntimeError("summary contains an invalid source commit")
     if not HEX_64.fullmatch(str(document.get("executableSha256", ""))):
         raise RuntimeError("summary contains an invalid executable SHA-256")
+    if not HEX_40.fullmatch(str(document.get("repoHead", ""))):
+        raise RuntimeError("summary contains an invalid repository HEAD")
     if document.get("finalClean") is not True:
         raise RuntimeError("summary requires a clean final benchmark tree")
     selected = document.get("selected")
@@ -568,6 +676,31 @@ def _validate_summary_document(document: dict[str, object]) -> None:
             raise RuntimeError("summary contains invalid selected input provenance")
         if any(not isinstance(path, str) or _is_absolute_path(path) for path in paths):
             raise RuntimeError("summary contains an absolute path")
+
+
+def _validate_summary_pair(
+    documents: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    expected_labels = {"packaged-v1.33.0", "source-v1.33.0"}
+    labels = [document.get("label") for document in documents]
+    if len(documents) != 2 or set(labels) != expected_labels:
+        raise RuntimeError(
+            "summary requires exactly one packaged-v1.33.0 and one "
+            "source-v1.33.0 result"
+        )
+    by_label = {str(document["label"]): document for document in documents}
+    ordered = [by_label["packaged-v1.33.0"], by_label["source-v1.33.0"]]
+    for document in ordered:
+        _validate_summary_document(document)
+        if document["sourceCommit"] != SOURCE_COMMIT:
+            raise RuntimeError(
+                f"summary requires exact source commit {SOURCE_COMMIT} for both results"
+            )
+    if ordered[0]["repoHead"] != ordered[1]["repoHead"]:
+        raise RuntimeError("summary requires identical repoHead values")
+    if ordered[0]["selected"] != ordered[1]["selected"]:
+        raise RuntimeError("summary requires identical selected mapping")
+    return ordered
 
 
 def _duration_stats(
@@ -588,6 +721,10 @@ def _duration_stats(
         duration = sample.get("durationSeconds")
         if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
             raise RuntimeError(f"summary contains an invalid duration for {scenario.name}")
+        if scenario.name != "cold-build" and sample.get("gitFastPath") is not True:
+            raise RuntimeError(
+                f"summary requires gitFastPath=True for every {scenario.name} sample"
+            )
         durations.append(float(duration))
     return len(durations), statistics.median(durations), min(durations), max(durations)
 
@@ -618,10 +755,7 @@ def _format_integer(value: int | None) -> str:
 
 def markdown_summary(documents: list[dict[str, object]]) -> str:
     """Produce a sanitized aggregate section; selected object paths are never emitted."""
-    if not documents:
-        raise RuntimeError("summary requires at least one benchmark result")
-    for document in documents:
-        _validate_summary_document(document)
+    documents = _validate_summary_pair(documents)
 
     lines = [
         SECTION_HEADING,
@@ -767,6 +901,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.summarize is None and args.append_to is not None:
+        parser.error("--append-to can only be used with --summarize")
     try:
         if args.summarize is not None:
             if args.append_to is None:
