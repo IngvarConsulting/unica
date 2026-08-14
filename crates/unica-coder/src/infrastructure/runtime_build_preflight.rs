@@ -313,6 +313,9 @@ fn workspace_identity_changed_error() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
@@ -432,16 +435,20 @@ mod tests {
         assert!(error.contains("regular file"), "{error}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn build_preflight_rejects_a_linked_local_config_overlay() {
         let (_directory, context) = workspace();
         let outside = tempfile::NamedTempFile::new().unwrap();
-        std::os::unix::fs::symlink(
+        let outcome = create_file_link_fixture_for_test(
             outside.path(),
             context.workspace_root.join("v8project.local.yaml"),
         )
-        .unwrap();
+        .expect("unexpected file-link fixture error must fail the test");
+        match outcome {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        }
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
 
         let error = RuntimeBuildPreflight::capture(&args, &context)
