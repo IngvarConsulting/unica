@@ -250,9 +250,11 @@ const LEAVE_DIRECTORY: u8 = 2;
 /// access changes the generation instead of reading as "nothing changed".
 const UNREADABLE_ENTRY: u8 = 3;
 
-/// Every walk over the source corpus skips this directory, so anything that
-/// builds a corpus of its own — the lexical search provider included — reads
-/// the name from here instead of spelling it again.
+/// The generated cache. It sits inside the source root but is not source, so
+/// the recursive walks skip it by name — this one and the source revision
+/// manifest — and the lexical search corpus excludes it. Anything else that
+/// descends the whole tree owes the same skip and reads the name from here
+/// rather than spelling it again.
 pub(crate) const GENERATED_DIR_NAME: &str = ".build";
 
 /// The walk is bound by metadata syscalls, not CPU, so it stops scaling early:

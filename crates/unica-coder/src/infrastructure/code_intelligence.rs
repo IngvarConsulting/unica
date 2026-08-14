@@ -1577,11 +1577,19 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let source_root = root.join("src");
-        let generated = source_root.join(".build/bsl-graph.db");
+        let database = source_root.join(".build/bsl-graph.db");
+        let sidecar = source_root.join(".build/entries.txt");
         let module = source_root.join("CommonModules/Продажи/Ext/Module.bsl");
-        std::fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(database.parent().unwrap()).unwrap();
         std::fs::create_dir_all(module.parent().unwrap()).unwrap();
-        std::fs::write(&generated, "index entry ПолитикаУчетаСерий\n").unwrap();
+        // The two shapes the real cache produces, in the order `git grep`
+        // reaches them: a database whose NUL bytes make it "Binary file …
+        // matches" — a record with no fields, so it lands in the diagnostics —
+        // and a text sidecar that parses into a hit and takes the budget.
+        let mut database_bytes = vec![0_u8];
+        database_bytes.extend_from_slice("index ПолитикаУчетаСерий\n".as_bytes());
+        std::fs::write(&database, &database_bytes).unwrap();
+        std::fs::write(&sidecar, "index entry ПолитикаУчетаСерий\n").unwrap();
         std::fs::write(&module, "// ПолитикаУчетаСерий\n").unwrap();
         assert!(std::process::Command::new("git")
             .args(["init", "--quiet"])
