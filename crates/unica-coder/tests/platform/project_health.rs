@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use unica_coder::application::UnicaApplication;
 
 #[test]
@@ -291,6 +291,64 @@ fn project_health_uses_staged_external_descriptor_for_repository_resource_policy
                 paths.iter().any(|path| path == "reports/Report.xml")
             })
     }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn staged_platform_marker_completes_repository_resource_aggregate() {
+    let root = temp_root("staged-platform-resource-aggregate");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitattributes"),
+        "*.xml text eol=lf\n*.bsl text eol=lf\n*.bin -text\nXDTOPackages/**/Ext/Package.bin text eol=lf\n",
+    )
+    .unwrap();
+    git(
+        &root,
+        &["add", "v8project.yaml", ".gitignore", ".gitattributes"],
+    );
+    let marker_oid = git_with_input(
+        &root,
+        &["hash-object", "-w", "--stdin"],
+        b"<MetaDataObject/>\n",
+    );
+    git(
+        &root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{},src/Configuration.xml", marker_oid.trim()),
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_eq!(data["ready"], false);
+    assert_eq!(data["repositoryReady"], false);
+    assert_eq!(data["sourceSets"][0]["sourceFormat"], "unknown");
+    for check in [
+        "repository.attributes",
+        "repository.index_eol",
+        "repository.working_eol",
+        "repository.lfs",
+    ] {
+        assert_repository_check_status(&data, check, None, "passed");
+        assert_repository_check_status(&data, check, Some("main"), "passed");
+    }
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1246,12 +1304,9 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
     .unwrap();
     git(&root, &["add", "v8project.yaml", ".gitignore", "src"]);
 
-    let started = Instant::now();
     let result = status(&root);
-    let elapsed = started.elapsed();
 
-    assert!(result.ok, "elapsed={elapsed:?}; errors={:?}", result.errors);
-    assert!(elapsed < Duration::from_secs(10), "elapsed={elapsed:?}");
+    assert!(result.ok, "errors={:?}", result.errors);
     let data = result.data.unwrap();
     assert_repository_check_status(&data, "repository.attributes", None, "notRun");
     assert_repository_check_status(

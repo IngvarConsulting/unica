@@ -2832,9 +2832,80 @@ pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
     }
 }
 
-#[cfg(all(not(windows), not(target_vendor = "apple")))]
+#[cfg(target_os = "linux")]
+pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
+    use std::mem::MaybeUninit;
+    use std::os::fd::AsRawFd;
+
+    let directory = open_absolute_directory_path_nofollow(path)?;
+    let mut filesystem = MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: directory owns a valid descriptor and fstatfs initializes the
+    // pointed structure on success.
+    if unsafe { libc::fstatfs(directory.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fstatfs succeeded above.
+    let filesystem_type = unsafe { filesystem.assume_init() }.f_type as u32 as u64;
+    let directory_flags = if matches!(
+        filesystem_type,
+        LINUX_EXT4_SUPER_MAGIC | LINUX_F2FS_SUPER_MAGIC
+    ) {
+        let mut flags: libc::c_long = 0;
+        // SAFETY: the descriptor is an open directory and flags points to
+        // writable storage of the type required by FS_IOC_GETFLAGS.
+        if unsafe { libc::ioctl(directory.as_raw_fd(), libc::FS_IOC_GETFLAGS, &mut flags) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Some(flags as u32)
+    } else {
+        None
+    };
+    linux_filesystem_case_sensitive_from_metadata(filesystem_type, directory_flags)
+}
+
+#[cfg(any(target_os = "linux", test))]
+const LINUX_EXT4_SUPER_MAGIC: u64 = 0x0000_ef53;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_F2FS_SUPER_MAGIC: u64 = 0xf2f5_2010;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_BTRFS_SUPER_MAGIC: u64 = 0x9123_683e;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_TMPFS_MAGIC: u64 = 0x0102_1994;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_RAMFS_MAGIC: u64 = 0x8584_58f6;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_FS_CASEFOLD_FL: u32 = 0x4000_0000;
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_filesystem_case_sensitive_from_metadata(
+    filesystem_type: u64,
+    directory_flags: Option<u32>,
+) -> io::Result<bool> {
+    match filesystem_type {
+        LINUX_EXT4_SUPER_MAGIC | LINUX_F2FS_SUPER_MAGIC => directory_flags
+            .map(|flags| flags & LINUX_FS_CASEFOLD_FL == 0)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Linux filesystem did not expose directory casefold flags",
+                )
+            }),
+        LINUX_BTRFS_SUPER_MAGIC | LINUX_TMPFS_MAGIC | LINUX_RAMFS_MAGIC => Ok(true),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "case-sensitivity cannot be proven for Linux filesystem type {filesystem_type:#x}"
+            ),
+        )),
+    }
+}
+
+#[cfg(all(not(windows), not(target_vendor = "apple"), not(target_os = "linux")))]
 pub(crate) fn host_filesystem_case_sensitive(_path: &Path) -> io::Result<bool> {
-    Ok(true)
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "filesystem case-sensitivity cannot be proven on this host",
+    ))
 }
 
 pub(crate) fn host_path_component_identity_key(
@@ -5137,6 +5208,35 @@ mod tests {
             "linked directory must fail closed: {result:?}"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn linux_filesystem_case_policy_is_mount_aware_and_fails_closed() {
+        const EXT4_SUPER_MAGIC: u64 = 0x0000_ef53;
+        const XFS_SUPER_MAGIC: u64 = 0x5846_5342;
+        const OVERLAYFS_SUPER_MAGIC: u64 = 0x794c_7630;
+        const CIFS_SUPER_MAGIC: u64 = 0xff53_4d42;
+        const FS_CASEFOLD_FL: u32 = 0x4000_0000;
+
+        assert!(
+            super::linux_filesystem_case_sensitive_from_metadata(EXT4_SUPER_MAGIC, Some(0),)
+                .unwrap()
+        );
+        assert!(!super::linux_filesystem_case_sensitive_from_metadata(
+            EXT4_SUPER_MAGIC,
+            Some(FS_CASEFOLD_FL),
+        )
+        .unwrap());
+        for filesystem_type in [
+            XFS_SUPER_MAGIC,
+            OVERLAYFS_SUPER_MAGIC,
+            CIFS_SUPER_MAGIC,
+            0x1234_5678,
+        ] {
+            let error = super::linux_filesystem_case_sensitive_from_metadata(filesystem_type, None)
+                .expect_err("unproven Linux filesystem semantics must fail closed");
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        }
     }
 
     #[cfg(windows)]

@@ -602,7 +602,7 @@ diagnostics.sort_by_key(|diagnostic| (
 агрегация складывает эти значения, а не число уже агрегированных объектов.
 
 Для доказанных runtime sidecars числом 1–20 публиковать одну команду
-`git rm --cached -- <path>...` с каждым sorted path отдельным argv. При count
+`git --literal-pathspecs rm --cached -- <path>...` с каждым sorted path отдельным argv. При count
 выше 20 не публиковать частичную команду: steps сообщают полный count, требуют
 получить exact список и повторить status. То же правило применяется к любой
 агрегированной mutating command: команда либо покрывает весь агрегат, либо

@@ -34,6 +34,11 @@ class ProjectHealthContractTests(unittest.TestCase):
             adr,
         )
         self.assertRegex(adr, r"сама\s+проверка индекс не изменяет")
+        self.assertRegex(
+            adr,
+            r"кажд(?:ый|ого)\s+уникально адресуем(?:ый|ого)\s+набор(?:а)?",
+        )
+        self.assertRegex(adr, r"не создаёт неразличимые проверки с\s+`sourceSet`")
         for invariant in (
             "INV-MCP-PROJECT-READINESS",
             "INV-SOURCE-ROOT-SEPARATION",
@@ -72,7 +77,14 @@ class ProjectHealthContractTests(unittest.TestCase):
             "### INV-SOURCE-SINGLE-RESOLVED-ROOT", maxsplit=1
         )[1].split("\n### ", maxsplit=1)[0]
 
-        self.assertIn("каждый объявленный набор", resolved_root)
+        self.assertRegex(
+            resolved_root,
+            r"кажд(?:ый|ого)\s+уникально адресуем(?:ый|ого)\s+набор(?:а)?",
+        )
+        self.assertRegex(
+            resolved_root,
+            r"не создаёт\s+неразличимые проверки с\s+`sourceSet`",
+        )
         self.assertNotIn(
             "`unica.project.status` и `unica.project.map`", resolved_root
         )

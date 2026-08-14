@@ -238,7 +238,7 @@ Git-предупреждения из `GitTrackingAdapter` удаляются и
     "commands": [
       {
         "program": "git",
-        "argv": ["rm", "--cached", "--", "src/ConfigDumpInfo.xml"],
+        "argv": ["--literal-pathspecs", "rm", "--cached", "--", "src/ConfigDumpInfo.xml"],
         "cwd": "/workspace"
       }
     ]

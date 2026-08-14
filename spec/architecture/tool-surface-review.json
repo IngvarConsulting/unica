@@ -15,7 +15,7 @@
   "unica.project.status": {
     "result": {
       "contract": "typed",
-      "now": "`data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные `checks[]`, `sourceSets` (`array` после завершённой source discovery, `null` когда discovery не доказала наборы; `sourceSets[].sourceFormat` отражает working-tree discovery, а применимость repository-проверок может дополнительно доказываться staged index без изменения опубликованного формата) и `diagnostics[]` с безопасной remediation (ADR-0060)",
+      "now": "`data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные общие и адресные по уникально адресуемому набору `checks[]` (группа с повторяющимся именем получает одну диагностику рабочего пространства с полным `count`, без неразличимых строк `sourceSet`), `sourceSets` (`array` после завершённой source discovery, `null` когда discovery не доказала наборы; `sourceSets[].sourceFormat` отражает working-tree discovery, а применимость repository-проверок может дополнительно доказываться staged index без изменения опубликованного формата) и `diagnostics[]` с безопасной remediation (ADR-0060)",
       "target": "достигнут"
     },
     "scenarios": [

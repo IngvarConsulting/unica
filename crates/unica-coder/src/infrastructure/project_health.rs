@@ -539,6 +539,15 @@ fn inspect_project_health_with(
         })
         .map(|entry| entry.repo_path.clone())
         .collect::<BTreeSet<_>>();
+    let eligible_resource_source_sets = eligible_resource_roots
+        .iter()
+        .map(|root| root.source_set.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let repository_resource_profiles_complete = incomplete_resource_source_sets.is_empty()
+        && declared_source_sets.iter().all(|source_set| {
+            source_set.source_format == crate::domain::project_sources::SourceFormat::Edt
+                || eligible_resource_source_sets.contains(source_set.name.as_str())
+        });
     if let Some(repository_root) = git.repository_root.as_ref().filter(|_| {
         repository_index_complete
             && git.resource_inspection_blocker.is_none()
@@ -558,7 +567,7 @@ fn inspect_project_health_with(
             &mut resource_matrix,
             resources.observations,
             &eligible_resource_roots,
-            layout.source_targets_complete && incomplete_resource_source_sets.is_empty(),
+            repository_resource_profiles_complete,
         );
         facts.extend(resources.facts);
     } else {
