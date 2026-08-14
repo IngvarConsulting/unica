@@ -1781,16 +1781,20 @@ pub(crate) fn open_any_child_nofollow(
     name: &std::ffi::OsStr,
 ) -> io::Result<(fs::File, OpenedChildKind)> {
     const FILE_OPEN: u32 = 0x0000_0001;
+    const FILE_OPEN_FOR_BACKUP_INTENT: u32 = 0x0000_4000;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
 
+    // FILE_OPEN_FOR_BACKUP_INTENT is required for an untyped handle to a directory entry.
+    // Without it, NtCreateFile reports a directory symlink as not found instead of returning
+    // the reparse-point handle that opened_child_kind must reject.
     let file = open_relative_child(
         parent,
         name,
         FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         0,
         FILE_OPEN,
-        FILE_OPEN_REPARSE_POINT,
+        FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT,
         None,
     )?;
     let kind = opened_child_kind(&file)?;
@@ -4376,6 +4380,34 @@ mod tests {
 
             let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link.txt"))
                 .expect("a no-follow open must return the reparse point itself");
+
+            assert_eq!(kind, OpenedChildKind::ReparsePoint);
+            assert_eq!(opened_child_kind(&opened).unwrap(), kind);
+            drop(opened);
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_open_any_child_nofollow_classifies_a_directory_reparse_point() {
+            const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+
+            let root = unique_temp_root("open-any-directory-reparse");
+            fs::create_dir_all(&root).unwrap();
+            let target = root.join("target");
+            fs::create_dir(&target).unwrap();
+            let link = root.join("link");
+            if let Err(error) = std::os::windows::fs::symlink_dir(&target, &link) {
+                if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) {
+                    fs::remove_dir_all(root).unwrap();
+                    return;
+                }
+                panic!("failed to create directory symlink: {error}");
+            }
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link"))
+                .expect("a no-follow open must return the directory reparse point itself");
 
             assert_eq!(kind, OpenedChildKind::ReparsePoint);
             assert_eq!(opened_child_kind(&opened).unwrap(), kind);

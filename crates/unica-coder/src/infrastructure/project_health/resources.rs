@@ -3544,13 +3544,18 @@ mod tests {
 
         let inspection = inspect_policy(&fixture);
 
-        assert!(inspection.facts.iter().any(|fact| matches!(
-            fact,
-            ProjectHealthFact::GitInspectionIncomplete {
-                check: ProjectCheckId::RepositoryLfs,
-                ..
-            }
-        )));
+        assert!(
+            inspection.facts.iter().any(|fact| matches!(
+                fact,
+                ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryLfs,
+                    ..
+                }
+            )),
+            "facts={:?}; observations={:?}",
+            inspection.facts,
+            inspection.observations
+        );
         assert!(!inspection.facts.iter().any(|fact| matches!(
             fact,
             ProjectHealthFact::LfsConsider { largest_path, .. }
