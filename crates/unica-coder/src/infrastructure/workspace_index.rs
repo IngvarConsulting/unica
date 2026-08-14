@@ -35,6 +35,8 @@ const LOCK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const LOCK_SCHEMA_VERSION: u32 = 1;
 const RLM_PRODUCT_DIR: &str = "rlm-bsl";
 const RLM_INDEX_GENERATION: &str = "index-v15";
+const RLM_PYTHON_UTF8: &str = "1";
+const RLM_PYTHON_IO_ENCODING: &str = "utf-8:surrogateescape";
 const STATUS_FILE_NAME: &str = "bsl_index_status.json";
 const LOCK_FILE_NAME: &str = "bsl_index.lock";
 pub(crate) const SOURCE_REVISION_GENERATION_ARG: &str = "__sourceRevisionGeneration";
@@ -46,6 +48,23 @@ pub(crate) fn rlm_provider_state_root(
     source_root: &Path,
 ) -> Result<PathBuf, String> {
     rlm_provider_state_root_with(context, source_root, neutral_provider_state_root())
+}
+
+pub(crate) fn rlm_process_environment(generation_root: PathBuf) -> Vec<(OsString, OsString)> {
+    vec![
+        (
+            OsString::from("RLM_INDEX_DIR"),
+            generation_root.into_os_string(),
+        ),
+        (
+            OsString::from("PYTHONUTF8"),
+            OsString::from(RLM_PYTHON_UTF8),
+        ),
+        (
+            OsString::from("PYTHONIOENCODING"),
+            OsString::from(RLM_PYTHON_IO_ENCODING),
+        ),
+    ]
 }
 
 fn rlm_provider_state_root_with(
@@ -632,10 +651,7 @@ impl<'a> WorkspaceIndexService<'a> {
             "could not locate Unica plugin root for internal RLM index adapter lookup".to_string()
         })?;
         let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-index", true)?.program;
-        let env = vec![(
-            OsString::from("RLM_INDEX_DIR"),
-            rlm_generation_root(context, source_root)?.into_os_string(),
-        )];
+        let env = rlm_process_environment(rlm_generation_root(context, source_root)?);
         let root = source_root.as_os_str().to_os_string();
         Ok(IndexCommands {
             info: IndexCommand {
@@ -2079,6 +2095,15 @@ mod tests {
         move |name: &str| entries.get(name).cloned()
     }
 
+    fn index_command_env<'a>(command: &'a IndexCommand, name: &str) -> &'a std::ffi::OsStr {
+        command
+            .env
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_os_str())
+            .unwrap_or_else(|| panic!("index command must carry {name}"))
+    }
+
     fn default_source_root(context: &WorkspaceContext) -> PathBuf {
         context.workspace_root.join("src")
     }
@@ -2435,9 +2460,14 @@ mod tests {
         let commands = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
             .commands(&context, &source_root, &CancellationToken::new())
             .unwrap();
-        let actual = PathBuf::from(&commands.info.env[0].1);
+        let actual = PathBuf::from(index_command_env(&commands.info, "RLM_INDEX_DIR"));
 
         assert_eq!(actual, state_root.join("rlm-bsl/index-v15"));
+        assert_eq!(index_command_env(&commands.info, "PYTHONUTF8"), "1");
+        assert_eq!(
+            index_command_env(&commands.info, "PYTHONIOENCODING"),
+            "utf-8:surrogateescape"
+        );
         assert_eq!(
             fs::read_to_string(legacy.join("builder-14-sentinel")).unwrap(),
             "keep"
@@ -2462,8 +2492,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            PathBuf::from(&commands.info.env[0].1),
+            PathBuf::from(index_command_env(&commands.info, "RLM_INDEX_DIR")),
             expected_reader_environment
+        );
+        assert_eq!(index_command_env(&commands.info, "PYTHONUTF8"), "1");
+        assert_eq!(
+            index_command_env(&commands.info, "PYTHONIOENCODING"),
+            "utf-8:surrogateescape"
         );
         assert_eq!(PathBuf::from(&commands.info.args[2]), source_root);
         cleanup(&context);
@@ -2692,7 +2727,10 @@ mod tests {
         assert_eq!(report.warnings, vec!["rlm index build started"]);
         assert_eq!(runner.backgrounds.borrow()[0].action, "build");
         assert_eq!(
-            PathBuf::from(&runner.backgrounds.borrow()[0].primary.env[0].1),
+            PathBuf::from(index_command_env(
+                &runner.backgrounds.borrow()[0].primary,
+                "RLM_INDEX_DIR",
+            )),
             rlm_generation_root(&context, &source_root).unwrap()
         );
         assert_eq!(fs::read(&legacy_db).unwrap(), before[0]);
@@ -3287,9 +3325,8 @@ source-set:
         let backgrounds = runner.backgrounds.borrow();
         assert_eq!(backgrounds[0].primary.args[0..2], ["index", "build"]);
         assert!(backgrounds[0].recovery_build.is_none());
-        assert_eq!(backgrounds[0].primary.env[0].0, "RLM_INDEX_DIR");
         assert_eq!(
-            PathBuf::from(&backgrounds[0].primary.env[0].1),
+            PathBuf::from(index_command_env(&backgrounds[0].primary, "RLM_INDEX_DIR",)),
             rlm_generation_root(
                 &context,
                 &normalize_path_identity(&context.workspace_root.join("src")).unwrap()

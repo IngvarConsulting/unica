@@ -45,6 +45,11 @@ V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
 V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
 V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS = 60
 RLM_MCP_CONTRACT_TIMEOUT_SECONDS = 120.0
+RLM_PYTHON_UTF8_ENV = {
+    "PYTHONUTF8": "1",
+    "PYTHONIOENCODING": "utf-8:surrogateescape",
+}
+COMMAND_DIAGNOSTIC_LIMIT = 4_000
 
 RLM_CONTRACT_CONFIGURATION_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
@@ -809,6 +814,8 @@ def run_command(
             cwd=cwd,
             env=None if env is None else {**os.environ, **env},
             text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -817,6 +824,15 @@ def run_command(
     except subprocess.TimeoutExpired as exc:
         return 1, f"timed out after {timeout}s: {exc}"
     return result.returncode, result.stdout + result.stderr
+
+
+def bounded_command_diagnostics(output: str, private_root: Path) -> str:
+    sanitized = output.replace(str(private_root), "<tools-dir>").strip()
+    if len(sanitized) <= COMMAND_DIAGNOSTIC_LIMIT:
+        return sanitized
+    marker = "\n...[truncated]...\n"
+    side = (COMMAND_DIAGNOSTIC_LIMIT - len(marker)) // 2
+    return sanitized[:side] + marker + sanitized[-side:]
 
 
 def detect_target() -> str:
@@ -857,9 +873,19 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
         if not tool.exists():
             errors.append(f"{label}: binary not found: {tool}")
             continue
-        status, output = run_command([str(tool), *args], tools_dir)
+        command_env = RLM_PYTHON_UTF8_ENV if tool_name.startswith("rlm-bsl-") else None
+        status, output = run_command(
+            [str(tool), *args],
+            tools_dir,
+            env=command_env,
+        )
         if status != 0:
-            errors.append(f"{label}: command exited with {status}: {' '.join([tool.name, *args])}")
+            diagnostics = bounded_command_diagnostics(output, tools_dir)
+            diagnostic_suffix = f"; output: {diagnostics}" if diagnostics else ""
+            errors.append(
+                f"{label}: command exited with {status}: "
+                f"{' '.join([tool.name, *args])}{diagnostic_suffix}"
+            )
             continue
         for token in expected_tokens:
             if token not in output:
@@ -953,6 +979,7 @@ def check_rlm_mtime_recovery_contract(
             return fixture_errors
 
         env = {
+            **RLM_PYTHON_UTF8_ENV,
             "RLM_INDEX_DIR": str(root / "index"),
             "RLM_INDEX_SAMPLE_SIZE": "1000",
             "RLM_INDEX_SAMPLE_THRESHOLD": "0",
@@ -1191,6 +1218,7 @@ def check_rlm_mcp_contract(mcp_tool: Path, index_tool: Path) -> list[str]:
         if fixture_errors or workspace is None:
             return fixture_errors
         env = {
+            **RLM_PYTHON_UTF8_ENV,
             "RLM_INDEX_DIR": str(root / "index"),
             "RLM_INDEX_SAMPLE_SIZE": "1000",
             "RLM_INDEX_SAMPLE_THRESHOLD": "0",
@@ -1215,7 +1243,12 @@ def check_rlm_mcp_contract(mcp_tool: Path, index_tool: Path) -> list[str]:
                 RLM_MCP_CONTRACT_TIMEOUT_SECONDS,
                 cwd=workspace,
             )
+        except SystemExit:
+            return [*errors, "rlm MCP contract: failed to start MCP transport"]
+        except (OSError, RuntimeError):
+            return [*errors, "rlm MCP contract: failed to start MCP transport"]
 
+        try:
             def request(payload: dict[str, object], request_id: int) -> dict[str, object] | None:
                 try:
                     return session.request(payload)
@@ -1384,7 +1417,7 @@ def check_rlm_mcp_contract(mcp_tool: Path, index_tool: Path) -> list[str]:
 
             call_tool("rlm_end", {"session_id": session_id})
         except (OSError, RuntimeError):
-            errors.append("rlm MCP contract: failed to start MCP transport")
+            errors.append("rlm MCP contract: MCP transport failed")
         finally:
             if session is not None:
                 terminate_shared_mcp_session(session, root)

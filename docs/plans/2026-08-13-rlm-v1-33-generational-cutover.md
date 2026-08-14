@@ -83,7 +83,7 @@
 
 ### Task 1: Pin the Toolchain Manifest Contract Before Changing the Manifest
 
-**Repository:** `/Users/ingvarvilkman/Documents/git/unica-toolchain`
+**Repository:** `$UNICA_TOOLCHAIN_REPO`
 
 **Files:**
 - Create: `tests/test_rlm_manifest.py`
@@ -96,9 +96,11 @@
 - [ ] **Step 1: Create a clean toolchain worktree from current `origin/main`**
 
 ```bash
-git fetch origin main
-git worktree add \
-  /Users/ingvarvilkman/Documents/git/unica-toolchain-rlm-v1-33 \
+: "${UNICA_TOOLCHAIN_REPO:?Set UNICA_TOOLCHAIN_REPO to the clean toolchain checkout}"
+: "${UNICA_TOOLCHAIN_WORKTREE:?Set UNICA_TOOLCHAIN_WORKTREE to a new worktree path}"
+git -C "$UNICA_TOOLCHAIN_REPO" fetch origin main
+git -C "$UNICA_TOOLCHAIN_REPO" worktree add \
+  "$UNICA_TOOLCHAIN_WORKTREE" \
   -b codex/rlm-v1-33 \
   origin/main
 ```
@@ -106,8 +108,8 @@ git worktree add \
 Verify:
 
 ```bash
-git -C /Users/ingvarvilkman/Documents/git/unica-toolchain-rlm-v1-33 status --short --branch
-git -C /Users/ingvarvilkman/Documents/git/unica-toolchain-rlm-v1-33 rev-parse HEAD origin/main
+git -C "$UNICA_TOOLCHAIN_WORKTREE" status --short --branch
+git -C "$UNICA_TOOLCHAIN_WORKTREE" rev-parse HEAD origin/main
 ```
 
 Expected: clean branch and equal commit IDs before edits.
@@ -206,7 +208,7 @@ git commit -m "test(rlm): specify v1.33 toolchain release"
 
 ### Task 2: Update, Build, and Publish RLM v1.33.0 Through `unica-toolchain`
 
-**Repository:** `/Users/ingvarvilkman/Documents/git/unica-toolchain-rlm-v1-33`
+**Repository:** `$UNICA_TOOLCHAIN_WORKTREE`
 
 **Files:**
 - Modify: `manifests/rlm-tools-bsl.json`
@@ -429,7 +431,7 @@ If any release check fails, do not replace the release. Increase `buildRevision`
 
 ### Task 3: Close #487 in an Independent Unica Prerequisite PR
 
-**Repository:** `/Users/ingvarvilkman/Documents/git/unica`
+**Repository:** `$UNICA_REPO`
 
 **Files:**
 - Modify: `crates/unica-bootstrap/src/host/runtime_cache.rs`
@@ -455,9 +457,11 @@ If any release check fails, do not replace the release. Increase `buildRevision`
 - [ ] **Step 1: Create a clean #487 worktree from current `origin/main`**
 
 ```bash
-git fetch origin main
-git worktree add \
-  /Users/ingvarvilkman/Documents/git/unica/.worktrees/issue-487-rlm-state-root \
+: "${UNICA_REPO:?Set UNICA_REPO to the clean Unica checkout}"
+: "${ISSUE_487_WORKTREE:?Set ISSUE_487_WORKTREE to a new worktree path}"
+git -C "$UNICA_REPO" fetch origin main
+git -C "$UNICA_REPO" worktree add \
+  "$ISSUE_487_WORKTREE" \
   -b codex/issue-487-rlm-state-root \
   origin/main
 ```
@@ -703,9 +707,11 @@ Merge #487 before creating the consumer branch. Do not base the consumer PR on t
 - [ ] **Step 1: Create the consumer worktree only after the #487 merge is on `origin/main`**
 
 ```bash
-git fetch origin main
-git worktree add \
-  /Users/ingvarvilkman/Documents/git/unica/.worktrees/rlm-v1-33-consumer \
+: "${UNICA_REPO:?Set UNICA_REPO to the clean Unica checkout}"
+: "${UNICA_CONSUMER_WORKTREE:?Set UNICA_CONSUMER_WORKTREE to a new worktree path}"
+git -C "$UNICA_REPO" fetch origin main
+git -C "$UNICA_REPO" worktree add \
+  "$UNICA_CONSUMER_WORKTREE" \
   -b codex/rlm-v1-33-consumer \
   origin/main
 ```
@@ -925,7 +931,7 @@ uv sync --frozen --no-dev --directory "$source_checkout" --python python3.12
 - [ ] **Step 2: Prove the benchmark workspace is the unchanged #485 fixture**
 
 ```bash
-BENCHMARK_REPO=/Users/ingvarvilkman/Documents/git/Sendbox
+: "${BENCHMARK_REPO:?Set BENCHMARK_REPO to the clean issue #485 benchmark workspace}"
 test -d "$BENCHMARK_REPO/.git"
 git -C "$BENCHMARK_REPO" diff --quiet
 git -C "$BENCHMARK_REPO" diff --cached --quiet
@@ -934,8 +940,8 @@ test "$(git -C "$BENCHMARK_REPO" ls-files | wc -l | tr -d ' ')" = "48159"
 git -C "$BENCHMARK_REPO" rev-parse HEAD
 ```
 
-This is the same real Sendbox checkout used for the earlier 48,159-file
-measurements. Stop if the tracked-file count or clean-tree proof differs.
+This is the same real 48,159-file checkout used for the earlier measurements.
+Stop if the tracked-file count or clean-tree proof differs.
 
 - [ ] **Step 3: Run the packaged executable with its own empty index directory**
 
@@ -1036,7 +1042,7 @@ The harness implementation in Task 4 must provide this `--summarize ... --append
 
 ### Task 6: Pin the New Consumer Identities, Assets, and Provenance
 
-**Repository:** `/Users/ingvarvilkman/Documents/git/unica/.worktrees/rlm-v1-33-consumer`
+**Repository:** `$UNICA_CONSUMER_WORKTREE`
 
 **Files:**
 - Modify: `plugins/unica/third-party/tools.lock.json`

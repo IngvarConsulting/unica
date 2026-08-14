@@ -928,16 +928,28 @@ class ProductContractTests(unittest.TestCase):
                 )
             return
         try:
-            if os.getpgid(parent_pid) == parent_pid:
+            if parent_pid and os.getpgid(parent_pid) == parent_pid:
                 os.killpg(parent_pid, signal.SIGKILL)
                 return
         except ProcessLookupError:
             pass
         for pid in (child_pid, parent_pid):
+            if not pid:
+                continue
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+    def cleanup_process_tree_best_effort(self, parent_pid: int, child_pid: int) -> None:
+        if parent_pid or child_pid:
+            self.kill_process_tree_best_effort(parent_pid, child_pid)
+
+    def test_rlm_hang_fixture_cleanup_uses_either_known_pid(self) -> None:
+        with patch.object(self, "kill_process_tree_best_effort") as kill_tree:
+            self.cleanup_process_tree_best_effort(0, 27182)
+
+        kill_tree.assert_called_once_with(0, 27182)
 
     def test_windows_best_effort_cleanup_targets_surviving_child_independently(
         self,
@@ -985,6 +997,67 @@ class ProductContractTests(unittest.TestCase):
             errors = module.check_tool_contracts(tools_dir)
 
         self.assertEqual(errors, [])
+
+    def test_rlm_help_forces_utf8_when_stdout_is_captured(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            tool = tools_dir / "rlm-bsl-index.py"
+            tool.write_text(
+                'print("build: Строить неполный индекс")\n',
+                encoding="utf-8",
+            )
+            with (
+                patch.object(
+                    module,
+                    "TOOL_HELP_CHECKS",
+                    [("rlm-bsl-index build", "rlm-bsl-index", [], ["build"])],
+                ),
+                patch.dict(
+                    os.environ,
+                    {
+                        "LC_ALL": "C",
+                        "LANG": "C",
+                        "PYTHONCOERCECLOCALE": "0",
+                        "PYTHONUTF8": "0",
+                        "PYTHONIOENCODING": "ascii",
+                    },
+                ),
+            ):
+                errors = module.check_tool_contracts(tools_dir)
+
+        self.assertEqual(errors, [])
+
+    def test_tool_help_failure_includes_bounded_sanitized_diagnostics(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            tool = tools_dir / "rlm-bsl-index.py"
+            tool.write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "print(f'OUT-ДИАГНОСТИКА cwd={Path.cwd()} ' + 'x' * 6000)\n"
+                "print(f'ERR-ДИАГНОСТИКА cwd={Path.cwd()}', file=sys.stderr)\n"
+                "raise SystemExit(7)\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                module,
+                "TOOL_HELP_CHECKS",
+                [("rlm-bsl-index build", "rlm-bsl-index", ["index", "build"], ["build"])],
+            ):
+                errors = module.check_tool_contracts(tools_dir)
+
+        self.assertEqual(len(errors), 1)
+        error = errors[0]
+        self.assertIn("command exited with 7", error)
+        self.assertIn("rlm-bsl-index.py index build", error)
+        self.assertIn("OUT-ДИАГНОСТИКА", error)
+        self.assertIn("ERR-ДИАГНОСТИКА", error)
+        self.assertNotIn(str(tools_dir), error)
+        self.assertLess(len(error), 5_000)
 
     def test_tool_help_contracts_do_not_fall_back_to_legacy_rlm_server_name(self) -> None:
         module = load_contract_module()
@@ -1342,6 +1415,75 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_rlm_mcp_contract_reports_session_constructor_system_exit(self) -> None:
+        module = load_contract_module()
+
+        class Shared:
+            class McpSession:
+                def __init__(self, *_args, **_kwargs):
+                    raise SystemExit("transport constructor failed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
+            with (
+                patch.object(module, "run_rlm_contract_process", return_value=(0, "")),
+                patch.object(module, "load_shared_mcp_smoke_module", return_value=Shared),
+            ):
+                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
+
+        self.assertTrue(any("failed to start MCP transport" in error for error in errors), errors)
+
+    def test_rlm_mcp_contract_does_not_label_post_start_failure_as_startup(self) -> None:
+        module = load_contract_module()
+
+        class Reader:
+            def join(self, timeout):
+                pass
+
+            def is_alive(self):
+                return False
+
+        class Stream:
+            def close(self):
+                pass
+
+        class Session:
+            def __init__(self, *_args, **_kwargs):
+                self.process = type(
+                    "Process",
+                    (),
+                    {"stdin": Stream(), "stdout": Stream(), "stderr": Stream()},
+                )()
+                self.reader = Reader()
+                self.error_reader = Reader()
+                self.calls = 0
+
+            def request(self, _payload):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"jsonrpc": "2.0", "id": 1, "result": {}}
+                raise RuntimeError("post-start transport failure")
+
+            def notify(self, _payload):
+                pass
+
+            def terminate_tree(self, _root):
+                pass
+
+        shared = type("Shared", (), {"McpSession": Session})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
+            with (
+                patch.object(module, "run_rlm_contract_process", return_value=(0, "")),
+                patch.object(module, "load_shared_mcp_smoke_module", return_value=shared),
+            ):
+                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
+
+        self.assertTrue(any("MCP transport failed" in error for error in errors), errors)
+        self.assertFalse(any("failed to start" in error for error in errors), errors)
+
     def test_rlm_mcp_contract_rejects_malformed_helper_payloads(self) -> None:
         module = load_contract_module()
         cases = [
@@ -1395,10 +1537,7 @@ class ProductContractTests(unittest.TestCase):
                 self.assertFalse(self.process_is_alive(parent_pid))
                 self.assertFalse(self.process_is_alive(child_pid))
             finally:
-                if parent_pid and (
-                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
-                ):
-                    self.kill_process_tree_best_effort(parent_pid, child_pid)
+                self.cleanup_process_tree_best_effort(parent_pid, child_pid)
 
     def test_rlm_mcp_contract_bounds_index_build_and_terminates_its_process_tree(self) -> None:
         module = load_contract_module()
@@ -1429,10 +1568,7 @@ class ProductContractTests(unittest.TestCase):
                 self.assertFalse(self.process_is_alive(parent_pid))
                 self.assertFalse(self.process_is_alive(child_pid))
             finally:
-                if child_pid and (
-                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
-                ):
-                    self.kill_process_tree_best_effort(parent_pid, child_pid)
+                self.cleanup_process_tree_best_effort(parent_pid, child_pid)
 
     def test_rlm_mcp_contract_closes_transport_pipes(self) -> None:
         module = load_contract_module()
@@ -1478,6 +1614,8 @@ class ProductContractTests(unittest.TestCase):
             self.assertEqual(env["RLM_INDEX_SAMPLE_SIZE"], "1000")
             self.assertEqual(env["RLM_INDEX_SAMPLE_THRESHOLD"], "0")
             self.assertEqual(env["RLM_INDEX_SKIP_SAMPLE_HOURS"], "0")
+            self.assertEqual(env["PYTHONUTF8"], "1")
+            self.assertEqual(env["PYTHONIOENCODING"], "utf-8:surrogateescape")
             return next(outputs)
 
         with patch.object(

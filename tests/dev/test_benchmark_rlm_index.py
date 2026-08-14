@@ -3,7 +3,6 @@ import contextlib
 import importlib.util
 import io
 import json
-import stat
 import subprocess
 import sys
 import tempfile
@@ -11,6 +10,7 @@ import textwrap
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -188,6 +188,29 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         MODULE.ensure_clean(repo)
         self.assertEqual(calls, ["reverse"])
 
+    def test_incremental_restore_routes_through_the_git_error_boundary(self) -> None:
+        repo = self.git_fixture()
+        selected = MODULE.select_inputs(repo)["bsl-1"]
+        with patch.object(MODULE, "_run_git", wraps=MODULE._run_git) as run_git:
+            MODULE.run_incremental_scenario(
+                repo=repo,
+                paths=selected,
+                marker="UNICA_RLM_BENCHMARK_MARKER",
+                measured_update=lambda: "measured",
+                reverse_update=lambda: None,
+            )
+
+        self.assertTrue(
+            any(
+                call.args[1:4] == ("restore", "--source=HEAD", "--")
+                for call in run_git.call_args_list
+            ),
+            run_git.call_args_list,
+        )
+
+    def test_parse_int_does_not_capture_digits_from_the_next_line(self) -> None:
+        self.assertIsNone(MODULE._parse_int("Methods", "Methods:\n123"))
+
     def test_result_keeps_raw_samples_and_provenance(self) -> None:
         result = MODULE.result_document(
             label="packaged-v1.33.0",
@@ -355,6 +378,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         self.assertIn("| source-v1.33.0 | No-op update | 5 | 3,00 с | 1,00–5,00 с |", summary)
         self.assertIn("12 290", summary)
         self.assertIn("220 748", summary)
+        self.assertIn("Макс. RSS среди всех завершённых дочерних процессов", summary)
         self.assertNotIn("SecretObject", summary)
         self.assertNotIn("src/", summary)
 
@@ -467,7 +491,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         repo = self.git_fixture(bsl_count=120, root_xml_count=12, form_xml_count=2)
         index_dir = self.root / "rlm-index"
         index_dir.mkdir()
-        executable = self.root / "fake-rlm-bsl-index"
+        executable = self.root / "fake-rlm-bsl-index.py"
         executable.write_text(
             textwrap.dedent(
                 """\
@@ -505,8 +529,6 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-
         document = MODULE.run_benchmark(
             repo=repo,
             executable=executable,

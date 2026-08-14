@@ -1567,21 +1567,28 @@ class RlmGenerationCutoverContractTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, rule)
 
-        plan = (
-            REPO_ROOT
-            / "docs/plans/2026-08-13-rlm-v1-33-generational-cutover.md"
-        ).read_text(encoding="utf-8")
-        self.assertIn(f"- **Rule:** {rule}", plan)
-
-    def test_glossary_preserves_the_prior_generation_not_builder_14_itself(self) -> None:
+    def test_glossary_delegates_generation_policy_to_its_normative_owners(self) -> None:
         glossary = (ARCHITECTURE_DIR / "glossary.md").read_text(encoding="utf-8")
         rlm_entry = glossary.split("- **RLM**", 1)[1].split("\n- **", 1)[0]
 
-        self.assertIn(
-            "прежнее поколение построителя 14 сохраняется и игнорируется",
-            rlm_entry,
+        self.assertIn("`ADR-0059`", rlm_entry)
+        self.assertIn("`INV-CACHE-GENERATION-CUTOVER`", rlm_entry)
+        for duplicated_policy in (
+            "`rlm-bsl/index-v15`",
+            "маркерами состояния и блокировки",
+            "поколение построителя 14",
+        ):
+            with self.subTest(duplicated_policy=duplicated_policy):
+                self.assertNotIn(duplicated_policy, rlm_entry)
+
+    def test_provenance_keeps_rlm_mcp_internal_and_unica_public(self) -> None:
+        provenance = (REPO_ROOT / "spec/provenance/README.md").read_text(
+            encoding="utf-8"
         )
-        self.assertNotIn("построитель 14 сохраняет и игнорирует", rlm_entry)
+        normalized = " ".join(provenance.split())
+        self.assertNotIn("опубликованный MCP API `rlm-bsl-mcp`", normalized)
+        self.assertIn("внутренний MCP API поставляемого процесса", normalized)
+        self.assertIn("Единственный публичный MCP-сервер — `unica`", normalized)
 
     def test_decision_context_marks_the_old_executable_as_pre_transition(self) -> None:
         decision = (

@@ -92,6 +92,28 @@ def design_documents() -> list[Path]:
 
 
 class LayoutTests(unittest.TestCase):
+    def test_rlm_cutover_archives_do_not_embed_private_workspace_identity(self) -> None:
+        paths = [
+            DESIGN_DIR / "2026-08-13-rlm-v1-33-generational-cutover-design.md",
+            PLANS_DIR / "2026-08-13-rlm-v1-33-generational-cutover.md",
+        ]
+        offenders = []
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for marker in ("/Users/", "Sendbox", "ingvarvilkman"):
+                if marker in text:
+                    offenders.append(f"{path.name}: {marker}")
+        self.assertEqual(offenders, [])
+
+    def test_registry_contract_tests_do_not_read_the_dated_rlm_plan(self) -> None:
+        registry_tests = (REPO_ROOT / "tests/ci/test_architecture_registry.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(
+            "2026-08-13-rlm-v1-33-generational-cutover.md",
+            registry_tests,
+        )
+
     def test_both_archive_trees_exist_and_are_marked(self) -> None:
         offenders = []
         for directory in (DESIGN_DIR, PLANS_DIR):

@@ -11,9 +11,9 @@ use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
-    ready_index_for_source_revision, rlm_generation_root, IndexBackgroundTaskTracker,
-    IndexReadiness, SystemIndexRunner, WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS,
-    SOURCE_REVISION_ARG, SOURCE_REVISION_GENERATION_ARG,
+    ready_index_for_source_revision, rlm_generation_root, rlm_process_environment,
+    IndexBackgroundTaskTracker, IndexReadiness, SystemIndexRunner, WorkspaceIndexService,
+    SOURCE_GENERATION_STALE_STATUS, SOURCE_REVISION_ARG, SOURCE_REVISION_GENERATION_ARG,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -2927,7 +2927,10 @@ fn rlm_transport_command(
     let mut command = Command::new(program);
     command
         .current_dir(&context.cwd)
-        .env("RLM_INDEX_DIR", rlm_generation_root(context, source_root)?);
+        .envs(rlm_process_environment(rlm_generation_root(
+            context,
+            source_root,
+        )?));
     Ok(command)
 }
 
@@ -4562,13 +4565,20 @@ mod tests {
 
         let command =
             rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
-        let actual = command
-            .get_envs()
-            .find(|(name, _)| *name == std::ffi::OsStr::new("RLM_INDEX_DIR"))
-            .and_then(|(_, value)| value)
-            .expect("reader command must carry RLM_INDEX_DIR");
+        let env = command.get_envs().collect::<HashMap<_, _>>();
 
-        assert_eq!(actual, expected.as_os_str());
+        assert_eq!(
+            env[std::ffi::OsStr::new("RLM_INDEX_DIR")],
+            Some(expected.as_os_str())
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONUTF8")],
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONIOENCODING")],
+            Some(std::ffi::OsStr::new("utf-8:surrogateescape"))
+        );
         cleanup(&context);
     }
 
@@ -4581,13 +4591,20 @@ mod tests {
 
         let command =
             rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
-        let actual = command
-            .get_envs()
-            .find(|(name, _)| *name == std::ffi::OsStr::new("RLM_INDEX_DIR"))
-            .and_then(|(_, value)| value)
-            .expect("reader command must carry RLM_INDEX_DIR");
+        let env = command.get_envs().collect::<HashMap<_, _>>();
 
-        assert_eq!(actual, expected.as_os_str());
+        assert_eq!(
+            env[std::ffi::OsStr::new("RLM_INDEX_DIR")],
+            Some(expected.as_os_str())
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONUTF8")],
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONIOENCODING")],
+            Some(std::ffi::OsStr::new("utf-8:surrogateescape"))
+        );
         cleanup(&context);
     }
 

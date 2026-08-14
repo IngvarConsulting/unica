@@ -253,11 +253,7 @@ def run_incremental_scenario(
         mutate(repo, paths, marker)
         return measured_update()
     finally:
-        subprocess.run(
-            ["git", "restore", "--source=HEAD", "--", *map(str, paths)],
-            cwd=repo,
-            check=True,
-        )
+        _run_git(repo, "restore", "--source=HEAD", "--", *map(str, paths))
         reverse_update()
         ensure_clean(repo)
 
@@ -275,6 +271,7 @@ def _tail(text: str) -> str:
 
 
 def _rss_bytes() -> int | None:
+    """Return max RSS across all reaped child processes, not one RLM command."""
     if resource is None:
         return None
     maximum = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
@@ -291,7 +288,12 @@ def _run_rlm(
     *,
     capture_peak_rss: bool = False,
 ) -> _CommandResult:
-    command = [str(executable), "index", action, str(repo)]
+    executable_command = (
+        [sys.executable, str(executable)]
+        if executable.suffix.lower() == ".py"
+        else [str(executable)]
+    )
+    command = [*executable_command, "index", action, str(repo)]
     env = {**os.environ, "RLM_INDEX_DIR": str(index_dir)}
     started = time.perf_counter()
     completed = subprocess.run(
@@ -315,8 +317,11 @@ def _run_rlm(
 
 
 def _parse_int(label: str, text: str) -> int | None:
-    match = re.search(rf"(?im)^\s*{re.escape(label)}:\s*([0-9][0-9\s]*)\s*$", text)
-    return int(match.group(1).replace(" ", "")) if match else None
+    match = re.search(
+        rf"(?im)^[ \t]*{re.escape(label)}:[ \t]*([0-9][0-9 \t]*)[ \t]*$",
+        text,
+    )
+    return int(re.sub(r"[ \t]", "", match.group(1))) if match else None
 
 
 def _parse_db_size(text: str) -> int | None:
@@ -818,7 +823,7 @@ def markdown_summary(documents: list[dict[str, object]]) -> str:
             "Параметры холодного build:",
             "",
             "| Вариант | Модули | Методы | DB size | Размер index dir | "
-            "Пиковый RSS |",
+            "Макс. RSS среди всех завершённых дочерних процессов |",
             "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
