@@ -1614,12 +1614,18 @@ class RuntimeReceiptContractTests(unittest.TestCase):
             DECISIONS_DIR / "0059-terminalnyy-receipt-runtime-v-odnom-vyzove.md"
         ).read_text(encoding="utf-8")
 
-    def test_build_fallback_policy_is_in_the_normative_decision_section(self) -> None:
+    def test_fallback_policy_is_in_the_normative_decision_section(self) -> None:
         section = DECISION_SECTION.search(self.decision)
         self.assertIsNotNone(section, "ADR-0059 must have a Decision section")
         body = section.group("body")
         self.assertIn("`unica.build.*`", body)
         self.assertRegex(body, r"запасн\w* пут")
+        self.assertRegex(
+            body,
+            r"(?s)`unica\.runtime\.job\.\*`[^.]*"
+            r"не используется как продолжение[^.]*"
+            r"запасной путь этого вызова\.",
+        )
 
     def test_runtime_receipt_rule_covers_packaged_guidance(self) -> None:
         record = self.records.get("INV-MCP-RUNTIME-RECEIPT")

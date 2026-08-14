@@ -8,6 +8,8 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MIN_RUNTIME_GUIDANCE_DOCS = 31
+MIN_RUNTIME_EXECUTE_EXAMPLES = 21
 
 
 # Both ways a document points at another one: a backticked path, where the
@@ -32,6 +34,27 @@ XDTO_DONOR_EVIDENCE = re.compile(
 
 def document_links(text: str) -> list[str]:
     return [match for pattern in DOCUMENT_LINK_PATTERNS for match in pattern.findall(text)]
+
+
+def runtime_execute_json_examples(text: str) -> list[dict]:
+    examples = []
+    for block_number, block in enumerate(
+        re.findall(r"```json\s*(.*?)```", text, re.DOTALL), start=1
+    ):
+        if "unica.runtime.execute" not in block:
+            continue
+        try:
+            payload = json.loads(block)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"invalid fenced runtime JSON example #{block_number}: {error}"
+            ) from error
+        if not isinstance(payload, dict):
+            raise ValueError(
+                f"fenced runtime JSON example #{block_number} must be an object"
+            )
+        examples.append(payload)
+    return examples
 
 
 def stale_route_guard_text(path: Path, text: str) -> str:
@@ -1736,6 +1759,27 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn('"sourceSet": "external-reports"', text)
         self.assertIn('"output": "build/external"', text)
 
+    def test_db_auth_check_numbers_only_the_two_credential_candidates(self) -> None:
+        text = (
+            self.skill_root() / "db-auth-check" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        credential_rule = text.split(
+            "## Правило пустых учетных данных", maxsplit=1
+        )[1].split("## Workflow", maxsplit=1)[0]
+
+        self.assertEqual(
+            re.findall(r"(?m)^(\d+)\.\s+(.+)$", credential_rule),
+            [
+                ("1", "`Администратор` с пустым паролем."),
+                ("2", "`Admin` с пустым паролем."),
+            ],
+        )
+        self.assertRegex(
+            credential_rule,
+            r"(?m)^После двух подтверждённых отказов остановись и спроси "
+            r"пользователя, из-под кого подключаться\.$",
+        )
+
     def test_all_runtime_execute_skill_guidance_is_preview_only(self) -> None:
         runtime_docs = []
         runtime_examples = []
@@ -1747,11 +1791,12 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             if "unica.runtime.execute" not in text and "v8-runner" not in text:
                 continue
             runtime_docs.append((doc, text))
-            for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
+            with self.subTest(path=doc.relative_to(self.repo_root())):
                 try:
-                    payload = json.loads(block)
-                except json.JSONDecodeError:
-                    continue
+                    payloads = runtime_execute_json_examples(text)
+                except ValueError as error:
+                    self.fail(str(error))
+            for payload in payloads:
                 if (
                     payload.get("method") == "tools/call"
                     and payload.get("params", {}).get("name")
@@ -1790,8 +1835,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertTrue(
             required_runtime_skills.issubset({doc for doc, _text in runtime_docs})
         )
-        self.assertGreater(len(runtime_docs), 30)
-        self.assertGreater(len(runtime_examples), 20)
+        self.assertGreaterEqual(len(runtime_docs), MIN_RUNTIME_GUIDANCE_DOCS)
+        self.assertGreaterEqual(
+            len(runtime_examples), MIN_RUNTIME_EXECUTE_EXAMPLES
+        )
         for doc, arguments in runtime_examples:
             with self.subTest(
                 path=doc.relative_to(self.repo_root()),
@@ -2001,10 +2048,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_v8_runner_examples_respect_single_call_runtime_admission(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
         text = skill_doc.read_text(encoding="utf-8")
-        calls = [
-            json.loads(block)
-            for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
-        ]
+        try:
+            calls = runtime_execute_json_examples(text)
+        except ValueError as error:
+            self.fail(str(error))
         arguments = [
             call["params"]["arguments"]
             for call in calls
@@ -2016,13 +2063,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             operation = example["operation"]
             with self.subTest(operation=operation, example=example):
                 self.assertIs(example.get("dryRun"), True)
-
-        applied_operations = {
-            example["operation"]
-            for example in arguments
-            if example.get("dryRun") is False
-        }
-        self.assertEqual(applied_operations, set())
 
         for required in (
             r"исходн\w* `tools/call`",
