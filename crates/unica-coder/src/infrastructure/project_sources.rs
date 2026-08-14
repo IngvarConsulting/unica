@@ -35,11 +35,28 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn set_before_project_input_secure_read_hook_for_test(hook: impl FnOnce(&Path) + 'static) {
+struct BeforeProjectInputSecureReadHookGuard;
+
+#[cfg(test)]
+impl Drop for BeforeProjectInputSecureReadHookGuard {
+    fn drop(&mut self) {
+        BEFORE_PROJECT_INPUT_SECURE_READ_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(test)]
+#[must_use]
+fn set_before_project_input_secure_read_hook_for_test(
+    hook: impl FnOnce(&Path) + 'static,
+) -> BeforeProjectInputSecureReadHookGuard {
     BEFORE_PROJECT_INPUT_SECURE_READ_HOOK.with(|slot| {
-        let previous = slot.replace(Some(Box::new(hook)));
-        assert!(previous.is_none(), "project input secure-read hook leaked");
+        let mut slot = slot.borrow_mut();
+        assert!(slot.is_none(), "project input secure-read hook leaked");
+        *slot = Some(Box::new(hook));
     });
+    BeforeProjectInputSecureReadHookGuard
 }
 
 fn run_before_project_input_secure_read_hook(path: &Path) {
@@ -395,16 +412,18 @@ fn snapshot_general_project_map_input(
 
     let identity = normalize_path_identity(path)?;
     let remaining = PROJECT_SOURCE_MAP_TOTAL_MAX_BYTES.saturating_sub(provenance.exact_bytes);
-    let maximum_bytes = if provenance.inputs.contains_key(&identity) {
+    let already_bound = provenance.inputs.contains_key(&identity);
+    let maximum_bytes = if already_bound {
         PROJECT_SOURCE_MAP_INPUT_MAX_BYTES
     } else {
         PROJECT_SOURCE_MAP_INPUT_MAX_BYTES.min(remaining)
     };
     if metadata.len() > maximum_bytes as u64 {
-        return Err(format!(
-            "project source-map input {} exceeds its {} byte limit",
-            path.display(),
-            maximum_bytes
+        return Err(project_input_byte_limit_error(
+            path,
+            maximum_bytes,
+            remaining,
+            already_bound,
         ));
     }
     let file = std::fs::File::open(path).map_err(|error| {
@@ -423,15 +442,39 @@ fn snapshot_general_project_map_input(
             )
         })?;
     if raw.len() > maximum_bytes {
-        return Err(format!(
-            "project source-map input {} exceeds its {} byte limit",
-            path.display(),
-            maximum_bytes
+        return Err(project_input_byte_limit_error(
+            path,
+            maximum_bytes,
+            remaining,
+            already_bound,
         ));
     }
     let raw = Arc::<[u8]>::from(raw);
     provenance.record_exact_file(identity, Arc::clone(&raw))?;
     Ok(Some(raw))
+}
+
+fn project_input_byte_limit_error(
+    path: &Path,
+    maximum_bytes: usize,
+    remaining_total_bytes: usize,
+    already_bound: bool,
+) -> String {
+    if already_bound {
+        return format!(
+            "project source-map input {} exceeds its per-input limit {} bytes",
+            path.display(),
+            PROJECT_SOURCE_MAP_INPUT_MAX_BYTES
+        );
+    }
+    format!(
+        "project source-map input {} exceeds its effective byte limit of {} bytes (per-input \
+         limit {} bytes; remaining total budget {} bytes)",
+        path.display(),
+        maximum_bytes,
+        PROJECT_SOURCE_MAP_INPUT_MAX_BYTES,
+        remaining_total_bytes
+    )
 }
 
 fn logical_project_input_identity(
@@ -868,6 +911,36 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn unconsumed_project_input_hook_does_not_leak_past_its_scope() {
+        {
+            let _guard = set_before_project_input_secure_read_hook_for_test(|_| {});
+        }
+
+        let _guard = set_before_project_input_secure_read_hook_for_test(|_| {});
+        run_before_project_input_secure_read_hook(Path::new("v8project.yaml"));
+    }
+
+    #[test]
+    fn general_project_input_reports_per_file_and_remaining_total_limits() {
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("v8project.yaml");
+        fs::write(&input, b"12345").unwrap();
+        let mut provenance = ProjectSourceMapProvenance::new(root.path()).unwrap();
+        provenance.exact_bytes = PROJECT_SOURCE_MAP_TOTAL_MAX_BYTES - 4;
+
+        let error = snapshot_general_project_map_input(&input, &mut provenance)
+            .expect_err("the remaining aggregate budget is smaller than this input");
+
+        assert!(
+            error.contains(&format!(
+                "per-input limit {PROJECT_SOURCE_MAP_INPUT_MAX_BYTES} bytes"
+            )),
+            "{error}"
+        );
+        assert!(error.contains("remaining total budget 4 bytes"), "{error}");
+    }
 
     #[test]
     fn detects_edt_configuration_and_platform_external_processor_source_sets() {
@@ -1384,7 +1457,7 @@ source-set:
         fs::remove_file(&probe).expect("remove file-link probe");
         let primary_for_hook = primary.clone();
         let alternate_for_hook = alternate.clone();
-        set_before_project_input_secure_read_hook_for_test(move |path| {
+        let _hook_guard = set_before_project_input_secure_read_hook_for_test(move |path| {
             assert_eq!(path, primary_for_hook);
             fs::remove_file(&primary_for_hook).expect("remove primary after metadata check");
             crate::infrastructure::platform::filesystem::create_file_symlink_for_test(

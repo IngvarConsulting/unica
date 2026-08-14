@@ -27,11 +27,28 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn set_before_support_evidence_hook_for_test(hook: impl FnOnce() + 'static) {
+struct BeforeSupportEvidenceHookGuard;
+
+#[cfg(test)]
+impl Drop for BeforeSupportEvidenceHookGuard {
+    fn drop(&mut self) {
+        BEFORE_SUPPORT_EVIDENCE_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(test)]
+#[must_use]
+fn set_before_support_evidence_hook_for_test(
+    hook: impl FnOnce() + 'static,
+) -> BeforeSupportEvidenceHookGuard {
     BEFORE_SUPPORT_EVIDENCE_HOOK.with(|slot| {
-        let previous = slot.replace(Some(Box::new(hook)));
-        assert!(previous.is_none(), "support evidence hook leaked");
+        let mut slot = slot.borrow_mut();
+        assert!(slot.is_none(), "support evidence hook leaked");
+        *slot = Some(Box::new(hook));
     });
+    BeforeSupportEvidenceHookGuard
 }
 
 fn run_before_support_evidence_hook() {
@@ -81,6 +98,7 @@ impl RuntimeBuildPreflight {
         })?;
         if path_lock_identity(&current.workspace_root)
             != path_lock_identity(&context.workspace_root)
+            || current.workspace_epoch != context.workspace_epoch
         {
             return Err(
                 "incremental build workspace identity changed during authorization; retry with \
@@ -558,6 +576,16 @@ mod tests {
         changed: AtomicBool,
     }
 
+    #[test]
+    fn unconsumed_support_evidence_hook_does_not_leak_past_its_scope() {
+        {
+            let _guard = set_before_support_evidence_hook_for_test(|| {});
+        }
+
+        let _guard = set_before_support_evidence_hook_for_test(|| {});
+        run_before_support_evidence_hook();
+    }
+
     struct ConstantConfigurationSupportReader(ConfigurationSupportState);
 
     struct RestoringWorkspaceSupportReader {
@@ -827,12 +855,8 @@ mod tests {
             ),
         )
         .expect("write configuration root");
-        let context = WorkspaceContext {
-            cwd: nested,
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
+        let context = discover_workspace(Some(nested.clone())).expect("discover nested workspace");
+        assert_eq!(context.cwd, nested);
         let args = Map::from_iter([
             ("operation".to_string(), Value::String("build".to_string())),
             (
@@ -963,6 +987,41 @@ mod tests {
         let error = authorization
             .reauthorize_current_workspace()
             .expect_err("authorization from another workspace epoch must not launch");
+
+        assert!(error.contains("workspace identity changed"), "{error}");
+        assert!(error.contains("fullRebuild: true"), "{error}");
+    }
+
+    #[test]
+    fn initial_authorization_rejects_an_epoch_change_during_support_read() {
+        let root = TempDir::new().expect("create workspace");
+        let workspace = root.path().canonicalize().expect("canonical workspace");
+        let source = workspace.join("src");
+        fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        fs::create_dir_all(&source).expect("create source root");
+        fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .expect("write workspace config");
+        fs::write(source.join("Configuration.xml"), "<MetaDataObject/>")
+            .expect("write configuration root");
+        let head = workspace.join(".git/HEAD");
+        fs::write(&head, "ref: refs/heads/feature-a\n").expect("write initial HEAD");
+        let context = discover_workspace(Some(workspace)).expect("discover workspace");
+        let args = Map::from_iter([("operation".to_string(), Value::String("build".into()))]);
+
+        let error =
+            match plan_runtime_invocation(&args, &context, &HeadSwitchingSupportReader { head }) {
+                Ok(_) => panic!("initial authorization must retain its invocation epoch"),
+                Err(error) => error,
+            };
 
         assert!(error.contains("workspace identity changed"), "{error}");
         assert!(error.contains("fullRebuild: true"), "{error}");
@@ -1197,7 +1256,7 @@ mod tests {
         let context = discover_workspace(Some(workspace)).expect("discover workspace");
         let args = Map::from_iter([("operation".to_string(), Value::String("build".into()))]);
         let config_for_hook = config.clone();
-        set_before_support_evidence_hook_for_test(move || {
+        let _hook_guard = set_before_support_evidence_hook_for_test(move || {
             fs::write(&config_for_hook, replacement).expect("publish replacement project config");
             File::options()
                 .write(true)

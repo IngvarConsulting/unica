@@ -1848,12 +1848,10 @@ mod tests {
             include_bytes!("../../../../plugins/unica/third-party/tools.lock.json"),
         )
         .unwrap();
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
+        let mut context =
+            crate::infrastructure::workspace::discover_workspace(Some(workspace.clone()))
+                .expect("discover runtime preflight workspace");
+        context.cache_root = workspace.join(".build/unica");
         let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
             StaticConfigurationSupportStateReaderFactory(ConfigurationSupportState::Supported),
         ));

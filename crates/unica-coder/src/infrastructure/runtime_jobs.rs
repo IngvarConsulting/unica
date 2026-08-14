@@ -1622,15 +1622,13 @@ pub(crate) fn start_detached_worker(
             return Err(error);
         }
     };
-    let write_result = worker
-        .stdin
-        .take()
-        .ok_or_else(|| redacted_error("runtime job worker stdin is unavailable"))
-        .and_then(|mut stdin| {
-            write_worker_handoff_after_request(&mut stdin, &handoff, cancellation, || {})
-        });
-    let commit_cancelled = match write_result {
-        Ok(commit_cancelled) => commit_cancelled,
+    let store = RuntimeJobStore::new(cache_root.clone(), DEFAULT_STALE_AFTER);
+    // Hold the same inter-process guard used by worker activation while the
+    // commit frame is published. A cancellation observed during that write is
+    // then terminalized before a worker carrying the older serialized snapshot
+    // can claim Queued -> Running.
+    let lifecycle_lock = match store.acquire_active_lifecycle_lock() {
+        Ok(lifecycle_lock) => lifecycle_lock,
         Err(error) => {
             let _ = worker.kill();
             let _ = worker.wait();
@@ -1638,7 +1636,24 @@ pub(crate) fn start_detached_worker(
             return Err(error);
         }
     };
-    worker_start_result(&cache_root, queued, commit_cancelled)
+    let write_result = worker
+        .stdin
+        .take()
+        .ok_or_else(|| redacted_error("runtime job worker stdin is unavailable"))
+        .and_then(|mut stdin| {
+            write_worker_handoff_after_request(&mut stdin, &handoff, cancellation, || {})
+        });
+    let result = settle_worker_handoff_guarded(&store, queued, write_result, || {
+        let _ = worker.kill();
+    });
+    let reap_worker = result.is_err();
+    drop(lifecycle_lock);
+    if reap_worker {
+        // The worker may have been waiting for the lifecycle guard. Reap only
+        // after releasing it; termination was already requested while guarded.
+        let _ = worker.wait();
+    }
+    result
 }
 
 fn write_worker_handoff_after_request(
@@ -1657,7 +1672,10 @@ fn write_worker_handoff_after_request(
         },
         "runtime job worker commit",
     )?;
-    Ok(commit_cancelled)
+    // The token may flip while serde or the pipe flush is in progress. The
+    // caller holds the activation lifecycle guard and will publish this late
+    // observation durably before releasing the worker.
+    Ok(commit_cancelled || cancellation.is_cancelled())
 }
 
 fn write_worker_frame(
@@ -1675,18 +1693,57 @@ fn write_worker_frame(
         .map_err(|error| io_error(&format!("flush {label}"), &error))
 }
 
+#[cfg(test)]
 fn worker_start_result(
     cache_root: &Path,
     queued: RuntimeJobSnapshot,
-    commit_cancelled: bool,
+    cancellation_observed: bool,
 ) -> JobResult<RuntimeJobSnapshot> {
-    if commit_cancelled {
-        cancel_queued_job(cache_root, &queued.id)?;
+    let store = RuntimeJobStore::new(cache_root.to_path_buf(), DEFAULT_STALE_AFTER);
+    let _lifecycle_lock = store.acquire_active_lifecycle_lock()?;
+    worker_start_result_guarded(&store, queued, cancellation_observed)
+}
+
+fn worker_start_result_guarded(
+    store: &RuntimeJobStore,
+    queued: RuntimeJobSnapshot,
+    cancellation_observed: bool,
+) -> JobResult<RuntimeJobSnapshot> {
+    if cancellation_observed {
+        cancel_queued_job_guarded(store, &queued.id, || {})?;
         Err(cancelled_error(
             "runtime job start stopped before detached worker activation",
         ))
     } else {
         Ok(queued)
+    }
+}
+
+fn settle_worker_handoff_guarded(
+    store: &RuntimeJobStore,
+    queued: RuntimeJobSnapshot,
+    handoff_result: JobResult<bool>,
+    terminate_worker: impl FnOnce(),
+) -> JobResult<RuntimeJobSnapshot> {
+    match handoff_result {
+        Ok(cancellation_observed) => {
+            let result = worker_start_result_guarded(store, queued, cancellation_observed);
+            if result.is_err() {
+                // A false commit may already be readable by the worker. If
+                // publishing Cancelled fails, it must still be stopped before
+                // the activation guard is released.
+                terminate_worker();
+            }
+            result
+        }
+        Err(error) => {
+            // Even a delimiter/flush error can leave a complete false commit in
+            // the pipe. Stop that worker first, while activation remains
+            // guarded, and make the queued record terminal before unlock.
+            terminate_worker();
+            fail_queued_job_guarded(store, &queued.id, &error)?;
+            Err(error)
+        }
     }
 }
 
@@ -1767,6 +1824,10 @@ fn apply_runtime_success_effects(cwd: &Path, operation: &str, job_id: &str) -> J
 fn fail_queued_job(cache_root: &Path, id: &str, error: &str) -> JobResult<()> {
     let store = RuntimeJobStore::new(cache_root.to_path_buf(), DEFAULT_STALE_AFTER);
     let _lifecycle_lock = store.acquire_active_lifecycle_lock()?;
+    fail_queued_job_guarded(&store, id, error)
+}
+
+fn fail_queued_job_guarded(store: &RuntimeJobStore, id: &str, error: &str) -> JobResult<()> {
     let mut record = store.read_record(id)?;
     if record.phase != RuntimeJobPhase::Queued {
         return Ok(());
@@ -1790,6 +1851,14 @@ fn cancel_queued_job_after_guard(
 ) -> JobResult<()> {
     let store = RuntimeJobStore::new(cache_root.to_path_buf(), DEFAULT_STALE_AFTER);
     let _lifecycle_lock = store.acquire_active_lifecycle_lock()?;
+    cancel_queued_job_guarded(&store, id, after_guard)
+}
+
+fn cancel_queued_job_guarded(
+    store: &RuntimeJobStore,
+    id: &str,
+    after_guard: impl FnOnce(),
+) -> JobResult<()> {
     let mut record = store.read_record(id)?;
     if record.phase != RuntimeJobPhase::Queued {
         return Ok(());
@@ -3137,6 +3206,130 @@ mod tests {
     }
 
     #[test]
+    fn worker_handoff_observes_cancellation_during_commit_write() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let cancellation = CancellationToken::new();
+        let mut framed = CancelDuringCommitWriter::new(cancellation.clone());
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let lifecycle_lock = store
+            .acquire_active_lifecycle_lock()
+            .expect("guard activation while publishing commit");
+
+        let cancellation_observed =
+            write_worker_handoff_after_request(&mut framed, &handoff, &cancellation, || {})
+                .expect("write worker handoff");
+
+        assert!(
+            cancellation_observed,
+            "cancellation published while the commit frame was written must be observed"
+        );
+        let error = worker_start_result_guarded(&store, queued.clone(), cancellation_observed)
+            .expect_err("late cancellation must terminalize the queued job");
+        assert!(error.starts_with("cancelled:"), "{error}");
+        drop(lifecycle_lock);
+
+        let mut reader = io::BufReader::new(framed.bytes.as_slice());
+        let decoded: WorkerStartRequest =
+            read_worker_frame(&mut reader, "test worker request").unwrap();
+        let commit: WorkerStartCommit =
+            read_worker_frame(&mut reader, "test worker commit").unwrap();
+        assert!(
+            !commit.cancelled,
+            "the regression must exercise cancellation after the serialized snapshot"
+        );
+
+        let runner = Arc::new(FakeRunner::success_after(1));
+        run_worker_request(decoded, runner.clone())
+            .expect_err("the stale worker commit must not reactivate a cancelled job");
+        let record = store.read_record(&queued.id).expect("read cancelled job");
+        assert_eq!(record.phase, RuntimeJobPhase::Cancelled);
+        assert!(record.cancelled);
+        assert!(!store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+    }
+
+    #[test]
+    fn handoff_write_error_after_commit_does_not_release_a_queued_worker() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let cancellation = CancellationToken::new();
+        let mut framed = FailSecondFlushWriter::default();
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let lifecycle_lock = store
+            .acquire_active_lifecycle_lock()
+            .expect("guard activation while publishing commit");
+
+        let handoff_result =
+            write_worker_handoff_after_request(&mut framed, &handoff, &cancellation, || {});
+        assert!(handoff_result.is_err());
+        let mut terminated = false;
+        settle_worker_handoff_guarded(&store, queued.clone(), handoff_result, || {
+            terminated = true;
+        })
+        .expect_err("a handoff write error must fail the queued job");
+        assert!(
+            terminated,
+            "the worker must be terminated before the activation guard is released"
+        );
+        drop(lifecycle_lock);
+
+        // The complete false commit is still decodable. Durable terminalization
+        // must prevent those stale bytes from activating a provider process.
+        let mut reader = io::BufReader::new(framed.bytes.as_slice());
+        let decoded: WorkerStartRequest =
+            read_worker_frame(&mut reader, "test worker request").unwrap();
+        let commit: WorkerStartCommit =
+            read_worker_frame(&mut reader, "test worker commit").unwrap();
+        assert!(!commit.cancelled);
+        let runner = Arc::new(FakeRunner::success_after(1));
+
+        let activation = run_worker_request(decoded, runner.clone());
+
+        assert!(
+            activation.is_err(),
+            "a worker whose handoff failed must not activate from serialized bytes"
+        );
+        assert_eq!(runner.next_id.load(Ordering::Acquire), 100);
+        let record = store.read_record(&queued.id).expect("read failed job");
+        assert_eq!(record.phase, RuntimeJobPhase::Failed);
+        assert!(!store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn handoff_terminalization_error_terminates_worker_before_unlock() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build job");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let lifecycle_lock = store
+            .acquire_active_lifecycle_lock()
+            .expect("guard activation while terminalizing commit");
+        fs::remove_file(store.record_path(&queued.id).expect("job record path"))
+            .expect("inject terminalization failure");
+        let mut terminated = false;
+
+        settle_worker_handoff_guarded(&store, queued, Ok(true), || {
+            terminated = true;
+        })
+        .expect_err("missing durable record must fail terminalization");
+
+        assert!(
+            terminated,
+            "terminalization failure must stop the stale commit worker before unlock"
+        );
+        drop(lifecycle_lock);
+    }
+
+    #[test]
     fn incremental_build_handoff_without_authorization_is_rejected() {
         let cache = TestCache::new();
         let request = RuntimeJobRequest::new(
@@ -3314,6 +3507,65 @@ mod tests {
 
     struct TestCache {
         root: PathBuf,
+    }
+
+    struct CancelDuringCommitWriter {
+        bytes: Vec<u8>,
+        cancellation: CancellationToken,
+        completed_flushes: usize,
+        cancelled: bool,
+    }
+
+    impl CancelDuringCommitWriter {
+        fn new(cancellation: CancellationToken) -> Self {
+            Self {
+                bytes: Vec::new(),
+                cancellation,
+                completed_flushes: 0,
+                cancelled: false,
+            }
+        }
+    }
+
+    impl io::Write for CancelDuringCommitWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.completed_flushes > 0 && !self.cancelled {
+                self.cancellation.cancel();
+                self.cancelled = true;
+            }
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.completed_flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FailSecondFlushWriter {
+        bytes: Vec<u8>,
+        completed_flushes: usize,
+    }
+
+    impl io::Write for FailSecondFlushWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.completed_flushes += 1;
+            if self.completed_flushes == 2 {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "injected commit flush failure",
+                ))
+            } else {
+                Ok(())
+            }
+        }
     }
 
     impl TestCache {

@@ -3862,8 +3862,8 @@ mod tests {
     /// full path before the platform sees that unsupported command.
     #[test]
     fn runtime_adapter_forces_full_build_for_supported_configuration() {
-        let context = temp_context("runtime-supported-configuration-build");
-        configure_supported_designer_source(&context);
+        let mut context = temp_context("runtime-supported-configuration-build");
+        configure_supported_designer_source(&mut context);
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
@@ -3898,8 +3898,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_trims_supported_configuration_selector_before_preflight() {
-        let context = temp_context("runtime-supported-configuration-trimmed-selector");
-        configure_supported_designer_source(&context);
+        let mut context = temp_context("runtime-supported-configuration-trimmed-selector");
+        configure_supported_designer_source(&mut context);
         let support_reader_factory = WorkspaceSupportStateReaderFactory;
         let support_reader = support_reader_factory.create(&context);
         let args = Map::from_iter([
@@ -3921,8 +3921,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_refuses_unknown_build_selector_before_incremental_authorization() {
-        let context = temp_context("runtime-unknown-configuration-selector");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-unknown-configuration-selector");
+        configure_designer_source(&mut context);
         let support_reader = PanickingConfigurationSupportReader;
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
@@ -3977,13 +3977,14 @@ mod tests {
 
     #[test]
     fn runtime_adapter_refuses_invalid_selected_configuration_format() {
-        let context = temp_context("runtime-invalid-configuration-format");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-invalid-configuration-format");
+        configure_designer_source(&mut context);
         fs::write(
             context.workspace_root.join("src/.project"),
             "<projectDescription/>",
         )
         .unwrap();
+        refresh_test_context(&mut context);
         let support_reader = PanickingConfigurationSupportReader;
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
@@ -4003,8 +4004,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_ignores_invalid_unselected_configuration_format() {
-        let context = temp_context("runtime-unselected-invalid-configuration-format");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-unselected-invalid-configuration-format");
+        configure_designer_source(&mut context);
         fs::write(
             context.workspace_root.join("src/.project"),
             "<projectDescription/>",
@@ -4025,6 +4026,7 @@ mod tests {
             ),
         )
         .unwrap();
+        refresh_test_context(&mut context);
         let support_reader = PanickingConfigurationSupportReader;
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
@@ -4048,8 +4050,8 @@ mod tests {
     /// entry points.
     #[test]
     fn runtime_job_dry_run_forces_full_build_for_supported_configuration() {
-        let context = temp_context("runtime-job-supported-configuration-build");
-        configure_supported_designer_source(&context);
+        let mut context = temp_context("runtime-job-supported-configuration-build");
+        configure_supported_designer_source(&mut context);
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
@@ -4074,8 +4076,8 @@ mod tests {
 
     #[test]
     fn runtime_job_request_persists_full_build_for_supported_configuration() {
-        let context = temp_context("runtime-job-request-supported-configuration");
-        configure_supported_designer_source(&context);
+        let mut context = temp_context("runtime-job-request-supported-configuration");
+        configure_supported_designer_source(&mut context);
         let support_reader_factory = WorkspaceSupportStateReaderFactory;
         let support_reader = support_reader_factory.create(&context);
         let mut args = Map::new();
@@ -4102,8 +4104,8 @@ mod tests {
 
     #[test]
     fn runtime_job_stops_when_cancelled_during_build_preflight() {
-        let context = temp_context("runtime-job-cancel-during-build-preflight");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-job-cancel-during-build-preflight");
+        configure_designer_source(&mut context);
         let cancellation = CancellationToken::new();
         let support_reader = SequencedConfigurationSupportReader {
             states: std::sync::Mutex::new(vec![ConfigurationSupportState::NotSupported]),
@@ -4131,8 +4133,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_keeps_incremental_build_for_unsupported_configuration() {
-        let context = temp_context("runtime-unsupported-configuration-build");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-unsupported-configuration-build");
+        configure_designer_source(&mut context);
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
@@ -4163,8 +4165,8 @@ mod tests {
         let _environment_lock = crate::infrastructure::V8TR_CONFIG_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let context = temp_context("runtime-preflight-config-binding");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-preflight-config-binding");
+        configure_designer_source(&mut context);
         let alternate = context.workspace_root.join("alternate.yaml");
         fs::write(&alternate, "format: DESIGNER\nsource-set: []\n")
             .expect("write alternate runner config");
@@ -4194,8 +4196,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_reauthorizes_incremental_build_before_process_start() {
-        let context = temp_context("runtime-support-race-before-process-start");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-support-race-before-process-start");
+        configure_designer_source(&mut context);
         let support_reader = SequencedConfigurationSupportReader {
             states: std::sync::Mutex::new(vec![
                 ConfigurationSupportState::NotSupported,
@@ -4243,8 +4245,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_stops_when_cancelled_during_build_preflight() {
-        let context = temp_context("runtime-cancel-during-build-preflight");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-cancel-during-build-preflight");
+        configure_designer_source(&mut context);
         let cancellation = CancellationToken::new();
         let support_reader = SequencedConfigurationSupportReader {
             states: std::sync::Mutex::new(vec![ConfigurationSupportState::NotSupported]),
@@ -4288,8 +4290,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_keeps_incremental_build_for_removed_configuration_support() {
-        let context = temp_context("runtime-removed-configuration-support");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-removed-configuration-support");
+        configure_designer_source(&mut context);
         let marker = context
             .workspace_root
             .join("src/Ext/ParentConfigurations.bin");
@@ -4311,7 +4313,7 @@ mod tests {
 
     #[test]
     fn runtime_adapter_skips_designer_support_reader_for_edt_configuration() {
-        let context = temp_context("runtime-edt-configuration-build");
+        let mut context = temp_context("runtime-edt-configuration-build");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
         fs::write(
             context.workspace_root.join("v8project.yaml"),
@@ -4324,6 +4326,7 @@ mod tests {
             ),
         )
         .unwrap();
+        refresh_test_context(&mut context);
         let support_reader = PanickingConfigurationSupportReader;
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
@@ -4343,8 +4346,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_refuses_extension_state_for_configuration_target() {
-        let context = temp_context("runtime-inconsistent-configuration-support");
-        configure_supported_designer_source(&context);
+        let mut context = temp_context("runtime-inconsistent-configuration-support");
+        configure_supported_designer_source(&mut context);
         let support_reader = StaticConfigurationSupportReader(ConfigurationSupportState::Extension);
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
         let runner = RecordingProcessRunner {
@@ -4389,8 +4392,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_does_not_force_nonselected_supported_configuration() {
-        let context = temp_context("runtime-nonselected-supported-configuration");
-        configure_supported_designer_source(&context);
+        let mut context = temp_context("runtime-nonselected-supported-configuration");
+        configure_supported_designer_source(&mut context);
         fs::create_dir_all(context.workspace_root.join("extension")).unwrap();
         fs::write(
             context.workspace_root.join("extension/Configuration.xml"),
@@ -4413,6 +4416,7 @@ mod tests {
             ),
         )
         .unwrap();
+        refresh_test_context(&mut context);
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
@@ -4445,8 +4449,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_refuses_unreadable_support_state_before_incremental_build() {
-        let context = temp_context("runtime-unreadable-support-state");
-        configure_supported_designer_source(&context);
+        let mut context = temp_context("runtime-unreadable-support-state");
+        configure_supported_designer_source(&mut context);
         fs::write(
             context
                 .workspace_root
@@ -4481,8 +4485,8 @@ mod tests {
 
     #[test]
     fn explicit_full_build_bypasses_unreadable_support_state() {
-        let context = temp_context("runtime-explicit-full-unreadable-support-state");
-        configure_supported_designer_source(&context);
+        let mut context = temp_context("runtime-explicit-full-unreadable-support-state");
+        configure_supported_designer_source(&mut context);
         fs::write(
             context
                 .workspace_root
@@ -4557,8 +4561,8 @@ mod tests {
 
     #[test]
     fn incremental_build_rejects_case_distinct_nonprimary_config() {
-        let context = temp_context("runtime-case-distinct-nonprimary-config");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-case-distinct-nonprimary-config");
+        configure_designer_source(&mut context);
         let alternate = context.workspace_root.join("V8PROJECT.YAML");
         fs::write(
             &alternate,
@@ -4663,7 +4667,7 @@ mod tests {
 
     #[test]
     fn runtime_adapter_uses_global_edt_mode_despite_platform_xml_evidence() {
-        let context = temp_context("runtime-edt-mode-with-platform-evidence");
+        let mut context = temp_context("runtime-edt-mode-with-platform-evidence");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
         fs::write(
             context.workspace_root.join("v8project.yaml"),
@@ -4681,6 +4685,7 @@ mod tests {
             "<MetaDataObject/>",
         )
         .unwrap();
+        refresh_test_context(&mut context);
         let support_reader = PanickingConfigurationSupportReader;
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
@@ -4839,8 +4844,8 @@ mod tests {
 
     #[test]
     fn runtime_adapter_delegates_successful_build_without_wrapper_timeout() {
-        let context = temp_context("runtime-build-success");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-build-success");
+        configure_designer_source(&mut context);
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
@@ -6727,8 +6732,8 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn cancellation_prefix_is_stable_for_cancelled_runtime_output() {
-        let context = temp_context("runtime-cancelled-output");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-cancelled-output");
+        configure_designer_source(&mut context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -6843,8 +6848,8 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn runtime_adapter_does_not_report_wrapper_timeout_seconds_without_local_timeout() {
-        let context = temp_context("runtime-timeout-no-local-budget");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-timeout-no-local-budget");
+        configure_designer_source(&mut context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -6874,8 +6879,8 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn runtime_adapter_redacts_non_zero_process_output() {
-        let context = temp_context("runtime-non-zero-diagnostics");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-non-zero-diagnostics");
+        configure_designer_source(&mut context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -6954,8 +6959,8 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn runtime_adapter_returns_failure_outcome_for_spawn_failure() {
-        let context = temp_context("runtime-spawn-failure-diagnostics");
-        configure_designer_source(&context);
+        let mut context = temp_context("runtime-spawn-failure-diagnostics");
+        configure_designer_source(&mut context);
         let runner = FailingProcessRunner {
             error: "failed to execute process: no such file or directory; apiToken=token-secret"
                 .to_string(),
@@ -7300,12 +7305,10 @@ analyze_timeout_seconds = 900
         )
         .unwrap();
         create_fake_plugin_root(&root);
-        WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build").join("unica"),
-            workspace_epoch: 1,
-        }
+        let mut context =
+            discover_workspace(Some(root.clone())).expect("discover temporary workspace");
+        context.cache_root = root.join(".build").join("unica");
+        context
     }
 
     fn assert_runtime_args_with_primary(
@@ -7332,7 +7335,7 @@ analyze_timeout_seconds = 900
         );
     }
 
-    fn configure_designer_source(context: &WorkspaceContext) {
+    fn configure_designer_source(context: &mut WorkspaceContext) {
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
         fs::write(
@@ -7353,6 +7356,7 @@ analyze_timeout_seconds = 900
             ),
         )
         .unwrap();
+        refresh_test_context(context);
     }
 
     struct StaticConfigurationSupportReader(ConfigurationSupportState);
@@ -7472,7 +7476,7 @@ analyze_timeout_seconds = 900
         }
     }
 
-    fn configure_supported_designer_source(context: &WorkspaceContext) {
+    fn configure_supported_designer_source(context: &mut WorkspaceContext) {
         configure_designer_source(context);
         let marker = context
             .workspace_root
@@ -7485,6 +7489,15 @@ analyze_timeout_seconds = 900
             ),
         )
         .unwrap();
+        refresh_test_context(context);
+    }
+
+    fn refresh_test_context(context: &mut WorkspaceContext) {
+        let cache_root = context.cache_root.clone();
+        let mut current = discover_workspace(Some(context.cwd.clone()))
+            .expect("rediscover configured test workspace");
+        current.cache_root = cache_root;
+        *context = current;
     }
 
     /// Rewrites the fake manifest without `tool_name`, the way a checkout that
