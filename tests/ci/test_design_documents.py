@@ -114,7 +114,7 @@ class LayoutTests(unittest.TestCase):
             registry_tests,
         )
 
-    def test_rlm_cutover_design_references_the_locked_immutable_release(self) -> None:
+    def test_rlm_cutover_design_preserves_its_historical_immutable_release(self) -> None:
         design = (
             DESIGN_DIR / "2026-08-13-rlm-v1-33-generational-cutover-design.md"
         ).read_text(encoding="utf-8")
@@ -123,18 +123,10 @@ class LayoutTests(unittest.TestCase):
             design,
         )
         self.assertIsNotNone(release_match)
-
-        lock = json.loads(
-            (REPO_ROOT / "plugins/unica/third-party/tools.lock.json").read_text(
-                encoding="utf-8"
-            )
+        self.assertEqual(
+            release_match.group("tag"),
+            "rlm-tools-bsl-v1.33.0-build.2",
         )
-        locked_tags = {
-            tool["assetTag"]
-            for tool in lock["tools"]
-            if tool["name"] in {"rlm-bsl-index", "rlm-bsl-mcp"}
-        }
-        self.assertEqual(locked_tags, {release_match.group("tag")})
 
     def test_both_archive_trees_exist_and_are_marked(self) -> None:
         offenders = []
