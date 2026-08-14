@@ -4,7 +4,7 @@ use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::filesystem::{
-    path_starts_with_host_root, provider_state_path_identity,
+    metadata_is_link_or_reparse_point, path_starts_with_host_root, provider_state_path_identity,
 };
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
@@ -20,6 +20,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -98,9 +99,41 @@ pub(crate) fn rlm_generation_root(
     context: &WorkspaceContext,
     source_root: &Path,
 ) -> Result<PathBuf, String> {
-    Ok(rlm_provider_state_root(context, source_root)?
-        .join(RLM_PRODUCT_DIR)
-        .join(RLM_INDEX_GENERATION))
+    let pair_root = rlm_provider_state_root(context, source_root)?;
+    checked_generation_route(
+        &pair_root,
+        pair_root.join(RLM_PRODUCT_DIR).join(RLM_INDEX_GENERATION),
+    )
+}
+
+fn checked_generation_route(pair_root: &Path, route: PathBuf) -> Result<PathBuf, String> {
+    let relative = route.strip_prefix(pair_root).map_err(|error| {
+        format!(
+            "RLM generation route is outside provider state root {}: {error}",
+            pair_root.display()
+        )
+    })?;
+    let mut current = pair_root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata_is_link_or_reparse_point(&metadata) => {
+                return Err(format!(
+                    "RLM generation route contains a symbolic link or reparse point: {}",
+                    current.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect RLM generation route {}: {error}",
+                    current.display()
+                ));
+            }
+        }
+    }
+    Ok(route)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,9 +221,9 @@ pub struct BslIndexRunMetrics {
 #[derive(Debug, Clone)]
 pub struct IndexCommand {
     pub program: PathBuf,
-    pub args: Vec<String>,
+    pub args: Vec<OsString>,
     pub cwd: PathBuf,
-    pub env: Vec<(String, String)>,
+    pub env: Vec<(OsString, OsString)>,
     pub timeout: Duration,
     pub cancellation: CancellationToken,
 }
@@ -367,13 +400,23 @@ impl<'a> WorkspaceIndexService<'a> {
             .map(|revision| revision.generation)
             .or_else(|| revision_generation(args))
             .unwrap_or_else(|| self.source_generation(&source_root));
-        let matching_failed = failed_status_for_source(context, &source_root, generation);
-        let prefer_update = status_prefers_update(context, &source_root);
+        let matching_failed = match failed_status_for_source(context, &source_root, generation) {
+            Ok(status) => status,
+            Err(error) => return unavailable_start_report(error),
+        };
+        let prefer_update = match status_prefers_update(context, &source_root) {
+            Ok(prefer_update) => prefer_update,
+            Err(error) => return unavailable_start_report(error),
+        };
 
-        if active_lock(context, &source_root) {
-            return IndexStartReport {
-                warnings: vec!["rlm index building".to_string()],
-            };
+        match active_lock(context, &source_root) {
+            Ok(true) => {
+                return IndexStartReport {
+                    warnings: vec!["rlm index building".to_string()],
+                };
+            }
+            Ok(false) => {}
+            Err(error) => return unavailable_start_report(error),
         }
 
         let commands = match self.commands(context, &source_root, cancellation) {
@@ -384,20 +427,19 @@ impl<'a> WorkspaceIndexService<'a> {
                         warnings: vec![format!("rlm index unavailable: {message}")],
                     };
                 }
-                let _ = write_status(
-                    context,
-                    &source_root,
-                    BslIndexStatus::unavailable(error.as_str(), Some(&source_root)),
-                );
-                return IndexStartReport::default();
+                return unavailable_start_report(error);
             }
         };
 
         let info = self.runner.run(&commands.info);
-        if active_lock(context, &source_root) {
-            return IndexStartReport {
-                warnings: vec!["rlm index building".to_string()],
-            };
+        match active_lock(context, &source_root) {
+            Ok(true) => {
+                return IndexStartReport {
+                    warnings: vec!["rlm index building".to_string()],
+                };
+            }
+            Ok(false) => {}
+            Err(error) => return unavailable_start_report(error),
         }
         let info = match info {
             Ok(output) => output,
@@ -487,7 +529,7 @@ impl<'a> WorkspaceIndexService<'a> {
                     IndexReadiness::Building => IndexStartReport {
                         warnings: vec!["rlm index building".to_string()],
                     },
-                    IndexReadiness::Failed(message) | IndexReadiness::Unavailable(message) => {
+                    IndexReadiness::Failed(message) => {
                         let _ = write_status(
                             context,
                             &source_root,
@@ -495,6 +537,7 @@ impl<'a> WorkspaceIndexService<'a> {
                         );
                         IndexStartReport::default()
                     }
+                    IndexReadiness::Unavailable(message) => unavailable_start_report(message),
                     IndexReadiness::Ready { .. } => unreachable!("handled above"),
                 }
             }
@@ -532,10 +575,15 @@ impl<'a> WorkspaceIndexService<'a> {
             .map(|revision| revision.generation)
             .or_else(|| revision_generation(args))
             .unwrap_or_else(|| self.source_generation(&source_root));
-        let matching_failed = failed_status_for_source(context, &source_root, generation);
+        let matching_failed = match failed_status_for_source(context, &source_root, generation) {
+            Ok(status) => status,
+            Err(error) => return IndexReadiness::Unavailable(error),
+        };
 
-        if active_lock(context, &source_root) {
-            return IndexReadiness::Building;
+        match active_lock(context, &source_root) {
+            Ok(true) => return IndexReadiness::Building,
+            Ok(false) => {}
+            Err(error) => return IndexReadiness::Unavailable(error),
         }
 
         let commands = match self.commands(context, &source_root, cancellation) {
@@ -548,8 +596,10 @@ impl<'a> WorkspaceIndexService<'a> {
         };
 
         let output = self.runner.run(&commands.info);
-        if active_lock(context, &source_root) {
-            return IndexReadiness::Building;
+        match active_lock(context, &source_root) {
+            Ok(true) => return IndexReadiness::Building,
+            Ok(false) => {}
+            Err(error) => return IndexReadiness::Unavailable(error),
         }
         let output = match output {
             Ok(output) => output,
@@ -583,16 +633,14 @@ impl<'a> WorkspaceIndexService<'a> {
         })?;
         let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-index", true)?.program;
         let env = vec![(
-            "RLM_INDEX_DIR".to_string(),
-            rlm_generation_root(context, source_root)?
-                .display()
-                .to_string(),
+            OsString::from("RLM_INDEX_DIR"),
+            rlm_generation_root(context, source_root)?.into_os_string(),
         )];
-        let root = source_root.display().to_string();
+        let root = source_root.as_os_str().to_os_string();
         Ok(IndexCommands {
             info: IndexCommand {
                 program: program.clone(),
-                args: vec!["index".to_string(), "info".to_string(), root.clone()],
+                args: vec!["index".into(), "info".into(), root.clone()],
                 cwd: context.cwd.clone(),
                 env: env.clone(),
                 timeout: INDEX_TIMEOUT,
@@ -600,7 +648,7 @@ impl<'a> WorkspaceIndexService<'a> {
             },
             build: IndexCommand {
                 program: program.clone(),
-                args: vec!["index".to_string(), "build".to_string(), root.clone()],
+                args: vec!["index".into(), "build".into(), root.clone()],
                 cwd: context.cwd.clone(),
                 env: env.clone(),
                 timeout: Duration::from_secs(24 * 60 * 60),
@@ -608,7 +656,7 @@ impl<'a> WorkspaceIndexService<'a> {
             },
             update: IndexCommand {
                 program,
-                args: vec!["index".to_string(), "update".to_string(), root],
+                args: vec!["index".into(), "update".into(), root],
                 cwd: context.cwd.clone(),
                 env,
                 timeout: Duration::from_secs(24 * 60 * 60),
@@ -634,7 +682,7 @@ impl<'a> WorkspaceIndexService<'a> {
         } = spec;
         let lock = match lock_path(context, &source_root) {
             Ok(lock) => lock,
-            Err(_) => return IndexStartReport::default(),
+            Err(error) => return unavailable_start_report(error),
         };
         if let Some(parent) = lock.parent() {
             if let Err(error) = fs::create_dir_all(parent) {
@@ -666,7 +714,7 @@ impl<'a> WorkspaceIndexService<'a> {
         };
         let status_path = match status_path(context, &source_root) {
             Ok(status_path) => status_path,
-            Err(_) => return IndexStartReport::default(),
+            Err(error) => return unavailable_start_report(error),
         };
         let _ = write_status_path(
             &status_path,
@@ -1391,11 +1439,7 @@ fn run_index_command_with_heartbeat(
         program: command.program.clone(),
         args: command.args.clone(),
         cwd: command.cwd.clone(),
-        env: command
-            .env
-            .iter()
-            .map(|(key, value)| (key.into(), value.into()))
-            .collect(),
+        env: command.env.clone(),
         timeout: Some(command.timeout),
         cancellation: command.cancellation.clone(),
     })
@@ -1504,19 +1548,34 @@ fn duration_ms(duration: Duration) -> u64 {
 pub fn read_bsl_index_status(
     context: &WorkspaceContext,
     source_root: &Path,
-) -> Option<BslIndexStatus> {
-    let text = fs::read_to_string(status_path(context, source_root).ok()?).ok()?;
-    serde_json::from_str(&text).ok()
+) -> Result<Option<BslIndexStatus>, String> {
+    let path = status_path(context, source_root)?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read RLM index status {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    serde_json::from_str(&text).map(Some).map_err(|error| {
+        format!(
+            "failed to parse RLM index status {}: {error}",
+            path.display()
+        )
+    })
 }
 
 pub fn bsl_index_is_ready(context: &WorkspaceContext) -> bool {
     let Ok(source_root) = resolve_source_root(context, None).map(|resolved| resolved.path) else {
         return false;
     };
-    if active_lock(context, &source_root) {
+    if active_lock(context, &source_root).unwrap_or(true) {
         return false;
     }
-    let Some(status) = read_bsl_index_status(context, &source_root) else {
+    let Ok(Some(status)) = read_bsl_index_status(context, &source_root) else {
         return false;
     };
     if status.status != "ready" || !stored_path_matches(status.source_root.as_deref(), &source_root)
@@ -1526,7 +1585,8 @@ pub fn bsl_index_is_ready(context: &WorkspaceContext) -> bool {
     match status.db_path {
         Some(db_path) => {
             let db_path = Path::new(&db_path);
-            db_path.is_file() && db_path_belongs_to_generation(context, &source_root, db_path)
+            db_path.is_file()
+                && db_path_belongs_to_generation(context, &source_root, db_path).unwrap_or(false)
         }
         None => false,
     }
@@ -1537,21 +1597,26 @@ pub(crate) fn ready_index_for_source_revision(
     source_root: &Path,
     revision: &SourceRevision,
 ) -> IndexReadiness {
-    if active_lock(context, source_root) {
-        return IndexReadiness::Building;
+    match active_lock(context, source_root) {
+        Ok(true) => return IndexReadiness::Building,
+        Ok(false) => {}
+        Err(error) => return IndexReadiness::Unavailable(error),
     }
     let readiness = match read_bsl_index_status(context, source_root) {
-        Some(status) if stored_path_matches(status.source_root.as_deref(), source_root) => {
+        Ok(Some(status)) if stored_path_matches(status.source_root.as_deref(), source_root) => {
             match status.status.as_str() {
-                "ready" if status.indexed_revision.as_ref() == Some(revision) => status
-                    .db_path
-                    .map(PathBuf::from)
-                    .filter(|db_path| {
-                        db_path.is_file()
-                            && db_path_belongs_to_generation(context, source_root, db_path)
-                    })
-                    .map(|db_path| IndexReadiness::Ready { db_path })
-                    .unwrap_or_else(source_generation_stale_readiness),
+                "ready" if status.indexed_revision.as_ref() == Some(revision) => {
+                    match status.db_path.map(PathBuf::from) {
+                        Some(db_path) if db_path.is_file() => {
+                            match db_path_belongs_to_generation(context, source_root, &db_path) {
+                                Ok(true) => IndexReadiness::Ready { db_path },
+                                Ok(false) => source_generation_stale_readiness(),
+                                Err(error) => IndexReadiness::Unavailable(error),
+                            }
+                        }
+                        _ => source_generation_stale_readiness(),
+                    }
+                }
                 "building" => IndexReadiness::Building,
                 "incomplete" => IndexReadiness::Incomplete,
                 "failed" => IndexReadiness::Failed(
@@ -1567,12 +1632,13 @@ pub(crate) fn ready_index_for_source_revision(
                 _ => source_generation_stale_readiness(),
             }
         }
-        _ => source_generation_stale_readiness(),
+        Ok(_) => source_generation_stale_readiness(),
+        Err(error) => IndexReadiness::Unavailable(error),
     };
-    if active_lock(context, source_root) {
-        IndexReadiness::Building
-    } else {
-        readiness
+    match active_lock(context, source_root) {
+        Ok(true) => IndexReadiness::Building,
+        Ok(false) => readiness,
+        Err(error) => IndexReadiness::Unavailable(error),
     }
 }
 
@@ -1582,43 +1648,55 @@ fn source_generation_stale_readiness() -> IndexReadiness {
     }
 }
 
+fn unavailable_start_report(error: String) -> IndexStartReport {
+    IndexStartReport {
+        warnings: vec![format!("rlm index unavailable: {error}")],
+    }
+}
+
 pub(crate) fn status_path(
     context: &WorkspaceContext,
     source_root: &Path,
 ) -> Result<PathBuf, String> {
-    Ok(rlm_provider_state_root(context, source_root)?
-        .join("caches")
-        .join(RLM_PRODUCT_DIR)
-        .join(RLM_INDEX_GENERATION)
-        .join(STATUS_FILE_NAME))
+    let pair_root = rlm_provider_state_root(context, source_root)?;
+    checked_generation_route(
+        &pair_root,
+        pair_root
+            .join("caches")
+            .join(RLM_PRODUCT_DIR)
+            .join(RLM_INDEX_GENERATION)
+            .join(STATUS_FILE_NAME),
+    )
 }
 
 fn lock_path(context: &WorkspaceContext, source_root: &Path) -> Result<PathBuf, String> {
-    Ok(rlm_provider_state_root(context, source_root)?
-        .join("locks")
-        .join(RLM_PRODUCT_DIR)
-        .join(RLM_INDEX_GENERATION)
-        .join(LOCK_FILE_NAME))
+    let pair_root = rlm_provider_state_root(context, source_root)?;
+    checked_generation_route(
+        &pair_root,
+        pair_root
+            .join("locks")
+            .join(RLM_PRODUCT_DIR)
+            .join(RLM_INDEX_GENERATION)
+            .join(LOCK_FILE_NAME),
+    )
 }
 
-fn active_lock(context: &WorkspaceContext, source_root: &Path) -> bool {
-    let Ok(lock) = lock_path(context, source_root) else {
-        return false;
-    };
+fn active_lock(context: &WorkspaceContext, source_root: &Path) -> Result<bool, String> {
+    let lock = lock_path(context, source_root)?;
     if !lock.is_file() {
-        return false;
+        return Ok(false);
     }
     if active_lock_registered(&lock) {
-        return true;
+        return Ok(true);
     }
     match read_lock_path(&lock) {
-        Ok(index_lock) if !index_lock.is_active() => false,
-        Ok(index_lock) if index_lock.is_fresh() => true,
+        Ok(index_lock) if !index_lock.is_active() => Ok(false),
+        Ok(index_lock) if index_lock.is_fresh() => Ok(true),
         Ok(index_lock) => {
             if lock_is_held_by_other_process(&lock) {
-                return true;
+                return Ok(true);
             }
-            !recover_stale_lock(
+            Ok(!recover_stale_lock(
                 context,
                 source_root,
                 format!(
@@ -1627,36 +1705,40 @@ fn active_lock(context: &WorkspaceContext, source_root: &Path) -> bool {
                 )
                 .as_str(),
                 Some(index_lock.lock_id.as_str()),
-            )
+            )?)
         }
         Err(error) => {
-            if invalid_lock_may_be_active(context, source_root, &lock) {
-                return true;
+            if invalid_lock_may_be_active(context, source_root, &lock)? {
+                return Ok(true);
             }
-            !recover_stale_lock(
+            Ok(!recover_stale_lock(
                 context,
                 source_root,
                 format!("RLM index lock is invalid: {error}").as_str(),
                 None,
-            )
+            )?)
         }
     }
 }
 
-fn invalid_lock_may_be_active(context: &WorkspaceContext, source_root: &Path, lock: &Path) -> bool {
+fn invalid_lock_may_be_active(
+    context: &WorkspaceContext,
+    source_root: &Path,
+    lock: &Path,
+) -> Result<bool, String> {
     if active_lock_registered(lock) || lock_is_held_by_other_process(lock) {
-        return true;
+        return Ok(true);
     }
     let lock_updated_at = file_modified_secs(lock).unwrap_or_else(now_secs);
     if now_secs().saturating_sub(lock_updated_at) <= LOCK_STALE_AFTER.as_secs() {
-        return true;
+        return Ok(true);
     }
-    if let Some(status) = read_bsl_index_status(context, source_root) {
+    if let Some(status) = read_bsl_index_status(context, source_root)? {
         if status.status == "building" {
-            return now_secs().saturating_sub(status.updated_at) <= LOCK_STALE_AFTER.as_secs();
+            return Ok(now_secs().saturating_sub(status.updated_at) <= LOCK_STALE_AFTER.as_secs());
         }
     }
-    false
+    Ok(false)
 }
 
 fn recover_stale_lock(
@@ -1664,16 +1746,13 @@ fn recover_stale_lock(
     source_root: &Path,
     reason: &str,
     lock_id: Option<&str>,
-) -> bool {
-    let Ok(lock) = lock_path(context, source_root) else {
-        return false;
-    };
+) -> Result<bool, String> {
+    let lock = lock_path(context, source_root)?;
     if !mark_lock_recovered(&lock, lock_id, source_root, reason) {
-        return false;
+        return Ok(false);
     }
-    if read_bsl_index_status(context, source_root)
-        .map(|status| status.status == "building")
-        .unwrap_or(false)
+    if read_bsl_index_status(context, source_root)?
+        .is_some_and(|status| status.status == "building")
     {
         let _ = write_status(
             context,
@@ -1684,7 +1763,7 @@ fn recover_stale_lock(
             ),
         );
     }
-    true
+    Ok(true)
 }
 
 fn read_lock_path(path: &Path) -> Result<BslIndexLock, String> {
@@ -1858,13 +1937,21 @@ fn bind_readiness_to_source_generation(
     let IndexReadiness::Ready { db_path } = readiness else {
         return readiness;
     };
-    let matches = read_bsl_index_status(context, source_root).is_some_and(|status| {
+    let status = match read_bsl_index_status(context, source_root) {
+        Ok(status) => status,
+        Err(error) => return IndexReadiness::Unavailable(error),
+    };
+    let db_is_in_generation = match db_path_belongs_to_generation(context, source_root, &db_path) {
+        Ok(matches) => matches,
+        Err(error) => return IndexReadiness::Unavailable(error),
+    };
+    let matches = status.is_some_and(|status| {
         status.status == "ready"
             && status.source_generation == Some(generation)
             && revision.is_none_or(|revision| status.indexed_revision.as_ref() == Some(revision))
             && stored_path_matches(status.source_root.as_deref(), source_root)
             && stored_path_matches(status.db_path.as_deref(), &db_path)
-            && db_path_belongs_to_generation(context, source_root, &db_path)
+            && db_is_in_generation
     });
     if matches {
         IndexReadiness::Ready { db_path }
@@ -1877,11 +1964,9 @@ fn db_path_belongs_to_generation(
     context: &WorkspaceContext,
     source_root: &Path,
     db_path: &Path,
-) -> bool {
-    let Ok(generation_root) = rlm_generation_root(context, source_root) else {
-        return false;
-    };
-    normalized_path_is_within(db_path, &generation_root)
+) -> Result<bool, String> {
+    let generation_root = rlm_generation_root(context, source_root)?;
+    Ok(normalized_path_is_within(db_path, &generation_root))
 }
 
 fn normalized_path_is_within(path: &Path, root: &Path) -> bool {
@@ -1905,8 +1990,10 @@ fn failed_status_for_source(
     context: &WorkspaceContext,
     source_root: &Path,
     generation: u64,
-) -> Option<String> {
-    let status = read_bsl_index_status(context, source_root)?;
+) -> Result<Option<String>, String> {
+    let Some(status) = read_bsl_index_status(context, source_root)? else {
+        return Ok(None);
+    };
     if status.status != "failed"
         || status.failure_class != Some(BslIndexFailureClass::Terminal)
         || !stored_path_matches(status.source_root.as_deref(), source_root)
@@ -1914,19 +2001,21 @@ fn failed_status_for_source(
             .source_generation
             .is_none_or(|failed| failed != generation)
     {
-        return None;
+        return Ok(None);
     }
-    status.message
+    Ok(status.message)
 }
 
-fn status_prefers_update(context: &WorkspaceContext, source_root: &Path) -> bool {
-    read_bsl_index_status(context, source_root).is_some_and(|status| {
-        status.status == "failed"
-            && status.failure_class == Some(BslIndexFailureClass::Retryable)
-            && status.next_action == Some(BslIndexNextAction::Update)
-            && status.observed_revision.is_some()
-            && stored_path_matches(status.source_root.as_deref(), source_root)
-    })
+fn status_prefers_update(context: &WorkspaceContext, source_root: &Path) -> Result<bool, String> {
+    Ok(
+        read_bsl_index_status(context, source_root)?.is_some_and(|status| {
+            status.status == "failed"
+                && status.failure_class == Some(BslIndexFailureClass::Retryable)
+                && status.next_action == Some(BslIndexNextAction::Update)
+                && status.observed_revision.is_some()
+                && stored_path_matches(status.source_root.as_deref(), source_root)
+        }),
+    )
 }
 
 fn stored_path_matches(stored: Option<&str>, current: &Path) -> bool {
@@ -2009,7 +2098,7 @@ mod tests {
     }
 
     fn read_bsl_index_status(context: &WorkspaceContext) -> Option<BslIndexStatus> {
-        super::read_bsl_index_status(context, &default_source_root(context))
+        super::read_bsl_index_status(context, &default_source_root(context)).unwrap()
     }
 
     fn write_status(context: &WorkspaceContext, status: BslIndexStatus) -> Result<(), String> {
@@ -2096,6 +2185,56 @@ mod tests {
         assert!(!source_root
             .join("locks/rlm-bsl/index-v15/bsl_index.lock")
             .exists());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn safe_root_failure_is_unavailable_at_revision_read_and_start_boundaries() {
+        let mut context = test_context("safe-root-boundaries");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let first = context.workspace_root.join("provider-state-cycle-a");
+        let second = context.workspace_root.join("provider-state-cycle-b");
+        let Some(first_link) = testing::create_dir_symlink_for_test(&second, &first) else {
+            cleanup(&context);
+            return;
+        };
+        first_link.unwrap();
+        testing::create_dir_symlink_for_test(&first, &second)
+            .expect("the platform that created the first link must expose the second fixture")
+            .unwrap();
+        context.cache_root = first;
+        let revision = SourceRevision {
+            generation: 1,
+            digest: "safe-root-boundary".to_string(),
+            algorithm: crate::domain::source_revision::SOURCE_REVISION_ALGORITHM.to_string(),
+        };
+        let runner = RecordingIndexRunner::default();
+        let service = WorkspaceIndexService::with_runner(&runner);
+
+        let readiness = ready_index_for_source_revision(&context, &source_root, &revision);
+        let report = service.start_for_workspace(&context, &Map::new(), false);
+
+        assert!(matches!(
+            readiness,
+            IndexReadiness::Unavailable(message)
+                if message.contains("failed to resolve existing path ancestor")
+        ));
+        assert!(report.warnings.iter().any(|warning| {
+            warning.starts_with("rlm index unavailable:")
+                && warning.contains("failed to resolve existing path ancestor")
+        }));
+        assert!(runner.commands.borrow().is_empty());
+        assert!(runner.backgrounds.borrow().is_empty());
+        assert!(!source_root.join("rlm-bsl/index-v15/bsl_index.db").exists());
+        assert!(!source_root
+            .join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            .exists());
+        assert!(!source_root
+            .join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            .exists());
+        testing::remove_dir_symlink_for_test(&second).unwrap();
+        testing::remove_dir_symlink_for_test(&context.cache_root).unwrap();
         cleanup(&context);
     }
 
@@ -2307,6 +2446,188 @@ mod tests {
     }
 
     #[test]
+    fn builder_generation_environment_preserves_native_path_bytes() {
+        let mut context = test_context("native-generation-environment");
+        let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
+            cleanup(&context);
+            return;
+        };
+        context.cache_root = context.workspace_root.join(invalid_component);
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let expected_reader_environment = rlm_generation_root(&context, &source_root).unwrap();
+
+        let commands = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
+            .commands(&context, &source_root, &CancellationToken::new())
+            .unwrap();
+
+        assert_eq!(
+            PathBuf::from(&commands.info.env[0].1),
+            expected_reader_environment
+        );
+        assert_eq!(PathBuf::from(&commands.info.args[2]), source_root);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn builder_command_preserves_native_source_root_argument_bytes() {
+        let context = test_context("native-source-argument");
+        let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
+            cleanup(&context);
+            return;
+        };
+        let source_root = context.workspace_root.join(invalid_component);
+
+        let commands = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
+            .commands(&context, &source_root, &CancellationToken::new())
+            .unwrap();
+
+        assert_eq!(PathBuf::from(&commands.info.args[2]), source_root);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn builder_15_rejects_a_generation_alias_to_builder_14_storage() {
+        let context = test_context("generation-alias-to-builder-14");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
+        let legacy = pair_root.join("rlm-tools-bsl/index");
+        fs::create_dir_all(&legacy).unwrap();
+        let legacy_db = legacy.join("bsl_index.db");
+        fs::write(&legacy_db, b"builder-14-db").unwrap();
+        let alias = pair_root.join("rlm-bsl/index-v15");
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
+            cleanup(&context);
+            return;
+        };
+        link.unwrap();
+
+        let error = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
+            .commands(&context, &source_root, &CancellationToken::new())
+            .unwrap_err();
+
+        assert!(error.contains("symbolic link or reparse point"));
+        assert_eq!(fs::read(&legacy_db).unwrap(), b"builder-14-db");
+        assert!(!legacy.join(STATUS_FILE_NAME).exists());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn ready_revision_rejects_a_builder_14_db_reached_through_generation_alias() {
+        let context = test_context("ready-generation-alias-to-builder-14");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
+        let legacy = pair_root.join("rlm-tools-bsl/index");
+        fs::create_dir_all(&legacy).unwrap();
+        let legacy_db = legacy.join("bsl_index.db");
+        fs::write(&legacy_db, b"builder-14-db").unwrap();
+        let revision = SourceRevision {
+            generation: 9,
+            digest: "aliased-builder-14".to_string(),
+            algorithm: crate::domain::source_revision::SOURCE_REVISION_ALGORITHM.to_string(),
+        };
+        write_status(
+            &context,
+            BslIndexStatus::ready(
+                &source_root,
+                &pair_root.join("rlm-bsl/index-v15/bsl_index.db"),
+            )
+            .with_indexed_revision(Some(revision.clone())),
+        )
+        .unwrap();
+        let alias = pair_root.join("rlm-bsl/index-v15");
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
+            cleanup(&context);
+            return;
+        };
+        link.unwrap();
+
+        let readiness = ready_index_for_source_revision(&context, &source_root, &revision);
+
+        assert!(matches!(
+            readiness,
+            IndexReadiness::Unavailable(message)
+                if message.contains("symbolic link or reparse point")
+        ));
+        assert_eq!(fs::read(&legacy_db).unwrap(), b"builder-14-db");
+        cleanup(&context);
+    }
+
+    #[test]
+    fn start_rejects_status_generation_alias_without_writing_legacy_target() {
+        let context = test_context("status-generation-alias");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
+        let legacy = pair_root.join("caches");
+        fs::create_dir_all(&legacy).unwrap();
+        let legacy_marker = legacy.join(STATUS_FILE_NAME);
+        fs::write(&legacy_marker, b"builder-14-status").unwrap();
+        let alias = pair_root.join("caches/rlm-bsl/index-v15");
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
+            cleanup(&context);
+            return;
+        };
+        link.unwrap();
+        let runner = RecordingIndexRunner::default();
+
+        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
+            &context,
+            &Map::new(),
+            false,
+        );
+
+        assert!(report.warnings.iter().any(|warning| {
+            warning.starts_with("rlm index unavailable:")
+                && warning.contains("symbolic link or reparse point")
+        }));
+        assert_eq!(fs::read(&legacy_marker).unwrap(), b"builder-14-status");
+        assert!(runner.commands.borrow().is_empty());
+        assert!(runner.backgrounds.borrow().is_empty());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn start_rejects_lock_generation_alias_without_writing_legacy_target() {
+        let context = test_context("lock-generation-alias");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
+        let legacy = pair_root.join("locks");
+        fs::create_dir_all(&legacy).unwrap();
+        let legacy_marker = legacy.join(LOCK_FILE_NAME);
+        fs::write(&legacy_marker, b"builder-14-lock").unwrap();
+        let alias = pair_root.join("locks/rlm-bsl/index-v15");
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
+            cleanup(&context);
+            return;
+        };
+        link.unwrap();
+        let runner = RecordingIndexRunner::default();
+
+        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
+            &context,
+            &Map::new(),
+            false,
+        );
+
+        assert!(report.warnings.iter().any(|warning| {
+            warning.starts_with("rlm index unavailable:")
+                && warning.contains("symbolic link or reparse point")
+        }));
+        assert_eq!(fs::read(&legacy_marker).unwrap(), b"builder-14-lock");
+        assert!(runner.commands.borrow().is_empty());
+        assert!(runner.backgrounds.borrow().is_empty());
+        cleanup(&context);
+    }
+
+    #[test]
     fn legacy_status_and_lock_do_not_gate_builder_15() {
         let context = test_context("legacy-markers");
         let source_root = context.workspace_root.join("src");
@@ -2493,7 +2814,9 @@ mod tests {
         )
         .unwrap();
         let legacy_bytes = fs::read(&legacy_path).unwrap();
-        assert!(super::read_bsl_index_status(&context, &source_root).is_none());
+        assert!(super::read_bsl_index_status(&context, &source_root)
+            .unwrap()
+            .is_none());
         let runner = RecordingIndexRunner {
             outputs: RefCell::new(vec![IndexOutput::success("Index not found\n")]),
             ..Default::default()
@@ -2530,7 +2853,9 @@ mod tests {
         )
         .unwrap();
         let legacy_bytes = fs::read(&legacy_path).unwrap();
-        assert!(super::read_bsl_index_status(&context, &source_root).is_none());
+        assert!(super::read_bsl_index_status(&context, &source_root)
+            .unwrap()
+            .is_none());
         let runner = RecordingIndexRunner {
             outputs: RefCell::new(vec![IndexOutput::success("Index not found\n")]),
             ..Default::default()
@@ -2557,7 +2882,9 @@ mod tests {
         fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
         write_lock_path(&legacy_path, BslIndexLock::new("update", &source_root)).unwrap();
         let legacy_bytes = fs::read(&legacy_path).unwrap();
-        assert!(super::read_bsl_index_status(&context, &source_root).is_none());
+        assert!(super::read_bsl_index_status(&context, &source_root)
+            .unwrap()
+            .is_none());
         let runner = RecordingIndexRunner {
             outputs: RefCell::new(vec![IndexOutput::success("Index not found\n")]),
             ..Default::default()
@@ -3751,10 +4078,10 @@ source-set:
         assert_eq!(
             commands,
             vec![
-                vec!["index".to_string(), "update".to_string()],
-                vec!["index".to_string(), "info".to_string()],
-                vec!["index".to_string(), "build".to_string()],
-                vec!["index".to_string(), "info".to_string()],
+                vec![OsString::from("index"), OsString::from("update")],
+                vec![OsString::from("index"), OsString::from("info")],
+                vec![OsString::from("index"), OsString::from("build")],
+                vec![OsString::from("index"), OsString::from("info")],
             ]
         );
         let status = read_bsl_index_status(&context).unwrap();
@@ -3792,8 +4119,8 @@ source-set:
         assert_eq!(
             commands,
             vec![
-                vec!["index".to_string(), "update".to_string()],
-                vec!["index".to_string(), "info".to_string()],
+                vec![OsString::from("index"), OsString::from("update")],
+                vec![OsString::from("index"), OsString::from("info")],
             ]
         );
         assert_eq!(read_bsl_index_status(&context).unwrap().status, "ready");
@@ -3985,8 +4312,8 @@ source-set:
         assert_eq!(
             commands,
             vec![
-                vec!["index".to_string(), "update".to_string()],
-                vec!["index".to_string(), "info".to_string()],
+                vec![OsString::from("index"), OsString::from("update")],
+                vec![OsString::from("index"), OsString::from("info")],
             ]
         );
         let marker = read_lock_path(&lock_path(&context)).unwrap();
@@ -4546,7 +4873,7 @@ source-set:
         write_stale_lock(&context, "build");
         write_old_building_status(&context, "build");
 
-        assert!(!active_lock(&context, &context.workspace_root.join("src")));
+        assert!(!active_lock(&context, &context.workspace_root.join("src")).unwrap());
 
         let current =
             read_lock_path(&lock_path(&context)).expect("stale lock should remain as marker");
@@ -4670,17 +4997,16 @@ source-set:
         IndexCommand {
             program: PathBuf::from("unused-by-scripted-runner"),
             args: vec![
-                "index".to_string(),
-                verb.to_string(),
-                context.workspace_root.join("src").display().to_string(),
+                "index".into(),
+                verb.into(),
+                context.workspace_root.join("src").into_os_string(),
             ],
             cwd: context.workspace_root.clone(),
             env: vec![(
-                "RLM_INDEX_DIR".to_string(),
+                "RLM_INDEX_DIR".into(),
                 rlm_generation_root(context, &default_source_root(context))
                     .unwrap()
-                    .display()
-                    .to_string(),
+                    .into_os_string(),
             )],
             timeout: Duration::from_secs(5),
             cancellation: CancellationToken::new(),
@@ -4691,7 +5017,7 @@ source-set:
         let command = testing::long_running_command();
         IndexCommand {
             program: command.program,
-            args: command.args,
+            args: command.args.into_iter().map(Into::into).collect(),
             cwd: context.workspace_root.clone(),
             env: Vec::new(),
             timeout: Duration::from_secs(30),
@@ -4736,14 +5062,13 @@ source-set:
         };
         IndexCommand {
             program: command.program,
-            args: command.args,
+            args: command.args.into_iter().map(Into::into).collect(),
             cwd: cwd.to_path_buf(),
             env: vec![(
-                "RLM_INDEX_DIR".to_string(),
+                "RLM_INDEX_DIR".into(),
                 rlm_generation_root(&context, &default_source_root(&context))
                     .unwrap()
-                    .display()
-                    .to_string(),
+                    .into_os_string(),
             )],
             timeout: Duration::from_secs(5),
             cancellation,

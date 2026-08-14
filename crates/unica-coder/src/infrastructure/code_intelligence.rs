@@ -423,6 +423,8 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
 
 fn rlm_index_progress_detail(context: &WorkspaceContext, source_root: &Path) -> &'static str {
     let is_update = read_bsl_index_status(context, source_root)
+        .ok()
+        .flatten()
         .and_then(|status| status.message)
         .is_some_and(|message| message.contains("update"));
     if is_update {

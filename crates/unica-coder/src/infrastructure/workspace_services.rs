@@ -2682,10 +2682,7 @@ impl PersistentMcpSession {
             "could not locate Unica plugin root for workspace RLM service".to_string()
         })?;
         let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-mcp", true)?.program;
-        let mut command = Command::new(program);
-        command
-            .current_dir(&context.cwd)
-            .env("RLM_INDEX_DIR", rlm_generation_root(context, source_root)?);
+        let command = rlm_transport_command(program, context, source_root)?;
         Self::start_with_command(command, cancellation)
     }
 
@@ -2920,6 +2917,18 @@ impl PersistentMcpSession {
             let _ = self.child.terminate();
         }
     }
+}
+
+fn rlm_transport_command(
+    program: PathBuf,
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<Command, String> {
+    let mut command = Command::new(program);
+    command
+        .current_dir(&context.cwd)
+        .env("RLM_INDEX_DIR", rlm_generation_root(context, source_root)?);
+    Ok(command)
 }
 
 impl Drop for PersistentMcpSession {
@@ -4539,6 +4548,49 @@ mod tests {
         assert_eq!(error, "tool not found in manifest: rlm-bsl-mcp");
     }
 
+    #[test]
+    fn rlm_reader_command_preserves_native_generation_environment_bytes() {
+        let mut context = test_context("rlm-reader-native-generation-environment");
+        let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
+            cleanup(&context);
+            return;
+        };
+        context.cache_root = context.workspace_root.join(invalid_component);
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let expected = rlm_generation_root(&context, &source_root).unwrap();
+
+        let command =
+            rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
+        let actual = command
+            .get_envs()
+            .find(|(name, _)| *name == std::ffi::OsStr::new("RLM_INDEX_DIR"))
+            .and_then(|(_, value)| value)
+            .expect("reader command must carry RLM_INDEX_DIR");
+
+        assert_eq!(actual, expected.as_os_str());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_reader_command_uses_native_generation_environment_on_normal_paths() {
+        let context = test_context("rlm-reader-normal-generation-environment");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let expected = rlm_generation_root(&context, &source_root).unwrap();
+
+        let command =
+            rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
+        let actual = command
+            .get_envs()
+            .find(|(name, _)| *name == std::ffi::OsStr::new("RLM_INDEX_DIR"))
+            .and_then(|(_, value)| value)
+            .expect("reader command must carry RLM_INDEX_DIR");
+
+        assert_eq!(actual, expected.as_os_str());
+        cleanup(&context);
+    }
+
     /// #204. A persistent session outlives its tool call, so a working
     /// directory inside the source tree keeps that tree open and
     /// `git worktree remove` fails long after the call returned. The tree is
@@ -4740,6 +4792,59 @@ mod tests {
                 "update left stale (content); recovery build failed".to_string(),
             )
         );
+    }
+
+    #[test]
+    fn rlm_ready_execution_barrier_preserves_safe_root_failure_as_unavailable() {
+        let context = test_context("rlm-ready-safe-root-failure");
+        let source_root = context.workspace_root.join("src");
+        let revisions = Arc::new(SourceRevisionService::new(&context, &source_root).unwrap());
+        revisions
+            .snapshot(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let first = context.workspace_root.join("provider-state-cycle-a");
+        let second = context.workspace_root.join("provider-state-cycle-b");
+        let Some(first_link) = testing::create_dir_symlink_for_test(&second, &first) else {
+            cleanup(&context);
+            return;
+        };
+        first_link.unwrap();
+        testing::create_dir_symlink_for_test(&first, &second)
+            .expect("the platform that created the first link must expose the second fixture")
+            .unwrap();
+        identity.service_dir = first.join("services").join(&identity.key);
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revisions);
+
+        let response = runtime.handle_rlm_ready(json!({}), 5, 0, &CancellationToken::new());
+
+        assert!(
+            matches!(
+                response.index_readiness(),
+                IndexReadiness::Unavailable(message)
+                    if message.contains("failed to resolve existing path ancestor")
+            ),
+            "{response:?}"
+        );
+        assert!(response.warnings.iter().any(|warning| {
+            warning.starts_with("rlm index unavailable:")
+                && warning.contains("failed to resolve existing path ancestor")
+        }));
+        assert!(!source_root.join("rlm-bsl/index-v15/bsl_index.db").exists());
+        assert!(!source_root
+            .join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            .exists());
+        assert!(!source_root
+            .join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            .exists());
+        testing::remove_dir_symlink_for_test(&second).unwrap();
+        testing::remove_dir_symlink_for_test(&first).unwrap();
+        cleanup(&context);
     }
 
     #[derive(Default)]

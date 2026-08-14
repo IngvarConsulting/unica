@@ -2145,7 +2145,7 @@ impl ProcessRunner for SystemProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         let output = ManagedChild::run(ManagedCommand {
             program: command.program.clone(),
-            args: command.args.clone(),
+            args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
             env: Vec::new(),
             timeout: command.timeout,
@@ -2162,7 +2162,7 @@ impl ProcessRunner for SystemProcessRunner {
     ) -> Result<ProcessStreamOutput, String> {
         let mut child = ManagedChild::spawn(ManagedCommand {
             program: command.program.clone(),
-            args: command.args.clone(),
+            args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
             env: Vec::new(),
             timeout: command.timeout,
