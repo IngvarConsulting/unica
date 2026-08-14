@@ -599,11 +599,20 @@ class SkillProvenanceTests(unittest.TestCase):
         )
         self.assertEqual(analyzer["assetTag"], "bsl-analyzer-v0.2.67-build.1")
         self.assertEqual(
-            {target: asset["sha256"] for target, asset in analyzer["assets"].items()},
+            analyzer["assets"],
             {
-                "darwin-arm64": "d18c3b79d017d60f229faf4e427bcefc0a9da59a93b57acbb867b064c52926bd",
-                "linux-x64": "c476c10fcdfa6eb7d310e83d0e69b02a27f9afeec0d394681feadb889de97301",
-                "win-x64": "a54d883bcb7ed0e0039953fb4d5cd7c2efbf30155de9951952f1a4060776eb3e",
+                "darwin-arm64": {
+                    "assetName": "bsl-analyzer-darwin-arm64",
+                    "sha256": "d18c3b79d017d60f229faf4e427bcefc0a9da59a93b57acbb867b064c52926bd",
+                },
+                "linux-x64": {
+                    "assetName": "bsl-analyzer-linux-x64",
+                    "sha256": "c476c10fcdfa6eb7d310e83d0e69b02a27f9afeec0d394681feadb889de97301",
+                },
+                "win-x64": {
+                    "assetName": "bsl-analyzer-win-x64.exe",
+                    "sha256": "a54d883bcb7ed0e0039953fb4d5cd7c2efbf30155de9951952f1a4060776eb3e",
+                },
             },
         )
 
