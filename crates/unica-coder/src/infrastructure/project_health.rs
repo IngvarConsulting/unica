@@ -336,9 +336,11 @@ fn staged_platform_format_marker(
                     StagedPlatformFormatMarker::Present
                 }
                 Some(
+                    ConfigDumpInfoXmlKind::ExternalProcessor
+                    | ConfigDumpInfoXmlKind::ExternalReport,
+                ) => StagedPlatformFormatMarker::Incomplete,
+                Some(
                     ConfigDumpInfoXmlKind::RuntimeSidecar
-                    | ConfigDumpInfoXmlKind::ExternalProcessor
-                    | ConfigDumpInfoXmlKind::ExternalReport
                     | ConfigDumpInfoXmlKind::MetadataDescriptor
                     | ConfigDumpInfoXmlKind::Other,
                 ) => StagedPlatformFormatMarker::Absent,
@@ -1487,6 +1489,62 @@ mod tests {
         .unwrap();
         let report = crate::domain::project_health::evaluate_project_health(snapshot).unwrap();
 
+        for check in [
+            ProjectCheckId::RepositoryAttributes,
+            ProjectCheckId::RepositoryIndexEol,
+            ProjectCheckId::RepositoryWorkingEol,
+            ProjectCheckId::RepositoryLfs,
+        ] {
+            assert!(
+                report.checks.iter().any(|reported| {
+                    reported.id == check.as_str()
+                        && reported.source_set.as_deref() == Some("main")
+                        && reported.status
+                            == crate::domain::project_health::ProjectCheckStatus::NotRun
+                }),
+                "{check:?}: {:?}",
+                report.checks
+            );
+        }
+    }
+
+    #[test]
+    fn staged_platform_marker_without_policy_files_still_probes_old_partial_clone() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/.project"), "<projectDescription/>").unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let runner = OldPartialCloneRunner {
+            repository_root: root,
+            commands: RefCell::new(Vec::new()),
+            index_paths: vec!["src/Configuration.xml".into()],
+        };
+
+        let snapshot = inspect_project_health_with_runner(
+            &context,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(2)),
+            &runner,
+        )
+        .unwrap();
+        let report = crate::domain::project_health::evaluate_project_health(snapshot).unwrap();
+
+        assert!(runner.commands.borrow().iter().any(|command| command
+            .args
+            .first()
+            .map(String::as_str)
+            == Some("config")));
         for check in [
             ProjectCheckId::RepositoryAttributes,
             ProjectCheckId::RepositoryIndexEol,

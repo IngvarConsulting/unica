@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use unica_coder::application::UnicaApplication;
 
 #[test]
@@ -402,6 +402,92 @@ fn project_health_does_not_emit_resource_derivatives_for_inconclusive_config_dum
             })
     }), "{data}");
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_rejects_cross_kind_staged_config_dump_descriptors() {
+    for (case, declared_type, descriptor_child) in [
+        (
+            "processor-in-report",
+            "EXTERNAL_REPORTS",
+            "ExternalDataProcessor",
+        ),
+        (
+            "report-in-processor",
+            "EXTERNAL_DATA_PROCESSORS",
+            "ExternalReport",
+        ),
+    ] {
+        let root = temp_root(case);
+        git(&root, &["init"]);
+        fs::create_dir_all(root.join("external")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            format!(
+                "format: EDT\nsource-set:\n  - name: external\n    type: {declared_type}\n    path: external\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join(".gitignore"),
+            "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+        )
+        .unwrap();
+        git(&root, &["add", "v8project.yaml", ".gitignore"]);
+        let descriptor = format!("<MetaDataObject><{descriptor_child}/></MetaDataObject>\n");
+        let oid = git_with_input(
+            &root,
+            &["hash-object", "-w", "--stdin"],
+            descriptor.as_bytes(),
+        );
+        git(
+            &root,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!(
+                    "100644,{},external/ConfigDumpInfo.xml",
+                    oid.trim()
+                ),
+            ],
+        );
+
+        let result = status(&root);
+
+        assert!(result.ok, "{case}: {:?}", result.errors);
+        let data = result.data.unwrap();
+        assert_eq!(data["repositoryReady"], false, "{case}: {data}");
+        assert_repository_check_status(
+            &data,
+            "repository.config_dump_info",
+            None,
+            "failed",
+        );
+        assert_repository_check_status(
+            &data,
+            "repository.config_dump_info",
+            Some("external"),
+            "failed",
+        );
+        assert_repository_check_status(&data, "repository.attributes", None, "notRun");
+        assert_repository_check_status(
+            &data,
+            "repository.attributes",
+            Some("external"),
+            "notRun",
+        );
+        assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+            diagnostic["code"] == "git.config_dump_info_unclassified"
+                && diagnostic["sourceSet"] == "external"
+                && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                    evidence
+                        .iter()
+                        .any(|item| item.as_str().is_some_and(|item| item.contains("does not match")))
+                })
+        }), "{case}: {data}");
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[test]
@@ -1098,6 +1184,58 @@ fn project_health_handles_real_index_with_43k_sibling_paths() {
                 evidence.iter().any(|item| item.as_str().is_some_and(|text| text.contains("truncated")))
             })
     }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_bounds_equal_root_resource_ownership_composition() {
+    let root = temp_root("equal-root-resource-scale");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+    for index in 0..63 {
+        fs::write(root.join(format!("src/Module{index}.bsl")), "Процедура P()\nКонецПроцедуры\n")
+            .unwrap();
+    }
+    let source_sets = (0..1024)
+        .map(|index| {
+            format!(
+                "  - name: owner-{index:04}\n    type: CONFIGURATION\n    path: src\n"
+            )
+        })
+        .collect::<String>();
+    fs::write(
+        root.join("v8project.yaml"),
+        format!("format: DESIGNER\nsource-set:\n{source_sets}"),
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(&root, &["add", "v8project.yaml", ".gitignore", "src"]);
+
+    let started = Instant::now();
+    let result = status(&root);
+    let elapsed = started.elapsed();
+
+    assert!(result.ok, "elapsed={elapsed:?}; errors={:?}", result.errors);
+    assert!(elapsed < Duration::from_secs(10), "elapsed={elapsed:?}");
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.attributes", None, "notRun");
+    assert_repository_check_status(
+        &data,
+        "repository.attributes",
+        Some("owner-0000"),
+        "notRun",
+    );
+    assert_repository_check_status(
+        &data,
+        "repository.attributes",
+        Some("owner-1023"),
+        "notRun",
+    );
     let _ = fs::remove_dir_all(root);
 }
 

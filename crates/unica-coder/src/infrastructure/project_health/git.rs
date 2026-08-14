@@ -479,6 +479,7 @@ impl<'a> GitRepositoryInspector<'a> {
                 .roots
                 .iter()
                 .any(|root| root.source_set.source_format == SourceFormat::PlatformXml)
+            || (!layout.roots.is_empty() && !entries.is_empty())
         {
             inspect_staged_blob_read_safety(self.runner, &repository_root, cancellation, deadline)?
         } else {
@@ -1021,6 +1022,71 @@ impl<'a> GitRepositoryInspector<'a> {
             inconclusive_paths,
             classifications,
         } = inspection;
+        for (path, classification) in &classifications {
+            let descriptor_kind = match classification {
+                ConfigDumpInfoXmlKind::ExternalProcessor => SourceSetKind::ExternalProcessor,
+                ConfigDumpInfoXmlKind::ExternalReport => SourceSetKind::ExternalReport,
+                ConfigDumpInfoXmlKind::RuntimeSidecar
+                | ConfigDumpInfoXmlKind::MetadataDescriptor
+                | ConfigDumpInfoXmlKind::Other => continue,
+            };
+            let owners = match source_owners.owners_for_repo_path(path, cancellation, deadline) {
+                Ok(owners) => owners,
+                Err(GeneratedPathInspectionError::Cancelled) => {
+                    return Err(ProjectHealthInspectionError::Cancelled)
+                }
+                Err(GeneratedPathInspectionError::TimedOut) => {
+                    return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
+                }
+                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
+                }
+            };
+            let Some(owners) = owners else {
+                continue;
+            };
+            for (owner_index, root) in owners.iter().enumerate() {
+                if owner_index.is_multiple_of(256) {
+                    if cancellation.is_cancelled() {
+                        return Err(ProjectHealthInspectionError::Cancelled);
+                    }
+                    if deadline.remaining().is_zero() {
+                        return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
+                    }
+                }
+                if !matches!(
+                    root.source_set.kind,
+                    SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+                ) || root.source_set.kind == descriptor_kind
+                {
+                    continue;
+                }
+                let reason = format!(
+                    "staged {} descriptor does not match declared {} source-set kind",
+                    source_set_kind_label(descriptor_kind),
+                    source_set_kind_label(root.source_set.kind)
+                );
+                fact_bytes = match reserve_expanded_repository_fact_budget(
+                    facts.len(),
+                    fact_bytes,
+                    1,
+                    path.len()
+                        .saturating_add(root.source_set.name.len())
+                        .saturating_add(reason.len()),
+                    "ConfigDumpInfo",
+                ) {
+                    Ok(bytes) => bytes,
+                    Err(reason) => {
+                        return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
+                    }
+                };
+                facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
+                    source_set: Some(root.source_set.name.clone()),
+                    path: path.clone(),
+                    reason,
+                });
+            }
+        }
         for path in runtime_paths {
             let owners = match source_owners.owners_for_repo_path(&path, cancellation, deadline) {
                 Ok(owners) => owners,
@@ -2386,6 +2452,15 @@ fn ambiguous_owner_reason(owners: &[&InspectedSourceRoot]) -> String {
             "{PREFIX}: {} owners; names omitted because the bounded diagnostic limit was reached",
             names.len()
         )
+    }
+}
+
+fn source_set_kind_label(kind: SourceSetKind) -> &'static str {
+    match kind {
+        SourceSetKind::Configuration => "configuration",
+        SourceSetKind::Extension => "extension",
+        SourceSetKind::ExternalProcessor => "external processor",
+        SourceSetKind::ExternalReport => "external report",
     }
 }
 

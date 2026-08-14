@@ -90,20 +90,28 @@ fn reserve_resource_owner_expansion(
 }
 
 fn bounded_resource_ownership_reason(error: &ResourceOwnershipError) -> String {
-    let detailed = format!(
-        "resource {} does not have one regular stage-0 blob or has ambiguous source-set owners: {}",
-        error.repo_path,
-        error.source_sets.join(", ")
-    );
-    if detailed.len() <= MAX_RESOURCE_OWNERSHIP_REASON_BYTES {
-        detailed
-    } else {
-        format!(
-            "resource ownership is ambiguous or non-regular; path bytes={}, owners={} (details omitted by inspection budget)",
-            error.repo_path.len(),
-            error.source_sets.len()
-        )
+    const PREFIX: &str =
+        "resource does not have one regular stage-0 blob or has ambiguous source-set owners";
+    let detailed_bytes = PREFIX
+        .len()
+        .saturating_add(2)
+        .saturating_add(error.repo_path.len())
+        .saturating_add(2)
+        .saturating_add(error.source_sets.iter().fold(0_usize, |total, source_set| {
+            total.saturating_add(source_set.len()).saturating_add(2)
+        }));
+    if detailed_bytes <= MAX_RESOURCE_OWNERSHIP_REASON_BYTES {
+        return format!(
+            "{PREFIX}: {}; {}",
+            error.repo_path,
+            error.source_sets.join(", ")
+        );
     }
+    format!(
+        "resource ownership is ambiguous or non-regular; path bytes={}, owners={} (details omitted by inspection budget)",
+        error.repo_path.len(),
+        error.source_sets.len()
+    )
 }
 
 pub(crate) struct RepositoryPolicyInspection {
@@ -414,31 +422,110 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 });
             }
         };
-        let mut facts = Vec::new();
-        let mut incomplete_source_sets = BTreeSet::new();
-        for error in classification.ownership_errors {
-            let reason = bounded_resource_ownership_reason(&error);
-            for source_set in &error.source_sets {
-                incomplete_source_sets.insert(source_set.clone());
-                for check in resource_check_ids() {
-                    mark_source_check_not_run(&mut observations, check, source_set, &reason);
+        let mut incomplete_reasons = BTreeMap::<String, String>::new();
+        let mut global_incomplete_reason = None;
+        for (error_index, error) in classification.ownership_errors.into_iter().enumerate() {
+            if error_index.is_multiple_of(256) {
+                if cancellation.is_cancelled() {
+                    return Err(ProjectHealthInspectionError::Cancelled);
                 }
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryAttributes,
-                    source_set: Some(source_set.clone()),
-                    reason: reason.clone(),
-                });
+                if deadline.remaining().is_zero() {
+                    return Ok(timeout_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                    ));
+                }
+            }
+            let reason = bounded_resource_ownership_reason(&error);
+            for (source_set_index, source_set) in error.source_sets.iter().enumerate() {
+                if source_set_index.is_multiple_of(256) {
+                    if cancellation.is_cancelled() {
+                        return Err(ProjectHealthInspectionError::Cancelled);
+                    }
+                    if deadline.remaining().is_zero() {
+                        return Ok(timeout_policy(
+                            observations,
+                            ProjectCheckId::RepositoryAttributes,
+                        ));
+                    }
+                }
+                if !incomplete_reasons.contains_key(source_set.as_str()) {
+                    incomplete_reasons.insert(source_set.clone(), reason.clone());
+                }
             }
             if error.source_sets.is_empty() {
-                for check in resource_check_ids() {
-                    mark_check_not_run(&mut observations, check, &reason);
-                }
-                facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryAttributes,
-                    source_set: None,
-                    reason,
-                });
+                global_incomplete_reason.get_or_insert(reason);
             }
+        }
+        if cancellation.is_cancelled() {
+            return Err(ProjectHealthInspectionError::Cancelled);
+        }
+        if deadline.remaining().is_zero() {
+            return Ok(timeout_policy(
+                observations,
+                ProjectCheckId::RepositoryAttributes,
+            ));
+        }
+        let incomplete_source_sets = incomplete_reasons.keys().cloned().collect::<BTreeSet<_>>();
+        let aggregate_reason = global_incomplete_reason.clone().unwrap_or_else(|| {
+            format!(
+                "resource ownership is incomplete for {} source sets",
+                incomplete_source_sets.len()
+            )
+        });
+        for observation in &mut observations {
+            if !resource_check_ids().contains(&observation.id)
+                || matches!(
+                    observation.outcome,
+                    ProjectCheckOutcome::NotApplicable { .. }
+                )
+            {
+                continue;
+            }
+            let reason = match observation.source_set.as_deref() {
+                Some(source_set) => incomplete_reasons.get(source_set),
+                None if !incomplete_source_sets.is_empty()
+                    || global_incomplete_reason.is_some() =>
+                {
+                    Some(&aggregate_reason)
+                }
+                None => None,
+            };
+            if let Some(reason) = reason {
+                observation.outcome = ProjectCheckOutcome::NotRun {
+                    reason: reason.clone(),
+                };
+            }
+        }
+        let mut facts = Vec::with_capacity(
+            incomplete_reasons
+                .len()
+                .saturating_add(usize::from(global_incomplete_reason.is_some())),
+        );
+        for (source_set_index, (source_set, reason)) in incomplete_reasons.iter().enumerate() {
+            if source_set_index.is_multiple_of(256) {
+                if cancellation.is_cancelled() {
+                    return Err(ProjectHealthInspectionError::Cancelled);
+                }
+                if deadline.remaining().is_zero() {
+                    return Ok(timeout_policy(
+                        observations,
+                        ProjectCheckId::RepositoryAttributes,
+                    ));
+                }
+            }
+            facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryAttributes,
+                source_set: Some(source_set.clone()),
+                reason: reason.clone(),
+            });
+        }
+        if let Some(reason) = global_incomplete_reason {
+            facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryAttributes,
+                source_set: None,
+                reason,
+            });
         }
         let resources = classification
             .resources
