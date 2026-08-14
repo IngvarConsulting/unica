@@ -247,6 +247,12 @@ pub(crate) enum ProjectHealthFact {
         source_set: Option<String>,
         reason: String,
     },
+    GitInspectionIncompleteCounted {
+        check: ProjectCheckId,
+        source_set: Option<String>,
+        reason: String,
+        count: usize,
+    },
     IgnoreRuleMissing {
         source_set: Option<String>,
         path: String,
@@ -463,7 +469,8 @@ pub(crate) fn evaluate_project_health(
 fn incomplete_fact_reason(fact: &ProjectHealthFact) -> Option<&str> {
     match fact {
         ProjectHealthFact::GitInspectionTimeout { .. } => Some("Git inspection timed out"),
-        ProjectHealthFact::GitInspectionIncomplete { reason, .. } => Some(reason),
+        ProjectHealthFact::GitInspectionIncomplete { reason, .. }
+        | ProjectHealthFact::GitInspectionIncompleteCounted { reason, .. } => Some(reason),
         ProjectHealthFact::SourceInspectionIncomplete { reason } => Some(reason),
         _ => None,
     }
@@ -636,7 +643,8 @@ fn validate_snapshot(snapshot: &ProjectHealthSnapshot) -> Result<(), String> {
     }
     for fact in &snapshot.facts {
         if let ProjectHealthFact::GitInspectionTimeout { check, .. }
-        | ProjectHealthFact::GitInspectionIncomplete { check, .. } = fact
+        | ProjectHealthFact::GitInspectionIncomplete { check, .. }
+        | ProjectHealthFact::GitInspectionIncompleteCounted { check, .. } = fact
         {
             if check.scope() != DiagnosticScope::Repository {
                 return snapshot_error(format!(
@@ -859,6 +867,26 @@ fn diagnostic_seed(fact: &ProjectHealthFact) -> DiagnosticSeed {
             source_set.clone(),
             Vec::new(),
             1,
+            "Git inspection did not produce a complete trustworthy result",
+            vec![reason.clone()],
+            if reason.contains("partial clone") && reason.contains("Git 2.46") {
+                RemediationKind::UpgradeGitForPartialClone
+            } else {
+                RemediationKind::RetryInspection
+            },
+        ),
+        GitInspectionIncompleteCounted {
+            check,
+            source_set,
+            reason,
+            count,
+        } => seed(
+            "git.inspection_incomplete",
+            incomplete_severity(*check),
+            *check,
+            source_set.clone(),
+            Vec::new(),
+            *count,
             "Git inspection did not produce a complete trustworthy result",
             vec![reason.clone()],
             if reason.contains("partial clone") && reason.contains("Git 2.46") {

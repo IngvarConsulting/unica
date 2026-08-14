@@ -1236,6 +1236,16 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
         Some("owner-1023"),
         "notRun",
     );
+    let owner_diagnostic = data["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diagnostic| {
+            diagnostic["code"] == "git.inspection_incomplete"
+                && diagnostic["sourceSet"] == "owner-0000"
+        })
+        .unwrap();
+    assert_eq!(owner_diagnostic["count"], 64, "{data}");
     let _ = fs::remove_dir_all(root);
 }
 

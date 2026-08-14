@@ -422,8 +422,8 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 });
             }
         };
-        let mut incomplete_reasons = BTreeMap::<String, String>::new();
-        let mut global_incomplete_reason = None;
+        let mut incomplete_reasons = BTreeMap::<String, (usize, String)>::new();
+        let mut global_incomplete_reason = None::<(usize, String)>;
         for (error_index, error) in classification.ownership_errors.into_iter().enumerate() {
             if error_index.is_multiple_of(256) {
                 if cancellation.is_cancelled() {
@@ -449,12 +449,14 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                         ));
                     }
                 }
-                if !incomplete_reasons.contains_key(source_set.as_str()) {
-                    incomplete_reasons.insert(source_set.clone(), reason.clone());
-                }
+                let summary = incomplete_reasons
+                    .entry(source_set.clone())
+                    .or_insert_with(|| (0, reason.clone()));
+                summary.0 = summary.0.saturating_add(1);
             }
             if error.source_sets.is_empty() {
-                global_incomplete_reason.get_or_insert(reason);
+                let summary = global_incomplete_reason.get_or_insert((0, reason));
+                summary.0 = summary.0.saturating_add(1);
             }
         }
         if cancellation.is_cancelled() {
@@ -467,12 +469,15 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             ));
         }
         let incomplete_source_sets = incomplete_reasons.keys().cloned().collect::<BTreeSet<_>>();
-        let aggregate_reason = global_incomplete_reason.clone().unwrap_or_else(|| {
-            format!(
-                "resource ownership is incomplete for {} source sets",
-                incomplete_source_sets.len()
-            )
-        });
+        let aggregate_reason = global_incomplete_reason
+            .as_ref()
+            .map(|(_, reason)| reason.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "resource ownership is incomplete for {} source sets",
+                    incomplete_source_sets.len()
+                )
+            });
         for observation in &mut observations {
             if !resource_check_ids().contains(&observation.id)
                 || matches!(
@@ -483,7 +488,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 continue;
             }
             let reason = match observation.source_set.as_deref() {
-                Some(source_set) => incomplete_reasons.get(source_set),
+                Some(source_set) => incomplete_reasons.get(source_set).map(|(_, reason)| reason),
                 None if !incomplete_source_sets.is_empty()
                     || global_incomplete_reason.is_some() =>
                 {
@@ -502,7 +507,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 .len()
                 .saturating_add(usize::from(global_incomplete_reason.is_some())),
         );
-        for (source_set_index, (source_set, reason)) in incomplete_reasons.iter().enumerate() {
+        for (source_set_index, (source_set, (count, reason))) in
+            incomplete_reasons.iter().enumerate()
+        {
             if source_set_index.is_multiple_of(256) {
                 if cancellation.is_cancelled() {
                     return Err(ProjectHealthInspectionError::Cancelled);
@@ -514,17 +521,19 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     ));
                 }
             }
-            facts.push(ProjectHealthFact::GitInspectionIncomplete {
+            facts.push(ProjectHealthFact::GitInspectionIncompleteCounted {
                 check: ProjectCheckId::RepositoryAttributes,
                 source_set: Some(source_set.clone()),
                 reason: reason.clone(),
+                count: *count,
             });
         }
-        if let Some(reason) = global_incomplete_reason {
-            facts.push(ProjectHealthFact::GitInspectionIncomplete {
+        if let Some((count, reason)) = global_incomplete_reason {
+            facts.push(ProjectHealthFact::GitInspectionIncompleteCounted {
                 check: ProjectCheckId::RepositoryAttributes,
                 source_set: None,
                 reason,
+                count,
             });
         }
         let resources = classification
@@ -2634,9 +2643,10 @@ mod tests {
 
         assert!(inspection.facts.iter().any(|fact| matches!(
             fact,
-            ProjectHealthFact::GitInspectionIncomplete {
+            ProjectHealthFact::GitInspectionIncompleteCounted {
                 check: ProjectCheckId::RepositoryAttributes,
                 reason,
+                count: 1,
                 ..
             } if reason.contains("regular stage-0 blob")
         )));
