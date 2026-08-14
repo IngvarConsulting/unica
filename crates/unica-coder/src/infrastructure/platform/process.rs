@@ -1659,10 +1659,9 @@ mod tests {
             ManagedCommand {
                 program: std::env::current_exe().map_err(|error| error.to_string())?,
                 args: vec![
-                    "--exact".to_string(),
-                    "infrastructure::platform::process::tests::managed_child_test_helper"
-                        .to_string(),
-                    "--nocapture".to_string(),
+                    "--exact".into(),
+                    "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                    "--nocapture".into(),
                 ],
                 cwd: std::env::current_dir().map_err(|error| error.to_string())?,
                 env: vec![(OsString::from(HELPER_ENV), OsString::from(mode))],
@@ -2049,6 +2048,8 @@ mod tests {
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_forever"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(Duration::from_secs(5)),
             cancellation: CancellationToken::new(),
         })
