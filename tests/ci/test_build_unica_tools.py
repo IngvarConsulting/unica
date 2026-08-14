@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import re
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -314,15 +315,127 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     target="linux-x64",
                 )
 
-    def test_bundle_builder_has_no_archive_asset_dependency_path(self) -> None:
+    def test_bundle_builder_downloads_shared_archive_once_and_declares_runtime_closure(
+        self,
+    ) -> None:
         module = load_build_module()
-        source = (
-            Path(__file__).resolve().parents[2] / "scripts" / "ci" / "build-unica-tools.py"
-        ).read_text(encoding="utf-8")
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        archive_path = root / "source.tar.gz"
+        manifest = runtime_manifest()
+        members = [
+            (
+                "manifest.json",
+                json.dumps(manifest, separators=(",", ":")).encode(),
+                0o644,
+                tarfile.REGTYPE,
+                "",
+            ),
+            ("payload/libpython3.12.so.1.0", b"shared", 0o644, tarfile.REGTYPE, ""),
+            ("payload/rlm-bsl-index", b"multidist", 0o755, tarfile.REGTYPE, ""),
+            ("payload/rlm-bsl-mcp", b"multidist", 0o755, tarfile.REGTYPE, ""),
+        ]
+        write_raw_archive(archive_path, members)
+        asset = {
+            "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+            "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+            "size": archive_path.stat().st_size,
+        }
 
-        self.assertFalse(hasattr(module, "extract_v8_runner"))
-        self.assertNotIn("archive-release-asset", source)
-        self.assertNotIn("archiveBinary", source)
+        def tool(name: str) -> dict:
+            return {
+                "name": name,
+                "version": "1.33.0",
+                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
+                "sourceTag": "v1.33.0",
+                "sourceCommit": RUNTIME_SOURCE_COMMIT,
+                "license": "MIT",
+                "binaryName": name,
+                "assetStrategy": "archive-release-asset",
+                "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
+                "assetTag": RUNTIME_RELEASE,
+                "assets": {
+                    "linux-x64": {
+                        **asset,
+                        "archiveBinary": name,
+                    }
+                },
+            }
+
+        lock = {
+            "schemaVersion": 1,
+            "targets": {
+                "linux-x64": {
+                    "hostSystem": "Linux",
+                    "hostMachines": ["x86_64"],
+                    "targetTriple": RUNTIME_TARGET["triple"],
+                    "exe": "",
+                }
+            },
+            "tools": [tool("rlm-bsl-index"), tool("rlm-bsl-mcp")],
+        }
+        lock_path = root / "tools.lock.json"
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
+        out_dir = root / "bundle"
+        work_dir = root / "work"
+        downloads: list[tuple[str, Path]] = []
+
+        def fake_download(url: str, destination: Path) -> None:
+            downloads.append((url, destination))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(archive_path, destination)
+
+        argv = [
+            "build-unica-tools.py",
+            "--target",
+            "linux-x64",
+            "--lock-file",
+            str(lock_path),
+            "--repo-root",
+            str(root),
+            "--out-dir",
+            str(out_dir),
+            "--work-dir",
+            str(work_dir),
+        ]
+        with (
+            patch.object(module, "assert_host"),
+            patch.object(module, "download", side_effect=fake_download),
+            patch.object(module, "load_cargo_workspace_binary_owners", return_value={}),
+            patch.object(
+                module,
+                "build_cargo_workspace_binaries",
+                return_value=({}, root / "bootstrap", 0.0),
+            ),
+            patch.object(sys, "argv", argv),
+        ):
+            module.main()
+
+        self.assertEqual(len(downloads), 1)
+        tools = json.loads((out_dir / "tools.json").read_text(encoding="utf-8"))
+        self.assertEqual(tools["schemaVersion"], 2)
+        self.assertEqual(
+            [item["path"] for item in tools["runtimeFiles"]],
+            [
+                "bin/linux-x64/libpython3.12.so.1.0",
+                "bin/linux-x64/rlm-bsl-index",
+                "bin/linux-x64/rlm-bsl-mcp",
+            ],
+        )
+        self.assertEqual(
+            {item["name"]: item["binaryPath"] for item in tools["tools"]},
+            {
+                "rlm-bsl-index": "bin/linux-x64/rlm-bsl-index",
+                "rlm-bsl-mcp": "bin/linux-x64/rlm-bsl-mcp",
+            },
+        )
+        self.assertEqual(
+            (out_dir / "bin" / "linux-x64" / "rlm-bsl-index").read_bytes(),
+            b"multidist",
+        )
+        self.assertEqual(
+            (out_dir / "bin" / "linux-x64" / "rlm-bsl-mcp").read_bytes(),
+            b"multidist",
+        )
 
     def test_verified_archive_rejects_unsafe_and_drifted_members(self) -> None:
         module = load_runtime_archive_module()
@@ -472,6 +585,115 @@ class BuildUnicaToolsTests(unittest.TestCase):
             with self.subTest(drift=label):
                 with self.assertRaisesRegex(SystemExit, message):
                     load(archive(f"drift-{label}", manifest=manifest, payload=payload))
+
+    def test_archive_group_rejects_conflicts_before_materialization(self) -> None:
+        module = load_build_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        archive_path = root / "source.tar.gz"
+        write_raw_archive(
+            archive_path,
+            [
+                (
+                    "manifest.json",
+                    json.dumps(runtime_manifest(), separators=(",", ":")).encode(),
+                    0o644,
+                    tarfile.REGTYPE,
+                    "",
+                ),
+                (
+                    "payload/libpython3.12.so.1.0",
+                    b"shared",
+                    0o644,
+                    tarfile.REGTYPE,
+                    "",
+                ),
+                (
+                    "payload/rlm-bsl-index",
+                    b"multidist",
+                    0o755,
+                    tarfile.REGTYPE,
+                    "",
+                ),
+                (
+                    "payload/rlm-bsl-mcp",
+                    b"multidist",
+                    0o755,
+                    tarfile.REGTYPE,
+                    "",
+                ),
+            ],
+        )
+        common_asset = {
+            "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+            "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+            "size": archive_path.stat().st_size,
+        }
+
+        def tool(name: str, selector: str | None) -> dict:
+            asset = dict(common_asset)
+            if selector is not None:
+                asset["archiveBinary"] = selector
+            return {
+                "name": name,
+                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
+                "sourceTag": "v1.33.0",
+                "sourceCommit": RUNTIME_SOURCE_COMMIT,
+                "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
+                "assetTag": RUNTIME_RELEASE,
+                "assets": {"linux-x64": asset},
+            }
+
+        missing = [tool("rlm-bsl-index", None), tool("rlm-bsl-mcp", "rlm-bsl-mcp")]
+        with patch.object(module, "download") as download_call:
+            with self.assertRaisesRegex(SystemExit, "missing archiveBinary"):
+                module.materialize_archive_group(
+                    missing,
+                    target="linux-x64",
+                    target_triple=RUNTIME_TARGET["triple"],
+                    downloads_dir=root / "downloads",
+                    target_bin_dir=root / "bundle" / "bin" / "linux-x64",
+                    reserved_paths={},
+                )
+        download_call.assert_not_called()
+
+        conflicting = [
+            tool("rlm-bsl-index", "rlm-bsl-index"),
+            tool("rlm-bsl-mcp", "rlm-bsl-mcp"),
+        ]
+        conflicting[1]["assets"]["linux-x64"]["sha256"] = "0" * 64
+        with patch.object(module, "download") as download_call:
+            with self.assertRaisesRegex(SystemExit, "conflicting archive identities"):
+                module.materialize_archive_group(
+                    conflicting,
+                    target="linux-x64",
+                    target_triple=RUNTIME_TARGET["triple"],
+                    downloads_dir=root / "downloads",
+                    target_bin_dir=root / "bundle" / "bin" / "linux-x64",
+                    reserved_paths={},
+                )
+        download_call.assert_not_called()
+
+        def fake_download(_url: str, destination: Path) -> None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(archive_path, destination)
+
+        valid = [
+            tool("rlm-bsl-index", "rlm-bsl-index"),
+            tool("rlm-bsl-mcp", "rlm-bsl-mcp"),
+        ]
+        with patch.object(module, "download", side_effect=fake_download) as download_call:
+            with self.assertRaisesRegex(SystemExit, "runtime destination collision"):
+                module.materialize_archive_group(
+                    valid,
+                    target="linux-x64",
+                    target_triple=RUNTIME_TARGET["triple"],
+                    downloads_dir=root / "downloads",
+                    target_bin_dir=root / "bundle" / "bin" / "linux-x64",
+                    reserved_paths={
+                        "bin/linux-x64/libpython3.12.so.1.0": "another tool"
+                    },
+                )
+        download_call.assert_called_once()
 
     def test_workspace_binaries_share_one_locked_cargo_build(self) -> None:
         module = load_build_module()

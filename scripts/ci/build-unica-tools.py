@@ -12,7 +12,18 @@ import subprocess
 import sys
 import time
 import urllib.request
+from collections import defaultdict
 from pathlib import Path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from unica_runtime_archive import RuntimeArchiveFile, load_verified_archive
+
+
+ArchiveIdentity = tuple[str, str, str, str, str]
 
 
 def load_lock(path: Path) -> dict:
@@ -69,6 +80,20 @@ def verify_asset_checksum(path: Path, asset: dict, *, tool_name: str, target: st
         )
 
 
+def verify_asset_size(path: Path, asset: dict, *, tool_name: str, target: str) -> None:
+    expected = asset.get("size")
+    if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
+        raise SystemExit(
+            f"{tool_name} {target} asset {asset.get('assetName')} is missing positive size in tools lock"
+        )
+    actual = path.stat().st_size
+    if actual != expected:
+        raise SystemExit(
+            f"{tool_name} {target} asset size mismatch for {asset.get('assetName')}: "
+            f"{actual} != {expected}"
+        )
+
+
 def download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"download {url}", flush=True)
@@ -80,6 +105,118 @@ def release_asset_url(tool: dict, asset: dict) -> str:
     repository = tool.get("assetRepository", tool["repository"])
     tag = tool.get("assetTag", tool["sourceTag"])
     return f"{repository}/releases/download/{tag}/{asset['assetName']}"
+
+
+def archive_identity(tool: dict, asset: dict, *, target: str) -> ArchiveIdentity:
+    repository = tool.get("assetRepository", tool["repository"])
+    tag = tool.get("assetTag", tool["sourceTag"])
+    name = asset.get("assetName")
+    digest = asset.get("sha256")
+    if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+        raise SystemExit(f"{tool['name']} {target} archive has unsafe assetName: {name}")
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise SystemExit(f"{tool['name']} {target} archive is missing sha256")
+    return repository, tag, target, name, digest
+
+
+def set_file_mode(path: Path, *, executable: bool) -> None:
+    path.chmod(0o755 if executable else 0o644)
+
+
+def runtime_file_entry(
+    path: Path,
+    *,
+    relative_path: str,
+    executable: bool,
+) -> dict:
+    return {
+        "path": relative_path,
+        "sha256": sha256(path),
+        "size": path.stat().st_size,
+        "executable": executable,
+    }
+
+
+def materialize_archive_group(
+    tools: list[dict],
+    *,
+    target: str,
+    target_triple: str,
+    downloads_dir: Path,
+    target_bin_dir: Path,
+    reserved_paths: dict[str, str],
+) -> tuple[dict[str, Path], list[dict]]:
+    first = tools[0]
+    first_asset = first["assets"][target]
+    identity = archive_identity(first, first_asset, target=target)
+    for tool in tools[1:]:
+        asset = tool["assets"][target]
+        if archive_identity(tool, asset, target=target) != identity:
+            raise SystemExit(
+                f"conflicting archive identities for release {identity[0]} {identity[1]} {target}"
+            )
+        comparable = {key: value for key, value in asset.items() if key != "archiveBinary"}
+        first_comparable = {
+            key: value for key, value in first_asset.items() if key != "archiveBinary"
+        }
+        if comparable != first_comparable:
+            raise SystemExit(f"conflicting archive metadata for {identity[3]}")
+        if tool["sourceCommit"] != first["sourceCommit"]:
+            raise SystemExit(f"conflicting archive source commits for {identity[3]}")
+
+    entrypoints: dict[str, str] = {}
+    for tool in tools:
+        archive_binary = tool["assets"][target].get("archiveBinary")
+        if not isinstance(archive_binary, str) or not archive_binary:
+            raise SystemExit(
+                f"{tool['name']} {target} archive is missing archiveBinary selector"
+            )
+        entrypoints[tool["name"]] = archive_binary
+
+    downloaded = downloads_dir / f"{identity[4][:16]}-{identity[3]}"
+    download(release_asset_url(first, first_asset), downloaded)
+    verify_asset_checksum(downloaded, first_asset, tool_name=first["name"], target=target)
+    verify_asset_size(downloaded, first_asset, tool_name=first["name"], target=target)
+    files = load_verified_archive(
+        downloaded,
+        release_tag=identity[1],
+        source_commit=first["sourceCommit"],
+        target={"key": target, "triple": target_triple},
+        entrypoints=entrypoints,
+    )
+
+    planned: list[tuple[RuntimeArchiveFile, str]] = []
+    for item in files:
+        relative = (Path("bin") / target / Path(*item.path.parts)).as_posix()
+        owner = reserved_paths.get(relative)
+        if owner is not None:
+            raise SystemExit(
+                f"runtime destination collision at {relative}: {owner} and archive {identity[3]}"
+            )
+        reserved_paths[relative] = f"archive {identity[3]}"
+        planned.append((item, relative))
+
+    runtime_files: list[dict] = []
+    by_archive_path: dict[str, Path] = {}
+    for item, relative in planned:
+        destination = target_bin_dir.joinpath(*item.path.parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(item.payload)
+        set_file_mode(destination, executable=item.executable)
+        runtime_files.append(
+            runtime_file_entry(
+                destination,
+                relative_path=relative,
+                executable=item.executable,
+            )
+        )
+        by_archive_path[item.path.as_posix()] = destination
+
+    built_paths = {
+        tool["name"]: by_archive_path[tool["assets"][target]["archiveBinary"]]
+        for tool in tools
+    }
+    return built_paths, runtime_files
 
 
 def assert_host(target: str, targets: dict) -> None:
@@ -238,26 +375,78 @@ def main() -> None:
 
     built_paths: dict[str, Path] = {}
     cargo_tools: list[dict] = []
+    direct_tools: list[dict] = []
+    archive_groups: dict[ArchiveIdentity, list[dict]] = defaultdict(list)
+    archive_release_identities: dict[tuple[str, str, str], tuple[str, str, int]] = {}
+    reserved_paths: dict[str, str] = {}
+    runtime_files: list[dict] = []
     for tool in lock["tools"]:
         strategy = tool["assetStrategy"]
-        dest = target_bin_dir / f"{tool['binaryName']}{exe}"
+        if strategy in ("direct-release-asset", "cargo-workspace"):
+            relative = f"bin/{args.target}/{tool['binaryName']}{exe}"
+            owner = reserved_paths.get(relative)
+            if owner is not None:
+                raise SystemExit(
+                    f"runtime destination collision at {relative}: {owner} and {tool['name']}"
+                )
+            reserved_paths[relative] = tool["name"]
 
         if strategy == "direct-release-asset":
+            direct_tools.append(tool)
+        elif strategy == "archive-release-asset":
             asset = tool["assets"].get(args.target)
             if not asset:
                 raise SystemExit(f"{tool['name']} has no asset for target {args.target}")
-            url = release_asset_url(tool, asset)
-            downloaded = downloads_dir / asset["assetName"]
-            download(url, downloaded)
-            verify_asset_checksum(downloaded, asset, tool_name=tool["name"], target=args.target)
-            shutil.copy2(downloaded, dest)
+            identity = archive_identity(tool, asset, target=args.target)
+            release_key = identity[:3]
+            size = asset.get("size")
+            if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                raise SystemExit(
+                    f"{tool['name']} {args.target} archive is missing positive size in tools lock"
+                )
+            asset_identity = (identity[3], identity[4], size)
+            existing = archive_release_identities.setdefault(release_key, asset_identity)
+            if existing != asset_identity:
+                raise SystemExit(
+                    f"conflicting archive identities for release {identity[0]} {identity[1]} {args.target}"
+                )
+            archive_groups[identity].append(tool)
         elif strategy == "cargo-workspace":
             cargo_tools.append(tool)
-            continue
         else:
             raise SystemExit(f"unsupported assetStrategy for {tool['name']}: {strategy}")
 
+    for tool in direct_tools:
+        asset = tool["assets"].get(args.target)
+        if not asset:
+            raise SystemExit(f"{tool['name']} has no asset for target {args.target}")
+        dest = target_bin_dir / f"{tool['binaryName']}{exe}"
+        url = release_asset_url(tool, asset)
+        downloaded = downloads_dir / asset["assetName"]
+        download(url, downloaded)
+        verify_asset_checksum(downloaded, asset, tool_name=tool["name"], target=args.target)
+        shutil.copy2(downloaded, dest)
+        set_file_mode(dest, executable=True)
         built_paths[tool["name"]] = dest
+        runtime_files.append(
+            runtime_file_entry(
+                dest,
+                relative_path=f"bin/{args.target}/{dest.name}",
+                executable=True,
+            )
+        )
+
+    for identity in sorted(archive_groups):
+        archive_paths, archive_files = materialize_archive_group(
+            archive_groups[identity],
+            target=args.target,
+            target_triple=cfg["targetTriple"],
+            downloads_dir=downloads_dir,
+            target_bin_dir=target_bin_dir,
+            reserved_paths=reserved_paths,
+        )
+        built_paths.update(archive_paths)
+        runtime_files.extend(archive_files)
 
     cargo_paths, _, cargo_build_seconds = build_cargo_workspace_binaries(
         cargo_tools,
@@ -270,16 +459,22 @@ def main() -> None:
         workspace_binary_owners=load_cargo_workspace_binary_owners(args.repo_root.resolve()),
     )
     built_paths.update(cargo_paths)
+    for tool in cargo_tools:
+        path = cargo_paths[tool["name"]]
+        set_file_mode(path, executable=True)
+        runtime_files.append(
+            runtime_file_entry(
+                path,
+                relative_path=f"bin/{args.target}/{path.name}",
+                executable=True,
+            )
+        )
     if args.metrics_file is not None:
         write_build_metrics(
             args.metrics_file,
             target=args.target,
             cargo_build_seconds=cargo_build_seconds,
         )
-
-    for path in target_bin_dir.iterdir():
-        if path.is_file() and not path.name.endswith(".exe"):
-            path.chmod(path.stat().st_mode | 0o755)
 
     tools = [
         tool_entry(
@@ -300,10 +495,12 @@ def main() -> None:
     (args.out_dir / "tools.json").write_text(
         json.dumps(
             {
+                "schemaVersion": 2,
                 "target": args.target,
                 "targetTriple": cfg["targetTriple"],
                 "lockFile": str(args.lock_file),
                 "tools": tools,
+                "runtimeFiles": sorted(runtime_files, key=lambda item: item["path"]),
             },
             ensure_ascii=False,
             indent=2,
