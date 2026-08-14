@@ -992,6 +992,27 @@ fn project_health_reports_index_eol_even_when_text_policy_is_missing() {
     )
     .unwrap();
     git(&root, &["add", "."]);
+    let crlf_blob_output = git_with_input(
+        &root,
+        &["hash-object", "-w", "--stdin"],
+        b"<MetaDataObject/>\r\n",
+    );
+    let crlf_blob = crlf_blob_output
+        .strip_suffix('\n')
+        .expect("git hash-object terminates the object id with a newline");
+    git(
+        &root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{crlf_blob},src/Configuration.xml"),
+        ],
+    );
+    assert_eq!(
+        git_output(&root, &["show", ":src/Configuration.xml"]).stdout,
+        b"<MetaDataObject/>\r\n"
+    );
 
     let result = status(&root);
 
