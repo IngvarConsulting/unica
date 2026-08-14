@@ -628,6 +628,15 @@ impl Drop for ActiveLifecycleLock {
     }
 }
 
+fn lock_is_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == io::ErrorKind::WouldBlock
+        || error
+            .raw_os_error()
+            .zip(expected.raw_os_error())
+            .is_some_and(|(actual, expected)| actual == expected)
+}
+
 #[derive(Debug, Clone)]
 struct RuntimeJobStore {
     cache_root: PathBuf,
@@ -694,6 +703,19 @@ impl RuntimeJobStore {
     }
 
     fn acquire_active_lifecycle_lock(&self) -> JobResult<ActiveLifecycleLock> {
+        self.open_active_lifecycle_lock(false)?.ok_or_else(|| {
+            redacted_error("active runtime job lifecycle lock unexpectedly remained contended")
+        })
+    }
+
+    fn try_acquire_active_lifecycle_lock(&self) -> JobResult<Option<ActiveLifecycleLock>> {
+        self.open_active_lifecycle_lock(true)
+    }
+
+    fn open_active_lifecycle_lock(
+        &self,
+        nonblocking: bool,
+    ) -> JobResult<Option<ActiveLifecycleLock>> {
         fs::create_dir_all(self.jobs_root())
             .map_err(|error| io_error("create runtime jobs directory", &error))?;
         let path = self.active_lifecycle_lock_path();
@@ -704,9 +726,19 @@ impl RuntimeJobStore {
             .write(true)
             .open(&path)
             .map_err(|error| io_error("open active runtime job lifecycle lock", &error))?;
-        FileExt::lock_exclusive(&file)
-            .map_err(|error| io_error("acquire active runtime job lifecycle lock", &error))?;
-        Ok(ActiveLifecycleLock { file })
+        let lock_result = if nonblocking {
+            FileExt::try_lock_exclusive(&file)
+        } else {
+            FileExt::lock_exclusive(&file)
+        };
+        match lock_result {
+            Ok(()) => Ok(Some(ActiveLifecycleLock { file })),
+            Err(error) if nonblocking && lock_is_contended(&error) => Ok(None),
+            Err(error) => Err(io_error(
+                "acquire active runtime job lifecycle lock",
+                &error,
+            )),
+        }
     }
 
     fn acquire_active_lock_guarded(&self, id: &str) -> JobResult<()> {
@@ -771,6 +803,15 @@ impl RuntimeJobStore {
         }
 
         let _lifecycle_lock = self.acquire_active_lifecycle_lock()?;
+        self.release_active_lock_guarded(id, after_guarded_observation)
+    }
+
+    fn release_active_lock_guarded(
+        &self,
+        id: &str,
+        after_guarded_observation: impl FnOnce(),
+    ) -> JobResult<()> {
+        let lock_path = self.active_lock_path();
         let current = match fs::read_to_string(&lock_path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -829,7 +870,11 @@ impl RuntimeJobStore {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
             Err(error) => return Err(io_error("create runtime job recovery lock", &error)),
         };
-        let result = self.recover_stale_active_locked();
+        let result = match self.try_acquire_active_lifecycle_lock() {
+            Ok(Some(_lifecycle_lock)) => self.recover_stale_active_locked(),
+            Ok(None) => Ok(false),
+            Err(error) => Err(error),
+        };
         drop(recovery_lock);
         match fs::remove_file(self.recovery_lock_path()) {
             Ok(()) => result,
@@ -850,7 +895,7 @@ impl RuntimeJobStore {
             // Its own id makes this cleanup safe. Lost is deliberately excluded:
             // its child may still be alive after a worker crash.
             if record.phase != RuntimeJobPhase::Lost {
-                self.release_active_lock_for(&id)?;
+                self.release_active_lock_guarded(&id, || {})?;
                 return Ok(true);
             }
             return Ok(false);
@@ -1072,6 +1117,16 @@ impl RuntimeJobService {
         request: &RuntimeJobRequest,
         after_preflight: impl FnOnce(),
     ) -> JobResult<RuntimeJobSnapshot> {
+        self.activate_enqueued_after_hooks(id, request, after_preflight, || {})
+    }
+
+    fn activate_enqueued_after_hooks(
+        &self,
+        id: &str,
+        request: &RuntimeJobRequest,
+        after_preflight: impl FnOnce(),
+        before_activation_guard: impl FnOnce(),
+    ) -> JobResult<RuntimeJobSnapshot> {
         let mut record = self.store.read_record(id)?;
         // No platform process has started while the record is still queued, so
         // every operation can honor cancellation safely at this boundary. The
@@ -1092,15 +1147,37 @@ impl RuntimeJobService {
             None => Ok(()),
         };
         after_preflight();
-        if let Some(cancelled) = self.cancel_enqueued_before_start(&mut record)? {
+        before_activation_guard();
+
+        // Recovery and cancellation are separate processes. Linearize the
+        // queued-to-running claim with both of them, then re-read durable state
+        // under the same guard that is held through spawn and publication.
+        let _lifecycle_lock = self.store.acquire_active_lifecycle_lock()?;
+        record = self.store.read_record(id)?;
+        if let Some(cancelled) = self.cancel_enqueued_before_start_guarded(&mut record)? {
             return Ok(cancelled);
         }
+        if record.phase != RuntimeJobPhase::Queued {
+            return Err(redacted_error("runtime job worker expected a queued job"));
+        }
+        if record.operation != request.operation.label() {
+            return Err(redacted_error(
+                "runtime job worker operation does not match queued job",
+            ));
+        }
+        // The first reauthorization may have completed while cancellation or
+        // recovery owned the lifecycle guard. Repeat it after claiming the
+        // activation boundary so stale evidence cannot cross into spawn.
+        let preflight_result = preflight_result.and_then(|()| match &request.build_preflight {
+            Some(build_preflight) => build_preflight.reauthorize_current_workspace(),
+            None => Ok(()),
+        });
         let spawn_result = preflight_result.and_then(|()| self.runner.spawn(request));
         let mut process = match spawn_result {
             Ok(process) => process,
             Err(error) => {
                 let error = redacted_error(&error);
-                let _ = self.fail_start(&mut record, &error);
+                let _ = self.fail_start_guarded(&mut record, &error);
                 return Err(error);
             }
         };
@@ -1110,13 +1187,13 @@ impl RuntimeJobService {
         record.heartbeat_at_ms = Some(now_millis());
         record.transition(RuntimeJobPhase::Running)?;
         if let Err(error) = self.store.write_record(&record) {
-            self.cleanup_activation_failure(&mut record, &mut *process, &error);
+            self.cleanup_activation_failure_guarded(&mut record, &mut *process, &error);
             return Err(error);
         }
         let mut processes = match self.lock_processes() {
             Ok(processes) => processes,
             Err(error) => {
-                self.cleanup_activation_failure(&mut record, &mut *process, &error);
+                self.cleanup_activation_failure_guarded(&mut record, &mut *process, &error);
                 return Err(error);
             }
         };
@@ -1125,6 +1202,15 @@ impl RuntimeJobService {
     }
 
     fn cancel_enqueued_before_start(
+        &self,
+        record: &mut RuntimeJobRecord,
+    ) -> JobResult<Option<RuntimeJobSnapshot>> {
+        let _lifecycle_lock = self.store.acquire_active_lifecycle_lock()?;
+        *record = self.store.read_record(&record.id)?;
+        self.cancel_enqueued_before_start_guarded(record)
+    }
+
+    fn cancel_enqueued_before_start_guarded(
         &self,
         record: &mut RuntimeJobRecord,
     ) -> JobResult<Option<RuntimeJobSnapshot>> {
@@ -1137,7 +1223,7 @@ impl RuntimeJobService {
         record.heartbeat_at_ms = Some(now_millis());
         record.transition(RuntimeJobPhase::Cancelled)?;
         self.store.write_record(record)?;
-        self.store.release_active_lock_for(&id)?;
+        self.store.release_active_lock_guarded(&id, || {})?;
         Ok(Some(record.snapshot(false)))
     }
 
@@ -1307,14 +1393,15 @@ impl RuntimeJobService {
         id: &str,
     ) -> JobResult<RuntimeJobSnapshot> {
         let store = RuntimeJobStore::new(cache_root, DEFAULT_STALE_AFTER);
+        let _lifecycle_lock = store.acquire_active_lifecycle_lock()?;
         let record = store.read_record(id)?;
         if record.phase.is_terminal() {
             return Ok(record.snapshot(false));
         }
         store.write_cancel_marker(id)?;
-        // The worker is the sole writer of lifecycle transitions in record.json.
-        // Re-read after publishing the marker so a concurrently committed terminal
-        // result always wins over this cancellation request.
+        // The worker and guarded lifecycle recovery publish transitions in
+        // record.json. Re-read after the marker so a concurrently committed
+        // terminal result always wins over this cancellation request.
         let current = store.read_record(id)?;
         store.snapshot_with_cancel_intent(&current, false)
     }
@@ -1397,15 +1484,15 @@ impl RuntimeJobService {
         Ok(record.snapshot(false))
     }
 
-    fn fail_start(&self, record: &mut RuntimeJobRecord, error: &str) -> JobResult<()> {
+    fn fail_start_guarded(&self, record: &mut RuntimeJobRecord, error: &str) -> JobResult<()> {
         record.transition(RuntimeJobPhase::Failed)?;
         record.finished_at_ms = Some(now_millis());
         record.warnings.push(redact_text(error));
         self.store.write_record(record)?;
-        self.store.release_active_lock_for(&record.id)
+        self.store.release_active_lock_guarded(&record.id, || {})
     }
 
-    fn cleanup_activation_failure(
+    fn cleanup_activation_failure_guarded(
         &self,
         record: &mut RuntimeJobRecord,
         process: &mut dyn RuntimeJobProcess,
@@ -1422,7 +1509,7 @@ impl RuntimeJobService {
                     "worker activation failed after child spawn: {activation_error}"
                 )));
                 if self.store.write_record(record).is_ok() {
-                    let _ = self.store.release_active_lock_for(&record.id);
+                    let _ = self.store.release_active_lock_guarded(&record.id, || {});
                 }
             }
             Err(cleanup_error) => {
@@ -1679,6 +1766,7 @@ fn apply_runtime_success_effects(cwd: &Path, operation: &str, job_id: &str) -> J
 
 fn fail_queued_job(cache_root: &Path, id: &str, error: &str) -> JobResult<()> {
     let store = RuntimeJobStore::new(cache_root.to_path_buf(), DEFAULT_STALE_AFTER);
+    let _lifecycle_lock = store.acquire_active_lifecycle_lock()?;
     let mut record = store.read_record(id)?;
     if record.phase != RuntimeJobPhase::Queued {
         return Ok(());
@@ -1688,31 +1776,31 @@ fn fail_queued_job(cache_root: &Path, id: &str, error: &str) -> JobResult<()> {
     record.heartbeat_at_ms = Some(now_millis());
     record.warnings.push(redact_text(error));
     store.write_record(&record)?;
-    store.release_active_lock_for(id)
+    store.release_active_lock_guarded(id, || {})
 }
 
 fn cancel_queued_job(cache_root: &Path, id: &str) -> JobResult<()> {
-    cancel_queued_job_after_hooks(cache_root, id, || {}, || {})
+    cancel_queued_job_after_guard(cache_root, id, || {})
 }
 
-fn cancel_queued_job_after_hooks(
+fn cancel_queued_job_after_guard(
     cache_root: &Path,
     id: &str,
-    after_record_read: impl FnOnce(),
-    after_lock_observation: impl FnOnce(),
+    after_guard: impl FnOnce(),
 ) -> JobResult<()> {
     let store = RuntimeJobStore::new(cache_root.to_path_buf(), DEFAULT_STALE_AFTER);
+    let _lifecycle_lock = store.acquire_active_lifecycle_lock()?;
     let mut record = store.read_record(id)?;
     if record.phase != RuntimeJobPhase::Queued {
         return Ok(());
     }
-    after_record_read();
+    after_guard();
     record.cancelled = true;
     record.transition(RuntimeJobPhase::Cancelled)?;
     record.finished_at_ms = Some(now_millis());
     record.heartbeat_at_ms = Some(now_millis());
     store.write_record(&record)?;
-    store.release_active_lock_for_after_observation(id, after_lock_observation)
+    store.release_active_lock_guarded(id, || {})
 }
 
 fn enqueue_cancellable_runtime_job(
@@ -1903,7 +1991,7 @@ mod tests {
         io::Cursor,
         sync::{
             atomic::{AtomicU32, Ordering},
-            mpsc, Barrier,
+            mpsc,
         },
     };
 
@@ -2510,6 +2598,152 @@ mod tests {
     }
 
     #[test]
+    fn worker_does_not_spawn_when_cancellation_wins_the_activation_race() {
+        let cache = TestCache::new();
+        let runner = Arc::new(FakeRunner::success_after(1));
+        let service = RuntimeJobService::new(cache.path(), runner.clone());
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build job");
+
+        let cancelled = service
+            .activate_enqueued_after_hooks(
+                &queued.id,
+                &request,
+                || {},
+                || {
+                    service
+                        .store
+                        .write_cancel_marker(&queued.id)
+                        .expect("cancel before the worker claims activation");
+                },
+            )
+            .expect("cancellation must win before process activation");
+
+        assert_eq!(cancelled.phase, RuntimeJobPhase::Cancelled);
+        assert!(cancelled.cancelled);
+        assert!(cancelled.pid.is_none());
+        assert!(!service.store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+    }
+
+    #[test]
+    fn worker_does_not_resurrect_job_recovered_during_build_reauthorization() {
+        let cache = TestCache::new();
+        let workspace = cache.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set: []\n",
+        )
+        .expect("write workspace config");
+        let context = discover_workspace(Some(workspace)).expect("discover workspace");
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Build,
+            vec!["build".to_string()],
+            "workspace:test",
+            None,
+        )
+        .with_build_preflight(Some(
+            RuntimeBuildPreflight::capture(&args, &context).unwrap(),
+        ));
+        let state_root = cache.path().join("state");
+        let runner = Arc::new(FakeRunner::success_after(1));
+        let service = RuntimeJobService::new(state_root.clone(), runner.clone());
+        let queued = RuntimeJobService::enqueue(&state_root, &request).expect("queue build job");
+
+        let error = service
+            .activate_enqueued_after_preflight(&queued.id, &request, || {
+                let mut stale = service
+                    .store
+                    .read_record(&queued.id)
+                    .expect("read queued record during recovery");
+                stale.heartbeat_at_ms = Some(0);
+                service
+                    .store
+                    .write_record(&stale)
+                    .expect("age queued record during preflight");
+                assert!(service
+                    .store
+                    .recover_stale_active()
+                    .expect("recover stale queued job"));
+            })
+            .expect_err("worker must not overwrite a recovered terminal state");
+
+        assert!(error.contains("expected a queued job"), "{error}");
+        assert_eq!(
+            service
+                .store
+                .read_record(&queued.id)
+                .expect("read recovered job")
+                .phase,
+            RuntimeJobPhase::Lost
+        );
+        assert!(service.store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+    }
+
+    #[test]
+    fn worker_rechecks_workspace_epoch_after_waiting_for_activation_guard() {
+        let cache = TestCache::new();
+        let workspace = cache.path().join("workspace");
+        fs::create_dir_all(workspace.join(".git")).expect("create git metadata");
+        fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set: []\n",
+        )
+        .expect("write workspace config");
+        let head = workspace.join(".git/HEAD");
+        fs::write(&head, "ref: refs/heads/feature-a\n").expect("write initial HEAD");
+        let context = discover_workspace(Some(workspace)).expect("discover workspace");
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Build,
+            vec!["build".to_string()],
+            "workspace:test",
+            None,
+        )
+        .with_build_preflight(Some(
+            RuntimeBuildPreflight::capture(&args, &context).unwrap(),
+        ));
+        let state_root = cache.path().join("state");
+        let runner = Arc::new(FakeRunner::success_after(1));
+        let service = RuntimeJobService::new(state_root.clone(), runner.clone());
+        let queued = RuntimeJobService::enqueue(&state_root, &request).expect("queue build job");
+
+        let error = service
+            .activate_enqueued_after_preflight(&queued.id, &request, || {
+                fs::write(&head, "ref: refs/heads/feature-b\n")
+                    .expect("switch HEAD after the first reauthorization");
+            })
+            .expect_err("worker must recheck authorization at activation");
+
+        assert!(error.contains("workspace identity changed"), "{error}");
+        assert_eq!(
+            service
+                .store
+                .read_record(&queued.id)
+                .expect("read failed job")
+                .phase,
+            RuntimeJobPhase::Failed
+        );
+        assert!(!service.store.active_lock_path().exists());
+        assert!(runner
+            .processes
+            .lock()
+            .expect("lock fake processes")
+            .is_empty());
+    }
+
+    #[test]
     fn worker_reauthorizes_incremental_build_after_support_state_changes() {
         let cache = TestCache::new();
         let workspace = cache.path().join("workspace");
@@ -2682,84 +2916,57 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_cancel_cleanup_cannot_remove_a_replacement_active_lock() {
+    fn cancel_cleanup_serializes_with_replacement_admission() {
         let cache = TestCache::new();
         let request = fake_request(RuntimeJobOperation::Build);
         let cancelled =
             RuntimeJobService::enqueue(cache.path(), &request).expect("queue cancelled job");
-        let both_read_queued = Arc::new(Barrier::new(2));
-        let (first_observed_tx, first_observed_rx) = mpsc::channel();
-        let (release_first_tx, release_first_rx) = mpsc::channel();
-        let (second_finished_tx, second_finished_rx) = mpsc::channel();
+        let (guarded_tx, guarded_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
 
-        let first_cache = cache.path();
-        let first_id = cancelled.id.clone();
-        let first_barrier = both_read_queued.clone();
-        let first = thread::spawn(move || {
-            cancel_queued_job_after_hooks(
-                &first_cache,
-                &first_id,
-                || {
-                    first_barrier.wait();
-                },
-                || {
-                    first_observed_tx
-                        .send(())
-                        .expect("signal first lock observation");
-                    release_first_rx
-                        .recv()
-                        .expect("release first terminalization");
-                },
-            )
+        let cancel_cache = cache.path();
+        let cancel_id = cancelled.id.clone();
+        let cancellation = thread::spawn(move || {
+            cancel_queued_job_after_guard(&cancel_cache, &cancel_id, || {
+                guarded_tx.send(()).expect("signal guarded cancellation");
+                release_rx.recv().expect("release guarded cancellation");
+            })
         });
 
-        let second_cache = cache.path();
-        let second_id = cancelled.id.clone();
-        let second_barrier = both_read_queued;
-        let second = thread::spawn(move || {
-            let result = cancel_queued_job_after_hooks(
-                &second_cache,
-                &second_id,
-                || {
-                    second_barrier.wait();
-                    first_observed_rx
-                        .recv()
-                        .expect("wait for first lock observation");
-                },
-                || {},
-            );
-            second_finished_tx
-                .send(())
-                .expect("signal second terminalization");
-            result
+        guarded_rx.recv().expect("wait for guarded cancellation");
+        let replacement_cache = cache.path();
+        let replacement_request = request.clone();
+        let (replacement_tx, replacement_rx) = mpsc::channel();
+        let replacement = thread::spawn(move || {
+            let result = RuntimeJobService::enqueue(replacement_cache, &replacement_request);
+            replacement_tx
+                .send(result)
+                .expect("send replacement result");
         });
 
-        second_finished_rx
+        assert!(replacement_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+        release_tx.send(()).expect("resume guarded cancellation");
+        cancellation
+            .join()
+            .expect("join cancellation")
+            .expect("finish cancellation");
+        let replacement_job = replacement_rx
             .recv()
-            .expect("wait for second terminalization");
-        let replacement =
-            RuntimeJobService::enqueue(cache.path(), &request).expect("queue replacement job");
-        release_first_tx
-            .send(())
-            .expect("resume first terminalization");
-        first
-            .join()
-            .expect("join first terminalization")
-            .expect("finish first terminalization");
-        second
-            .join()
-            .expect("join second terminalization")
-            .expect("finish second terminalization");
+            .expect("receive replacement result")
+            .expect("queue replacement job");
+        replacement.join().expect("join replacement admission");
 
         let error = RuntimeJobService::enqueue(cache.path(), &request)
             .expect_err("replacement job must retain exclusive admission");
-        assert!(error.contains(&replacement.id), "{error}");
+        assert!(error.contains(&replacement_job.id), "{error}");
         let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
         assert_eq!(
             fs::read_to_string(store.active_lock_path())
                 .expect("read replacement active lock")
                 .trim(),
-            replacement.id
+            replacement_job.id
         );
     }
 
@@ -2773,15 +2980,7 @@ mod tests {
                 .expect("open lifecycle lock contender");
             let error = FileExt::try_lock_exclusive(&contender)
                 .expect_err("lifecycle lock must remain held");
-            let expected = fs2::lock_contended_error();
-            assert!(
-                error.kind() == io::ErrorKind::WouldBlock
-                    || error
-                        .raw_os_error()
-                        .zip(expected.raw_os_error())
-                        .is_some_and(|(actual, expected)| actual == expected),
-                "unexpected lock contention error: {error}"
-            );
+            assert!(lock_is_contended(&error), "unexpected lock error: {error}");
         }
 
         let cache = TestCache::new();
@@ -2849,6 +3048,48 @@ mod tests {
         store
             .release_active_lock_for(&replacement_id)
             .expect("release replacement active lock");
+    }
+
+    #[test]
+    fn status_and_list_skip_recovery_while_lifecycle_transition_is_guarded() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let _lifecycle_lock = store
+            .acquire_active_lifecycle_lock()
+            .expect("guard lifecycle transition");
+
+        let status_cache = cache.path();
+        let status_id = queued.id.clone();
+        let (status_tx, status_rx) = mpsc::channel();
+        let status = thread::spawn(move || {
+            status_tx
+                .send(RuntimeJobService::status_at(status_cache, &status_id))
+                .expect("send status result");
+        });
+        let observed = status_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("status must not wait for the lifecycle guard")
+            .expect("read queued status");
+        status.join().expect("join status reader");
+
+        let list_cache = cache.path();
+        let (list_tx, list_rx) = mpsc::channel();
+        let list = thread::spawn(move || {
+            list_tx
+                .send(RuntimeJobService::list_at(list_cache))
+                .expect("send list result");
+        });
+        let listed = list_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("list must not wait for the lifecycle guard");
+        list.join().expect("join list reader");
+
+        assert_eq!(observed.phase, RuntimeJobPhase::Queued);
+        assert!(listed.warnings.is_empty());
+        assert_eq!(listed.jobs.len(), 1);
+        assert_eq!(listed.jobs[0].id, queued.id);
     }
 
     #[test]

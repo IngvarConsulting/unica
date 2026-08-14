@@ -3397,6 +3397,7 @@ mod tests {
     use crate::infrastructure::platform::testing;
     use serde_json::json;
     use std::cell::RefCell;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -3883,9 +3884,10 @@ mod tests {
             .unwrap();
 
         assert!(outcome.ok);
-        assert_eq!(
-            runner.commands.borrow()[0].args,
-            vec!["build", "--full-rebuild"]
+        assert_runtime_args_with_primary(
+            &context,
+            &runner.commands.borrow()[0].args,
+            &["build", "--full-rebuild"],
         );
         assert!(outcome
             .warnings
@@ -3908,9 +3910,10 @@ mod tests {
         let invocation = plan_runtime_invocation(&args, &context, support_reader.as_ref())
             .expect("runner-compatible selector must reach support preflight");
 
-        assert_eq!(
-            runtime_args(&invocation.args, false).unwrap(),
-            ["build", "--full-rebuild", "--source-set", "main"]
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build", "--full-rebuild", "--source-set", "main"],
         );
         assert!(invocation.build_preflight.is_none());
         cleanup_context(&context);
@@ -4031,9 +4034,10 @@ mod tests {
         let invocation = plan_runtime_invocation(&args, &context, &support_reader)
             .expect("unselected contradictory evidence must not block an extension build");
 
-        assert_eq!(
-            runtime_args(&invocation.args, false).unwrap(),
-            ["build", "--source-set", "extension"]
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build", "--source-set", "extension"],
         );
         assert!(invocation.build_preflight.is_some());
         cleanup_context(&context);
@@ -4058,10 +4062,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            outcome.outcome.command.unwrap()[1..],
-            ["build", "--full-rebuild"]
-        );
+        let command = outcome.outcome.command.unwrap();
+        assert_runtime_args_with_primary(&context, &command[1..], &["build", "--full-rebuild"]);
         assert!(outcome
             .outcome
             .warnings
@@ -4090,7 +4092,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(request.raw_argv(), ["build", "--full-rebuild"]);
+        assert_runtime_args_with_primary(
+            &context,
+            request.raw_argv(),
+            &["build", "--full-rebuild"],
+        );
         cleanup_context(&context);
     }
 
@@ -4147,8 +4153,42 @@ mod tests {
             .unwrap();
 
         assert!(outcome.ok);
-        assert_eq!(runner.commands.borrow()[0].args, vec!["build"]);
+        assert_runtime_args_with_primary(&context, &runner.commands.borrow()[0].args, &["build"]);
         assert!(outcome.warnings.is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_binds_preflight_config_against_runner_environment_override() {
+        let _environment_lock = crate::infrastructure::V8TR_CONFIG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let context = temp_context("runtime-preflight-config-binding");
+        configure_designer_source(&context);
+        let alternate = context.workspace_root.join("alternate.yaml");
+        fs::write(&alternate, "format: DESIGNER\nsource-set: []\n")
+            .expect("write alternate runner config");
+        let _environment = EnvVarGuard::set("V8TR_CONFIG", &alternate);
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: "incremental build completed".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert_runtime_args_with_primary(&context, &runner.commands.borrow()[0].args, &["build"]);
         cleanup_context(&context);
     }
 
@@ -4249,13 +4289,22 @@ mod tests {
     #[test]
     fn runtime_adapter_keeps_incremental_build_for_removed_configuration_support() {
         let context = temp_context("runtime-removed-configuration-support");
-        configure_supported_designer_source(&context);
+        configure_designer_source(&context);
+        let marker = context
+            .workspace_root
+            .join("src/Ext/ParentConfigurations.bin");
+        fs::create_dir_all(marker.parent().expect("support marker parent")).unwrap();
+        fs::write(marker, []).expect("write removed support marker");
         let support_reader = StaticConfigurationSupportReader(ConfigurationSupportState::Removed);
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
 
         let invocation = plan_runtime_invocation(&args, &context, &support_reader).unwrap();
 
-        assert_eq!(runtime_args(&invocation.args, false).unwrap(), ["build"]);
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build"],
+        );
         assert!(invocation.warnings.is_empty());
         cleanup_context(&context);
     }
@@ -4283,7 +4332,11 @@ mod tests {
 
         let invocation = plan_runtime_invocation(&args, &context, &support_reader).unwrap();
 
-        assert_eq!(runtime_args(&invocation.args, false).unwrap(), ["build"]);
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build"],
+        );
         assert!(invocation.build_preflight.is_some());
         cleanup_context(&context);
     }
@@ -4381,9 +4434,10 @@ mod tests {
             .unwrap();
 
         assert!(outcome.ok);
-        assert_eq!(
-            runner.commands.borrow()[0].args,
-            ["build", "--source-set", "extension"]
+        assert_runtime_args_with_primary(
+            &context,
+            &runner.commands.borrow()[0].args,
+            &["build", "--source-set", "extension"],
         );
         assert!(outcome.warnings.is_empty());
         cleanup_context(&context);
@@ -4636,9 +4690,10 @@ mod tests {
         let invocation = plan_runtime_invocation(&args, &context, &support_reader)
             .expect("global EDT mode does not use Designer support state");
 
-        assert_eq!(
-            runtime_args(&invocation.args, false).unwrap(),
-            ["build", "--source-set", "main"]
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build", "--source-set", "main"],
         );
         assert!(invocation.build_preflight.is_some());
         cleanup_context(&context);
@@ -4712,9 +4767,10 @@ mod tests {
         )
         .expect("missing format must use the runner Designer default");
 
-        assert_eq!(
-            runtime_args(&invocation.args, false).unwrap(),
-            ["build", "--full-rebuild"]
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build", "--full-rebuild"],
         );
         cleanup_context(&context);
     }
@@ -7177,6 +7233,29 @@ analyze_timeout_seconds = 900
         output: ProcessOutput,
     }
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     impl ProcessRunner for RecordingProcessRunner {
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.commands.borrow_mut().push(command.clone());
@@ -7227,6 +7306,27 @@ analyze_timeout_seconds = 900
             cache_root: root.join(".build").join("unica"),
             workspace_epoch: 1,
         }
+    }
+
+    fn assert_runtime_args_with_primary(
+        context: &WorkspaceContext,
+        actual: &[String],
+        expected_tail: &[&str],
+    ) {
+        assert_eq!(actual.first().map(String::as_str), Some("--config"));
+        let expected_config = context
+            .workspace_root
+            .join("v8project.yaml")
+            .canonicalize()
+            .expect("canonical primary runtime config");
+        assert_eq!(
+            actual.get(1).map(Path::new),
+            Some(expected_config.as_path())
+        );
+        assert_eq!(
+            actual.get(2..).expect("runtime command after config"),
+            expected_tail
+        );
     }
 
     fn configure_designer_source(context: &WorkspaceContext) {

@@ -44,3 +44,6 @@ pub(crate) mod workspace_config;
 pub mod workspace_index;
 pub mod workspace_services;
 pub mod workspace_state;
+
+#[cfg(test)]
+pub(crate) static V8TR_CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

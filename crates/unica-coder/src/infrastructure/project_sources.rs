@@ -4,22 +4,54 @@ use crate::domain::project_sources::{
 };
 use crate::domain::source_roots::select_default_source_set;
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
-use crate::infrastructure::platform::filesystem::host_path_text;
+use crate::infrastructure::platform::filesystem::{host_path_text, path_starts_with_host_root};
+use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::source_roots::{
     normalize_contained_source_root, normalize_path_identity,
 };
 use serde_yaml::Value as YamlValue;
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 const MAX_RESERVED_EXTERNAL_DESCRIPTOR_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const PROJECT_SOURCE_MAP_INPUT_MAX_BYTES: usize = 64 * 1024 * 1024;
+const PROJECT_SOURCE_MAP_TOTAL_MAX_BYTES: usize = 64 * 1024 * 1024;
 const EDT_SOURCE_MARKERS: &[&str] = &[
     ".project",
     "DT-INF/PROJECT.PMF",
     "Configuration/Configuration.mdo",
     "src/Configuration/Configuration.mdo",
 ];
+
+#[cfg(test)]
+type ProjectInputSnapshotTestHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_PROJECT_INPUT_SECURE_READ_HOOK: std::cell::RefCell<Option<ProjectInputSnapshotTestHook>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn set_before_project_input_secure_read_hook_for_test(hook: impl FnOnce(&Path) + 'static) {
+    BEFORE_PROJECT_INPUT_SECURE_READ_HOOK.with(|slot| {
+        let previous = slot.replace(Some(Box::new(hook)));
+        assert!(previous.is_none(), "project input secure-read hook leaked");
+    });
+}
+
+fn run_before_project_input_secure_read_hook(path: &Path) {
+    #[cfg(test)]
+    BEFORE_PROJECT_INPUT_SECURE_READ_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook(path);
+        }
+    });
+    #[cfg(not(test))]
+    let _ = path;
+}
 
 #[derive(Debug, Clone)]
 struct ConfigSourceSet {
@@ -29,18 +61,36 @@ struct ConfigSourceSet {
     default_format: Option<SourceFormat>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectSourceMapEvidencePolicy {
+    General,
+    RuntimeAttested,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ProjectSourceMapInput {
-    ExactFile(Vec<u8>),
+    ExactFile(Arc<[u8]>),
     Absent,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProjectSourceMapProvenance {
+    workspace_root: PathBuf,
+    logical_workspace_root: PathBuf,
     inputs: BTreeMap<PathBuf, ProjectSourceMapInput>,
+    exact_bytes: usize,
 }
 
 impl ProjectSourceMapProvenance {
+    fn new(workspace_root: &Path) -> Result<Self, String> {
+        Ok(Self {
+            workspace_root: normalize_path_identity(workspace_root)?,
+            logical_workspace_root: absolute_lexical_path(workspace_root)?,
+            inputs: BTreeMap::new(),
+            exact_bytes: 0,
+        })
+    }
+
     pub(crate) fn bind_to(&self, transaction: &mut CompileTransaction) -> Result<(), String> {
         for (path, input) in &self.inputs {
             match input {
@@ -59,7 +109,37 @@ impl ProjectSourceMapProvenance {
         Ok(())
     }
 
-    fn record_exact_file(&mut self, path: PathBuf, raw: Vec<u8>) -> Result<(), String> {
+    pub(crate) fn revalidate(&self) -> Result<(), String> {
+        for (path, input) in &self.inputs {
+            let current = read_root_relative_regular_file(
+                &self.workspace_root,
+                path,
+                PROJECT_SOURCE_MAP_INPUT_MAX_BYTES,
+                |_| {},
+            );
+            match (input, current) {
+                (ProjectSourceMapInput::ExactFile(expected), Ok(read))
+                    if read.bytes.as_slice() == expected.as_ref() => {}
+                (ProjectSourceMapInput::Absent, Err(error))
+                    if error.kind() == std::io::ErrorKind::NotFound => {}
+                (_, Ok(_)) => {
+                    return Err(format!(
+                        "project source-map input changed after resolving: {}",
+                        path.display()
+                    ));
+                }
+                (_, Err(error)) => {
+                    return Err(format!(
+                        "project source-map input became unavailable after resolving: {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn record_exact_file(&mut self, path: PathBuf, raw: Arc<[u8]>) -> Result<(), String> {
         match self.inputs.get(&path) {
             Some(ProjectSourceMapInput::ExactFile(existing)) if existing == &raw => Ok(()),
             Some(_) => Err(format!(
@@ -67,6 +147,15 @@ impl ProjectSourceMapProvenance {
                 path.display()
             )),
             None => {
+                self.exact_bytes = self.exact_bytes.checked_add(raw.len()).ok_or_else(|| {
+                    "project source-map evidence exceeded its total byte limit".to_string()
+                })?;
+                if self.exact_bytes > PROJECT_SOURCE_MAP_TOTAL_MAX_BYTES {
+                    return Err(format!(
+                        "project source-map evidence exceeds the {} byte total limit",
+                        PROJECT_SOURCE_MAP_TOTAL_MAX_BYTES
+                    ));
+                }
                 self.inputs
                     .insert(path, ProjectSourceMapInput::ExactFile(raw));
                 Ok(())
@@ -98,9 +187,29 @@ pub(crate) fn discover_project_source_map(
 pub(crate) fn discover_project_source_map_with_provenance(
     workspace_root: &Path,
 ) -> Result<(ProjectSourceMap, ProjectSourceMapProvenance), String> {
-    let mut provenance = ProjectSourceMapProvenance::default();
+    discover_project_source_map_with_provenance_policy(
+        workspace_root,
+        ProjectSourceMapEvidencePolicy::General,
+    )
+}
+
+pub(crate) fn discover_runtime_project_source_map_with_provenance(
+    workspace_root: &Path,
+) -> Result<(ProjectSourceMap, ProjectSourceMapProvenance), String> {
+    discover_project_source_map_with_provenance_policy(
+        workspace_root,
+        ProjectSourceMapEvidencePolicy::RuntimeAttested,
+    )
+}
+
+fn discover_project_source_map_with_provenance_policy(
+    workspace_root: &Path,
+    evidence_policy: ProjectSourceMapEvidencePolicy,
+) -> Result<(ProjectSourceMap, ProjectSourceMapProvenance), String> {
+    let mut provenance = ProjectSourceMapProvenance::new(workspace_root)?;
     let project_config = workspace_root.join("v8project.yaml");
-    let project_config_raw = snapshot_project_map_input(&project_config, &mut provenance)?;
+    let project_config_raw =
+        snapshot_project_map_input(&project_config, &mut provenance, evidence_policy)?;
     let config_path = project_config_raw.as_ref().map(|_| project_config.clone());
     let (mut source_sets, configured_format_raw) = if let Some(raw) = &project_config_raw {
         read_config_source_sets(workspace_root, &project_config, raw)?
@@ -109,12 +218,14 @@ pub(crate) fn discover_project_source_map_with_provenance(
     };
 
     if source_sets.is_empty() {
-        source_sets = autodetect_source_sets(workspace_root, &mut provenance)?;
+        source_sets = autodetect_source_sets(workspace_root, &mut provenance, evidence_policy)?;
     }
 
     let project_source_sets = source_sets
         .into_iter()
-        .map(|source_set| detect_source_set_format(workspace_root, source_set, &mut provenance))
+        .map(|source_set| {
+            detect_source_set_format(workspace_root, source_set, &mut provenance, evidence_policy)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let (effective_source_set, effective_source_root, source_selection_error) =
         match select_default_source_set(&project_source_sets) {
@@ -206,7 +317,55 @@ fn read_config_source_sets(
 fn snapshot_project_map_input(
     path: &Path,
     provenance: &mut ProjectSourceMapProvenance,
-) -> Result<Option<Vec<u8>>, String> {
+    evidence_policy: ProjectSourceMapEvidencePolicy,
+) -> Result<Option<Arc<[u8]>>, String> {
+    if evidence_policy == ProjectSourceMapEvidencePolicy::General {
+        return snapshot_general_project_map_input(path, provenance);
+    }
+
+    // Resolve the logical workspace-relative identity before the testable race
+    // point, then open that same route beneath a retained, no-follow root. A
+    // leaf or parent replacement can therefore only make the snapshot fail;
+    // it cannot silently retarget the provenance to another file.
+    let identity = logical_project_input_identity(
+        &provenance.workspace_root,
+        &provenance.logical_workspace_root,
+        path,
+    )?;
+    run_before_project_input_secure_read_hook(path);
+    let remaining = PROJECT_SOURCE_MAP_TOTAL_MAX_BYTES.saturating_sub(provenance.exact_bytes);
+    let maximum_bytes = if provenance.inputs.contains_key(&identity) {
+        PROJECT_SOURCE_MAP_INPUT_MAX_BYTES
+    } else {
+        PROJECT_SOURCE_MAP_INPUT_MAX_BYTES.min(remaining)
+    };
+    let raw = match read_root_relative_regular_file(
+        &provenance.workspace_root,
+        &identity,
+        maximum_bytes,
+        |_| {},
+    ) {
+        Ok(read) => Arc::<[u8]>::from(read.bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            provenance.record_absence(identity)?;
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to securely read project source-map input {} within its byte limit: \
+                 {error}",
+                path.display()
+            ));
+        }
+    };
+    provenance.record_exact_file(identity, Arc::clone(&raw))?;
+    Ok(Some(raw))
+}
+
+fn snapshot_general_project_map_input(
+    path: &Path,
+    provenance: &mut ProjectSourceMapProvenance,
+) -> Result<Option<Arc<[u8]>>, String> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -233,15 +392,108 @@ fn snapshot_project_map_input(
             path.display()
         ));
     }
-    let raw = std::fs::read(path).map_err(|error| {
+
+    let identity = normalize_path_identity(path)?;
+    let remaining = PROJECT_SOURCE_MAP_TOTAL_MAX_BYTES.saturating_sub(provenance.exact_bytes);
+    let maximum_bytes = if provenance.inputs.contains_key(&identity) {
+        PROJECT_SOURCE_MAP_INPUT_MAX_BYTES
+    } else {
+        PROJECT_SOURCE_MAP_INPUT_MAX_BYTES.min(remaining)
+    };
+    if metadata.len() > maximum_bytes as u64 {
+        return Err(format!(
+            "project source-map input {} exceeds its {} byte limit",
+            path.display(),
+            maximum_bytes
+        ));
+    }
+    let file = std::fs::File::open(path).map_err(|error| {
         format!(
             "failed to read project source-map input {}: {error}",
             path.display()
         )
     })?;
-    let identity = normalize_path_identity(path)?;
-    provenance.record_exact_file(identity, raw.clone())?;
+    let mut raw = Vec::with_capacity((metadata.len() as usize).min(maximum_bytes));
+    file.take(maximum_bytes as u64 + 1)
+        .read_to_end(&mut raw)
+        .map_err(|error| {
+            format!(
+                "failed to read project source-map input {}: {error}",
+                path.display()
+            )
+        })?;
+    if raw.len() > maximum_bytes {
+        return Err(format!(
+            "project source-map input {} exceeds its {} byte limit",
+            path.display(),
+            maximum_bytes
+        ));
+    }
+    let raw = Arc::<[u8]>::from(raw);
+    provenance.record_exact_file(identity, Arc::clone(&raw))?;
     Ok(Some(raw))
+}
+
+fn logical_project_input_identity(
+    workspace_root: &Path,
+    logical_workspace_root: &Path,
+    path: &Path,
+) -> Result<PathBuf, String> {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        logical_workspace_root.join(path)
+    };
+    let normalized = absolute_lexical_path(&candidate)?;
+    let relative = relative_to_host_root(&normalized, logical_workspace_root)
+        .or_else(|| relative_to_host_root(&normalized, workspace_root))
+        .ok_or_else(|| {
+            format!(
+                "project source-map input is outside workspace root {}: {}",
+                logical_workspace_root.display(),
+                normalized.display()
+            )
+        })?;
+    Ok(workspace_root.join(relative))
+}
+
+fn relative_to_host_root(path: &Path, root: &Path) -> Option<PathBuf> {
+    if !path_starts_with_host_root(path, root) {
+        return None;
+    }
+    Some(path.components().skip(root.components().count()).collect())
+}
+
+fn absolute_lexical_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("failed to determine current directory: {error}"))?
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(format!(
+                        "project source-map input escapes the filesystem root: {}",
+                        path.display()
+                    ));
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    if !normalized.is_absolute() {
+        return Err(format!(
+            "project source-map input did not resolve to an absolute path: {}",
+            path.display()
+        ));
+    }
+    Ok(normalized)
 }
 
 fn config_source_set_from_yaml(
@@ -286,6 +538,7 @@ fn normalize_configured_path(workspace_root: &Path, base_path: &str, raw_path: &
 fn autodetect_source_sets(
     workspace_root: &Path,
     provenance: &mut ProjectSourceMapProvenance,
+    evidence_policy: ProjectSourceMapEvidencePolicy,
 ) -> Result<Vec<ConfigSourceSet>, String> {
     for path in [".", "src", "src/cf"] {
         let root = workspace_root.join(path);
@@ -295,7 +548,7 @@ fn autodetect_source_sets(
             root.join("Configuration/Configuration.mdo"),
             root.join("src/Configuration/Configuration.mdo"),
         ] {
-            found |= snapshot_project_map_input(&marker, provenance)?.is_some();
+            found |= snapshot_project_map_input(&marker, provenance, evidence_policy)?.is_some();
         }
         if found {
             return Ok(vec![ConfigSourceSet {
@@ -313,10 +566,40 @@ fn detect_source_set_format(
     workspace_root: &Path,
     source_set: ConfigSourceSet,
     provenance: &mut ProjectSourceMapProvenance,
+    evidence_policy: ProjectSourceMapEvidencePolicy,
 ) -> Result<ProjectSourceSet, String> {
     let source_root = workspace_root.join(&source_set.path);
-    let platform_evidence = platform_xml_evidence(workspace_root, &source_root, source_set.kind);
-    let edt_evidence = edt_evidence(workspace_root, &source_root, provenance)?;
+    if evidence_policy == ProjectSourceMapEvidencePolicy::RuntimeAttested
+        && normalize_contained_source_root(workspace_root, &source_set.path).is_err()
+    {
+        let source_format = source_set.default_format.unwrap_or(SourceFormat::Unknown);
+        let format_evidence = source_set
+            .default_format
+            .map(|format| match format {
+                SourceFormat::PlatformXml => "v8project.yaml:format=DESIGNER".to_string(),
+                SourceFormat::Edt => "v8project.yaml:format=EDT".to_string(),
+                SourceFormat::Unknown | SourceFormat::Invalid => {
+                    "v8project.yaml:format".to_string()
+                }
+            })
+            .into_iter()
+            .collect();
+        return Ok(ProjectSourceSet {
+            name: source_set.name,
+            kind: source_set.kind,
+            path: source_set.path,
+            source_format,
+            format_evidence,
+        });
+    }
+    let platform_evidence = platform_xml_evidence(
+        workspace_root,
+        &source_root,
+        source_set.kind,
+        provenance,
+        evidence_policy,
+    )?;
+    let edt_evidence = edt_evidence(workspace_root, &source_root, provenance, evidence_policy)?;
     let source_format = classify_source_format(
         !platform_evidence.is_empty(),
         !edt_evidence.is_empty(),
@@ -394,16 +677,27 @@ fn platform_xml_evidence(
     workspace_root: &Path,
     source_root: &Path,
     kind: SourceSetKind,
-) -> Vec<String> {
+    provenance: &mut ProjectSourceMapProvenance,
+    evidence_policy: ProjectSourceMapEvidencePolicy,
+) -> Result<Vec<String>, String> {
     let mut evidence = Vec::new();
-    // The exact configuration descriptor is authorization-bound by the
-    // platform-owner resolver. Keeping format detection itself non-owning also
-    // preserves the structured owner diagnostic for a link/reparse candidate.
-    push_existing(
-        &mut evidence,
-        workspace_root,
-        &source_root.join("Configuration.xml"),
-    );
+    let configuration_descriptor = source_root.join("Configuration.xml");
+    if evidence_policy == ProjectSourceMapEvidencePolicy::RuntimeAttested {
+        push_snapshot_existing(
+            &mut evidence,
+            workspace_root,
+            &configuration_descriptor,
+            provenance,
+            evidence_policy,
+        )?;
+    } else {
+        // General project discovery deliberately leaves the descriptor to the
+        // platform owner/containment boundary. That boundary owns the stable
+        // link diagnostic; consuming the link here would turn a structured
+        // denial into an unrelated source-map I/O failure. Runtime incremental
+        // authorization opts into the exact descriptor snapshot above.
+        push_existing(&mut evidence, workspace_root, &configuration_descriptor);
+    }
 
     if matches!(
         kind,
@@ -426,7 +720,7 @@ fn platform_xml_evidence(
     }
     evidence.sort();
     evidence.dedup();
-    evidence
+    Ok(evidence)
 }
 
 fn is_config_dump_info_sidecar(path: &Path, kind: SourceSetKind) -> bool {
@@ -486,6 +780,7 @@ fn edt_evidence(
     workspace_root: &Path,
     source_root: &Path,
     provenance: &mut ProjectSourceMapProvenance,
+    evidence_policy: ProjectSourceMapEvidencePolicy,
 ) -> Result<Vec<String>, String> {
     let mut evidence = Vec::new();
     for rel in EDT_SOURCE_MARKERS {
@@ -494,6 +789,7 @@ fn edt_evidence(
             workspace_root,
             &source_root.join(rel),
             provenance,
+            evidence_policy,
         )?;
     }
     evidence.sort();
@@ -506,8 +802,9 @@ fn push_snapshot_existing(
     workspace_root: &Path,
     path: &Path,
     provenance: &mut ProjectSourceMapProvenance,
+    evidence_policy: ProjectSourceMapEvidencePolicy,
 ) -> Result<(), String> {
-    if snapshot_project_map_input(path, provenance)?.is_some() {
+    if snapshot_project_map_input(path, provenance, evidence_policy)?.is_some() {
         evidence.push(path_relative_to(workspace_root, path));
     }
     Ok(())
@@ -846,6 +1143,9 @@ source-set:
 
     #[test]
     fn ignores_legacy_v8tr_config_environment_override() {
+        let _environment_lock = crate::infrastructure::V8TR_CONFIG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = temp_workspace("unica-source-map-ignore-v8tr-config");
         write(
             &root.join("v8project.yaml"),
@@ -1006,6 +1306,101 @@ source-set:
 
         assert!(error.contains(".project"), "{error}");
         assert!(error.contains("changed"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn configured_source_provenance_rejects_changed_platform_descriptor() {
+        let root = temp_workspace("unica-source-map-changed-platform-descriptor");
+        write(
+            &root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        );
+        let descriptor = root.join("src/Configuration.xml");
+        write(&descriptor, "<MetaDataObject/>");
+
+        let (_, provenance) = discover_runtime_project_source_map_with_provenance(&root).unwrap();
+        write(
+            &descriptor,
+            "<MetaDataObject version=\"2.20\"></MetaDataObject>",
+        );
+
+        let error = provenance
+            .revalidate()
+            .expect_err("the exact platform descriptor bytes must stay unchanged");
+
+        assert!(error.contains("Configuration.xml"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_source_map_rejects_an_oversized_input_before_parsing() {
+        let root = temp_workspace("unica-source-map-oversized-config");
+        fs::File::create(root.join("v8project.yaml"))
+            .unwrap()
+            .set_len((PROJECT_SOURCE_MAP_INPUT_MAX_BYTES + 1) as u64)
+            .unwrap();
+
+        let error = discover_project_source_map_with_provenance(&root)
+            .expect_err("an oversized project config must fail at the bounded read");
+
+        assert!(error.contains("byte limit"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn configured_source_provenance_binds_the_logical_primary_during_leaf_replacement() {
+        let root = temp_workspace("unica-source-map-primary-leaf-replacement");
+        let primary = root.join("v8project.yaml");
+        let alternate = root.join("alternate.yaml");
+        let probe = root.join("symlink-probe.yaml");
+        let original = concat!(
+            "format: DESIGNER\n",
+            "source-set:\n",
+            "  - name: main\n",
+            "    type: CONFIGURATION\n",
+            "    path: src-a\n",
+        );
+        let replacement = concat!(
+            "format: DESIGNER\n",
+            "source-set:\n",
+            "  - name: main\n",
+            "    type: CONFIGURATION\n",
+            "    path: src-b\n",
+        );
+        write(&primary, original);
+        write(&alternate, replacement);
+        write(&root.join("src-a/Configuration.xml"), "<MetaDataObject/>");
+        write(&root.join("src-b/Configuration.xml"), "<MetaDataObject/>");
+        let Some(probe_result) =
+            crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
+                &alternate, &probe,
+            )
+        else {
+            fs::remove_dir_all(root).unwrap();
+            return;
+        };
+        probe_result.expect("create file-link probe");
+        fs::remove_file(&probe).expect("remove file-link probe");
+        let primary_for_hook = primary.clone();
+        let alternate_for_hook = alternate.clone();
+        set_before_project_input_secure_read_hook_for_test(move |path| {
+            assert_eq!(path, primary_for_hook);
+            fs::remove_file(&primary_for_hook).expect("remove primary after metadata check");
+            crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
+                &alternate_for_hook,
+                &primary_for_hook,
+            )
+            .expect("file links are supported")
+            .expect("replace primary with a file link");
+        });
+
+        let error = discover_runtime_project_source_map_with_provenance(&root)
+            .expect_err("a transient primary link must fail the secure logical-path read");
+        fs::remove_file(&primary).expect("remove transient primary link or file");
+        write(&primary, original);
+
+        assert!(error.contains("securely read"), "{error}");
         fs::remove_dir_all(root).unwrap();
     }
 

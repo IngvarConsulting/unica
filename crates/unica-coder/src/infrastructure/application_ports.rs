@@ -1306,7 +1306,7 @@ mod tests {
     };
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -1878,8 +1878,14 @@ mod tests {
                 )
                 .unwrap();
             let command = outcome.adapter.command.unwrap();
+            assert_eq!(command[1], "--config");
             assert_eq!(
-                command[1..],
+                Path::new(&command[2]),
+                workspace.join("v8project.yaml").canonicalize().unwrap(),
+                "{name} must bind the command to the verified primary config"
+            );
+            assert_eq!(
+                command[3..],
                 ["build", "--full-rebuild"],
                 "{name} must plan with the reader injected through application ports"
             );

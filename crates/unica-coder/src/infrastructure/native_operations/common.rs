@@ -2511,9 +2511,7 @@ pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
 /// pre-image and atomicity contract is migrated separately. Subject readers
 /// must distinguish an absent marker from evidence that exists but cannot be
 /// trusted.
-pub(crate) fn read_support_state_strict(
-    bin_path: &Path,
-) -> Result<Option<SupportState>, SupportReadError> {
+fn read_support_state_strict_bytes(bin_path: &Path) -> Result<Option<Vec<u8>>, SupportReadError> {
     let marker_parent = bin_path.parent().ok_or_else(|| {
         SupportReadError::new(
             SupportReadErrorCode::StateUnreadable,
@@ -2558,17 +2556,32 @@ pub(crate) fn read_support_state_strict(
             "support-state marker bytes are unreadable",
         )
     })?;
+    Ok(Some(data))
+}
+
+pub(crate) fn read_support_state_strict(
+    bin_path: &Path,
+) -> Result<Option<SupportState>, SupportReadError> {
+    let Some(data) = read_support_state_strict_bytes(bin_path)? else {
+        return Ok(None);
+    };
+    parse_support_state_strict_bytes(&data).map(Some)
+}
+
+pub(crate) fn parse_support_state_strict_bytes(
+    data: &[u8],
+) -> Result<SupportState, SupportReadError> {
     if data.is_empty() {
-        return Ok(Some(SupportState {
+        return Ok(SupportState {
             global_editing_enabled: true,
             vendor_count: 0,
             removed: true,
             counts: [0, 0, 0],
             object_rules: HashMap::new(),
             vendors: Vec::new(),
-        }));
+        });
     }
-    let text = std::str::from_utf8(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data))
+    let text = std::str::from_utf8(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data))
         .map_err(|_| {
             SupportReadError::new(
                 SupportReadErrorCode::StateInvalid,
@@ -2582,24 +2595,24 @@ pub(crate) fn read_support_state_strict(
         )
     })?;
     if vendor_count == 0 {
-        return Ok(Some(SupportState {
+        return Ok(SupportState {
             global_editing_enabled: true,
             vendor_count,
             removed: true,
             counts: [0, 0, 0],
             object_rules: HashMap::new(),
             vendors: Vec::new(),
-        }));
+        });
     }
     let (counts, object_rules) = parse_support_object_rules(text);
-    Ok(Some(SupportState {
+    Ok(SupportState {
         global_editing_enabled: global_flag == 0,
         vendor_count,
         removed: false,
         counts,
         object_rules,
         vendors: parse_support_vendors(text),
-    }))
+    })
 }
 
 pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
