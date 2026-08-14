@@ -41,18 +41,21 @@ def runtime_execute_json_examples(text: str) -> list[dict]:
     for block_number, block in enumerate(
         re.findall(r"```json\s*(.*?)```", text, re.DOTALL | re.IGNORECASE), start=1
     ):
-        if "unica.runtime.execute" not in block:
-            continue
         try:
             payload = json.loads(block)
         except json.JSONDecodeError as error:
-            raise ValueError(
-                f"invalid fenced runtime JSON example #{block_number}: {error}"
-            ) from error
+            if "unica.runtime.execute" in block:
+                raise ValueError(
+                    f"invalid fenced runtime JSON example #{block_number}: {error}"
+                ) from error
+            continue
         if not isinstance(payload, dict):
-            raise ValueError(
-                f"fenced runtime JSON example #{block_number} must be an object"
-            )
+            continue
+        params = payload.get("params")
+        if not isinstance(params, dict):
+            continue
+        if params.get("name") != "unica.runtime.execute":
+            continue
         examples.append(payload)
     return examples
 
@@ -1803,6 +1806,36 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_runtime_json_guard_decodes_tool_name_before_classification(self) -> None:
+        example = r"""```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "unica\u002eruntime.execute",
+    "arguments": {"operation": "build", "dryRun": false}
+  }
+}
+```"""
+
+        payloads = runtime_execute_json_examples(example)
+
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["params"]["name"], "unica.runtime.execute")
+        self.assertIs(payloads[0]["params"]["arguments"]["dryRun"], False)
+
+    def test_runtime_json_guard_keeps_malformed_block_boundary(self) -> None:
+        self.assertEqual(
+            runtime_execute_json_examples("```json\n{not runtime JSON}\n```"),
+            [],
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, r"invalid fenced runtime JSON example #1"
+        ):
+            runtime_execute_json_examples(
+                '```json\n{"name":"unica.runtime.execute",\n```'
+            )
 
     def test_all_runtime_execute_skill_guidance_is_preview_only(self) -> None:
         runtime_docs = []
