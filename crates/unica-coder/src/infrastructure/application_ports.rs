@@ -1881,7 +1881,9 @@ mod tests {
             assert_eq!(command[1], "--config");
             assert_eq!(
                 Path::new(&command[2]),
-                workspace.join("v8project.yaml").canonicalize().unwrap(),
+                crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
+                    &workspace.join("v8project.yaml").canonicalize().unwrap(),
+                ),
                 "{name} must bind the command to the verified primary config"
             );
             assert_eq!(

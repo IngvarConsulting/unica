@@ -7314,11 +7314,14 @@ analyze_timeout_seconds = 900
         expected_tail: &[&str],
     ) {
         assert_eq!(actual.first().map(String::as_str), Some("--config"));
-        let expected_config = context
-            .workspace_root
-            .join("v8project.yaml")
-            .canonicalize()
-            .expect("canonical primary runtime config");
+        let expected_config =
+            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
+                &context
+                    .workspace_root
+                    .join("v8project.yaml")
+                    .canonicalize()
+                    .expect("canonical primary runtime config"),
+            );
         assert_eq!(
             actual.get(1).map(Path::new),
             Some(expected_config.as_path())
