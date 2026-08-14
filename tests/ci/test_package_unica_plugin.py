@@ -621,6 +621,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
             server["env"]["UNICA_RUNTIME_CACHE_DIR"],
             module.PACKAGED_MCP_CACHE_DIR,
         )
+        self.assertNotIn("timeout", server)
+        self.assertNotIn("tool_timeout_sec", server)
         self.assertNotIn("UNICA_MCP_CALL_BUDGET_SECONDS", server["env"])
         self.assertNotIn("win-x64", json.dumps(server))
         self.assertNotIn("run-unica.sh", json.dumps(server))

@@ -75,6 +75,13 @@ impl InvocationMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeAdmissionPolicy {
+    Enforce,
+    #[cfg(test)]
+    AlreadyAdmittedForDownstreamContractTest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultContract {
     Typed,
     ExternalStream,
@@ -626,7 +633,7 @@ impl UnicaApplication {
             &CancellationToken::new(),
             deadline,
             &NoopSearchProgressSink,
-            false,
+            RuntimeAdmissionPolicy::AlreadyAdmittedForDownstreamContractTest,
         )
     }
 }
@@ -1030,7 +1037,15 @@ fn call_tool_observed(
     deadline: ProviderDeadline,
     progress: &dyn SearchProgressSink,
 ) -> Result<OperationResult, String> {
-    call_tool_with_runtime_admission(spec, args, ports, cancellation, deadline, progress, true)
+    call_tool_with_runtime_admission(
+        spec,
+        args,
+        ports,
+        cancellation,
+        deadline,
+        progress,
+        RuntimeAdmissionPolicy::Enforce,
+    )
 }
 
 fn call_tool_with_runtime_admission(
@@ -1040,7 +1055,7 @@ fn call_tool_with_runtime_admission(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
     progress: &dyn SearchProgressSink,
-    enforce_runtime_admission: bool,
+    runtime_admission: RuntimeAdmissionPolicy,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
@@ -1048,7 +1063,9 @@ fn call_tool_with_runtime_admission(
     let mode = InvocationMode::from_validated_args(spec, args)?;
     tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
     let dry_run = mode.is_preview();
-    if enforce_runtime_admission && matches!(spec.handler, ToolHandler::RuntimeAdapter) && !dry_run
+    if runtime_admission == RuntimeAdmissionPolicy::Enforce
+        && matches!(spec.handler, ToolHandler::RuntimeAdapter)
+        && !dry_run
     {
         let failure = runtime_admission::runtime_receipt_admission_failure(spec.name, args)?;
         return Ok(runtime_receipt_admission_result(spec, failure));
@@ -4971,7 +4988,7 @@ mod tests {
             &cancellation,
             ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE),
             &NoopSearchProgressSink,
-            false,
+            RuntimeAdmissionPolicy::AlreadyAdmittedForDownstreamContractTest,
         )
         .unwrap();
 

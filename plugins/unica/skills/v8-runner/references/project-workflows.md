@@ -1,5 +1,7 @@
 # Project Workflows
 
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+
 `v8project.yaml` is the project contract. `v8project.local.yaml` is for local secrets and paths and must not redefine shared source topology or `execution_timeout`.
 
 Typical empty workspace order:
@@ -14,7 +16,10 @@ All dump modes and applied `convert` remain preview-only. Designer `rawKeys` con
 `LoadConfigFromFiles` are fail-closed until they share the verified publication
 boundary.
 
-`build` also prepares configured client MCP tool extensions when the project has `tools.client_mcp.extension`. Preview with `fullRebuild=true` if that generated state may be stale.
+For a future admitted applied operation, `build` also prepares configured client
+MCP tool extensions when the project has `tools.client_mcp.extension`.
+Currently only preview `fullRebuild=true` when that generated state may be
+stale; the preview does not prepare the extension.
 
 Preview `extensions` with `dryRun=true` when only extension properties need synchronization; applied synchronization is not currently admitted.
 

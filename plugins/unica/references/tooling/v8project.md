@@ -4,7 +4,7 @@
 In a preview, use MCP `unica.runtime.execute` argument `config` when the config
 file is not located at `./v8project.yaml`.
 
-Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
+По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
 только с `dryRun: true`; любой applied-режим возвращает fail-closed до
 workspace discovery и process spawn. Preview не является runtime verification.
 Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
@@ -175,7 +175,7 @@ or `v8-runner` would execute; other Unix hosts fail closed as well.
 - Every applied operation is currently blocked; `convert` additionally lacks a
   verified private-stage publication boundary.
 - Do not pass `DumpConfigToFiles` or `LoadConfigFromFiles` through Designer `rawKeys`; Unica rejects these unverified source bypasses.
-- When credentials are absent, try only empty-password `Администратор`, then empty-password `Admin`; if both fail, ask the user.
+- When credentials are absent, do not initiate a runtime probe while applied execution is blocked. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
 - If a runtime flag or debug-server step is missing from
   `unica.runtime.execute`, treat it as a Unica MCP contract gap. EPF/ERF

@@ -14,7 +14,7 @@ description: "Справка платформы 1С и объектной мод
 - `language` секции — локаль, которой источник ответил на самом деле, а не запрошенная. Если они расходятся, назовите подстановку локали в ответе: справка поставляется не во всех локалях, и запрос `en` на русскоязычной установке молча отвечал бы русскими страницами.
 - Секция со смыслом источника `development-standard` не закрывает вопрос о сигнатуре или механике платформы, каким бы уместным ни выглядел её текст. Это правило чтения, а не правило вызова. Симметрично: секция `configuration-documentation` описывает прикладную конфигурацию и не доказывает поведение самой платформы.
 - For project context, use `unica.code.search`, `unica.project.map`, and `unica.runtime.execute`.
-- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use object-specific `unica.*.info` tools when the API question depends on metadata structure.
 - Do not call internal standards, runtime, or package adapters directly.
 

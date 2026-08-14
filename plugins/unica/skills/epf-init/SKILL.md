@@ -9,7 +9,7 @@ description: Создать пустой make-ready scaffold внешней об
 
 - Использовать MCP `unica` tool `unica.epf.init` для scaffold XML/BSL.
 - Не вызывать внутренние adapters и не добавлять skill-local scripts.
-- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Для будущей сборки результата предпросмотреть `operation=make` через `v8-runner`; текущий вызов не создаёт артефакт.
 
 ## Порядок работы
@@ -48,7 +48,7 @@ source-set:
     path: src/external-processors
 ```
 
-`operation=init` допустима только по явному запросу или разрешению пользователя и только для новой изолированной пустой ИБ. Не выполнять `init` ради самого scaffold или для существующей проектной базы. Для существующей connection использовать её без переинициализации; при проблемах доступа следовать skill `v8-runner`/`db-auth-check`.
+Текущий applied `operation=init` не допускается даже по явному запросу пользователя: он возвращает fail-closed до запуска процесса. Не выполнять `init` ради scaffold или существующей проектной базы. Для существующей connection сохранить настройки без переинициализации; `db-auth-check` может классифицировать только уже предоставленное runtime evidence и не запускает auth probe.
 
 ## Параметры
 

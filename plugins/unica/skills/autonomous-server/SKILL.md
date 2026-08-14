@@ -8,7 +8,7 @@ description: "Автономный сервер отладки 1С. Исполь
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.runtime.execute`, `unica.meta.info`, `unica.code.search`, and `unica.code.diagnostics`.
-- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Do not call internal runtime, server, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
 ## Workflow

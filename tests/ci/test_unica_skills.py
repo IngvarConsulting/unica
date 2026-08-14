@@ -1744,7 +1744,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         for doc in sorted(shipped_docs):
             text = doc.read_text(encoding="utf-8")
-            if "unica.runtime.execute" not in text:
+            if "unica.runtime.execute" not in text and "v8-runner" not in text:
                 continue
             runtime_docs.append((doc, text))
             for block in re.findall(r"```json\s*(.*?)```", text, re.DOTALL):
@@ -1768,14 +1768,27 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 "use-cases/integrations.md",
                 "use-cases/code-quality-review.md",
                 "use-cases/extensions-cfe.md",
+                "use-cases/rights-access.md",
                 "tooling/v8project.md",
                 "tooling/runtime-build.md",
+            )
+        }
+        required_runtime_skills = {
+            self.skill_root() / relative_path
+            for relative_path in (
+                "db-auth-check/SKILL.md",
+                "epf-bsp-init/SKILL.md",
+                "epf-init/SKILL.md",
+                "erf-init/SKILL.md",
             )
         }
         self.assertTrue(
             required_runtime_references.issubset(
                 {doc for doc, _text in runtime_docs}
             )
+        )
+        self.assertTrue(
+            required_runtime_skills.issubset({doc for doc, _text in runtime_docs})
         )
         self.assertGreater(len(runtime_docs), 30)
         self.assertGreater(len(runtime_examples), 20)
@@ -1787,6 +1800,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 self.assertIs(arguments.get("dryRun"), True)
 
         contract_tokens = (
+            "INV-MCP-RUNTIME-RECEIPT",
             "preview-only",
             "`dryRun: true`",
             "fail-closed",
@@ -1807,6 +1821,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             r"Launch .* with `unica\.runtime\.execute`",
             r"[Сс]обрать .*`unica\.runtime\.execute`",
             r"для публикации .*`unica\.runtime\.execute`",
+            r"запускай следующую необходимую операцию",
+            r"`operation=init` допустима",
+            r"подготовить external source-set .* через `v8-runner`",
+            r"Проверь `Администратор` с пустым паролем",
+            r"допускается только два предположения",
+            r"When credentials are absent, try only",
+            r"Authentication failure without credentials allows only",
+            r"Use `dump` to bring database changes into Git-visible files",
         )
         for doc, text in runtime_docs:
             with self.subTest(path=doc.relative_to(self.repo_root())):
@@ -1814,6 +1836,105 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn(token, text)
                 for claim in forbidden_applied_claims:
                     self.assertNotRegex(text, claim)
+
+    def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
+        self,
+    ) -> None:
+        shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
+            self.reference_root().glob("**/*.md")
+        )
+        namespace_pattern = (
+            r"`(?:unica\.build|unica\.runtime\.job)\."
+            r"(?:\*|[a-z][a-z0-9.-]*)`"
+        )
+        namespace = re.compile(namespace_pattern)
+        fallback_context = re.compile(
+            r"(?i)\bfallback\b|\bfall\s+back\b|\bcontinuation\b|"
+            r"\bretry\b|\binstead\b|\bworkaround\b|"
+            r"(?:after|around|when).{0,60}\b(?:runtime )?refus\w*\b|"
+            r"запасн\w*\s+пут\w*|продолжени\w*|повтор\w*|вместо|обход\w*|"
+            r"(?:после|при).{0,60}отказ\w*"
+        )
+        negative_fallback = tuple(
+            re.compile(pattern)
+            for pattern in (
+                rf"(?i)\b(?:do not|don't|never|must not)\s+"
+                rf"(?:use|call|invoke|route)\b[^,.;!?]{{0,80}}{namespace_pattern}",
+                rf"(?i)\b(?:нельзя|запрещено)\s+"
+                rf"(?:использовать|вызывать|направлять)\b[^,.;!?]{{0,80}}"
+                rf"{namespace_pattern}",
+                rf"(?i)\bне\s+(?:используй|вызывай|вызови|направь|перейди)\b"
+                rf"[^,.;!?]{{0,80}}{namespace_pattern}",
+                rf"(?i)\b(?:do not|don't|never|must not)\b[^.;!?]{{0,120}}"
+                rf"\bbypass\b[^.;!?]{{0,120}}{namespace_pattern}",
+                rf"(?i)\bне\s+обходи\b[^.;!?]{{0,160}}{namespace_pattern}",
+                rf"(?i){namespace_pattern}[^.;!?]{{0,100}}"
+                rf"(?:\bis not\b|\bisn't\b|\bnot\s+as\b|"
+                rf"\bdo not use (?:it|them)\b)[^.;!?]{{0,60}}"
+                rf"(?:fallback|continuation|retry|workaround)",
+                rf"(?i){namespace_pattern}[^.;!?]{{0,100}}"
+                rf"\bне\s+(?:является|служит|используй (?:его|их))\b"
+                rf"[^.;!?]{{0,60}}(?:запасн\w*\s+пут\w*|fallback|продолжени\w*)",
+            )
+        )
+
+        def logical_clauses(text: str) -> list[str]:
+            return [
+                clause.strip()
+                for clause in re.split(
+                    r"(?<=[.!?;])\s+|^\s*(?:[-*]|\d+[.)])\s+",
+                    text,
+                    flags=re.MULTILINE,
+                )
+                if clause.strip()
+            ]
+
+        def is_fallback_route(clause: str) -> bool:
+            return bool(
+                namespace.search(clause)
+                and fallback_context.search(clause)
+                and not any(pattern.search(clause) for pattern in negative_fallback)
+            )
+
+        unsafe_examples = (
+            "Use `unica.build.load` as fallback.",
+            "Route through `unica.runtime.job.start` as continuation after runtime refusal.",
+            "Используй `unica.build.*` как запасной путь.",
+            "После отказа перейди в `unica.runtime.job.status`.",
+            "Fall back to `unica.build.load` after runtime refusal.",
+            "After runtime refusal, call `unica.runtime.job.start`.",
+            "После отказа вызови `unica.build.load`.",
+            "If runtime.execute cannot run, use `unica.runtime.job.start` as fallback.",
+            "Не вызывай runtime.execute повторно, используй `unica.runtime.job.start` как запасной путь.",
+            "Если runtime.execute нельзя вызвать, используй `unica.build.load` вместо него.",
+        )
+        safe_examples = (
+            "Do not use `unica.build.load` as fallback.",
+            "Не используй `unica.runtime.job.start` после отказа.",
+            "Use `unica.runtime.job.start` for an explicitly requested durable job.",
+            "Используй `unica.build.load` для независимого build workflow.",
+            "Use `unica.runtime.job.start` for an explicitly requested durable job; do not use it as fallback.",
+            "Используй `unica.build.load` для отдельного workflow; не используй его как запасной путь.",
+        )
+        for example in unsafe_examples:
+            self.assertTrue(
+                any(is_fallback_route(clause) for clause in logical_clauses(example)),
+                example,
+            )
+        for example in safe_examples:
+            self.assertFalse(
+                any(is_fallback_route(clause) for clause in logical_clauses(example)),
+                example,
+            )
+        for doc in shipped_docs:
+            text = doc.read_text(encoding="utf-8")
+            with self.subTest(path=doc.relative_to(self.repo_root())):
+                violating = [
+                    clause
+                    for clause in logical_clauses(text)
+                    if is_fallback_route(clause)
+                ]
+                self.assertEqual(violating, [])
 
     def test_v8_runner_examples_respect_single_call_runtime_admission(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"

@@ -8,7 +8,7 @@ description: "Поиск и применение паттернов БСП. Ис
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.form.info`, `unica.role.info`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
-- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `epf-bsp-init` and `epf-bsp-add-command` only for BSP external processing registration helpers.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 

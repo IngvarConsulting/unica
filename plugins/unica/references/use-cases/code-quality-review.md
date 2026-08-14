@@ -12,7 +12,7 @@ with object-specific info tools, source search, syntax checks, and focused tests
 
 ## Primary path
 
-Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
+По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
 только с `dryRun: true`; любой applied-режим возвращает fail-closed до
 workspace discovery и process spawn. Preview не является runtime verification.
 Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.

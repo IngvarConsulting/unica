@@ -8,7 +8,7 @@ description: "Объектные блокировки 1С — пессимист
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.patch`, `unica.form.info`, `unica.code.diagnostics`, and `unica.runtime.execute`.
-- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `unica.standards.search` and `unica.standards.explain` for the one development-standard here, 490, and for related ones 648 and 783. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.runtime.execute` only to preview typed arguments; reproducing a conflict requires separate runtime evidence and cannot be inferred from preview.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.

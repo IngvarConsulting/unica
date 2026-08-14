@@ -14,7 +14,7 @@ allowed-tools:
 ## MCP routing
 
 - Preferred path: use MCP `unica` tool `unica.runtime.execute` to preview typed v8-runner arguments; no current applied operation is admitted.
-- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Do not start internal runner MCP servers, package launchers, or shell runners directly, including for maintainer/debug workflows. Report the public contract gap instead.
 
 ## Lifecycle одного вызова
@@ -63,7 +63,7 @@ then call `unica.project.status` again after the approved fix.
 ## Auth/license stop rules
 
 - Если вывод операции похож на проблему лицензии 1С (`лиценз`, `license`, `HASP`, `nethasp`, `LM`, `No license`, `Лицензия не найдена`), остановись. Не лечи лицензию, не меняй службы, реестр, `nethasp.ini` или программную лицензию.
-- Если база без указанного пользователя/пароля, допускается только два предположения: `Администратор` без пароля, затем `Admin` без пароля. Если оба не подходят, спроси пользователя.
+- Если база без указанного пользователя/пароля, не запускай auth probe: попроси пользователя указать credentials. Уже предоставленное свидетельство можно классифицировать только для явно проверенных `Администратор` или `Admin` с пустым паролем; после подтверждённых отказов спроси пользователя.
 - Не сохраняй пароль в `v8project.yaml` молча. Если credentials нужно записать в connection string, предупреди пользователя и не коммить такой файл.
 - Если `tools-download` падает на `failed to fetch latest release … 403`, это анонимный лимит GitHub API, а не ошибка проекта и не отказ 1С. Не повторяй вызов по кругу: назови пользователю причину прямо. Аутентифицировать запрос runner не умеет — переменной с токеном он не читает. Выходы: подождать сброса лимита; направить `V8TR_GITHUB_API_BASE_URL` на зеркало или прокси, которое добавит авторизацию (Unica пробрасывает окружение в runner, поэтому переменная доходит); либо положить готовый артефакт по настроенному пути вручную — для client MCP это `tools.client_mcp.extension.artifact.path`.
 

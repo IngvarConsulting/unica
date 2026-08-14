@@ -8,7 +8,7 @@ description: "Анализ журнала регистрации и технол
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.project.map`, `unica.code.diagnostics`, `unica.standards.search`, and `unica.standards.explain`.
-- Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `unica.runtime.execute` only to preview typed syntax/test/launch arguments, never as verification or a substitute for log evidence.
 - Do not call internal runtime, analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
 

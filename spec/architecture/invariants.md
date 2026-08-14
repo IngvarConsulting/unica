@@ -412,7 +412,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_skills.py`
-- **Scope:** source, runtime
+- **Scope:** source, packaged, runtime
 
 ### INV-MCP-SURFACE-SYNC — Изменения публичной поверхности синхронны
 

@@ -11,7 +11,7 @@ Do not use this for database build/dump/load or artifact build/export. Those are
 runtime workflows whose typed arguments can currently only be previewed by
 `v8-runner` through `unica.runtime.execute`.
 
-Текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
+По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
 только с `dryRun: true`; любой applied-режим возвращает fail-closed до
 workspace discovery и process spawn. Preview не является runtime verification.
 Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.

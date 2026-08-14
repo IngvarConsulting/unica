@@ -1,6 +1,10 @@
 # File And Artifact Workflows
 
-Use `dump` to bring database changes into Git-visible files. Check the worktree before dump and review the diff after dump.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+
+The intended future applied role of `dump` is to bring database changes into
+Git-visible files. Currently preview only its arguments; it does not change the
+worktree, and no runtime evidence or diff is produced.
 
 For a dump preview, use `dryRun=true`; select an extension with matching
 `sourceSet` and `extension` names.
