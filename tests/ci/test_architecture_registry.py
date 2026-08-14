@@ -1545,6 +1545,60 @@ class RuntimeArtifactFlowContractTests(unittest.TestCase):
         )
 
 
+class RlmGenerationCutoverContractTests(unittest.TestCase):
+    """The builder-15 layout and transition wording stay unambiguous."""
+
+    def setUp(self) -> None:
+        self.records = {
+            record.id: record for record in parse_records(INVARIANTS)
+        }
+
+    def test_generation_rule_owns_the_complete_pair_scoped_layout(self) -> None:
+        record = self.records.get("INV-CACHE-GENERATION-CUTOVER")
+        self.assertIsNotNone(record, "missing generation-cutover invariant")
+        rule = record.one("Rule") or ""
+
+        for token in [
+            "`workspaceRoot + sourceRoot`",
+            "`rlm-bsl/index-v15`",
+            "`caches/rlm-bsl/index-v15/bsl_index_status.json`",
+            "`locks/rlm-bsl/index-v15/bsl_index.lock`",
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, rule)
+
+        plan = (
+            REPO_ROOT
+            / "docs/plans/2026-08-13-rlm-v1-33-generational-cutover.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(f"- **Rule:** {rule}", plan)
+
+    def test_glossary_preserves_the_prior_generation_not_builder_14_itself(self) -> None:
+        glossary = (ARCHITECTURE_DIR / "glossary.md").read_text(encoding="utf-8")
+        rlm_entry = glossary.split("- **RLM**", 1)[1].split("\n- **", 1)[0]
+
+        self.assertIn(
+            "прежнее поколение построителя 14 сохраняется и игнорируется",
+            rlm_entry,
+        )
+        self.assertNotIn("построитель 14 сохраняет и игнорирует", rlm_entry)
+
+    def test_decision_context_marks_the_old_executable_as_pre_transition(self) -> None:
+        decision = (
+            DECISIONS_DIR / "0059-rlm-generacionnyy-perehod.md"
+        ).read_text(encoding="utf-8")
+        context = decision.split("## Контекст", 1)[1].split("## Решение", 1)[0]
+
+        self.assertRegex(
+            context,
+            r"До перехода Unica поставляла[^.]*`rlm-tools-bsl`",
+        )
+        self.assertNotRegex(
+            context,
+            r"(?m)^Unica поставляет[^.]*`rlm-tools-bsl`",
+        )
+
+
 class ReaderInvocationContractTests(unittest.TestCase):
     """ADR-0044 stays activated through derived executable rules."""
 

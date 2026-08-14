@@ -1583,7 +1583,7 @@ Under `CACHE`, add:
 ```markdown
 #### INV-CACHE-GENERATION-CUTOVER — Несовместимый индекс получает новое поколение
 
-- **Rule:** Несовместимая версия построителя `RLM` получает отдельные каталог данных, маркер состояния и маркер блокировки; новая версия строит своё поколение с нуля, не открывает, не обновляет и не удаляет предыдущее, а состояния `building` и `incomplete` запрещают чтение, поддерживаемое `RLM`.
+- **Rule:** Для постоянного корня нормализованной пары `workspaceRoot + sourceRoot` несовместимая версия построителя `RLM` получает каталог данных `rlm-bsl/index-v15`, маркер состояния `caches/rlm-bsl/index-v15/bsl_index_status.json` и маркер блокировки `locks/rlm-bsl/index-v15/bsl_index.lock`; новая версия строит это поколение с нуля, не открывает, не обновляет и не удаляет предыдущее поколение, а состояния `building` и `incomplete` запрещают чтение, поддерживаемое `RLM`.
 - **Decision:** ADR-0059
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
