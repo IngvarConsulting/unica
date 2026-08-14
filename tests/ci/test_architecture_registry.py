@@ -1606,17 +1606,17 @@ class RlmGenerationCutoverContractTests(unittest.TestCase):
 
 
 class RuntimeReceiptContractTests(unittest.TestCase):
-    """ADR-0059 owns the fail-closed runtime and no-fallback policy."""
+    """ADR-0061 owns the fail-closed runtime and no-fallback policy."""
 
     def setUp(self) -> None:
         self.records = {record.id: record for record in all_records()}
         self.decision = (
-            DECISIONS_DIR / "0059-terminalnyy-receipt-runtime-v-odnom-vyzove.md"
+            DECISIONS_DIR / "0061-terminalnyy-receipt-runtime-v-odnom-vyzove.md"
         ).read_text(encoding="utf-8")
 
     def test_fallback_policy_is_in_the_normative_decision_section(self) -> None:
         section = DECISION_SECTION.search(self.decision)
-        self.assertIsNotNone(section, "ADR-0059 must have a Decision section")
+        self.assertIsNotNone(section, "ADR-0061 must have a Decision section")
         body = section.group("body")
         self.assertIn("`unica.build.*`", body)
         self.assertRegex(body, r"запасн\w* пут")
@@ -1630,7 +1630,7 @@ class RuntimeReceiptContractTests(unittest.TestCase):
     def test_runtime_receipt_rule_covers_packaged_guidance(self) -> None:
         record = self.records.get("INV-MCP-RUNTIME-RECEIPT")
         self.assertIsNotNone(record, "missing INV-MCP-RUNTIME-RECEIPT")
-        self.assertEqual(record.one("Decision"), "ADR-0059")
+        self.assertEqual(record.one("Decision"), "ADR-0061")
         self.assertIn("packaged", record.one("Scope").split(", "))
         self.assertIn(
             "tests/ci/test_unica_skills.py",

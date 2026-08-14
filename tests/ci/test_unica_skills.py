@@ -84,8 +84,9 @@ def fenced_json_blocks(text: str) -> list[str]:
         ):
             body.append(markdown_container_content(lines[line_number]))
             line_number += 1
-        if language == "json":
-            blocks.append("\n".join(body))
+        block = "\n".join(body)
+        if language == "json" or block_mentions_runtime_tool(block):
+            blocks.append(block)
         if line_number < len(lines):
             line_number += 1
     return blocks
@@ -1906,6 +1907,24 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             ],
         )
 
+    def test_runtime_json_guard_checks_jsonc_runtime_blocks_before_language_filtering(
+        self,
+    ) -> None:
+        example = """```jsonc
+{
+  "method": "tools/call",
+  "params": {
+    "name": "unica.runtime.execute",
+    "arguments": {"operation": "build", "dryRun": false}
+  }
+}
+```"""
+
+        payloads = runtime_execute_json_examples(example)
+
+        self.assertEqual(len(payloads), 1)
+        self.assertIs(payloads[0]["params"]["arguments"]["dryRun"], False)
+
     def test_runtime_json_guard_decodes_tool_name_before_classification(self) -> None:
         example = r"""```json
 {
@@ -2387,12 +2406,11 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_v8_runner_leads_client_mcp_download_with_the_prebuilt_artifact(
         self,
     ) -> None:
-        """#346. Pinned v8-runner 0.5.1 downloads the prebuilt
-        `build/tools/client_mcp.cfe` when `sources` is left off, and an EDT
-        source tree with no `.cfe` when it is passed. The skill published only
-        the `sources: true` recipe, so a caller who wanted the ready extension
-        took a `1cedtcli` dependency and still failed the `build` preflight that
-        wants `tools.client_mcp.extension.artifact.path`.
+        """#346. The prebuilt client MCP artifact remains the default route.
+
+        Current runtime.execute guidance is preview-only, but it still has to
+        keep the ready `build/tools/client_mcp.cfe` artifact distinct from the
+        `sources: true` EDT tree that needs `1cedtcli` and produces no `.cfe`.
         """
         skill_dir = self.skill_root() / "v8-runner"
         skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
@@ -2416,22 +2434,21 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             client_mcp_calls, "the skill has to show how to prepare client MCP"
         )
 
-        # `dryRun: false` is part of the oracle: a preview never downloads, so
-        # a recipe that only previews leaves the caller without the artifact
-        # the `build` preflight wants. `sources: false` is accepted alongside an
-        # omitted key because the mapper emits `--sources` only for a literal
-        # true, so both spellings produce the same runner argv.
+        # `dryRun: true` is part of the current runtime contract. The oracle is
+        # that the prebuilt artifact route is still documented separately from
+        # the sources route, without advertising applied tools-download.
         artifact_calls = [
             call
             for call in client_mcp_calls
-            if not call.get("sources") and call.get("dryRun") is False
+            if not call.get("sources") and call.get("dryRun") is True
         ]
         self.assertTrue(
             artifact_calls,
-            "an executable default call returns the prebuilt client_mcp.cfe and "
-            f"has to be published: {client_mcp_calls}",
+            "the default preview call must name the prebuilt client_mcp.cfe "
+            f"route: {client_mcp_calls}",
         )
         self.assertIn("build/tools/client_mcp.cfe", skill_text)
+        self.assertIn("готовый артефакт должен уже существовать", skill_text)
 
         # The EDT route may stay, but never unlabelled: it replaces the
         # artifact and needs a toolchain the workspace may not have.

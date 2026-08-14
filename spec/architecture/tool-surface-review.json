@@ -776,7 +776,7 @@
   "unica.runtime.execute": {
     "result": {
       "contract": "partial",
-      "now": "preview сохраняется; любой текущий applied-вызов возвращает терминальный fail-closed отказ до workspace discovery и process spawn (ADR-0059)",
+      "now": "preview сохраняется; любой текущий applied-вызов возвращает терминальный fail-closed отказ до workspace discovery и process spawn (ADR-0061)",
       "target": "повторный applied admission требует доказанного process ownership; предметная surface и Tasks принадлежат #465/#497"
     },
     "scenarios": [

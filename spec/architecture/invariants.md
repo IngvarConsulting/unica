@@ -407,7 +407,7 @@ Unica. Каждая запись формулирует одно нормати�
   отдельного решения с доказательствами сохранения исходного вызова хостом,
   крайнего срока ответа, владения всем деревом процессов и безопасного
   восстановления записи.
-- **Decision:** ADR-0059
+- **Decision:** ADR-0061
 - **Check:** `ci-test` — `crates/unica-coder/src/application/runtime_admission.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`

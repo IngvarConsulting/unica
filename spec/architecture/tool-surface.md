@@ -1178,7 +1178,7 @@ Preview typed v8-runner workflows; current applied operations return a terminal 
 
 Публикует **64** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
-**Результат сейчас:** preview сохраняется; любой текущий applied-вызов возвращает терминальный fail-closed отказ до workspace discovery и process spawn (ADR-0059) (типизированы частично: часть результата всё ещё текст)
+**Результат сейчас:** preview сохраняется; любой текущий applied-вызов возвращает терминальный fail-closed отказ до workspace discovery и process spawn (ADR-0061) (типизированы частично: часть результата всё ещё текст)
 
 **Вне границ: семейство runtime и build изучается отдельно.**
 

@@ -336,7 +336,19 @@ fn render_tool_result(
     }
     let text = serde_json::to_string_pretty(&value)
         .map_err(|error| ErrorData::new(ErrorCode::INTERNAL_ERROR, error.to_string(), None))?;
-    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+    let content = vec![ContentBlock::text(text)];
+    Ok(if result.ok || !is_tool_execution_error(&result) {
+        CallToolResult::success(content)
+    } else {
+        CallToolResult::error(content)
+    })
+}
+
+fn is_tool_execution_error(result: &OperationResult) -> bool {
+    result
+        .errors
+        .iter()
+        .any(|error| error.starts_with("runtime_operation_unbounded:"))
 }
 
 #[cfg(test)]
@@ -720,7 +732,7 @@ mod tests {
         let response = client.receive().await;
         assert_eq!(response["id"], "runtime-refusal", "{response}");
         assert!(response.get("error").is_none(), "{response}");
-        assert_eq!(response["result"]["isError"], false, "{response}");
+        assert_eq!(response["result"]["isError"], true, "{response}");
         let receipt: Value = serde_json::from_str(
             response["result"]["content"][0]["text"]
                 .as_str()
@@ -767,6 +779,30 @@ mod tests {
         assert!(
             compact_result_bytes < 1_285_000,
             "tools/list result consumes {compact_result_bytes} compact JSON bytes"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tools_list_describes_runtime_execute_dry_run_as_preview_only() {
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
+            .await;
+        let response = client.receive().await;
+        let listed = response["result"]["tools"].as_array().unwrap();
+        let runtime = listed
+            .iter()
+            .find(|tool| tool["name"] == "unica.runtime.execute")
+            .expect("runtime tool is listed");
+        assert_eq!(
+            runtime["description"],
+            "Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn."
+        );
+        assert_eq!(
+            runtime["inputSchema"]["properties"]["dryRun"]["description"],
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
         );
         client.shutdown().await;
     }

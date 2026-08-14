@@ -3330,6 +3330,13 @@ fn description_for_arg(name: &str) -> Option<&'static str> {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if tool.name == "unica.runtime.execute" && name == "dryRun" {
+        return json!({
+            "type": "boolean",
+            "default": true,
+            "description": "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+        });
+    }
     if tool.name == "unica.role.edit" {
         return match name {
             "sourceSet" => json!({
@@ -6370,6 +6377,10 @@ mod tests {
         assert_eq!(schema["properties"]["ignoreTags"]["type"], "array");
         assert_eq!(schema["properties"]["scenarioFilters"]["type"], "array");
         assert_eq!(schema["properties"]["projects"]["type"], "array");
+        assert_eq!(
+            schema["properties"]["dryRun"]["description"],
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+        );
     }
 
     #[test]
