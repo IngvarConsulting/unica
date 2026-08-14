@@ -63,7 +63,7 @@ fn rlm_provider_state_root_with(
     };
     let mut hasher = Sha256::new();
     for component in [&workspace, &source] {
-        hasher.update(provider_state_path_identity(component).as_bytes());
+        hasher.update(provider_state_path_identity(component));
         hasher.update([0]);
     }
     let identity = format!("{:x}", hasher.finalize());
@@ -2088,6 +2088,47 @@ mod tests {
         .unwrap();
 
         assert_ne!(upper, lower);
+        cleanup(&fixture);
+    }
+
+    #[test]
+    fn rlm_provider_state_identity_preserves_distinct_non_utf8_unix_paths() {
+        // INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE: distinct normalized pairs
+        // must not share persistent provider state when their path text is not UTF-8.
+        let fixture = test_context("provider-state-non-utf8-identity");
+        let Some((first_workspace, second_workspace)) =
+            testing::distinct_non_utf8_provider_paths_for_test(&fixture.workspace_root)
+        else {
+            cleanup(&fixture);
+            return;
+        };
+        fs::create_dir_all(&first_workspace).unwrap();
+        fs::create_dir_all(&second_workspace).unwrap();
+        assert_ne!(
+            fs::canonicalize(&first_workspace).unwrap(),
+            fs::canonicalize(&second_workspace).unwrap()
+        );
+        let external = fixture.workspace_root.join("host-data");
+        let context_for = |workspace_root: PathBuf| WorkspaceContext {
+            cwd: workspace_root.clone(),
+            cache_root: workspace_root.join(".build/unica"),
+            workspace_root,
+            workspace_epoch: 1,
+        };
+        let first = rlm_provider_state_root_with(
+            &context_for(first_workspace.clone()),
+            &first_workspace,
+            Some(external.clone()),
+        )
+        .unwrap();
+        let second = rlm_provider_state_root_with(
+            &context_for(second_workspace.clone()),
+            &second_workspace,
+            Some(external),
+        )
+        .unwrap();
+
+        assert_ne!(first, second);
         cleanup(&fixture);
     }
 

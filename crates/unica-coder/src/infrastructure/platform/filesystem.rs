@@ -3315,13 +3315,20 @@ pub(crate) fn path_lock_identity(path: &Path) -> String {
 }
 
 #[cfg(windows)]
-pub(crate) fn provider_state_path_identity(path: &Path) -> String {
-    path_lock_identity(path)
+pub(crate) fn provider_state_path_identity(path: &Path) -> Vec<u8> {
+    path_lock_identity(path).into_bytes()
 }
 
-#[cfg(not(windows))]
-pub(crate) fn provider_state_path_identity(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+#[cfg(unix)]
+pub(crate) fn provider_state_path_identity(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn provider_state_path_identity(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -4770,9 +4777,9 @@ mod tests {
     fn provider_state_identity_preserves_case_except_on_windows() {
         let identity = provider_state_path_identity(Path::new("/Workspace/Configuration.xml"));
         if cfg!(windows) {
-            assert_eq!(identity, "/workspace/configuration.xml");
+            assert_eq!(identity, b"/workspace/configuration.xml");
         } else {
-            assert_eq!(identity, "/Workspace/Configuration.xml");
+            assert_eq!(identity, b"/Workspace/Configuration.xml");
         }
     }
 
