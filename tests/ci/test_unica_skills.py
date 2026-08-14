@@ -39,7 +39,7 @@ def document_links(text: str) -> list[str]:
 def runtime_execute_json_examples(text: str) -> list[dict]:
     examples = []
     for block_number, block in enumerate(
-        re.findall(r"```json\s*(.*?)```", text, re.DOTALL), start=1
+        re.findall(r"```json\s*(.*?)```", text, re.DOTALL | re.IGNORECASE), start=1
     ):
         if "unica.runtime.execute" not in block:
             continue
@@ -1778,6 +1778,30 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             credential_rule,
             r"(?m)^После двух подтверждённых отказов остановись и спроси "
             r"пользователя, из-под кого подключаться\.$",
+        )
+
+    def test_runtime_json_guard_accepts_case_insensitive_fence_labels(self) -> None:
+        example = """```JSON
+{
+  "method": "tools/call",
+  "params": {
+    "name": "unica.runtime.execute",
+    "arguments": {"operation": "build", "dryRun": false}
+  }
+}
+```"""
+
+        self.assertEqual(
+            runtime_execute_json_examples(example),
+            [
+                {
+                    "method": "tools/call",
+                    "params": {
+                        "name": "unica.runtime.execute",
+                        "arguments": {"operation": "build", "dryRun": False},
+                    },
+                }
+            ],
         )
 
     def test_all_runtime_execute_skill_guidance_is_preview_only(self) -> None:
