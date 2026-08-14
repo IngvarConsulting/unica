@@ -791,6 +791,19 @@ impl RuntimeJobStore {
         let Ok(record_path) = self.record_path(id) else {
             return false;
         };
+        // The record path alone cannot answer this. When its parent is a file
+        // rather than a directory, Unix reports `NotADirectory` but Windows
+        // reports the same `NotFound` an absent record produces, so trusting
+        // `try_exists` there turns "I cannot tell" into proof of absence and
+        // releases the lock under a live job. Prove the parent first.
+        if let Some(parent) = record_path.parent() {
+            match fs::metadata(parent) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => return false,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+                Err(_) => return false,
+            }
+        }
         matches!(record_path.try_exists(), Ok(false))
     }
 
@@ -2085,6 +2098,15 @@ mod tests {
         assert!(
             store.active_lock_path().exists(),
             "the lock must be retained while the record cannot be read"
+        );
+
+        // The other side of the same rule: a job directory that is genuinely
+        // missing does prove absence, on every platform. Without this the
+        // guard above could be satisfied by never proving absence at all.
+        let never_started = Uuid::new_v4().to_string();
+        assert!(
+            store.record_is_provably_absent(&never_started),
+            "an absent job directory proves the record is absent"
         );
     }
 
