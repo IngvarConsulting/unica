@@ -27,6 +27,13 @@ MARKER = "UNICA_RLM_BENCHMARK_MARKER"
 SECTION_HEADING = "## Замер RLM v1.33.0"
 RELEASE_TAG = "rlm-tools-bsl-v1.33.0-build.2"
 SOURCE_COMMIT = "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549"
+TOOLS_LOCK = (
+    Path(__file__).resolve().parents[2]
+    / "plugins"
+    / "unica"
+    / "third-party"
+    / "tools.lock.json"
+)
 TAIL_LIMIT = 4_000
 HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -683,6 +690,16 @@ def _validate_summary_document(document: dict[str, object]) -> None:
             raise RuntimeError("summary contains an absolute path")
 
 
+def _locked_packaged_index_sha256() -> str:
+    lock = json.loads(TOOLS_LOCK.read_text(encoding="utf-8"))
+    matches = [
+        tool for tool in lock["tools"] if tool.get("name") == "rlm-bsl-index"
+    ]
+    if len(matches) != 1 or matches[0].get("assetTag") != RELEASE_TAG:
+        raise RuntimeError("benchmark release identity does not match tools.lock.json")
+    return str(matches[0]["assets"]["darwin-arm64"]["sha256"])
+
+
 def _validate_summary_pair(
     documents: list[dict[str, object]],
 ) -> list[dict[str, object]]:
@@ -701,6 +718,12 @@ def _validate_summary_pair(
             raise RuntimeError(
                 f"summary requires exact source commit {SOURCE_COMMIT} for both results"
             )
+    packaged_sha256 = _locked_packaged_index_sha256()
+    if ordered[0]["executableSha256"] != packaged_sha256:
+        raise RuntimeError(
+            "summary requires exact build.2 Darwin rlm-bsl-index SHA-256 "
+            f"{packaged_sha256}"
+        )
     if ordered[0]["repoHead"] != ordered[1]["repoHead"]:
         raise RuntimeError("summary requires identical repoHead values")
     if ordered[0]["selected"] != ordered[1]["selected"]:

@@ -135,7 +135,9 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         source = self.sample_document(selected=selected)
         packaged = copy.deepcopy(source)
         packaged["label"] = "packaged-v1.33.0"
-        packaged["executableSha256"] = "c" * 64
+        packaged["executableSha256"] = (
+            "d48bd7a0186e46b6d2a48476bc9926fb638882544e7be201293f89db9e654a63"
+        )
         return [packaged, source]
 
     def test_refuses_a_dirty_tracked_tree(self) -> None:
@@ -408,6 +410,17 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             document["sourceCommit"] = "d" * 40
 
         with self.assertRaisesRegex(RuntimeError, "exact source commit"):
+            MODULE.markdown_summary(documents)
+
+    def test_summary_rejects_the_packaged_build_1_executable_digest(self) -> None:
+        documents = self.paired_documents()
+        documents[0]["executableSha256"] = (
+            "d5ed39a9cec302791ecb391959a52fcb84d09ca9e10ac826a3c9641c7ce17ec8"
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "exact build.2 Darwin rlm-bsl-index SHA-256"
+        ):
             MODULE.markdown_summary(documents)
 
     def test_summary_requires_identical_repository_heads(self) -> None:

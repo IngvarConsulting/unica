@@ -105,7 +105,7 @@ Upstream умеет запустить full rebuild, но старый инде�
 - source tag: `v1.33.0`;
 - source commit: `3e6920cd015a61af4ba7aa1a5f1fedd8bc935549`;
 - toolchain manifest и immutable release tag:
-  `rlm-tools-bsl-v1.33.0-build.1`.
+  `rlm-tools-bsl-v1.33.0-build.2`.
 
 ### Поставляемые инструменты
 
