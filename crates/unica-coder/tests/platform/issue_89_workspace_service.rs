@@ -1065,7 +1065,7 @@ fn compile_fake_tools(root: &Path, plugin_root: &Path) {
     fs::create_dir_all(&bin).unwrap();
     let sha256 = sha256_file(&fake);
     let mut manifest_tools = Vec::new();
-    for name in ["bsl-analyzer", "rlm-tools-bsl", "rlm-bsl-index"] {
+    for name in ["bsl-analyzer", "rlm-bsl-mcp", "rlm-bsl-index"] {
         let contract = lock["tools"]
             .as_array()
             .unwrap()

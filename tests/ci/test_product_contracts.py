@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+import gc
 import importlib.util
 import json
+import os
 import re
+import signal
 import subprocess
 import tempfile
+import time
 import tomllib
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -817,7 +823,7 @@ class ProductContractTests(unittest.TestCase):
                 ("index", "update", "--help"),
                 ("index", "info", "--help"),
             ],
-            "rlm-tools-bsl": [("--help",)],
+            "rlm-bsl-mcp": [("--help",)],
             "v8-runner": [("--version",), ("build", "--help")],
         }[name]
         routed_outputs = {
@@ -844,6 +850,94 @@ class ProductContractTests(unittest.TestCase):
         )
         path.chmod(path.stat().st_mode | 0o755)
 
+    def write_rlm_contract_standins(
+        self,
+        root: Path,
+        *,
+        mode: str = "ok",
+        index_mode: str = "ok",
+    ) -> tuple[Path, Path, Path, Path, Path]:
+        request_log = root / "requests.jsonl"
+        index_log = root / "index.json"
+        pid_log = root / "pids.txt"
+        index_tool = root / "rlm-bsl-index.py"
+        index_tool.write_text(
+            "import json, os, subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            f"INDEX_MODE = {index_mode!r}\n"
+            "workspace = Path(sys.argv[3]).resolve()\n"
+            "if INDEX_MODE == 'reject_outer_scan' and "
+            "(workspace.parents[1] / 'poison-outer-sibling').exists():\n"
+            "    raise SystemExit(19)\n"
+            "if INDEX_MODE == 'hang':\n"
+            "    child = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(30)'])\n"
+            f"    Path({str(pid_log)!r}).write_text("
+            "f'{os.getpid()}\\n{child.pid}\\n', encoding='utf-8')\n"
+            "    time.sleep(30)\n"
+            f"Path({str(index_log)!r}).write_text("
+            "json.dumps({'argv': sys.argv[1:], "
+            "'index_dir': os.environ.get('RLM_INDEX_DIR')}), encoding='utf-8')\n"
+            "Path(os.environ['RLM_INDEX_DIR']).mkdir(parents=True, exist_ok=True)\n",
+            encoding="utf-8",
+        )
+        index_tool.chmod(index_tool.stat().st_mode | 0o755)
+
+        mcp_tool = root / "rlm-bsl-mcp.py"
+        shared_standin = (
+            REPO_ROOT
+            / "tests/fixtures/unica_mcp_script_parity/reader-standins/bsl_mcp.py"
+        )
+        mcp_tool.write_text(
+            "import os, runpy\n"
+            f"os.environ['UNICA_RLM_CONTRACT_STANDIN_MODE'] = {mode!r}\n"
+            f"os.environ['UNICA_RLM_CONTRACT_RPC_LOG'] = {str(request_log)!r}\n"
+            f"os.environ['UNICA_RLM_CONTRACT_PID_LOG'] = {str(pid_log)!r}\n"
+            f"runpy.run_path({str(shared_standin)!r}, run_name='__main__')\n",
+            encoding="utf-8",
+        )
+        mcp_tool.chmod(mcp_tool.stat().st_mode | 0o755)
+        return mcp_tool, index_tool, request_log, index_log, pid_log
+
+    def process_is_alive(self, pid: int) -> bool:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0 and f'"{pid}"' in result.stdout
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        state = result.stdout.strip()
+        return result.returncode == 0 and bool(state) and not state.startswith("Z")
+
+    def kill_process_tree_best_effort(self, parent_pid: int, child_pid: int) -> None:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(parent_pid), "/T", "/F"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return
+        try:
+            if os.getpgid(parent_pid) == parent_pid:
+                os.killpg(parent_pid, signal.SIGKILL)
+                return
+        except ProcessLookupError:
+            pass
+        for pid in (child_pid, parent_pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
     def test_tool_help_contracts_pass_with_expected_cli_surface(self) -> None:
         module = load_contract_module()
 
@@ -861,7 +955,7 @@ class ProductContractTests(unittest.TestCase):
             )
             self.write_executable(
                 tools_dir,
-                "rlm-tools-bsl",
+                "rlm-bsl-mcp",
                 "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
             )
             self.write_executable(
@@ -873,6 +967,28 @@ class ProductContractTests(unittest.TestCase):
             errors = module.check_tool_contracts(tools_dir)
 
         self.assertEqual(errors, [])
+
+    def test_tool_help_contracts_do_not_fall_back_to_legacy_rlm_server_name(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            legacy = tools_dir / "rlm-tools-bsl.py"
+            legacy.write_text(
+                "print('--transport stdio streamable-http')\n",
+                encoding="utf-8",
+            )
+            legacy.chmod(legacy.stat().st_mode | 0o755)
+
+            errors = module.check_tool_contracts(tools_dir)
+
+        self.assertTrue(
+            any(
+                error.startswith("rlm-bsl-mcp server: binary not found:")
+                for error in errors
+            ),
+            errors,
+        )
 
     def test_tool_help_contracts_accept_relative_tools_dir(self) -> None:
         module = load_contract_module()
@@ -891,7 +1007,7 @@ class ProductContractTests(unittest.TestCase):
             )
             self.write_executable(
                 tools_dir,
-                "rlm-tools-bsl",
+                "rlm-bsl-mcp",
                 "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
             )
             self.write_executable(
@@ -913,7 +1029,7 @@ class ProductContractTests(unittest.TestCase):
             self.write_executable(tools_dir, "rlm-bsl-index", "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n")
             self.write_executable(
                 tools_dir,
-                "rlm-tools-bsl",
+                "rlm-bsl-mcp",
                 "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
             )
             self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version build'\n")
@@ -944,7 +1060,7 @@ class ProductContractTests(unittest.TestCase):
             )
             self.write_executable(
                 tools_dir,
-                "rlm-tools-bsl",
+                "rlm-bsl-mcp",
                 "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
             )
             self.write_executable(
@@ -1075,12 +1191,12 @@ class ProductContractTests(unittest.TestCase):
                 self.BSL_ANALYZER_HELP,
             )
             self.write_executable(tools_dir, "rlm-bsl-index", "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n")
-            self.write_executable(tools_dir, "rlm-tools-bsl", "#!/usr/bin/env sh\nprintf '%s\\n' 'service'\n")
+            self.write_executable(tools_dir, "rlm-bsl-mcp", "#!/usr/bin/env sh\nprintf '%s\\n' 'service'\n")
             self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version build'\n")
 
             errors = module.check_tool_contracts(tools_dir)
 
-        self.assertTrue(any("rlm-tools-bsl server" in error and "--transport" in error for error in errors), errors)
+        self.assertTrue(any("rlm-bsl-mcp server" in error and "--transport" in error for error in errors), errors)
 
     def test_tool_contract_checker_does_not_depend_on_rlm_sqlite_schema(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -1115,6 +1231,207 @@ class ProductContractTests(unittest.TestCase):
         ):
             self.assertNotIn(removed, production)
 
+    def test_rlm_mcp_contract_exercises_runtime_helpers_over_json_rpc(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mcp_tool, index_tool, request_log, index_log, _pid_log = (
+                self.write_rlm_contract_standins(root)
+            )
+
+            errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
+            requests = [
+                json.loads(line)
+                for line in request_log.read_text(encoding="utf-8").splitlines()
+            ]
+            index_call = json.loads(index_log.read_text(encoding="utf-8"))
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            requests[0],
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "unica-contract", "version": "1"},
+                },
+            },
+        )
+        self.assertEqual(
+            requests[1],
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        tool_calls = [
+            request["params"]
+            for request in requests
+            if request.get("method") == "tools/call"
+        ]
+        self.assertEqual(
+            [call["name"] for call in tool_calls],
+            ["rlm_start", "rlm_execute", "rlm_execute", "rlm_execute", "rlm_end"],
+        )
+        start = tool_calls[0]["arguments"]
+        self.assertEqual(
+            {key: value for key, value in start.items() if key != "path"},
+            {
+                "query": "ContractTest1",
+                "effort": "low",
+                "max_output_chars": 100_000,
+                "max_execute_calls": 10_000,
+                "execution_timeout_seconds": 30,
+                "include_metadata": False,
+            },
+        )
+        self.assertEqual(
+            [call["arguments"]["code"] for call in tool_calls[1:4]],
+            [
+                'import json\n_result = search("ContractTest", scope="all", limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
+                'import json\n_result = find_definition("ContractTest1", module_hint=None, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
+                'import json\n_result = get_object_profile("CommonModule.ContractOne", sections=None, include_flow=False, include_code_usages=False, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
+            ],
+        )
+        self.assertNotIn("parse_form", "\n".join(call["arguments"]["code"] for call in tool_calls[1:4]))
+        self.assertEqual(index_call["argv"][:2], ["index", "build"])
+        self.assertEqual(index_call["argv"][2], start["path"])
+        self.assertEqual(
+            index_call["index_dir"],
+            str(Path(start["path"]).parents[1] / "index"),
+        )
+
+    def test_rlm_mcp_contract_confines_upstream_two_ancestor_extension_scan(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = Path(tmp)
+            contract_root = outer / "contract"
+            contract_root.mkdir()
+            outer.joinpath("poison-outer-sibling").touch()
+            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(
+                outer,
+                index_mode="reject_outer_scan",
+            )
+
+            with patch.object(
+                module.tempfile,
+                "TemporaryDirectory",
+                return_value=nullcontext(str(contract_root)),
+            ):
+                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
+
+        self.assertEqual(errors, [])
+
+    def test_rlm_mcp_contract_rejects_malformed_helper_payloads(self) -> None:
+        module = load_contract_module()
+        cases = [
+            ("definition_list", "find_definition must return an object"),
+            ("string_params", "definitions[].params must be a list"),
+            ("string_boolean", "_meta.truncated must be boolean"),
+            ("search_object", "search must return a list"),
+            ("profile_list", "get_object_profile must return an object"),
+            ("scalar_metadata", "_meta must be an object"),
+        ]
+
+        for mode, expected in cases:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(
+                    root,
+                    mode=mode,
+                )
+                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
+
+                self.assertTrue(any(expected in error for error in errors), errors)
+                self.assertFalse(any(str(root) in error for error in errors), errors)
+
+    def test_rlm_mcp_contract_bounds_reads_and_terminates_the_process_tree(self) -> None:
+        module = load_contract_module()
+        parent_pid = child_pid = 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mcp_tool, index_tool, _request_log, _index_log, pid_log = (
+                self.write_rlm_contract_standins(root, mode="hang")
+            )
+            try:
+                with patch.object(module, "RLM_MCP_CONTRACT_TIMEOUT_SECONDS", 0.2):
+                    started_at = time.monotonic()
+                    errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
+                    elapsed = time.monotonic() - started_at
+                parent_pid, child_pid = [
+                    int(line)
+                    for line in pid_log.read_text(encoding="utf-8").splitlines()
+                ]
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and (
+                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
+                ):
+                    time.sleep(0.025)
+
+                self.assertLess(elapsed, 2.0)
+                self.assertTrue(any("timed out" in error for error in errors), errors)
+                self.assertFalse(self.process_is_alive(parent_pid))
+                self.assertFalse(self.process_is_alive(child_pid))
+            finally:
+                if parent_pid and (
+                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
+                ):
+                    self.kill_process_tree_best_effort(parent_pid, child_pid)
+
+    def test_rlm_mcp_contract_bounds_index_build_and_terminates_its_process_tree(self) -> None:
+        module = load_contract_module()
+        parent_pid = child_pid = 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mcp_tool, index_tool, _request_log, _index_log, pid_log = (
+                self.write_rlm_contract_standins(root, index_mode="hang")
+            )
+            try:
+                with patch.object(module, "RLM_MCP_CONTRACT_TIMEOUT_SECONDS", 0.2):
+                    started_at = time.monotonic()
+                    errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
+                    elapsed = time.monotonic() - started_at
+                parent_pid, child_pid = [
+                    int(line)
+                    for line in pid_log.read_text(encoding="utf-8").splitlines()
+                ]
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and (
+                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
+                ):
+                    time.sleep(0.025)
+
+                self.assertLess(elapsed, 2.0)
+                self.assertTrue(any("timed out" in error for error in errors), errors)
+                self.assertFalse(self.process_is_alive(parent_pid))
+                self.assertFalse(self.process_is_alive(child_pid))
+            finally:
+                if child_pid and (
+                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
+                ):
+                    self.kill_process_tree_best_effort(parent_pid, child_pid)
+
+    def test_rlm_mcp_contract_closes_transport_pipes(self) -> None:
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ResourceWarning)
+                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
+                gc.collect()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [warning for warning in caught if warning.category is ResourceWarning],
+            [],
+        )
+
     def test_rlm_mtime_recovery_contract_checks_scripted_orchestration(self) -> None:
         module = load_contract_module()
         outputs = iter(
@@ -1138,64 +1455,26 @@ class ProductContractTests(unittest.TestCase):
             )
             actions.append(command[2])
             self.assertEqual(cwd, Path(command[3]))
-            self.assertEqual(env["RLM_INDEX_DIR"], str(cwd.parent / "index"))
+            self.assertEqual(env["RLM_INDEX_DIR"], str(cwd.parents[1] / "index"))
             self.assertEqual(env["RLM_INDEX_SAMPLE_SIZE"], "1000")
             self.assertEqual(env["RLM_INDEX_SAMPLE_THRESHOLD"], "0")
             self.assertEqual(env["RLM_INDEX_SKIP_SAMPLE_HOURS"], "0")
             return next(outputs)
 
-        errors = module.check_rlm_mtime_recovery_contract(
-            Path("rlm-bsl-index"),
-            run_rlm=run_rlm,
-        )
+        with patch.object(
+            module,
+            "run_rlm_contract_process",
+            side_effect=run_rlm,
+        ):
+            errors = module.check_rlm_mtime_recovery_contract(
+                Path("rlm-bsl-index"),
+            )
 
         self.assertEqual(errors, [])
         self.assertEqual(
             actions,
             ["build", "info", "info", "update", "info", "build", "info"],
         )
-
-    def test_run_rlm_command_times_out_instead_of_hanging(self) -> None:
-        module = load_contract_module()
-        timeout = module.subprocess.TimeoutExpired(["rlm-bsl-index"], 120.0)
-
-        with patch.object(module.subprocess, "run", side_effect=timeout) as run:
-            status, output = module.run_rlm_command(
-                ["rlm-bsl-index"],
-                Path.cwd(),
-                {},
-            )
-
-        self.assertEqual(status, 1)
-        self.assertIn("timed out after 120.0s", output)
-        self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
-
-    def test_run_rlm_command_reuses_script_wrapping(self) -> None:
-        module = load_contract_module()
-        completed = module.subprocess.CompletedProcess(
-            ["fixture.py"],
-            0,
-            stdout="wrapped stdout\n",
-            stderr="wrapped stderr\n",
-        )
-
-        with patch.object(module.subprocess, "run", return_value=completed) as run:
-            status, output = module.run_rlm_command(
-                ["fixture.py", "index", "info"],
-                Path.cwd(),
-                {"RLM_CONTRACT_TEST": "1"},
-            )
-
-        self.assertEqual(status, 0)
-        self.assertEqual(output, "wrapped stdout\nwrapped stderr\n")
-        wrapped_command = run.call_args.args[0]
-        self.assertEqual(wrapped_command[0], module.sys.executable)
-        self.assertEqual(wrapped_command[1:], ["fixture.py", "index", "info"])
-        self.assertEqual(
-            run.call_args.kwargs["env"]["RLM_CONTRACT_TEST"],
-            "1",
-        )
-        self.assertEqual(run.call_args.kwargs["timeout"], 120.0)
 
     def test_rlm_mtime_recovery_fixture_disables_git_signing(self) -> None:
         module = load_contract_module()

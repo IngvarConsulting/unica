@@ -2673,7 +2673,7 @@ impl PersistentMcpSession {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for workspace RLM service".to_string()
         })?;
-        let program = resolve_bundled_tool(&plugin_root, "rlm-tools-bsl", true)?.program;
+        let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-mcp", true)?.program;
         let mut command = Command::new(program);
         command
             .current_dir(&context.cwd)
@@ -4496,6 +4496,39 @@ mod tests {
                 limit: 7
             }
         );
+    }
+
+    #[test]
+    fn rlm_transport_requires_renamed_manifest_identity_without_legacy_fallback() {
+        let context = test_context("renamed-rlm-mcp-only");
+        let plugin_root = context.workspace_root.join("plugins/unica");
+        fs::create_dir_all(plugin_root.join("skills")).unwrap();
+        fs::create_dir_all(plugin_root.join("third-party")).unwrap();
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "tools": [
+    {"name": "rlm-tools-bsl", "version": "legacy", "binaries": {}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = match PersistentMcpSession::start_rlm_transport(
+            &context,
+            &context.workspace_root.join("src"),
+            &CancellationToken::new(),
+        ) {
+            Ok(mut session) => {
+                session.invalidate();
+                panic!("legacy RLM MCP manifest identity must not be accepted")
+            }
+            Err(error) => error,
+        };
+
+        cleanup(&context);
+        assert_eq!(error, "tool not found in manifest: rlm-bsl-mcp");
     }
 
     /// #204. A persistent session outlives its tool call, so a working
