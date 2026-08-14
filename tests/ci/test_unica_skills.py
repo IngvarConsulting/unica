@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 import unittest
@@ -36,28 +37,126 @@ def document_links(text: str) -> list[str]:
     return [match for pattern in DOCUMENT_LINK_PATTERNS for match in pattern.findall(text)]
 
 
+FENCED_BLOCK_START = re.compile(
+    r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<info>[^\r\n]*)$"
+)
+BLOCKQUOTE_PREFIX = re.compile(r"^(?:[ \t]*>[ \t]?)+")
+LIST_ITEM_PREFIX = re.compile(
+    r"^[ \t]*(?:[-+*]|[0-9]{1,9}[.)])[ \t]+"
+)
+
+
+def markdown_container_content(line: str) -> str:
+    while True:
+        content = BLOCKQUOTE_PREFIX.sub("", line)
+        content = LIST_ITEM_PREFIX.sub("", content, count=1)
+        if content == line:
+            return content
+        line = content
+
+
+def fenced_json_blocks(text: str) -> list[str]:
+    lines = text.splitlines()
+    blocks = []
+    line_number = 0
+    while line_number < len(lines):
+        opening = FENCED_BLOCK_START.fullmatch(
+            markdown_container_content(lines[line_number])
+        )
+        if opening is None:
+            line_number += 1
+            continue
+
+        fence = opening.group("fence")
+        closing = re.compile(
+            rf"^[ \t]*{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$"
+        )
+        info = html.unescape(opening.group("info").strip())
+        language = info.split(maxsplit=1)[0].casefold() if info else ""
+        line_number += 1
+        body = []
+        while (
+            line_number < len(lines)
+            and closing.fullmatch(
+                markdown_container_content(lines[line_number])
+            )
+            is None
+        ):
+            body.append(markdown_container_content(lines[line_number]))
+            line_number += 1
+        if language == "json":
+            blocks.append("\n".join(body))
+        if line_number < len(lines):
+            line_number += 1
+    return blocks
+
+
+def decode_active_json_unicode_escapes(text: str) -> str:
+    decoded = []
+    index = 0
+    while index < len(text):
+        if text[index] != "\\":
+            decoded.append(text[index])
+            index += 1
+            continue
+
+        slash_start = index
+        while index < len(text) and text[index] == "\\":
+            index += 1
+        slash_count = index - slash_start
+        decoded.append("\\" * (slash_count // 2))
+        if (
+            slash_count % 2 == 1
+            and index + 5 <= len(text)
+            and text[index] == "u"
+            and all(
+                character in "0123456789abcdefABCDEF"
+                for character in text[index + 1 : index + 5]
+            )
+        ):
+            decoded.append(chr(int(text[index + 1 : index + 5], 16)))
+            index += 5
+        elif slash_count % 2 == 1:
+            decoded.append("\\")
+    return "".join(decoded)
+
+
+def block_mentions_runtime_tool(block: str) -> bool:
+    return "unica.runtime.execute" in decode_active_json_unicode_escapes(block)
+
+
 def runtime_execute_json_examples(text: str) -> list[dict]:
     examples = []
-    for block_number, block in enumerate(
-        re.findall(r"```json\s*(.*?)```", text, re.DOTALL | re.IGNORECASE), start=1
-    ):
+    for block_number, block in enumerate(fenced_json_blocks(text), start=1):
         try:
             payload = json.loads(block)
         except json.JSONDecodeError as error:
-            if "unica.runtime.execute" in block:
+            if block_mentions_runtime_tool(block):
                 raise ValueError(
                     f"invalid fenced runtime JSON example #{block_number}: {error}"
                 ) from error
             continue
-        if not isinstance(payload, dict):
-            continue
-        params = payload.get("params")
-        if not isinstance(params, dict):
-            continue
-        if params.get("name") != "unica.runtime.execute":
-            continue
-        examples.append(payload)
+        candidates = payload if isinstance(payload, list) else [payload]
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            params = candidate.get("params")
+            if not isinstance(params, dict):
+                continue
+            if params.get("name") != "unica.runtime.execute":
+                continue
+            examples.append(candidate)
     return examples
+
+
+def runtime_guidance_document(text: str) -> tuple[bool, list[dict]]:
+    examples = runtime_execute_json_examples(text)
+    return (
+        bool(examples)
+        or "unica.runtime.execute" in text
+        or "v8-runner" in text,
+        examples,
+    )
 
 
 def stale_route_guard_text(path: Path, text: str) -> str:
@@ -1829,6 +1928,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             runtime_execute_json_examples("```json\n{not runtime JSON}\n```"),
             [],
         )
+        self.assertEqual(
+            runtime_execute_json_examples(
+                r'''```json
+{"note":"unica\\u002eruntime.execute",
+```'''
+            ),
+            [],
+        )
 
         with self.assertRaisesRegex(
             ValueError, r"invalid fenced runtime JSON example #1"
@@ -1836,6 +1943,109 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             runtime_execute_json_examples(
                 '```json\n{"name":"unica.runtime.execute",\n```'
             )
+
+    def test_runtime_json_guard_rejects_malformed_escaped_tool_name(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, r"invalid fenced runtime JSON example #1"
+        ):
+            runtime_execute_json_examples(
+                r'''```json
+{"params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}},
+```'''
+            )
+
+        with self.assertRaisesRegex(
+            ValueError, r"invalid fenced runtime JSON example #1"
+        ):
+            runtime_execute_json_examples(
+                r'''```json
+{"params":{"name":"unica\u002eruntime.execute
+```'''
+            )
+
+    def test_runtime_json_guard_handles_commonmark_fences_and_batches(self) -> None:
+        examples = r'''~~~JSON
+[{"method":"tools/call","params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}}}]
+~~~
+``` json
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+```
+````json
+{"note":"```","method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+````'''
+
+        payloads = runtime_execute_json_examples(examples)
+
+        self.assertEqual(len(payloads), 3)
+        self.assertTrue(
+            all(
+                payload["params"]["name"] == "unica.runtime.execute"
+                and payload["params"]["arguments"]["dryRun"] is False
+                for payload in payloads
+            )
+        )
+
+    def test_runtime_json_guard_handles_commonmark_containers_and_info(self) -> None:
+        examples = '''> ```json
+> {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+> ```
+- example:
+
+    ```json
+    {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+    ```
+```json title=request
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+```'''
+
+        payloads = runtime_execute_json_examples(examples)
+
+        self.assertEqual(len(payloads), 3)
+        self.assertTrue(
+            all(
+                payload["params"]["arguments"]["dryRun"] is False
+                for payload in payloads
+            )
+        )
+
+    def test_runtime_json_guard_handles_fence_after_list_marker(self) -> None:
+        examples = '''- ```json
+  {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+  ```
+> - ```json
+>   {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+>   ```'''
+
+        payloads = runtime_execute_json_examples(examples)
+
+        self.assertEqual(len(payloads), 2)
+
+    def test_runtime_json_guard_handles_nested_indent_and_info_entities(self) -> None:
+        examples = '''123. outer
+     - ```json
+       {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+       ```
+123. outer
+     > ```json
+     > {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+     > ```
+```j&#x73;on
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+```'''
+
+        payloads = runtime_execute_json_examples(examples)
+
+        self.assertEqual(len(payloads), 3)
+
+    def test_runtime_guidance_document_detects_decoded_tool_name(self) -> None:
+        example = r'''```json
+{"method":"tools/call","params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}}}
+```'''
+
+        is_runtime_document, payloads = runtime_guidance_document(example)
+
+        self.assertTrue(is_runtime_document)
+        self.assertEqual(len(payloads), 1)
 
     def test_all_runtime_execute_skill_guidance_is_preview_only(self) -> None:
         runtime_docs = []
@@ -1845,14 +2055,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         for doc in sorted(shipped_docs):
             text = doc.read_text(encoding="utf-8")
-            if "unica.runtime.execute" not in text and "v8-runner" not in text:
-                continue
-            runtime_docs.append((doc, text))
             with self.subTest(path=doc.relative_to(self.repo_root())):
                 try:
-                    payloads = runtime_execute_json_examples(text)
+                    is_runtime_document, payloads = runtime_guidance_document(text)
                 except ValueError as error:
                     self.fail(str(error))
+            if not is_runtime_document:
+                continue
+            runtime_docs.append((doc, text))
             for payload in payloads:
                 if (
                     payload.get("method") == "tools/call"
