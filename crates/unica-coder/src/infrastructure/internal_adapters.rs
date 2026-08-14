@@ -1903,7 +1903,7 @@ impl ProcessRunner for SystemProcessRunner {
         let output = ManagedChild::run_with_input(
             ManagedCommand {
                 program: command.program.clone(),
-                args: command.args.clone(),
+                args: command.args.iter().map(Into::into).collect(),
                 cwd: command.cwd.clone(),
                 env: command.env.clone(),
                 env_remove: command.env_remove.clone(),

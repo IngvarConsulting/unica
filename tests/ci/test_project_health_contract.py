@@ -16,7 +16,7 @@ class ProjectHealthContractTests(unittest.TestCase):
 
     def test_project_health_contract_is_accepted_and_routed(self) -> None:
         adr = self.read(
-            "spec/decisions/0056-project-status-publikuet-gotovnost-proekta.md"
+            "spec/decisions/0060-project-status-publikuet-gotovnost-proekta.md"
         )
         invariants = self.read("spec/architecture/invariants.md")
         decisions = self.read("spec/decisions/README.md")
@@ -31,7 +31,7 @@ class ProjectHealthContractTests(unittest.TestCase):
             "docs/plans/2026-08-13-project-source-health.md"
         )
         self.assertIn("- Статус: `accepted`", adr)
-        self.assertIn("ADR-0059", implementation_plan)
+        self.assertIn("ADR-0060", implementation_plan)
         for invariant in (
             "INV-MCP-PROJECT-READINESS",
             "INV-SOURCE-ROOT-SEPARATION",
@@ -40,8 +40,8 @@ class ProjectHealthContractTests(unittest.TestCase):
             self.assertIn(f"### {invariant}", invariants)
 
         accepted, proposed = decisions.split("## Предложенные решения", maxsplit=1)
-        self.assertIn("ADR-0056", accepted)
-        self.assertNotIn("ADR-0056", proposed)
+        self.assertIn("ADR-0060", accepted)
+        self.assertNotIn("ADR-0060", proposed)
 
         status_contract = review["unica.project.status"]["result"]
         self.assertEqual(status_contract["contract"], "typed")

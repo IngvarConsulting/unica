@@ -5,7 +5,7 @@
 > behavior change follows RED → GREEN and no test is weakened to make it pass.
 
 **Goal:** Bring the implemented `unica.project.status` behavior into exact
-agreement with approved ADR-0056 after independent semantic review.
+agreement with approved ADR-0060 after independent semantic review.
 
 **Architecture:** Git inspection remains read-only and publishes one typed
 snapshot. Each check starts `notRun` and becomes `completed` only after its own
@@ -19,7 +19,7 @@ MCP typed result envelope, Python contract tests.
 
 ## Global Constraints
 
-- Preserve ADR-0056 semantics: no project or Git mutation, `ready` independent
+- Preserve ADR-0060 semantics: no project or Git mutation, `ready` independent
   from `repositoryReady`, and problems remain successful typed inspection data.
 - Preserve one public MCP server and the existing `unica.project.status` tool.
 - Support the documented generic Git prerequisite; do not silently require Git
@@ -29,7 +29,7 @@ MCP typed result envelope, Python contract tests.
 - Use a 64 MiB project-health stdout budget (stderr remains 256 KiB): it is
   finite, covers the validated 43k-file class with headroom, and leaves the
   1 MiB default unchanged for unrelated processes.
-- Update existing ADR-0056-derived design and plan text where it contradicts the
+- Update existing ADR-0060-derived design and plan text where it contradicts the
   accepted decision; do not create a replacement ADR.
 
 ---

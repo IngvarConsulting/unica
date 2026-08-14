@@ -1,4 +1,4 @@
-# ADR-0056: `unica.project.status` публикует типизированную готовность проекта
+# ADR-0060: `unica.project.status` публикует типизированную готовность проекта
 
 - Статус: `accepted`
 - Дата: `2026-08-13`
@@ -140,14 +140,14 @@ descriptor.
 
 ## Верификация
 
-- `tests/ci/test_project_health_contract.py` — ADR-0056 принят, три выведенных
+- `tests/ci/test_project_health_contract.py` — ADR-0060 принят, три выведенных
   инварианта зарегистрированы, ведомость инструмента и AI workflow описывают
   доставленную типизированную форму.
-- `tests/ci/test_architecture_registry.py` — каталог решений содержит ADR-0056
+- `tests/ci/test_architecture_registry.py` — каталог решений содержит ADR-0060
   ровно в секции принятых решений, а записи реестра ссылаются на существующие
   исполняемые проверки.
 - `tests/ci/test_design_documents.py` — approved design ссылается на
-  существующую ADR-0056.
+  существующую ADR-0060.
 - `cargo test -p unica-coder project_health -- --test-threads=1` —
   проверяет два контура готовности, каталог первичных причин, полноту фактов и
   безопасную remediation.

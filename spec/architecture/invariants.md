@@ -441,7 +441,7 @@ Unica. Каждая запись формулирует одно нормати�
   даже при найденных проблемах проекта, тогда как
   `unica.project.map` возвращает только карту наборов исходников и не запускает
   проверки Git.
-- **Decision:** ADR-0056
+- **Decision:** ADR-0060
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
 - **Check:** `doc-assert` — `tests/ci/test_project_health_contract.py`
@@ -982,7 +982,7 @@ Unica. Каждая запись формулирует одно нормати�
   `./` и ссылочный псевдоним, даёт одну первичную ошибку
   `source_set.root_is_workspace`, закрывает `ready` и не порождает производные
   ошибки о служебных путях внутри того же корня.
-- **Decision:** ADR-0056
+- **Decision:** ADR-0060
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/layout.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
@@ -996,7 +996,7 @@ Unica. Каждая запись формулирует одно нормати�
   `ConfigDumpInfo.xml`; локальные правила не считаются переносимыми, а отдельное
   хранилище больших файлов предлагается только как необязательная подсказка и
   не меняет ни один флаг.
-- **Decision:** ADR-0056
+- **Decision:** ADR-0060
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/project_health.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/git.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/resources.rs`

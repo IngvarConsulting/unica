@@ -1,6 +1,6 @@
 - Date: `2026-08-13`
 - Status: `approved`
-- Decision: `ADR-0056`
+- Decision: `ADR-0060`
 
 # Типизированная проверка готовности проекта и наборов исходников
 
@@ -539,7 +539,7 @@ PR #473 владеет размещением кеша `bsl-analyzer` вне sou
 2. Ввести fact snapshot, внутренние порты и чистые правила.
 3. Перевести `unica.project.status` на новую модель и убрать Git warning из
    `project.map`.
-4. Вместе с кодом перевести ADR-0056 в `accepted`, добавить выведенные правила
+4. Вместе с кодом перевести ADR-0060 в `accepted`, добавить выведенные правила
    в реестр, синхронизировать tool surface, change checklist, operation
    descriptors, skill и package contracts.
 5. Запустить unit, platform-specific, MCP smoke и архитектурные стражи.

@@ -116,7 +116,7 @@ CLI с NUL-протоколами, Python 3.12 contract tests, Markdown ADR/inva
 | Modify: `crates/unica-coder/src/interfaces/mcp.rs`, `tests/ci/test_unica_mcp_smoke.py` | Consumer-visible status payload и read-only MCP smoke. |
 | Create: `tests/ci/test_project_health_contract.py` | Синхронизация ADR, invariants, tool review, acceptance и AI guidance. |
 | Modify: `spec/architecture/{invariants,change-checklist,building-blocks,concepts,runtime,tool-surface-review.json,tool-surface.md}` | Действующие правила и ведомость изменённого результата. |
-| Modify: `spec/decisions/{0056-project-status-publikuet-gotovnost-proekta.md,README.md}` | Принятие решения только после GREEN реализации. |
+| Modify: `spec/decisions/{0060-project-status-publikuet-gotovnost-proekta.md,README.md}` | Принятие решения только после GREEN реализации. |
 | Modify: `spec/acceptance/unica-mcp-validation.md` | Исполняемая матрица project health. |
 | Modify: `plugins/unica/skills/v8-runner/SKILL.md`, `plugins/unica/references/use-cases/workspace-runtime.md`, `tests/ci/test_unica_skills.py` | AI вызывает preflight, читает typed remediation и не выполняет её без полномочия. |
 
@@ -1617,7 +1617,7 @@ service/write regressions.
 **Files:**
 
 - Create: `tests/ci/test_project_health_contract.py`
-- Modify: `spec/decisions/0056-project-status-publikuet-gotovnost-proekta.md`
+- Modify: `spec/decisions/0060-project-status-publikuet-gotovnost-proekta.md`
 - Modify: `spec/decisions/README.md`
 - Modify: `spec/architecture/invariants.md`
 - Modify: `spec/architecture/change-checklist.md`
@@ -1634,7 +1634,7 @@ service/write regressions.
 **Interfaces:**
 
 - Consumes: GREEN public behavior from Task 6.
-- Produces: accepted ADR-0056 and three executable rules:
+- Produces: accepted ADR-0060 and three executable rules:
 
 ```text
 INV-MCP-PROJECT-READINESS
@@ -1648,7 +1648,7 @@ INV-SOURCE-PORTABLE-GIT
 
 ```python
 def test_project_health_contract_is_accepted_and_routed(self) -> None:
-    adr = self.read("spec/decisions/0056-project-status-publikuet-gotovnost-proekta.md")
+    adr = self.read("spec/decisions/0060-project-status-publikuet-gotovnost-proekta.md")
     invariants = self.read("spec/architecture/invariants.md")
     review = json.loads(self.read("spec/architecture/tool-surface-review.json"))
     workflow = self.read("plugins/unica/references/use-cases/workspace-runtime.md")
@@ -1666,7 +1666,7 @@ def test_project_health_contract_is_accepted_and_routed(self) -> None:
     self.assertIn("remediation", workflow)
 ```
 
-Добавить assertions, что ADR-0056 находится в accepted section README и
+Добавить assertions, что ADR-0060 находится в accepted section README и
 отсутствует в proposed section, а `project.map` review не обещает health.
 
 - [ ] **Step 2: Run the contract test and witness RED.**
@@ -1679,7 +1679,7 @@ Expected: FAIL на `proposed`/missing invariants, не на import/path error.
 
 - [ ] **Step 3: Add the three invariant records and current architecture.**
 
-Нормативные `Rule` формулировать по-русски и ссылать на ADR-0056:
+Нормативные `Rule` формулировать по-русски и ссылать на ADR-0060:
 
 - `INV-MCP-PROJECT-READINESS`: status typed data, два флага, checks,
   diagnostics, `ok=true` для findings; map не делает health check;
@@ -1694,7 +1694,7 @@ change checklist по ID, а building-blocks/concepts/runtime — только �
 
 - [ ] **Step 4: Accept ADR and update acceptance.**
 
-Перевести ADR-0056 `proposed → accepted`, переместить ровно одну ссылку в
+Перевести ADR-0060 `proposed → accepted`, переместить ровно одну ссылку в
 decision README. В `unica-mcp-validation.md` добавить executable matrix:
 
 1. no Git → ready true/repository false;
@@ -1741,7 +1741,7 @@ surface не меняются.
 python3.12 -m unittest tests.ci.test_project_health_contract tests.ci.test_design_documents tests.ci.test_architecture_registry tests.ci.test_unica_skills
 python3.12 scripts/ci/check-architecture-sync.py --base origin/main
 git diff --check
-git add tests/ci/test_project_health_contract.py tests/ci/test_unica_skills.py spec/decisions/0056-project-status-publikuet-gotovnost-proekta.md spec/decisions/README.md spec/architecture/invariants.md spec/architecture/change-checklist.md spec/architecture/building-blocks.md spec/architecture/concepts.md spec/architecture/runtime.md spec/architecture/tool-surface-review.json spec/architecture/tool-surface.md spec/acceptance/unica-mcp-validation.md plugins/unica/skills/v8-runner/SKILL.md plugins/unica/references/use-cases/workspace-runtime.md
+git add tests/ci/test_project_health_contract.py tests/ci/test_unica_skills.py spec/decisions/0060-project-status-publikuet-gotovnost-proekta.md spec/decisions/README.md spec/architecture/invariants.md spec/architecture/change-checklist.md spec/architecture/building-blocks.md spec/architecture/concepts.md spec/architecture/runtime.md spec/architecture/tool-surface-review.json spec/architecture/tool-surface.md spec/acceptance/unica-mcp-validation.md plugins/unica/skills/v8-runner/SKILL.md plugins/unica/references/use-cases/workspace-runtime.md
 git commit -m "docs(project): accept project health contract"
 ```
 
@@ -1803,4 +1803,4 @@ Use `superpowers:requesting-code-review`. Review must explicitly verify:
 - no lossy/truncated observation becomes passed;
 - CDFI has one classifier and staged-blob semantics;
 - path `.` reports the root cause while independent Git findings remain;
-- ADR-0056 is accepted only with all checks GREEN.
+- ADR-0060 is accepted only with all checks GREEN.
