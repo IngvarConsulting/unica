@@ -2187,8 +2187,11 @@ mod tests {
                 &CancellationToken::new(),
             )
         });
-        let first = started_rx.recv_timeout(Duration::from_millis(300));
-        let second = started_rx.recv_timeout(Duration::from_millis(300));
+        // Both windows wait for an event rather than forbid elapsed time: a
+        // provider that waits for its sibling never sends, so a generous
+        // window costs a slow failure instead of a flaky one.
+        let first = started_rx.recv_timeout(Duration::from_secs(5));
+        let second = started_rx.recv_timeout(Duration::from_secs(5));
         {
             let (lock, condition) = &*gate;
             *lock.lock().unwrap() = true;
@@ -2232,8 +2235,12 @@ mod tests {
         let saw_cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let registry = behavior_registry(vec![(
             &ANALYZER_DESCRIPTOR,
+            // The gap between "returned on its own deadline" and "waited for
+            // the provider" carries this assertion, so it is wide enough to
+            // survive a loaded runner: a correct coordinator answers in tens
+            // of milliseconds, and one that waits takes the full sleep.
             ProviderBehavior::SleepUntilCancelledOrElapsed {
-                duration: Duration::from_millis(150),
+                duration: Duration::from_secs(5),
                 saw_cancellation: Arc::clone(&saw_cancellation),
             },
         )]);
@@ -2241,7 +2248,11 @@ mod tests {
         request.timeout = Some(Duration::from_millis(30));
         let started = Instant::now();
         let result = run(registry, &request).unwrap();
-        assert!(started.elapsed() < Duration::from_millis(120));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the coordinator waited for the provider: {:?}",
+            started.elapsed()
+        );
         assert_eq!(result.providers[0].status, DiagnosticProviderStatus::Failed);
         assert_eq!(
             result.providers[0].error.as_ref().unwrap().code,
@@ -2286,7 +2297,7 @@ mod tests {
                 &worker_cancellation,
             )
         });
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         cancellation.cancel();
         let error = execution.join().unwrap().unwrap_err();
         assert_eq!(error.code, "cancelled");
