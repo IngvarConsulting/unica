@@ -179,7 +179,7 @@ MCP typed result envelope, Python contract tests.
 - [x] Add failing mixed Platform XML/EDT and no-Git regressions for the public
   `checks[]` matrix; publish per-source-set Platform results or `NotRun` and EDT
   `NotApplicable` whenever source-set identities are known, retaining aggregate-
-  only observations only while `sourceSets` is `null`.
+  only observations while `sourceSets` is `null`.
 - [x] Add failing cancellation/deadline regressions for maximum-size Git
   attribute and EOL protocols; parse NUL records incrementally with periodic
   checkpoints instead of materializing and cloning every field first.

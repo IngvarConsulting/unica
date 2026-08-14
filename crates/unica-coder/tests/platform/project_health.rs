@@ -896,6 +896,15 @@ fn project_health_keeps_working_eol_errors_scoped_to_the_source_set() {
     )
     .unwrap();
     fs::set_permissions(root.join("bad/Extra.xml"), fs::Permissions::from_mode(0o0)).unwrap();
+    if fs::File::open(root.join("bad/Extra.xml")).is_ok() {
+        fs::set_permissions(
+            root.join("bad/Extra.xml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(root);
+        return;
+    }
 
     let result = status(&root);
 

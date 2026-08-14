@@ -1070,7 +1070,7 @@ Inspect typed workspace, source-set, and portable Git readiness without changing
 | `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
 | `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
 
-**Результат сейчас:** `data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные `checks[]`, `sourceSets` (`array` после завершённой source discovery, `null` когда discovery не доказала наборы) и `diagnostics[]` с безопасной remediation (ADR-0056) (отвечают типизированным `data`)
+**Результат сейчас:** `data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные `checks[]`, `sourceSets` (`array` после завершённой source discovery, `null` когда discovery не доказала наборы; `sourceSets[].sourceFormat` отражает working-tree discovery, а применимость repository-проверок может дополнительно доказываться staged index без изменения опубликованного формата) и `diagnostics[]` с безопасной remediation (ADR-0060) (отвечают типизированным `data`)
 
 **Целевой контракт:** достигнут
 

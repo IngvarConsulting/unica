@@ -20,6 +20,7 @@ class ProjectHealthContractTests(unittest.TestCase):
         )
         invariants = self.read("spec/architecture/invariants.md")
         decisions = self.read("spec/decisions/README.md")
+        surface = self.read("spec/architecture/tool-surface.md")
         review = json.loads(
             self.read("spec/architecture/tool-surface-review.json")
         )
@@ -28,6 +29,11 @@ class ProjectHealthContractTests(unittest.TestCase):
         )
 
         self.assertIn("- Статус: `accepted`", adr)
+        self.assertIn(
+            "`sourceSets[].sourceFormat` остаётся результатом проверки рабочего дерева",
+            adr,
+        )
+        self.assertRegex(adr, r"сама\s+проверка индекс не изменяет")
         for invariant in (
             "INV-MCP-PROJECT-READINESS",
             "INV-SOURCE-ROOT-SEPARATION",
@@ -44,6 +50,9 @@ class ProjectHealthContractTests(unittest.TestCase):
         self.assertIn("repositoryReady", status_result)
         self.assertIn("`array`", status_result)
         self.assertIn("`null`", status_result)
+        for contract in (surface, status_result, workflow):
+            self.assertIn("working-tree", contract)
+            self.assertIn("staged index", contract)
 
         map_review = json.dumps(
             review["unica.project.map"], ensure_ascii=False

@@ -22,6 +22,10 @@ until its source-set problem is fixed. In particular, `sourceSet.path: .` is an
 error: explain how to move the export into a strict child such as `src/` and
 update `v8project.yaml` safely.
 
+Each `sourceSets[].sourceFormat` describes working-tree discovery. Repository
+checks may additionally become applicable from staged index markers; do not
+interpret that as a rewrite of the published working-tree format.
+
 A false `repositoryReady` does not mean Unica is unusable without Git. It means
 portable Git policy has not been proved, so do not claim the workspace is ready
 for team work or another clone. Follow `diagnostics[].remediation.steps` when
