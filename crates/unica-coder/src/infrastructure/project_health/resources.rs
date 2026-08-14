@@ -9,8 +9,8 @@ use crate::infrastructure::internal_adapters::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
 };
 use crate::infrastructure::platform::filesystem::{
-    host_path_text, open_absolute_directory_path_nofollow, open_directory_child_nofollow,
-    open_regular_child_nofollow,
+    host_path_text, open_absolute_directory_path_nofollow, open_any_child_nofollow,
+    open_child_for_secure_tree_use, OpenedChildKind,
 };
 use crate::infrastructure::project_health::git::GitIndexEntry;
 use crate::infrastructure::project_health::layout::InspectedSourceRoot;
@@ -2384,10 +2384,32 @@ fn open_repository_regular_file_nofollow(
                 "resource path contains a non-normal component",
             ));
         };
+        let (classification_anchor, kind) = open_any_child_nofollow(&parent, name)?;
         if components.peek().is_some() {
-            parent = open_directory_child_nofollow(&parent, name)?;
+            if kind != OpenedChildKind::Directory {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "resource path contains a linked or non-directory parent",
+                ));
+            }
+            parent = open_child_for_secure_tree_use(
+                &parent,
+                name,
+                classification_anchor,
+                OpenedChildKind::Directory,
+            )?;
+        } else if kind == OpenedChildKind::RegularFile {
+            return open_child_for_secure_tree_use(
+                &parent,
+                name,
+                classification_anchor,
+                OpenedChildKind::RegularFile,
+            );
         } else {
-            return open_regular_child_nofollow(&parent, name);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "resource path is linked or is not a regular file",
+            ));
         }
     }
     Err(std::io::Error::new(

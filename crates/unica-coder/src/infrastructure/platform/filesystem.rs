@@ -5444,9 +5444,9 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(all(not(target_vendor = "apple"), not(windows)))]
     #[test]
-    fn case_insensitive_component_identity_collapses_final_sigma() {
+    fn injected_case_insensitive_component_identity_collapses_final_sigma() {
         assert!(super::host_path_components_equal(
             std::ffi::OsStr::new("σ"),
             std::ffi::OsStr::new("ς"),
@@ -5456,6 +5456,23 @@ mod tests {
         assert!(!super::host_path_components_equal(
             std::ffi::OsStr::new("ß"),
             std::ffi::OsStr::new("ss"),
+            false,
+        )
+        .unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_component_identity_uses_compare_string_ordinal() {
+        assert!(!super::host_path_components_equal(
+            std::ffi::OsStr::new("σ"),
+            std::ffi::OsStr::new("ς"),
+            false,
+        )
+        .unwrap());
+        assert!(super::host_path_components_equal(
+            std::ffi::OsStr::new("a"),
+            std::ffi::OsStr::new("A"),
             false,
         )
         .unwrap());
