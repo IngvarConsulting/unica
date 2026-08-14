@@ -250,7 +250,10 @@ const LEAVE_DIRECTORY: u8 = 2;
 /// access changes the generation instead of reading as "nothing changed".
 const UNREADABLE_ENTRY: u8 = 3;
 
-const GENERATED_DIR_NAME: &str = ".build";
+/// Every walk over the source corpus skips this directory, so anything that
+/// builds a corpus of its own — the lexical search provider included — reads
+/// the name from here instead of spelling it again.
+pub(crate) const GENERATED_DIR_NAME: &str = ".build";
 
 /// The walk is bound by metadata syscalls, not CPU, so it stops scaling early:
 /// on a 43k-file 8.3.27 configuration (APFS, 14 cores) one worker takes 883 ms,
