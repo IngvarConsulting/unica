@@ -3544,18 +3544,31 @@ mod tests {
 
         let inspection = inspect_policy(&fixture);
 
+        #[cfg(windows)]
+        let expected_causal_check = ProjectCheckId::RepositoryAttributes;
+        #[cfg(not(windows))]
+        let expected_causal_check = ProjectCheckId::RepositoryLfs;
         assert!(
             inspection.facts.iter().any(|fact| matches!(
                 fact,
                 ProjectHealthFact::GitInspectionIncomplete {
-                    check: ProjectCheckId::RepositoryLfs,
+                    check,
+                    reason,
                     ..
-                }
+                } if *check == expected_causal_check
+                    && (reason.contains("reparse point")
+                        || reason.contains("symbolic links")
+                        || reason.contains("linked or non-directory parent"))
             )),
             "facts={:?}; observations={:?}",
             inspection.facts,
             inspection.observations
         );
+        assert!(inspection.observations.iter().any(|observation| {
+            observation.id == ProjectCheckId::RepositoryLfs
+                && observation.source_set.is_none()
+                && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+        }));
         assert!(!inspection.facts.iter().any(|fact| matches!(
             fact,
             ProjectHealthFact::LfsConsider { largest_path, .. }
