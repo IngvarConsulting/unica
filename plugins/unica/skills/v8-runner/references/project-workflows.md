@@ -26,9 +26,13 @@ that vendor support caused it.
 
 Explicit `fullRebuild=true` runs one full build and is never retried. Malformed
 or unstructured output, a non-matching error, process spawn failure,
-cancellation, timeout, or truncated output does not start the fallback. A
-failed full retry does not start a third attempt. This temporary Unica fallback
-does not replace the separate runtime/runner redesign planned for v14.
+cancellation, a process timeout observed by Unica, or truncated output does not
+start the fallback. The pinned receipt has no deferred internal timeout
+metadata: a critical runner step that crosses its internal deadline and then
+returns the exact completed partial failure is indistinguishable from the same
+failure without that deadline and can still start the retry. A failed full retry
+does not start a third attempt. This temporary Unica fallback does not replace
+the separate runtime/runner redesign planned for v14.
 
 Use `extensions` when only extension properties need synchronization.
 

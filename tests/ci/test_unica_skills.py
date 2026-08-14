@@ -1725,7 +1725,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("не определяет причину ошибки", skill_contract)
         self.assertIn("Явный `fullRebuild: true`", skill_contract)
         self.assertIn("одну полную сборку без fallback", skill_contract)
-        self.assertIn("отмена, тайм-аут", skill_contract)
+        self.assertIn(
+            "тайм-аут внешнего процесса, зафиксированный Unica", skill_contract
+        )
+        self.assertIn("отложенного внутреннего тайм-аута", skill_contract)
         self.assertIn("третьей попытки нет", skill_contract)
 
         self.assertIn("normal build first", workflow_contract)
@@ -1737,11 +1740,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("does not identify the cause", workflow_contract)
         self.assertIn("Explicit `fullRebuild=true`", workflow_contract)
         self.assertIn("is never retried", workflow_contract)
+        self.assertIn("process timeout observed by Unica", workflow_contract)
+        self.assertIn("deferred internal timeout", workflow_contract)
 
         self.assertIn("Do not retry", troubleshooting_contract)
         self.assertIn("external exit code `4`", troubleshooting_contract)
         self.assertIn("cancellation", troubleshooting_contract)
-        self.assertIn("timeout", troubleshooting_contract)
+        self.assertIn("process timeout observed by Unica", troubleshooting_contract)
+        self.assertIn("deferred internal timeout", troubleshooting_contract)
         self.assertIn("malformed", troubleshooting_contract)
 
         self.assertIn("v14", all_text)

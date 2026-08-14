@@ -2866,7 +2866,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "fullRebuild",
-        "Boolean for operation build that forces a complete rebuild instead of the incremental one; use it after branch switches, rebases, large object moves or suspect incremental state",
+        "Boolean for operation build that runs one complete rebuild instead of the runner's normal build strategy and disables the automatic full fallback; use it after branch switches, rebases, large object moves or suspect incremental state",
     ),
     (
         "handlersExistence",
@@ -4294,6 +4294,18 @@ mod tests {
 
         assert!(description.contains("mxl.compile"));
         assert!(!description.contains("mxl.decompile"));
+    }
+
+    #[test]
+    fn full_rebuild_description_distinguishes_explicit_full_from_normal_strategy() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "fullRebuild")
+            .expect("fullRebuild must have a shared description");
+
+        assert!(description.contains("runner's normal build strategy"));
+        assert!(description.contains("disables the automatic full fallback"));
+        assert!(!description.contains("instead of the incremental one"));
     }
 
     #[test]

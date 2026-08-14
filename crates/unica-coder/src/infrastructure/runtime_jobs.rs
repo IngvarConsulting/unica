@@ -3626,6 +3626,12 @@ mod tests {
             "format: DESIGNER\nsource-set: []\n",
         )
         .expect("write workspace config");
+        let local_config = workspace.join("v8project.local.yaml");
+        fs::write(
+            &local_config,
+            "workPath: local\ninfobase:\n  password: handoff-secret\n",
+        )
+        .expect("write local workspace config");
         let context = discover_workspace(Some(workspace)).expect("discover workspace");
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
@@ -3648,11 +3654,21 @@ mod tests {
         let handoff = worker_request(&cache, &Uuid::new_v4().to_string(), &request);
 
         let encoded = serde_json::to_vec(&handoff).expect("serialize handoff");
+        assert!(!encoded
+            .windows(b"handoff-secret".len())
+            .any(|window| { window == b"handoff-secret" }));
         let decoded: WorkerStartRequest =
             serde_json::from_slice(&encoded).expect("deserialize handoff");
         let restored = decoded.runtime_request().expect("restore runtime request");
 
         assert_eq!(restored.build_preflight(), request.build_preflight());
+        fs::write(&local_config, "workPath: changed\n").expect("change local workspace config");
+        let error = restored
+            .build_preflight()
+            .expect("restored build preflight")
+            .reauthorize_current_workspace()
+            .expect_err("serialized authorization must retain the local overlay digest");
+        assert!(error.contains("local project config changed"), "{error}");
     }
 
     #[test]

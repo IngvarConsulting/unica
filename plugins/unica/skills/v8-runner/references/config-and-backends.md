@@ -14,6 +14,11 @@ Important `v8project.yaml` concepts:
 
 Use `v8project.local.yaml` for local `workPath`, `infobase`, `tools`, `tests`, and `mcp` values. Do not pass it as the MCP `config` argument. Do not put shared `source-set`, `format`, `builder`, or `execution_timeout` there.
 
+For a fallback-capable runtime build, Unica binds the presence and exact bytes
+of this sibling overlay together with the primary config. Do not create, remove,
+or rewrite it between the normal attempt and the possible full retry: changing
+it can select a different work directory, infobase, or executable.
+
 Do not use legacy top-level `connection`; the current schema stores the connection under `infobase.connection`.
 
 For an opt-in fail-closed platform binding, put the machine-specific path in

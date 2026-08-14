@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 const RUNTIME_CONFIG_MAX_BYTES: usize = 64 * 1024 * 1024;
+const LOCAL_RUNTIME_CONFIG_FILE_NAME: &str = "v8project.local.yaml";
 
 #[cfg(test)]
 thread_local! {
@@ -100,6 +101,7 @@ pub(crate) struct RuntimeBuildPreflight {
     workspace_epoch: u64,
     config: PathBuf,
     config_sha256: [u8; 32],
+    local_config_sha256: Option<[u8; 32]>,
 }
 
 impl RuntimeBuildPreflight {
@@ -118,12 +120,14 @@ impl RuntimeBuildPreflight {
         }
         let config = resolved_runtime_config(args, &current)?;
         let config_sha256 = runtime_config_digest(&config)?;
+        let local_config_sha256 = runtime_local_config_digest(&config)?;
         Ok(Self {
             cwd: context.cwd.clone(),
             workspace_root: current.workspace_root,
             workspace_epoch: current.workspace_epoch,
             config,
             config_sha256,
+            local_config_sha256,
         })
     }
 
@@ -154,6 +158,11 @@ impl RuntimeBuildPreflight {
             || runtime_config_digest(&current_config)? != self.config_sha256
         {
             return Err("runtime build project config changed before v8-runner launch".to_string());
+        }
+        if runtime_local_config_digest(&current_config)? != self.local_config_sha256 {
+            return Err(
+                "runtime build local project config changed before v8-runner launch".to_string(),
+            );
         }
         run_after_reauthorization_hook();
         Ok(())
@@ -279,6 +288,24 @@ fn runtime_config_digest(path: &Path) -> Result<[u8; 32], String> {
     Ok(Sha256::digest(&read.bytes).into())
 }
 
+fn runtime_local_config_digest(config: &Path) -> Result<Option<[u8; 32]>, String> {
+    let root = config.parent().ok_or_else(|| {
+        format!(
+            "runtime build config `{}` has no parent directory",
+            config.display()
+        )
+    })?;
+    let local_config = root.join(LOCAL_RUNTIME_CONFIG_FILE_NAME);
+    match read_root_relative_regular_file(root, &local_config, RUNTIME_CONFIG_MAX_BYTES, |_| {}) {
+        Ok(read) => Ok(Some(Sha256::digest(&read.bytes).into())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "runtime build local project config `{}` must be a bounded regular file: {error}",
+            local_config.display()
+        )),
+    }
+}
+
 fn workspace_identity_changed_error() -> String {
     "runtime build workspace identity changed before v8-runner launch".to_string()
 }
@@ -344,6 +371,83 @@ mod tests {
             .expect_err("changed config must fail closed");
 
         assert!(error.contains("identity changed") || error.contains("config changed"));
+    }
+
+    #[test]
+    fn build_preflight_rejects_a_changed_local_config_overlay() {
+        let (_directory, context) = workspace();
+        let local_config = context.workspace_root.join("v8project.local.yaml");
+        fs::write(&local_config, "workPath: first\n").unwrap();
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+        let preflight = RuntimeBuildPreflight::capture(&args, &context).unwrap();
+        preflight
+            .reauthorize_current_workspace()
+            .expect("an unchanged local overlay must stay authorized");
+        fs::write(&local_config, "workPath: other\n").unwrap();
+
+        let error = preflight
+            .reauthorize_current_workspace()
+            .expect_err("a changed local overlay must invalidate fallback authorization");
+
+        assert!(error.contains("local project config changed"), "{error}");
+    }
+
+    #[test]
+    fn build_preflight_rejects_a_created_or_removed_local_config_overlay() {
+        let (_directory, context) = workspace();
+        let local_config = context.workspace_root.join("v8project.local.yaml");
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+        let absent_preflight = RuntimeBuildPreflight::capture(&args, &context).unwrap();
+        fs::write(&local_config, "workPath: local\n").unwrap();
+
+        let created_error = absent_preflight
+            .reauthorize_current_workspace()
+            .expect_err("a new local overlay must invalidate fallback authorization");
+        assert!(
+            created_error.contains("local project config changed"),
+            "{created_error}"
+        );
+
+        let present_preflight = RuntimeBuildPreflight::capture(&args, &context).unwrap();
+        fs::remove_file(&local_config).unwrap();
+
+        let removed_error = present_preflight
+            .reauthorize_current_workspace()
+            .expect_err("a removed local overlay must invalidate fallback authorization");
+        assert!(
+            removed_error.contains("local project config changed"),
+            "{removed_error}"
+        );
+    }
+
+    #[test]
+    fn build_preflight_rejects_a_non_regular_local_config_overlay() {
+        let (_directory, context) = workspace();
+        fs::create_dir(context.workspace_root.join("v8project.local.yaml")).unwrap();
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let error = RuntimeBuildPreflight::capture(&args, &context)
+            .expect_err("a directory must not become a runtime local config overlay");
+
+        assert!(error.contains("regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_preflight_rejects_a_linked_local_config_overlay() {
+        let (_directory, context) = workspace();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::os::unix::fs::symlink(
+            outside.path(),
+            context.workspace_root.join("v8project.local.yaml"),
+        )
+        .unwrap();
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let error = RuntimeBuildPreflight::capture(&args, &context)
+            .expect_err("a linked local overlay must not escape the workspace binding");
+
+        assert!(error.contains("regular file"), "{error}");
     }
 
     #[test]
@@ -421,6 +525,28 @@ mod tests {
                 .into_owned()))
         );
         assert!(plan.build_preflight.is_some());
+    }
+
+    #[test]
+    fn build_preflight_binds_the_local_overlay_next_to_an_alternate_config() {
+        let (_directory, context) = workspace();
+        let alternate = context.workspace_root.join("configs/alternate.yaml");
+        let local_config = alternate.parent().unwrap().join("v8project.local.yaml");
+        fs::create_dir_all(alternate.parent().unwrap()).unwrap();
+        fs::write(&alternate, "format: DESIGNER\nsource-set: []\n").unwrap();
+        fs::write(&local_config, "workPath: first\n").unwrap();
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("config".to_string(), json!("configs/alternate.yaml")),
+        ]);
+        let preflight = RuntimeBuildPreflight::capture(&args, &context).unwrap();
+        fs::write(&local_config, "workPath: other\n").unwrap();
+
+        let error = preflight
+            .reauthorize_current_workspace()
+            .expect_err("the selected config's sibling overlay must stay bound");
+
+        assert!(error.contains("local project config changed"), "{error}");
     }
 
     #[test]
