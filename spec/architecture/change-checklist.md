@@ -42,6 +42,9 @@
   (`INV-MCP-CODE-SEARCH-ROLES`).
 - [ ] Reader не публикует и не принимает режим предпросмотра, а mutation
   сохраняет preview по умолчанию (`INV-MCP-PREVIEW-MUTATION-ONLY`).
+- [ ] `unica.project.status` сохраняет независимые `ready` и
+  `repositoryReady`, а `unica.project.map` остаётся только картой источников
+  (`INV-MCP-PROJECT-READINESS`).
 
 ## Маршрутизация скиллов
 
@@ -127,6 +130,11 @@
   (`INV-SOURCE-OBSERVED-EOL`).
 - [ ] Каждая запись остаётся внутри корня рабочего пространства, включая выход
   через символическую ссылку (`INV-SOURCE-WRITE-CONTAINMENT`).
+- [ ] Корень набора исходников остаётся строгим потомком workspace и не
+  подменяется `.` или ссылочным псевдонимом (`INV-SOURCE-ROOT-SEPARATION`).
+- [ ] Переносимость Git доказывается отслеживаемыми правилами и ролевой
+  политикой ресурсов, независимо от готовности источников
+  (`INV-SOURCE-PORTABLE-GIT`).
 
 ## Упаковка
 

@@ -1372,6 +1372,9 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             program: bundled.0,
             args: execution_args,
             cwd: context.cwd.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: match invocation {
                 FullDumpInvocation::BuildDump => Some(BUILD_DUMP_TIMEOUT),
                 FullDumpInvocation::RuntimeExecute => None,
@@ -7512,6 +7515,9 @@ fn verify_platform_candidate(
         program: probe.clone(),
         args: vec!["--version".to_string()],
         cwd: install_dir.to_path_buf(),
+        env: Vec::new(),
+        env_remove: Vec::new(),
+        capture_limits: None,
         timeout: Some(PLATFORM_PROBE_TIMEOUT),
         cancellation: cancellation.clone(),
     })?;
@@ -7719,6 +7725,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             })
         }
     }
@@ -7846,6 +7855,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             })
         }
     }
