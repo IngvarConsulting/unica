@@ -3406,7 +3406,7 @@ def prepare_reader_standins(temp_root: Path) -> tuple[Path, dict[str, str], Path
     binary_dir.mkdir(parents=True)
     binaries = {
         f"bsl-analyzer{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
-        f"rlm-tools-bsl{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
+        f"rlm-bsl-mcp{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
         f"rlm-bsl-index{suffix}": READER_STANDINS_ROOT / "rlm_index.py",
     }
     manifest_tools = []

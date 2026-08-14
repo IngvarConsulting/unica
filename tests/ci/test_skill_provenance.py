@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import subprocess
@@ -39,6 +40,40 @@ class SkillProvenanceTests(unittest.TestCase):
 
     def load_upstream_review(self) -> dict:
         return json.loads(self.upstream_review_path().read_text(encoding="utf-8"))
+
+    def assert_rlm_review_identity(self, review: dict) -> None:
+        self.assertEqual(review["schemaVersion"], 1)
+        self.assertEqual(review["id"], "2026-08-13-rlm-v1-33-product-update")
+        self.assertEqual(review["generatedAt"], "2026-08-14")
+        self.assertEqual(
+            review["source"],
+            {
+                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
+                "tag": "v1.33.0",
+                "commit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+                "tree": "4b321de0454d4d0998762659891374a3a1326cd0",
+                "patches": [],
+            },
+        )
+        self.assertEqual(
+            review["toolchain"],
+            {
+                "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+                "releaseTag": "rlm-tools-bsl-v1.33.0-build.2",
+                "buildRevision": 2,
+            },
+        )
+        self.assertEqual(
+            review["compatibility"],
+            {
+                "builder": "15",
+                "previousBuilder": "14",
+                "strategy": "cold-generation-cutover",
+                "legacyStateDeleted": False,
+                "publicMcpChanged": False,
+            },
+        )
+        self.assertEqual(set(review["tools"]), {"rlm-bsl-mcp", "rlm-bsl-index"})
 
     def load_product_backlog(self) -> dict:
         return json.loads(self.product_backlog_path().read_text(encoding="utf-8"))
@@ -481,60 +516,71 @@ class SkillProvenanceTests(unittest.TestCase):
             "7ce1b062843d86644fe55741dbe0ee79f7ca767d",
         )
 
-    def test_rlm_tools_are_locked_to_reviewed_1_29_1_pair(self) -> None:
+    def test_rlm_tools_are_locked_to_reviewed_1_33_pair(self) -> None:
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
                 encoding="utf-8"
             )
         )
         locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
+        review = json.loads(
+            (
+                self.reviews_dir()
+                / "2026-08-13-rlm-v1-33-product-update.json"
+            ).read_text(encoding="utf-8")
+        )
 
-        for name in ("rlm-tools-bsl", "rlm-bsl-index"):
-            self.assertEqual(locked_tools[name]["version"], "1.29.1")
-            self.assertEqual(locked_tools[name]["sourceTag"], "v1.29.1")
+        expected_names = {"rlm-bsl-mcp", "rlm-bsl-index"}
+        self.assert_rlm_review_identity(review)
+        for name in expected_names:
+            locked = locked_tools[name]
+            recorded = review["tools"][name]
+            self.assertEqual(locked["version"], "1.33.0")
+            self.assertEqual(locked["sourceTag"], "v1.33.0")
             self.assertEqual(
-                locked_tools[name]["sourceCommit"],
-                "8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed",
+                locked["sourceCommit"],
+                "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
             )
             self.assertEqual(
-                locked_tools[name]["assetTag"],
-                "rlm-tools-bsl-v1.29.1-build.2",
+                locked["assetTag"],
+                "rlm-tools-bsl-v1.33.0-build.2",
             )
+            self.assertEqual(locked["releaseName"], "rlm-tools-bsl")
+            self.assertEqual(locked["assets"], recorded["assets"])
 
-        self.assertEqual(
-            locked_tools["rlm-tools-bsl"]["assets"],
-            {
-                "darwin-arm64": {
-                    "assetName": "rlm-tools-bsl-darwin-arm64",
-                    "sha256": "4a1cd5c2fc0c6c27f049241a4008dbe382a7d23ab01b5e9cfdc91a75d9eaba65",
-                },
-                "linux-x64": {
-                    "assetName": "rlm-tools-bsl-linux-x64",
-                    "sha256": "dec0334cb640ee94d97b80ff3d0c8e4c39e4426eceffbfe932378526876c4417",
-                },
-                "win-x64": {
-                    "assetName": "rlm-tools-bsl-win-x64.exe",
-                    "sha256": "349d6002ecf551f1ab99e24aa097aeb207087acf9de8ab4adef42c2b7eaf6539",
-                },
-            },
+    def test_rlm_review_identity_rejects_mutated_immutable_metadata(self) -> None:
+        review = json.loads(
+            (
+                self.reviews_dir()
+                / "2026-08-13-rlm-v1-33-product-update.json"
+            ).read_text(encoding="utf-8")
         )
-        self.assertEqual(
-            locked_tools["rlm-bsl-index"]["assets"],
-            {
-                "darwin-arm64": {
-                    "assetName": "rlm-bsl-index-darwin-arm64",
-                    "sha256": "b20725360b889944547cb2b1823df7ce8bc4b6b39c103debb602d572648d42ad",
-                },
-                "linux-x64": {
-                    "assetName": "rlm-bsl-index-linux-x64",
-                    "sha256": "5e68d6048ad384df36a54a7edf0f4fd0c89cd583cf978cc91d7144cd5f788a5d",
-                },
-                "win-x64": {
-                    "assetName": "rlm-bsl-index-win-x64.exe",
-                    "sha256": "e72ddea7ecc841800a3dde479ac4ef1680f7ea0ca60c9cd75004e727fa939cef",
-                },
-            },
-        )
+        mutations = [
+            (("schemaVersion",), 2),
+            (("id",), "different-review"),
+            (("source", "repository"), "https://example.invalid/upstream"),
+            (("source", "tag"), "v1.33.1"),
+            (("source", "commit"), "0" * 40),
+            (("source", "tree"), "0" * 40),
+            (("source", "patches"), ["local.patch"]),
+            (("toolchain", "repository"), "https://example.invalid/toolchain"),
+            (("toolchain", "releaseTag"), "rlm-tools-bsl-v1.33.0-build.1"),
+            (("toolchain", "buildRevision"), 1),
+            (("compatibility", "builder"), "14"),
+            (("compatibility", "previousBuilder"), "13"),
+            (("compatibility", "strategy"), "migration"),
+            (("compatibility", "legacyStateDeleted"), True),
+            (("compatibility", "publicMcpChanged"), True),
+        ]
+        for path, value in mutations:
+            with self.subTest(path=path):
+                mutated = copy.deepcopy(review)
+                target = mutated
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                with self.assertRaises(AssertionError):
+                    self.assert_rlm_review_identity(mutated)
 
     def test_bsl_analyzer_contract_is_v0_2_67(self) -> None:
         tool_lock = json.loads(

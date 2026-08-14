@@ -32,8 +32,13 @@ def make_bundle(root: Path) -> Path:
     bin_dir.mkdir(parents=True)
     unica = bin_dir / "unica"
     analyzer = bin_dir / "bsl-analyzer"
+    rlm_mcp = bin_dir / "rlm-bsl-mcp"
+    rlm_index = bin_dir / "rlm-bsl-index"
     unica.write_bytes(b"unica")
     analyzer.write_bytes(b"analyzer")
+    rlm_mcp.write_bytes(b"rlm-mcp")
+    rlm_index.write_bytes(b"rlm-index")
+    (bin_dir / "rlm-tools-bsl").write_bytes(b"legacy")
     (bundle / "tools.json").write_text(
         json.dumps(
             {
@@ -51,6 +56,18 @@ def make_bundle(root: Path) -> Path:
                         "version": "0.2.55",
                         "binaryPath": "bin/linux-x64/bsl-analyzer",
                         "sha256": sha256(analyzer),
+                    },
+                    {
+                        "name": "rlm-bsl-mcp",
+                        "version": "1.33.0",
+                        "binaryPath": "bin/linux-x64/rlm-bsl-mcp",
+                        "sha256": sha256(rlm_mcp),
+                    },
+                    {
+                        "name": "rlm-bsl-index",
+                        "version": "1.33.0",
+                        "binaryPath": "bin/linux-x64/rlm-bsl-index",
+                        "sha256": sha256(rlm_index),
                     },
                 ],
             }
@@ -80,10 +97,16 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 [member.name for member in members],
                 [
                     "bin/linux-x64/bsl-analyzer",
+                    "bin/linux-x64/rlm-bsl-index",
+                    "bin/linux-x64/rlm-bsl-mcp",
                     "bin/linux-x64/unica",
                     "third-party/manifest.json",
                 ],
             )
+            member_names = [member.name for member in members]
+            self.assertIn("bin/linux-x64/rlm-bsl-mcp", member_names)
+            self.assertIn("bin/linux-x64/rlm-bsl-index", member_names)
+            self.assertNotIn("bin/linux-x64/rlm-tools-bsl", member_names)
             self.assertTrue(all(member.mtime == 0 for member in members))
 
     def test_metadata_hashes_archive_and_each_runtime_file(self) -> None:
@@ -103,12 +126,15 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             self.assertEqual(metadata["entrypoint"], "bin/linux-x64/unica")
             expected = {
                 "bin/linux-x64/bsl-analyzer": hashlib.sha256(b"analyzer").hexdigest(),
+                "bin/linux-x64/rlm-bsl-index": hashlib.sha256(b"rlm-index").hexdigest(),
+                "bin/linux-x64/rlm-bsl-mcp": hashlib.sha256(b"rlm-mcp").hexdigest(),
                 "bin/linux-x64/unica": hashlib.sha256(b"unica").hexdigest(),
             }
             actual = {item["path"]: item["sha256"] for item in metadata["files"]}
             for path, digest in expected.items():
                 self.assertEqual(actual[path], digest)
             self.assertIn("third-party/manifest.json", actual)
+            self.assertNotIn("bin/linux-x64/rlm-tools-bsl", actual)
 
     def test_runtime_packager_rejects_symlinked_binary(self) -> None:
         module = load_module()

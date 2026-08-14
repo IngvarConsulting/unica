@@ -337,19 +337,29 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         2,
         "the second persistent RLM process must be reused after cancellation recovery"
     );
-    let indexer_rlm_index_dir = records
+    let indexer = records
         .iter()
         .find(|record| record.kind == "rlm-index")
-        .expect("RLM indexer must record its state directory")
-        .rlm_index_dir
-        .clone();
-    let reader_rlm_index_dir = records
+        .expect("RLM indexer must record its process environment");
+    let reader = records
         .iter()
         .find(|record| record.kind == "rlm")
-        .expect("RLM reader must record its state directory")
-        .rlm_index_dir
-        .clone();
-    assert_eq!(indexer_rlm_index_dir, reader_rlm_index_dir);
+        .expect("RLM reader must record its process environment");
+    let indexer_environment = (
+        &indexer.rlm_index_dir,
+        &indexer.python_utf8,
+        &indexer.python_io_encoding,
+    );
+    let reader_environment = (
+        &reader.rlm_index_dir,
+        &reader.python_utf8,
+        &reader.python_io_encoding,
+    );
+    assert_eq!(indexer_environment, reader_environment);
+    assert_eq!(indexer.python_utf8, "1");
+    assert_eq!(indexer.python_io_encoding, "utf-8:surrogateescape");
+    let indexer_rlm_index_dir = indexer.rlm_index_dir.clone();
+    assert!(Path::new(&indexer_rlm_index_dir).ends_with("rlm-bsl/index-v15"));
     assert!(!path_starts_with_host_root(
         Path::new(&indexer_rlm_index_dir),
         &fixture.workspace,
@@ -800,7 +810,12 @@ impl Fixture {
                     .and_then(|record| {
                         PathBuf::from(record.rlm_index_dir)
                             .parent()
-                            .map(|root| root.join("caches/bsl_index_status.json"))
+                            .and_then(Path::parent)
+                            .map(|pair_root| {
+                                pair_root.join(
+                                    "caches/rlm-bsl/index-v15/bsl_index_status.json",
+                                )
+                            })
                     });
             }
             let Some(current_status_path) = status_path.as_ref() else {
@@ -897,8 +912,8 @@ impl Fixture {
         let text = fs::read_to_string(&self.log).map_err(|error| error.to_string())?;
         text.lines()
             .map(|line| {
-                let fields = line.splitn(6, '|').collect::<Vec<_>>();
-                if fields.len() != 6 {
+                let fields = line.splitn(8, '|').collect::<Vec<_>>();
+                if fields.len() != 8 {
                     return Err(format!("incomplete fake-tool log line: {line}"));
                 }
                 Ok(ToolRecord {
@@ -914,6 +929,8 @@ impl Fixture {
                         .map_err(|error| error.to_string())?,
                     source_root: fields[4].to_string(),
                     rlm_index_dir: fields[5].to_string(),
+                    python_utf8: fields[6].to_string(),
+                    python_io_encoding: fields[7].to_string(),
                 })
             })
             .collect()
@@ -1036,6 +1053,8 @@ struct ToolRecord {
     descendant_pid: u32,
     source_root: String,
     rlm_index_dir: String,
+    python_utf8: String,
+    python_io_encoding: String,
 }
 
 fn compile_fake_tools(root: &Path, plugin_root: &Path) {
@@ -1065,7 +1084,7 @@ fn compile_fake_tools(root: &Path, plugin_root: &Path) {
     fs::create_dir_all(&bin).unwrap();
     let sha256 = sha256_file(&fake);
     let mut manifest_tools = Vec::new();
-    for name in ["bsl-analyzer", "rlm-tools-bsl", "rlm-bsl-index"] {
+    for name in ["bsl-analyzer", "rlm-bsl-mcp", "rlm-bsl-index"] {
         let contract = lock["tools"]
             .as_array()
             .unwrap()
@@ -1272,7 +1291,9 @@ fn spawn_descendant(kind: &str, root: &str) -> Child {
 fn record(kind: &str, sequence: u32, descendant: u32, root: &str) {
     let mut file = OpenOptions::new().create(true).append(true).open(env::var("ISSUE89_LOG").unwrap()).unwrap();
     let rlm_index_dir = env::var("RLM_INDEX_DIR").unwrap_or_default();
-    let line = format!("{}|{}|{}|{}|{}|{}\n", kind, sequence, std::process::id(), descendant, root, rlm_index_dir);
+    let python_utf8 = env::var("PYTHONUTF8").unwrap_or_default();
+    let python_io_encoding = env::var("PYTHONIOENCODING").unwrap_or_default();
+    let line = format!("{}|{}|{}|{}|{}|{}|{}|{}\n", kind, sequence, std::process::id(), descendant, root, rlm_index_dir, python_utf8, python_io_encoding);
     file.write_all(line.as_bytes()).unwrap();
     file.flush().unwrap();
 }

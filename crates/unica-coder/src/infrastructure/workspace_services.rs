@@ -11,9 +11,9 @@ use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
-    ready_index_for_source_revision, rlm_index_dir, IndexBackgroundTaskTracker, IndexReadiness,
-    SystemIndexRunner, WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS, SOURCE_REVISION_ARG,
-    SOURCE_REVISION_GENERATION_ARG,
+    ready_index_for_source_revision, rlm_generation_root, rlm_process_environment,
+    IndexBackgroundTaskTracker, IndexReadiness, SystemIndexRunner, WorkspaceIndexService,
+    SOURCE_GENERATION_STALE_STATUS, SOURCE_REVISION_ARG, SOURCE_REVISION_GENERATION_ARG,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -2454,6 +2454,12 @@ impl ServiceResponse {
                 warnings,
                 ..Self::default()
             },
+            IndexReadiness::Incomplete => Self {
+                ok: true,
+                index_status: Some("incomplete".to_string()),
+                warnings,
+                ..Self::default()
+            },
             IndexReadiness::Failed(error) => Self {
                 ok: true,
                 index_status: Some("failed".to_string()),
@@ -2478,6 +2484,7 @@ impl ServiceResponse {
             response.error = Some(match response.index_status.as_deref() {
                 Some("missing") => "rlm index is missing".to_string(),
                 Some("building") => "rlm index building".to_string(),
+                Some("incomplete") => "rlm index recovery pending".to_string(),
                 _ => "rlm index unavailable at execution boundary".to_string(),
             });
         }
@@ -2504,6 +2511,7 @@ impl ServiceResponse {
                 status: self.error.clone().unwrap_or_else(|| "stale".to_string()),
             },
             Some("building") => IndexReadiness::Building,
+            Some("incomplete") => IndexReadiness::Incomplete,
             Some("failed") => IndexReadiness::Failed(self.error.clone().unwrap_or_default()),
             Some("unavailable") => {
                 IndexReadiness::Unavailable(self.error.clone().unwrap_or_default())
@@ -2673,11 +2681,8 @@ impl PersistentMcpSession {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for workspace RLM service".to_string()
         })?;
-        let program = resolve_bundled_tool(&plugin_root, "rlm-tools-bsl", true)?.program;
-        let mut command = Command::new(program);
-        command
-            .current_dir(&context.cwd)
-            .env("RLM_INDEX_DIR", rlm_index_dir(context, source_root)?);
+        let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-mcp", true)?.program;
+        let command = rlm_transport_command(program, context, source_root)?;
         Self::start_with_command(command, cancellation)
     }
 
@@ -2912,6 +2917,21 @@ impl PersistentMcpSession {
             let _ = self.child.terminate();
         }
     }
+}
+
+fn rlm_transport_command(
+    program: PathBuf,
+    context: &WorkspaceContext,
+    source_root: &Path,
+) -> Result<Command, String> {
+    let mut command = Command::new(program);
+    command
+        .current_dir(&context.cwd)
+        .envs(rlm_process_environment(rlm_generation_root(
+            context,
+            source_root,
+        )?));
+    Ok(command)
 }
 
 impl Drop for PersistentMcpSession {
@@ -4498,6 +4518,96 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rlm_transport_requires_renamed_manifest_identity_without_legacy_fallback() {
+        let context = test_context("renamed-rlm-mcp-only");
+        let plugin_root = context.workspace_root.join("plugins/unica");
+        fs::create_dir_all(plugin_root.join("skills")).unwrap();
+        fs::create_dir_all(plugin_root.join("third-party")).unwrap();
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "tools": [
+    {"name": "rlm-tools-bsl", "version": "legacy", "binaries": {}}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let error = match PersistentMcpSession::start_rlm_transport(
+            &context,
+            &context.workspace_root.join("src"),
+            &CancellationToken::new(),
+        ) {
+            Ok(mut session) => {
+                session.invalidate();
+                panic!("legacy RLM MCP manifest identity must not be accepted")
+            }
+            Err(error) => error,
+        };
+
+        cleanup(&context);
+        assert_eq!(error, "tool not found in manifest: rlm-bsl-mcp");
+    }
+
+    #[test]
+    fn rlm_reader_command_preserves_native_generation_environment_bytes() {
+        let mut context = test_context("rlm-reader-native-generation-environment");
+        let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
+            cleanup(&context);
+            return;
+        };
+        context.cache_root = context.workspace_root.join(invalid_component);
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let expected = rlm_generation_root(&context, &source_root).unwrap();
+
+        let command =
+            rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
+        let env = command.get_envs().collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            env[std::ffi::OsStr::new("RLM_INDEX_DIR")],
+            Some(expected.as_os_str())
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONUTF8")],
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONIOENCODING")],
+            Some(std::ffi::OsStr::new("utf-8:surrogateescape"))
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn rlm_reader_command_uses_native_generation_environment_on_normal_paths() {
+        let context = test_context("rlm-reader-normal-generation-environment");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let expected = rlm_generation_root(&context, &source_root).unwrap();
+
+        let command =
+            rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
+        let env = command.get_envs().collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            env[std::ffi::OsStr::new("RLM_INDEX_DIR")],
+            Some(expected.as_os_str())
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONUTF8")],
+            Some(std::ffi::OsStr::new("1"))
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("PYTHONIOENCODING")],
+            Some(std::ffi::OsStr::new("utf-8:surrogateescape"))
+        );
+        cleanup(&context);
+    }
+
     /// #204. A persistent session outlives its tool call, so a working
     /// directory inside the source tree keeps that tree open and
     /// `git worktree remove` fails long after the call returned. The tree is
@@ -4668,6 +4778,23 @@ mod tests {
     }
 
     #[test]
+    fn service_response_preserves_incomplete_as_retryable_and_never_as_output() {
+        let response = ServiceResponse::from_readiness(IndexReadiness::Incomplete, Vec::new());
+
+        assert_eq!(response.index_status.as_deref(), Some("incomplete"));
+        assert_eq!(response.index_readiness(), IndexReadiness::Incomplete);
+        let unavailable =
+            ServiceResponse::unavailable_rlm_execution(IndexReadiness::Incomplete, Vec::new());
+        assert!(!unavailable.ok);
+        assert!(unavailable
+            .error
+            .as_deref()
+            .is_some_and(|message| message.contains("pending")));
+        assert!(unavailable.result_text.is_none());
+        assert!(unavailable.stderr.is_none());
+    }
+
+    #[test]
     fn service_response_preserves_failed_index_message() {
         let response = ServiceResponse::from_readiness(
             IndexReadiness::Failed(
@@ -4682,6 +4809,61 @@ mod tests {
                 "update left stale (content); recovery build failed".to_string(),
             )
         );
+    }
+
+    #[test]
+    fn rlm_ready_execution_barrier_preserves_safe_root_failure_as_unavailable() {
+        let context = test_context("rlm-ready-safe-root-failure");
+        let source_root = context.workspace_root.join("src");
+        let revisions = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
+        );
+        revisions
+            .snapshot(
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let first = context.workspace_root.join("provider-state-cycle-a");
+        let second = context.workspace_root.join("provider-state-cycle-b");
+        let Some(first_link) = testing::create_dir_symlink_for_test(&second, &first) else {
+            cleanup(&context);
+            return;
+        };
+        first_link.unwrap();
+        testing::create_dir_symlink_for_test(&first, &second)
+            .expect("the platform that created the first link must expose the second fixture")
+            .unwrap();
+        identity.service_dir = first.join("services").join(&identity.key);
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+        *runtime.rlm_source_revisions.lock().unwrap() = Some(revisions);
+
+        let response = runtime.handle_rlm_ready(json!({}), 5, 0, &CancellationToken::new());
+
+        assert!(
+            matches!(
+                response.index_readiness(),
+                IndexReadiness::Unavailable(message)
+                    if message.contains("failed to resolve existing path ancestor")
+            ),
+            "{response:?}"
+        );
+        assert!(response.warnings.iter().any(|warning| {
+            warning.starts_with("rlm index unavailable:")
+                && warning.contains("failed to resolve existing path ancestor")
+        }));
+        assert!(!source_root.join("rlm-bsl/index-v15/bsl_index.db").exists());
+        assert!(!source_root
+            .join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            .exists());
+        assert!(!source_root
+            .join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            .exists());
+        testing::remove_dir_symlink_for_test(&second).unwrap();
+        testing::remove_dir_symlink_for_test(&first).unwrap();
+        cleanup(&context);
     }
 
     #[derive(Default)]
@@ -6644,7 +6826,9 @@ fn main() {
                 &CancellationToken::new(),
             )
             .unwrap();
-        let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
+        let db_path = rlm_generation_root(context, source_root)
+            .unwrap()
+            .join("test/bsl_index.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, "ready index").unwrap();
         let status = crate::infrastructure::workspace_index::BslIndexStatus {
@@ -6675,7 +6859,7 @@ fn main() {
         let lock_path =
             crate::infrastructure::workspace_index::rlm_provider_state_root(context, source_root)
                 .unwrap()
-                .join("locks/bsl_index.lock");
+                .join("locks/rlm-bsl/index-v15/bsl_index.lock");
         fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         let now = now_secs_for_test();
         fs::write(

@@ -429,6 +429,10 @@ fn readiness_message(readiness: IndexReadiness) -> String {
         IndexReadiness::Building => {
             "index_pending: rlm index building; retry once index maintenance completes".to_string()
         }
+        IndexReadiness::Incomplete => {
+            "index_pending: rlm index recovery update is pending; retry once index maintenance completes"
+                .to_string()
+        }
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
             if error.starts_with(CANCELLED_PREFIX) =>
         {
@@ -1074,6 +1078,7 @@ mod tests {
         let request = definition_request();
         for (readiness, prefix, retryable) in [
             (IndexReadiness::Building, "index_pending:", true),
+            (IndexReadiness::Incomplete, "index_pending:", true),
             (IndexReadiness::Missing, "index_unavailable:", false),
             (
                 IndexReadiness::Stale {
