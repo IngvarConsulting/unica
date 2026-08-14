@@ -453,6 +453,9 @@ fn rlm_search_unready_error(readiness: IndexReadiness) -> String {
             redactor(&status)
         ),
         IndexReadiness::Building => "rlm index building".to_string(),
+        IndexReadiness::Incomplete => {
+            "rlm index recovery update pending; retry after maintenance".to_string()
+        }
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => redactor(&error),
     }
 }
@@ -557,7 +560,9 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             RlmSearchAttempt::Unready(readiness) => {
                 let dependency_detail = match &readiness {
                     IndexReadiness::Missing | IndexReadiness::Building => Some("buildingIndex"),
-                    IndexReadiness::Stale { .. } => Some("updatingIndex"),
+                    IndexReadiness::Stale { .. } | IndexReadiness::Incomplete => {
+                        Some("updatingIndex")
+                    }
                     IndexReadiness::Ready { .. }
                     | IndexReadiness::Failed(_)
                     | IndexReadiness::Unavailable(_) => None,
@@ -2671,6 +2676,40 @@ mod tests {
         );
 
         assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+        assert_eq!(
+            serde_json::to_value(&section).unwrap()["termination"],
+            json!({
+                "code": "dependencyPending",
+                "retryable": true,
+                "detailCode": "updatingIndex"
+            })
+        );
+    }
+
+    #[test]
+    fn rlm_provider_reports_incomplete_as_retryable_recovery_without_results() {
+        let client = FakeRlmClient {
+            readiness: IndexReadiness::Incomplete,
+            calls: Mutex::new(Vec::new()),
+            result: "[]".to_string(),
+        };
+
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
+            &CancellationToken::new(),
+        );
+
+        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+        assert!(section.hits.is_empty());
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("recovery")));
         assert_eq!(
             serde_json::to_value(&section).unwrap()["termination"],
             json!({

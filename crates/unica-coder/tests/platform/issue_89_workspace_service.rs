@@ -350,6 +350,7 @@ fn issue_89_multi_source_workspace_uses_main_root_and_remains_cancellable() {
         .rlm_index_dir
         .clone();
     assert_eq!(indexer_rlm_index_dir, reader_rlm_index_dir);
+    assert!(Path::new(&indexer_rlm_index_dir).ends_with("rlm-bsl/index-v15"));
     assert!(!path_starts_with_host_root(
         Path::new(&indexer_rlm_index_dir),
         &fixture.workspace,
@@ -800,7 +801,12 @@ impl Fixture {
                     .and_then(|record| {
                         PathBuf::from(record.rlm_index_dir)
                             .parent()
-                            .map(|root| root.join("caches/bsl_index_status.json"))
+                            .and_then(Path::parent)
+                            .map(|pair_root| {
+                                pair_root.join(
+                                    "caches/rlm-bsl/index-v15/bsl_index_status.json",
+                                )
+                            })
                     });
             }
             let Some(current_status_path) = status_path.as_ref() else {

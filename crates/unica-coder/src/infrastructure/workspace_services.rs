@@ -11,9 +11,9 @@ use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
 use crate::infrastructure::workspace_index::{
-    ready_index_for_source_revision, rlm_index_dir, IndexBackgroundTaskTracker, IndexReadiness,
-    SystemIndexRunner, WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS, SOURCE_REVISION_ARG,
-    SOURCE_REVISION_GENERATION_ARG,
+    ready_index_for_source_revision, rlm_generation_root, IndexBackgroundTaskTracker,
+    IndexReadiness, SystemIndexRunner, WorkspaceIndexService, SOURCE_GENERATION_STALE_STATUS,
+    SOURCE_REVISION_ARG, SOURCE_REVISION_GENERATION_ARG,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -2454,6 +2454,12 @@ impl ServiceResponse {
                 warnings,
                 ..Self::default()
             },
+            IndexReadiness::Incomplete => Self {
+                ok: true,
+                index_status: Some("incomplete".to_string()),
+                warnings,
+                ..Self::default()
+            },
             IndexReadiness::Failed(error) => Self {
                 ok: true,
                 index_status: Some("failed".to_string()),
@@ -2478,6 +2484,7 @@ impl ServiceResponse {
             response.error = Some(match response.index_status.as_deref() {
                 Some("missing") => "rlm index is missing".to_string(),
                 Some("building") => "rlm index building".to_string(),
+                Some("incomplete") => "rlm index recovery pending".to_string(),
                 _ => "rlm index unavailable at execution boundary".to_string(),
             });
         }
@@ -2504,6 +2511,7 @@ impl ServiceResponse {
                 status: self.error.clone().unwrap_or_else(|| "stale".to_string()),
             },
             Some("building") => IndexReadiness::Building,
+            Some("incomplete") => IndexReadiness::Incomplete,
             Some("failed") => IndexReadiness::Failed(self.error.clone().unwrap_or_default()),
             Some("unavailable") => {
                 IndexReadiness::Unavailable(self.error.clone().unwrap_or_default())
@@ -2677,7 +2685,7 @@ impl PersistentMcpSession {
         let mut command = Command::new(program);
         command
             .current_dir(&context.cwd)
-            .env("RLM_INDEX_DIR", rlm_index_dir(context, source_root)?);
+            .env("RLM_INDEX_DIR", rlm_generation_root(context, source_root)?);
         Self::start_with_command(command, cancellation)
     }
 
@@ -4701,6 +4709,23 @@ mod tests {
     }
 
     #[test]
+    fn service_response_preserves_incomplete_as_retryable_and_never_as_output() {
+        let response = ServiceResponse::from_readiness(IndexReadiness::Incomplete, Vec::new());
+
+        assert_eq!(response.index_status.as_deref(), Some("incomplete"));
+        assert_eq!(response.index_readiness(), IndexReadiness::Incomplete);
+        let unavailable =
+            ServiceResponse::unavailable_rlm_execution(IndexReadiness::Incomplete, Vec::new());
+        assert!(!unavailable.ok);
+        assert!(unavailable
+            .error
+            .as_deref()
+            .is_some_and(|message| message.contains("pending")));
+        assert!(unavailable.result_text.is_none());
+        assert!(unavailable.stderr.is_none());
+    }
+
+    #[test]
     fn service_response_preserves_failed_index_message() {
         let response = ServiceResponse::from_readiness(
             IndexReadiness::Failed(
@@ -6677,7 +6702,9 @@ fn main() {
                 &CancellationToken::new(),
             )
             .unwrap();
-        let db_path = context.cache_root.join("rlm-tools-bsl/test/bsl_index.db");
+        let db_path = rlm_generation_root(context, source_root)
+            .unwrap()
+            .join("test/bsl_index.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, "ready index").unwrap();
         let status = crate::infrastructure::workspace_index::BslIndexStatus {
@@ -6708,7 +6735,7 @@ fn main() {
         let lock_path =
             crate::infrastructure::workspace_index::rlm_provider_state_root(context, source_root)
                 .unwrap()
-                .join("locks/bsl_index.lock");
+                .join("locks/rlm-bsl/index-v15/bsl_index.lock");
         fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         let now = now_secs_for_test();
         fs::write(
