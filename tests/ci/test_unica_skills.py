@@ -1698,6 +1698,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             (skill_dir / "SKILL.md").read_text(encoding="utf-8"),
         )
 
+    def test_v8_runner_describes_supported_partial_loading_conservatively(self) -> None:
+        text = (self.skill_root() / "v8-runner" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "точное изменение не доказано безопасным для partial load",
+            text,
+        )
+        self.assertNotIn("Designer не принимает partial load", text)
+
     def test_v8_runner_examples_are_parameterized_mcp_calls(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
         text = skill_doc.read_text(encoding="utf-8")

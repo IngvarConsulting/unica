@@ -243,11 +243,11 @@ fn project_config_changed_error() -> String {
         .to_string()
 }
 
-/// Designer cannot apply a partial file load to an actively supported
-/// configuration. v8-runner owns the incremental baseline, so this boundary
-/// deliberately makes only the decision it can prove from source evidence:
-/// any selected supported Platform XML configuration takes the runner's full
-/// build path before a platform process is started (#404, ADR-0059).
+/// Designer may reject a partial file load for an actively supported
+/// configuration, and this boundary cannot prove the exact changed objects are
+/// safe. v8-runner owns the incremental baseline, so any selected supported
+/// Platform XML configuration conservatively takes the runner's full build
+/// path before a platform process is started (#404, ADR-0059).
 pub(crate) fn plan_runtime_invocation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -451,8 +451,9 @@ pub(crate) fn plan_runtime_invocation(
     Ok(RuntimeInvocationPlan {
         args: planned_args,
         warnings: vec![format!(
-            "vendor-supported configuration source-set(s) {source_sets} cannot use Designer \
-             partial loading; Unica selected a full rebuild before starting v8-runner"
+            "the exact change is not proven safe for Designer partial loading in \
+             vendor-supported configuration source-set(s) {source_sets}; Unica conservatively \
+             selected a full rebuild before starting v8-runner"
         )],
         build_preflight: None,
         incremental_support_evidence: Vec::new(),

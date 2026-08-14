@@ -3856,10 +3856,10 @@ mod tests {
         cleanup_context(&context);
     }
 
-    /// #404. Designer rejects a partial `/LoadConfigFromFiles` for a
-    /// vendor-supported configuration even when the changed form files are a
-    /// valid partial-load set. The runtime boundary must select the runner's
-    /// full path before the platform sees that unsupported command.
+    /// #404. Designer may reject a partial `/LoadConfigFromFiles` for a
+    /// vendor-supported configuration. Because the runtime boundary cannot
+    /// prove that the exact change is safe, it conservatively selects the
+    /// runner's full path before the platform command starts.
     #[test]
     fn runtime_adapter_forces_full_build_for_supported_configuration() {
         let mut context = temp_context("runtime-supported-configuration-build");
@@ -3892,7 +3892,7 @@ mod tests {
         assert!(outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("supported configuration")));
+            .any(|warning| warning.contains("not proven safe for Designer partial loading")));
         cleanup_context(&context);
     }
 
