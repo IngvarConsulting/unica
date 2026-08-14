@@ -293,6 +293,68 @@ fn project_health_owns_a_filesystem_caseless_unicode_staged_path() {
 }
 
 #[test]
+fn project_health_does_not_apply_a_host_alias_gitignore_to_another_git_path() {
+    let root = temp_root("gitignore-host-alias");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("A/src")).unwrap();
+    let upper_identity = fs::canonicalize(root.join("A")).unwrap();
+    let Ok(lower_identity) = fs::canonicalize(root.join("a")) else {
+        let _ = fs::remove_dir_all(root);
+        return;
+    };
+    if upper_identity != lower_identity {
+        let _ = fs::remove_dir_all(root);
+        return;
+    }
+    fs::write(root.join("A/src/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: a/src\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "**/.build/\n").unwrap();
+    fs::write(
+        root.join("A/.gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(
+        &root,
+        &["add", ".gitignore", "A/.gitignore", "v8project.yaml"],
+    );
+    let oid = git_with_input(
+        &root,
+        &["hash-object", "-w", "--stdin"],
+        b"<MetaDataObject/>\n",
+    );
+    git(
+        &root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{},a/src/Configuration.xml", oid.trim()),
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.ignore", None, "notRun");
+    assert_repository_check_status(&data, "repository.ignore", Some("main"), "notRun");
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.inspection_incomplete"
+            && diagnostic["evidence"]
+                .as_array()
+                .is_some_and(|evidence| evidence.iter().any(|item| {
+                    item.as_str().is_some_and(|text| text.contains("host path identity"))
+                }))
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn project_health_uses_staged_external_descriptor_for_repository_resource_policy() {
     let root = temp_root("staged-external-descriptor");
     git(&root, &["init"]);

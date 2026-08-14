@@ -699,6 +699,7 @@ impl<'a> GitRepositoryInspector<'a> {
             self.runner,
             &repository_root,
             &entries,
+            &candidates,
             &blob_read_safety,
             cancellation,
             deadline,
@@ -1964,9 +1965,11 @@ fn ignore_candidates(
         });
     }
     for root in roots {
-        if let Some(path) = repo_path(
+        if let Some(path) = declared_source_repo_path(
             repository_root,
-            &root.path.join(".build/.unica-health-probe"),
+            context,
+            root,
+            Path::new(".build/.unica-health-probe"),
         ) {
             candidates.push(IgnoreCandidate {
                 source_set: Some(root.source_set.name.clone()),
@@ -1980,7 +1983,9 @@ fn ignore_candidates(
             )
         {
             for name in ["ConfigDumpInfo.xml", "DumpFilesIndex.txt"] {
-                if let Some(path) = repo_path(repository_root, &root.path.join(name)) {
+                if let Some(path) =
+                    declared_source_repo_path(repository_root, context, root, Path::new(name))
+                {
                     candidates.push(IgnoreCandidate {
                         source_set: Some(root.source_set.name.clone()),
                         repo_path: path,
@@ -1994,6 +1999,31 @@ fn ignore_candidates(
         left.repo_path == right.repo_path && left.source_set == right.source_set
     });
     candidates
+}
+
+fn declared_source_repo_path(
+    repository_root: &Path,
+    context: &WorkspaceContext,
+    root: &InspectedSourceRoot,
+    child: &Path,
+) -> Option<String> {
+    let workspace_prefix = repo_path(repository_root, &context.workspace_root)?;
+    let mut result = PathBuf::from(workspace_prefix);
+    let workspace_depth = result.components().count();
+    for component in Path::new(&root.source_set.path)
+        .components()
+        .chain(child.components())
+    {
+        match component {
+            Component::Normal(component) => result.push(component),
+            Component::CurDir => {}
+            Component::ParentDir if result.components().count() > workspace_depth => {
+                result.pop();
+            }
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(host_path_text(result.to_string_lossy().into_owned()))
 }
 
 fn ignore_facts_with_checkpoint(
@@ -2078,6 +2108,7 @@ fn materialize_staged_ignore_files(
     runner: &dyn ProcessRunner,
     repository_root: &Path,
     entries: &[GitIndexEntry],
+    candidates: &[IgnoreCandidate],
     blob_read_safety: &StagedBlobReadSafety,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
@@ -2122,6 +2153,7 @@ fn materialize_staged_ignore_files(
         return Err(ProjectHealthInspectionError::Fatal(reason.clone()));
     }
     let mut total_bytes = 0_usize;
+    let mut materialized_directories = BTreeSet::new();
     for (path, oid) in staged_ignore_files {
         if cancellation.is_cancelled() {
             return Err(ProjectHealthInspectionError::Cancelled);
@@ -2142,16 +2174,18 @@ fn materialize_staged_ignore_files(
             )));
         }
         let target = root.path().join(relative);
-        let parent = target.parent().ok_or_else(|| {
+        let relative_parent = relative.parent().ok_or_else(|| {
             ProjectHealthInspectionError::Fatal(format!(
                 "staged .gitignore path has no parent: {path}"
             ))
         })?;
-        std::fs::create_dir_all(parent).map_err(|error| {
-            ProjectHealthInspectionError::Fatal(format!(
-                "create staged .gitignore parent for {path}: {error}"
-            ))
-        })?;
+        materialize_exact_git_directories(
+            root.path(),
+            relative_parent,
+            &mut materialized_directories,
+            cancellation,
+            deadline,
+        )?;
         let mut target_file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -2217,7 +2251,73 @@ fn materialize_staged_ignore_files(
                 ))
             })?;
     }
+    for candidate in candidates {
+        let candidate = Path::new(&candidate.repo_path);
+        let parent = candidate.parent().ok_or_else(|| {
+            ProjectHealthInspectionError::Fatal(format!(
+                "Git ignore candidate has no parent: {}",
+                candidate.display()
+            ))
+        })?;
+        materialize_exact_git_directories(
+            root.path(),
+            parent,
+            &mut materialized_directories,
+            cancellation,
+            deadline,
+        )?;
+    }
     Ok(root)
+}
+
+fn materialize_exact_git_directories(
+    root: &Path,
+    relative: &Path,
+    materialized: &mut BTreeSet<PathBuf>,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+) -> Result<(), ProjectHealthInspectionError> {
+    let mut logical = PathBuf::new();
+    let mut physical = root.to_path_buf();
+    for component in relative.components() {
+        if cancellation.is_cancelled() {
+            return Err(ProjectHealthInspectionError::Cancelled);
+        }
+        if deadline.remaining().is_zero() {
+            return Err(ProjectHealthInspectionError::Fatal(
+                "staged Git ignore path identity inspection timed out".into(),
+            ));
+        }
+        let Component::Normal(component) = component else {
+            return Err(ProjectHealthInspectionError::Fatal(format!(
+                "staged Git ignore path is not repository-relative: {}",
+                relative.display()
+            )));
+        };
+        logical.push(component);
+        physical.push(component);
+        if materialized.contains(&logical) {
+            continue;
+        }
+        match std::fs::create_dir(&physical) {
+            Ok(()) => {
+                materialized.insert(logical.clone());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(ProjectHealthInspectionError::Fatal(format!(
+                    "staged Git ignore paths collide through host path identity at {}",
+                    logical.display()
+                )));
+            }
+            Err(error) => {
+                return Err(ProjectHealthInspectionError::Fatal(format!(
+                    "create staged Git ignore path {}: {error}",
+                    logical.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn inspect_working_ignore_matches(
@@ -2447,9 +2547,10 @@ fn repo_path(repository_root: &Path, path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        git_environment_removals_from, materialize_staged_ignore_files, normalize_path_identity,
-        parse_check_ignore_verbose_z, parse_git_index_entries, partial_clone_config_is_enabled,
-        GitIndexEntry, GitRepositoryInspector, IgnoreMatch, StagedBlobReadSafety,
+        declared_source_repo_path, git_environment_removals_from, materialize_staged_ignore_files,
+        normalize_path_identity, parse_check_ignore_verbose_z, parse_git_index_entries,
+        partial_clone_config_is_enabled, GitIndexEntry, GitRepositoryInspector, IgnoreMatch,
+        StagedBlobReadSafety,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -2481,6 +2582,26 @@ mod tests {
     fn advancing_owner_index_clock() -> Instant {
         let tick = OWNER_INDEX_CLOCK_TICKS.fetch_add(1, Ordering::SeqCst) as u64;
         Instant::now() + Duration::from_millis(tick)
+    }
+
+    #[test]
+    fn declared_ignore_candidate_preserves_git_spelling_and_normalizes_lexically() {
+        let fixture = parent_repository_fixture();
+        let layout = inspect_layout(&fixture.context);
+        let mut root = layout.roots[0].clone();
+        root.source_set.path = "src/../SRC".into();
+        let repository_root = normalize_path_identity(&fixture.repository_root).unwrap();
+
+        assert_eq!(
+            declared_source_repo_path(
+                &repository_root,
+                &fixture.context,
+                &root,
+                Path::new("ConfigDumpInfo.xml"),
+            )
+            .as_deref(),
+            Some("workspace/SRC/ConfigDumpInfo.xml")
+        );
     }
 
     #[test]
@@ -2869,6 +2990,7 @@ mod tests {
                 blob_oid: None,
                 mode: None,
             }],
+            &[],
             &StagedBlobReadSafety::LocalOnlyGuaranteed,
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(1)),
@@ -2915,6 +3037,7 @@ mod tests {
             &runner,
             repository.path(),
             &entries,
+            &[],
             &StagedBlobReadSafety::LocalOnlyGuaranteed,
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(1)),
@@ -2924,7 +3047,7 @@ mod tests {
         assert!(matches!(
             error,
             ProjectHealthInspectionError::Fatal(ref reason)
-                if reason.contains("collides with another host path identity")
+                if reason.contains("host path identity")
         ));
         assert_eq!(runner.commands.borrow().len(), 1);
     }
@@ -2945,6 +3068,7 @@ mod tests {
             &runner,
             repository.path(),
             &entries,
+            &[],
             &StagedBlobReadSafety::LocalOnlyGuaranteed,
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(1)),
@@ -2978,6 +3102,7 @@ mod tests {
                 blob_oid: Some("a".repeat(40)),
                 mode: Some("100644".into()),
             }],
+            &[],
             &StagedBlobReadSafety::LocalOnlyGuaranteed,
             &CancellationToken::new(),
             ProviderDeadline::from_budget(Duration::from_secs(1)),

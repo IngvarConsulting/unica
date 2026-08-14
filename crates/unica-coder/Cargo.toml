@@ -32,7 +32,6 @@ regex.workspace = true
 tempfile.workspace = true
 ureq.workspace = true
 uuid.workspace = true
-unicode-normalization.workspace = true
 # `flate2` кодом крейта не вызывается: она объявлена, чтобы `zip` получил
 # чистый Rust-backend для deflate вместо системного zlib и без `zopfli`
 # (см. комментарий у `zip` в корневом Cargo.toml).

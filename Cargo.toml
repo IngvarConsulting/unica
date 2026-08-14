@@ -51,7 +51,6 @@ zip = { version = "2", default-features = false, features = ["deflate-flate2", "
 regex = "1"
 ureq = { version = "2.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
-unicode-normalization = "0.1"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",

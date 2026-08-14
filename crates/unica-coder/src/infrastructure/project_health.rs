@@ -56,16 +56,6 @@ impl<'a> SourceRootOwnerIndex<'a> {
         if let Some(child) = self.nodes[node].exact_children.get(component) {
             return Ok(Some(*child));
         }
-        if self.nodes[node].case_sensitive {
-            for (candidate, child) in &self.nodes[node].exact_children {
-                if crate::infrastructure::platform::filesystem::host_path_components_equal(
-                    candidate, component, true,
-                )? {
-                    return Ok(Some(*child));
-                }
-            }
-            return Ok(None);
-        }
         if let Some(identity) =
             crate::infrastructure::platform::filesystem::host_directory_child_identity(
                 &self.nodes[node].path,
@@ -993,6 +983,15 @@ mod tests {
     fn source_owner_index_applies_case_policy_per_parent_directory() {
         let temp = TempDir::new().unwrap();
         let repository_root = temp.path();
+        let repository_identity =
+            crate::infrastructure::source_roots::normalize_path_identity(repository_root).unwrap();
+        if !crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(
+            &repository_identity,
+        )
+        .unwrap()
+        {
+            return;
+        }
         fs::create_dir_all(repository_root.join("modules/SRC")).unwrap();
         let root = crate::infrastructure::project_health::layout::InspectedSourceRoot {
             source_set: ProjectSourceSet {
@@ -1083,47 +1082,6 @@ mod tests {
         let index = SourceRootOwnerIndex::new(repository_root, [&root]).unwrap();
         let owners = index
             .deepest_owners_with_checkpoint("missing/nested/Configuration.xml", &mut || {
-                Ok::<_, ()>(())
-            })
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(owners.0[0].source_set.name, "main");
-    }
-
-    #[test]
-    fn source_owner_index_uses_apple_canonical_unicode_path_identity() {
-        if !crate::infrastructure::platform::filesystem::host_path_components_equal(
-            std::ffi::OsStr::new("é"),
-            std::ffi::OsStr::new("e\u{301}"),
-            true,
-        )
-        .unwrap()
-        {
-            return;
-        }
-        let repository_root = Path::new("/repository");
-        let root = crate::infrastructure::project_health::layout::InspectedSourceRoot {
-            source_set: ProjectSourceSet {
-                name: "main".into(),
-                kind: SourceSetKind::Configuration,
-                path: "src/é".into(),
-                source_format: SourceFormat::PlatformXml,
-                format_evidence: Vec::new(),
-                format_probe_error: None,
-            },
-            path: repository_root.join("src/é"),
-        };
-        let index = SourceRootOwnerIndex::new_with_case_policy(
-            repository_root,
-            [&root],
-            &mut || Ok::<_, ()>(()),
-            &|_| Ok(true),
-        )
-        .unwrap();
-
-        let owners = index
-            .deepest_owners_with_checkpoint("src/e\u{301}/Configuration.xml", &mut || {
                 Ok::<_, ()>(())
             })
             .unwrap()

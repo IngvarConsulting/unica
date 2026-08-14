@@ -2979,13 +2979,16 @@ pub(crate) fn host_directory_child_names_equal(
         Ok(parent) => parent,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             #[cfg(target_vendor = "apple")]
-            if !case_sensitive {
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
-                    "case-insensitive Apple path identity needs an existing parent directory",
+                    "Apple path identity needs an existing parent directory",
                 ));
             }
-            return host_path_components_equal(left, right, case_sensitive);
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                return host_path_components_equal(left, right, case_sensitive);
+            }
         }
         Err(error) => return Err(error),
     };
@@ -3000,13 +3003,16 @@ pub(crate) fn host_directory_child_names_equal(
                 && right_error.kind() == io::ErrorKind::NotFound =>
         {
             #[cfg(target_vendor = "apple")]
-            if !case_sensitive {
-                return Err(io::Error::new(
+            {
+                Err(io::Error::new(
                     io::ErrorKind::Unsupported,
-                    "case-insensitive Apple path identity needs an existing child directory",
-                ));
+                    "Apple path identity needs an existing child directory",
+                ))
             }
-            host_path_components_equal(left, right, case_sensitive)
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                host_path_components_equal(left, right, case_sensitive)
+            }
         }
         (Err(error), _) | (_, Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         (Err(error), _) | (_, Err(error)) => Err(error),
@@ -3042,42 +3048,33 @@ pub(crate) fn host_path_components_equal(
     right: &std::ffi::OsStr,
     case_sensitive: bool,
 ) -> io::Result<bool> {
-    use unicode_normalization::UnicodeNormalization;
-
-    if case_sensitive && !cfg!(target_vendor = "apple") {
-        return Ok(left == right);
-    }
-    let left = left.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "left path component is not valid UTF-8",
-        )
-    })?;
-    let right = right.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "right path component is not valid UTF-8",
-        )
-    })?;
-    let normalize = |text: &str| {
-        if cfg!(target_vendor = "apple") {
-            text.nfd().collect::<String>()
-        } else {
-            text.to_owned()
-        }
-    };
-    let left = normalize(left);
-    let right = normalize(right);
-    if case_sensitive {
-        return Ok(left == right);
+    #[cfg(target_vendor = "apple")]
+    let _ = case_sensitive;
+    if left == right {
+        return Ok(true);
     }
     #[cfg(target_vendor = "apple")]
     return Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "case-insensitive Apple path identity needs an existing directory object",
+        "Apple path identity needs an existing directory object",
     ));
     #[cfg(not(target_vendor = "apple"))]
     {
+        if case_sensitive {
+            return Ok(false);
+        }
+        let left = left.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "left path component is not valid UTF-8",
+            )
+        })?;
+        let right = right.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "right path component is not valid UTF-8",
+            )
+        })?;
         // Linux casefold directories never reach this branch: their kernel Unicode
         // table is rejected as unprovable by host_filesystem_case_sensitive. This
         // simple, non-expanding fold models only injected case-insensitive policy
@@ -5402,6 +5399,19 @@ mod tests {
         .unwrap());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn apple_missing_unicode_alias_is_not_approximated_in_userspace() {
+        let error = super::host_path_components_equal(
+            std::ffi::OsStr::new("é"),
+            std::ffi::OsStr::new("e\u{301}"),
+            true,
+        )
+        .expect_err("a missing Apple path component has no proven host identity");
+
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]
