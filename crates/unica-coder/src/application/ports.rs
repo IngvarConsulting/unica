@@ -650,7 +650,7 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         observations: Vec<DiagnosticObservation>,
         context: &DiagnosticContext,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+    ) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
         observations
             .into_iter()
             .map(|observation| self.map_diagnostic_observation(observation, context, cancellation))

@@ -97,7 +97,7 @@ pub(crate) trait DiagnosticMapping: Send + Sync {
         observations: Vec<DiagnosticObservation>,
         context: &DiagnosticContext,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+    ) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
         observations
             .into_iter()
             .map(|observation| self.map_observation(observation, context, cancellation))
@@ -129,7 +129,7 @@ impl<T: ApplicationPorts + ?Sized> DiagnosticMapping for T {
         observations: Vec<DiagnosticObservation>,
         context: &DiagnosticContext,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+    ) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
         ApplicationPorts::map_diagnostic_observations(self, observations, context, cancellation)
     }
 }
@@ -184,36 +184,32 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
             &selected,
             &provider_request,
             &context,
-            request.timeout.unwrap_or(Duration::from_secs(120)),
+            request.timeout.unwrap_or(DIAGNOSTIC_BUDGET_WITHOUT_CONFIG),
             cancellation,
         )?;
         let mut sections = Vec::with_capacity(selected.len());
         let mut all_items = Vec::new();
-        for (selected_provider, execution) in selected.iter().zip(executions) {
-            let ProviderExecution::Outcome(mut outcome) = execution else {
-                sections.push(unsupported_section(
-                    selected_provider.descriptor,
-                    request.action,
-                ));
-                continue;
-            };
+        for (selected_provider, mut outcome) in selected.iter().zip(executions) {
             sanitize_provider_outcome(&mut outcome, &context);
-            let mut provider_items =
-                match self
-                    .mapping
-                    .map_observations(outcome.observations, &context, cancellation)
-                {
-                    Ok(items) => items,
-                    Err(error) => {
-                        sections.push(failed_mapping_section(
-                            selected_provider.descriptor,
-                            outcome.version,
-                            error,
-                            request.action,
+            let mapped =
+                self.mapping
+                    .map_observations(outcome.observations, &context, cancellation);
+            // A resource the mapper cannot prove is that observation's own
+            // failure. Losing the batch around it would answer a proven set of
+            // findings with nothing at all.
+            let mut mapping_error = None;
+            let mut provider_items = Vec::with_capacity(mapped.len());
+            for item in mapped {
+                match item {
+                    Ok(item) => provider_items.push(item),
+                    Err(error) if error.code == "cancelled" => {
+                        return Err(cancelled_request_error(
+                            "diagnostics stopped while observations were mapped",
                         ));
-                        continue;
                     }
-                };
+                    Err(error) => mapping_error = mapping_error.or(Some(error)),
+                }
+            }
             if request.action == DiagnosticAction::Catalog {
                 provider_items.extend(outcome.rules.into_iter().map(|rule| {
                     DiagnosticItem::DiagnosticRule {
@@ -233,10 +229,23 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                 .count();
             let items_total = provider_items.len();
             all_items.extend(provider_items);
+            let error = outcome.error.or_else(|| {
+                mapping_error.as_ref().map(|error| {
+                    let mut error = DiagnosticError {
+                        code: error.code.to_string(),
+                        message: error.message.clone(),
+                        retryable: false,
+                    };
+                    // The mapper is inside the boundary; its wording is
+                    // published under the same guard as a provider error.
+                    sanitize_public_diagnostic_error(&mut error);
+                    error
+                })
+            });
             sections.push(DiagnosticProviderSection {
                 id: selected_provider.descriptor.id.as_str(),
                 status: outcome.status,
-                complete: outcome.complete,
+                complete: outcome.complete && mapping_error.is_none(),
                 version: outcome.version,
                 capabilities: (request.action == DiagnosticAction::Catalog)
                     .then(|| selected_provider.descriptor.into()),
@@ -246,7 +255,7 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                 resource_failures: action_has_observations(request.action)
                     .then_some(resource_failures),
                 truncated: action_has_items(request.action).then_some(false),
-                error: outcome.error,
+                error,
             });
         }
 
@@ -309,12 +318,6 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
 struct SelectedProvider {
     descriptor: &'static DiagnosticProviderDescriptor,
     provider: Arc<dyn DiagnosticProvider>,
-    applicable: bool,
-}
-
-enum ProviderExecution {
-    Unsupported,
-    Outcome(DiagnosticProviderOutcome),
 }
 
 fn execute_selected_providers(
@@ -323,41 +326,34 @@ fn execute_selected_providers(
     context: &DiagnosticContext,
     total_budget: Duration,
     cancellation: &CancellationToken,
-) -> Result<Vec<ProviderExecution>, DiagnosticRequestError> {
+) -> Result<Vec<DiagnosticProviderOutcome>, DiagnosticRequestError> {
     let started_at = Instant::now();
     let (sender, receiver) = mpsc::channel();
     let mut slots = (0..selected.len())
         .map(|_| None)
-        .collect::<Vec<Option<ProviderExecution>>>();
+        .collect::<Vec<Option<DiagnosticProviderOutcome>>>();
     let child_cancellations = selected
         .iter()
-        .map(|provider| provider.applicable.then(|| cancellation.linked_child()))
+        .map(|_| cancellation.linked_child())
         .collect::<Vec<_>>();
     let admission = diagnostic_worker_admission();
     let lifecycle = diagnostic_worker_lifecycle();
 
     for (index, selected_provider) in selected.iter().enumerate() {
-        if !selected_provider.applicable {
-            slots[index] = Some(ProviderExecution::Unsupported);
-            continue;
-        }
         let provider_id = selected_provider.descriptor.id;
         let Some(permit) = admission.try_acquire(provider_id) else {
-            slots[index] = Some(ProviderExecution::Outcome(provider_failure_outcome(
+            slots[index] = Some(provider_failure_outcome(
                 "provider_busy",
                 "diagnostic provider worker capacity is exhausted",
                 true,
-            )));
+            ));
             continue;
         };
         let provider = Arc::clone(&selected_provider.provider);
         let sender = sender.clone();
         let request = request.clone();
         let context = context.clone();
-        let worker_cancellation = child_cancellations[index]
-            .as_ref()
-            .expect("applicable provider has a child cancellation token")
-            .clone();
+        let worker_cancellation = child_cancellations[index].clone();
         let spawn = thread::Builder::new()
             .name(format!("unica-diagnostics-{}", provider_id.as_str()))
             .spawn(move || {
@@ -377,11 +373,11 @@ fn execute_selected_providers(
         match spawn {
             Ok(handle) => lifecycle.track(handle),
             Err(_) => {
-                slots[index] = Some(ProviderExecution::Outcome(provider_failure_outcome(
+                slots[index] = Some(provider_failure_outcome(
                     "provider_start_failed",
                     "diagnostic provider worker could not be started",
                     true,
-                )));
+                ));
             }
         }
     }
@@ -400,21 +396,19 @@ fn execute_selected_providers(
         if remaining.is_zero() {
             for (index, slot) in slots.iter_mut().enumerate() {
                 if slot.is_none() {
-                    if let Some(token) = &child_cancellations[index] {
-                        token.cancel();
-                    }
-                    *slot = Some(ProviderExecution::Outcome(provider_failure_outcome(
+                    child_cancellations[index].cancel();
+                    *slot = Some(provider_failure_outcome(
                         "provider_timeout",
                         "diagnostic provider exceeded the invocation deadline",
                         true,
-                    )));
+                    ));
                 }
             }
             break;
         }
         match receiver.recv_timeout(remaining.min(Duration::from_millis(20))) {
             Ok((index, outcome)) if slots[index].is_none() => {
-                slots[index] = Some(ProviderExecution::Outcome(outcome));
+                slots[index] = Some(outcome);
             }
             Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -432,23 +426,23 @@ fn execute_selected_providers(
     Ok(slots
         .into_iter()
         .zip(selected)
-        .map(|(execution, provider)| {
-            execution.unwrap_or_else(|| {
-                ProviderExecution::Outcome(provider_failure_outcome(
+        .map(|(outcome, provider)| {
+            outcome.unwrap_or_else(|| {
+                provider_failure_outcome(
                     "provider_ended_without_result",
                     format!(
                         "diagnostic provider {} ended without a result",
                         provider.descriptor.id.as_str()
                     ),
                     true,
-                ))
+                )
             })
         })
         .collect())
 }
 
-fn cancel_diagnostic_children(children: &[Option<CancellationToken>]) {
-    for child in children.iter().flatten() {
+fn cancel_diagnostic_children(children: &[CancellationToken]) {
+    for child in children {
         child.cancel();
     }
 }
@@ -549,6 +543,9 @@ fn normalize_provider_outcome(
                     "findings provider returned catalog rules",
                 );
             }
+            // Readiness is evidence about the findings, not a substitute for
+            // them: `ready` is dropped and the findings stand, anything else
+            // means the provider has nothing to prove yet.
             if let Some(readiness) = outcome.readiness.take() {
                 if readiness.state != DiagnosticReadinessState::Ready {
                     return DiagnosticProviderOutcome {
@@ -565,10 +562,6 @@ fn normalize_provider_outcome(
                         }),
                     };
                 }
-                return provider_contract_failure(
-                    outcome.version,
-                    "findings provider returned readiness instead of findings",
-                );
             }
         }
     }
@@ -616,18 +609,18 @@ fn provider_panic_outcome(
 }
 
 fn sanitize_provider_outcome(outcome: &mut DiagnosticProviderOutcome, context: &DiagnosticContext) {
-    outcome.version = outcome
-        .version
-        .take()
-        .map(|version| redact_public_physical_paths(&version, context));
+    // The roots are the same for every string of the batch; deriving them per
+    // message would repeat one allocation per finding.
+    let roots = PhysicalPathRoots::of(context);
+    outcome.version = outcome.version.take().map(|version| roots.redact(&version));
     if let Some(error) = &mut outcome.error {
         sanitize_public_diagnostic_error(error);
     }
     for observation in &mut outcome.observations {
         match observation {
             DiagnosticObservation::Diagnostic { code, message, .. } => {
-                *code = redact_public_physical_paths(code, context);
-                *message = redact_public_physical_paths(message, context);
+                *code = roots.redact(code);
+                *message = roots.redact(message);
             }
             DiagnosticObservation::ResourceFailure { error, .. } => {
                 sanitize_public_diagnostic_error(error);
@@ -635,12 +628,12 @@ fn sanitize_provider_outcome(outcome: &mut DiagnosticProviderOutcome, context: &
         }
     }
     for rule in &mut outcome.rules {
-        rule.code = redact_public_physical_paths(&rule.code, context);
-        rule.title = redact_public_physical_paths(&rule.title, context);
+        rule.code = roots.redact(&rule.code);
+        rule.title = roots.redact(&rule.title);
         rule.description = rule
             .description
             .take()
-            .map(|description| redact_public_physical_paths(&description, context));
+            .map(|description| roots.redact(&description));
     }
 }
 
@@ -652,6 +645,13 @@ fn sanitize_public_diagnostic_error(error: &mut DiagnosticError) {
         "target_not_supported" => "diagnostic provider does not support the selected target",
         "action_not_supported" => "diagnostic provider does not support the selected action",
         "location_outside_source_set" => "provider resource is outside the selected sourceSet",
+        "location_mapping_failed" => "provider resource could not be mapped safely",
+        "resource_scheme_unsupported" => "provider resource URI scheme is unsupported",
+        "source_format_unsupported" => "sourceSet is outside the supported logical address profile",
+        "metadata_address_invalid" | "metadata_address_not_found" => {
+            "provider observation does not name a resolvable logical address"
+        }
+        "diagnostics_unavailable" => "diagnostics are not configured for this workspace",
         "provider_contract_invalid" => "diagnostic provider returned an invalid result",
         "provider_timeout" => "diagnostic provider deadline exceeded",
         "provider_panicked" => "diagnostic provider terminated unexpectedly",
@@ -673,21 +673,44 @@ fn sanitize_public_diagnostic_error(error: &mut DiagnosticError) {
     }
 }
 
-fn redact_public_physical_paths(text: &str, context: &DiagnosticContext) -> String {
-    let mut redacted = text.to_string();
-    for root in [
-        &context.workspace.cwd,
-        &context.workspace.workspace_root,
-        &context.workspace.cache_root,
-        &context.source_root.path,
-    ] {
-        let displayed = root.to_string_lossy();
-        if !displayed.is_empty() {
-            redacted = redacted.replace(displayed.as_ref(), "<physical-path>");
-            redacted = redacted.replace(displayed.replace('\\', "/").as_str(), "<physical-path>");
+/// Every spelling of the roots a provider string may quote, derived once per
+/// batch instead of once per string.
+struct PhysicalPathRoots {
+    spellings: Vec<String>,
+}
+
+impl PhysicalPathRoots {
+    fn of(context: &DiagnosticContext) -> Self {
+        let mut spellings = Vec::with_capacity(8);
+        for root in [
+            &context.workspace.cwd,
+            &context.workspace.workspace_root,
+            &context.workspace.cache_root,
+            &context.source_root.path,
+        ] {
+            let displayed = root.to_string_lossy();
+            if displayed.is_empty() {
+                continue;
+            }
+            let portable = displayed.replace('\\', "/");
+            if !spellings.contains(&portable) {
+                spellings.push(portable);
+            }
+            let displayed = displayed.into_owned();
+            if !spellings.contains(&displayed) {
+                spellings.push(displayed);
+            }
         }
+        Self { spellings }
     }
-    redact_absolute_path_tokens(&redacted)
+
+    fn redact(&self, text: &str) -> String {
+        let mut redacted = text.to_string();
+        for spelling in &self.spellings {
+            redacted = redacted.replace(spelling.as_str(), "<physical-path>");
+        }
+        redact_absolute_path_tokens(&redacted)
+    }
 }
 
 fn redact_absolute_path_tokens(text: &str) -> String {
@@ -913,7 +936,6 @@ fn select_providers(
             selected.push(SelectedProvider {
                 descriptor,
                 provider: Arc::clone(provider),
-                applicable,
             });
         }
     }
@@ -948,58 +970,6 @@ fn selection(
             .collect(),
         filter: exposes_filter.then_some(request.filter.clone()),
         limit: exposes_limit.then_some(request.limit),
-    }
-}
-
-fn unsupported_section(
-    descriptor: &DiagnosticProviderDescriptor,
-    action: DiagnosticAction,
-) -> DiagnosticProviderSection {
-    DiagnosticProviderSection {
-        id: descriptor.id.as_str(),
-        status: DiagnosticProviderStatus::Unsupported,
-        complete: false,
-        version: None,
-        capabilities: (action == DiagnosticAction::Catalog).then(|| descriptor.into()),
-        readiness: None,
-        items_total: action_has_items(action).then_some(0),
-        items_returned: action_has_items(action).then_some(0),
-        resource_failures: action_has_observations(action).then_some(0),
-        truncated: action_has_items(action).then_some(false),
-        error: Some(DiagnosticError {
-            code: "target_not_supported".to_string(),
-            message: format!(
-                "provider {} does not support {} for the selected target",
-                descriptor.id.as_str(),
-                action.as_str()
-            ),
-            retryable: false,
-        }),
-    }
-}
-
-fn failed_mapping_section(
-    descriptor: &DiagnosticProviderDescriptor,
-    version: Option<String>,
-    error: DiagnosticMapError,
-    action: DiagnosticAction,
-) -> DiagnosticProviderSection {
-    DiagnosticProviderSection {
-        id: descriptor.id.as_str(),
-        status: DiagnosticProviderStatus::Failed,
-        complete: false,
-        version,
-        capabilities: (action == DiagnosticAction::Catalog).then(|| descriptor.into()),
-        readiness: None,
-        items_total: action_has_items(action).then_some(0),
-        items_returned: action_has_items(action).then_some(0),
-        resource_failures: action_has_observations(action).then_some(0),
-        truncated: action_has_items(action).then_some(false),
-        error: Some(DiagnosticError {
-            code: error.code.to_string(),
-            message: error.message,
-            retryable: false,
-        }),
     }
 }
 
@@ -1538,10 +1508,13 @@ mod tests {
         let metadata_path = match location {
             DiagnosticObservationLocation::Logical { metadata_path } => metadata_path,
             DiagnosticObservationLocation::Resource { handle } if handle == "outside" => {
+                // Deliberately provider-shaped and physical: the public error
+                // must be the sanitized wording, never this one.
                 return Err(DiagnosticMapError {
                     code: "location_outside_source_set",
-                    message: "provider resource is outside the selected sourceSet".to_string(),
-                })
+                    message: "/private/var/other-set/Ext/Module.bsl is outside the sourceSet"
+                        .to_string(),
+                });
             }
             DiagnosticObservationLocation::Resource { handle } if handle == "selected" => {
                 context.target.metadata_path.clone()
@@ -2709,5 +2682,160 @@ mod tests {
         assert!(schema_text.contains("bsl-analyzer"));
         assert!(!schema_text.contains("bsl-language-server"));
         assert!(!schema_text.contains("metadata-validator"));
+    }
+
+    #[test]
+    fn diagnostics_unmappable_observation_keeps_the_proven_findings_of_its_provider() {
+        let mixed = successful(vec![
+            diagnostic(
+                ANALYZER,
+                "selected",
+                "A001",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::Target,
+            ),
+            diagnostic(
+                ANALYZER,
+                "outside",
+                "A002",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::Target,
+            ),
+        ]);
+        let (registry, _) = fake_registry([mixed, successful(Vec::new()), successful(Vec::new())]);
+
+        let result = run(registry, &findings_request()).unwrap();
+
+        assert!(
+            result.ok,
+            "a single unmappable resource must not fail the call"
+        );
+        assert_eq!(result.state, DiagnosticResultState::Partial);
+        assert_eq!(result.items_total, Some(1));
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    DiagnosticItem::Diagnostic { code, .. } => Some(code.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec!["A001"],
+            "the proven observation must survive its unmappable sibling"
+        );
+        let section = &result.providers[0];
+        assert!(!section.complete);
+        assert_eq!(section.items_total, Some(1));
+        let error = section.error.as_ref().expect("incomplete mapping is typed");
+        assert_eq!(error.code, "location_outside_source_set");
+    }
+
+    #[test]
+    fn diagnostics_mapping_error_message_crosses_the_boundary_sanitized() {
+        let unmappable = successful(vec![diagnostic(
+            ANALYZER,
+            "outside",
+            "A001",
+            DiagnosticSeverity::Warning,
+            DiagnosticObservationFocus::Target,
+        )]);
+        let (registry, _) =
+            fake_registry([unmappable, successful(Vec::new()), successful(Vec::new())]);
+
+        let result = run(registry, &findings_request()).unwrap();
+        let error = result.providers[0]
+            .error
+            .as_ref()
+            .expect("mapping failure is reported");
+
+        assert_eq!(error.code, "location_outside_source_set");
+        assert_eq!(
+            error.message, "provider resource is outside the selected sourceSet",
+            "public mapping errors take the sanitized wording, never the raw one"
+        );
+    }
+
+    #[test]
+    fn diagnostics_zero_width_focus_keeps_its_position_and_respects_the_requested_range() {
+        let caret = DiagnosticRange {
+            start_line: 40,
+            start_column: 4,
+            end_line: 40,
+            end_column: 4,
+        };
+        let observations = vec![diagnostic(
+            ANALYZER,
+            "selected",
+            "A001",
+            DiagnosticSeverity::Warning,
+            DiagnosticObservationFocus::SourceRange(caret),
+        )];
+        let (registry, _) = fake_registry([
+            successful(observations.clone()),
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+
+        let unfiltered = run(registry, &findings_request()).unwrap();
+        assert!(
+            matches!(
+                &unfiltered.items[0],
+                DiagnosticItem::Diagnostic {
+                    focus: DiagnosticFocus::SourceRange { range },
+                    ..
+                } if *range == caret
+            ),
+            "a zero-width range is a caret position, not a whole-target finding: {:?}",
+            unfiltered.items[0]
+        );
+
+        let (registry, _) = fake_registry([
+            successful(observations),
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+        let mut outside = findings_request();
+        outside.range = Some(DiagnosticRange {
+            start_line: 0,
+            start_column: 0,
+            end_line: 10,
+            end_column: 0,
+        });
+        let narrowed = run(registry, &outside).unwrap();
+        assert!(
+            narrowed.items.is_empty(),
+            "a caret on line 40 is outside lines 0..10: {:?}",
+            narrowed.items
+        );
+    }
+
+    #[test]
+    fn diagnostics_findings_provider_may_prove_readiness_alongside_its_findings() {
+        let ready_with_findings = DiagnosticProviderOutcome {
+            readiness: Some(DiagnosticReadiness {
+                state: DiagnosticReadinessState::Ready,
+                retryable: false,
+            }),
+            ..successful(vec![diagnostic(
+                ANALYZER,
+                "selected",
+                "A001",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::Target,
+            )])
+        };
+        let (registry, _) = fake_registry([
+            ready_with_findings,
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+
+        let result = run(registry, &findings_request()).unwrap();
+        let section = &result.providers[0];
+
+        assert_eq!(section.status, DiagnosticProviderStatus::Completed);
+        assert!(section.error.is_none(), "{:?}", section.error);
+        assert_eq!(result.items_total, Some(1));
     }
 }

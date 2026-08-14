@@ -1318,10 +1318,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             "sourceDir".to_string(),
             Value::String(source_root.display().to_string()),
         );
-        let timeout_seconds = timeout.as_secs();
-        if (DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS..=DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
-            .contains(&timeout_seconds)
-        {
+        if let Some(timeout_seconds) = analyzer_analyze_timeout_seconds(timeout) {
             args.insert("timeoutSeconds".to_string(), json!(timeout_seconds));
         }
         let result = self.invoke_diagnostics_analyze(
@@ -1677,6 +1674,20 @@ fn required_string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a st
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("missing required `{key}` argument"))
+}
+
+/// Caller budget the analyzer run is allowed to take, in whole seconds.
+///
+/// The remaining budget is always a fraction below the configured one because
+/// the deadline starts before the provider worker does, so truncating would
+/// push the documented minimum of 30 seconds out of the accepted band and drop
+/// the caller budget entirely.
+fn analyzer_analyze_timeout_seconds(timeout: Duration) -> Option<u64> {
+    let seconds = timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0);
+    Some(seconds.clamp(
+        DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+        DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
+    ))
 }
 
 fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
@@ -2948,6 +2959,37 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn analyzer_analyze_budget_survives_the_deadline_that_already_started() {
+        // The provider deadline starts before the worker thread does, so the
+        // smallest configured budget always arrives here a fraction short.
+        let almost_minimum =
+            Duration::from_secs(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS) - Duration::from_millis(1);
+        assert_eq!(
+            analyzer_analyze_timeout_seconds(almost_minimum),
+            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS),
+            "the caller budget must reach the analyzer instead of being dropped"
+        );
+
+        let almost_maximum =
+            Duration::from_secs(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS) - Duration::from_millis(1);
+        assert_eq!(
+            analyzer_analyze_timeout_seconds(almost_maximum),
+            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
+        );
+
+        // An exhausted deadline still bounds the analyzer by the smallest
+        // accepted value rather than handing it its own default.
+        assert_eq!(
+            analyzer_analyze_timeout_seconds(Duration::from_secs(1)),
+            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS)
+        );
+        assert_eq!(
+            analyzer_analyze_timeout_seconds(Duration::from_secs(7_200)),
+            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
+        );
+    }
 
     #[test]
     fn standards_search_maps_to_v8std_search_request() {

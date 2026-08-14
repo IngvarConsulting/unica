@@ -375,7 +375,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         observations: Vec<DiagnosticObservation>,
         context: &DiagnosticContext,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
+    ) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
         crate::infrastructure::diagnostics::map_diagnostic_observations(
             observations,
             context,

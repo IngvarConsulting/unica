@@ -1,6 +1,7 @@
 pub use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::{
     cancellation::CancellationToken,
+    operational_config::DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS,
     project_sources::ProjectSourceSet,
     source_location::SourceLocation,
     source_roots::ResolvedSourceRoot,
@@ -60,6 +61,12 @@ pub const BSL_ANALYZER_PROVIDER: DiagnosticProviderId =
 pub const LIVE_DIAGNOSTIC_PROVIDERS: &[DiagnosticProviderId] = &[BSL_ANALYZER_PROVIDER];
 
 pub const DIAGNOSTIC_LIMIT_DEFAULT: usize = 200;
+
+/// Budget for the actions that never resolve an `OperationalConfig`
+/// (INV-APP-CONFIG-SNAPSHOT): `findings`, `status` and `catalog`. It is the
+/// compiled analyze fallback, so both budgets stay one number.
+pub const DIAGNOSTIC_BUDGET_WITHOUT_CONFIG: Duration =
+    Duration::from_secs(DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticRequest {
@@ -191,7 +198,14 @@ impl DiagnosticRange {
         (self.start_line, self.start_column) < (self.end_line, self.end_column)
     }
 
+    /// A zero-width observation range is a caret position, not "no position":
+    /// providers emit one wherever a fix inserts text. It belongs to a
+    /// requested range when the caret falls inside that half-open range.
     pub fn intersects(self, other: Self) -> bool {
+        if !self.is_non_empty() {
+            return (other.start_line, other.start_column) <= (self.start_line, self.start_column)
+                && (self.start_line, self.start_column) < (other.end_line, other.end_column);
+        }
         (self.start_line, self.start_column) < (other.end_line, other.end_column)
             && (other.start_line, other.start_column) < (self.end_line, self.end_column)
     }
@@ -637,6 +651,41 @@ mod tests {
 
     fn provider(descriptor: &'static DiagnosticProviderDescriptor) -> Arc<dyn DiagnosticProvider> {
         Arc::new(StubProvider(descriptor))
+    }
+
+    #[test]
+    fn zero_width_observation_range_matches_the_requested_range_that_contains_its_caret() {
+        let requested = DiagnosticRange {
+            start_line: 10,
+            start_column: 0,
+            end_line: 20,
+            end_column: 0,
+        };
+        let caret = |line: usize, column: usize| DiagnosticRange {
+            start_line: line,
+            start_column: column,
+            end_line: line,
+            end_column: column,
+        };
+
+        assert!(!caret(10, 0).is_non_empty());
+        assert!(
+            caret(10, 0).intersects(requested),
+            "caret on the first line"
+        );
+        assert!(
+            caret(19, 40).intersects(requested),
+            "caret on the last line"
+        );
+        assert!(
+            !caret(9, 40).intersects(requested),
+            "caret before the range"
+        );
+        assert!(
+            !caret(20, 0).intersects(requested),
+            "the requested end is exclusive"
+        );
+        assert!(!caret(40, 4).intersects(requested), "caret after the range");
     }
 
     fn metadata_address(value: &str) -> MetadataAddress {

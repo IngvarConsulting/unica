@@ -366,13 +366,6 @@ fn findings_module_path(
 }
 
 #[derive(Debug, Deserialize)]
-struct ResidentLoadingReply {
-    status: Option<String>,
-    state: Option<String>,
-    detail: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct ResidentFindingsEnvelope {
     #[serde(default)]
     stale: bool,
@@ -416,17 +409,14 @@ fn parse_resident_findings(
     let value: Value = serde_json::from_str(&reply.result_text).map_err(|_| {
         "bsl-analyzer diagnostics reply did not match the typed protocol".to_string()
     })?;
-    if let Ok(loading) = serde_json::from_value::<ResidentLoadingReply>(value.clone()) {
-        if loading.status.as_deref() == Some("loading")
-            || loading.state.as_deref() == Some("loading")
-        {
-            return Ok(provider_not_ready(
-                reply.version,
-                loading
-                    .detail
-                    .unwrap_or_else(|| "diagnostics database is building".to_string()),
-            ));
-        }
+    // A findings reply can carry thousands of entries; probing two optional
+    // fields must not deep-copy the tree it arrived in.
+    let field = |name: &str| value.get(name).and_then(Value::as_str);
+    if field("status") == Some("loading") || field("state") == Some("loading") {
+        let detail = field("detail")
+            .map(str::to_string)
+            .unwrap_or_else(|| "diagnostics database is building".to_string());
+        return Ok(provider_not_ready(reply.version, detail));
     }
     let envelope: ResidentFindingsEnvelope = serde_json::from_value(value)
         .map_err(|_| "bsl-analyzer findings reply did not match the typed protocol".to_string())?;
@@ -1098,24 +1088,26 @@ pub(crate) fn map_diagnostic_observation(
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
 ) -> Result<DiagnosticItem, DiagnosticMapError> {
-    map_diagnostic_observation_cached(observation, context, cancellation, &mut HashMap::new())
+    map_diagnostic_observation_cached(
+        observation,
+        context,
+        cancellation,
+        &mut DiagnosticMappingCache::default(),
+    )
 }
 
+/// One result per observation: a resource the mapper cannot prove is that
+/// observation's own failure, not proof against the batch it arrived in.
 pub(crate) fn map_diagnostic_observations(
     observations: Vec<DiagnosticObservation>,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
-) -> Result<Vec<DiagnosticItem>, DiagnosticMapError> {
-    let mut resource_locations = HashMap::new();
+) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
+    let mut cache = DiagnosticMappingCache::default();
     observations
         .into_iter()
         .map(|observation| {
-            map_diagnostic_observation_cached(
-                observation,
-                context,
-                cancellation,
-                &mut resource_locations,
-            )
+            map_diagnostic_observation_cached(observation, context, cancellation, &mut cache)
         })
         .collect()
 }
@@ -1124,7 +1116,7 @@ fn map_diagnostic_observation_cached(
     observation: DiagnosticObservation,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
-    resource_locations: &mut HashMap<String, Result<MappedDiagnosticLocation, DiagnosticMapError>>,
+    cache: &mut DiagnosticMappingCache,
 ) -> Result<DiagnosticItem, DiagnosticMapError> {
     if cancellation.is_cancelled() {
         return Err(map_error(
@@ -1142,8 +1134,8 @@ fn map_diagnostic_observation_cached(
             message,
             tags,
         } => {
-            let mapped = map_location_cached(location, context, cancellation, resource_locations)?;
-            let focus = map_focus(focus, &mapped.location, context, cancellation);
+            let mapped = map_location_cached(location, context, cancellation, cache)?;
+            let focus = map_focus(focus, &mapped.location, context, cancellation, cache);
             Ok(DiagnosticItem::Diagnostic {
                 provider: provider.as_str(),
                 location: mapped.location,
@@ -1160,7 +1152,7 @@ fn map_diagnostic_observation_cached(
             location,
             error,
         } => {
-            let mapped = map_location_cached(location, context, cancellation, resource_locations)?;
+            let mapped = map_location_cached(location, context, cancellation, cache)?;
             Ok(DiagnosticItem::ResourceFailure {
                 provider: provider.as_str(),
                 location: mapped.location,
@@ -1175,6 +1167,28 @@ fn map_diagnostic_observation_cached(
 struct MappedDiagnosticLocation {
     location: SourceLocation,
     reason: Option<UnaddressableReason>,
+}
+
+/// Per-batch memo of everything the mapper would otherwise re-derive for every
+/// observation of the same logical resource: the proven location and the object
+/// descriptor a metadata focus is checked against.
+#[derive(Debug, Default)]
+struct DiagnosticMappingCache {
+    resource_locations: HashMap<String, Result<MappedDiagnosticLocation, DiagnosticMapError>>,
+    descriptors: HashMap<String, Option<String>>,
+}
+
+impl DiagnosticMappingCache {
+    fn descriptor_text(
+        &mut self,
+        key: &str,
+        load: impl FnOnce() -> Option<String>,
+    ) -> Option<&str> {
+        self.descriptors
+            .entry(key.to_string())
+            .or_insert_with(load)
+            .as_deref()
+    }
 }
 
 fn map_location(
@@ -1215,15 +1229,15 @@ fn map_location_cached(
     location: DiagnosticObservationLocation,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
-    resource_locations: &mut HashMap<String, Result<MappedDiagnosticLocation, DiagnosticMapError>>,
+    cache: &mut DiagnosticMappingCache,
 ) -> Result<MappedDiagnosticLocation, DiagnosticMapError> {
     match location {
         DiagnosticObservationLocation::Resource { handle } => {
-            if let Some(mapped) = resource_locations.get(&handle) {
+            if let Some(mapped) = cache.resource_locations.get(&handle) {
                 return mapped.clone();
             }
             let mapped = map_resource_location(&handle, context, cancellation);
-            resource_locations.insert(handle, mapped.clone());
+            cache.resource_locations.insert(handle, mapped.clone());
             mapped
         }
         logical => map_location(logical, context, cancellation),
@@ -1355,15 +1369,16 @@ fn map_focus(
     location: &SourceLocation,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
+    cache: &mut DiagnosticMappingCache,
 ) -> DiagnosticFocus {
     match focus {
         DiagnosticObservationFocus::Target => DiagnosticFocus::Target,
-        DiagnosticObservationFocus::SourceRange(range) if range.is_non_empty() => {
-            DiagnosticFocus::SourceRange { range }
-        }
-        DiagnosticObservationFocus::SourceRange(_) => DiagnosticFocus::Target,
+        // A zero-width range is a caret, and weakening it to `target` would
+        // both lose the position and make the finding answer every requested
+        // range. `DiagnosticRange::intersects` owns the caret comparison.
+        DiagnosticObservationFocus::SourceRange(range) => DiagnosticFocus::SourceRange { range },
         DiagnosticObservationFocus::Metadata(focus)
-            if metadata_focus_is_proven(&focus, location, context, cancellation) =>
+            if metadata_focus_is_proven(&focus, location, context, cancellation, cache) =>
         {
             focus.into()
         }
@@ -1376,6 +1391,7 @@ fn metadata_focus_is_proven(
     location: &SourceLocation,
     context: &DiagnosticContext,
     cancellation: &CancellationToken,
+    cache: &mut DiagnosticMappingCache,
 ) -> bool {
     if cancellation.is_cancelled() {
         return false;
@@ -1405,33 +1421,31 @@ fn metadata_focus_is_proven(
     let Some(route) = diagnostic_metadata_focus_route(&focus.element_path) else {
         return false;
     };
-    let target = SourceTarget {
-        source_set: context.target.source_set.clone(),
-        metadata_path: Some(metadata_path.clone()),
-    };
-    let Ok(resolution) = resolve_platform_xml_target_in_diagnostic_context(
-        &context.workspace,
-        &target,
-        TargetKindPolicy::Any,
-        &context.source_set,
-        &context.source_root.path,
-    ) else {
-        return false;
-    };
-    let Ok(evidence) = platform_xml_resource_evidence(&context.workspace, &resolution.handle)
-    else {
-        return false;
-    };
-    let Ok(metadata) = std::fs::metadata(&evidence.target_path) else {
-        return false;
-    };
-    if metadata.len() > MAX_METADATA_FOCUS_DESCRIPTOR_BYTES {
-        return false;
-    }
-    let Ok(bytes) = std::fs::read(&evidence.target_path) else {
-        return false;
-    };
-    let Ok(text) = std::str::from_utf8(&bytes) else {
+    // Every observation of the same object would otherwise re-resolve the
+    // target and re-read a descriptor of up to
+    // `MAX_METADATA_FOCUS_DESCRIPTOR_BYTES`.
+    let Some(text) = cache.descriptor_text(metadata_path.as_str(), || {
+        let target = SourceTarget {
+            source_set: context.target.source_set.clone(),
+            metadata_path: Some(metadata_path.clone()),
+        };
+        let resolution = resolve_platform_xml_target_in_diagnostic_context(
+            &context.workspace,
+            &target,
+            TargetKindPolicy::Any,
+            &context.source_set,
+            &context.source_root.path,
+        )
+        .ok()?;
+        let evidence =
+            platform_xml_resource_evidence(&context.workspace, &resolution.handle).ok()?;
+        let metadata = std::fs::metadata(&evidence.target_path).ok()?;
+        if metadata.len() > MAX_METADATA_FOCUS_DESCRIPTOR_BYTES {
+            return None;
+        }
+        let bytes = std::fs::read(&evidence.target_path).ok()?;
+        String::from_utf8(bytes).ok()
+    }) else {
         return false;
     };
     let Ok(document) = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')) else {
@@ -2048,6 +2062,73 @@ mod tests {
             SourceLocation::Unaddressable { path, .. }
                 if path == "CommonModules/Any/Ext/Module.bsl"
         ));
+    }
+
+    #[test]
+    fn zero_width_provider_range_stays_a_caret_focus() {
+        let fixture = Fixture::platform_xml();
+        let module = fixture.write_common_module("Shared");
+        let cancellation = CancellationToken::new();
+        let context =
+            resolve_diagnostic_context(&request(None), &fixture.context, &cancellation).unwrap();
+        let caret = DiagnosticRange {
+            start_line: 40,
+            start_column: 4,
+            end_line: 40,
+            end_column: 4,
+        };
+
+        let item = map_diagnostic_observation(
+            diagnostic(
+                DiagnosticObservationLocation::Resource {
+                    handle: module.to_string_lossy().into_owned(),
+                },
+                DiagnosticObservationFocus::SourceRange(caret),
+            ),
+            &context,
+            &cancellation,
+        )
+        .unwrap();
+
+        assert!(
+            matches!(
+                &item,
+                DiagnosticItem::Diagnostic {
+                    focus: DiagnosticFocus::SourceRange { range },
+                    ..
+                } if *range == caret
+            ),
+            "a zero-width range must keep its position instead of weakening to target: {item:?}"
+        );
+    }
+
+    #[test]
+    fn metadata_focus_descriptor_is_read_once_per_mapped_batch() {
+        let mut cache = super::DiagnosticMappingCache::default();
+        let mut reads = 0usize;
+        let mut load = |cache: &mut super::DiagnosticMappingCache| {
+            cache
+                .descriptor_text("Catalog.Items", || {
+                    reads += 1;
+                    Some("<MetaDataObject/>".to_string())
+                })
+                .map(str::to_string)
+        };
+
+        assert_eq!(load(&mut cache).as_deref(), Some("<MetaDataObject/>"));
+        assert_eq!(load(&mut cache).as_deref(), Some("<MetaDataObject/>"));
+        assert_eq!(reads, 1, "the descriptor must be read once per batch");
+
+        let mut misses = 0usize;
+        for _ in 0..2 {
+            assert!(cache
+                .descriptor_text("Catalog.Missing", || {
+                    misses += 1;
+                    None
+                })
+                .is_none());
+        }
+        assert_eq!(misses, 1, "an unreadable descriptor is not retried either");
     }
 
     mod platform_tests {
