@@ -13,7 +13,7 @@ use crate::infrastructure::internal_adapters::{
 };
 use crate::infrastructure::platform::filesystem::{host_path_text, path_starts_with_host_root};
 use crate::infrastructure::project_health::layout::{InspectedSourceRoot, SourceLayoutInspection};
-use crate::infrastructure::project_health::SourceRootOwnerIndex;
+use crate::infrastructure::project_health::{SourceRootOwnerIndex, SourceRootOwnerIndexError};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -96,6 +96,7 @@ struct SourceRootOwners<'a> {
 enum GeneratedPathInspectionError {
     Cancelled,
     TimedOut,
+    Incomplete(String),
 }
 
 impl<'a> SourceRootOwners<'a> {
@@ -112,6 +113,12 @@ impl<'a> SourceRootOwners<'a> {
                 Err(GeneratedPathInspectionError::TimedOut)
             } else {
                 Ok(())
+            }
+        })
+        .map_err(|error| match error {
+            SourceRootOwnerIndexError::Checkpoint(error) => error,
+            SourceRootOwnerIndexError::Path(reason) => {
+                GeneratedPathInspectionError::Incomplete(reason)
             }
         })?;
         Ok(Self { index })
@@ -427,7 +434,7 @@ impl<'a> GitRepositoryInspector<'a> {
             };
         observations.push(completed(ProjectCheckId::RepositoryIndex));
 
-        if !layout.repository_targets_complete {
+        if !layout.repository_targets_complete && layout.roots.is_empty() {
             append_not_run_after_index(
                 &mut observations,
                 &layout.roots,
@@ -504,6 +511,28 @@ impl<'a> GitRepositoryInspector<'a> {
                         facts,
                     });
                 }
+                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                    for check in [
+                        ProjectCheckId::RepositoryGeneratedPaths,
+                        ProjectCheckId::RepositoryConfigDumpInfo,
+                        ProjectCheckId::RepositoryIgnore,
+                    ] {
+                        observations.push(not_run(check, &reason));
+                        append_not_run_for_roots(&mut observations, check, &layout.roots, &reason);
+                        facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                            check,
+                            source_set: None,
+                            reason: reason.clone(),
+                        });
+                    }
+                    return Ok(GitRepositoryInspection {
+                        repository_root: Some(repository_root),
+                        entries,
+                        resource_inspection_blocker,
+                        observations,
+                        facts,
+                    });
+                }
             };
         match tracked_generated_facts(
             &entries,
@@ -537,6 +566,20 @@ impl<'a> GitRepositoryInspector<'a> {
                 facts.push(ProjectHealthFact::GitInspectionTimeout {
                     check: ProjectCheckId::RepositoryGeneratedPaths,
                     source_set: None,
+                });
+            }
+            Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                observations.push(not_run(ProjectCheckId::RepositoryGeneratedPaths, &reason));
+                append_not_run_for_roots(
+                    &mut observations,
+                    ProjectCheckId::RepositoryGeneratedPaths,
+                    &layout.roots,
+                    &reason,
+                );
+                facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryGeneratedPaths,
+                    source_set: None,
+                    reason,
                 });
             }
         }
@@ -754,14 +797,33 @@ impl<'a> GitRepositoryInspector<'a> {
                             );
                             match ignore_fact_result {
                                 Ok(mut ignore_facts) => {
-                                    observations.push(if incomplete_ignore_roots.is_empty() {
-                                        completed(ProjectCheckId::RepositoryIgnore)
-                                    } else {
-                                        not_run(
-                                            ProjectCheckId::RepositoryIgnore,
-                                            "source format is incomplete, so format-dependent ignore targets are unknown",
-                                        )
-                                    });
+                                    if !incomplete_ignore_roots.is_empty() {
+                                        ignore_facts.retain(|fact| match fact {
+                                            ProjectHealthFact::IgnoreRuleMissing {
+                                                source_set: Some(source_set),
+                                                ..
+                                            }
+                                            | ProjectHealthFact::IgnoreRuleLocalOnly {
+                                                source_set: Some(source_set),
+                                                ..
+                                            } => !incomplete_ignore_roots
+                                                .iter()
+                                                .any(|root| root.source_set.name == *source_set),
+                                            _ => true,
+                                        });
+                                    }
+                                    observations.push(
+                                        if incomplete_ignore_roots.is_empty()
+                                            || !ignore_facts.is_empty()
+                                        {
+                                            completed(ProjectCheckId::RepositoryIgnore)
+                                        } else {
+                                            not_run(
+                                                ProjectCheckId::RepositoryIgnore,
+                                                "source format is incomplete, so format-dependent ignore targets are unknown",
+                                            )
+                                        },
+                                    );
                                     append_completed_for_roots(
                                         &mut observations,
                                         ProjectCheckId::RepositoryIgnore,
@@ -777,23 +839,6 @@ impl<'a> GitRepositoryInspector<'a> {
                                         incomplete_ignore_roots.iter().copied(),
                                         "source format is incomplete, so format-dependent ignore targets are unknown",
                                     );
-                                    if !incomplete_ignore_roots.is_empty() {
-                                        ignore_facts.retain(|fact| match fact {
-                                            ProjectHealthFact::IgnoreRuleMissing {
-                                                source_set,
-                                                ..
-                                            }
-                                            | ProjectHealthFact::IgnoreRuleLocalOnly {
-                                                source_set,
-                                                ..
-                                            } => source_set.as_deref().is_some_and(|source_set| {
-                                                !incomplete_ignore_roots
-                                                    .iter()
-                                                    .any(|root| root.source_set.name == source_set)
-                                            }),
-                                            _ => true,
-                                        });
-                                    }
                                     facts.extend(ignore_facts);
                                 }
                                 Err(IgnoreInspectionError::Cancelled) => {
@@ -947,6 +992,9 @@ impl<'a> GitRepositoryInspector<'a> {
                 Err(GeneratedPathInspectionError::TimedOut) => {
                     return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
                 }
+                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
+                }
             };
             if let Some([root]) = owners {
                 facts.push(ProjectHealthFact::RuntimeSidecarTracked {
@@ -986,6 +1034,9 @@ impl<'a> GitRepositoryInspector<'a> {
                 }
                 Err(GeneratedPathInspectionError::TimedOut) => {
                     return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut))
+                }
+                Err(GeneratedPathInspectionError::Incomplete(reason)) => {
+                    return Ok(Err(ConfigDumpInfoIndexInspectionError::Incomplete(reason)))
                 }
             };
             facts.push(ProjectHealthFact::ConfigDumpInfoUnclassified {
@@ -1848,6 +1899,7 @@ fn materialize_staged_ignore_files(
     if let StagedBlobReadSafety::Blocked(reason) = blob_read_safety {
         return Err(ProjectHealthInspectionError::Fatal(reason.clone()));
     }
+    reject_staged_ignore_host_identity_collisions(root.path(), &staged_ignore_files)?;
     let mut total_bytes = 0_usize;
     for (path, oid) in staged_ignore_files {
         if cancellation.is_cancelled() {
@@ -1929,6 +1981,58 @@ fn materialize_staged_ignore_files(
         })?;
     }
     Ok(root)
+}
+
+fn reject_staged_ignore_host_identity_collisions(
+    materialization_root: &Path,
+    staged_ignore_files: &[(&str, &str)],
+) -> Result<(), ProjectHealthInspectionError> {
+    let materialization_identity =
+        normalize_path_identity(materialization_root).map_err(|reason| {
+            ProjectHealthInspectionError::Fatal(format!(
+                "failed to normalize staged .gitignore materialization root: {reason}"
+            ))
+        })?;
+    let case_sensitive =
+        crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(
+            &materialization_identity,
+        )
+        .map_err(|error| {
+            ProjectHealthInspectionError::Fatal(format!(
+                "failed to determine staged .gitignore materialization path identity at {}: {error}",
+                materialization_identity.display()
+            ))
+        })?;
+    let mut identities = BTreeMap::<String, &str>::new();
+    for (path, _) in staged_ignore_files {
+        let relative = Path::new(path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(ProjectHealthInspectionError::Fatal(format!(
+                "staged .gitignore path is not a safe repository-relative path: {path}"
+            )));
+        }
+        let mut identity = String::new();
+        for component in relative.components() {
+            let key = crate::infrastructure::platform::filesystem::host_path_component_identity_key(
+                component.as_os_str(),
+                case_sensitive,
+            );
+            identity.push('/');
+            identity.push_str(&key);
+        }
+        if let Some(previous) = identities.insert(identity, path) {
+            if previous != *path {
+                return Err(ProjectHealthInspectionError::Fatal(format!(
+                    "staged .gitignore paths {previous} and {path} resolve to the same host path identity"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn inspect_working_ignore_matches(
@@ -2068,7 +2172,7 @@ fn repo_path(repository_root: &Path, path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        git_environment_removals_from, materialize_staged_ignore_files,
+        git_environment_removals_from, materialize_staged_ignore_files, normalize_path_identity,
         parse_check_ignore_verbose_z, parse_git_index_entries, partial_clone_config_is_enabled,
         GitIndexEntry, GitRepositoryInspector, IgnoreMatch, StagedBlobReadSafety,
     };
@@ -2343,6 +2447,49 @@ mod tests {
             ),
             "{error:?}"
         );
+        assert!(runner.commands.borrow().is_empty());
+    }
+
+    #[test]
+    fn project_health_git_ignore_rejects_host_identity_collisions() {
+        let repository = TempDir::new().unwrap();
+        let repository_identity = normalize_path_identity(repository.path()).unwrap();
+        if crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(
+            &repository_identity,
+        )
+        .unwrap()
+        {
+            return;
+        }
+        let runner = SequenceRunner::outputs(Vec::new());
+        let entries = [
+            GitIndexEntry {
+                repo_path: "src/A/.gitignore".into(),
+                blob_oid: Some("a".repeat(40)),
+                mode: Some("100644".into()),
+            },
+            GitIndexEntry {
+                repo_path: "src/a/.gitignore".into(),
+                blob_oid: Some("b".repeat(40)),
+                mode: Some("100644".into()),
+            },
+        ];
+
+        let error = materialize_staged_ignore_files(
+            &runner,
+            repository.path(),
+            &entries,
+            &StagedBlobReadSafety::LocalOnlyGuaranteed,
+            &CancellationToken::new(),
+            ProviderDeadline::from_budget(Duration::from_secs(1)),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ProjectHealthInspectionError::Fatal(ref reason)
+                if reason.contains("same host path identity")
+        ));
         assert!(runner.commands.borrow().is_empty());
     }
 

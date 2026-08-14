@@ -32,6 +32,7 @@ pub(crate) struct SourceLayoutInspection {
     pub(crate) roots: Vec<InspectedSourceRoot>,
 }
 
+#[derive(Clone)]
 pub(crate) struct InspectedSourceRoot {
     pub(crate) source_set: ProjectSourceSet,
     pub(crate) path: PathBuf,
@@ -226,10 +227,6 @@ impl SourceLayoutInspector {
                     &source_set.name,
                     "workspace root was rejected before generated paths were inspected",
                 );
-                roots.push(InspectedSourceRoot {
-                    source_set: source_set.clone(),
-                    path: route.identity_path,
-                });
             } else {
                 match reject_linked_source_root_route(&context.workspace_root, &route.lexical_path)
                 {
@@ -522,7 +519,7 @@ mod tests {
             );
             assert!(!inspection.source_targets_complete);
             assert!(inspection.repository_targets_complete);
-            assert_eq!(inspection.roots.len(), 1);
+            assert!(inspection.roots.is_empty());
             assert!(inspection.observations.iter().any(|observation| {
                 observation.id == ProjectCheckId::SourceGeneratedPaths
                     && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })

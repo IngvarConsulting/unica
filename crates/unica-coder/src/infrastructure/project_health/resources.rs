@@ -14,7 +14,7 @@ use crate::infrastructure::platform::filesystem::{
 };
 use crate::infrastructure::project_health::git::GitIndexEntry;
 use crate::infrastructure::project_health::layout::InspectedSourceRoot;
-use crate::infrastructure::project_health::SourceRootOwnerIndex;
+use crate::infrastructure::project_health::{SourceRootOwnerIndex, SourceRootOwnerIndexError};
 use crate::infrastructure::source_roots::normalize_path_identity;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -54,9 +54,14 @@ pub(crate) struct ResourceOwnershipError {
 }
 
 enum ResourceClassificationError {
-    Ownership(ResourceOwnershipError),
     Cancelled,
     TimedOut,
+    Ownership(ResourceOwnershipError),
+}
+
+struct ResourceClassification {
+    resources: Vec<RepositoryResource>,
+    ownership_errors: Vec<ResourceOwnershipError>,
 }
 
 pub(crate) struct RepositoryPolicyInspection {
@@ -83,8 +88,6 @@ struct EolValues {
 
 struct AttributePolicyEvaluation {
     facts: Vec<ProjectHealthFact>,
-    local_only: BTreeSet<String>,
-    text_policy_missing: BTreeSet<String>,
     text_marked_binary: BTreeSet<String>,
 }
 
@@ -121,7 +124,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         entries: &[GitIndexEntry],
         excluded_runtime_sidecars: &BTreeSet<String>,
     ) -> Result<Vec<RepositoryResource>, ResourceOwnershipError> {
-        Self::classify_with_checkpoint(
+        let classification = Self::classify_with_checkpoint(
             repository_root,
             roots,
             entries,
@@ -129,11 +132,16 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             &mut || Ok(()),
         )
         .map_err(|error| match error {
-            ResourceClassificationError::Ownership(error) => error,
             ResourceClassificationError::Cancelled | ResourceClassificationError::TimedOut => {
                 unreachable!("uncontrolled resource classification cannot stop")
             }
-        })
+            ResourceClassificationError::Ownership(error) => error,
+        })?;
+        if let Some(error) = classification.ownership_errors.into_iter().next() {
+            Err(error)
+        } else {
+            Ok(classification.resources)
+        }
     }
 
     fn classify_with_checkpoint(
@@ -142,7 +150,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         entries: &[GitIndexEntry],
         excluded_runtime_sidecars: &BTreeSet<String>,
         checkpoint: &mut dyn FnMut() -> Result<(), ResourceClassificationError>,
-    ) -> Result<Vec<RepositoryResource>, ResourceClassificationError> {
+    ) -> Result<ResourceClassification, ResourceClassificationError> {
         let repository_root = normalize_path_identity(repository_root).map_err(|_| {
             ResourceClassificationError::Ownership(ResourceOwnershipError {
                 repo_path: repository_root.display().to_string(),
@@ -150,8 +158,18 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             })
         })?;
         let owners =
-            SourceRootOwnerIndex::new_with_checkpoint(&repository_root, roots.iter(), checkpoint)?;
+            SourceRootOwnerIndex::new_with_checkpoint(&repository_root, roots.iter(), checkpoint)
+                .map_err(|error| match error {
+                SourceRootOwnerIndexError::Checkpoint(error) => error,
+                SourceRootOwnerIndexError::Path(reason) => {
+                    ResourceClassificationError::Ownership(ResourceOwnershipError {
+                        repo_path: reason,
+                        source_sets: Vec::new(),
+                    })
+                }
+            })?;
         let mut resources = Vec::new();
+        let mut ownership_errors = Vec::new();
         checkpoint()?;
         for (entry_index, entry) in entries.iter().enumerate() {
             if entry_index % 256 == 0 {
@@ -172,12 +190,11 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     .collect::<Vec<_>>();
                 source_sets.sort();
                 source_sets.dedup();
-                return Err(ResourceClassificationError::Ownership(
-                    ResourceOwnershipError {
-                        repo_path: entry.repo_path.clone(),
-                        source_sets,
-                    },
-                ));
+                ownership_errors.push(ResourceOwnershipError {
+                    repo_path: entry.repo_path.clone(),
+                    source_sets,
+                });
+                continue;
             }
             let root = owners[0];
             if root.source_set.source_format != SourceFormat::PlatformXml {
@@ -204,12 +221,11 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                         .as_deref()
                         .is_some_and(|mode| matches!(mode, "100644" | "100755"))
                 {
-                    return Err(ResourceClassificationError::Ownership(
-                        ResourceOwnershipError {
-                            repo_path: entry.repo_path.clone(),
-                            source_sets: vec![root.source_set.name.clone()],
-                        },
-                    ));
+                    ownership_errors.push(ResourceOwnershipError {
+                        repo_path: entry.repo_path.clone(),
+                        source_sets: vec![root.source_set.name.clone()],
+                    });
+                    continue;
                 }
                 resources.push(RepositoryResource {
                     source_set: root.source_set.name.clone(),
@@ -225,7 +241,10 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         }
         resources.sort_by(|left, right| left.repo_path.cmp(&right.repo_path));
         checkpoint()?;
-        Ok(resources)
+        Ok(ResourceClassification {
+            resources,
+            ownership_errors,
+        })
     }
 
     pub(crate) fn inspect(
@@ -263,7 +282,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             "repository resource check was not reached",
             true,
         );
-        let resources = match Self::classify_with_checkpoint(
+        let classification = match Self::classify_with_checkpoint(
             repository_root,
             roots,
             entries,
@@ -278,7 +297,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 }
             },
         ) {
-            Ok(resources) => resources,
+            Ok(classification) => classification,
             Err(ResourceClassificationError::Cancelled) => {
                 return Err(ProjectHealthInspectionError::Cancelled)
             }
@@ -297,9 +316,8 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             }
             Err(ResourceClassificationError::Ownership(error)) => {
                 let reason = format!(
-                    "resource {} does not have one regular stage-0 blob or has ambiguous source-set owners: {}",
-                    error.repo_path,
-                    error.source_sets.join(", ")
+                    "resource ownership could not be proven from repository root {}",
+                    error.repo_path
                 );
                 for check in resource_check_ids() {
                     mark_check_not_run(&mut observations, check, &reason);
@@ -314,17 +332,52 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 });
             }
         };
+        let mut facts = Vec::new();
+        let mut incomplete_source_sets = BTreeSet::new();
+        for error in classification.ownership_errors {
+            let reason = format!(
+                "resource {} does not have one regular stage-0 blob or has ambiguous source-set owners: {}",
+                error.repo_path,
+                error.source_sets.join(", ")
+            );
+            for source_set in &error.source_sets {
+                incomplete_source_sets.insert(source_set.clone());
+                for check in resource_check_ids() {
+                    mark_source_check_not_run(&mut observations, check, source_set, &reason);
+                }
+                facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryAttributes,
+                    source_set: Some(source_set.clone()),
+                    reason: reason.clone(),
+                });
+            }
+            if error.source_sets.is_empty() {
+                for check in resource_check_ids() {
+                    mark_check_not_run(&mut observations, check, &reason);
+                }
+                facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryAttributes,
+                    source_set: None,
+                    reason,
+                });
+            }
+        }
+        let resources = classification
+            .resources
+            .into_iter()
+            .filter(|resource| !incomplete_source_sets.contains(&resource.source_set))
+            .collect::<Vec<_>>();
         if resources.is_empty() {
             if observations.iter().any(|observation| {
                 matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
             }) {
                 for check in resource_check_ids() {
-                    mark_check_completed(&mut observations, check);
+                    mark_check_completed(&mut observations, check, &incomplete_source_sets);
                 }
             }
             return Ok(RepositoryPolicyInspection {
                 observations,
-                facts: Vec::new(),
+                facts,
             });
         }
         let paths = resources
@@ -551,19 +604,19 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             }
         };
         let AttributePolicyEvaluation {
-            mut facts,
-            local_only,
-            text_policy_missing,
+            facts: attribute_facts,
             text_marked_binary,
         } = attribute_policy;
-        mark_check_completed(&mut observations, ProjectCheckId::RepositoryAttributes);
+        facts.extend(attribute_facts);
+        mark_check_completed(
+            &mut observations,
+            ProjectCheckId::RepositoryAttributes,
+            &incomplete_source_sets,
+        );
 
         let expected_text_resources = resources
             .iter()
-            .filter(|resource| {
-                resource.kind == RepositoryResourceKind::Text
-                    && !local_only.contains(&resource.repo_path)
-            })
+            .filter(|resource| resource.kind == RepositoryResourceKind::Text)
             .collect::<Vec<_>>();
         if let Err(reason) = self.validate_resource_blob_sizes(
             repository_root,
@@ -726,8 +779,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         let index_eol_facts = match index_eol_facts_with_checkpoint(
             &resources,
             &eol,
-            &local_only,
-            &text_policy_missing,
             &text_marked_binary,
             &mut || resource_protocol_checkpoint(cancellation, deadline),
         ) {
@@ -760,12 +811,16 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             }
         };
         facts.extend(index_eol_facts);
-        mark_check_completed(&mut observations, ProjectCheckId::RepositoryIndexEol);
+        mark_check_completed(
+            &mut observations,
+            ProjectCheckId::RepositoryIndexEol,
+            &incomplete_source_sets,
+        );
         let mut total_working_bytes = 0_u64;
-        let mut working_incomplete = None;
+        let mut working_incomplete_source_sets = BTreeSet::new();
         let mut working_timed_out = false;
         let mut working_facts = Vec::new();
-        let mut lfs_incomplete = false;
+        let mut lfs_incomplete_source_sets = BTreeSet::new();
         let mut lfs_timed_out = false;
         let mut binary_by_source = BTreeMap::<String, Vec<(String, u64)>>::new();
         for resource in &resources {
@@ -777,9 +832,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     RepositoryResourceKind::Text => working_timed_out = true,
                     RepositoryResourceKind::Binary => lfs_timed_out = true,
                 }
-                continue;
-            }
-            if local_only.contains(&resource.repo_path) {
                 continue;
             }
             let attributes = &staged[&resource.repo_path];
@@ -820,8 +872,19 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                             working_timed_out = true;
                         }
                         Err(WorkingEolInspectionError::Incomplete(reason)) => {
-                            working_incomplete
-                                .get_or_insert_with(|| format!("{}: {reason}", resource.repo_path));
+                            let reason = format!("{}: {reason}", resource.repo_path);
+                            working_incomplete_source_sets.insert(resource.source_set.clone());
+                            mark_source_check_not_run(
+                                &mut observations,
+                                ProjectCheckId::RepositoryWorkingEol,
+                                &resource.source_set,
+                                &reason,
+                            );
+                            facts.push(ProjectHealthFact::GitInspectionIncomplete {
+                                check: ProjectCheckId::RepositoryWorkingEol,
+                                source_set: Some(resource.source_set.clone()),
+                                reason,
+                            });
                         }
                     }
                 }
@@ -839,16 +902,17 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                             .push((resource.repo_path.clone(), size)),
                         Ok(None) => {}
                         Err(reason) => {
-                            lfs_incomplete = true;
                             let reason = format!("{}: {reason}", resource.repo_path);
-                            mark_check_not_run(
+                            lfs_incomplete_source_sets.insert(resource.source_set.clone());
+                            mark_source_check_not_run(
                                 &mut observations,
                                 ProjectCheckId::RepositoryLfs,
+                                &resource.source_set,
                                 &reason,
                             );
                             facts.push(ProjectHealthFact::GitInspectionIncomplete {
                                 check: ProjectCheckId::RepositoryLfs,
-                                source_set: None,
+                                source_set: Some(resource.source_set.clone()),
                                 reason,
                             });
                         }
@@ -867,19 +931,23 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 check: ProjectCheckId::RepositoryWorkingEol,
                 source_set: None,
             });
-        } else if let Some(reason) = working_incomplete {
-            mark_check_not_run(
+        } else {
+            working_facts.retain(|fact| match fact {
+                ProjectHealthFact::MixedEol { source_set, .. }
+                | ProjectHealthFact::WorkingEolUnsupported { source_set, .. } => {
+                    !working_incomplete_source_sets.contains(source_set)
+                }
+                _ => true,
+            });
+            let working_incomplete_source_sets = incomplete_source_sets
+                .union(&working_incomplete_source_sets)
+                .cloned()
+                .collect();
+            mark_check_completed(
                 &mut observations,
                 ProjectCheckId::RepositoryWorkingEol,
-                &reason,
+                &working_incomplete_source_sets,
             );
-            facts.push(ProjectHealthFact::GitInspectionIncomplete {
-                check: ProjectCheckId::RepositoryWorkingEol,
-                source_set: None,
-                reason,
-            });
-        } else {
-            mark_check_completed(&mut observations, ProjectCheckId::RepositoryWorkingEol);
             facts.extend(working_facts);
         }
         if lfs_timed_out {
@@ -892,13 +960,24 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 check: ProjectCheckId::RepositoryLfs,
                 source_set: None,
             });
-        } else if !lfs_incomplete {
+        } else {
+            for source_set in &lfs_incomplete_source_sets {
+                binary_by_source.remove(source_set);
+            }
             match lfs_facts_with_checkpoint(binary_by_source, &mut || {
                 resource_protocol_checkpoint(cancellation, deadline)
             }) {
                 Ok(lfs_facts) => {
                     facts.extend(lfs_facts);
-                    mark_check_completed(&mut observations, ProjectCheckId::RepositoryLfs);
+                    let lfs_incomplete_source_sets = incomplete_source_sets
+                        .union(&lfs_incomplete_source_sets)
+                        .cloned()
+                        .collect();
+                    mark_check_completed(
+                        &mut observations,
+                        ProjectCheckId::RepositoryLfs,
+                        &lfs_incomplete_source_sets,
+                    );
                 }
                 Err(ResourceProtocolParseError::Cancelled) => {
                     return Err(ProjectHealthInspectionError::Cancelled)
@@ -1437,8 +1516,6 @@ fn evaluate_attribute_policy_with_checkpoint(
 ) -> Result<AttributePolicyEvaluation, ResourceProtocolParseError> {
     let mut evaluation = AttributePolicyEvaluation {
         facts: Vec::new(),
-        local_only: BTreeSet::new(),
-        text_policy_missing: BTreeSet::new(),
         text_marked_binary: BTreeSet::new(),
     };
     for (resource_index, resource) in resources.iter().enumerate() {
@@ -1459,7 +1536,6 @@ fn evaluate_attribute_policy_with_checkpoint(
         })?;
         let staged_policy_sufficient = policy_satisfied(resource.kind, attributes);
         if !staged_policy_sufficient && policy_satisfied(resource.kind, effective_attributes) {
-            evaluation.local_only.insert(resource.repo_path.clone());
             evaluation
                 .facts
                 .push(ProjectHealthFact::AttributesLocalOnly {
@@ -1487,9 +1563,6 @@ fn evaluate_attribute_policy_with_checkpoint(
                     });
             }
             RepositoryResourceKind::Text if !text_policy_satisfied(attributes) => {
-                evaluation
-                    .text_policy_missing
-                    .insert(resource.repo_path.clone());
                 evaluation.facts.push(ProjectHealthFact::TextPolicyMissing {
                     source_set: resource.source_set.clone(),
                     path: resource.repo_path.clone(),
@@ -1588,8 +1661,6 @@ fn parse_eol_records_with_checkpoint(
 fn index_eol_facts_with_checkpoint(
     resources: &[RepositoryResource],
     eol: &BTreeMap<String, EolValues>,
-    local_only: &BTreeSet<String>,
-    text_policy_missing: &BTreeSet<String>,
     text_marked_binary: &BTreeSet<String>,
     checkpoint: &mut dyn FnMut() -> Result<(), ResourceProtocolParseError>,
 ) -> Result<Vec<ProjectHealthFact>, ResourceProtocolParseError> {
@@ -1599,8 +1670,6 @@ fn index_eol_facts_with_checkpoint(
             checkpoint()?;
         }
         if resource.kind != RepositoryResourceKind::Text
-            || local_only.contains(&resource.repo_path)
-            || text_policy_missing.contains(&resource.repo_path)
             || text_marked_binary.contains(&resource.repo_path)
         {
             continue;
@@ -1835,11 +1904,18 @@ fn timeout_policy(
     }
 }
 
-fn mark_check_completed(observations: &mut [ProjectCheckObservation], check: ProjectCheckId) {
-    for observation in observations
-        .iter_mut()
-        .filter(|observation| observation.id == check)
-    {
+fn mark_check_completed(
+    observations: &mut [ProjectCheckObservation],
+    check: ProjectCheckId,
+    incomplete_source_sets: &BTreeSet<String>,
+) {
+    for observation in observations.iter_mut().filter(|observation| {
+        observation.id == check
+            && match observation.source_set.as_ref() {
+                Some(source_set) => !incomplete_source_sets.contains(source_set),
+                None => incomplete_source_sets.is_empty(),
+            }
+    }) {
         if matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. }) {
             observation.outcome = ProjectCheckOutcome::Completed;
         }
@@ -1853,6 +1929,26 @@ fn mark_check_not_run(
 ) {
     for observation in observations.iter_mut().filter(|observation| {
         observation.id == check
+            && !matches!(
+                observation.outcome,
+                ProjectCheckOutcome::NotApplicable { .. }
+            )
+    }) {
+        observation.outcome = ProjectCheckOutcome::NotRun {
+            reason: reason.to_owned(),
+        };
+    }
+}
+
+fn mark_source_check_not_run(
+    observations: &mut [ProjectCheckObservation],
+    check: ProjectCheckId,
+    source_set: &str,
+    reason: &str,
+) {
+    for observation in observations.iter_mut().filter(|observation| {
+        observation.id == check
+            && observation.source_set.as_deref() == Some(source_set)
             && !matches!(
                 observation.outcome,
                 ProjectCheckOutcome::NotApplicable { .. }
@@ -2488,8 +2584,6 @@ mod tests {
                 blob_oid: "b".repeat(40),
             },
         ];
-        let mut first_resource_is_not_evaluated = std::collections::BTreeSet::new();
-        first_resource_is_not_evaluated.insert("src/A.xml".to_string());
         let eol = std::collections::BTreeMap::from([
             (
                 "src/A.xml".into(),
@@ -2512,11 +2606,9 @@ mod tests {
             &resources,
             &eol,
             &Default::default(),
-            &first_resource_is_not_evaluated,
-            &Default::default(),
             &mut || {
                 checkpoints += 1;
-                if checkpoints == 1 {
+                if checkpoints == 2 {
                     Err(super::ResourceProtocolParseError::TimedOut)
                 } else {
                     Ok(())
@@ -2542,8 +2634,6 @@ mod tests {
 
         let result = super::index_eol_facts_with_checkpoint(
             &resources,
-            &Default::default(),
-            &Default::default(),
             &Default::default(),
             &Default::default(),
             &mut || Err(super::ResourceProtocolParseError::TimedOut),

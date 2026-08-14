@@ -2807,34 +2807,43 @@ pub(crate) fn host_path_text(path: String) -> String {
 }
 
 #[cfg(windows)]
-pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> bool {
+pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
     open_absolute_directory_path_nofollow(path)
         .and_then(|directory| relative_child_object_attributes(&directory))
         .map(|attributes| attributes == 0)
-        .unwrap_or(true)
 }
 
 #[cfg(target_vendor = "apple")]
-pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> bool {
+pub(crate) fn host_filesystem_case_sensitive(path: &Path) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
 
-    let Ok(directory) = fs::File::open(path) else {
-        return true;
-    };
+    let directory = open_absolute_directory_path_nofollow(path)?;
     // SAFETY: directory owns a valid descriptor and fpathconf only queries it.
-    unsafe { libc::fpathconf(directory.as_raw_fd(), libc::_PC_CASE_SENSITIVE) != 0 }
+    let result = unsafe { libc::fpathconf(directory.as_raw_fd(), libc::_PC_CASE_SENSITIVE) };
+    if result == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(result != 0)
+    }
 }
 
 #[cfg(all(not(windows), not(target_vendor = "apple")))]
-pub(crate) fn host_filesystem_case_sensitive(_path: &Path) -> bool {
-    true
+pub(crate) fn host_filesystem_case_sensitive(_path: &Path) -> io::Result<bool> {
+    Ok(true)
 }
 
 pub(crate) fn host_path_component_identity_key(
     component: &std::ffi::OsStr,
     case_sensitive: bool,
 ) -> String {
+    use unicode_normalization::UnicodeNormalization;
+
     let text = component.to_string_lossy().into_owned();
+    let text = if cfg!(target_vendor = "apple") {
+        text.nfd().collect()
+    } else {
+        text
+    };
     if case_sensitive {
         text
     } else {
@@ -5079,6 +5088,26 @@ mod tests {
         assert_eq!(regular, normalize_path_identity(&extended).unwrap());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn filesystem_case_policy_does_not_follow_a_linked_directory() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_temp_root("case-policy-linked-directory");
+        let target = root.join("target");
+        let linked = root.join("linked");
+        fs::create_dir_all(&target).unwrap();
+        symlink(&target, &linked).unwrap();
+
+        let result = super::host_filesystem_case_sensitive(&linked);
+
+        assert!(
+            result.is_err(),
+            "linked directory must fail closed: {result:?}"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[cfg(windows)]

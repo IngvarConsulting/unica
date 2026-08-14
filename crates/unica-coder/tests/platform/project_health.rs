@@ -154,6 +154,460 @@ fn project_health_mixed_platform_and_nested_edt_publish_profile_specific_checks(
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn project_health_checks_a_proven_platform_root_when_a_sibling_format_is_unknown() {
+    let root = temp_root("platform-with-unknown-sibling");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("good")).unwrap();
+    fs::create_dir_all(root.join("unknown")).unwrap();
+    fs::write(root.join("good/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "source-set:\n  - name: good\n    type: CONFIGURATION\n    path: good\n  - name: unknown\n    type: CONFIGURATION\n    path: unknown\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "good/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "good/** text eol=lf\n").unwrap();
+    git(&root, &["add", "."]);
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    for check in [
+        "repository.attributes",
+        "repository.index_eol",
+        "repository.working_eol",
+        "repository.lfs",
+    ] {
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check
+                    && row["sourceSet"] == "good"
+                    && row["status"] == "passed"
+            }),
+            "{check}/good: {data}"
+        );
+        assert!(
+            data["checks"].as_array().unwrap().iter().any(|row| {
+                row["id"] == check
+                    && row["sourceSet"] == "unknown"
+                    && row["status"] == "notRun"
+            }),
+            "{check}/unknown: {data}"
+        );
+    }
+    assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+        row["id"] == "repository.attributes"
+            && row.get("sourceSet").is_none()
+            && row["status"] == "notRun"
+    }), "aggregate attributes must remain incomplete: {data}");
+    assert_repository_check_status(&data, "repository.ignore", None, "failed");
+    assert_repository_check_status(&data, "repository.ignore", Some("good"), "passed");
+    assert_repository_check_status(&data, "repository.ignore", Some("unknown"), "notRun");
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.ignore_rule_missing"
+            && diagnostic.get("sourceSet").is_none()
+            && diagnostic["paths"].as_array().is_some_and(|paths| {
+                paths
+                    .iter()
+                    .any(|path| path.as_str().is_some_and(|path| path.contains(".build")))
+            })
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_workspace_root_rejection_suppresses_source_derived_git_facts() {
+    let root = temp_root("workspace-root-rejected");
+    git(&root, &["init"]);
+    fs::write(root.join("Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitignore"), "**/.build/\n").unwrap();
+    git(
+        &root,
+        &["add", "v8project.yaml", "Configuration.xml", ".gitignore"],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "source_set.root_is_workspace"
+    }), "{data}");
+    assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["sourceSet"] == "main"
+            && matches!(
+                diagnostic["code"].as_str(),
+                Some(
+                    "git.ignore_rule_missing"
+                        | "git.ignore_rule_local_only"
+                        | "git.generated_path_tracked"
+                        | "git.runtime_sidecar_tracked"
+                        | "git.config_dump_info_unclassified"
+                )
+            )
+    }), "{data}");
+    for check in [
+        "repository.ignore",
+        "repository.generated_paths",
+        "repository.config_dump_info",
+        "repository.attributes",
+        "repository.index_eol",
+        "repository.working_eol",
+        "repository.lfs",
+    ] {
+        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row["sourceSet"] == "main"
+                && row["status"] == "notRun"
+        }), "{check}/main: {data}");
+    }
+    for check in [
+        "repository.ignore",
+        "repository.generated_paths",
+        "repository.config_dump_info",
+    ] {
+        assert_repository_check_status(&data, check, None, "notRun");
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_preserves_an_independent_cache_ignore_failure_for_a_rejected_root() {
+    let root = temp_root("workspace-root-cache-ignore-missing");
+    git(&root, &["init"]);
+    fs::write(root.join("Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n",
+    )
+    .unwrap();
+    git(&root, &["add", "v8project.yaml", "Configuration.xml"]);
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.ignore", None, "failed");
+    assert_repository_check_status(&data, "repository.ignore", Some("main"), "notRun");
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.ignore_rule_missing"
+            && diagnostic.get("sourceSet").is_none()
+            && diagnostic["paths"].as_array().is_some_and(|paths| {
+                paths
+                    .iter()
+                    .any(|path| path.as_str().is_some_and(|path| path.contains(".build")))
+            })
+    }), "{data}");
+    assert!(!data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.ignore_rule_missing"
+            && diagnostic["sourceSet"] == "main"
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_checks_a_proven_root_when_a_sibling_route_is_unsafe() {
+    let root = temp_root("platform-with-unsafe-sibling");
+    git(&root, &["init"]);
+    fs::create_dir_all(root.join("good")).unwrap();
+    fs::write(root.join("good/Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: good\n    type: CONFIGURATION\n    path: good\n  - name: unsafe\n    type: CONFIGURATION\n    path: ../outside\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "good/** text eol=lf\n").unwrap();
+    git(&root, &["add", "."]);
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    for check in [
+        "repository.ignore",
+        "repository.generated_paths",
+        "repository.config_dump_info",
+        "repository.attributes",
+        "repository.index_eol",
+        "repository.working_eol",
+        "repository.lfs",
+    ] {
+        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row["sourceSet"] == "good"
+                && row["status"] == "passed"
+        }), "{check}/good: {data}");
+        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row["sourceSet"] == "unsafe"
+                && row["status"] == "notRun"
+        }), "{check}/unsafe: {data}");
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_keeps_resource_policy_independent_between_source_sets() {
+    let root = temp_root("independent-resource-roots");
+    git(&root, &["init"]);
+    for source in ["good", "bad"] {
+        fs::create_dir_all(root.join(source)).unwrap();
+        fs::write(
+            root.join(source).join("Configuration.xml"),
+            "<MetaDataObject/>\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: good\n    type: CONFIGURATION\n    path: good\n  - name: bad\n    type: CONFIGURATION\n    path: bad\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+    git(&root, &["add", "."]);
+    let oid = git_with_input(&root, &["hash-object", "-w", "--stdin"], b"target\n");
+    git(
+        &root,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("120000,{},bad/B.xml", oid.trim()),
+        ],
+    );
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    for check in [
+        "repository.attributes",
+        "repository.index_eol",
+        "repository.working_eol",
+        "repository.lfs",
+    ] {
+        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row.get("sourceSet").is_none()
+                && row["status"] == "notRun"
+        }), "{check}/aggregate: {data}");
+        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row["sourceSet"] == "good"
+                && row["status"] == "passed"
+        }), "{check}/good: {data}");
+        assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+            row["id"] == check
+                && row["sourceSet"] == "bad"
+                && row["status"] == "notRun"
+        }), "{check}/bad: {data}");
+    }
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.inspection_incomplete"
+            && diagnostic["sourceSet"] == "bad"
+            && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                evidence.iter().any(|item| item.as_str().is_some_and(|text| {
+                    text.contains("bad/B.xml")
+                }))
+            })
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn project_health_keeps_working_eol_errors_scoped_to_the_source_set() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_root("independent-working-eol");
+    git(&root, &["init"]);
+    for source in ["good", "bad"] {
+        fs::create_dir_all(root.join(source)).unwrap();
+        fs::write(
+            root.join(source).join("Configuration.xml"),
+            "<MetaDataObject/>\n",
+        )
+        .unwrap();
+        fs::write(root.join(source).join("Extra.xml"), "<A/>\n").unwrap();
+    }
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: good\n    type: CONFIGURATION\n    path: good\n  - name: bad\n    type: CONFIGURATION\n    path: bad\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(root.join(".gitattributes"), "*.xml text eol=lf\n").unwrap();
+    git(&root, &["add", "."]);
+    fs::write(
+        root.join("bad/Configuration.xml"),
+        "<MetaDataObject>\n<A/>\r\n</MetaDataObject>\n",
+    )
+    .unwrap();
+    fs::set_permissions(root.join("bad/Extra.xml"), fs::Permissions::from_mode(0o0)).unwrap();
+
+    let result = status(&root);
+
+    fs::set_permissions(
+        root.join("bad/Extra.xml"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.working_eol", None, "notRun");
+    assert_repository_check_status(&data, "repository.working_eol", Some("good"), "passed");
+    assert_repository_check_status(&data, "repository.working_eol", Some("bad"), "notRun");
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.inspection_incomplete"
+            && diagnostic["sourceSet"] == "bad"
+            && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                evidence.iter().any(|item| item.as_str().is_some_and(|text| {
+                    text.contains("bad/Extra.xml")
+                }))
+            })
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_keeps_lfs_errors_scoped_to_the_source_set() {
+    let root = temp_root("independent-lfs");
+    git(&root, &["init"]);
+    for source in ["good", "bad"] {
+        fs::create_dir_all(root.join(source)).unwrap();
+        fs::write(
+            root.join(source).join("Configuration.xml"),
+            "<MetaDataObject/>\n",
+        )
+        .unwrap();
+        fs::write(root.join(source).join("Picture.bin"), b"binary").unwrap();
+    }
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: good\n    type: CONFIGURATION\n    path: good\n  - name: bad\n    type: CONFIGURATION\n    path: bad\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitattributes"),
+        "*.xml text eol=lf\n*.bin -text\n",
+    )
+    .unwrap();
+    fs::File::create(root.join("bad/A-Large.bin"))
+        .unwrap()
+        .set_len(10 * 1024 * 1024)
+        .unwrap();
+    git(&root, &["add", "."]);
+    fs::remove_file(root.join("bad/Picture.bin")).unwrap();
+    fs::create_dir(root.join("bad/Picture.bin")).unwrap();
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.lfs", None, "notRun");
+    assert_repository_check_status(&data, "repository.lfs", Some("good"), "passed");
+    assert_repository_check_status(&data, "repository.lfs", Some("bad"), "notRun");
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.inspection_incomplete"
+            && diagnostic["sourceSet"] == "bad"
+            && diagnostic["evidence"].as_array().is_some_and(|evidence| {
+                evidence.iter().any(|item| item.as_str().is_some_and(|text| {
+                    text.contains("bad/Picture.bin")
+                }))
+            })
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_reports_index_eol_even_when_text_policy_is_missing() {
+    let root = temp_root("missing-attributes-crlf-index");
+    git(&root, &["init"]);
+    create_platform_workspace(&root, "src");
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/Configuration.xml"),
+        "<MetaDataObject/>\r\n",
+    )
+    .unwrap();
+    git(&root, &["add", "."]);
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.attributes", Some("main"), "failed");
+    assert_repository_check_status(&data, "repository.index_eol", Some("main"), "failed");
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.index_eol_not_lf"
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn project_health_reports_working_eol_even_when_text_policy_is_local_only() {
+    let root = temp_root("local-only-attributes-mixed-working-eol");
+    git(&root, &["init"]);
+    create_platform_workspace(&root, "src");
+    fs::write(
+        root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(&root, &["add", "."]);
+    fs::write(root.join(".git/info/attributes"), "*.xml text eol=lf\n").unwrap();
+    fs::write(
+        root.join("src/Configuration.xml"),
+        "<MetaDataObject>\n<A/>\r\n</MetaDataObject>\n",
+    )
+    .unwrap();
+
+    let result = status(&root);
+
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.unwrap();
+    assert_repository_check_status(&data, "repository.attributes", Some("main"), "failed");
+    assert_repository_check_status(&data, "repository.working_eol", Some("main"), "failed");
+    assert!(data["diagnostics"].as_array().unwrap().iter().any(|diagnostic| {
+        diagnostic["code"] == "git.mixed_eol"
+    }), "{data}");
+    let _ = fs::remove_dir_all(root);
+}
+
 #[cfg(unix)]
 #[test]
 fn project_health_does_not_execute_configured_fsmonitor_hook() {
@@ -381,6 +835,19 @@ fn status(workspace: &Path) -> unica_coder::application::OperationResult {
     UnicaApplication::new()
         .call_tool("unica.project.status", &args)
         .unwrap()
+}
+
+fn assert_repository_check_status(
+    data: &Value,
+    check: &str,
+    source_set: Option<&str>,
+    expected: &str,
+) {
+    assert!(data["checks"].as_array().unwrap().iter().any(|row| {
+        row["id"] == check
+            && row.get("sourceSet").and_then(Value::as_str) == source_set
+            && row["status"] == expected
+    }), "{check}/{source_set:?} expected {expected}: {data}");
 }
 
 fn create_platform_workspace(root: &Path, source_path: &str) {

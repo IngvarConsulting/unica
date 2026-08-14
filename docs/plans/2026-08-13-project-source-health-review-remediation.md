@@ -137,8 +137,9 @@ MCP typed result envelope, Python contract tests.
 - [x] Reproduce false `Completed` outcomes for incomplete targets and the
   EDT-only `NotApplicable` overwrite, then keep repository checks that require
   complete source target identities `NotRun` until those identities are proven.
-  Keep independent tracked/ignore checks running for a known-but-invalid
-  workspace-root source target.
+  Continue independent repository checks for each separately proven sibling,
+  but keep source-derived Git checks `NotRun` for a rejected workspace-root
+  target so `source_set.root_is_workspace` remains its single primary cause.
 - [x] Replace `checkout-index` materialization with exact staged blob reads that
   cannot run smudge filters; bound file count and aggregate bytes.
 - [x] Remove inherited `GIT_*` variables case-insensitively and restore

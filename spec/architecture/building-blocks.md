@@ -216,9 +216,10 @@ runtime для операций платформы, поставляемый а�
   `BslAnalyzerMcpAdapter` и `StandardsAdapter`.
 - `project_health` — читающий инфраструктурный композитор топологии,
   переносимого Git-состояния и ролевой политики ресурсов. Слой application
-  получает только типизированный снимок через порт и не запускает `git`
-  (INV-APP-NO-DIRECT-GIT, INV-MCP-PROJECT-READINESS,
-  INV-SOURCE-PORTABLE-GIT).
+  получает только типизированный снимок через порт и не запускает `git`.
+  `unica.project.status` использует этот композитор; `unica.project.map` не выполняет Git-проверок
+  (INV-APP-NO-DIRECT-GIT,
+  INV-MCP-PROJECT-READINESS, INV-SOURCE-PORTABLE-GIT).
 - `code_intelligence` — инфраструктурные адаптеры текущих реализаций ролей
   `semantic`, `symbol`, `lexical` (`rlm`, `bsl-analyzer`, `git-grep`), их
   команды, разбор ответов, локализация попаданий и отображение состояний.

@@ -40,16 +40,22 @@ impl<'a> SourceRootOwnerIndex<'a> {
     pub(super) fn new(
         repository_root: &Path,
         roots: impl IntoIterator<Item = &'a layout::InspectedSourceRoot>,
-    ) -> Self {
-        Self::new_with_checkpoint(repository_root, roots, &mut || Ok::<_, ()>(()))
-            .expect("uncontrolled source-root owner index construction cannot stop")
+    ) -> Result<Self, String> {
+        Self::new_with_checkpoint(repository_root, roots, &mut || Ok::<_, ()>(())).map_err(
+            |error| match error {
+                SourceRootOwnerIndexError::Checkpoint(()) => {
+                    unreachable!("uncontrolled source-root owner index construction cannot stop")
+                }
+                SourceRootOwnerIndexError::Path(reason) => reason,
+            },
+        )
     }
 
     pub(super) fn new_with_checkpoint<E>(
         repository_root: &Path,
         roots: impl IntoIterator<Item = &'a layout::InspectedSourceRoot>,
         checkpoint: &mut dyn FnMut() -> Result<(), E>,
-    ) -> Result<Self, E> {
+    ) -> Result<Self, SourceRootOwnerIndexError<E>> {
         Self::new_with_case_policy(repository_root, roots, checkpoint, &|path| {
             crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(path)
         })
@@ -59,20 +65,25 @@ impl<'a> SourceRootOwnerIndex<'a> {
         repository_root: &Path,
         roots: impl IntoIterator<Item = &'a layout::InspectedSourceRoot>,
         checkpoint: &mut dyn FnMut() -> Result<(), E>,
-        case_policy: &dyn Fn(&Path) -> bool,
-    ) -> Result<Self, E> {
+        case_policy: &dyn Fn(&Path) -> std::io::Result<bool>,
+    ) -> Result<Self, SourceRootOwnerIndexError<E>> {
         let repository_root =
             crate::infrastructure::source_roots::normalize_path_identity(repository_root)
-                .unwrap_or_else(|_| repository_root.to_path_buf());
+                .map_err(SourceRootOwnerIndexError::Path)?;
         let root_node = SourceRootOwnerNode {
-            case_sensitive: case_policy(&repository_root),
+            case_sensitive: case_policy(&repository_root).map_err(|error| {
+                SourceRootOwnerIndexError::Path(format!(
+                    "failed to determine filesystem path identity at {}: {error}",
+                    repository_root.display()
+                ))
+            })?,
             ..SourceRootOwnerNode::default()
         };
         let mut result = Self {
             nodes: vec![root_node],
         };
         for root in roots {
-            checkpoint()?;
+            checkpoint().map_err(SourceRootOwnerIndexError::Checkpoint)?;
             let Ok(path) = crate::infrastructure::source_roots::normalize_path_identity(&root.path)
             else {
                 continue;
@@ -85,7 +96,7 @@ impl<'a> SourceRootOwnerIndex<'a> {
             let mut parent_path = repository_root.clone();
             for (component_index, component) in relative.components().enumerate() {
                 if component_index % 256 == 0 {
-                    checkpoint()?;
+                    checkpoint().map_err(SourceRootOwnerIndexError::Checkpoint)?;
                 }
                 let key =
                     crate::infrastructure::platform::filesystem::host_path_component_identity_key(
@@ -98,8 +109,23 @@ impl<'a> SourceRootOwnerIndex<'a> {
                     let child = result.nodes.len();
                     let mut child_path = parent_path.clone();
                     child_path.push(component.as_os_str());
+                    let case_sensitive = match case_policy(&child_path) {
+                        Ok(case_sensitive) => case_sensitive,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            // A declared root may be missing. A child that does not
+                            // exist cannot carry a platform-specific override yet,
+                            // so it inherits the already-proven parent policy.
+                            result.nodes[node].case_sensitive
+                        }
+                        Err(error) => {
+                            return Err(SourceRootOwnerIndexError::Path(format!(
+                                "failed to determine filesystem path identity at {}: {error}",
+                                child_path.display()
+                            )))
+                        }
+                    };
                     result.nodes.push(SourceRootOwnerNode {
-                        case_sensitive: case_policy(&child_path),
+                        case_sensitive,
                         ..SourceRootOwnerNode::default()
                     });
                     result.nodes[node].children.insert(key, child);
@@ -142,6 +168,12 @@ impl<'a> SourceRootOwnerIndex<'a> {
     }
 }
 
+#[derive(Debug)]
+pub(super) enum SourceRootOwnerIndexError<E> {
+    Checkpoint(E),
+    Path(String),
+}
+
 pub(crate) fn inspect_project_health(
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
@@ -181,7 +213,6 @@ fn inspect_project_health_with(
             && observation.source_set.is_none()
             && matches!(observation.outcome, ProjectCheckOutcome::Completed)
     });
-    let repository_sources_complete = repository_index_complete && layout.source_targets_complete;
     let mut observations = layout.observations;
     observations.extend(git.observations);
     let mut facts = layout.facts;
@@ -196,9 +227,33 @@ fn inspect_project_health_with(
     };
     complete_repository_matrix(
         &mut observations,
+        &facts,
         &declared_source_sets,
         repository_matrix_reason,
     );
+    let resource_reason = if !repository_index_complete {
+        "Git index snapshot is unavailable"
+    } else if let Some(reason) = git.resource_inspection_blocker.as_deref() {
+        reason
+    } else if git.repository_root.is_none() {
+        "Git repository root is unavailable"
+    } else {
+        "source-set targets are incomplete"
+    };
+    let mut resource_matrix = resource_observations(
+        declared_source_sets.iter().copied(),
+        resource_reason,
+        layout.source_targets_complete,
+    );
+    let eligible_resource_roots = layout
+        .roots
+        .iter()
+        .filter(|root| {
+            root.source_set.source_format
+                == crate::domain::project_sources::SourceFormat::PlatformXml
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let runtime_sidecars = facts
         .iter()
         .filter_map(|fact| match fact {
@@ -209,37 +264,28 @@ fn inspect_project_health_with(
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();
-    if let Some(repository_root) = git
-        .repository_root
-        .as_ref()
-        .filter(|_| repository_sources_complete && git.resource_inspection_blocker.is_none())
-    {
+    if let Some(repository_root) = git.repository_root.as_ref().filter(|_| {
+        repository_index_complete
+            && git.resource_inspection_blocker.is_none()
+            && !eligible_resource_roots.is_empty()
+    }) {
         let resources = SourceResourcePolicyInspector::with_process_runner(runner)
             .inspect_excluding(
                 repository_root,
-                &layout.roots,
+                &eligible_resource_roots,
                 &git.entries,
                 &runtime_sidecars,
                 cancellation,
                 deadline,
             )?;
-        observations.extend(resources.observations);
+        merge_resource_observations(
+            &mut resource_matrix,
+            resources.observations,
+            &eligible_resource_roots,
+            layout.source_targets_complete,
+        );
         facts.extend(resources.facts);
     } else {
-        let reason = if !layout.source_targets_complete {
-            "source-set targets are incomplete"
-        } else if let Some(reason) = git.resource_inspection_blocker.as_deref() {
-            reason
-        } else if git.repository_root.is_some() {
-            "Git index snapshot is unavailable"
-        } else {
-            "Git repository root is unavailable"
-        };
-        observations.extend(resource_observations(
-            declared_source_sets.iter().copied(),
-            reason,
-            layout.source_targets_complete,
-        ));
         let platform_resource_policy_required = declared_source_sets.iter().any(|source_set| {
             source_set.source_format == crate::domain::project_sources::SourceFormat::PlatformXml
         });
@@ -255,6 +301,7 @@ fn inspect_project_health_with(
             }
         }
     }
+    observations.extend(resource_matrix);
     #[cfg(test)]
     if CANCEL_BEFORE_SNAPSHOT.with(|slot| slot.replace(false)) {
         cancellation.cancel();
@@ -273,8 +320,36 @@ fn inspect_project_health_with(
     })
 }
 
+fn merge_resource_observations(
+    matrix: &mut Vec<crate::domain::project_health::ProjectCheckObservation>,
+    inspected: Vec<crate::domain::project_health::ProjectCheckObservation>,
+    eligible_roots: &[layout::InspectedSourceRoot],
+    aggregate_complete: bool,
+) {
+    let eligible_names = eligible_roots
+        .iter()
+        .map(|root| root.source_set.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for observation in inspected {
+        let replace = observation
+            .source_set
+            .as_deref()
+            .map(|source_set| eligible_names.contains(source_set))
+            .unwrap_or(aggregate_complete);
+        if !replace {
+            continue;
+        }
+        matrix.retain(|existing| {
+            (existing.id, existing.source_set.as_deref())
+                != (observation.id, observation.source_set.as_deref())
+        });
+        matrix.push(observation);
+    }
+}
+
 fn complete_repository_matrix(
     observations: &mut Vec<crate::domain::project_health::ProjectCheckObservation>,
+    facts: &[crate::domain::project_health::ProjectHealthFact],
     source_sets: &[&crate::domain::project_sources::ProjectSourceSet],
     reason: &str,
 ) {
@@ -300,6 +375,64 @@ fn complete_repository_matrix(
             });
         }
     }
+    for id in [
+        ProjectCheckId::RepositoryIgnore,
+        ProjectCheckId::RepositoryGeneratedPaths,
+        ProjectCheckId::RepositoryConfigDumpInfo,
+    ] {
+        if facts
+            .iter()
+            .any(|fact| ordinary_repository_fact_targets_check(fact, id))
+        {
+            // A proven failure dominates incomplete per-set coverage in the
+            // aggregate result. Keep the aggregate observation completed so
+            // the domain can publish that ordinary fact as `failed`.
+            continue;
+        }
+        let per_set_reason = observations.iter().find_map(|observation| {
+            (observation.id == id && observation.source_set.is_some())
+                .then_some(&observation.outcome)
+                .and_then(|outcome| match outcome {
+                    ProjectCheckOutcome::NotRun { reason } => Some(reason.clone()),
+                    ProjectCheckOutcome::Completed | ProjectCheckOutcome::NotApplicable { .. } => {
+                        None
+                    }
+                })
+        });
+        if let Some(reason) = per_set_reason {
+            if let Some(aggregate) = observations
+                .iter_mut()
+                .find(|observation| observation.id == id && observation.source_set.is_none())
+            {
+                if matches!(aggregate.outcome, ProjectCheckOutcome::Completed) {
+                    aggregate.outcome = ProjectCheckOutcome::NotRun { reason };
+                }
+            }
+        }
+    }
+}
+
+fn ordinary_repository_fact_targets_check(
+    fact: &crate::domain::project_health::ProjectHealthFact,
+    id: ProjectCheckId,
+) -> bool {
+    use crate::domain::project_health::ProjectHealthFact;
+
+    matches!(
+        (id, fact),
+        (
+            ProjectCheckId::RepositoryIgnore,
+            ProjectHealthFact::IgnoreRuleMissing { .. }
+                | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
+        ) | (
+            ProjectCheckId::RepositoryGeneratedPaths,
+            ProjectHealthFact::GeneratedPathTracked { .. }
+        ) | (
+            ProjectCheckId::RepositoryConfigDumpInfo,
+            ProjectHealthFact::RuntimeSidecarTracked { .. }
+                | ProjectHealthFact::ConfigDumpInfoUnclassified { .. }
+        )
+    )
 }
 
 fn uniquely_addressable_source_sets(
@@ -402,14 +535,26 @@ mod tests {
                 path: repository_root.to_path_buf(),
             };
         let roots = [root("first"), root("second")];
-        let one = SourceRootOwnerIndex::new(repository_root, roots.iter().take(1));
+        let one = SourceRootOwnerIndex::new_with_case_policy(
+            repository_root,
+            roots.iter().take(1),
+            &mut || Ok::<_, ()>(()),
+            &|_| Ok(true),
+        )
+        .unwrap();
         let one_owners = one
             .deepest_owners_with_checkpoint("ConfigDumpInfo.xml", &mut || Ok::<_, ()>(()))
             .unwrap()
             .unwrap();
         assert_eq!(one_owners.0[0].source_set.name, "first");
 
-        let ambiguous = SourceRootOwnerIndex::new(repository_root, &roots);
+        let ambiguous = SourceRootOwnerIndex::new_with_case_policy(
+            repository_root,
+            &roots,
+            &mut || Ok::<_, ()>(()),
+            &|_| Ok(true),
+        )
+        .unwrap();
         let owners = ambiguous
             .deepest_owners_with_checkpoint("ConfigDumpInfo.xml", &mut || Ok::<_, ()>(()))
             .unwrap()
@@ -422,9 +567,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let repository_root = temp.path();
         fs::create_dir(repository_root.join("src")).unwrap();
+        let repository_identity =
+            crate::infrastructure::source_roots::normalize_path_identity(repository_root).unwrap();
         if crate::infrastructure::platform::filesystem::host_filesystem_case_sensitive(
-            repository_root,
-        ) {
+            &repository_identity,
+        )
+        .unwrap()
+        {
             return;
         }
         let root = crate::infrastructure::project_health::layout::InspectedSourceRoot {
@@ -438,7 +587,7 @@ mod tests {
             },
             path: repository_root.join("src"),
         };
-        let index = SourceRootOwnerIndex::new(repository_root, [&root]);
+        let index = SourceRootOwnerIndex::new(repository_root, [&root]).unwrap();
 
         let owners = index
             .deepest_owners_with_checkpoint("SRC/Hidden.xml", &mut || Ok::<_, ()>(()))
@@ -466,7 +615,7 @@ mod tests {
             repository_root,
             [&root],
             &mut || Ok::<_, ()>(()),
-            &|path| path.ends_with("modules"),
+            &|path| Ok(path.ends_with("modules")),
         )
         .unwrap();
 
@@ -484,6 +633,113 @@ mod tests {
                 .name,
             "upper"
         );
+    }
+
+    #[test]
+    fn source_owner_index_fails_closed_when_case_policy_is_unavailable() {
+        let repository_root = Path::new("/repository");
+        let root = crate::infrastructure::project_health::layout::InspectedSourceRoot {
+            source_set: ProjectSourceSet {
+                name: "main".into(),
+                kind: SourceSetKind::Configuration,
+                path: "src".into(),
+                source_format: SourceFormat::PlatformXml,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            path: repository_root.join("src"),
+        };
+
+        let result = SourceRootOwnerIndex::new_with_case_policy(
+            repository_root,
+            [&root],
+            &mut || Ok::<_, ()>(()),
+            &|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "case policy denied",
+                ))
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::SourceRootOwnerIndexError::Path(reason))
+                if reason.contains("failed to determine filesystem path identity")
+                    && reason.contains("case policy denied")
+        ));
+    }
+
+    #[test]
+    fn source_owner_index_inherits_case_policy_for_a_missing_declared_root() {
+        let temp = TempDir::new().unwrap();
+        let repository_root = temp.path();
+        let root = crate::infrastructure::project_health::layout::InspectedSourceRoot {
+            source_set: ProjectSourceSet {
+                name: "main".into(),
+                kind: SourceSetKind::Configuration,
+                path: "missing/nested".into(),
+                source_format: SourceFormat::PlatformXml,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            path: repository_root.join("missing/nested"),
+        };
+
+        let index = SourceRootOwnerIndex::new(repository_root, [&root]).unwrap();
+        let owners = index
+            .deepest_owners_with_checkpoint("missing/nested/Configuration.xml", &mut || {
+                Ok::<_, ()>(())
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(owners.0[0].source_set.name, "main");
+    }
+
+    #[test]
+    fn source_owner_index_uses_apple_canonical_unicode_path_identity() {
+        let composed =
+            crate::infrastructure::platform::filesystem::host_path_component_identity_key(
+                std::ffi::OsStr::new("é"),
+                true,
+            );
+        let decomposed =
+            crate::infrastructure::platform::filesystem::host_path_component_identity_key(
+                std::ffi::OsStr::new("e\u{301}"),
+                true,
+            );
+        if composed != decomposed {
+            return;
+        }
+        let repository_root = Path::new("/repository");
+        let root = crate::infrastructure::project_health::layout::InspectedSourceRoot {
+            source_set: ProjectSourceSet {
+                name: "main".into(),
+                kind: SourceSetKind::Configuration,
+                path: "src/é".into(),
+                source_format: SourceFormat::PlatformXml,
+                format_evidence: Vec::new(),
+                format_probe_error: None,
+            },
+            path: repository_root.join("src/é"),
+        };
+        let index = SourceRootOwnerIndex::new_with_case_policy(
+            repository_root,
+            [&root],
+            &mut || Ok::<_, ()>(()),
+            &|_| Ok(true),
+        )
+        .unwrap();
+
+        let owners = index
+            .deepest_owners_with_checkpoint("src/e\u{301}/Configuration.xml", &mut || {
+                Ok::<_, ()>(())
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(owners.0[0].source_set.name, "main");
     }
 
     #[test]
