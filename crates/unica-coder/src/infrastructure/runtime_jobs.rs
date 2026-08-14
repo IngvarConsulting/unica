@@ -426,11 +426,12 @@ struct RuntimeJobRecord {
     pid: Option<u32>,
     pid_identity: Option<String>,
     /// Persisted immediately before the worker asks the runner for a child, so a
-    /// record can prove whether an orphaned child process may exist. Records
-    /// written before this field existed default to the conservative reading
-    /// that `pid` already carries.
+    /// record can prove whether an orphaned child process may exist. Absent means
+    /// unknown, not "no child": a build that predates this field could die after
+    /// `runner.spawn()` and before persisting `pid`, leaving a live child behind
+    /// a queued record with no trace of it. Only an explicit `false` is proof.
     #[serde(default)]
-    child_spawn_attempted: bool,
+    child_spawn_attempted: Option<bool>,
     exit_code: Option<i32>,
     cancel_policy: CancelPolicy,
     cancelled: bool,
@@ -463,7 +464,7 @@ impl RuntimeJobRecord {
             finished_at_ms: None,
             pid: None,
             pid_identity: None,
-            child_spawn_attempted: false,
+            child_spawn_attempted: Some(false),
             exit_code: None,
             cancel_policy: request.operation.cancel_policy(),
             cancelled: false,
@@ -506,11 +507,12 @@ impl RuntimeJobRecord {
 
     /// Whether an orphaned child process of this job may still be running, and
     /// therefore whether releasing `active.lock` could admit a second job into a
-    /// workspace the first one is still mutating. `child_spawn_attempted` is
-    /// persisted before the spawn; `pid` covers records written before that
-    /// field existed.
+    /// workspace the first one is still mutating. Releasing requires proof that
+    /// no child exists: an explicit `child_spawn_attempted: false`, which this
+    /// build persists before it asks the runner for a child. An absent flag is
+    /// unknown and keeps the lock, as does any recorded `pid`.
     fn may_have_orphan_child(&self) -> bool {
-        self.child_spawn_attempted || self.pid.is_some()
+        self.child_spawn_attempted.unwrap_or(true) || self.pid.is_some()
     }
 
     fn transition(&mut self, next: RuntimeJobPhase) -> JobResult<()> {
@@ -1034,7 +1036,7 @@ impl RuntimeJobService {
         // The child must never be able to exist before the record admits it. A
         // worker killed between the spawn and the `Running` write would otherwise
         // leave a queued record that wrongly proves the workspace is childless.
-        record.child_spawn_attempted = true;
+        record.child_spawn_attempted = Some(true);
         if let Err(error) = self.store.write_record(&record) {
             let _ = self.fail_start(&mut record, &error);
             return Err(error);
@@ -1832,7 +1834,7 @@ mod tests {
         record.heartbeat_at_ms = Some(0);
         // The worker persisted its intent to spawn, so an orphaned child tree may
         // still be mutating this workspace.
-        record.child_spawn_attempted = true;
+        record.child_spawn_attempted = Some(true);
         store.write_record(&record).expect("age queued record");
 
         let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
@@ -2099,6 +2101,56 @@ mod tests {
             .recover_stale_active()
             .expect_err("a lock that names no job proves nothing about a child");
         assert!(store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn a_legacy_record_without_the_spawn_flag_is_lost_and_retains_the_active_lock() {
+        // A record written before `childSpawnAttempted` existed proves nothing:
+        // the previous worker could die after `runner.spawn()` and before it
+        // persisted `pid`, leaving a live child behind a queued record. Absence
+        // of the flag is unknown, never "no child was spawned".
+        let cache = TestCache::new();
+        let (store, abandoned) = abandoned_queued_job(&cache);
+        let path = store.record_path(&abandoned).expect("record path");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read record"))
+                .expect("parse record");
+        value
+            .as_object_mut()
+            .expect("record object")
+            .remove("childSpawnAttempted");
+        assert_eq!(
+            value["pid"],
+            serde_json::Value::Null,
+            "the legacy shape under test carries no pid either"
+        );
+        fs::write(
+            &path,
+            serde_json::to_vec(&value).expect("serialize legacy record"),
+        )
+        .expect("write legacy record");
+
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let error = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect_err("an unprovable legacy record must not free the workspace");
+
+        assert!(error.contains(&abandoned), "{error}");
+        assert_eq!(
+            store
+                .read_record(&abandoned)
+                .expect("read recovered record")
+                .phase,
+            RuntimeJobPhase::Lost,
+            "the record must still be terminalized"
+        );
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read retained active lock")
+                .trim(),
+            abandoned,
+            "the lock must be retained while the child cannot be ruled out"
+        );
     }
 
     #[test]
