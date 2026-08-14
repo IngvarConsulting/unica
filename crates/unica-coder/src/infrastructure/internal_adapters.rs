@@ -487,7 +487,7 @@ impl<'a> RuntimeAdapter<'a> {
         validate_bounded_external_epf_artifact_paths(&invocation.args, &context.cwd)?;
         let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
         let mut command = vec![bundled_tool.program.display().to_string()];
-        command.extend(report_args);
+        command.extend(report_args.iter().cloned());
 
         if dry_run {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
@@ -553,19 +553,27 @@ impl<'a> RuntimeAdapter<'a> {
             }
         };
         let mut initial_partial_output = None;
-        if let (Some(_failure), Some(fallback_args)) = (
-            classify_partial_platform_failure(&BuildAttempt {
-                argv: &process_command.args,
-                process_exit_code: process_exit_code(&output.status),
-                status_success: output.status_success,
-                timed_out: output.timed_out,
-                cancelled: output.cancelled,
-                stdout_truncated: output.stdout_truncated,
-                stdout_had_invalid_utf8: output.stdout_had_invalid_utf8,
-                stdout: &output.stdout,
-            }),
-            full_rebuild_argv(&process_command.args),
-        ) {
+        let proven_partial_failure = classify_partial_platform_failure(&BuildAttempt {
+            argv: &process_command.args,
+            process_exit_code: process_exit_code(&output.status),
+            status_success: output.status_success,
+            timed_out: output.timed_out,
+            cancelled: output.cancelled,
+            stdout_truncated: output.stdout_truncated,
+            stdout_had_invalid_utf8: output.stdout_had_invalid_utf8,
+            stdout: &output.stdout,
+        });
+        let fallback_args = match &proven_partial_failure {
+            Ok(_) => full_rebuild_argv(&process_command.args),
+            Err(rejection) => {
+                // A receipt that reached the pinned failure code and was still
+                // refused has to say so. Without it a drifted receipt looks
+                // exactly like a runtime that never considered the retry (#404).
+                runtime_warnings.extend(rejection.warning());
+                None
+            }
+        };
+        if let Some(fallback_args) = fallback_args {
             if cancellation.is_cancelled() {
                 let stdout = redactor(&output.stdout);
                 let stderr = redactor(&output.stderr);
@@ -616,6 +624,14 @@ impl<'a> RuntimeAdapter<'a> {
                     ));
                 }
             };
+            // The full attempt is the one whose result is reported, so the
+            // reported command must be the one that produced it. Leaving the
+            // partial argv here hands the caller a command that never ran.
+            if let Some(reported_fallback_args) = full_rebuild_argv(&report_args) {
+                command = std::iter::once(bundled_tool.program.display().to_string())
+                    .chain(reported_fallback_args)
+                    .collect();
+            }
             runtime_warnings.push(PARTIAL_FALLBACK_WARNING.to_string());
         }
         let mut runner_error = if args.get("operation").and_then(Value::as_str) == Some("build")
@@ -3449,6 +3465,14 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("retried once with `--full-rebuild`")));
+        // The full attempt decided the reported result, so the reported command
+        // has to be the one that produced it.
+        let reported = outcome.command.expect("reported command");
+        assert_eq!(
+            reported[1..],
+            commands[1].args[..],
+            "the reported command must be the attempt whose result was published"
+        );
         cleanup_context(&context);
     }
 
@@ -3755,6 +3779,17 @@ mod tests {
 
         assert!(!outcome.ok);
         assert_eq!(runner.commands.borrow().len(), 1);
+        // The pinned exit code arrived and the retry still did not happen. That
+        // has to be visible, or it is indistinguishable from #404 unfixed.
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("no full rebuild was retried")
+                    && warning.contains("not valid UTF-8")),
+            "{:?}",
+            outcome.warnings
+        );
         cleanup_context(&context);
     }
 

@@ -1,6 +1,8 @@
 //! Durable runtime-job state used by the runtime-job worker and transport adapter.
 
 use super::redaction;
+#[cfg(test)]
+use super::runtime_build_fallback::FallbackRejection;
 use super::runtime_build_fallback::{
     classify_partial_platform_failure, full_rebuild_argv, BuildAttempt, PARTIAL_FALLBACK_WARNING,
 };
@@ -23,7 +25,7 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -33,6 +35,9 @@ const RECORD_SCHEMA_VERSION: u8 = 1;
 const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
 const FALLBACK_RECEIPT_BYTES: usize = STDOUT_CAPTURE_LIMIT;
 const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
+const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(30);
+const LIFECYCLE_LOCK_RETRY: Duration = Duration::from_millis(20);
+const STREAM_FINISH_TIMEOUT: Duration = Duration::from_secs(10);
 
 type JobResult<T> = Result<T, String>;
 
@@ -169,26 +174,25 @@ impl RuntimeJobRequest {
             ));
         }
         match &self.full_rebuild_fallback_argv {
-            Some(fallback) => {
+            Some(fallback)
                 if self.operation != RuntimeJobOperation::Build
                     || full_rebuild
                     || !self
                         .raw_argv
                         .iter()
                         .any(|argument| argument == "--json-message")
-                    || full_rebuild_argv(&self.raw_argv).as_ref() != Some(fallback)
-                {
-                    return Err(redacted_error(
-                        "runtime job full rebuild fallback arguments are inconsistent",
-                    ));
-                }
+                    || full_rebuild_argv(&self.raw_argv).as_ref() != Some(fallback) =>
+            {
+                return Err(redacted_error(
+                    "runtime job full rebuild fallback arguments are inconsistent",
+                ));
             }
             None if self.operation == RuntimeJobOperation::Build && !full_rebuild => {
                 return Err(redacted_error(
                     "normal build worker request is missing its full rebuild fallback",
                 ));
             }
-            None => {}
+            Some(_) | None => {}
         }
         Ok(())
     }
@@ -270,7 +274,9 @@ pub(crate) enum RuntimeJobProcessState {
 pub(crate) struct RuntimeJobOutput {
     pub(crate) stdout: String,
     pub(crate) stderr: String,
-    pub(crate) stdout_truncated: bool,
+    /// A reader that had to be abandoned before EOF, so the persisted tail may
+    /// be missing the end of the process output.
+    pub(crate) output_incomplete: bool,
     fallback_receipt: Option<String>,
     fallback_receipt_truncated: bool,
 }
@@ -433,29 +439,37 @@ impl RuntimeJobProcess for SystemRuntimeJobProcess {
     }
 
     fn output_tails(&mut self, max_bytes: usize) -> JobResult<RuntimeJobOutput> {
-        if self.exited {
-            self.stdout.finish()?;
-            self.stderr.finish()?;
-        }
-        let (stdout, stdout_truncated) = self.stdout.tail(max_bytes)?;
-        let (fallback_receipt, receipt_truncated) = self.stdout.receipt()?;
-        let (stderr, _) = self.stderr.tail(max_bytes)?;
+        // The receipt only decides anything once the process is gone, and it is
+        // the whole retained buffer. Reading it on every 25 ms poll of a running
+        // build would clone and re-validate it for nothing.
+        let (output_incomplete, fallback_receipt, fallback_receipt_truncated) = if self.exited {
+            let stdout_incomplete = self.stdout.finish()?;
+            let stderr_incomplete = self.stderr.finish()?;
+            let (receipt, receipt_truncated) = self.stdout.receipt()?;
+            (
+                stdout_incomplete || stderr_incomplete,
+                receipt,
+                receipt_truncated,
+            )
+        } else {
+            (false, None, false)
+        };
         Ok(RuntimeJobOutput {
-            stdout,
-            stderr,
-            stdout_truncated,
+            stdout: self.stdout.tail(max_bytes)?,
+            stderr: self.stderr.tail(max_bytes)?,
+            output_incomplete,
             fallback_receipt,
-            fallback_receipt_truncated: receipt_truncated,
+            fallback_receipt_truncated,
         })
     }
 }
 
 struct StreamTail {
     text: Arc<Mutex<String>>,
-    truncated: Arc<std::sync::atomic::AtomicBool>,
     receipt: Option<Arc<Mutex<Vec<u8>>>>,
     receipt_truncated: Arc<std::sync::atomic::AtomicBool>,
     reader: Option<thread::JoinHandle<io::Result<()>>>,
+    finished: mpsc::Receiver<()>,
 }
 
 impl StreamTail {
@@ -479,55 +493,75 @@ impl StreamTail {
     {
         let text = Arc::new(Mutex::new(String::new()));
         let captured = Arc::clone(&text);
-        let truncated = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let capture_truncated = Arc::clone(&truncated);
         let receipt = retain_receipt.then(|| Arc::new(Mutex::new(Vec::new())));
         let captured_receipt = receipt.clone();
         let receipt_truncated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let capture_receipt_truncated = Arc::clone(&receipt_truncated);
+        let (finished_sender, finished) = mpsc::channel::<()>();
         let reader = thread::spawn(move || {
+            // Dropped on every exit path, which is what tells `finish` the
+            // reader is joinable without blocking on it.
+            let _finished = finished_sender;
             let mut buffer = [0_u8; 4096];
             let mut redactor = redaction::StreamRedactor::new();
             loop {
                 let count = stream.read(&mut buffer)?;
                 if count == 0 {
-                    append_tail(&captured, &capture_truncated, &redactor.finish())?;
+                    append_tail(&captured, &redactor.finish())?;
                     return Ok(());
                 }
                 if let Some(receipt) = &captured_receipt {
                     append_byte_tail(receipt, &capture_receipt_truncated, &buffer[..count])?;
                 }
                 let chunk = String::from_utf8_lossy(&buffer[..count]);
-                append_tail(&captured, &capture_truncated, &redactor.push(&chunk))?;
+                append_tail(&captured, &redactor.push(&chunk))?;
             }
         });
         Self {
             text,
-            truncated,
             receipt,
             receipt_truncated,
             reader: Some(reader),
+            finished,
         }
     }
 
-    fn finish(&mut self) -> JobResult<()> {
-        let Some(reader) = self.reader.take() else {
-            return Ok(());
-        };
-        reader
-            .join()
-            .map_err(|_| redacted_error("join runtime job output reader"))?
-            .map_err(|error| io_error("read runtime job output", &error))
+    /// Drains the reader for a bounded time and reports whether it had to be
+    /// abandoned. A child that exits while a grandchild still holds the
+    /// inherited pipe never produces EOF, and this join runs inside the
+    /// workspace lifecycle guard: waiting on it forever would wedge the guard
+    /// and with it every other job transition, including cancellation.
+    fn finish(&mut self) -> JobResult<bool> {
+        self.finish_within(STREAM_FINISH_TIMEOUT)
     }
 
-    fn tail(&self, max_bytes: usize) -> JobResult<(String, bool)> {
+    fn finish_within(&mut self, timeout: Duration) -> JobResult<bool> {
+        let Some(reader) = self.reader.take() else {
+            return Ok(false);
+        };
+        match self.finished.recv_timeout(timeout) {
+            Err(mpsc::RecvTimeoutError::Disconnected) => reader
+                .join()
+                .map_err(|_| redacted_error("join runtime job output reader"))?
+                .map_err(|error| io_error("read runtime job output", &error))
+                .map(|()| false),
+            _ => {
+                // What the reader already captured stays readable, but the
+                // receipt can no longer be proven whole, so it must not
+                // authorize a full rebuild.
+                self.receipt_truncated
+                    .store(true, std::sync::atomic::Ordering::Release);
+                Ok(true)
+            }
+        }
+    }
+
+    fn tail(&self, max_bytes: usize) -> JobResult<String> {
         let text = self
             .text
             .lock()
             .map_err(|error| redacted_error(&format!("lock runtime job output: {error}")))?;
-        let truncated =
-            self.truncated.load(std::sync::atomic::Ordering::Acquire) || text.len() > max_bytes;
-        Ok((bounded_tail(&text, max_bytes), truncated))
+        Ok(bounded_tail(&text, max_bytes))
     }
 
     fn receipt(&self) -> JobResult<(Option<String>, bool)> {
@@ -754,6 +788,7 @@ struct CancelMarker {
     requested_at_ms: u64,
 }
 
+#[derive(Debug)]
 struct ActiveLifecycleLock {
     file: File,
 }
@@ -827,13 +862,15 @@ impl RuntimeJobStore {
     fn acquire_active_lock(&self, id: &str) -> JobResult<()> {
         self.acquire_active_lock_after_lifecycle(id, || {})
     }
-
+    /// The hook runs after the lifecycle guard is held and before the active
+    /// lock is claimed, so a test can interleave another process in that window.
+    /// Production passes a no-op.
     fn acquire_active_lock_after_lifecycle(
         &self,
         id: &str,
         after_lifecycle_lock: impl FnOnce(),
     ) -> JobResult<()> {
-        let _lifecycle_lock = self.acquire_active_lifecycle_lock()?;
+        let _lifecycle_lock = self.acquire_active_lifecycle_lock_bounded()?;
         after_lifecycle_lock();
         self.acquire_active_lock_guarded(id)
     }
@@ -842,6 +879,38 @@ impl RuntimeJobStore {
         self.open_active_lifecycle_lock(false)?.ok_or_else(|| {
             redacted_error("active runtime job lifecycle lock unexpectedly remained contended")
         })
+    }
+
+    /// Bounded acquisition for the paths that answer a caller: starting a job
+    /// and requesting cancellation. The guard is held across process
+    /// observation, so an owner that wedges must not turn those calls into an
+    /// unbounded wait — a caller is owed a diagnosable refusal it can retry,
+    /// and cancellation above all must not depend on the health of the worker
+    /// it is trying to stop. The worker's own loop keeps the blocking form,
+    /// since it owns the transition it is guarding.
+    fn acquire_active_lifecycle_lock_bounded(&self) -> JobResult<ActiveLifecycleLock> {
+        let deadline = Instant::now()
+            .checked_add(LIFECYCLE_LOCK_WAIT)
+            .ok_or_else(|| redacted_error("runtime job lifecycle deadline is unrepresentable"))?;
+        self.acquire_active_lifecycle_lock_until(deadline)
+    }
+
+    fn acquire_active_lifecycle_lock_until(
+        &self,
+        deadline: Instant,
+    ) -> JobResult<ActiveLifecycleLock> {
+        loop {
+            if let Some(lifecycle_lock) = self.try_acquire_active_lifecycle_lock()? {
+                return Ok(lifecycle_lock);
+            }
+            if Instant::now() >= deadline {
+                return Err(redacted_error(
+                    "another runtime job lifecycle transition still holds the workspace guard; \
+                     retry once the active job reports progress",
+                ));
+            }
+            thread::sleep(LIFECYCLE_LOCK_RETRY);
+        }
     }
 
     fn try_acquire_active_lifecycle_lock(&self) -> JobResult<Option<ActiveLifecycleLock>> {
@@ -927,17 +996,11 @@ impl RuntimeJobStore {
     }
 
     fn release_active_lock_for(&self, id: &str) -> JobResult<()> {
-        self.release_active_lock_for_after_observation(id, || {})
+        self.release_active_lock_for_after_hooks(id, || {}, || {})
     }
 
-    fn release_active_lock_for_after_observation(
-        &self,
-        id: &str,
-        after_observation: impl FnOnce(),
-    ) -> JobResult<()> {
-        self.release_active_lock_for_after_hooks(id, after_observation, || {})
-    }
-
+    /// The hook parameters exist so a test can interleave another process at the
+    /// two observation points this release has. Production always passes no-ops.
     fn release_active_lock_for_after_hooks(
         &self,
         id: &str,
@@ -1275,6 +1338,17 @@ struct ActiveRuntimeJobProcess {
     previous_output: Option<RuntimeJobOutput>,
 }
 
+/// One observation of the active process: its state, the outputs to persist and
+/// the evidence a full rebuild decision needs.
+struct RuntimeJobObservation {
+    state: RuntimeJobProcessState,
+    output: RuntimeJobOutput,
+    attempt_argv: Vec<String>,
+    /// Whether a full rebuild is still available for this job. Only then can a
+    /// refused receipt mean anything, so only then is it worth reporting.
+    fallback_pending: bool,
+}
+
 pub(crate) struct RuntimeJobService {
     store: RuntimeJobStore,
     runner: Arc<dyn RuntimeJobRunner>,
@@ -1322,7 +1396,8 @@ impl RuntimeJobService {
     ) -> JobResult<RuntimeJobSnapshot> {
         self.activate_enqueued_after_preflight(id, request, || {})
     }
-
+    /// The hook runs after the first build reauthorization, so a test can let
+    /// recovery or cancellation win that window. Production passes a no-op.
     fn activate_enqueued_after_preflight(
         &self,
         id: &str,
@@ -1331,7 +1406,8 @@ impl RuntimeJobService {
     ) -> JobResult<RuntimeJobSnapshot> {
         self.activate_enqueued_after_hooks(id, request, after_preflight, || {})
     }
-
+    /// The second hook runs just before the activation guard is claimed, so a
+    /// test can order itself against it. Production passes no-ops.
     fn activate_enqueued_after_hooks(
         &self,
         id: &str,
@@ -1524,9 +1600,20 @@ impl RuntimeJobService {
             record.heartbeat_at_ms = Some(now_millis());
             self.store.write_record(&record)?;
         }
-        let (process_state, output, attempt_argv) =
-            self.observe_process(&record, request_safe_cancel)?;
+        let RuntimeJobObservation {
+            state: process_state,
+            output,
+            attempt_argv,
+            fallback_pending,
+        } = self.observe_process(&record, request_safe_cancel)?;
         self.store.write_logs(&record.id, &output)?;
+        if output.output_incomplete {
+            record.warnings.push(
+                "runtime job output reader was abandoned before end of stream; the persisted tail \
+                 may be incomplete and no full rebuild can be authorized from it"
+                    .to_string(),
+            );
+        }
 
         match process_state {
             RuntimeJobProcessState::Running => {
@@ -1535,26 +1622,31 @@ impl RuntimeJobService {
                 Ok(record.snapshot(false))
             }
             RuntimeJobProcessState::Exited { exit_code } => {
-                if exit_code != 0
-                    && !cancel_requested
-                    && output.fallback_receipt.as_deref().is_some_and(|stdout| {
-                        classify_partial_platform_failure(&BuildAttempt {
-                            argv: &attempt_argv,
-                            process_exit_code: Some(exit_code),
-                            status_success: false,
-                            timed_out: false,
-                            cancelled: false,
-                            stdout_truncated: output.fallback_receipt_truncated,
-                            stdout_had_invalid_utf8: false,
-                            stdout,
-                        })
-                        .is_some()
-                    })
-                {
-                    if let Some(snapshot) =
-                        self.start_full_build_fallback_guarded(&mut record, &output, exit_code)?
-                    {
-                        return Ok(snapshot);
+                if exit_code != 0 && !cancel_requested && fallback_pending {
+                    match classify_partial_platform_failure(&BuildAttempt {
+                        argv: &attempt_argv,
+                        process_exit_code: Some(exit_code),
+                        status_success: false,
+                        timed_out: false,
+                        cancelled: false,
+                        stdout_truncated: output.fallback_receipt_truncated,
+                        stdout_had_invalid_utf8: output.fallback_receipt.is_none()
+                            && !output.fallback_receipt_truncated,
+                        stdout: output.fallback_receipt.as_deref().unwrap_or_default(),
+                    }) {
+                        Ok(_) => {
+                            if let Some(snapshot) = self.start_full_build_fallback_guarded(
+                                &mut record,
+                                &output,
+                                exit_code,
+                            )? {
+                                return Ok(snapshot);
+                            }
+                        }
+                        // A receipt that reached the pinned failure code and was
+                        // still refused has to say so, or a drifted receipt is
+                        // indistinguishable from a runtime that never tried.
+                        Err(rejection) => record.warnings.extend(rejection.warning()),
                     }
                 }
                 let phase = if cancel_requested && record.cancel_policy == CancelPolicy::Safe {
@@ -1651,7 +1743,7 @@ impl RuntimeJobService {
         id: &str,
     ) -> JobResult<RuntimeJobSnapshot> {
         let store = RuntimeJobStore::new(cache_root, DEFAULT_STALE_AFTER);
-        let _lifecycle_lock = store.acquire_active_lifecycle_lock()?;
+        let _lifecycle_lock = store.acquire_active_lifecycle_lock_bounded()?;
         let record = store.read_record(id)?;
         if record.phase.is_terminal() {
             return Ok(record.snapshot(false));
@@ -1690,7 +1782,7 @@ impl RuntimeJobService {
         &self,
         record: &RuntimeJobRecord,
         request_safe_cancel: bool,
-    ) -> JobResult<(RuntimeJobProcessState, RuntimeJobOutput, Vec<String>)> {
+    ) -> JobResult<RuntimeJobObservation> {
         let mut processes = self.lock_processes()?;
         if !processes.contains_key(&record.id) {
             let process_id = record.pid.ok_or_else(|| {
@@ -1733,7 +1825,12 @@ impl RuntimeJobService {
         if let Some(previous) = &active.previous_output {
             output = combine_runtime_job_outputs(previous, &output);
         }
-        Ok((state, output, active.attempt_argv.clone()))
+        Ok(RuntimeJobObservation {
+            state,
+            output,
+            attempt_argv: active.attempt_argv.clone(),
+            fallback_pending: active.fallback.is_some(),
+        })
     }
 
     fn start_full_build_fallback_guarded(
@@ -1804,6 +1901,10 @@ impl RuntimeJobService {
         let mut previous_output = first_output.clone();
         previous_output.fallback_receipt = None;
         previous_output.fallback_receipt_truncated = false;
+        // The poll that observed the first attempt already recorded whatever it
+        // had to say about its reader. Carrying the flag forward would repeat
+        // that warning on every poll of the full attempt.
+        previous_output.output_incomplete = false;
         active.previous_output = Some(previous_output);
         Ok(Some(record.snapshot(false)))
     }
@@ -1977,7 +2078,7 @@ pub(crate) fn start_detached_worker(
     // commit frame is published. A cancellation observed during that write is
     // then terminalized before a worker carrying the older serialized snapshot
     // can claim Queued -> Running.
-    let lifecycle_lock = match store.acquire_active_lifecycle_lock() {
+    let lifecycle_lock = match store.acquire_active_lifecycle_lock_bounded() {
         Ok(lifecycle_lock) => lifecycle_lock,
         Err(error) => {
             let _ = worker.kill();
@@ -2005,7 +2106,8 @@ pub(crate) fn start_detached_worker(
     }
     result
 }
-
+/// The hook runs between the request and commit frames, so a test can cancel
+/// while exactly one frame is readable. Production passes a no-op.
 fn write_worker_handoff_after_request(
     writer: &mut impl Write,
     handoff: &WorkerStartRequest,
@@ -2193,7 +2295,8 @@ fn fail_queued_job_guarded(store: &RuntimeJobStore, id: &str, error: &str) -> Jo
 fn cancel_queued_job(cache_root: &Path, id: &str) -> JobResult<()> {
     cancel_queued_job_after_guard(cache_root, id, || {})
 }
-
+/// The hook runs under the lifecycle guard once the record is known to be
+/// queued, so a test can race the terminal write. Production passes a no-op.
 fn cancel_queued_job_after_guard(
     cache_root: &Path,
     id: &str,
@@ -2229,7 +2332,9 @@ fn enqueue_cancellable_runtime_job(
 ) -> JobResult<RuntimeJobSnapshot> {
     enqueue_cancellable_runtime_job_after_hook(cache_root, request, cancellation, || {})
 }
-
+/// The hook runs after the durable enqueue and before the cancellation is
+/// re-read, so a test can flip the token in that window. Production passes a
+/// no-op.
 fn enqueue_cancellable_runtime_job_after_hook(
     cache_root: &Path,
     request: &RuntimeJobRequest,
@@ -2354,18 +2459,13 @@ fn bounded_redacted_tail(text: &str, max_bytes: usize) -> String {
     bounded_tail(&redact_text(text), max_bytes)
 }
 
-fn append_tail(
-    target: &Arc<Mutex<String>>,
-    truncated: &std::sync::atomic::AtomicBool,
-    addition: &str,
-) -> io::Result<()> {
+fn append_tail(target: &Arc<Mutex<String>>, addition: &str) -> io::Result<()> {
     let mut text = target
         .lock()
         .map_err(|_| io::Error::other("runtime job output lock is poisoned"))?;
     text.push_str(addition);
     if text.len() > OUTPUT_TAIL_BYTES {
         *text = bounded_tail(&text, OUTPUT_TAIL_BYTES);
-        truncated.store(true, std::sync::atomic::Ordering::Release);
     }
     Ok(())
 }
@@ -2400,7 +2500,7 @@ fn combine_runtime_job_outputs(
             "--- initial partial attempt ---\n{}\n--- full rebuild fallback ---\n{}",
             initial.stderr, fallback.stderr
         ),
-        stdout_truncated: initial.stdout_truncated || fallback.stdout_truncated,
+        output_incomplete: initial.output_incomplete || fallback.output_incomplete,
         fallback_receipt: fallback.fallback_receipt.clone(),
         fallback_receipt_truncated: fallback.fallback_receipt_truncated,
     }
@@ -2514,17 +2614,70 @@ mod tests {
         assert!(!reconnected.store.active_lock_path().exists());
     }
 
+    /// A pipe whose write end outlived the child: readable, never at EOF.
+    struct NeverEndingStream {
+        released: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Read for NeverEndingStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            while !self.released.load(std::sync::atomic::Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(5));
+            }
+            buffer[0] = b'x';
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn a_reader_that_never_reaches_eof_is_abandoned_instead_of_wedging_the_guard() {
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut tail = StreamTail::spawn_with_receipt(NeverEndingStream {
+            released: Arc::clone(&released),
+        });
+
+        let abandoned = tail
+            .finish_within(Duration::from_millis(50))
+            .expect("an unfinished reader must not fail the observation");
+
+        assert!(
+            abandoned,
+            "a reader still waiting on an inherited pipe must be abandoned"
+        );
+        let (receipt, receipt_truncated) = tail.receipt().expect("read classification receipt");
+        assert!(receipt.is_none());
+        assert!(
+            receipt_truncated,
+            "an abandoned reader cannot prove a whole receipt, so no fallback may be authorized"
+        );
+        released.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[test]
+    fn a_held_lifecycle_guard_refuses_a_caller_instead_of_blocking_it() {
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let _held = store
+            .acquire_active_lifecycle_lock()
+            .expect("hold the lifecycle guard");
+
+        let error = store
+            .acquire_active_lifecycle_lock_until(Instant::now())
+            .expect_err("a bounded acquisition must refuse a held guard");
+
+        assert!(error.contains("still holds the workspace guard"), "{error}");
+    }
+
     #[test]
     fn worker_stream_tail_redacts_output_before_retaining_it() {
         let mut tail = StreamTail::spawn(Cursor::new(
             b"build started\nPwd=stream-secret\ncompleted\n".to_vec(),
         ));
-        tail.finish().expect("finish output reader");
-        let (output, truncated) = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
+        assert!(!tail.finish().expect("finish output reader"));
+        let output = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
         let (receipt, receipt_truncated) =
             tail.receipt().expect("inspect disabled receipt capture");
 
-        assert!(!truncated);
         assert!(receipt.is_none());
         assert!(!receipt_truncated);
         assert!(output.contains("Pwd=<redacted>"));
@@ -2539,27 +2692,28 @@ mod tests {
         let mut bytes = b"discarded-prefix".to_vec();
         bytes.extend_from_slice(padded_receipt.as_bytes());
         let mut tail = StreamTail::spawn_with_receipt(Cursor::new(bytes));
-        tail.finish().expect("finish output reader");
-        let (output, truncated) = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
+        assert!(!tail.finish().expect("finish output reader"));
+        let output = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
         let (receipt, receipt_truncated) = tail.receipt().expect("read classification receipt");
         let argv = vec!["--json-message".to_string(), "build".to_string()];
 
         assert_eq!(output.len(), OUTPUT_TAIL_BYTES);
-        assert!(truncated);
         assert!(receipt.is_none());
         assert!(receipt_truncated);
-        assert!(
+        assert_eq!(
             classify_partial_platform_failure(&BuildAttempt {
                 argv: &argv,
                 process_exit_code: Some(4),
                 status_success: false,
                 timed_out: false,
                 cancelled: false,
-                stdout_truncated: truncated,
+                stdout_truncated: receipt_truncated,
                 stdout_had_invalid_utf8: false,
-                stdout: &output,
-            })
-            .is_none(),
+                stdout: receipt.as_deref().unwrap_or_default(),
+            }),
+            Err(FallbackRejection::Receipt(
+                "the captured output was truncated"
+            )),
             "a valid JSON tail must not hide discarded stdout bytes"
         );
     }
@@ -2569,14 +2723,13 @@ mod tests {
         let receipt = completed_partial_failure_json()
             .replace("/tmp/partial.lst", "/tmp/token=durable-secret/partial.lst");
         let mut tail = StreamTail::spawn_with_receipt(Cursor::new(receipt.into_bytes()));
-        tail.finish().expect("finish output reader");
-        let (output, truncated) = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
+        assert!(!tail.finish().expect("finish output reader"));
+        let output = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
         let (receipt, receipt_truncated) = tail.receipt().expect("read classification receipt");
         let receipt = receipt.expect("complete raw receipt");
         let argv = vec!["--json-message".to_string(), "build".to_string()];
 
         assert!(!output.contains("durable-secret"));
-        assert!(!truncated);
         assert!(!receipt_truncated);
         assert!(
             classify_partial_platform_failure(&BuildAttempt {
@@ -2589,7 +2742,7 @@ mod tests {
                 stdout_had_invalid_utf8: false,
                 stdout: &receipt,
             })
-            .is_some(),
+            .is_ok(),
             "redaction for persisted logs must not change transient retry evidence"
         );
     }
@@ -2600,13 +2753,15 @@ mod tests {
         let receipt = completed_partial_failure_json().replace("sanitized", &expanded_log);
         assert!(receipt.len() <= OUTPUT_TAIL_BYTES);
         let mut tail = StreamTail::spawn_with_receipt(Cursor::new(receipt.into_bytes()));
-        tail.finish().expect("finish output reader");
-        let (_, redacted_truncated) = tail.tail(OUTPUT_TAIL_BYTES).expect("read redacted tail");
+        assert!(!tail.finish().expect("finish output reader"));
+        let redacted = tail.tail(OUTPUT_TAIL_BYTES).expect("read redacted tail");
         let (receipt, receipt_truncated) = tail.receipt().expect("read classification receipt");
         let receipt = receipt.expect("complete raw receipt");
         let argv = vec!["--json-message".to_string(), "build".to_string()];
 
-        assert!(redacted_truncated);
+        // Redaction expanded the persisted tail past its cap while the raw
+        // receipt stayed whole, which is exactly the split the classifier reads.
+        assert_eq!(redacted.len(), OUTPUT_TAIL_BYTES);
         assert!(!receipt_truncated);
         assert!(
             classify_partial_platform_failure(&BuildAttempt {
@@ -2619,7 +2774,7 @@ mod tests {
                 stdout_had_invalid_utf8: false,
                 stdout: &receipt,
             })
-            .is_some(),
+            .is_ok(),
             "only truncation of the raw receipt may reject retry evidence"
         );
     }
@@ -2649,7 +2804,7 @@ mod tests {
                 stdout_had_invalid_utf8: false,
                 stdout: &receipt,
             })
-            .is_some(),
+            .is_ok(),
             "durable classification must accept every complete receipt that sync capture accepts"
         );
     }
@@ -2679,7 +2834,7 @@ mod tests {
             stdout_had_invalid_utf8: false,
             stdout: &receipt,
         })
-        .is_some());
+        .is_ok());
     }
 
     #[test]
@@ -5019,7 +5174,7 @@ mod tests {
             Ok(RuntimeJobOutput {
                 stdout: state.stdout.clone(),
                 stderr: state.stderr.clone(),
-                stdout_truncated: false,
+                output_incomplete: false,
                 fallback_receipt: Some(state.stdout.clone()),
                 fallback_receipt_truncated: false,
             })

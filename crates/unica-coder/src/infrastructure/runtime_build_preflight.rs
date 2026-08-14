@@ -226,8 +226,12 @@ pub(crate) fn plan_runtime_invocation(
         warnings: if explicit_full {
             Vec::new()
         } else {
+            // `--json-message` replaces the runner's streamed text with one
+            // envelope printed at exit, which is what the classifier needs and
+            // what leaves the job logs empty until the build ends. A caller
+            // polling `unica.runtime.job.logs` has to be told that up front.
             vec![
-                "v8-runner will try its normal build strategy first; if it reports a failed partial platform step, Unica will retry once with a full rebuild"
+                "v8-runner runs its normal build strategy first and reports one structured result when the process exits, so this build streams no progress into its logs; if that result proves a failed partial platform step, Unica will retry once with a full rebuild"
                     .to_string(),
             ]
         },

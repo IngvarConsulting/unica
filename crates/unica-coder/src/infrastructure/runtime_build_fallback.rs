@@ -4,6 +4,37 @@ use serde_json::Value;
 pub(crate) const PARTIAL_FALLBACK_WARNING: &str =
     "v8-runner reported a completed partial load failure; Unica retried once with `--full-rebuild`";
 
+/// A build that reached the pinned failure code but whose receipt refused the
+/// classification must say so. Silence here is indistinguishable from a runtime
+/// that never considered the retry, so a receipt that drifts away from the
+/// pinned shape would look exactly like #404 being unfixed (ADR-0061).
+const PARTIAL_FALLBACK_REJECTED: &str =
+    "v8-runner exited with the pinned partial-load failure code, but its structured result did not \
+     prove a completed partial load, so no full rebuild was retried";
+
+/// Why an attempt did not authorize the one full retry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FallbackRejection {
+    /// The attempt was never a candidate: an explicit full rebuild, a success,
+    /// a cancellation, a timeout, or any exit code other than the pinned one.
+    /// Ordinary results must stay quiet.
+    NotACandidate,
+    /// The attempt carried the pinned exit code, so the caller expected a
+    /// retry. The reason names the first check that refused the receipt.
+    Receipt(&'static str),
+}
+
+impl FallbackRejection {
+    /// The public warning for a rejection, or `None` when the attempt was never
+    /// a candidate and reporting it would be noise on every ordinary failure.
+    pub(crate) fn warning(&self) -> Option<String> {
+        match self {
+            Self::NotACandidate => None,
+            Self::Receipt(reason) => Some(format!("{PARTIAL_FALLBACK_REJECTED}: {reason}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BuildAttempt<'a> {
     pub(crate) argv: &'a [String],
@@ -107,7 +138,9 @@ fn build_subcommand_index(argv: &[String]) -> Option<usize> {
 
 pub(crate) fn classify_partial_platform_failure(
     attempt: &BuildAttempt<'_>,
-) -> Option<PartialBuildFailure> {
+) -> Result<PartialBuildFailure, FallbackRejection> {
+    use FallbackRejection::{NotACandidate, Receipt};
+
     if !attempt
         .argv
         .iter()
@@ -119,25 +152,42 @@ pub(crate) fn classify_partial_platform_failure(
         || attempt.status_success
         || attempt.timed_out
         || attempt.cancelled
-        || attempt.stdout_truncated
-        || attempt.stdout_had_invalid_utf8
         || attempt.process_exit_code != Some(4)
     {
-        return None;
+        return Err(NotACandidate);
+    }
+    // Past this point the attempt looked like the pinned failure, so every
+    // refusal below is worth reporting instead of being swallowed.
+    if attempt.stdout_truncated {
+        return Err(Receipt("the captured output was truncated"));
+    }
+    if attempt.stdout_had_invalid_utf8 {
+        return Err(Receipt("the captured output was not valid UTF-8"));
     }
 
-    let envelope: FailureEnvelope = serde_json::from_str(attempt.stdout).ok()?;
-    if envelope.ok
-        || envelope.command != "build"
-        || envelope.data.ok
-        || envelope.error.code != "platform_failure"
-        || envelope.error.kind != "platform"
-        || envelope.error.message.is_empty()
-        || envelope.duration_ms != envelope.data.duration_ms
-        || !envelope.warnings.is_empty()
-        || !envelope.steps.is_empty()
-    {
-        return None;
+    let envelope: FailureEnvelope = serde_json::from_str(attempt.stdout)
+        .map_err(|_| Receipt("the output is not a closed v8-runner build failure envelope"))?;
+    if envelope.ok || envelope.data.ok {
+        return Err(Receipt("the envelope does not report an overall failure"));
+    }
+    if envelope.command != "build" {
+        return Err(Receipt("the envelope does not report the `build` command"));
+    }
+    if envelope.error.code != "platform_failure" || envelope.error.kind != "platform" {
+        return Err(Receipt(
+            "the error is not a `platform_failure` of kind `platform`",
+        ));
+    }
+    if envelope.error.message.is_empty() {
+        return Err(Receipt("the error carries no message"));
+    }
+    if envelope.duration_ms != envelope.data.duration_ms {
+        return Err(Receipt("the envelope and build durations disagree"));
+    }
+    if !envelope.warnings.is_empty() || !envelope.steps.is_empty() {
+        return Err(Receipt(
+            "the envelope carries top-level warnings or steps that the pinned failure never has",
+        ));
     }
 
     let mut failed_partial = None;
@@ -150,44 +200,60 @@ pub(crate) fn classify_partial_platform_failure(
             (BuildMode::Skipped, false, true)
                 if step.duration_ms == 0
                     && step.message.as_deref() == Some("aborted after previous failure") => {}
-            _ => return None,
+            _ => {
+                return Err(Receipt(
+                    "the failed step is not a single partial load followed by canonical skips",
+                ))
+            }
         }
     }
-    let step = failed_partial?;
-    let BuildMode::Partial { file_count } = step.mode else {
-        return None;
+    let Some(step) = failed_partial else {
+        return Err(Receipt("no failed partial load step is present"));
     };
-    let step_error = step.message.as_deref()?.strip_prefix("platform error: ")?;
+    let BuildMode::Partial { file_count } = step.mode else {
+        return Err(Receipt("no failed partial load step is present"));
+    };
+    let step_error = step
+        .message
+        .as_deref()
+        .and_then(|message| message.strip_prefix("platform error: "))
+        .ok_or(Receipt("the failed step carries no platform error message"))?;
     if step_error != envelope.error.message {
-        return None;
+        return Err(Receipt("the step and envelope error messages disagree"));
     }
     let prefix = format!(
         "load failed for source-set '{}' with exit code ",
         step.source_set
     );
-    let (exit_code, _) = envelope
+    let inner_exit_code = envelope
         .error
         .message
-        .strip_prefix(&prefix)?
-        .split_once("; ")?;
-    let inner_exit_code = exit_code.parse::<i32>().ok()?;
-    if inner_exit_code <= 0 {
-        return None;
-    }
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.split_once("; "))
+        .and_then(|(exit_code, _)| exit_code.parse::<i32>().ok())
+        .filter(|inner_exit_code| *inner_exit_code > 0)
+        .ok_or(Receipt(
+            "the error does not report a positive platform exit code for the failed source-set",
+        ))?;
     let (_, partial_list_path) = envelope
         .error
         .message
-        .rsplit_once("; partial load list path: ")?;
+        .rsplit_once("; partial load list path: ")
+        .ok_or(Receipt(
+            "the error does not report a partial load list path",
+        ))?;
     if partial_list_path.trim().is_empty() || partial_list_path.contains("; ") {
-        return None;
+        return Err(Receipt("the reported partial load list path is not final"));
     }
     if requested_source_set(attempt.argv)
         .is_some_and(|requested| requested != step.source_set.as_str())
     {
-        return None;
+        return Err(Receipt(
+            "the failed source-set is not the one the build requested",
+        ));
     }
 
-    Some(PartialBuildFailure {
+    Ok(PartialBuildFailure {
         source_set: step.source_set.clone(),
         file_count,
         inner_exit_code,
@@ -311,7 +377,55 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(classify_partial_platform_failure(&attempt(&argv, &stdout)).is_some());
+        assert!(classify_partial_platform_failure(&attempt(&argv, &stdout)).is_ok());
+    }
+
+    #[test]
+    fn a_refused_receipt_reports_the_check_that_rejected_it() {
+        let argv = argv();
+        let message = "load failed for source-set 'main' with exit code 1; platform log: sanitized; partial load list path: /tmp/partial.lst";
+        let warned = serde_json::from_str::<Value>(&failure(
+            json!({"partial": {"file_count": 4}}),
+            "platform_failure",
+            message,
+        ))
+        .map(|mut envelope| {
+            envelope["warnings"] = json!(["platform version was pinned"]);
+            envelope.to_string()
+        })
+        .unwrap();
+
+        let rejection = classify_partial_platform_failure(&attempt(&argv, &warned))
+            .expect_err("a receipt carrying envelope warnings is not the pinned failure");
+
+        let reported = rejection
+            .warning()
+            .expect("a receipt that reached the pinned exit code must be reported");
+        assert!(
+            reported.contains("no full rebuild was retried"),
+            "{reported}"
+        );
+        assert!(
+            reported.contains("top-level warnings or steps"),
+            "the report must name the check that refused it: {reported}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_never_reported_as_a_refused_receipt() {
+        let argv = argv();
+        let mut ordinary = attempt(&argv, "");
+        ordinary.process_exit_code = Some(1);
+
+        let rejection = classify_partial_platform_failure(&ordinary)
+            .expect_err("an unrelated exit code is not a candidate");
+
+        assert_eq!(rejection, FallbackRejection::NotACandidate);
+        assert_eq!(
+            rejection.warning(),
+            None,
+            "every ordinary build failure would otherwise carry a fallback warning"
+        );
     }
 
     #[test]
@@ -331,10 +445,10 @@ mod tests {
         let full = failure(json!("full"), "platform_failure", "full failed");
         let runtime = failure(partial_mode, "runtime_failure", "runtime failed");
 
-        assert!(classify_partial_platform_failure(&attempt(&argv, &spawn)).is_none());
-        assert!(classify_partial_platform_failure(&attempt(&argv, &update)).is_none());
-        assert!(classify_partial_platform_failure(&attempt(&argv, &full)).is_none());
-        assert!(classify_partial_platform_failure(&attempt(&argv, &runtime)).is_none());
+        assert!(classify_partial_platform_failure(&attempt(&argv, &spawn)).is_err());
+        assert!(classify_partial_platform_failure(&attempt(&argv, &update)).is_err());
+        assert!(classify_partial_platform_failure(&attempt(&argv, &full)).is_err());
+        assert!(classify_partial_platform_failure(&attempt(&argv, &runtime)).is_err());
 
         let valid = failure(
             json!({"partial": {"file_count": 1}}),
@@ -343,23 +457,23 @@ mod tests {
         );
         let mut interrupted = attempt(&argv, &valid);
         interrupted.cancelled = true;
-        assert!(classify_partial_platform_failure(&interrupted).is_none());
+        assert!(classify_partial_platform_failure(&interrupted).is_err());
         interrupted.cancelled = false;
         interrupted.timed_out = true;
-        assert!(classify_partial_platform_failure(&interrupted).is_none());
+        assert!(classify_partial_platform_failure(&interrupted).is_err());
         interrupted.timed_out = false;
         interrupted.stdout_truncated = true;
-        assert!(classify_partial_platform_failure(&interrupted).is_none());
+        assert!(classify_partial_platform_failure(&interrupted).is_err());
 
         interrupted.stdout_truncated = false;
         interrupted.process_exit_code = Some(137);
         assert!(
-            classify_partial_platform_failure(&interrupted).is_none(),
+            classify_partial_platform_failure(&interrupted).is_err(),
             "a killed process must not authorize fallback from a stale receipt"
         );
         interrupted.process_exit_code = None;
         assert!(
-            classify_partial_platform_failure(&interrupted).is_none(),
+            classify_partial_platform_failure(&interrupted).is_err(),
             "an unknown process exit must fail closed"
         );
     }
@@ -367,7 +481,7 @@ mod tests {
     #[test]
     fn malformed_or_mismatched_receipts_fail_closed() {
         let argv = argv();
-        assert!(classify_partial_platform_failure(&attempt(&argv, "exit code 4")).is_none());
+        assert!(classify_partial_platform_failure(&attempt(&argv, "exit code 4")).is_err());
 
         let message = "load failed for source-set 'main' with exit code 1; partial load list path: /tmp/partial.lst";
         let valid = failure(
@@ -376,7 +490,7 @@ mod tests {
             message,
         );
         let duplicated = format!("{valid}\n{valid}");
-        assert!(classify_partial_platform_failure(&attempt(&argv, &duplicated)).is_none());
+        assert!(classify_partial_platform_failure(&attempt(&argv, &duplicated)).is_err());
 
         let selected = vec![
             "--json-message".to_string(),
@@ -384,22 +498,22 @@ mod tests {
             "--source-set".to_string(),
             "other".to_string(),
         ];
-        assert!(classify_partial_platform_failure(&attempt(&selected, &valid)).is_none());
+        assert!(classify_partial_platform_failure(&attempt(&selected, &valid)).is_err());
 
         let no_json_flag = vec!["build".to_string()];
-        assert!(classify_partial_platform_failure(&attempt(&no_json_flag, &valid)).is_none());
+        assert!(classify_partial_platform_failure(&attempt(&no_json_flag, &valid)).is_err());
 
         let trailing_diagnostic = failure(
             json!({"partial": {"file_count": 1}}),
             "platform_failure",
             "load failed for source-set 'main' with exit code 1; platform log: sanitized; partial load list path: /tmp/partial.lst; failed to spawn cleanup",
         );
-        assert!(classify_partial_platform_failure(&attempt(&argv, &trailing_diagnostic)).is_none());
+        assert!(classify_partial_platform_failure(&attempt(&argv, &trailing_diagnostic)).is_err());
 
         let unknown_partial_field =
             valid.replace("\"file_count\":1", "\"file_count\":1,\"unknown\":true");
         assert!(
-            classify_partial_platform_failure(&attempt(&argv, &unknown_partial_field)).is_none(),
+            classify_partial_platform_failure(&attempt(&argv, &unknown_partial_field)).is_err(),
             "the closed receipt schema must reject unknown partial-mode fields"
         );
     }

@@ -24,6 +24,11 @@ that proves a completed partial load is the only result that starts one full
 retry. This classifies the failed stage but does not identify the cause or claim
 that vendor support caused it.
 
+That normal build carries `--json-message`, so the runner prints one structured
+envelope at process exit instead of streaming text. Synchronous `stdout` is that
+envelope, and a durable job keeps empty logs until it finishes; liveness comes
+from `phase` and the heartbeat, not from log growth.
+
 Explicit `fullRebuild=true` runs one full build and is never retried. Malformed
 or unstructured output, a non-matching error, process spawn failure,
 cancellation, a process timeout observed by Unica, or truncated output does not
