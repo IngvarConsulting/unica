@@ -63,8 +63,11 @@ def tool_payload(tool: str, arguments: dict[str, object]) -> object:
                     ],
                     "_meta": {"total_is_lower_bound": False},
                 }
-        elif "get_object_profile" in code and mode == "profile_list":
-            stdout = []
+        elif "get_object_profile" in code and mode in {
+            "profile_error",
+            "profile_list",
+        }:
+            stdout = {"error": "object not found"} if mode == "profile_error" else []
         elif "get_object_profile" in code and mode:
             stdout = {
                 "object_name": "ContractOne",

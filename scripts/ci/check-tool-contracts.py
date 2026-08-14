@@ -1341,6 +1341,13 @@ def check_rlm_mcp_contract(mcp_tool: Path, index_tool: Path) -> list[str]:
                 except json.JSONDecodeError:
                     errors.append(f"rlm MCP contract: {helper_name} stdout is not valid JSON")
                     continue
+                if (
+                    isinstance(helper_payload, dict)
+                    and isinstance(helper_payload.get("error"), str)
+                    and helper_payload["error"]
+                ):
+                    errors.append(f"rlm MCP contract: {helper_name} returned an error")
+                    continue
                 helper_payloads[helper_name] = helper_payload
                 errors.extend(rlm_mcp_metadata_errors(helper_payload, helper_name))
 

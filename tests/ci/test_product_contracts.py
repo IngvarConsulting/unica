@@ -1350,6 +1350,7 @@ class ProductContractTests(unittest.TestCase):
             ("string_boolean", "_meta.truncated must be boolean"),
             ("search_object", "search must return a list"),
             ("profile_list", "get_object_profile must return an object"),
+            ("profile_error", "get_object_profile returned an error"),
             ("scalar_metadata", "_meta must be an object"),
         ]
 
