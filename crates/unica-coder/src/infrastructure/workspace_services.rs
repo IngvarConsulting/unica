@@ -4798,7 +4798,9 @@ mod tests {
     fn rlm_ready_execution_barrier_preserves_safe_root_failure_as_unavailable() {
         let context = test_context("rlm-ready-safe-root-failure");
         let source_root = context.workspace_root.join("src");
-        let revisions = Arc::new(SourceRevisionService::new(&context, &source_root).unwrap());
+        let revisions = Arc::new(
+            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
+        );
         revisions
             .snapshot(
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
