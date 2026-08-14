@@ -194,10 +194,13 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
             let mapped =
                 self.mapping
                     .map_observations(outcome.observations, &context, cancellation);
-            // A resource the mapper cannot prove is that observation's own
-            // failure. Losing the batch around it would answer a proven set of
-            // findings with nothing at all.
-            let mut mapping_error = None;
+            // Two different failures hide behind one `Err`. A handle outside
+            // the permitted scope is an adapter contract breach and costs the
+            // whole section (ADR-0063 §12); a resource the mapper simply could
+            // not prove belongs to itself and must not withdraw the findings
+            // proven around it (ADR-0063 §10).
+            let mut out_of_scope = None;
+            let mut unproven = None;
             let mut provider_items = Vec::with_capacity(mapped.len());
             for item in mapped {
                 match item {
@@ -207,9 +210,14 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                             "diagnostics stopped while observations were mapped",
                         ));
                     }
-                    Err(error) => mapping_error = mapping_error.or(Some(error)),
+                    Err(error) if error.code == "location_outside_source_set" => {
+                        out_of_scope = out_of_scope.or(Some(error));
+                    }
+                    Err(error) => unproven = unproven.or(Some(error)),
                 }
             }
+            let scope_breach = out_of_scope.is_some();
+            let mapping_error = out_of_scope.or(unproven);
             if request.action == DiagnosticAction::Catalog {
                 provider_items.extend(outcome.rules.into_iter().map(|rule| {
                     DiagnosticItem::DiagnosticRule {
@@ -223,6 +231,9 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                 }));
             }
             provider_items.retain(|item| item_matches_request(item, request, &context));
+            if scope_breach {
+                provider_items.clear();
+            }
             let resource_failures = provider_items
                 .iter()
                 .filter(|item| matches!(item, DiagnosticItem::ResourceFailure { .. }))
@@ -244,7 +255,11 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
             });
             sections.push(DiagnosticProviderSection {
                 id: selected_provider.descriptor.id.as_str(),
-                status: outcome.status,
+                status: if scope_breach {
+                    DiagnosticProviderStatus::Failed
+                } else {
+                    outcome.status
+                },
                 complete: outcome.complete && mapping_error.is_none(),
                 version: outcome.version,
                 capabilities: (request.action == DiagnosticAction::Catalog)
@@ -1516,6 +1531,13 @@ mod tests {
                         .to_string(),
                 });
             }
+            DiagnosticObservationLocation::Resource { handle } if handle == "unprovable" => {
+                return Err(DiagnosticMapError {
+                    code: "location_mapping_failed",
+                    message: "/private/var/main/Ext/Module.bsl could not be mapped safely"
+                        .to_string(),
+                });
+            }
             DiagnosticObservationLocation::Resource { handle } if handle == "selected" => {
                 context.target.metadata_path.clone()
             }
@@ -2707,7 +2729,7 @@ mod tests {
             ),
             diagnostic(
                 ANALYZER,
-                "outside",
+                "unprovable",
                 "A002",
                 DiagnosticSeverity::Warning,
                 DiagnosticObservationFocus::Target,
@@ -2739,7 +2761,44 @@ mod tests {
         assert!(!section.complete);
         assert_eq!(section.items_total, Some(1));
         let error = section.error.as_ref().expect("incomplete mapping is typed");
-        assert_eq!(error.code, "location_outside_source_set");
+        assert_eq!(error.code, "location_mapping_failed");
+    }
+
+    #[test]
+    fn diagnostics_out_of_scope_handle_still_costs_the_whole_provider_section() {
+        // ADR-0063 §12: a handle outside the permitted scope is an adapter
+        // contract breach, not one unprovable resource, so its siblings are
+        // not trustworthy either.
+        let breaching = successful(vec![
+            diagnostic(
+                ANALYZER,
+                "selected",
+                "A001",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::Target,
+            ),
+            diagnostic(
+                ANALYZER,
+                "outside",
+                "A002",
+                DiagnosticSeverity::Warning,
+                DiagnosticObservationFocus::Target,
+            ),
+        ]);
+        let (registry, _) =
+            fake_registry([breaching, successful(Vec::new()), successful(Vec::new())]);
+
+        let result = run(registry, &findings_request()).unwrap();
+        let section = &result.providers[0];
+
+        assert_eq!(section.status, DiagnosticProviderStatus::Failed);
+        assert!(!section.complete);
+        assert_eq!(section.items_total, Some(0));
+        assert!(result.items.is_empty(), "{:?}", result.items);
+        assert_eq!(
+            section.error.as_ref().unwrap().code,
+            "location_outside_source_set"
+        );
     }
 
     #[test]

@@ -3423,8 +3423,11 @@ mod tests {
         let observed = ports.observed_budget.lock().unwrap().unwrap();
 
         assert!(result.ok, "{result:?}");
+        // The override is proven by the band it lands in, not by the second it
+        // lands on: the deadline starts before the provider reads it, and a
+        // loaded runner can spend more than a second in between.
         assert!(observed <= Duration::from_secs(900), "{observed:?}");
-        assert!(observed > Duration::from_secs(899), "{observed:?}");
+        assert!(observed > Duration::from_secs(880), "{observed:?}");
     }
 
     #[test]
