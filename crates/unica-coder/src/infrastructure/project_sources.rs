@@ -126,6 +126,7 @@ impl ProjectSourceMapProvenance {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn revalidate(&self) -> Result<(), String> {
         for (path, input) in &self.inputs {
             let current = read_root_relative_regular_file(
@@ -210,6 +211,7 @@ pub(crate) fn discover_project_source_map_with_provenance(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn discover_runtime_project_source_map_with_provenance(
     workspace_root: &Path,
 ) -> Result<(ProjectSourceMap, ProjectSourceMapProvenance), String> {

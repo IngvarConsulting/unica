@@ -15,7 +15,20 @@ Async full dump and external source-set dump remain preview-only. Applied
 `LoadConfigFromFiles` are fail-closed until they share the verified publication
 boundary.
 
-`build` also prepares configured client MCP tool extensions when the project has `tools.client_mcp.extension`. Use `fullRebuild=true` if that generated state may be stale. Before synchronous or durable-job builds, Unica reads support state for selected Platform XML configuration source-sets. Active vendor support selects the full path before v8-runner starts; unreadable support evidence or a non-primary project config requires an explicit `fullRebuild=true`.
+`build` also prepares configured client MCP tool extensions when the project has
+`tools.client_mcp.extension`. Use `fullRebuild=true` if that generated state may
+be stale. Without that explicit flag, synchronous and durable-job builds run the
+normal build first; Unica does not inspect support state or preselect the full
+path. External exit code `4` together with a valid structured runner failure
+that proves a completed partial load is the only result that starts one full
+retry. This classifies the failed stage but does not identify the cause or claim
+that vendor support caused it.
+
+Explicit `fullRebuild=true` runs one full build and is never retried. Malformed
+or unstructured output, a non-matching error, process spawn failure,
+cancellation, timeout, or truncated output does not start the fallback. A
+failed full retry does not start a third attempt. This temporary Unica fallback
+does not replace the separate runtime/runner redesign planned for v14.
 
 Use `extensions` when only extension properties need synchronization.
 

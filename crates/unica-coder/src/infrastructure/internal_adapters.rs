@@ -5,7 +5,6 @@ use crate::application::{
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::operational_config::OperationalConfig;
 use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
-use crate::domain::support_state::SupportStateReader;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
@@ -19,6 +18,10 @@ use crate::infrastructure::platform::{
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
+use crate::infrastructure::runtime_build_fallback::{
+    classify_partial_platform_failure, full_rebuild_argv, process_exit_code, BuildAttempt,
+    PARTIAL_FALLBACK_WARNING,
+};
 use crate::infrastructure::runtime_build_preflight::{
     RuntimeBuildPreflight, RuntimeInvocationPlan,
 };
@@ -27,9 +30,6 @@ use crate::infrastructure::runtime_jobs::{
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::source_roots::resolve_source_root;
-use crate::infrastructure::support_state::{
-    SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
-};
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use serde_json::{json, Map, Value};
@@ -185,10 +185,6 @@ pub struct RuntimeJobAdapterOutcome {
 }
 
 pub struct RuntimeJobAdapter;
-
-pub(crate) struct RuntimeSupportPreflight<'a> {
-    pub(crate) reader: &'a dyn SupportStateReader,
-}
 
 pub(crate) struct RuntimeInvocation<'a> {
     pub(crate) tool_name: &'a str,
@@ -650,16 +646,11 @@ fn format_git_paths<'a>(paths: impl Iterator<Item = &'a str>) -> String {
 fn plan_runtime_invocation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-    support_reader: &dyn SupportStateReader,
 ) -> Result<RuntimeInvocationPlan, String> {
     if args.get("operation").and_then(Value::as_str) == Some("build") {
         validate_runtime_mapper_payload("build", args)?;
     }
-    crate::infrastructure::runtime_build_preflight::plan_runtime_invocation(
-        args,
-        context,
-        support_reader,
-    )
+    crate::infrastructure::runtime_build_preflight::plan_runtime_invocation(args, context)
 }
 
 fn merge_warnings(mut left: Vec<String>, right: Vec<String>) -> Vec<String> {
@@ -719,9 +710,7 @@ impl<'a> RuntimeAdapter<'a> {
         mutating: bool,
         cancellation: &CancellationToken,
     ) -> Result<RuntimeAdapterOutcome, String> {
-        let support_reader_factory = WorkspaceSupportStateReaderFactory;
-        let support_reader = support_reader_factory.create(context);
-        self.invoke_cancellable_with_support_state(
+        self.invoke_cancellable(
             RuntimeInvocation {
                 tool_name,
                 args,
@@ -730,17 +719,13 @@ impl<'a> RuntimeAdapter<'a> {
                 mutating,
             },
             cancellation,
-            RuntimeSupportPreflight {
-                reader: support_reader.as_ref(),
-            },
         )
     }
 
-    pub(crate) fn invoke_cancellable_with_support_state(
+    pub(crate) fn invoke_cancellable(
         &self,
         invocation: RuntimeInvocation<'_>,
         cancellation: &CancellationToken,
-        support_preflight: RuntimeSupportPreflight<'_>,
     ) -> Result<RuntimeAdapterOutcome, String> {
         let RuntimeInvocation {
             tool_name,
@@ -761,7 +746,7 @@ impl<'a> RuntimeAdapter<'a> {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
-        let invocation = plan_runtime_invocation(args, context, support_preflight.reader)?;
+        let invocation = plan_runtime_invocation(args, context)?;
         if cancellation.is_cancelled() {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
                 format!("{tool_name} cancelled during runtime build preflight"),
@@ -795,7 +780,7 @@ impl<'a> RuntimeAdapter<'a> {
         }
 
         if let Some(build_preflight) = &invocation.build_preflight {
-            build_preflight.reauthorize_with_reader(context, support_preflight.reader)?;
+            build_preflight.reauthorize_in_context(context)?;
         }
         if cancellation.is_cancelled() {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
@@ -811,11 +796,12 @@ impl<'a> RuntimeAdapter<'a> {
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
-        let output = match self.runner.run(&process_command) {
+        let mut runtime_warnings = invocation.warnings;
+        let mut output = match self.runner.run(&process_command) {
             Ok(output) => output,
             Err(error) => {
                 let error = redactor(&error);
-                let mut warnings = invocation.warnings;
+                let mut warnings = runtime_warnings;
                 warnings
                     .push("internal v8-runner runtime adapter failed to spawn process".to_string());
                 return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
@@ -833,12 +819,98 @@ impl<'a> RuntimeAdapter<'a> {
                 }));
             }
         };
+        let mut initial_partial_output = None;
+        if let (Some(_failure), Some(fallback_args)) = (
+            classify_partial_platform_failure(&BuildAttempt {
+                argv: &process_command.args,
+                process_exit_code: process_exit_code(&output.status),
+                status_success: output.status_success,
+                timed_out: output.timed_out,
+                cancelled: output.cancelled,
+                stdout_truncated: output.stdout_truncated,
+                stdout: &output.stdout,
+            }),
+            full_rebuild_argv(&process_command.args),
+        ) {
+            if cancellation.is_cancelled() {
+                let stdout = redactor(&output.stdout);
+                let stderr = redactor(&output.stderr);
+                let mut outcome =
+                    cancelled_process_outcome(tool_name, stdout, stderr, Some(command));
+                outcome.warnings = merge_warnings(runtime_warnings, outcome.warnings);
+                return Ok(RuntimeAdapterOutcome::plain(outcome));
+            }
+            if let Some(build_preflight) = &invocation.build_preflight {
+                if let Err(error) = build_preflight.reauthorize_in_context(context) {
+                    return Ok(RuntimeAdapterOutcome::plain(fallback_error_outcome(
+                        tool_name,
+                        &output,
+                        runtime_warnings,
+                        "full rebuild fallback was not started because build identity changed",
+                        "full rebuild fallback was not started",
+                        &error,
+                        Some(command),
+                    )));
+                }
+            }
+            if cancellation.is_cancelled() {
+                let stdout = redactor(&output.stdout);
+                let stderr = redactor(&output.stderr);
+                let mut outcome =
+                    cancelled_process_outcome(tool_name, stdout, stderr, Some(command));
+                outcome.warnings = merge_warnings(runtime_warnings, outcome.warnings);
+                return Ok(RuntimeAdapterOutcome::plain(outcome));
+            }
+            initial_partial_output = Some(output.clone());
+            let fallback_command = ProcessCommand {
+                args: fallback_args,
+                ..process_command.clone()
+            };
+            output = match self.runner.run(&fallback_command) {
+                Ok(output) => output,
+                Err(error) => {
+                    return Ok(RuntimeAdapterOutcome::plain(
+                        fallback_error_outcome(
+                            tool_name,
+                            &output,
+                            runtime_warnings,
+                            "full rebuild fallback did not produce a result; process start state is unknown",
+                            "full rebuild fallback result is unavailable",
+                            &error,
+                            Some(command),
+                        ),
+                    ));
+                }
+            };
+            runtime_warnings.push(PARTIAL_FALLBACK_WARNING.to_string());
+        }
+        let mut runner_error = if args.get("operation").and_then(Value::as_str) == Some("build")
+            && !output.status_success
+        {
+            parse_runner_json_envelope(&output.stdout)
+                .ok()
+                .and_then(|envelope| runner_error_message(&envelope).map(redactor))
+        } else {
+            None
+        };
+        if !output.status_success {
+            if let Some(initial) = initial_partial_output {
+                output.stdout = format!(
+                    "--- initial partial attempt ---\n{}\n--- full rebuild fallback ---\n{}",
+                    initial.stdout, output.stdout
+                );
+                output.stderr = format!(
+                    "--- initial partial attempt ---\n{}\n--- full rebuild fallback ---\n{}",
+                    initial.stderr, output.stderr
+                );
+            }
+        }
         let mut ok = output.status_success;
         let stdout = redactor(&output.stdout);
         let stderr = redactor(&output.stderr);
         if output.cancelled {
             let mut outcome = cancelled_process_outcome(tool_name, stdout, stderr, Some(command));
-            outcome.warnings = merge_warnings(invocation.warnings, outcome.warnings);
+            outcome.warnings = merge_warnings(runtime_warnings, outcome.warnings);
             return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
         let waited_epf = args
@@ -847,7 +919,6 @@ impl<'a> RuntimeAdapter<'a> {
             .unwrap_or(false);
         let mut artifacts = Vec::new();
         let mut wait_error = None;
-        let mut runner_error = None;
         let mut data = None;
         if waited_epf {
             match parse_runner_json_envelope(&output.stdout) {
@@ -921,15 +992,15 @@ impl<'a> RuntimeAdapter<'a> {
                     Vec::new()
                 },
                 warnings: if ok || wait_failed {
-                    invocation.warnings
+                    runtime_warnings
                 } else if output.timed_out {
                     merge_warnings(
-                        invocation.warnings,
+                        runtime_warnings,
                         vec!["internal v8-runner runtime adapter timed out".to_string()],
                     )
                 } else {
                     merge_warnings(
-                        invocation.warnings,
+                        runtime_warnings,
                         vec![format!(
                             "internal v8-runner runtime adapter exited with status {}",
                             output.status
@@ -1301,37 +1372,26 @@ impl RuntimeJobAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
     ) -> Result<RuntimeJobAdapterOutcome, String> {
-        let support_reader_factory = WorkspaceSupportStateReaderFactory;
-        let support_reader = support_reader_factory.create(context);
-        Self::invoke_with_support_state(
+        Self::invoke_cancellable(
             action,
             tool_name,
             args,
             context,
             dry_run,
-            support_reader.as_ref(),
             &CancellationToken::new(),
         )
     }
 
-    pub(crate) fn invoke_with_support_state(
+    pub(crate) fn invoke_cancellable(
         action: RuntimeJobAction,
         tool_name: &str,
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
-        support_reader: &dyn SupportStateReader,
         cancellation: &CancellationToken,
     ) -> Result<RuntimeJobAdapterOutcome, String> {
         match action {
-            RuntimeJobAction::Start => Self::start(
-                tool_name,
-                args,
-                context,
-                dry_run,
-                support_reader,
-                cancellation,
-            ),
+            RuntimeJobAction::Start => Self::start(tool_name, args, context, dry_run, cancellation),
             RuntimeJobAction::Status => Self::status(tool_name, args, context),
             RuntimeJobAction::Wait => Self::wait(tool_name, args, context),
             RuntimeJobAction::Logs => Self::logs(tool_name, args, context),
@@ -1345,7 +1405,6 @@ impl RuntimeJobAdapter {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
-        support_reader: &dyn SupportStateReader,
         cancellation: &CancellationToken,
     ) -> Result<RuntimeJobAdapterOutcome, String> {
         for argument in ["waitForExit", "waitTimeoutMs", "stderrOutput"] {
@@ -1360,7 +1419,7 @@ impl RuntimeJobAdapter {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
-        let invocation = plan_runtime_invocation(args, context, support_reader)?;
+        let invocation = plan_runtime_invocation(args, context)?;
         if cancellation.is_cancelled() {
             return Ok(RuntimeJobAdapterOutcome {
                 outcome: AdapterOutcome::cancelled(format!(
@@ -1693,6 +1752,44 @@ fn cancelled_process_outcome(
     outcome.stderr = Some(stderr);
     outcome.command = command;
     outcome
+}
+
+fn fallback_error_outcome(
+    tool_name: &str,
+    initial: &ProcessOutput,
+    mut warnings: Vec<String>,
+    warning: &str,
+    fallback_diagnostic_heading: &str,
+    fallback_error: &str,
+    command: Option<Vec<String>>,
+) -> AdapterOutcome {
+    warnings.push(warning.to_string());
+    let fallback_error = redactor(fallback_error);
+    let mut errors = parse_runner_json_envelope(&initial.stdout)
+        .ok()
+        .and_then(|envelope| runner_error_message(&envelope).map(redactor))
+        .into_iter()
+        .collect::<Vec<_>>();
+    errors.push(fallback_error.clone());
+    let initial_stderr = redactor(&initial.stderr);
+    let stderr = if initial_stderr.trim().is_empty() {
+        fallback_error
+    } else {
+        format!(
+            "--- initial partial attempt ---\n{initial_stderr}\n--- {fallback_diagnostic_heading} ---\n{fallback_error}"
+        )
+    };
+    AdapterOutcome {
+        ok: false,
+        summary: format!("{tool_name} failed through internal v8-runner runtime adapter"),
+        changes: Vec::new(),
+        warnings,
+        errors,
+        artifacts: Vec::new(),
+        stdout: Some(redactor(&initial.stdout)),
+        stderr: Some(stderr),
+        command,
+    }
 }
 
 fn process_timeout_error(label: &str, timeout: Option<Duration>) -> String {
@@ -2922,7 +3019,9 @@ fn append_runtime_global_args(
     args: &Map<String, Value>,
     redact: bool,
 ) {
-    if args.get("waitForExit").and_then(Value::as_bool) == Some(true) {
+    if args.get("waitForExit").and_then(Value::as_bool) == Some(true)
+        || (operation == "build" && args.get("fullRebuild").and_then(Value::as_bool) != Some(true))
+    {
         result.push("--json-message".to_string());
     }
     if operation != "config-init" {
@@ -3392,8 +3491,6 @@ fn _path_list(paths: &[PathBuf]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::source_target::ResolvedTarget;
-    use crate::domain::support_state::ConfigurationSupportState;
     use crate::infrastructure::platform::testing;
     use serde_json::json;
     use std::cell::RefCell;
@@ -3842,9 +3939,10 @@ mod tests {
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
-        assert_eq!(
-            commands[0].args,
-            vec!["build", "--full-rebuild", "--source-set", "main"]
+        assert_runtime_args_with_primary(
+            &context,
+            &commands[0].args,
+            &["build", "--full-rebuild", "--source-set", "main"],
         );
         assert!(commands[0].timeout.is_none());
         assert!(commands[0].program.to_string_lossy().contains("bin/"));
@@ -3856,25 +3954,63 @@ mod tests {
         cleanup_context(&context);
     }
 
-    /// #404. Designer may reject a partial `/LoadConfigFromFiles` for a
-    /// vendor-supported configuration. Because the runtime boundary cannot
-    /// prove that the exact change is safe, it conservatively selects the
-    /// runner's full path before the platform command starts.
+    /// #404. The retry decision follows the mode actually selected by
+    /// v8-runner, rather than the configuration support marker: a failed
+    /// partial platform step gets one full rebuild attempt.
     #[test]
-    fn runtime_adapter_forces_full_build_for_supported_configuration() {
-        let mut context = temp_context("runtime-supported-configuration-build");
+    fn runtime_adapter_falls_back_after_a_structured_partial_platform_failure() {
+        let mut context = temp_context("runtime-partial-full-fallback");
         configure_supported_designer_source(&mut context);
-        let runner = RecordingProcessRunner {
+        let runner = SequenceProcessRunner {
             commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: "full build completed".to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
+            outputs: RefCell::new(vec![
+                ProcessOutput {
+                    status_success: false,
+                    status: "exit status: 4".to_string(),
+                    stdout: serde_json::to_string(&json!({
+                        "ok": false,
+                        "command": "build",
+                        "duration_ms": 12,
+                        "data": {
+                            "ok": false,
+                            "steps": [{
+                                "source_set": "main",
+                                "mode": { "partial": { "file_count": 1 } },
+                                "ok": false,
+                                "message": "platform error: load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst",
+                                "duration_ms": 0
+                            }],
+                            "duration_ms": 12
+                        },
+                        "warnings": [],
+                        "steps": [],
+                        "error": {
+                            "code": "platform_failure",
+                            "kind": "platform",
+                            "message": "load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst"
+                        }
+                    }))
+                    .unwrap(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+                ProcessOutput {
+                    status_success: true,
+                    status: "exit status: 0".to_string(),
+                    stdout: serde_json::to_string(&json!({
+                        "ok": true,
+                        "command": "build",
+                        "data": { "steps": [] }
+                    }))
+                    .unwrap(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+            ]),
         };
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
@@ -3884,121 +4020,328 @@ mod tests {
             .unwrap();
 
         assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 2);
+        assert_runtime_args_with_primary(&context, &commands[0].args[1..], &["build"]);
+        assert_eq!(
+            commands[0].args.first().map(String::as_str),
+            Some("--json-message")
+        );
         assert_runtime_args_with_primary(
             &context,
-            &runner.commands.borrow()[0].args,
+            &commands[1].args[1..],
             &["build", "--full-rebuild"],
+        );
+        assert_eq!(
+            commands[1].args.first().map(String::as_str),
+            Some("--json-message")
         );
         assert!(outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("not proven safe for Designer partial loading")));
+            .any(|warning| warning.contains("retried once with `--full-rebuild`")));
         cleanup_context(&context);
     }
 
     #[test]
-    fn runtime_adapter_trims_supported_configuration_selector_before_preflight() {
+    fn runtime_adapter_cancellation_during_fallback_reauthorization_prevents_spawn() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut context = temp_context("runtime-fallback-cancelled-after-reauthorization");
+        configure_designer_source(&mut context);
+        let cancellation = CancellationToken::new();
+        let cancellation_for_hook = cancellation.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_hook = Arc::clone(&calls);
+        let _hook =
+            crate::infrastructure::runtime_build_preflight::set_after_reauthorization_hook_for_test(
+                move || {
+                    if calls_for_hook.fetch_add(1, Ordering::SeqCst) == 1 {
+                        cancellation_for_hook.cancel();
+                    }
+                },
+            );
+        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst";
+        let runner = SequenceProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            outputs: RefCell::new(vec![
+                ProcessOutput {
+                    status_success: false,
+                    status: "exit status: 4".to_string(),
+                    stdout: build_failure_json(
+                        json!({ "partial": { "file_count": 1 } }),
+                        partial_message,
+                    ),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+                ProcessOutput {
+                    status_success: true,
+                    status: "exit status: 0".to_string(),
+                    stdout: "full build completed".to_string(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+            ]),
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke_cancellable_with_data(
+                "unica.runtime.execute",
+                &args,
+                &context,
+                false,
+                true,
+                &cancellation,
+            )
+            .expect("runtime outcome");
+
+        assert!(!outcome.outcome.ok);
+        assert!(outcome.outcome.summary.contains("cancel"));
+        assert_eq!(runner.commands.borrow().len(), 1);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_rejects_config_change_between_partial_and_full_attempts() {
+        let mut context = temp_context("runtime-fallback-config-change");
+        configure_designer_source(&mut context);
+        let config = context.workspace_root.join("v8project.yaml");
+        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst";
+        let runner = MutatingAfterFirstProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            outputs: RefCell::new(vec![
+                ProcessOutput {
+                    status_success: false,
+                    status: "exit status: 4".to_string(),
+                    stdout: build_failure_json(
+                        json!({ "partial": { "file_count": 1 } }),
+                        partial_message,
+                    ),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+                ProcessOutput {
+                    status_success: true,
+                    status: "exit status: 0".to_string(),
+                    stdout: "full build completed".to_string(),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+            ]),
+            after_first: RefCell::new(Some(Box::new(move || {
+                fs::write(
+                    config,
+                    "format: DESIGNER\nsource-set: []\n# changed before fallback\n",
+                )
+                .expect("change config after first attempt");
+            }))),
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .expect("identity refusal is a failed runtime outcome");
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("identity changed") || error.contains("config changed")));
+        assert!(outcome
+            .stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.contains(partial_message)));
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("fallback was not started")));
+        assert_eq!(runner.commands.borrow().len(), 1);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_preserves_partial_diagnostics_when_fallback_execution_errors() {
+        let mut context = temp_context("runtime-partial-fallback-spawn-error");
+        configure_designer_source(&mut context);
+        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: first; platform log path: /tmp/first.log; partial load list path: /tmp/partial.lst";
+        let runner = FailingAfterFirstProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            first: ProcessOutput {
+                status_success: false,
+                status: "exit status: 4".to_string(),
+                stdout: build_failure_json(
+                    json!({ "partial": { "file_count": 1 } }),
+                    partial_message,
+                ),
+                stderr: "first stderr".to_string(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+            error: "fallback spawn failed".to_string(),
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .expect("spawn refusal is a failed runtime outcome");
+
+        assert!(!outcome.ok);
+        assert!(outcome.errors.iter().any(|error| error == partial_message));
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("fallback spawn failed")));
+        assert!(outcome
+            .stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.contains(partial_message)));
+        assert!(outcome
+            .stderr
+            .as_deref()
+            .is_some_and(|stderr| stderr.contains("first stderr")));
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("process start state is unknown")));
+        assert!(!outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("could not be spawned")));
+        assert!(!outcome
+            .warnings
+            .iter()
+            .any(|warning| warning == PARTIAL_FALLBACK_WARNING));
+        assert_eq!(runner.commands.borrow().len(), 2);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_preserves_both_diagnostics_when_full_fallback_fails() {
+        let mut context = temp_context("runtime-partial-full-fallback-fails");
+        configure_designer_source(&mut context);
+        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: first; platform log path: /tmp/first.log; partial load list path: /tmp/partial.lst";
+        let full_message =
+            "full load failed for source-set 'main' with exit code 2; platform log: second";
+        let runner = SequenceProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            outputs: RefCell::new(vec![
+                ProcessOutput {
+                    status_success: false,
+                    status: "exit status: 4".to_string(),
+                    stdout: build_failure_json(
+                        json!({ "partial": { "file_count": 1 } }),
+                        partial_message,
+                    ),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+                ProcessOutput {
+                    status_success: false,
+                    status: "exit status: 4".to_string(),
+                    stdout: build_failure_json(json!("full"), full_message),
+                    stderr: String::new(),
+                    timed_out: false,
+                    cancelled: false,
+                    stdout_truncated: false,
+                },
+            ]),
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| error.contains(full_message)));
+        let stdout = outcome.stdout.expect("combined attempt output");
+        assert!(stdout.contains("--- initial partial attempt ---"));
+        assert!(stdout.contains(partial_message));
+        assert!(stdout.contains("--- full rebuild fallback ---"));
+        assert!(stdout.contains(full_message));
+        assert_eq!(runner.commands.borrow().len(), 2);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_does_not_fallback_when_the_initial_partial_build_succeeds() {
+        let mut context = temp_context("runtime-supported-partial-success");
+        configure_supported_designer_source(&mut context);
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: serde_json::to_string(&json!({
+                    "ok": true,
+                    "command": "build",
+                    "data": {
+                        "steps": [{
+                            "source_set": "main",
+                            "mode": { "partial": { "file_count": 1 } },
+                            "ok": true
+                        }]
+                    }
+                }))
+                .unwrap(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+            },
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_runtime_args_with_primary(&context, &commands[0].args[1..], &["build"]);
+        assert_eq!(
+            commands[0].args.first().map(String::as_str),
+            Some("--json-message")
+        );
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_trims_selector_for_the_initial_build() {
         let mut context = temp_context("runtime-supported-configuration-trimmed-selector");
         configure_supported_designer_source(&mut context);
-        let support_reader_factory = WorkspaceSupportStateReaderFactory;
-        let support_reader = support_reader_factory.create(&context);
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
             ("sourceSet".to_string(), json!(" main ")),
         ]);
 
-        let invocation = plan_runtime_invocation(&args, &context, support_reader.as_ref())
-            .expect("runner-compatible selector must reach support preflight");
+        let invocation = plan_runtime_invocation(&args, &context)
+            .expect("runner-compatible selector must reach v8-runner");
 
         assert_runtime_args_with_primary(
             &context,
             &runtime_args(&invocation.args, false).unwrap(),
-            &["build", "--full-rebuild", "--source-set", "main"],
+            &["build", "--source-set", "main"],
         );
-        assert!(invocation.build_preflight.is_none());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_refuses_unknown_build_selector_before_incremental_authorization() {
-        let mut context = temp_context("runtime-unknown-configuration-selector");
-        configure_designer_source(&mut context);
-        let support_reader = PanickingConfigurationSupportReader;
-        let args = Map::from_iter([
-            ("operation".to_string(), json!("build")),
-            ("sourceSet".to_string(), json!("missing")),
-        ]);
-
-        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
-            Ok(_) => panic!("unknown selector cannot authorize an incremental build"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("source-set `missing`"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_refuses_ambiguous_build_selector_before_incremental_authorization() {
-        let context = temp_context("runtime-ambiguous-configuration-selector");
-        fs::create_dir_all(context.workspace_root.join("first")).unwrap();
-        fs::create_dir_all(context.workspace_root.join("second")).unwrap();
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: duplicate\n",
-                "    type: EXTENSION\n",
-                "    path: first\n",
-                "  - name: duplicate\n",
-                "    type: EXTENSION\n",
-                "    path: second\n",
-            ),
-        )
-        .unwrap();
-        let support_reader = PanickingConfigurationSupportReader;
-        let args = Map::from_iter([
-            ("operation".to_string(), json!("build")),
-            ("sourceSet".to_string(), json!("duplicate")),
-        ]);
-
-        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
-            Ok(_) => panic!("ambiguous selector cannot authorize an incremental build"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("source-set `duplicate`"), "{error}");
-        assert!(error.contains("exactly one"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_refuses_invalid_selected_configuration_format() {
-        let mut context = temp_context("runtime-invalid-configuration-format");
-        configure_designer_source(&mut context);
-        fs::write(
-            context.workspace_root.join("src/.project"),
-            "<projectDescription/>",
-        )
-        .unwrap();
-        refresh_test_context(&mut context);
-        let support_reader = PanickingConfigurationSupportReader;
-        let args = Map::from_iter([
-            ("operation".to_string(), json!("build")),
-            ("sourceSet".to_string(), json!("main")),
-        ]);
-
-        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
-            Ok(_) => panic!("contradictory source-format evidence must fail closed"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("source format"), "{error}");
-        assert!(error.contains("source-set `main`"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
+        assert!(invocation.build_preflight.is_some());
         cleanup_context(&context);
     }
 
@@ -4027,13 +4370,12 @@ mod tests {
         )
         .unwrap();
         refresh_test_context(&mut context);
-        let support_reader = PanickingConfigurationSupportReader;
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
             ("sourceSet".to_string(), json!("extension")),
         ]);
 
-        let invocation = plan_runtime_invocation(&args, &context, &support_reader)
+        let invocation = plan_runtime_invocation(&args, &context)
             .expect("unselected contradictory evidence must not block an extension build");
 
         assert_runtime_args_with_primary(
@@ -4045,11 +4387,10 @@ mod tests {
         cleanup_context(&context);
     }
 
-    /// The durable job path maps its argv independently from
-    /// `unica.runtime.execute`; keep the same preflight on both public runtime
-    /// entry points.
+    /// The durable path gets the same initial/default build and one fallback
+    /// plan as the synchronous runtime entry point.
     #[test]
-    fn runtime_job_dry_run_forces_full_build_for_supported_configuration() {
+    fn runtime_job_dry_run_reports_the_initial_default_build() {
         let mut context = temp_context("runtime-job-supported-configuration-build");
         configure_supported_designer_source(&mut context);
         let mut args = Map::new();
@@ -4065,25 +4406,23 @@ mod tests {
         .unwrap();
 
         let command = outcome.outcome.command.unwrap();
-        assert_runtime_args_with_primary(&context, &command[1..], &["build", "--full-rebuild"]);
+        assert_runtime_args_with_primary(&context, &command[1..], &["build"]);
         assert!(outcome
             .outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("supported configuration")));
+            .any(|warning| warning.contains("retry once")));
         cleanup_context(&context);
     }
 
     #[test]
-    fn runtime_job_request_persists_full_build_for_supported_configuration() {
+    fn runtime_job_request_carries_one_full_fallback() {
         let mut context = temp_context("runtime-job-request-supported-configuration");
         configure_supported_designer_source(&mut context);
-        let support_reader_factory = WorkspaceSupportStateReaderFactory;
-        let support_reader = support_reader_factory.create(&context);
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("build"));
 
-        let invocation = plan_runtime_invocation(&args, &context, support_reader.as_ref()).unwrap();
+        let invocation = plan_runtime_invocation(&args, &context).unwrap();
         let execution_args = runtime_args(&invocation.args, false).unwrap();
         let request = runtime_job_start_request(
             "unica.runtime.job.start",
@@ -4094,40 +4433,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_runtime_args_with_primary(
-            &context,
-            request.raw_argv(),
-            &["build", "--full-rebuild"],
-        );
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_job_stops_when_cancelled_during_build_preflight() {
-        let mut context = temp_context("runtime-job-cancel-during-build-preflight");
-        configure_designer_source(&mut context);
-        let cancellation = CancellationToken::new();
-        let support_reader = SequencedConfigurationSupportReader {
-            states: std::sync::Mutex::new(vec![ConfigurationSupportState::NotSupported]),
-            cancellation: Some(cancellation.clone()),
-        };
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let outcome = RuntimeJobAdapter::invoke_with_support_state(
-            RuntimeJobAction::Start,
-            "unica.runtime.job.start",
-            &args,
-            &context,
-            false,
-            &support_reader,
-            &cancellation,
-        )
-        .expect("cancellation is an adapter outcome");
-
-        assert!(!outcome.outcome.ok);
-        assert!(outcome.outcome.errors[0].starts_with(CANCELLED_PREFIX));
-        assert!(outcome.job.is_none());
-        assert!(!context.cache_root.join("jobs").exists());
+        assert_runtime_args_with_primary(&context, request.raw_argv(), &["build"]);
+        let fallback = request
+            .full_rebuild_fallback_argv()
+            .expect("durable full fallback");
+        assert_runtime_args_with_primary(&context, fallback, &["build", "--full-rebuild"]);
         cleanup_context(&context);
     }
 
@@ -4156,7 +4466,10 @@ mod tests {
 
         assert!(outcome.ok);
         assert_runtime_args_with_primary(&context, &runner.commands.borrow()[0].args, &["build"]);
-        assert!(outcome.warnings.is_empty());
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("retry once")));
         cleanup_context(&context);
     }
 
@@ -4195,100 +4508,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_adapter_reauthorizes_incremental_build_before_process_start() {
-        let mut context = temp_context("runtime-support-race-before-process-start");
-        configure_designer_source(&mut context);
-        let support_reader = SequencedConfigurationSupportReader {
-            states: std::sync::Mutex::new(vec![
-                ConfigurationSupportState::NotSupported,
-                ConfigurationSupportState::Supported,
-            ]),
-            cancellation: None,
-        };
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let error = match RuntimeAdapter::with_runner(&runner)
-            .invoke_cancellable_with_support_state(
-                RuntimeInvocation {
-                    tool_name: "unica.runtime.execute",
-                    args: &args,
-                    context: &context,
-                    dry_run: false,
-                    mutating: true,
-                },
-                &CancellationToken::new(),
-                RuntimeSupportPreflight {
-                    reader: &support_reader,
-                },
-            ) {
-            Ok(_) => panic!("changed support evidence must refuse a stale incremental plan"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("changed before v8-runner launch"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_stops_when_cancelled_during_build_preflight() {
-        let mut context = temp_context("runtime-cancel-during-build-preflight");
-        configure_designer_source(&mut context);
-        let cancellation = CancellationToken::new();
-        let support_reader = SequencedConfigurationSupportReader {
-            states: std::sync::Mutex::new(vec![ConfigurationSupportState::NotSupported]),
-            cancellation: Some(cancellation.clone()),
-        };
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke_cancellable_with_support_state(
-                RuntimeInvocation {
-                    tool_name: "unica.runtime.execute",
-                    args: &args,
-                    context: &context,
-                    dry_run: false,
-                    mutating: true,
-                },
-                &cancellation,
-                RuntimeSupportPreflight {
-                    reader: &support_reader,
-                },
-            )
-            .expect("cancellation is an adapter outcome");
-
-        assert!(!outcome.outcome.ok);
-        assert!(outcome.outcome.errors[0].starts_with(CANCELLED_PREFIX));
-        assert!(runner.commands.borrow().is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
     fn runtime_adapter_keeps_incremental_build_for_removed_configuration_support() {
         let mut context = temp_context("runtime-removed-configuration-support");
         configure_designer_source(&mut context);
@@ -4297,22 +4516,24 @@ mod tests {
             .join("src/Ext/ParentConfigurations.bin");
         fs::create_dir_all(marker.parent().expect("support marker parent")).unwrap();
         fs::write(marker, []).expect("write removed support marker");
-        let support_reader = StaticConfigurationSupportReader(ConfigurationSupportState::Removed);
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
 
-        let invocation = plan_runtime_invocation(&args, &context, &support_reader).unwrap();
+        let invocation = plan_runtime_invocation(&args, &context).unwrap();
 
         assert_runtime_args_with_primary(
             &context,
             &runtime_args(&invocation.args, false).unwrap(),
             &["build"],
         );
-        assert!(invocation.warnings.is_empty());
+        assert!(invocation
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("retry once")));
         cleanup_context(&context);
     }
 
     #[test]
-    fn runtime_adapter_skips_designer_support_reader_for_edt_configuration() {
+    fn runtime_adapter_keeps_the_default_strategy_for_edt_configuration() {
         let mut context = temp_context("runtime-edt-configuration-build");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
         fs::write(
@@ -4327,13 +4548,12 @@ mod tests {
         )
         .unwrap();
         refresh_test_context(&mut context);
-        let support_reader = PanickingConfigurationSupportReader;
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
             ("fullRebuild".to_string(), json!(false)),
         ]);
 
-        let invocation = plan_runtime_invocation(&args, &context, &support_reader).unwrap();
+        let invocation = plan_runtime_invocation(&args, &context).unwrap();
 
         assert_runtime_args_with_primary(
             &context,
@@ -4341,52 +4561,6 @@ mod tests {
             &["build"],
         );
         assert!(invocation.build_preflight.is_some());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_refuses_extension_state_for_configuration_target() {
-        let mut context = temp_context("runtime-inconsistent-configuration-support");
-        configure_supported_designer_source(&mut context);
-        let support_reader = StaticConfigurationSupportReader(ConfigurationSupportState::Extension);
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-
-        let error = match RuntimeAdapter::with_runner(&runner)
-            .invoke_cancellable_with_support_state(
-                RuntimeInvocation {
-                    tool_name: "unica.runtime.execute",
-                    args: &args,
-                    context: &context,
-                    dry_run: false,
-                    mutating: true,
-                },
-                &CancellationToken::new(),
-                RuntimeSupportPreflight {
-                    reader: &support_reader,
-                },
-            ) {
-            Ok(_) => panic!("an extension state cannot authorize a configuration build"),
-            Err(error) => error,
-        };
-
-        assert!(
-            error.contains("inconsistent `Extension` support state"),
-            "{error}"
-        );
-        assert!(error.contains("fullRebuild: true"), "{error}");
-        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
@@ -4443,43 +4617,10 @@ mod tests {
             &runner.commands.borrow()[0].args,
             &["build", "--source-set", "extension"],
         );
-        assert!(outcome.warnings.is_empty());
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_refuses_unreadable_support_state_before_incremental_build() {
-        let mut context = temp_context("runtime-unreadable-support-state");
-        configure_supported_designer_source(&mut context);
-        fs::write(
-            context
-                .workspace_root
-                .join("src/Ext/ParentConfigurations.bin"),
-            b"not a support-state marker",
-        )
-        .unwrap();
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-        let mut args = Map::new();
-        args.insert("operation".to_string(), json!("build"));
-
-        let error = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .expect_err("an unreadable support marker cannot authorize partial loading");
-
-        assert!(error.contains("support state"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
-        assert!(runner.commands.borrow().is_empty());
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("retry once")));
         cleanup_context(&context);
     }
 
@@ -4515,16 +4656,17 @@ mod tests {
             .unwrap();
 
         assert!(outcome.ok);
-        assert_eq!(
-            runner.commands.borrow()[0].args,
-            ["build", "--full-rebuild"]
+        assert_runtime_args_with_primary(
+            &context,
+            &runner.commands.borrow()[0].args,
+            &["build", "--full-rebuild"],
         );
         assert!(outcome.warnings.is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn incremental_build_with_nonprimary_config_has_actionable_refusal() {
+    fn incremental_build_with_explicit_config_uses_the_same_fallback_policy() {
         let context = temp_context("runtime-nonprimary-build-config");
         let alternate = context.workspace_root.join("alternate");
         fs::create_dir_all(&alternate).unwrap();
@@ -4549,18 +4691,26 @@ mod tests {
         args.insert("operation".to_string(), json!("build"));
         args.insert("config".to_string(), json!("alternate/v8project.yaml"));
 
-        let error = RuntimeAdapter::with_runner(&runner)
+        let outcome = RuntimeAdapter::with_runner(&runner)
             .invoke("unica.runtime.execute", &args, &context, false, true)
-            .expect_err("the primary reader must not inspect a different config tree");
+            .expect("fallback policy must not depend on the primary support reader");
 
-        assert!(error.contains("non-primary config"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
-        assert!(runner.commands.borrow().is_empty());
+        assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0]
+            .args
+            .iter()
+            .any(|argument| argument == "--json-message"));
+        assert!(!commands[0]
+            .args
+            .iter()
+            .any(|argument| argument == "--full-rebuild"));
         cleanup_context(&context);
     }
 
     #[test]
-    fn incremental_build_rejects_case_distinct_nonprimary_config() {
+    fn incremental_build_keeps_a_case_distinct_explicit_config() {
         let mut context = temp_context("runtime-case-distinct-nonprimary-config");
         configure_designer_source(&mut context);
         let alternate = context.workspace_root.join("V8PROJECT.YAML");
@@ -4583,85 +4733,14 @@ mod tests {
             ),
         ]);
 
-        let error = match plan_runtime_invocation(
-            &args,
-            &context,
-            &StaticConfigurationSupportReader(ConfigurationSupportState::NotSupported),
-        ) {
-            Ok(_) => panic!("a distinct config inode must never share primary authorization"),
-            Err(error) => error,
-        };
+        let plan = plan_runtime_invocation(&args, &context)
+            .expect("an explicit config has its own build identity");
 
-        assert!(error.contains("non-primary config"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_refuses_unknown_selected_configuration_format() {
-        let context = temp_context("runtime-unknown-configuration-format");
-        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            concat!(
-                "source-set:\n",
-                "  - name: main\n",
-                "    type: CONFIGURATION\n",
-                "    path: src\n",
-            ),
-        )
-        .unwrap();
-        let support_reader = PanickingConfigurationSupportReader;
-        let args = Map::from_iter([
-            ("operation".to_string(), json!("build")),
-            ("sourceSet".to_string(), json!("main")),
-        ]);
-
-        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
-            Ok(_) => panic!("unknown source format cannot authorize an incremental build"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("source format"), "{error}");
-        assert!(error.contains("source-set `main`"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_refuses_edt_evidence_under_designer_build_mode() {
-        let context = temp_context("runtime-designer-mode-with-edt-evidence");
-        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: main\n",
-                "    type: CONFIGURATION\n",
-                "    path: src\n",
-            ),
-        )
-        .unwrap();
-        fs::write(
-            context.workspace_root.join("src/.project"),
-            "<projectDescription/>",
-        )
-        .unwrap();
-        let support_reader = PanickingConfigurationSupportReader;
-        let args = Map::from_iter([
-            ("operation".to_string(), json!("build")),
-            ("sourceSet".to_string(), json!("main")),
-        ]);
-
-        let error = match plan_runtime_invocation(&args, &context, &support_reader) {
-            Ok(_) => panic!("Designer build mode cannot authorize an EDT-shaped source root"),
-            Err(error) => error,
-        };
-
-        assert!(error.contains("source format"), "{error}");
-        assert!(error.contains("source-set `main`"), "{error}");
-        assert!(error.contains("fullRebuild: true"), "{error}");
+        assert_eq!(
+            plan.args.get("config").and_then(Value::as_str),
+            alternate.to_str()
+        );
+        assert!(plan.build_preflight.is_some());
         cleanup_context(&context);
     }
 
@@ -4686,14 +4765,13 @@ mod tests {
         )
         .unwrap();
         refresh_test_context(&mut context);
-        let support_reader = PanickingConfigurationSupportReader;
         let args = Map::from_iter([
             ("operation".to_string(), json!("build")),
             ("sourceSet".to_string(), json!("main")),
         ]);
 
-        let invocation = plan_runtime_invocation(&args, &context, &support_reader)
-            .expect("global EDT mode does not use Designer support state");
+        let invocation = plan_runtime_invocation(&args, &context)
+            .expect("global EDT mode reaches v8-runner unchanged");
 
         assert_runtime_args_with_primary(
             &context,
@@ -4702,144 +4780,6 @@ mod tests {
         );
         assert!(invocation.build_preflight.is_some());
         cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_build_preflight_rejects_noncanonical_runner_format_values() {
-        for (index, format) in [
-            "edt",
-            "designer",
-            "XML",
-            "PLATFORM_XML",
-            "FUTURE",
-            " EDT ",
-            "",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let context = temp_context(&format!("runtime-noncanonical-format-{index}"));
-            let source_root = context.workspace_root.join("src");
-            fs::create_dir_all(&source_root).unwrap();
-            fs::write(
-                context.workspace_root.join("v8project.yaml"),
-                format!(
-                    "format: {format:?}\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
-                ),
-            )
-            .unwrap();
-            fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
-            let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-            let error = match plan_runtime_invocation(
-                &args,
-                &context,
-                &PanickingConfigurationSupportReader,
-            ) {
-                Ok(_) => panic!("format {format:?} must be rejected before runner launch"),
-                Err(error) => error,
-            };
-
-            assert!(error.contains("format"), "{format:?}: {error}");
-            assert!(error.contains("DESIGNER"), "{format:?}: {error}");
-            assert!(error.contains("EDT"), "{format:?}: {error}");
-            cleanup_context(&context);
-        }
-    }
-
-    #[test]
-    fn runtime_build_preflight_defaults_missing_format_to_designer() {
-        let context = temp_context("runtime-missing-format-defaults-designer");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            concat!(
-                "source-set:\n",
-                "  - name: main\n",
-                "    type: CONFIGURATION\n",
-                "    path: src\n",
-            ),
-        )
-        .unwrap();
-        fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let invocation = plan_runtime_invocation(
-            &args,
-            &context,
-            &StaticConfigurationSupportReader(ConfigurationSupportState::Supported),
-        )
-        .expect("missing format must use the runner Designer default");
-
-        assert_runtime_args_with_primary(
-            &context,
-            &runtime_args(&invocation.args, false).unwrap(),
-            &["build", "--full-rebuild"],
-        );
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_build_preflight_entrypoints_reject_noncanonical_format_in_preview_and_apply() {
-        for (index, format) in ["edt", "designer", "XML", "PLATFORM_XML", "FUTURE"]
-            .into_iter()
-            .enumerate()
-        {
-            let context = temp_context(&format!("runtime-entrypoints-noncanonical-format-{index}"));
-            let source_root = context.workspace_root.join("src");
-            fs::create_dir_all(&source_root).unwrap();
-            fs::write(
-                context.workspace_root.join("v8project.yaml"),
-                format!(
-                    "format: {format:?}\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
-                ),
-            )
-            .unwrap();
-            fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
-            let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-            let runner = RecordingProcessRunner {
-                commands: RefCell::new(Vec::new()),
-                output: ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                },
-            };
-
-            for dry_run in [true, false] {
-                let execute_error = RuntimeAdapter::with_runner(&runner)
-                    .invoke("unica.runtime.execute", &args, &context, dry_run, true)
-                    .expect_err("runtime.execute must reject runner-invalid format");
-                assert!(
-                    execute_error.contains("exact `DESIGNER` or `EDT`"),
-                    "{format:?}: {execute_error}"
-                );
-
-                let job_error = match RuntimeJobAdapter::invoke(
-                    RuntimeJobAction::Start,
-                    "unica.runtime.job.start",
-                    &args,
-                    &context,
-                    dry_run,
-                ) {
-                    Ok(_) => panic!("runtime.job.start must reject format {format:?}"),
-                    Err(error) => error,
-                };
-                assert!(
-                    job_error.contains("exact `DESIGNER` or `EDT`"),
-                    "{format:?}: {job_error}"
-                );
-            }
-
-            assert!(runner.commands.borrow().is_empty());
-            assert!(!context.cache_root.join("jobs").exists());
-            cleanup_context(&context);
-        }
     }
 
     #[test]
@@ -7273,10 +7213,73 @@ analyze_timeout_seconds = 900
         outputs: RefCell<Vec<ProcessOutput>>,
     }
 
+    struct FailingAfterFirstProcessRunner {
+        commands: RefCell<Vec<ProcessCommand>>,
+        first: ProcessOutput,
+        error: String,
+    }
+
+    struct MutatingAfterFirstProcessRunner {
+        commands: RefCell<Vec<ProcessCommand>>,
+        outputs: RefCell<Vec<ProcessOutput>>,
+        after_first: RefCell<Option<Box<dyn FnOnce()>>>,
+    }
+
+    fn build_failure_json(mode: Value, message: &str) -> String {
+        serde_json::to_string(&json!({
+            "ok": false,
+            "command": "build",
+            "duration_ms": 12,
+            "data": {
+                "ok": false,
+                "steps": [{
+                    "source_set": "main",
+                    "mode": mode,
+                    "ok": false,
+                    "message": format!("platform error: {message}"),
+                    "duration_ms": 0
+                }],
+                "duration_ms": 12
+            },
+            "warnings": [],
+            "steps": [],
+            "error": {
+                "code": "platform_failure",
+                "kind": "platform",
+                "message": message
+            }
+        }))
+        .expect("serialize build failure")
+    }
+
     impl ProcessRunner for SequenceProcessRunner {
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.commands.borrow_mut().push(command.clone());
             Ok(self.outputs.borrow_mut().remove(0))
+        }
+    }
+
+    impl ProcessRunner for FailingAfterFirstProcessRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.commands.borrow_mut().push(command.clone());
+            if self.commands.borrow().len() == 1 {
+                Ok(self.first.clone())
+            } else {
+                Err(self.error.clone())
+            }
+        }
+    }
+
+    impl ProcessRunner for MutatingAfterFirstProcessRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.commands.borrow_mut().push(command.clone());
+            let output = self.outputs.borrow_mut().remove(0);
+            if self.commands.borrow().len() == 1 {
+                if let Some(after_first) = self.after_first.borrow_mut().take() {
+                    after_first();
+                }
+            }
+            Ok(output)
         }
     }
 
@@ -7316,6 +7319,11 @@ analyze_timeout_seconds = 900
         actual: &[String],
         expected_tail: &[&str],
     ) {
+        let actual = if actual.first().map(String::as_str) == Some("--json-message") {
+            &actual[1..]
+        } else {
+            actual
+        };
         assert_eq!(actual.first().map(String::as_str), Some("--config"));
         let expected_config =
             crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
@@ -7357,123 +7365,6 @@ analyze_timeout_seconds = 900
         )
         .unwrap();
         refresh_test_context(context);
-    }
-
-    struct StaticConfigurationSupportReader(ConfigurationSupportState);
-
-    impl SupportStateReader for StaticConfigurationSupportReader {
-        fn configuration_support(
-            &self,
-            _target: &ResolvedTarget,
-        ) -> Result<
-            crate::domain::support_state::ConfigurationSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            Ok(crate::domain::support_state::ConfigurationSupportData {
-                state: self.0,
-                editing_enabled: None,
-                objects: None,
-            })
-        }
-
-        fn object_support(
-            &self,
-            _target: &ResolvedTarget,
-        ) -> Result<
-            crate::domain::support_state::ObjectSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            unreachable!("runtime build preflight reads configuration support")
-        }
-
-        fn subsystem_support(
-            &self,
-            _target: &crate::domain::support_state::ResolvedSubsystemTarget,
-        ) -> Result<
-            crate::domain::support_state::ObjectSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            unreachable!("runtime build preflight reads configuration support")
-        }
-    }
-
-    struct SequencedConfigurationSupportReader {
-        states: std::sync::Mutex<Vec<ConfigurationSupportState>>,
-        cancellation: Option<CancellationToken>,
-    }
-
-    struct PanickingConfigurationSupportReader;
-
-    impl SupportStateReader for PanickingConfigurationSupportReader {
-        fn configuration_support(
-            &self,
-            _target: &ResolvedTarget,
-        ) -> Result<
-            crate::domain::support_state::ConfigurationSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            panic!("EDT configurations do not have Designer support-state evidence")
-        }
-
-        fn object_support(
-            &self,
-            _target: &ResolvedTarget,
-        ) -> Result<
-            crate::domain::support_state::ObjectSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            unreachable!("runtime build preflight reads configuration support")
-        }
-
-        fn subsystem_support(
-            &self,
-            _target: &crate::domain::support_state::ResolvedSubsystemTarget,
-        ) -> Result<
-            crate::domain::support_state::ObjectSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            unreachable!("runtime build preflight reads configuration support")
-        }
-    }
-
-    impl SupportStateReader for SequencedConfigurationSupportReader {
-        fn configuration_support(
-            &self,
-            _target: &ResolvedTarget,
-        ) -> Result<
-            crate::domain::support_state::ConfigurationSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            if let Some(cancellation) = &self.cancellation {
-                cancellation.cancel();
-            }
-            let state = self.states.lock().unwrap().remove(0);
-            Ok(crate::domain::support_state::ConfigurationSupportData {
-                state,
-                editing_enabled: None,
-                objects: None,
-            })
-        }
-
-        fn object_support(
-            &self,
-            _target: &ResolvedTarget,
-        ) -> Result<
-            crate::domain::support_state::ObjectSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            unreachable!("runtime build preflight reads configuration support")
-        }
-
-        fn subsystem_support(
-            &self,
-            _target: &crate::domain::support_state::ResolvedSubsystemTarget,
-        ) -> Result<
-            crate::domain::support_state::ObjectSupportData,
-            crate::domain::support_state::SupportReadError,
-        > {
-            unreachable!("runtime build preflight reads configuration support")
-        }
     }
 
     fn configure_supported_designer_source(context: &mut WorkspaceContext) {
