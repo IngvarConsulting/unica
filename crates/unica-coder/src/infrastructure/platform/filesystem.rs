@@ -1744,7 +1744,6 @@ pub(crate) fn open_regular_child_nofollow(
     name: &std::ffi::OsStr,
 ) -> io::Result<fs::File> {
     const FILE_OPEN: u32 = 0x0000_0001;
-    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
     const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1757,7 +1756,7 @@ pub(crate) fn open_regular_child_nofollow(
         GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         0,
         FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        FILE_OPEN_REPARSE_POINT,
         None,
     )?;
     let attributes = windows_file_information(&file)?.dwFileAttributes;
@@ -3976,6 +3975,20 @@ mod tests {
             .expect_err("an ambiguous parent case-sensitivity query must fail closed");
 
             assert!(error.to_string().contains("case-sensitive"), "{error}");
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_regular_child_open_reports_directory_as_wrong_kind() {
+            let root = unique_temp_root("regular-child-directory");
+            fs::create_dir_all(root.join("Archive.xml")).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+
+            let error = open_regular_child_nofollow(&parent, std::ffi::OsStr::new("Archive.xml"))
+                .expect_err("a directory must not be returned as a regular child");
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
             drop(parent);
             fs::remove_dir_all(root).unwrap();
         }
