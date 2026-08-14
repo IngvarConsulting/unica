@@ -374,7 +374,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         summary = MODULE.markdown_summary(documents)
 
         self.assertTrue(summary.startswith("## Замер RLM v1.33.0\n"))
-        self.assertIn("`rlm-tools-bsl-v1.33.0-build.1`", summary)
+        self.assertIn("`rlm-tools-bsl-v1.33.0-build.2`", summary)
         self.assertIn("| source-v1.33.0 | No-op update | 5 | 3,00 с | 1,00–5,00 с |", summary)
         self.assertIn("12 290", summary)
         self.assertIn("220 748", summary)

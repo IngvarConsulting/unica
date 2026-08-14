@@ -89,7 +89,7 @@
       "sourceTag": "v1.33.0",
       "sourceCommit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "rlm-tools-bsl-v1.33.0-build.1",
+      "assetTag": "rlm-tools-bsl-v1.33.0-build.2",
       "releaseName": "rlm-tools-bsl",
       "license": "MIT",
       "assetStrategy": "direct-release-asset",
@@ -97,15 +97,18 @@
       "assets": {
         "darwin-arm64": {
           "assetName": "rlm-bsl-mcp-darwin-arm64",
-          "sha256": "74dfc2c8a2c14acda30c7e284a90d5371bbefb0a926ddfdf6932b7655cfa8893"
+          "sha256": "312fe35fa211dee1137cf4aef7e52a2bb1eb161ad903a87257342257985efe00",
+          "size": 22384192
         },
         "linux-x64": {
           "assetName": "rlm-bsl-mcp-linux-x64",
-          "sha256": "984100e851f3f4995563b385659d4fad14cfcfd73b87fc5cf1c627d77ab84615"
+          "sha256": "f81cf7776fc6bf0bda6290f86a665593ce4daa6b04ec5d02d00f158345bfd277",
+          "size": 36846384
         },
         "win-x64": {
           "assetName": "rlm-bsl-mcp-win-x64.exe",
-          "sha256": "6da8061385febbc493001ccb454a4f42cb3352cb649cea022e439d166c877c58"
+          "sha256": "c198b3539769c207f4d0d0f95848ff47d8f892f499ec04f300f2d7538c658c11",
+          "size": 23834848
         }
       }
     },
@@ -116,7 +119,7 @@
       "sourceTag": "v1.33.0",
       "sourceCommit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "rlm-tools-bsl-v1.33.0-build.1",
+      "assetTag": "rlm-tools-bsl-v1.33.0-build.2",
       "releaseName": "rlm-tools-bsl",
       "license": "MIT",
       "assetStrategy": "direct-release-asset",
@@ -124,15 +127,18 @@
       "assets": {
         "darwin-arm64": {
           "assetName": "rlm-bsl-index-darwin-arm64",
-          "sha256": "d5ed39a9cec302791ecb391959a52fcb84d09ca9e10ac826a3c9641c7ce17ec8"
+          "sha256": "d48bd7a0186e46b6d2a48476bc9926fb638882544e7be201293f89db9e654a63",
+          "size": 22384192
         },
         "linux-x64": {
           "assetName": "rlm-bsl-index-linux-x64",
-          "sha256": "43b309349320a5fef3e961e03f91c1a79d7c78c498019f0306eb9a2dd73cb4df"
+          "sha256": "94ffdcf44330ed5ad6121682fcefd7560adfdc9ebe09ee2a1476666e21c33996",
+          "size": 36846384
         },
         "win-x64": {
           "assetName": "rlm-bsl-index-win-x64.exe",
-          "sha256": "d4795697ca37a8ddffb71cb8c080db516db568193953b58b3d10659ac4b58f00"
+          "sha256": "1e64e9436ea2fa69212b27ebe3f6d349fc53acc56250a79d1d2cf67c4570d69b",
+          "size": 23834846
         }
       }
     },

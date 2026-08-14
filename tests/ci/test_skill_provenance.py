@@ -44,20 +44,23 @@ class SkillProvenanceTests(unittest.TestCase):
     def assert_rlm_review_identity(self, review: dict) -> None:
         self.assertEqual(review["schemaVersion"], 1)
         self.assertEqual(review["id"], "2026-08-13-rlm-v1-33-product-update")
+        self.assertEqual(review["generatedAt"], "2026-08-14")
         self.assertEqual(
             review["source"],
             {
                 "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
                 "tag": "v1.33.0",
                 "commit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+                "tree": "4b321de0454d4d0998762659891374a3a1326cd0",
+                "patches": [],
             },
         )
         self.assertEqual(
             review["toolchain"],
             {
                 "repository": "https://github.com/IngvarConsulting/unica-toolchain",
-                "releaseTag": "rlm-tools-bsl-v1.33.0-build.1",
-                "buildRevision": 1,
+                "releaseTag": "rlm-tools-bsl-v1.33.0-build.2",
+                "buildRevision": 2,
             },
         )
         self.assertEqual(
@@ -540,7 +543,7 @@ class SkillProvenanceTests(unittest.TestCase):
             )
             self.assertEqual(
                 locked["assetTag"],
-                "rlm-tools-bsl-v1.33.0-build.1",
+                "rlm-tools-bsl-v1.33.0-build.2",
             )
             self.assertEqual(locked["releaseName"], "rlm-tools-bsl")
             self.assertEqual(locked["assets"], recorded["assets"])
@@ -558,9 +561,11 @@ class SkillProvenanceTests(unittest.TestCase):
             (("source", "repository"), "https://example.invalid/upstream"),
             (("source", "tag"), "v1.33.1"),
             (("source", "commit"), "0" * 40),
+            (("source", "tree"), "0" * 40),
+            (("source", "patches"), ["local.patch"]),
             (("toolchain", "repository"), "https://example.invalid/toolchain"),
-            (("toolchain", "releaseTag"), "rlm-tools-bsl-v1.33.0-build.2"),
-            (("toolchain", "buildRevision"), 2),
+            (("toolchain", "releaseTag"), "rlm-tools-bsl-v1.33.0-build.1"),
+            (("toolchain", "buildRevision"), 1),
             (("compatibility", "builder"), "14"),
             (("compatibility", "previousBuilder"), "13"),
             (("compatibility", "strategy"), "migration"),

@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 
 MARKER = "UNICA_RLM_BENCHMARK_MARKER"
 SECTION_HEADING = "## Замер RLM v1.33.0"
-RELEASE_TAG = "rlm-tools-bsl-v1.33.0-build.1"
+RELEASE_TAG = "rlm-tools-bsl-v1.33.0-build.2"
 SOURCE_COMMIT = "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549"
 TAIL_LIMIT = 4_000
 HEX_40 = re.compile(r"[0-9a-f]{40}\Z")

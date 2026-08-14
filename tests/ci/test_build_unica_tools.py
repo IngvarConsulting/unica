@@ -133,6 +133,57 @@ class BuildUnicaToolsTests(unittest.TestCase):
             tool["assetTag"] = f"{release_name}-{source_label}-build.{build_revision}"
         self.assert_external_toolchain_contract(updated_tools)
 
+    def test_checked_in_rlm_assets_match_build_2_release_provenance(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        lock = json.loads(
+            (repo_root / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        tools = {tool["name"]: tool for tool in lock["tools"]}
+
+        expected_assets = {
+            "rlm-bsl-index": {
+                "darwin-arm64": {
+                    "assetName": "rlm-bsl-index-darwin-arm64",
+                    "sha256": "d48bd7a0186e46b6d2a48476bc9926fb638882544e7be201293f89db9e654a63",
+                    "size": 22_384_192,
+                },
+                "linux-x64": {
+                    "assetName": "rlm-bsl-index-linux-x64",
+                    "sha256": "94ffdcf44330ed5ad6121682fcefd7560adfdc9ebe09ee2a1476666e21c33996",
+                    "size": 36_846_384,
+                },
+                "win-x64": {
+                    "assetName": "rlm-bsl-index-win-x64.exe",
+                    "sha256": "1e64e9436ea2fa69212b27ebe3f6d349fc53acc56250a79d1d2cf67c4570d69b",
+                    "size": 23_834_846,
+                },
+            },
+            "rlm-bsl-mcp": {
+                "darwin-arm64": {
+                    "assetName": "rlm-bsl-mcp-darwin-arm64",
+                    "sha256": "312fe35fa211dee1137cf4aef7e52a2bb1eb161ad903a87257342257985efe00",
+                    "size": 22_384_192,
+                },
+                "linux-x64": {
+                    "assetName": "rlm-bsl-mcp-linux-x64",
+                    "sha256": "f81cf7776fc6bf0bda6290f86a665593ce4daa6b04ec5d02d00f158345bfd277",
+                    "size": 36_846_384,
+                },
+                "win-x64": {
+                    "assetName": "rlm-bsl-mcp-win-x64.exe",
+                    "sha256": "c198b3539769c207f4d0d0f95848ff47d8f892f499ec04f300f2d7538c658c11",
+                    "size": 23_834_848,
+                },
+            },
+        }
+
+        for name, assets in expected_assets.items():
+            with self.subTest(tool=name):
+                self.assertEqual(tools[name]["assetTag"], "rlm-tools-bsl-v1.33.0-build.2")
+                self.assertEqual(tools[name]["assets"], assets)
+
     def test_release_asset_checksum_mismatch_fails_before_use(self) -> None:
         module = load_build_module()
 
