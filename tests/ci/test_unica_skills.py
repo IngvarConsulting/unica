@@ -1806,13 +1806,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             client_mcp_calls, "the skill has to show how to prepare client MCP"
         )
 
+        # `dryRun: false` is part of the oracle: a preview never downloads, so
+        # a recipe that only previews leaves the caller without the artifact
+        # the `build` preflight wants. `sources: false` is accepted alongside an
+        # omitted key because the mapper emits `--sources` only for a literal
+        # true, so both spellings produce the same runner argv.
         artifact_calls = [
-            call for call in client_mcp_calls if not call.get("sources")
+            call
+            for call in client_mcp_calls
+            if not call.get("sources") and call.get("dryRun") is False
         ]
         self.assertTrue(
             artifact_calls,
-            "the default call returns the prebuilt client_mcp.cfe and has to be "
-            f"published: {client_mcp_calls}",
+            "an executable default call returns the prebuilt client_mcp.cfe and "
+            f"has to be published: {client_mcp_calls}",
         )
         self.assertIn("build/tools/client_mcp.cfe", skill_text)
 
