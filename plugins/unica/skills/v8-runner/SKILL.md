@@ -58,6 +58,7 @@ then call `unica.project.status` again after the approved fix.
 - Если вывод операции похож на проблему лицензии 1С (`лиценз`, `license`, `HASP`, `nethasp`, `LM`, `No license`, `Лицензия не найдена`), остановись. Не лечи лицензию, не меняй службы, реестр, `nethasp.ini` или программную лицензию.
 - Если база без указанного пользователя/пароля, допускается только два предположения: `Администратор` без пароля, затем `Admin` без пароля. Если оба не подходят, спроси пользователя.
 - Не сохраняй пароль в `v8project.yaml` молча. Если credentials нужно записать в connection string, предупреди пользователя и не коммить такой файл.
+- Если `tools-download` падает на `failed to fetch latest release … 403`, это анонимный лимит GitHub API, а не ошибка проекта и не отказ 1С. Не повторяй вызов по кругу: назови пользователю причину прямо. Аутентифицировать запрос runner не умеет — переменной с токеном он не читает. Выходы: подождать сброса лимита; направить `V8TR_GITHUB_API_BASE_URL` на зеркало или прокси, которое добавит авторизацию (Unica пробрасывает окружение в runner, поэтому переменная доходит); либо положить готовый артефакт по настроенному пути вручную — для client MCP это `tools.client_mcp.extension.artifact.path`.
 
 ## Workspace init
 
@@ -714,7 +715,34 @@ handles: доверенный владелец и DACL должны защища
 `build/tools/vanessa-automation-single.epf`. Если effective project config
 переопределяет `tools.va.epf_path`, используй в `execute` именно это значение.
 
-### Download client MCP sources
+### Download client MCP extension
+
+По умолчанию runner берёт готовый артефакт релиза и кладёт его в
+`build/tools/client_mcp.cfe`. Это тот путь, которого ждут
+`tools.client_mcp.extension.artifact.path` и preflight `build`, поэтому для
+подготовки клиентского MCP используй вызов без `sources`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.runtime.execute",
+    "arguments": {
+      "cwd": "<workspace>",
+      "operation": "tools-download",
+      "tool": "client-mcp",
+      "dryRun": false
+    }
+  }
+}
+```
+
+Исходники нужны только когда расширение правится. `sources: true` не добавляет
+их к артефакту, а заменяет его: runner переключается в режим `sources`, кладёт
+дерево EDT в `build/tools/onec-client-mcp-devkit/exts/client-mcp`, `.cfe` при
+этом не создаётся, и собрать дерево можно только установленным `1cedtcli`. Если
+`1cedtcli` в системе нет, этот маршрут тупиковый — оставайся на вызове выше.
 
 ```json
 {

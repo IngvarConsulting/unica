@@ -250,7 +250,12 @@ const LEAVE_DIRECTORY: u8 = 2;
 /// access changes the generation instead of reading as "nothing changed".
 const UNREADABLE_ENTRY: u8 = 3;
 
-const GENERATED_DIR_NAME: &str = ".build";
+/// The generated cache. It sits inside the source root but is not source, so
+/// the recursive walks skip it by name — this one and the source revision
+/// manifest — and the lexical search corpus excludes it. Anything else that
+/// descends the whole tree owes the same skip and reads the name from here
+/// rather than spelling it again.
+pub(crate) const GENERATED_DIR_NAME: &str = ".build";
 
 /// The walk is bound by metadata syscalls, not CPU, so it stops scaling early:
 /// on a 43k-file 8.3.27 configuration (APFS, 14 cores) one worker takes 883 ms,

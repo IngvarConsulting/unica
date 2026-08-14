@@ -3176,7 +3176,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "sources",
-        "Boolean that also downloads tool sources on operation tools-download; supported only for tool yaxunit or client-mcp and rejected for vanessa",
+        "Boolean that on operation tools-download fetches sources instead of the prebuilt release artifact; omit it to get the ready artifact, such as build/tools/client_mcp.cfe. What the source route yields differs by tool: client-mcp gets an EDT tree that only 1cedtcli can build and no .cfe at all, while yaxunit gets the tests source-set. Supported only for tool yaxunit or client-mcp and rejected for vanessa",
     ),
     (
         "srcDir",
@@ -4321,6 +4321,49 @@ mod tests {
         assert!(
             description.contains("unica.code.diagnostics"),
             "{description}"
+        );
+    }
+
+    /// #346. `sources` is exclusive, not additive. Pinned v8-runner 0.5.1
+    /// reports `mode: artifacts` without it and writes the prebuilt
+    /// `build/tools/client_mcp.cfe`; with it the runner reports `mode: sources`
+    /// and writes an EDT tree under `build/tools/onec-client-mcp-devkit/exts/`
+    /// and no `.cfe` at all. The description said the flag "also" downloads
+    /// sources, which reads as artifact plus sources, so a caller who wanted
+    /// the ready extension asked for the EDT path, took a `1cedtcli` dependency
+    /// it never announced, and still lacked the artifact that
+    /// `tools.client_mcp.extension.artifact.path` and the `build` preflight
+    /// require.
+    #[test]
+    fn sources_description_says_it_replaces_the_prebuilt_artifact() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "sources")
+            .expect("sources must have a shared description");
+
+        assert!(
+            !description.contains("also"),
+            "`also` reads as artifact plus sources, but the flag replaces one with the other: {description}"
+        );
+        assert!(
+            description.contains("instead of"),
+            "the description has to say the source tree replaces the release artifact: {description}"
+        );
+        assert!(
+            description.contains("1cedtcli"),
+            "the source tree is EDT and still has to be built, so the description names that cost: {description}"
+        );
+        assert!(
+            description.contains("omit"),
+            "a caller who wants the prebuilt artifact needs to be told to leave the flag off: {description}"
+        );
+        // One description serves both tools, and their source routes differ:
+        // yaxunit lays down the tests source-set, with no EDT tree and no
+        // 1cedtcli anywhere in it. Naming that keeps the client-mcp cost from
+        // reading as the price of the flag itself.
+        assert!(
+            description.contains("source-set"),
+            "the yaxunit source route is not EDT, so the description says what it yields instead of letting the client-mcp cost stand for both: {description}"
         );
     }
 
