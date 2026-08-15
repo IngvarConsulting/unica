@@ -19,6 +19,7 @@ pub(crate) use tool_contracts::{
 };
 
 pub(crate) mod code_intelligence;
+pub(crate) mod diagnostics;
 pub(crate) mod documentation;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
@@ -167,6 +168,7 @@ pub enum ToolHandler {
     SourceResources {
         operation: SourceResourceOperation,
     },
+    Diagnostics,
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -955,16 +957,14 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.diagnostics",
-            description: "Run BSL diagnostics through the internal code analysis adapter.",
+            description: "Read provider-neutral diagnostics addressed by logical 1C source targets.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["bsl_diagnostics"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["analyze"],
-            },
+            handler: ToolHandler::Diagnostics,
         },
         ToolSpec {
             name: "unica.standards.search",
@@ -1383,6 +1383,13 @@ fn call_tool_with_runtime_admission(
             ToolHandler::SourceResources { operation } => {
                 source_resources::invoke(operation, ports, args, &context, cancellation)?
             }
+            ToolHandler::Diagnostics => diagnostics::invoke(
+                ports,
+                args,
+                &context,
+                operational_config.as_ref(),
+                cancellation,
+            )?,
             ToolHandler::ProjectStatus => {
                 project_health::invoke(ports, &context, cancellation, deadline)
             }
@@ -1490,7 +1497,8 @@ fn call_tool_with_runtime_admission(
     );
 
     let role_typed = role_target.is_some();
-    if role_typed {
+    let diagnostics_typed = matches!(spec.handler, ToolHandler::Diagnostics);
+    if role_typed || diagnostics_typed {
         cache.root.clear();
     }
     let artifacts = if let Some(target) = role_target.as_ref() {
@@ -3071,6 +3079,22 @@ mod tests {
         crate::test_support::canonical_path(path)
     }
 
+    fn object_schema_property_maps(schema: &Value) -> Vec<&Map<String, Value>> {
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            return vec![properties];
+        }
+        schema["oneOf"]
+            .as_array()
+            .expect("tool schema publishes properties or closed object oneOf branches")
+            .iter()
+            .map(|branch| {
+                branch["properties"]
+                    .as_object()
+                    .expect("oneOf branch properties are an object")
+            })
+            .collect()
+    }
+
     fn call_public_tool_from_workspace(
         workspace: &std::path::Path,
         name: &str,
@@ -3215,6 +3239,316 @@ mod tests {
                 );
             }
         }
+    }
+
+    static DIAGNOSTICS_BOUNDARY_DESCRIPTOR:
+        crate::domain::diagnostics::DiagnosticProviderDescriptor =
+        crate::domain::diagnostics::DiagnosticProviderDescriptor {
+            id: crate::domain::diagnostics::BSL_ANALYZER_PROVIDER,
+            actions: &[
+                crate::domain::diagnostics::DiagnosticAction::Analyze,
+                crate::domain::diagnostics::DiagnosticAction::Status,
+            ],
+            findings_target_kinds: &[],
+            emits_focus_kinds: &[],
+        };
+
+    struct DiagnosticsBoundaryProvider {
+        calls: Arc<AtomicUsize>,
+        observed_budget: Arc<Mutex<Option<Duration>>>,
+        fail: bool,
+    }
+
+    impl crate::domain::diagnostics::DiagnosticProvider for DiagnosticsBoundaryProvider {
+        fn descriptor(&self) -> &'static crate::domain::diagnostics::DiagnosticProviderDescriptor {
+            &DIAGNOSTICS_BOUNDARY_DESCRIPTOR
+        }
+
+        fn execute(
+            &self,
+            request: &crate::domain::diagnostics::DiagnosticProviderRequest,
+            _context: &crate::domain::diagnostics::DiagnosticContext,
+            deadline: crate::domain::diagnostics::ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> crate::domain::diagnostics::DiagnosticProviderOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.observed_budget.lock().unwrap() = Some(deadline.remaining());
+            if self.fail {
+                return crate::domain::diagnostics::DiagnosticProviderOutcome {
+                    status: crate::domain::diagnostics::DiagnosticProviderStatus::Failed,
+                    complete: false,
+                    version: Some("test".to_string()),
+                    observations: Vec::new(),
+                    rules: Vec::new(),
+                    readiness: None,
+                    error: Some(crate::domain::diagnostics::DiagnosticError {
+                        code: "provider_unavailable".to_string(),
+                        message: "test provider is unavailable".to_string(),
+                        retryable: true,
+                    }),
+                };
+            }
+            crate::domain::diagnostics::DiagnosticProviderOutcome {
+                status: if request.action == crate::domain::diagnostics::DiagnosticAction::Analyze {
+                    crate::domain::diagnostics::DiagnosticProviderStatus::Empty
+                } else {
+                    crate::domain::diagnostics::DiagnosticProviderStatus::Completed
+                },
+                complete: true,
+                version: Some("test".to_string()),
+                observations: Vec::new(),
+                rules: Vec::new(),
+                readiness: (request.action == crate::domain::diagnostics::DiagnosticAction::Status)
+                    .then_some(crate::domain::diagnostics::DiagnosticReadiness {
+                        state: crate::domain::diagnostics::DiagnosticReadinessState::Ready,
+                        retryable: false,
+                    }),
+                error: None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct DiagnosticsBoundaryPorts {
+        handler_calls: AtomicUsize,
+        provider_calls: Arc<AtomicUsize>,
+        observed_budget: Arc<Mutex<Option<Duration>>>,
+        fail_provider: bool,
+    }
+
+    impl ports::ApplicationPorts for DiagnosticsBoundaryPorts {
+        fn discover_workspace(
+            &self,
+            requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            let root = requested_cwd.unwrap_or_else(|| PathBuf::from("workspace"));
+            Ok(WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 7,
+            })
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _mode: InvocationMode,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn diagnostic_provider_registry(
+            &self,
+        ) -> Result<crate::domain::diagnostics::DiagnosticProviderRegistry, String> {
+            crate::domain::diagnostics::DiagnosticProviderRegistry::new(vec![Arc::new(
+                DiagnosticsBoundaryProvider {
+                    calls: Arc::clone(&self.provider_calls),
+                    observed_budget: Arc::clone(&self.observed_budget),
+                    fail: self.fail_provider,
+                },
+            )])
+            .map_err(|error| error.to_string())
+        }
+
+        fn resolve_diagnostic_context(
+            &self,
+            request: &crate::domain::diagnostics::DiagnosticRequest,
+            workspace: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<
+            crate::domain::diagnostics::DiagnosticContext,
+            crate::domain::diagnostics::DiagnosticRequestError,
+        > {
+            Ok(crate::domain::diagnostics::DiagnosticContext::new(
+                workspace.clone(),
+                crate::domain::project_sources::ProjectSourceSet {
+                    name: request.source_set.clone(),
+                    kind: crate::domain::project_sources::SourceSetKind::Configuration,
+                    path: "src".to_string(),
+                    source_format: crate::domain::project_sources::SourceFormat::PlatformXml,
+                    format_evidence: Vec::new(),
+                    format_probe_error: None,
+                },
+                crate::domain::source_roots::ResolvedSourceRoot {
+                    source_set: Some(request.source_set.clone()),
+                    path: workspace.workspace_root.join("src"),
+                },
+                crate::domain::source_target::ResolvedTarget {
+                    source_set: request.source_set.clone(),
+                    metadata_path: request.metadata_path.clone(),
+                    target_kind: crate::domain::source_target::TargetKind::SourceRoot,
+                },
+            ))
+        }
+
+        fn map_diagnostic_observation(
+            &self,
+            _observation: crate::domain::diagnostics::DiagnosticObservation,
+            _context: &crate::domain::diagnostics::DiagnosticContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<
+            crate::domain::diagnostics::DiagnosticItem,
+            crate::domain::diagnostics::DiagnosticMapError,
+        > {
+            unreachable!("status providers do not emit observations")
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            Ok(SupportGuardCheck::Allow)
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _mode: InvocationMode,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.handler_calls.fetch_add(1, Ordering::SeqCst);
+            Err("diagnostics was misrouted to the generic handler".to_string())
+        }
+
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            _mode: InvocationMode,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            Ok(CacheReport {
+                mode: "read".to_string(),
+                root: context.cache_root.display().to_string(),
+                workspace_epoch: context.workspace_epoch,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+                publication_warnings: Vec::new(),
+            })
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_routes_only_through_coordinator_and_data() {
+        fn contains_string(value: &Value, needle: &str) -> bool {
+            match value {
+                Value::Object(object) => {
+                    object.values().any(|value| contains_string(value, needle))
+                }
+                Value::Array(items) => items.iter().any(|value| contains_string(value, needle)),
+                Value::String(text) => text.contains(needle),
+                _ => false,
+            }
+        }
+
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let workspace = std::env::temp_dir().join("unica-diagnostics-private-workspace");
+        let args = json!({
+            "action": "status",
+            "sourceSet": "main",
+            "cwd": workspace
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+        let wire = serde_json::to_value(&result).unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["state"], "completed");
+        assert_eq!(wire["cache"]["root"], "");
+        assert!(
+            !contains_string(&wire, &workspace.display().to_string()),
+            "serialized diagnostics result leaked workspace path: {wire}"
+        );
+        assert!(result.stdout.is_none());
+        assert!(result.stderr.is_none());
+        assert!(result.command.is_none());
+        assert!(result.diagnostics.is_none());
+        assert!(result.artifacts.is_empty());
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_preserves_failed_useful_result_semantics() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts {
+            fail_provider: true,
+            ..Default::default()
+        });
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({"action": "status", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["state"], "failed");
+        assert!(result.diagnostics.is_none());
+        assert!(result.stdout.is_none());
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_analyze_timeout_override_reaches_provider_deadline() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({
+            "action": "analyze",
+            "sourceSet": "main",
+            "timeoutSeconds": 900
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+        let observed = ports.observed_budget.lock().unwrap().unwrap();
+
+        assert!(result.ok, "{result:?}");
+        // The override is proven by the band it lands in, not by the second it
+        // lands on: the deadline starts before the provider reads it, and a
+        // loaded runner can spend more than a second in between.
+        assert!(observed <= Duration::from_secs(900), "{observed:?}");
+        assert!(observed > Duration::from_secs(880), "{observed:?}");
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_cancellation_publishes_no_partial_data() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({"action": "status", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let error = app
+            .call_tool_cancellable("unica.code.diagnostics", &args, cancellation)
+            .unwrap_err();
+
+        assert!(error.contains("cancel"), "{error}");
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -3504,6 +3838,15 @@ mod tests {
                     )),
                 });
             }
+            if matches!(spec.handler, ToolHandler::Diagnostics) {
+                return Ok(ports::PreparedToolInvocation {
+                    format_guard: None,
+                    handler: Some(ports::HandlerOutcome::with_data(
+                        AdapterOutcome::ok("prepared diagnostics"),
+                        json!({"state": "completed"}),
+                    )),
+                });
+            }
             Ok(ports::PreparedToolInvocation::empty())
         }
 
@@ -3653,23 +3996,22 @@ mod tests {
         let app = UnicaApplication::with_ports(ports.clone());
 
         let mut status = Map::new();
-        status.insert("mode".to_string(), json!("status"));
+        status.insert("action".to_string(), json!("status"));
+        status.insert("sourceSet".to_string(), json!("main"));
         app.call_tool("unica.code.diagnostics", &status).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 0);
 
         let mut analyze = Map::new();
+        analyze.insert("action".to_string(), json!("analyze"));
+        analyze.insert("sourceSet".to_string(), json!("main"));
         analyze.insert("timeoutSeconds".to_string(), json!(900));
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            *ports.observed_analyze_timeout.lock().unwrap(),
-            Some(Duration::from_secs(900))
-        );
 
         let status = app.call_tool("unica.project.status", &Map::new()).unwrap();
         assert!(!status.ok);
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
         assert_eq!(ports.project_health_calls.load(Ordering::SeqCst), 1);
 
         for (tool_name, args) in [
@@ -3720,7 +4062,10 @@ mod tests {
             ),
             ("unica.code.definition", json!({"name": "Needle"})),
             ("unica.code.outline", json!({"path": "Module.bsl"})),
-            ("unica.code.diagnostics", json!({"timeoutSeconds": 900})),
+            (
+                "unica.code.diagnostics",
+                json!({"action": "analyze", "sourceSet": "main", "timeoutSeconds": 900}),
+            ),
         ];
 
         for (tool_name, args) in cases {
@@ -7940,21 +8285,20 @@ mod tests {
     fn reader_schemas_never_publish_dry_run_and_mutations_keep_it() {
         for tool in tools() {
             let schema = input_schema_for_tool(&tool);
-            let properties = schema["properties"]
-                .as_object()
-                .expect("tool input schema properties are an object");
-            assert_eq!(
-                properties.contains_key("dryRun"),
-                tool.execution.is_mutating(),
-                "{} publishes the wrong invocation switch",
-                tool.name,
-            );
-            if tool.execution.is_mutating() {
+            for properties in object_schema_property_maps(&schema) {
                 assert_eq!(
-                    properties["dryRun"]["default"], true,
-                    "{} publishes the wrong preview default",
+                    properties.contains_key("dryRun"),
+                    tool.execution.is_mutating(),
+                    "{} publishes the wrong invocation switch",
                     tool.name,
                 );
+                if tool.execution.is_mutating() {
+                    assert_eq!(
+                        properties["dryRun"]["default"], true,
+                        "{} publishes the wrong preview default",
+                        tool.name,
+                    );
+                }
             }
         }
     }

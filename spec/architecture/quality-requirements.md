@@ -174,7 +174,7 @@
   долговременные записи, поэтому её ход виден без удержания открытого
   MCP-вызова на всё время прогона; эта поверхность не является запасным путём
   для `unica.runtime.execute` (INV-MCP-RUNTIME-RECEIPT).
-- **Decision:** ADR-0001, ADR-0006, ADR-0061
+- **Decision:** ADR-0001, ADR-0006, ADR-0066
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_jobs.rs`
 - **Scope:** runtime
 

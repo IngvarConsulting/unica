@@ -123,7 +123,7 @@ INV-MCP-CODE-SEARCH-ROLES).
 
 1. После обнаружения рабочего пространства приложение определяет, относится ли
    вызов к `unica.code.search`, `unica.code.definition`,
-   `unica.code.outline` или `unica.code.diagnostics` в режиме `analyze`. Только
+   `unica.code.outline` или `unica.code.diagnostics` с `action=analyze`. Только
    эти вызовы обращаются к операционной конфигурации
    (INV-APP-CONFIG-SNAPSHOT).
 2. Инфраструктурный порт независимо читает присутствующие
@@ -157,7 +157,7 @@ INV-MCP-CODE-SEARCH-ROLES).
    управляющих путей скрытого сервиса сохраняются, но рабочие пути анализатора
    и RLM с бюджетом вызывающей стороны получают полный остаток вызова и не
    обрезают его до 120 секунд.
-6. `initialize`, `tools/list`, другие инструменты и остальные режимы
+6. `initialize`, `tools/list`, другие инструменты и остальные действия
    `unica.code.diagnostics` не разрешают `OperationalConfig` и не читают
    `[operational]`. Потребители сетевой политики документации и стандартов
    независимо читают `network` и `providers` по
@@ -229,10 +229,17 @@ INV-CACHE-GENERATION-CUTOVER). Публичных инструментов
    эффективный корень исходников; ошибка не расширяет область до рабочего
    пространства (INV-SOURCE-SINGLE-RESOLVED-ROOT,
    INV-MCP-CODE-SEARCH-ROLES).
+   `unica.code.diagnostics` вместо этого требует точный `sourceSet` для каждого
+   действия и разрешает корень этого набора; `cwd` выбирает только рабочее
+   пространство, а физический путь целью не является
+   (INV-MCP-DIAGNOSTIC-TARGET).
 2. Поиск передаёт один `CodeIntelligenceContext` ролям `semantic`, `symbol` и
    `lexical`, которые сейчас реализуют `rlm`, `bsl-analyzer` и `git-grep`;
    операции навигации выбирают исполнимую возможность RLM
-   (INV-APP-CODE-PROVIDER-BOUNDARY). Поставщик, которому нужно
+   (INV-APP-CODE-PROVIDER-BOUNDARY). Диагностика независимо проходит через
+   упорядоченный `DiagnosticProviderRegistry`, а общий mapper переводит закрытые
+   ресурсные ручки поставщиков в `location + focus`
+   (INV-APP-DIAGNOSTIC-PROVIDERS, INV-MCP-DIAGNOSTIC-TARGET). Поставщик, которому нужно
    тёплое состояние, просит у внутреннего менеджера сервис по ключу из
    нормализованных `workspaceRoot` и `sourceRoot`. Разрешённый источник обязан
    остаться внутри рабочего пространства; его выбор согласован с картой

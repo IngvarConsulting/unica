@@ -1,57 +1,53 @@
 ---
 name: code-diagnostics
-description: "Диагностика BSL и объяснение отключений диагностик в коде. Используй когда нужно запустить или разобрать диагностики, объяснить коды АПК, EDT, BSL LS, inline/range disable markers, suppression-комментарии или стандарт v8std за диагностикой."
+description: "Диагностика BSL и объяснение отключений правил. Используй, когда нужно запустить или разобрать диагностики BSL, АПК, EDT, BSL LS, inline/range disable markers, suppression-комментарии или стандарт v8std за диагностикой."
 ---
 
 # Code Diagnostics
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.code.graph`, `unica.code.definition`, `unica.code.outline`, `unica.code.search`, `unica.standards.explain`, `unica.standards.search`, and `unica.runtime.execute`.
+- Preferred path: use MCP `unica` tools `unica.code.diagnostics`, `unica.source.locate`, `unica.project.map`, `unica.code.graph`, `unica.code.definition`, `unica.code.outline`, `unica.code.search`, `unica.standards.explain`, `unica.standards.search`, and `unica.runtime.execute`.
 - По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
-- Use `unica.code.diagnostics` with `mode=analyze` or no `mode` for the classic analyzer run; large workspaces may set `timeoutSeconds` from 30 to 3600. Without that argument the call uses `operational.code_diagnostics.analyze_timeout_seconds` from `<workspaceRoot>/unica.local.toml`, then `unica.toml`, then the compiled 120-second fallback. Use `mode=status|catalog|file|workspace` for typed diagnostic catalog and scoped diagnostic reads; those modes do not read this operational config and do not accept `timeoutSeconds`.
-- `mode=analyze` always returns typed `data` assembled from the analyzer JSONL protocol; raw JSONL and console reports never appear in `stdout`. Omit `format`, or use the migration aliases `format=json|jsonl`; `console`, unknown formats and `format` on another mode are rejected before the analyzer starts.
-- Analyze filters default to `minSeverity=warning`, `detail=concise` and `limit=200` (`1..=200`). `codes` matches exact case-sensitive codes. Read `files`, `diagnostics`, `itemsTotal`, `itemsReturned` and `truncated` before treating `items` as exhaustive; file failures remain visible regardless of diagnostic filters.
-- `path` belongs to `mode=file` only. Every other mode rejects it instead of scanning the whole source set, so name the file and the mode together.
-- When the analyzer workspace model is still loading, `mode=file|workspace` fail with `diagnostics_pending:` and a retry hint rather than reporting an empty finding set. For `mode=analyze`, a stream containing only `start` is `diagnostics_pending:`, file events without `done` are `diagnostics_incomplete:`, and malformed events or inconsistent totals are `diagnostics_invalid:`. Only `state=completed`, `complete=true` and `ok=true` prove a finished analysis; treat every other state as not clean code. `mode=status` reports loading as a successful readiness answer.
-- `unica.code.definition` returns `index_pending:` only while an RLM index is building and `index_unavailable:` for missing, stale, failed or unavailable indexes. Neither state means “no definitions”; only a ready typed result with `definitions=[]` is a successful empty answer.
-- Read-only tools do not accept `dryRun`; preview and apply modes belong only to mutating tools.
-- Use `unica.code.graph` only for diagnostic impact context: containing node, callers, callees, neighbors, or workspace graph status.
-- v8std access goes only through public `unica.standards.*` tools.
-- Do not call internal analyzer, standards, or package adapters directly. They are hidden behind MCP `unica`.
+- Every diagnostics call names an exact `sourceSet`; `cwd` selects the workspace only and never identifies the target. Use `unica.project.map` when the source-set name is unknown.
+- Use `action=status` before resident `findings` when readiness is uncertain. A completed status request is not proof that a provider is ready: read each `providers[].readiness.state` and call `findings` only for `ready`; `building`, `notStarted`, and `stale` are not clean results.
+- Use `action=findings` with a logical `metadataPath` for one module or metadata object, `action=analyze` for a complete one-shot source-set scan, and `action=catalog` to discover provider-qualified rules. Provider execution is routed internally; do not pass a provider selector. The current live provider `bsl-analyzer` supports module findings only. Until a metadata provider is registered, a metadata-object request fails at request level with `no_applicable_provider`; this means neither clean metadata nor a bad logical address.
+- `action=analyze` may set `timeoutSeconds` from 30 to 3600. Without it the call uses `operational.code_diagnostics.analyze_timeout_seconds` from `<workspaceRoot>/unica.local.toml`, then `unica.toml`, then the compiled 120-second fallback. `findings`, `status`, and `catalog` do not read this operational config, do not accept `timeoutSeconds`, and run on that same compiled 120-second budget.
+- Put severity and exact case-sensitive codes under `filter`. Every code is `{provider, code}`; obtain provider ids and codes from `catalog`. `limit` is global across providers after normalization and deterministic ordering.
+- Read `location` as the shared logical navigation target and `focus` as the position inside it. `location.kind=addressed` carries `sourceSet`, optional `metadataPath`, and derived `targetKind`; `location.kind=unaddressable` carries a safe relative `path` and the item carries `locationReason`. `focus.kind` is `target`, `sourceRange`, or `metadata`.
+- Treat `state=partial` as useful but incomplete. A `resourceFailure` is one provider's failure for one logical resource. `location.kind=unaddressable` means the observation is safe to report but cannot be navigated as its own logical target. A provider section with `complete=false` and an error may still carry proven items: one resource the mapper could not place never withdraws the rest. Neither means clean code.
+- For actions that return `items`, only `state=completed`, `complete=true`, `truncated=false`, and provider sections without failures prove an exhaustive answer. Check `itemsTotal` and `itemsReturned` before treating `items` as complete. `status` has no `truncated` field; its evidence is each provider's readiness.
+- `unica.code.definition` returns `index_pending:` only while an RLM index is building and `index_unavailable:` for missing, stale, failed, or unavailable indexes. Neither means “no definitions”.
+- Use `unica.code.graph` only for diagnostic impact context. v8std access goes only through public `unica.standards.*` tools. Do not call internal analyzer, standards, or package adapters directly.
 
 ## Workflow
 
-1. Run `unica.code.diagnostics` for the selected source-set or module. Start with `mode=status` when the analyzer workspace model may still be loading, and use `mode=catalog` when diagnostic codes need classification.
-2. Group diagnostics by file, diagnostic id/code, and root cause. Do not fix duplicate reports independently when one source issue explains them.
-3. For one file or range, use `unica.code.diagnostics` with `mode=file`; then use `unica.code.outline`, `unica.code.definition`, or `unica.code.search` for exact context.
-4. When diagnostic output includes a graph id or the fix may affect callers/callees, inspect impact with `unica.code.graph` before proposing a change.
-5. Search nearby code with `unica.code.search` only when exact context tools do not identify the root cause.
-6. For each diagnostic id/code, call `unica.standards.explain` with `codes` when the code is explicit; otherwise search `unica.standards.search` by diagnostic name, APK/EDT/BSL LS token, or nearby snippet.
-7. Report fixes in cause-first order: source defect, impacted diagnostics, graph impact if relevant, standard reference, verification command.
+1. Resolve the exact `sourceSet`. If the starting point is a physical file, use `unica.source.locate` to obtain its logical `metadataPath`.
+2. Call `status` when resident readiness matters and `catalog` when rule ids need classification. Use `findings` for one logical target or `analyze` for the whole source set.
+3. Group diagnostics by logical `location`, provider-qualified code, and root cause. Follow `focus` for the exact source range or metadata element.
+4. Inspect the target with `unica.code.outline`, `unica.code.definition`, or `unica.code.search`. Use `unica.code.graph` before changing shared or exported behavior.
+5. Call `unica.standards.explain` with explicit codes; otherwise use `unica.standards.search` by diagnostic name, АПК/EDT/BSL LS token, or nearby snippet.
+6. Report source cause, impacted diagnostics, logical target and focus, standard evidence, and verification result.
 
 ## Verification gate
 
-- The verification gate is part of the delivery contract, not an optional final
-  polish step.
-- Run diagnostics after syntax-sensitive edits and treat new `error` or `critical`
-  findings as blocking.
-- Run impact analysis with `unica.code.graph` when an exported method, metadata
-  handler, public API, query path, or shared module contract changes.
-- If public MCP `unica` cannot expose the required syntax, diagnostic, or impact
-  evidence, report that as a Unica MCP contract gap instead of claiming the
-  change is fully verified.
+This verification gate is mandatory:
+
+- Run diagnostics after syntax-sensitive edits and treat new `error` findings as blocking.
+- Run impact analysis when an exported method, metadata handler, public API, query path, or shared module contract changes.
+- If public MCP `unica` cannot expose required evidence, report a contract gap instead of claiming full verification.
 
 ## Suppression and range-disable comments
 
-When comments disable diagnostics over a line or range, treat the exact marker as evidence, not as decoration.
+Когда inline/range disable markers или suppression-комментарии отключают диагностику строки или диапазона, считайте точный маркер частью доказательства.
 
-- Extract literal codes or ids from the comment: АПК, EDT, BSL LS, analyzer rule names, numeric or mnemonic ids.
-- Use `unica.standards.explain` with all extracted codes. If v8std does not resolve a code, search with `unica.standards.search` using the code plus nearby diagnostic text.
-- Explain why the отключение exists only when the code, surrounding range, and standard support the reason. If the reason is absent, say that the suppression is not justified in the source.
-- Prefer narrowing the disabled range or fixing the code. Keep suppression only when `development-standard` evidence, a verified `platform-help` source, or a runtime reproduction proves the diagnostic intentionally false-positive. Do not infer a platform limitation from `unica.standards.*`.
+- Extract literal rule codes from АПК, EDT, BSL LS, analyzer, or suppression comments.
+- Explain an отключение only when the code, surrounding range, and standard support the reason.
+- Prefer fixing the cause or narrowing the disabled range. Keep suppression only with standards, platform-help, or runtime evidence of an intentional false positive.
 
 ## MCP examples
+
+One logical module, narrowed to one rule. Remove `filter.codes` to include all codes at the selected severity threshold; set `filter.minSeverity=hint` for every severity and still inspect `truncated`:
 
 ```jsonc
 {
@@ -61,15 +57,23 @@ When comments disable diagnostics over a line or range, treat the exact marker a
     "name": "unica.code.diagnostics",
     "arguments": {
       "cwd": "<workspace>",
-      "sourceDir": "src",
-      "mode": "file",
-      "path": "CommonModules/Продажи/Ext/Module.bsl",
+      "action": "findings",
+      "sourceSet": "main",
+      "metadataPath": "CommonModule.Продажи.Module",
+      "filter": {
+        "minSeverity": "warning",
+        "codes": [
+          {"provider": "bsl-analyzer", "code": "UnusedLocalVariable"}
+        ]
+      },
       "limit": 100
     }
   }
 }
 ```
 
+Complete source-set scan:
+
 ```jsonc
 {
   "jsonrpc": "2.0",
@@ -78,8 +82,9 @@ When comments disable diagnostics over a line or range, treat the exact marker a
     "name": "unica.code.diagnostics",
     "arguments": {
       "cwd": "<workspace>",
-      "mode": "catalog",
-      "codes": ["UnusedLocalVariable", "DataExchangeLoading"]
+      "action": "analyze",
+      "sourceSet": "main",
+      "timeoutSeconds": 900
     }
   }
 }

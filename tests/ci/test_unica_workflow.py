@@ -331,6 +331,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(outcome=outcome):
                 self.assertIn(outcome, build)
         self.assertIn("cargoBuildSeconds", build)
+        self.assertIn("archiveDownloadSeconds", build)
+        self.assertIn("RLM archive download duration", build)
         self.assertIn("GITHUB_STEP_SUMMARY", build)
 
     def test_runtime_matrix_builds_verifies_and_exports_narrow_artifacts(self) -> None:

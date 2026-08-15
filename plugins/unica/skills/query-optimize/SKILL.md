@@ -17,7 +17,7 @@ description: "Оптимизация запросов 1С и СКД. Испол�
 1. Extract the exact query text with `unica.code.search` or `unica.dcs.info`.
 2. Inspect the execution context with `unica.code.outline`: module, exported entry point, region, temporary table chain, and caller loop.
 3. Use `unica.code.graph` for callers/callees when the query is inside reusable API, background jobs, event handlers, or suspected query-in-loop flow.
-4. Run `unica.code.diagnostics` with `mode=file` when analyzer diagnostics can reveal unreachable code, unresolved calls, or type issues around the query.
+4. Run `unica.code.diagnostics` with `action=findings`, the exact `sourceSet`, and the containing module's logical `metadataPath` when analyzer diagnostics can reveal unreachable code, unresolved calls, or type issues around the query. Do not pass a DCS `TemplatePath` as a diagnostic target; locate the BSL module that executes the query.
 5. Inspect `unica.meta.info` for both related modules, subscriptions, roles, functional options and the local registers, dimensions, resources, реквизиты, tabular sections, and indexes implied by the platform object type.
 6. Inspect DCS with `unica.dcs.info` when the query lives in a data composition schema.
 7. Search `unica.standards.search` only for `development-standard` query rules. Exact platform query semantics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap before making a platform-dependent rewrite.

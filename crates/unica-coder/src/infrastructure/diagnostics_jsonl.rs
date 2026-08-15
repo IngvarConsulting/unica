@@ -1,33 +1,37 @@
+use crate::domain::diagnostics::{
+    DiagnosticError, DiagnosticObservation, DiagnosticObservationFocus,
+    DiagnosticObservationLocation, DiagnosticProviderOutcome, DiagnosticProviderStatus,
+    DiagnosticRange, DiagnosticSeverity, DiagnosticTag, BSL_ANALYZER_PROVIDER,
+};
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
-use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 pub(crate) const MAX_DIAGNOSTICS_JSONL_LINE_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Clone)]
-pub(crate) struct DiagnosticsProtocolError {
-    pub(crate) code: &'static str,
-    pub(crate) message: String,
-    pub(crate) retryable: bool,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AnalyzerDiagnosticsFileTotals {
+    pub(crate) discovered: Option<usize>,
+    pub(crate) processed: Option<usize>,
+    pub(crate) failed: Option<usize>,
 }
 
-#[derive(Debug)]
-pub(crate) struct DiagnosticsProjection {
-    pub(crate) data: Value,
-    pub(crate) error: Option<DiagnosticsProtocolError>,
+/// Typed result of the analyzer JSONL protocol. This type is private to the
+/// provider boundary: physical resource handles remain in observations until
+/// the common diagnostics mapper proves their logical addresses.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AnalyzerDiagnosticsBatch {
+    pub(crate) outcome: DiagnosticProviderOutcome,
+    pub(crate) files: AnalyzerDiagnosticsFileTotals,
+    pub(crate) diagnostics_reported: Option<usize>,
+    pub(crate) elapsed_seconds: Option<f64>,
 }
 
 #[derive(Debug)]
 pub(crate) struct DiagnosticsJsonlParser {
     source_root: PathBuf,
-    codes: Option<BTreeSet<String>>,
-    min_severity: PublicSeverity,
-    detailed: bool,
-    limit: usize,
     first_error: Option<String>,
     started: bool,
     done: bool,
@@ -36,8 +40,7 @@ pub(crate) struct DiagnosticsJsonlParser {
     files_seen: BTreeSet<String>,
     diagnostics_seen: usize,
     failures_seen: usize,
-    matched: usize,
-    items: Vec<StoredItem>,
+    observations: Vec<DiagnosticObservation>,
     elapsed_seconds: Option<f64>,
     reported: Option<usize>,
     done_files: Option<usize>,
@@ -45,48 +48,9 @@ pub(crate) struct DiagnosticsJsonlParser {
 }
 
 impl DiagnosticsJsonlParser {
-    pub(crate) fn new(source_root: &Path, args: Map<String, Value>) -> Result<Self, String> {
-        let codes = args
-            .get("codes")
-            .and_then(Value::as_array)
-            .map(|codes| {
-                codes
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .collect::<BTreeSet<_>>()
-            })
-            .filter(|codes| !codes.is_empty());
-        let min_severity = match args
-            .get("minSeverity")
-            .and_then(Value::as_str)
-            .unwrap_or("warning")
-        {
-            "error" => PublicSeverity::Error,
-            "warning" => PublicSeverity::Warning,
-            "info" => PublicSeverity::Info,
-            "hint" => PublicSeverity::Hint,
-            value => return Err(format!("unsupported diagnostics severity filter: {value}")),
-        };
-        let detailed = match args
-            .get("detail")
-            .and_then(Value::as_str)
-            .unwrap_or("concise")
-        {
-            "concise" => false,
-            "detailed" => true,
-            value => return Err(format!("unsupported diagnostics detail: {value}")),
-        };
-        let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
-        if !(1..=200).contains(&limit) {
-            return Err("diagnostics limit must be between 1 and 200".to_string());
-        }
+    pub(crate) fn new(source_root: &Path) -> Result<Self, String> {
         Ok(Self {
             source_root: normalize_absolute_root(source_root)?,
-            codes,
-            min_severity,
-            detailed,
-            limit,
             first_error: None,
             started: false,
             done: false,
@@ -95,8 +59,7 @@ impl DiagnosticsJsonlParser {
             files_seen: BTreeSet::new(),
             diagnostics_seen: 0,
             failures_seen: 0,
-            matched: 0,
-            items: Vec::new(),
+            observations: Vec::new(),
             elapsed_seconds: None,
             reported: None,
             done_files: None,
@@ -141,19 +104,24 @@ impl DiagnosticsJsonlParser {
         }
     }
 
-    pub(crate) fn finish(mut self) -> DiagnosticsProjection {
+    pub(crate) fn finish(mut self) -> AnalyzerDiagnosticsBatch {
         if self.first_error.is_none() && self.done {
             if let Err(error) = self.validate_totals() {
                 self.first_error = Some(error);
             }
         }
         if let Some(message) = self.first_error.take() {
-            return self.failure("invalid", "diagnostics_invalid:", false, message);
+            return self.failure(
+                DiagnosticProviderStatus::Failed,
+                "diagnostics_invalid",
+                false,
+                message,
+            );
         }
         if !self.started {
             return self.failure(
-                "invalid",
-                "diagnostics_invalid:",
+                DiagnosticProviderStatus::Failed,
+                "diagnostics_invalid",
                 false,
                 "line 0: stream is missing start event".to_string(),
             );
@@ -161,16 +129,16 @@ impl DiagnosticsJsonlParser {
         if !self.done {
             if self.files_seen.is_empty() {
                 return self.failure(
-                    "pending",
-                    "diagnostics_pending:",
+                    DiagnosticProviderStatus::Unavailable,
+                    "diagnostics_pending",
                     true,
                     "bsl-analyzer emitted start but did not report files or a terminal event"
                         .to_string(),
                 );
             }
             return self.failure(
-                "incomplete",
-                "diagnostics_incomplete:",
+                DiagnosticProviderStatus::Failed,
+                "diagnostics_incomplete",
                 false,
                 "bsl-analyzer stream ended after file events without a terminal event".to_string(),
             );
@@ -178,36 +146,28 @@ impl DiagnosticsJsonlParser {
 
         let failed = self.done_failures.expect("validated done event");
         let discovered = self.discovered.expect("validated start event");
-        let mut items = self.items;
-        items.sort_by(StoredItem::compare);
-        let items = items
-            .into_iter()
-            .map(StoredItem::into_json)
-            .collect::<Vec<_>>();
-        let items_total = self.matched + failed;
-        DiagnosticsProjection {
-            data: json!({
-                "action": "analyze",
-                "state": "completed",
-                "complete": true,
-                "retryable": false,
-                "analyzerVersion": self.version,
-                "files": {
-                    "discovered": discovered,
-                    "processed": discovered - failed,
-                    "failed": failed,
-                },
-                "diagnostics": {
-                    "reported": self.reported,
-                    "matched": self.matched,
-                },
-                "itemsTotal": items_total,
-                "itemsReturned": items.len(),
-                "truncated": items.len() < items_total,
-                "items": items,
-                "elapsedSeconds": self.elapsed_seconds,
-            }),
-            error: None,
+        let status = if self.observations.is_empty() {
+            DiagnosticProviderStatus::Empty
+        } else {
+            DiagnosticProviderStatus::Completed
+        };
+        AnalyzerDiagnosticsBatch {
+            outcome: DiagnosticProviderOutcome {
+                status,
+                complete: failed == 0,
+                version: self.version,
+                observations: self.observations,
+                rules: Vec::new(),
+                readiness: None,
+                error: None,
+            },
+            files: AnalyzerDiagnosticsFileTotals {
+                discovered: Some(discovered),
+                processed: Some(discovered - failed),
+                failed: Some(failed),
+            },
+            diagnostics_reported: self.reported,
+            elapsed_seconds: self.elapsed_seconds,
         }
     }
 
@@ -246,39 +206,36 @@ impl DiagnosticsJsonlParser {
                         );
                     }
                     self.failures_seen += 1;
-                    self.retain_item(StoredItem::FileFailure {
-                        path,
-                        message: redactor(&error),
-                    });
+                    self.observations
+                        .push(DiagnosticObservation::ResourceFailure {
+                            provider: BSL_ANALYZER_PROVIDER,
+                            location: DiagnosticObservationLocation::Resource { handle: path },
+                            error: DiagnosticError {
+                                code: "source_analysis_failed".to_string(),
+                                message: redactor(&error),
+                                retryable: false,
+                            },
+                        });
                     return Ok(());
                 }
                 for diagnostic in event.diagnostics {
                     self.diagnostics_seen += 1;
-                    let severity = diagnostic.validate()?;
-                    if self
-                        .codes
-                        .as_ref()
-                        .is_some_and(|codes| !codes.contains(&diagnostic.code))
-                        || severity < self.min_severity
-                    {
-                        continue;
-                    }
-                    self.matched += 1;
-                    self.retain_item(StoredItem::Diagnostic {
-                        path: path.clone(),
+                    let (severity, tags) = diagnostic.validate()?;
+                    self.observations.push(DiagnosticObservation::Diagnostic {
+                        provider: BSL_ANALYZER_PROVIDER,
+                        location: DiagnosticObservationLocation::Resource {
+                            handle: path.clone(),
+                        },
+                        focus: DiagnosticObservationFocus::SourceRange(DiagnosticRange {
+                            start_line: diagnostic.start_line,
+                            start_column: diagnostic.start_column,
+                            end_line: diagnostic.end_line,
+                            end_column: diagnostic.end_column,
+                        }),
                         code: diagnostic.code,
                         severity,
-                        internal_severity: self.detailed.then_some(diagnostic.severity),
                         message: diagnostic.message,
-                        start_line: diagnostic.start_line,
-                        start_column: diagnostic.start_column,
-                        end_line: diagnostic.end_line,
-                        end_column: diagnostic.end_column,
-                        tags: diagnostic
-                            .tags
-                            .into_iter()
-                            .map(|tag| tag.public_name().to_string())
-                            .collect(),
+                        tags,
                     });
                 }
             }
@@ -297,14 +254,6 @@ impl DiagnosticsJsonlParser {
             }
         }
         Ok(())
-    }
-
-    fn retain_item(&mut self, item: StoredItem) {
-        self.items.push(item);
-        self.items.sort_by(StoredItem::compare);
-        if self.items.len() > self.limit {
-            self.items.pop();
-        }
     }
 
     fn validate_totals(&self) -> Result<(), String> {
@@ -335,38 +284,32 @@ impl DiagnosticsJsonlParser {
 
     fn failure(
         self,
-        state: &'static str,
+        status: DiagnosticProviderStatus,
         code: &'static str,
         retryable: bool,
         message: String,
-    ) -> DiagnosticsProjection {
-        DiagnosticsProjection {
-            data: json!({
-                "action": "analyze",
-                "state": state,
-                "complete": false,
-                "retryable": retryable,
-                "analyzerVersion": self.version,
-                "files": {
-                    "discovered": self.discovered,
-                    "processed": Value::Null,
-                    "failed": Value::Null,
-                },
-                "diagnostics": {
-                    "reported": Value::Null,
-                    "matched": Value::Null,
-                },
-                "itemsTotal": 0,
-                "itemsReturned": 0,
-                "truncated": false,
-                "items": [],
-                "elapsedSeconds": Value::Null,
-            }),
-            error: Some(DiagnosticsProtocolError {
-                code,
-                message,
-                retryable,
-            }),
+    ) -> AnalyzerDiagnosticsBatch {
+        AnalyzerDiagnosticsBatch {
+            outcome: DiagnosticProviderOutcome {
+                status,
+                complete: false,
+                version: self.version,
+                observations: Vec::new(),
+                rules: Vec::new(),
+                readiness: None,
+                error: Some(DiagnosticError {
+                    code: code.to_string(),
+                    message,
+                    retryable,
+                }),
+            },
+            files: AnalyzerDiagnosticsFileTotals {
+                discovered: self.discovered,
+                processed: None,
+                failed: None,
+            },
+            diagnostics_reported: None,
+            elapsed_seconds: None,
         }
     }
 }
@@ -434,24 +377,26 @@ struct UpstreamDiagnostic {
 }
 
 impl UpstreamDiagnostic {
-    fn validate(&self) -> Result<PublicSeverity, String> {
+    fn validate(&self) -> Result<(DiagnosticSeverity, Vec<DiagnosticTag>), String> {
         if self.code.trim().is_empty() {
             return Err("diagnostic.code must be non-empty".to_string());
         }
         if self.message.trim().is_empty() {
             return Err("diagnostic.message must be non-empty".to_string());
         }
-        let severity = PublicSeverity::from_internal(&self.severity)?;
+        let severity = map_severity(&self.severity)?;
         if (self.end_line, self.end_column) < (self.start_line, self.start_column) {
             return Err("diagnostic range end precedes its start".to_string());
         }
-        let mut tags = BTreeSet::new();
+        let mut unique_tags = BTreeSet::new();
+        let mut tags = Vec::with_capacity(self.tags.len());
         for tag in &self.tags {
-            if !tags.insert(*tag) {
+            if !unique_tags.insert(*tag) {
                 return Err("diagnostic tags must be unique".to_string());
             }
+            tags.push((*tag).into());
         }
-        Ok(severity)
+        Ok((severity, tags))
     }
 }
 
@@ -462,151 +407,21 @@ enum UpstreamTag {
 }
 
 impl UpstreamTag {
-    const fn public_name(self) -> &'static str {
+    const fn into(self) -> DiagnosticTag {
         match self {
-            Self::Unnecessary => "unnecessary",
-            Self::Deprecated => "deprecated",
+            Self::Unnecessary => DiagnosticTag::Unnecessary,
+            Self::Deprecated => DiagnosticTag::Deprecated,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum PublicSeverity {
-    Hint,
-    Info,
-    Warning,
-    Error,
-}
-
-impl PublicSeverity {
-    fn from_internal(value: &str) -> Result<Self, String> {
-        match value {
-            "Blocker" | "Critical" | "Major" | "Error" => Ok(Self::Error),
-            "Warning" => Ok(Self::Warning),
-            "Information" => Ok(Self::Info),
-            "Hint" => Ok(Self::Hint),
-            _ => Err(format!("unknown diagnostic severity `{value}`")),
-        }
-    }
-
-    const fn public_name(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warning => "warning",
-            Self::Info => "info",
-            Self::Hint => "hint",
-        }
-    }
-}
-
-#[derive(Debug)]
-enum StoredItem {
-    FileFailure {
-        path: String,
-        message: String,
-    },
-    Diagnostic {
-        path: String,
-        code: String,
-        severity: PublicSeverity,
-        internal_severity: Option<String>,
-        message: String,
-        start_line: usize,
-        start_column: usize,
-        end_line: usize,
-        end_column: usize,
-        tags: Vec<String>,
-    },
-}
-
-impl StoredItem {
-    fn compare(left: &Self, right: &Self) -> Ordering {
-        left.path()
-            .cmp(right.path())
-            .then_with(|| left.kind_order().cmp(&right.kind_order()))
-            .then_with(|| left.range_key().cmp(&right.range_key()))
-            .then_with(|| left.code().cmp(right.code()))
-            .then_with(|| left.message().cmp(right.message()))
-    }
-
-    fn path(&self) -> &str {
-        match self {
-            Self::FileFailure { path, .. } | Self::Diagnostic { path, .. } => path,
-        }
-    }
-
-    const fn kind_order(&self) -> u8 {
-        match self {
-            Self::FileFailure { .. } => 0,
-            Self::Diagnostic { .. } => 1,
-        }
-    }
-
-    const fn range_key(&self) -> (usize, usize, usize, usize) {
-        match self {
-            Self::FileFailure { .. } => (0, 0, 0, 0),
-            Self::Diagnostic {
-                start_line,
-                start_column,
-                end_line,
-                end_column,
-                ..
-            } => (*start_line, *start_column, *end_line, *end_column),
-        }
-    }
-
-    fn code(&self) -> &str {
-        match self {
-            Self::FileFailure { .. } => "",
-            Self::Diagnostic { code, .. } => code,
-        }
-    }
-
-    fn message(&self) -> &str {
-        match self {
-            Self::FileFailure { message, .. } | Self::Diagnostic { message, .. } => message,
-        }
-    }
-
-    fn into_json(self) -> Value {
-        match self {
-            Self::FileFailure { path, message } => json!({
-                "kind": "fileFailure",
-                "path": path,
-                "message": message,
-            }),
-            Self::Diagnostic {
-                path,
-                code,
-                severity,
-                internal_severity,
-                message,
-                start_line,
-                start_column,
-                end_line,
-                end_column,
-                tags,
-            } => {
-                let mut value = json!({
-                    "kind": "diagnostic",
-                    "path": path,
-                    "code": code,
-                    "severity": severity.public_name(),
-                    "message": message,
-                    "range": {
-                        "startLine": start_line,
-                        "startColumn": start_column,
-                        "endLine": end_line,
-                        "endColumn": end_column,
-                    },
-                    "tags": tags,
-                });
-                if let Some(internal_severity) = internal_severity {
-                    value["internalSeverity"] = Value::String(internal_severity);
-                }
-                value
-            }
-        }
+fn map_severity(value: &str) -> Result<DiagnosticSeverity, String> {
+    match value {
+        "Blocker" | "Critical" | "Major" | "Error" => Ok(DiagnosticSeverity::Error),
+        "Warning" => Ok(DiagnosticSeverity::Warning),
+        "Information" => Ok(DiagnosticSeverity::Info),
+        "Hint" => Ok(DiagnosticSeverity::Hint),
+        _ => Err(format!("unknown diagnostic severity `{value}`")),
     }
 }
 
@@ -626,17 +441,16 @@ fn normalize_reported_path(source_root: &Path, raw: &str) -> Result<String, Stri
     }
     let path = Path::new(raw);
     let candidate = if path.is_absolute() {
-        normalize_lexical(path)?
+        normalize_lexical(path).map_err(|_| "file.path contains invalid traversal".to_string())?
     } else {
-        normalize_lexical(&source_root.join(path))?
+        normalize_lexical(&source_root.join(path))
+            .map_err(|_| "file.path contains invalid traversal".to_string())?
     };
-    let identity = normalize_path_identity(&candidate)?;
-    let relative = identity.strip_prefix(source_root).map_err(|_| {
-        format!(
-            "file.path `{raw}` escapes diagnostics source root {}",
-            source_root.display()
-        )
-    })?;
+    let identity = normalize_path_identity(&candidate)
+        .map_err(|_| "file.path could not be resolved safely".to_string())?;
+    let relative = identity
+        .strip_prefix(source_root)
+        .map_err(|_| "file.path resolves outside diagnostics source root".to_string())?;
     if relative.as_os_str().is_empty() {
         return Err("file.path must name a file below the diagnostics source root".to_string());
     }
@@ -669,19 +483,20 @@ fn normalize_lexical(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::diagnostics::{
+        DiagnosticObservation, DiagnosticObservationFocus, DiagnosticObservationLocation,
+        DiagnosticProviderStatus, DiagnosticRange, DiagnosticSeverity, DiagnosticTag,
+        BSL_ANALYZER_PROVIDER,
+    };
     use crate::infrastructure::platform::testing::{
         create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
     };
-    use serde_json::{json, Map, Value};
+    use serde_json::json;
     use tempfile::TempDir;
 
-    fn parser_with_args(args: Map<String, Value>) -> DiagnosticsJsonlParser {
+    fn parser() -> DiagnosticsJsonlParser {
         let source_root = std::env::temp_dir().join("unica-diagnostics-jsonl-tests");
-        DiagnosticsJsonlParser::new(&source_root, args).unwrap()
-    }
-
-    fn parser(args: Value) -> DiagnosticsJsonlParser {
-        parser_with_args(args.as_object().cloned().unwrap_or_default())
+        DiagnosticsJsonlParser::new(&source_root).unwrap()
     }
 
     fn feed(parser: &mut DiagnosticsJsonlParser, lines: &[&str]) {
@@ -711,7 +526,7 @@ mod tests {
     #[test]
     fn complete_stream_projects_typed_data_without_upstream_shape() {
         let file = diagnostic("LineLength", "Warning", 10);
-        let mut parser = parser(json!({}));
+        let mut parser = parser();
         feed(
             &mut parser,
             &[
@@ -721,38 +536,39 @@ mod tests {
             ],
         );
 
-        let result = parser.finish();
-        assert!(result.error.is_none(), "{:?}", result.error);
-        assert_eq!(result.data["action"], "analyze");
-        assert_eq!(result.data["state"], "completed");
-        assert_eq!(result.data["complete"], true);
-        assert_eq!(result.data["retryable"], false);
-        assert_eq!(result.data["analyzerVersion"], "0.2.62");
+        let batch = parser.finish();
+        assert_eq!(batch.outcome.status, DiagnosticProviderStatus::Completed);
+        assert!(batch.outcome.complete);
+        assert_eq!(batch.outcome.version.as_deref(), Some("0.2.62"));
+        assert_eq!(batch.files.discovered, Some(1));
+        assert_eq!(batch.files.processed, Some(1));
+        assert_eq!(batch.files.failed, Some(0));
+        assert_eq!(batch.diagnostics_reported, Some(1));
+        assert_eq!(batch.elapsed_seconds, Some(0.4));
         assert_eq!(
-            result.data["files"],
-            json!({"discovered": 1, "processed": 1, "failed": 0})
+            batch.outcome.observations,
+            vec![DiagnosticObservation::Diagnostic {
+                provider: BSL_ANALYZER_PROVIDER,
+                location: DiagnosticObservationLocation::Resource {
+                    handle: "CommonModules/Sales/Ext/Module.bsl".to_string(),
+                },
+                focus: DiagnosticObservationFocus::SourceRange(DiagnosticRange {
+                    start_line: 10,
+                    start_column: 0,
+                    end_line: 10,
+                    end_column: 150,
+                }),
+                code: "LineLength".to_string(),
+                severity: DiagnosticSeverity::Warning,
+                message: "Line too long".to_string(),
+                tags: vec![DiagnosticTag::Unnecessary],
+            }]
         );
-        assert_eq!(
-            result.data["diagnostics"],
-            json!({"reported": 1, "matched": 1})
-        );
-        assert_eq!(result.data["itemsTotal"], 1);
-        assert_eq!(result.data["itemsReturned"], 1);
-        assert_eq!(result.data["truncated"], false);
-        assert_eq!(result.data["items"][0]["severity"], "warning");
-        assert_eq!(result.data["items"][0]["tags"], json!(["unnecessary"]));
-        assert!(result.data["items"][0].get("internalSeverity").is_none());
-        assert_eq!(result.data["elapsedSeconds"], 0.4);
     }
 
     #[test]
-    fn filters_sort_limit_and_file_failures_have_closed_semantics() {
-        let mut args = Map::new();
-        args.insert("codes".to_string(), json!(["Keep"]));
-        args.insert("minSeverity".to_string(), json!("info"));
-        args.insert("detail".to_string(), json!("detailed"));
-        args.insert("limit".to_string(), json!(1));
-        let mut parser = parser_with_args(args);
+    fn parser_keeps_all_observations_and_redacts_resource_failures() {
+        let mut parser = parser();
         let keep = diagnostic("Keep", "Information", 3);
         let drop =
             diagnostic("Drop", "Blocker", 1).replace("CommonModules/Sales", "CommonModules/Drop");
@@ -767,34 +583,61 @@ mod tests {
             ],
         );
 
-        let result = parser.finish();
-        assert!(result.error.is_none(), "{:?}", result.error);
-        assert_eq!(
-            result.data["diagnostics"],
-            json!({"reported": 2, "matched": 1})
-        );
-        assert_eq!(result.data["itemsTotal"], 2);
-        assert_eq!(result.data["itemsReturned"], 1);
-        assert_eq!(result.data["truncated"], true);
-        assert_eq!(result.data["items"][0]["kind"], "diagnostic");
-        assert_eq!(result.data["items"][0]["internalSeverity"], "Information");
-        assert!(!result.data.to_string().contains("secret"));
+        let batch = parser.finish();
+        assert_eq!(batch.outcome.status, DiagnosticProviderStatus::Completed);
+        assert_eq!(batch.diagnostics_reported, Some(2));
+        assert_eq!(batch.outcome.observations.len(), 3);
+        assert!(batch
+            .outcome
+            .observations
+            .iter()
+            .any(|observation| matches!(
+                observation,
+                DiagnosticObservation::Diagnostic { code, severity: DiagnosticSeverity::Info, .. }
+                    if code == "Keep"
+            )));
+        assert!(batch
+            .outcome
+            .observations
+            .iter()
+            .any(|observation| matches!(
+                observation,
+                DiagnosticObservation::Diagnostic { code, severity: DiagnosticSeverity::Error, .. }
+                    if code == "Drop"
+            )));
+        let failure = batch
+            .outcome
+            .observations
+            .iter()
+            .find_map(|observation| match observation {
+                DiagnosticObservation::ResourceFailure { error, .. } => Some(error),
+                _ => None,
+            })
+            .expect("resource failure");
+        assert_eq!(failure.code, "source_analysis_failed");
+        assert!(!failure.message.contains("secret"));
     }
 
     #[test]
     fn only_start_is_pending_and_file_without_done_is_incomplete() {
-        let mut pending = parser(json!({}));
+        let mut pending = parser();
         feed(
             &mut pending,
             &[r#"{"type":"start","total_files":1,"version":"0.2.62"}"#],
         );
         let pending = pending.finish();
-        assert_eq!(pending.error.as_ref().unwrap().code, "diagnostics_pending:");
-        assert!(pending.error.as_ref().unwrap().retryable);
-        assert_eq!(pending.data["state"], "pending");
-        assert_eq!(pending.data["items"], json!([]));
+        assert_eq!(
+            pending.outcome.status,
+            DiagnosticProviderStatus::Unavailable
+        );
+        assert_eq!(
+            pending.outcome.error.as_ref().unwrap().code,
+            "diagnostics_pending"
+        );
+        assert!(pending.outcome.error.as_ref().unwrap().retryable);
+        assert!(pending.outcome.observations.is_empty());
 
-        let mut incomplete = parser(json!({}));
+        let mut incomplete = parser();
         feed(
             &mut incomplete,
             &[
@@ -804,12 +647,12 @@ mod tests {
         );
         let incomplete = incomplete.finish();
         assert_eq!(
-            incomplete.error.as_ref().unwrap().code,
-            "diagnostics_incomplete:"
+            incomplete.outcome.error.as_ref().unwrap().code,
+            "diagnostics_incomplete"
         );
-        assert!(!incomplete.error.as_ref().unwrap().retryable);
-        assert_eq!(incomplete.data["state"], "incomplete");
-        assert_eq!(incomplete.data["items"], json!([]));
+        assert_eq!(incomplete.outcome.status, DiagnosticProviderStatus::Failed);
+        assert!(!incomplete.outcome.error.as_ref().unwrap().retryable);
+        assert!(incomplete.outcome.observations.is_empty());
     }
 
     #[test]
@@ -832,16 +675,16 @@ mod tests {
             ],
         ];
         for lines in cases {
-            let mut parser = parser(json!({}));
+            let mut parser = parser();
             feed(&mut parser, &lines);
             let result = parser.finish();
             assert_eq!(
-                result.error.as_ref().unwrap().code,
-                "diagnostics_invalid:",
+                result.outcome.error.as_ref().unwrap().code,
+                "diagnostics_invalid",
                 "{lines:?}"
             );
-            assert_eq!(result.data["state"], "invalid");
-            assert_eq!(result.data["items"], json!([]));
+            assert_eq!(result.outcome.status, DiagnosticProviderStatus::Failed);
+            assert!(result.outcome.observations.is_empty());
         }
     }
 
@@ -855,7 +698,7 @@ mod tests {
         ] {
             let file =
                 json!({"type":"file","path":"Module.bsl","diagnostics":[diagnostic]}).to_string();
-            let mut parser = parser(json!({}));
+            let mut parser = parser();
             feed(
                 &mut parser,
                 &[
@@ -863,7 +706,10 @@ mod tests {
                     &file,
                 ],
             );
-            assert_eq!(parser.finish().error.unwrap().code, "diagnostics_invalid:");
+            assert_eq!(
+                parser.finish().outcome.error.unwrap().code,
+                "diagnostics_invalid"
+            );
         }
     }
 
@@ -885,19 +731,22 @@ mod tests {
                 r#"{"type":"done","elapsed_secs":0.0,"total_files":0,"total_diagnostics":0,"failed_files":0}"#,
             ],
         ] {
-            let mut parser = parser(json!({}));
+            let mut parser = parser();
             feed(&mut parser, &lines);
-            assert_eq!(parser.finish().error.unwrap().code, "diagnostics_invalid:");
+            assert_eq!(
+                parser.finish().outcome.error.unwrap().code,
+                "diagnostics_invalid"
+            );
         }
     }
 
     #[test]
     fn line_length_failure_names_the_physical_line_without_copying_it() {
-        let mut parser = parser(json!({}));
+        let mut parser = parser();
         parser.reject_line(7, "line exceeds 8388608 bytes");
         let result = parser.finish();
-        let error = result.error.unwrap();
-        assert_eq!(error.code, "diagnostics_invalid:");
+        let error = result.outcome.error.unwrap();
+        assert_eq!(error.code, "diagnostics_invalid");
         assert!(error.message.contains("line 7"));
         assert!(!error.message.contains("sensitive contents"));
     }
@@ -920,7 +769,7 @@ mod tests {
             return;
         }
 
-        let mut parser = DiagnosticsJsonlParser::new(&source_root, Map::new()).unwrap();
+        let mut parser = DiagnosticsJsonlParser::new(&source_root).unwrap();
         feed(
             &mut parser,
             &[
@@ -931,7 +780,68 @@ mod tests {
         );
 
         let result = parser.finish();
-        assert_eq!(result.error.unwrap().code, "diagnostics_invalid:");
-        assert!(result.data["items"].as_array().unwrap().is_empty());
+        assert_eq!(result.outcome.error.unwrap().code, "diagnostics_invalid");
+        assert!(result.outcome.observations.is_empty());
+    }
+
+    #[test]
+    fn absolute_outside_path_is_rejected_without_copying_physical_handles() {
+        let fixture = TempDir::new().unwrap();
+        let source_root = fixture.path().join("source");
+        let outside = fixture.path().join("outside/Secret.bsl");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, "Procedure Secret()\nEndProcedure").unwrap();
+        let event = json!({"type":"file","path":outside,"diagnostics":[]}).to_string();
+        let mut parser = DiagnosticsJsonlParser::new(&source_root).unwrap();
+        feed(
+            &mut parser,
+            &[
+                r#"{"type":"start","total_files":1,"version":"0.2.62"}"#,
+                &event,
+            ],
+        );
+
+        let error = parser.finish().outcome.error.unwrap();
+
+        assert_eq!(error.code, "diagnostics_invalid");
+        assert_eq!(
+            error.message,
+            "line 2: file.path resolves outside diagnostics source root"
+        );
+        assert!(!error
+            .message
+            .contains(source_root.to_string_lossy().as_ref()));
+        assert!(!error.message.contains(outside.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn invalid_utf8_fails_closed_without_copying_input() {
+        let mut parser = parser();
+        parser.push_line(3, &[0xff, b's', b'e', b'c', b'r', b'e', b't']);
+
+        let batch = parser.finish();
+        let error = batch.outcome.error.unwrap();
+        assert_eq!(error.code, "diagnostics_invalid");
+        assert!(error.message.contains("line 3"));
+        assert!(!error.message.contains("secret"));
+        assert!(batch.outcome.observations.is_empty());
+    }
+
+    #[test]
+    fn cyrillic_path_is_preserved_as_a_private_resource_handle() {
+        let mut parser = parser();
+        feed(
+            &mut parser,
+            &[
+                r#"{"type":"start","total_files":1,"version":"0.2.62"}"#,
+                r#"{"type":"file","path":"ОбщиеМодули/Продажи/Ext/Module.bsl","diagnostics":[]}"#,
+                r#"{"type":"done","elapsed_secs":0.1,"total_files":1,"total_diagnostics":0,"failed_files":0}"#,
+            ],
+        );
+
+        let batch = parser.finish();
+        assert_eq!(batch.outcome.status, DiagnosticProviderStatus::Empty);
+        assert_eq!(batch.files.processed, Some(1));
     }
 }

@@ -77,7 +77,7 @@ pub fn run_stdio() {
     // implementations can terminate their child process trees.
     if !drain_mcp_shutdown(&in_flight, EOF_CANCELLATION_GRACE) {
         eprintln!(
-            "unica mcp shutdown grace expired while tool calls or code-search providers were cleaning up"
+            "unica mcp shutdown grace expired while tool calls or provider workers were cleaning up"
         );
     }
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
@@ -85,7 +85,13 @@ pub fn run_stdio() {
 
 fn drain_mcp_shutdown(in_flight: &InFlightRegistry, grace: Duration) -> bool {
     drain_mcp_shutdown_with(in_flight, grace, |remaining| {
-        crate::application::code_intelligence::drain_code_search_workers(remaining)
+        let deadline = Instant::now() + remaining;
+        let code_search_idle =
+            crate::application::code_intelligence::drain_code_search_workers(remaining);
+        let diagnostics_idle = crate::application::diagnostics::drain_diagnostic_workers(
+            deadline.saturating_duration_since(Instant::now()),
+        );
+        code_search_idle && diagnostics_idle
     })
 }
 
@@ -505,6 +511,29 @@ mod tests {
     use tokio::time::timeout;
 
     const TEST_STEP: Duration = Duration::from_secs(10);
+
+    fn object_schema_property_maps(
+        schema: &serde_json::Map<String, serde_json::Value>,
+    ) -> Vec<&serde_json::Map<String, serde_json::Value>> {
+        if let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            return vec![properties];
+        }
+        schema
+            .get("oneOf")
+            .expect("tool schema publishes properties or closed object oneOf branches")
+            .as_array()
+            .expect("tool schema publishes properties or closed object oneOf branches")
+            .iter()
+            .map(|branch| {
+                branch["properties"]
+                    .as_object()
+                    .expect("oneOf branch properties are an object")
+            })
+            .collect()
+    }
 
     fn successful_test_result(summary: &str) -> OperationResult {
         OperationResult {
@@ -1203,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_definitions_expose_flat_diagnostics_worktree_contract() {
+    fn tool_definitions_expose_logical_diagnostics_action_union() {
         let listed = tool_definitions(&crate::application::tools());
         let diagnostics = listed
             .iter()
@@ -1211,18 +1240,17 @@ mod tests {
             .expect("unica.code.diagnostics must be listed");
 
         let schema = diagnostics.input_schema.as_ref();
-        let properties = schema["properties"].as_object().unwrap();
-        for name in [
-            "cwd",
-            "sourceDir",
-            "mode",
-            "path",
-            "codes",
-            "timeoutSeconds",
-        ] {
-            assert!(properties.contains_key(name), "missing {name}");
+        let branches = schema["oneOf"].as_array().expect("closed action union");
+        assert_eq!(branches.len(), 4);
+        for branch in branches {
+            let properties = branch["properties"].as_object().unwrap();
+            assert!(properties.contains_key("action"));
+            assert!(properties.contains_key("sourceSet"));
+            assert!(properties.contains_key("cwd"));
+            for legacy in ["sourceDir", "mode", "path", "codes"] {
+                assert!(!properties.contains_key(legacy), "legacy field {legacy}");
+            }
         }
-        assert!(schema.get("oneOf").is_none());
     }
 
     #[test]
@@ -1530,11 +1558,13 @@ mod tests {
     #[test]
     fn no_public_tool_schema_exposes_raw_adapter_args() {
         for tool in tool_definitions(&crate::application::tools()) {
-            assert!(
-                tool.input_schema["properties"].get("args").is_none(),
-                "{} must not expose raw adapter args",
-                tool.name
-            );
+            for properties in object_schema_property_maps(&tool.input_schema) {
+                assert!(
+                    properties.get("args").is_none(),
+                    "{} must not expose raw adapter args",
+                    tool.name
+                );
+            }
         }
     }
 
@@ -1984,6 +2014,21 @@ mod tests {
                 EOF_CANCELLATION_GRACE
             ),
             "tracked code-search worker outlived the EOF cleanup grace"
+        );
+    }
+
+    #[test]
+    fn eof_cleanup_drains_noncooperative_diagnostic_worker_within_the_same_grace() {
+        // This worker deliberately has no cancellation token. It models a
+        // provider that ignored cancellation after its tool call returned.
+        crate::application::diagnostics::track_diagnostic_worker_for_test(std::thread::spawn(
+            || std::thread::sleep(Duration::from_millis(50)),
+        ));
+
+        let registry = InFlightRegistry::default();
+        assert!(
+            drain_mcp_shutdown(&registry, EOF_CANCELLATION_GRACE),
+            "tracked diagnostics worker outlived the EOF cleanup grace"
         );
     }
 

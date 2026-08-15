@@ -78,7 +78,12 @@
 - [ADR-0058: `git-grep` возвращает ограниченный неранжируемый префикс](0058-bounded-unranked-git-grep-search.md)
 - [ADR-0059: Несовместимая версия RLM получает новое поколение состояния](0059-rlm-generacionnyy-perehod.md)
 - [ADR-0060: `unica.project.status` публикует типизированную готовность проекта](0060-project-status-publikuet-gotovnost-proekta.md)
-- [ADR-0061: Терминальный результат runtime возвращается в том же вызове](0061-terminalnyy-receipt-runtime-v-odnom-vyzove.md)
+- [ADR-0061: Многофайловый RLM входит в runtime замкнутой полезной нагрузкой](0061-rlm-mnogofaylovyy-runtime-iz-proveryaemogo-arhiva.md)
+- [ADR-0062: Готовность RLM является типизированным состоянием](0062-tipizirovannaya-gotovnost-rlm.md)
+- [ADR-0063: Публичная диагностика адресует логические цели](0063-logicheskie-nablyudeniya-diagnostiki.md)
+- [ADR-0064: Поставщики диагностик сохраняют происхождение и отказывают независимо](0064-neytralnaya-kompoziciya-diagnostik.md)
+- [ADR-0065: Миграция читателя выбирает мост или прямое переключение явно](0065-yavnyy-rezhim-migracii-chitatelya.md)
+- [ADR-0066: Терминальный результат runtime возвращается в том же вызове](0066-terminalnyy-receipt-runtime-v-odnom-vyzove.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе
