@@ -30,18 +30,13 @@ pub(crate) fn requires_snapshot(spec: ToolSpec, args: &Map<String, Value>) -> bo
             | CodeIntelligenceOperation::Definition
             | CodeIntelligenceOperation::Outline => true,
         },
-        ToolHandler::CodeAdapter { .. } if spec.name == "unica.code.diagnostics" => {
-            args.get("mode")
-                .and_then(Value::as_str)
-                .unwrap_or("analyze")
-                == "analyze"
-        }
+        ToolHandler::Diagnostics => args.get("action").and_then(Value::as_str) == Some("analyze"),
         _ => false,
     }
 }
 
 fn diagnostics_analyze_override(spec: ToolSpec, args: &Map<String, Value>) -> Option<u64> {
-    (spec.name == "unica.code.diagnostics")
+    matches!(spec.handler, ToolHandler::Diagnostics)
         .then(|| args.get("timeoutSeconds").and_then(Value::as_u64))
         .flatten()
 }
@@ -63,7 +58,7 @@ mod tests {
                         | CodeIntelligenceOperation::Definition
                         | CodeIntelligenceOperation::Outline
                 }
-            ) || spec.name == "unica.code.diagnostics";
+            );
             assert_eq!(
                 requires_snapshot(spec, &Map::new()),
                 expected,
@@ -74,15 +69,18 @@ mod tests {
     }
 
     #[test]
-    fn non_analyze_diagnostics_modes_do_not_resolve_config() {
+    fn only_analyze_diagnostics_action_resolves_config() {
         let spec = tools()
             .into_iter()
             .find(|spec| spec.name == "unica.code.diagnostics")
             .unwrap();
-        for mode in ["status", "catalog", "file", "workspace"] {
+        for action in ["findings", "status", "catalog"] {
             let mut args = Map::new();
-            args.insert("mode".to_string(), json!(mode));
-            assert!(!requires_snapshot(spec, &args), "{mode}");
+            args.insert("action".to_string(), json!(action));
+            assert!(!requires_snapshot(spec, &args), "{action}");
         }
+        let mut analyze = Map::new();
+        analyze.insert("action".to_string(), json!("analyze"));
+        assert!(requires_snapshot(spec, &analyze));
     }
 }

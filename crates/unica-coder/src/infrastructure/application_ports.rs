@@ -19,6 +19,10 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
     CodeIntelligenceRegistry, CodeSearchScope, ProviderDeadline,
 };
+use crate::domain::diagnostics::{
+    DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
+    DiagnosticProvider, DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
+};
 use crate::domain::events::DomainEvent;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::source_resources::{
@@ -26,6 +30,7 @@ use crate::domain::source_resources::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
+use crate::infrastructure::diagnostics::BslAnalyzerDiagnosticProvider;
 use crate::infrastructure::internal_adapters::{
     BslAnalyzerMcpAdapter, CliAdapter, RuntimeAdapter, RuntimeInvocation, RuntimeJobAdapter,
     StandardsAdapter,
@@ -295,6 +300,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         CodeIntelligenceRegistry::new(providers)
     }
 
+    fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
+        let providers: Vec<Arc<dyn DiagnosticProvider>> =
+            vec![Arc::new(BslAnalyzerDiagnosticProvider::new())];
+        DiagnosticProviderRegistry::new(providers).map_err(|error| error.to_string())
+    }
+
     fn resolve_source_navigation(
         &self,
         request: SourceResolveRequest,
@@ -330,6 +341,45 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
             context,
             &request,
+            cancellation,
+        )
+    }
+
+    fn resolve_diagnostic_context(
+        &self,
+        request: &DiagnosticRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<DiagnosticContext, DiagnosticRequestError> {
+        crate::infrastructure::diagnostics::resolve_diagnostic_context(
+            request,
+            context,
+            cancellation,
+        )
+    }
+
+    fn map_diagnostic_observation(
+        &self,
+        observation: DiagnosticObservation,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Result<DiagnosticItem, DiagnosticMapError> {
+        crate::infrastructure::diagnostics::map_diagnostic_observation(
+            observation,
+            context,
+            cancellation,
+        )
+    }
+
+    fn map_diagnostic_observations(
+        &self,
+        observations: Vec<DiagnosticObservation>,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
+        crate::infrastructure::diagnostics::map_diagnostic_observations(
+            observations,
+            context,
             cancellation,
         )
     }
@@ -566,9 +616,11 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 "{} must be dispatched through the provider-neutral source resource port",
                 spec.name
             )),
-            ToolHandler::CodeAdapter {
-                command: ["graph"] | ["analyze"],
-            } => BslAnalyzerMcpAdapter::new()
+            ToolHandler::Diagnostics => Err(format!(
+                "{} must be dispatched through the provider-neutral diagnostics coordinator",
+                spec.name
+            )),
+            ToolHandler::CodeAdapter { command: ["graph"] } => BslAnalyzerMcpAdapter::new()
                 .invoke_cancellable_with_operational_config(
                     spec.name,
                     args,
@@ -1341,6 +1393,19 @@ mod tests {
             .unwrap_or_else(|| panic!("{name} must be registered"));
         spec.handler = handler;
         spec
+    }
+
+    #[test]
+    fn production_diagnostic_registry_matches_the_canonical_live_composition() {
+        use crate::application::ports::ApplicationPorts;
+        use crate::domain::diagnostics::LIVE_DIAGNOSTIC_PROVIDERS;
+
+        let ports = super::InfrastructureApplicationPorts::new();
+        let registry = ApplicationPorts::diagnostic_provider_registry(&ports).unwrap();
+        let registered = registry.ids().collect::<Vec<_>>();
+        let published = LIVE_DIAGNOSTIC_PROVIDERS.to_vec();
+
+        assert_eq!(registered, published);
     }
 
     #[derive(Clone)]

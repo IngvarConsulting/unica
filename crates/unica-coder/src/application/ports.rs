@@ -11,6 +11,10 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceReadRequest, CodeIntelligenceRegistry,
     CodeSearchScope, ProviderDeadline,
 };
+use crate::domain::diagnostics::{
+    DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
+    DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
+};
 use crate::domain::events::DomainEvent;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaInfoDeclarations,
@@ -584,6 +588,10 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         Err("code intelligence provider registry is not configured".to_string())
     }
 
+    fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
+        Err("diagnostic provider registry is not configured".to_string())
+    }
+
     fn resolve_source_navigation(
         &self,
         _request: SourceResolveRequest,
@@ -609,6 +617,44 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _cancellation: &CancellationToken,
     ) -> Result<SourceLocateResult, String> {
         Err("source navigation locator is not configured".to_string())
+    }
+
+    fn resolve_diagnostic_context(
+        &self,
+        _request: &DiagnosticRequest,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<DiagnosticContext, DiagnosticRequestError> {
+        Err(DiagnosticRequestError {
+            code: "diagnostics_unavailable",
+            field: None,
+            message: "diagnostic context resolver is not configured".to_string(),
+            retryable: false,
+        })
+    }
+
+    fn map_diagnostic_observation(
+        &self,
+        _observation: DiagnosticObservation,
+        _context: &DiagnosticContext,
+        _cancellation: &CancellationToken,
+    ) -> Result<DiagnosticItem, DiagnosticMapError> {
+        Err(DiagnosticMapError {
+            code: "diagnostics_unavailable",
+            message: "diagnostic location mapper is not configured".to_string(),
+        })
+    }
+
+    fn map_diagnostic_observations(
+        &self,
+        observations: Vec<DiagnosticObservation>,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
+        observations
+            .into_iter()
+            .map(|observation| self.map_diagnostic_observation(observation, context, cancellation))
+            .collect()
     }
 
     fn source_resources(

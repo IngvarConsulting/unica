@@ -1,3 +1,5 @@
+use crate::domain::diagnostics::DiagnosticAction;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SupportGuardRequirement {
     Editable,
@@ -48,6 +50,65 @@ pub(crate) enum SupportGuardPolicy {
 pub(crate) struct PathAliasGroup {
     pub canonical: &'static str,
     pub aliases: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DiagnosticActionDescriptor {
+    pub action: DiagnosticAction,
+    pub allowed_args: &'static [&'static str],
+    pub required_args: &'static [&'static str],
+}
+
+const DIAGNOSTIC_ANALYZE_ARGS: &[&str] = &[
+    "action",
+    "sourceSet",
+    "cwd",
+    "filter",
+    "limit",
+    "timeoutSeconds",
+];
+const DIAGNOSTIC_FINDINGS_ARGS: &[&str] = &[
+    "action",
+    "sourceSet",
+    "cwd",
+    "metadataPath",
+    "filter",
+    "range",
+    "limit",
+];
+const DIAGNOSTIC_STATUS_ARGS: &[&str] = &["action", "sourceSet", "cwd"];
+const DIAGNOSTIC_CATALOG_ARGS: &[&str] = &["action", "sourceSet", "cwd", "filter", "limit"];
+
+pub(crate) const DIAGNOSTIC_ACTION_DESCRIPTORS: &[DiagnosticActionDescriptor] = &[
+    DiagnosticActionDescriptor {
+        action: DiagnosticAction::Analyze,
+        allowed_args: DIAGNOSTIC_ANALYZE_ARGS,
+        required_args: &["action", "sourceSet"],
+    },
+    DiagnosticActionDescriptor {
+        action: DiagnosticAction::Findings,
+        allowed_args: DIAGNOSTIC_FINDINGS_ARGS,
+        required_args: &["action", "sourceSet", "metadataPath"],
+    },
+    DiagnosticActionDescriptor {
+        action: DiagnosticAction::Status,
+        allowed_args: DIAGNOSTIC_STATUS_ARGS,
+        required_args: &["action", "sourceSet"],
+    },
+    DiagnosticActionDescriptor {
+        action: DiagnosticAction::Catalog,
+        allowed_args: DIAGNOSTIC_CATALOG_ARGS,
+        required_args: &["action", "sourceSet"],
+    },
+];
+
+pub(crate) fn diagnostic_action_descriptor(
+    action: DiagnosticAction,
+) -> &'static DiagnosticActionDescriptor {
+    DIAGNOSTIC_ACTION_DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.action == action)
+        .expect("the closed diagnostic action enum and descriptor table must stay in sync")
 }
 
 const EMPTY: &[&str] = &[];

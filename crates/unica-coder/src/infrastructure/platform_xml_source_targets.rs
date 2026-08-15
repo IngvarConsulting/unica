@@ -10,7 +10,7 @@ use crate::application::source_navigation::{
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode};
 use crate::domain::project_sources::{
-    classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
+    classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind, ProjectSourceSet,
 };
 use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::source_target::{
@@ -350,14 +350,52 @@ fn locate_platform_xml_source_path_with_policy(
     check_navigation_cancellation(cancellation)?;
     let selected = resolve_named_source_set(context, &request.source_set)
         .map_err(|error| public_source_set_error(&request.source_set, error).to_string())?;
-    if selected.source_set.source_format != SourceFormat::PlatformXml {
+    locate_platform_xml_source_path_in_with_policy(
+        context,
+        &selected.source_set,
+        &selected.path,
+        &request.path,
+        cancellation,
+        version_policy,
+    )
+}
+
+/// The same inverse mapping as `unica.source.locate`, against a source set the
+/// caller has already resolved exactly. Diagnostics uses this entry point so a
+/// provider result cannot silently trigger the legacy default-source fallback.
+pub(crate) fn locate_platform_xml_source_path_in(
+    context: &WorkspaceContext,
+    source_set: &ProjectSourceSet,
+    source_root: &Path,
+    raw_path: &str,
+    cancellation: &CancellationToken,
+) -> Result<SourceLocateResult, String> {
+    locate_platform_xml_source_path_in_with_policy(
+        context,
+        source_set,
+        source_root,
+        raw_path,
+        cancellation,
+        DescriptorVersionPolicy::ActiveProfile,
+    )
+}
+
+fn locate_platform_xml_source_path_in_with_policy(
+    context: &WorkspaceContext,
+    source_set: &ProjectSourceSet,
+    source_root: &Path,
+    raw_path: &str,
+    cancellation: &CancellationToken,
+    version_policy: DescriptorVersionPolicy,
+) -> Result<SourceLocateResult, String> {
+    if source_set.source_format != SourceFormat::PlatformXml {
         return Err(format!(
             "sourceSet `{}` is not addressable by the Platform XML source provider",
-            request.source_set
+            source_set.name
         ));
     }
     let reject = |relative: String, rejection: LocateRejection| SourceLocateResult {
-        source_set: selected.source_set.name.clone(),
+        source_set: source_set.name.clone(),
         relative_path: relative,
         metadata_path: None,
         target_kind: None,
@@ -365,8 +403,8 @@ fn locate_platform_xml_source_path_with_policy(
         rejection: Some(rejection),
     };
 
-    let raw = Path::new(request.path.trim());
-    let Some(relative) = source_set_relative_path(context, &selected, raw) else {
+    let raw = Path::new(raw_path.trim());
+    let Some(relative) = source_set_relative_path(context, source_root, raw) else {
         // There is no source-set-relative form for a path outside the set, and
         // echoing a stripped one back would read as relative while naming
         // somewhere else entirely.
@@ -381,11 +419,11 @@ fn locate_platform_xml_source_path_with_policy(
         if let Ok(identity) = platform_xml_module_identity(&relative) {
             let proven = validate_platform_xml_module_descriptors(
                 context,
-                &selected.path,
+                source_root,
                 &identity.descriptors,
             )
             .is_ok()
-                && module_descriptor_identity_is_proven(&selected.path, &identity, cancellation)?;
+                && module_descriptor_identity_is_proven(source_root, &identity, cancellation)?;
             if !proven {
                 return Ok(reject(relative_text, LocateRejection::OwnerUnproven));
             }
@@ -395,7 +433,7 @@ fn locate_platform_xml_source_path_with_policy(
             )
             .ok();
             return Ok(SourceLocateResult {
-                source_set: selected.source_set.name.clone(),
+                source_set: source_set.name.clone(),
                 relative_path: relative_text,
                 metadata_path: Some(identity.address),
                 target_kind: Some(TargetKind::Module),
@@ -432,12 +470,8 @@ fn locate_platform_xml_source_path_with_policy(
     ) else {
         return Ok(reject(relative_text, LocateRejection::NotAddressable));
     };
-    if exact_object_outcome_with_policy(
-        &selected.path,
-        &object_address,
-        cancellation,
-        version_policy,
-    )? != ExactCandidate::Proven
+    if exact_object_outcome_with_policy(source_root, &object_address, cancellation, version_policy)?
+        != ExactCandidate::Proven
     {
         return Ok(reject(relative_text, LocateRejection::OwnerUnproven));
     }
@@ -464,7 +498,7 @@ fn locate_platform_xml_source_path_with_policy(
             &nested,
         ) {
             if exact_object_outcome_with_policy(
-                &selected.path,
+                source_root,
                 &nested_address,
                 cancellation,
                 version_policy,
@@ -472,7 +506,7 @@ fn locate_platform_xml_source_path_with_policy(
             {
                 let is_own_descriptor = parts.len() == 4 && parts[3].ends_with(".xml");
                 return Ok(SourceLocateResult {
-                    source_set: selected.source_set.name.clone(),
+                    source_set: source_set.name.clone(),
                     relative_path: relative_text,
                     metadata_path: is_own_descriptor.then(|| nested_address.clone()),
                     target_kind: is_own_descriptor.then_some(TargetKind::MetadataObject),
@@ -485,7 +519,7 @@ fn locate_platform_xml_source_path_with_policy(
 
     let is_object_descriptor = parts.len() == 2 && parts[1].ends_with(".xml");
     Ok(SourceLocateResult {
-        source_set: selected.source_set.name.clone(),
+        source_set: source_set.name.clone(),
         relative_path: relative_text,
         metadata_path: is_object_descriptor.then(|| object_address.clone()),
         target_kind: is_object_descriptor.then_some(TargetKind::MetadataObject),
@@ -496,9 +530,9 @@ fn locate_platform_xml_source_path_with_policy(
 
 /// Accepts an absolute path, a workspace-relative path or a source-set-relative
 /// path, and returns it relative to the source root when it is contained there.
-fn source_set_relative_path(
+pub(crate) fn source_set_relative_path(
     context: &WorkspaceContext,
-    selected: &ResolvedNamedSourceSet,
+    source_root: &Path,
     raw: &Path,
 ) -> Option<PathBuf> {
     let mut candidates = Vec::new();
@@ -506,13 +540,13 @@ fn source_set_relative_path(
         candidates.push(raw.to_path_buf());
     } else {
         candidates.push(context.workspace_root.join(raw));
-        candidates.push(selected.path.join(raw));
+        candidates.push(source_root.join(raw));
     }
     for candidate in candidates {
         let Ok(normalized) = normalize_path_identity(&candidate) else {
             continue;
         };
-        if let Ok(relative) = normalized.strip_prefix(&selected.path) {
+        if let Ok(relative) = normalized.strip_prefix(source_root) {
             if relative.as_os_str().is_empty() {
                 continue;
             }
@@ -522,7 +556,7 @@ fn source_set_relative_path(
     None
 }
 
-fn portable_relative(path: &Path) -> String {
+pub(crate) fn portable_relative(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
             Component::Normal(value) => value.to_str(),
@@ -2292,6 +2326,24 @@ pub(crate) fn resolve_platform_xml_target(
     }
     let selected = resolve_named_source_set(context, &target.source_set)
         .map_err(|error| public_source_set_error(&target.source_set, error))?;
+    resolve_platform_xml_target_in(context, target, policy, selected)
+}
+
+/// Resolves another logical observation inside the exact source set already
+/// selected for a diagnostics call. The source root is a closed internal
+/// handle; no physical identity is added to the public target.
+pub(crate) fn resolve_platform_xml_target_in_diagnostic_context(
+    context: &WorkspaceContext,
+    target: &SourceTarget,
+    policy: TargetKindPolicy,
+    source_set: &ProjectSourceSet,
+    source_root: &Path,
+) -> Result<PlatformXmlResolution, SourceTargetError> {
+    let selected = ResolvedNamedSourceSet {
+        source_set: source_set.clone(),
+        lexical_path: source_root.to_path_buf(),
+        path: source_root.to_path_buf(),
+    };
     resolve_platform_xml_target_in(context, target, policy, selected)
 }
 

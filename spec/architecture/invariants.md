@@ -423,14 +423,34 @@ Unica. Каждая запись формулирует одно нормати�
   отсутствие завершает вызов стабильной ошибкой `typed_result_missing`;
   текстовый дубль завершает вызов ошибкой `typed_result_textual`, а
   соответствие классификации ведомости проверяет
-  `tool_specs_match_reviewed_result_contracts`.
-- **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0045
+  `tool_specs_match_reviewed_result_contracts`. `unica.code.definition`
+  публикует предметный результат только при готовом текущем состоянии `RLM`:
+  `building` и `incomplete` возвращают `index_pending`, потому что обслуживание
+  индекса запущено, остальные неготовые состояния — `index_unavailable`, а
+  пустой список при `ready` означает доказанное отсутствие совпадений.
+- **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0062
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics_jsonl.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`
 - **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
 - **Scope:** source, runtime
+
+### INV-MCP-DIAGNOSTIC-TARGET — Диагностика адресует логическую цель и фокус
+
+- **Rule:** `unica.code.diagnostics` выбирает цель через `action`, точный
+  `sourceSet` и обязательный для `findings` логический `metadataPath`, выводит
+  `targetKind` из разрешённой цели, не принимает публичный параметр выбора поставщика
+  и публикует каждое наблюдение через общий тип `SourceLocation` в поле `location`
+  и внутренний `focus`; адресуемая ветвь и все остальные
+  публичные поля не содержат абсолютный физический путь, а безопасное
+  относительное наблюдение без доказуемой цели явно имеет
+  `location.kind=unaddressable`.
+- **Decision:** ADR-0063
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
+- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
+- **Scope:** source, packaged, runtime
 
 ### INV-MCP-PROJECT-READINESS — Готовность проекта публикуется двумя независимыми контурами
 
@@ -779,7 +799,7 @@ Unica. Каждая запись формулирует одно нормати�
   новый срок исполнения второй команды, а также отсутствие в закреплённой
   квитанции признака отложенного внутреннего тайм-аута критического шага
   признаются временными ограничениями до переработки поколения `v14`.
-- **Decision:** ADR-0062, ADR-0003
+- **Decision:** ADR-0066, ADR-0003
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/application_ports.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/internal_adapters.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_build_fallback.rs`
@@ -793,7 +813,7 @@ Unica. Каждая запись формулирует одно нормати�
 ### INV-APP-CONFIG-SNAPSHOT — Конфигурация вызова изолирована рабочим пространством
 
 - **Rule:** Для `unica.code.search`, `unica.code.definition`,
-  `unica.code.outline` и `unica.code.diagnostics` в режиме `analyze` приложение
+  `unica.code.outline` и `unica.code.diagnostics` с `action=analyze` приложение
   после обнаружения рабочего пространства разрешает ровно один неизменяемый
   `OperationalConfig`: все сроки данного вызова выводятся из этого снимка без
   повторного чтения файлов, следующий вызов разрешает его заново, а снимок
@@ -820,7 +840,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0040, ADR-0056, ADR-0058
+- **Decision:** ADR-0040, ADR-0056, ADR-0058, ADR-0063
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
@@ -839,6 +859,19 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0017
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
+- **Scope:** source, runtime
+
+### INV-APP-DIAGNOSTIC-PROVIDERS — Наблюдения поставщиков компонуются независимо
+
+- **Rule:** Слой application вызывает диагностики через упорядоченный реестр
+  `DiagnosticProvider`, сохраняет `provider + code` у каждого наблюдения, не
+  выполняет дедупликацию между поставщиками и локализует их неполноту и отказ в
+  отдельных секциях; полезный ответ одного поставщика допускает только явно
+  частичный общий результат другого, а отмена всего вызова не публикует
+  частичный набор.
+- **Decision:** ADR-0064
+- **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
 - **Scope:** source, runtime
 
 ### INV-APP-DOCUMENTATION-NO-DISK-STATE — Разбор корпуса справки не создаёт состояния на диске
@@ -1134,10 +1167,24 @@ Unica. Каждая запись формулирует одно нормати�
   них, отклоняет одновременную передачу обоих стабильным `selector_conflict` до
   вызова обработчика и отвечает на логический вызов теми же типизированными
   данными, что на файловый.
-- **Decision:** ADR-0049
+- **Decision:** ADR-0065
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs`
 - **Scope:** source, runtime
+
+### INV-SOURCE-READER-MIGRATION — Режим миграции читателя объявлен явно
+
+- **Rule:** Каждый предметный читатель мигрирует физический селектор только в
+  явно выбранном режиме `bridge` или `directSwitch`: `bridge` сохраняет
+  взаимоисключающие логический и файловый входы до отдельного снятия, а
+  `directSwitch` требует поинструментного решения и атомарной смены всего
+  публичного контура; единственный действующий прямой переход принадлежит
+  `unica.code.diagnostics`, остальные читатели остаются в режиме `bridge`.
+- **Decision:** ADR-0065
+- **Check:** `ci-test` — `tests/ci/test_architecture_registry.py`
+- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Scope:** source, packaged, runtime
 
 ### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля
 
@@ -1741,4 +1788,4 @@ Unica. Каждая запись формулирует одно нормати�
   больше не определяет роль владельца; правило заменено новым по ADR-0031.
 - `INV-APP-SUPPORT-SAFE-BUILD`, `2026-08-14` — предварительный выбор полного
   режима по состоянию поддержки отклонён до слияния; правило заменено
-  новым по ADR-0061.
+  новым по ADR-0066.

@@ -10,7 +10,6 @@ import json
 import os
 import platform
 import queue
-import re
 import shutil
 import subprocess
 import sys
@@ -450,6 +449,15 @@ def project_source_sets(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     return []
 
 
+def project_source_set_name(payload: dict[str, Any] | None, source_path: str) -> str | None:
+    for source_set in project_source_sets(payload):
+        if source_set.get("path") == source_path:
+            name = source_set.get("name")
+            if isinstance(name, str) and name.strip() == name and name:
+                return name
+    return None
+
+
 def scenario_result(
     *,
     scenario_id: str,
@@ -833,23 +841,33 @@ def sample_bsl_search(bsp_root: Path) -> tuple[str, str] | None:
     return None
 
 
-def base_tool_scenarios(bsp_root: Path) -> list[tuple[str, str, str, dict[str, Any], bool, bool]]:
-    bsl_search = sample_bsl_search(bsp_root)
-    code_search_args = {"sourceSet": "main", "query": "Процедура", "limit": 20}
-    if bsl_search:
-        _, query = bsl_search
-        code_search_args = {"sourceSet": "main", "query": query, "limit": 20}
-
-    scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
+def project_probe_scenarios() -> list[tuple[str, str, str, dict[str, Any], bool, bool]]:
+    return [
         ("project-status", "Workspace status", "unica.project.status", {}, True, True),
         ("project-map", "Workspace source-set map", "unica.project.map", {}, True, True),
+    ]
+
+
+def base_tool_scenarios(
+    bsp_root: Path, project_map_payload: dict[str, Any]
+) -> list[tuple[str, str, str, dict[str, Any], bool, bool]]:
+    source_set = project_source_set_name(project_map_payload, SOURCE_DIR)
+    if source_set is None:
+        raise ValueError(f"project map does not identify the source set for {SOURCE_DIR}")
+    bsl_search = sample_bsl_search(bsp_root)
+    code_search_args = {"sourceSet": source_set, "query": "Процедура", "limit": 20}
+    if bsl_search:
+        _, query = bsl_search
+        code_search_args = {"sourceSet": source_set, "query": query, "limit": 20}
+
+    scenarios: list[tuple[str, str, str, dict[str, Any], bool, bool]] = [
         ("cf-info", "BSP Configuration.xml overview", "unica.cf.info", {"ConfigPath": SOURCE_DIR}, True, True),
         ("cf-validate", "BSP Configuration.xml validation", "unica.cf.validate", {"ConfigPath": SOURCE_DIR, "MaxErrors": 50}, False, False),
         (
-            "code-diagnostics-workspace",
-            "BSL diagnostics workspace read",
+            "code-diagnostics-analyze",
+            "BSL diagnostics source-set analysis",
             "unica.code.diagnostics",
-            {"sourceDir": SOURCE_DIR, "mode": "workspace", "limit": 100},
+            {"action": "analyze", "sourceSet": source_set, "limit": 100},
             False,
             False,
         ),
@@ -881,27 +899,21 @@ def extract_diagnostic_codes(payload: dict[str, Any] | None) -> list[str]:
     if not payload:
         return []
     codes: set[str] = set()
-    # unica.code.diagnostics answers with typed `data` (ADR-0023); the analyzer
-    # reply carries the findings there, not in a printed report.
+    # The public diagnostics contract exposes provider-neutral observations in
+    # data.items.  Resource failures have their own error codes and must not be
+    # reported as diagnostic findings.
     data = payload.get("data")
-    candidates = [payload.get("diagnostics")]
-    if isinstance(data, dict):
-        candidates.append(data.get("diagnostics"))
-    for diagnostics in candidates:
-        if not isinstance(diagnostics, list):
+    if not isinstance(data, dict):
+        return []
+    items = data.get("items")
+    if not isinstance(items, list):
+        return []
+    for item in items:
+        if not isinstance(item, dict) or item.get("kind") != "diagnostic":
             continue
-        for item in diagnostics:
-            if not isinstance(item, dict):
-                continue
-            for key in ("code", "id", "diagnostic", "diagnosticId"):
-                value = item.get(key)
-                if isinstance(value, str) and value:
-                    codes.add(value)
-    for text_key in ("stdout", "summary"):
-        text = payload.get(text_key)
-        if isinstance(text, str):
-            for match in re.findall(r"\b[A-Z][A-Za-z0-9_]{4,}\b", text):
-                codes.add(match)
+        code = item.get("code")
+        if isinstance(code, str) and code:
+            codes.add(code)
     return sorted(codes)
 
 
@@ -966,7 +978,8 @@ def build_assessment_report(
 
     scenarios.append(run_tools_list_scenario(run_unica, bsp_root, cache_dir, timeout_seconds))
 
-    for scenario_id, title, tool, arguments, blocking, require_payload_ok in base_tool_scenarios(bsp_root):
+    project_map_payload: dict[str, Any] | None = None
+    for scenario_id, title, tool, arguments, blocking, require_payload_ok in project_probe_scenarios():
         scenario, payload = run_tool_scenario(
             run_unica,
             bsp_root=bsp_root,
@@ -981,6 +994,40 @@ def build_assessment_report(
         )
         if scenario_id == "project-map":
             validate_project_map(scenario, payload)
+            project_map_payload = payload
+        scenarios.append(scenario)
+        diagnostic_codes.extend(extract_diagnostic_codes(payload))
+
+    try:
+        base_scenarios = base_tool_scenarios(bsp_root, project_map_payload or {})
+    except ValueError as error:
+        scenarios.append(
+            scenario_result(
+                scenario_id="logical-source-set-resolution",
+                title="Resolve BSP logical source set",
+                tool="unica.project.map",
+                arguments={"path": SOURCE_DIR},
+                status="failed",
+                duration_ms=0,
+                blocking=True,
+                errors=[str(error)],
+            )
+        )
+        base_scenarios = []
+
+    for scenario_id, title, tool, arguments, blocking, require_payload_ok in base_scenarios:
+        scenario, payload = run_tool_scenario(
+            run_unica,
+            bsp_root=bsp_root,
+            cache_dir=cache_dir,
+            scenario_id=scenario_id,
+            title=title,
+            tool=tool,
+            arguments=arguments,
+            timeout_seconds=timeout_seconds,
+            blocking=blocking,
+            require_payload_ok=require_payload_ok,
+        )
         if scenario_id == "code-search":
             validate_code_search(scenario, payload)
         scenarios.append(scenario)

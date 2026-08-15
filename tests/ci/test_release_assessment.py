@@ -221,10 +221,31 @@ for raw in sys.stdin:
                     {"name": "main", "path": "src/cf", "sourceFormat": "platform_xml"}
                 ]
             }
-        elif name == "unica.code.diagnostics" and arguments.get("mode") == "workspace":
-            payload["diagnostics"] = [
-                {"code": "UnusedLocalVariable", "file": "CommonModules/Test/Ext/Module.bsl"}
-            ]
+        elif name == "unica.code.diagnostics" and arguments.get("action") == "analyze":
+            payload.pop("stdout")
+            payload["data"] = {
+                "action": "analyze",
+                "state": "completed",
+                "complete": True,
+                "providers": [],
+                "itemsTotal": 1,
+                "itemsReturned": 1,
+                "truncated": False,
+                "items": [{
+                    "kind": "diagnostic",
+                    "provider": "bsl-analyzer",
+                    "location": {
+                        "kind": "addressed",
+                        "sourceSet": "main",
+                        "targetKind": "sourceRoot",
+                    },
+                    "focus": {"kind": "target"},
+                    "code": "UnusedLocalVariable",
+                    "severity": "warning",
+                    "message": "fixture",
+                    "tags": [],
+                }],
+            }
         elif name == "unica.code.search":
             print(json.dumps({
                 "jsonrpc": "2.0",
@@ -579,14 +600,25 @@ for raw in sys.stdin:
 
     def test_code_search_is_blocking_and_requires_fixed_role_sections(self) -> None:
         module = load_assessment_module()
+        project_map = {
+            "data": {
+                "sourceSets": [
+                    {
+                        "name": "configuration",
+                        "path": module.SOURCE_DIR,
+                        "sourceFormat": "platform_xml",
+                    }
+                ]
+            }
+        }
         scenarios = {
             scenario_id: (arguments, blocking, require_payload_ok)
             for scenario_id, _title, _tool, arguments, blocking, require_payload_ok
-            in module.base_tool_scenarios(Path("/missing-bsp"))
+            in module.base_tool_scenarios(Path("/missing-bsp"), project_map)
         }
 
         self.assertEqual(scenarios["code-search"][1:], (True, True))
-        self.assertEqual(scenarios["code-search"][0]["sourceSet"], "main")
+        self.assertEqual(scenarios["code-search"][0]["sourceSet"], "configuration")
         self.assertNotIn("sourceDir", scenarios["code-search"][0])
 
         scenario = module.scenario_result(
@@ -610,12 +642,55 @@ for raw in sys.stdin:
                 },
             },
         )
-
         self.assertEqual(scenario["status"], "failed")
         self.assertTrue(
             any("semantic, symbol, lexical" in error for error in scenario["errors"]),
             scenario,
         )
+
+    def test_diagnostics_release_probe_uses_logical_analyze_contract(self) -> None:
+        module = load_assessment_module()
+        project_map = {
+            "data": {
+                "sourceSets": [
+                    {
+                        "name": "configuration",
+                        "path": module.SOURCE_DIR,
+                        "sourceFormat": "platform_xml",
+                    }
+                ]
+            }
+        }
+        diagnostics = next(
+            scenario
+            for scenario in module.base_tool_scenarios(
+                Path("/missing-bsp"), project_map
+            )
+            if scenario[2] == "unica.code.diagnostics"
+        )
+        arguments = diagnostics[3]
+
+        self.assertEqual(arguments["action"], "analyze")
+        self.assertEqual(arguments["sourceSet"], "configuration")
+        for legacy in ("mode", "sourceDir", "path", "codes"):
+            self.assertNotIn(legacy, arguments)
+
+    def test_diagnostic_code_extraction_reads_provider_neutral_items(self) -> None:
+        module = load_assessment_module()
+        payload = {
+            "data": {
+                "items": [
+                    {
+                        "kind": "diagnostic",
+                        "provider": "bsl-analyzer",
+                        "code": "UnusedLocalVariable",
+                    },
+                    {"kind": "resourceFailure", "error": {"code": "source_failed"}},
+                ]
+            }
+        }
+
+        self.assertEqual(module.extract_diagnostic_codes(payload), ["UnusedLocalVariable"])
 
     def test_code_search_rejects_an_invalid_match_count_contract(self) -> None:
         module = load_assessment_module()
