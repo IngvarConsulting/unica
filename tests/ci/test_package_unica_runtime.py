@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import stat
 import tarfile
 import tempfile
 import unittest
@@ -34,16 +36,31 @@ def make_bundle(root: Path) -> Path:
     analyzer = bin_dir / "bsl-analyzer"
     rlm_mcp = bin_dir / "rlm-bsl-mcp"
     rlm_index = bin_dir / "rlm-bsl-index"
+    shared_library = bin_dir / "libpython3.12.so.1.0"
     unica.write_bytes(b"unica")
     analyzer.write_bytes(b"analyzer")
     rlm_mcp.write_bytes(b"rlm-mcp")
     rlm_index.write_bytes(b"rlm-index")
-    (bin_dir / "rlm-tools-bsl").write_bytes(b"legacy")
+    shared_library.write_bytes(b"shared-library")
+    for executable in (unica, analyzer, rlm_mcp, rlm_index):
+        executable.chmod(0o755)
+    shared_library.chmod(0o644)
+    runtime_paths = [unica, analyzer, rlm_mcp, rlm_index, shared_library]
     (bundle / "tools.json").write_text(
         json.dumps(
             {
+                "schemaVersion": 2,
                 "target": "linux-x64",
                 "targetTriple": "x86_64-unknown-linux-gnu",
+                "runtimeFiles": [
+                    {
+                        "path": path.relative_to(bundle).as_posix(),
+                        "sha256": sha256(path),
+                        "size": path.stat().st_size,
+                        "executable": path != shared_library,
+                    }
+                    for path in sorted(runtime_paths)
+                ],
                 "tools": [
                     {
                         "name": "unica",
@@ -97,6 +114,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 [member.name for member in members],
                 [
                     "bin/linux-x64/bsl-analyzer",
+                    "bin/linux-x64/libpython3.12.so.1.0",
                     "bin/linux-x64/rlm-bsl-index",
                     "bin/linux-x64/rlm-bsl-mcp",
                     "bin/linux-x64/unica",
@@ -126,6 +144,9 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             self.assertEqual(metadata["entrypoint"], "bin/linux-x64/unica")
             expected = {
                 "bin/linux-x64/bsl-analyzer": hashlib.sha256(b"analyzer").hexdigest(),
+                "bin/linux-x64/libpython3.12.so.1.0": hashlib.sha256(
+                    b"shared-library"
+                ).hexdigest(),
                 "bin/linux-x64/rlm-bsl-index": hashlib.sha256(b"rlm-index").hexdigest(),
                 "bin/linux-x64/rlm-bsl-mcp": hashlib.sha256(b"rlm-mcp").hexdigest(),
                 "bin/linux-x64/unica": hashlib.sha256(b"unica").hexdigest(),
@@ -148,6 +169,74 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
 
             with self.assertRaisesRegex(SystemExit, "symlink"):
                 module.package_runtime(bundle, root / "out")
+
+    def test_runtime_packager_rejects_hard_linked_payload(self) -> None:
+        module = load_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bundle = make_bundle(root)
+        library = bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
+        os.link(library, root / "second-link")
+
+        with self.assertRaisesRegex(SystemExit, "hard-linked"):
+            module.package_runtime(bundle, root / "out")
+
+    def test_runtime_packager_rejects_missing_extra_and_metadata_drift(self) -> None:
+        module = load_module()
+
+        mutations = {
+            "missing": lambda bundle: (
+                bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
+            ).unlink(),
+            "extra": lambda bundle: (
+                bundle / "bin" / "linux-x64" / "rlm-tools-bsl"
+            ).write_bytes(b"legacy"),
+            "digest": lambda bundle: (
+                bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
+            ).write_bytes(b"drifted-payloa"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bundle = make_bundle(root)
+                mutate(bundle)
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "missing|unexpected|checksum|size|file set",
+                ):
+                    module.package_runtime(bundle, root / "out")
+
+    @unittest.skipIf(os.name == "nt", "Windows does not preserve POSIX execute bits")
+    def test_runtime_packager_rejects_mode_drift(self) -> None:
+        module = load_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bundle = make_bundle(root)
+        library = bundle / "bin" / "linux-x64" / "libpython3.12.so.1.0"
+        library.chmod(library.stat().st_mode | stat.S_IXUSR)
+
+        with self.assertRaisesRegex(SystemExit, "mode|executable"):
+            module.package_runtime(bundle, root / "out")
+
+    def test_runtime_packager_rejects_duplicate_and_out_of_closure_tool_paths(self) -> None:
+        module = load_module()
+        for label in ("duplicate", "outside", "wrong-target"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bundle = make_bundle(root)
+                manifest_path = bundle / "tools.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if label == "duplicate":
+                    manifest["runtimeFiles"].append(dict(manifest["runtimeFiles"][0]))
+                elif label == "outside":
+                    manifest["tools"][0]["binaryPath"] = "bin/linux-x64/not-declared"
+                else:
+                    manifest["runtimeFiles"][0]["path"] = "bin/win-x64/unica.exe"
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "duplicate|closure|declared|outside",
+                ):
+                    module.package_runtime(bundle, root / "out")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ pub(crate) const PARTIAL_FALLBACK_WARNING: &str =
 /// A build that reached the pinned failure code but whose receipt refused the
 /// classification must say so. Silence here is indistinguishable from a runtime
 /// that never considered the retry, so a receipt that drifts away from the
-/// pinned shape would look exactly like #404 being unfixed (ADR-0061).
+/// pinned shape would look exactly like #404 being unfixed (ADR-0062).
 const PARTIAL_FALLBACK_REJECTED: &str =
     "v8-runner exited with the pinned partial-load failure code, but its structured result did not \
      prove a completed partial load, so no full rebuild was retried";

@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 
 MARKER = "UNICA_RLM_BENCHMARK_MARKER"
 SECTION_HEADING = "## Замер RLM v1.33.0"
-RELEASE_TAG = "rlm-tools-bsl-v1.33.0-build.2"
+RELEASE_TAG = "rlm-tools-bsl-v1.33.0-build.3"
 SOURCE_COMMIT = "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549"
 TOOLS_LOCK = (
     Path(__file__).resolve().parents[2]
@@ -33,6 +33,13 @@ TOOLS_LOCK = (
     / "unica"
     / "third-party"
     / "tools.lock.json"
+)
+STANDALONE_REVIEW = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "provenance"
+    / "reviews"
+    / "2026-08-14-rlm-v1-33-nuitka-standalone.json"
 )
 TAIL_LIMIT = 4_000
 HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -697,7 +704,29 @@ def _locked_packaged_index_sha256() -> str:
     ]
     if len(matches) != 1 or matches[0].get("assetTag") != RELEASE_TAG:
         raise RuntimeError("benchmark release identity does not match tools.lock.json")
-    return str(matches[0]["assets"]["darwin-arm64"]["sha256"])
+    tool = matches[0]
+    if tool.get("assetStrategy") != "archive-release-asset":
+        raise RuntimeError("benchmark requires the reviewed standalone archive")
+    locked_asset = tool["assets"]["darwin-arm64"]
+    review = json.loads(STANDALONE_REVIEW.read_text(encoding="utf-8"))
+    reviewed_target = review["targets"]["darwin-arm64"]
+    reviewed_archive = reviewed_target["archive"]
+    locked_archive = {
+        key: locked_asset[key] for key in ("assetName", "sha256", "size")
+    }
+    if (
+        review["toolchain"]["releaseTag"] != RELEASE_TAG
+        or reviewed_archive != locked_archive
+        or reviewed_target["entrypoints"]["rlm-bsl-index"]
+        != locked_asset.get("archiveBinary")
+    ):
+        raise RuntimeError("benchmark standalone review does not match tools.lock.json")
+    executable_sha256 = reviewed_target["payload"]["entrypointSha256"]
+    if not isinstance(executable_sha256, str) or not HEX_64.fullmatch(
+        executable_sha256
+    ):
+        raise RuntimeError("benchmark standalone review has an invalid entrypoint SHA-256")
+    return executable_sha256
 
 
 def _validate_summary_pair(
@@ -721,7 +750,7 @@ def _validate_summary_pair(
     packaged_sha256 = _locked_packaged_index_sha256()
     if ordered[0]["executableSha256"] != packaged_sha256:
         raise RuntimeError(
-            "summary requires exact build.2 Darwin rlm-bsl-index SHA-256 "
+            "summary requires exact build.3 Darwin rlm-bsl-index SHA-256 "
             f"{packaged_sha256}"
         )
     if ordered[0]["repoHead"] != ordered[1]["repoHead"]:

@@ -169,7 +169,8 @@ class AttributionTests(unittest.TestCase):
 
         self.assertIn("`1.33.0`", section)
         self.assertIn("`3e6920cd015a61af4ba7aa1a5f1fedd8bc935549`", section)
-        self.assertIn("`rlm-tools-bsl-v1.33.0-build.2`", section)
+        self.assertIn("`rlm-tools-bsl-v1.33.0-build.3`", section)
+        self.assertIn("Nuitka", section)
 
     def test_parse_sections_rejects_duplicate_markers(self) -> None:
         module = load_attribution_module()

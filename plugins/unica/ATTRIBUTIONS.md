@@ -62,12 +62,15 @@ LGPL-3.0-or-later проекта Unica не заменяет эти услови
 - Автор: [Roman Starchenko](https://github.com/Dach-Coin); исходный проект
   `rlm-tools` — [Stefan O'Shea](https://github.com/stefanoshea)
 - Закреплённая версия: `1.33.0`, commit `3e6920cd015a61af4ba7aa1a5f1fedd8bc935549`
-- Набор бинарников: `rlm-tools-bsl-v1.33.0-build.2`
+- Архив standalone runtime: `rlm-tools-bsl-v1.33.0-build.3`
+- Инструмент сборки standalone runtime: [Nuitka](https://nuitka.net/) `4.1.3`
 - Лицензия: [MIT](third-party/licenses/rlm-tools-bsl/LICENSE)
 
 Оба бинарника собираются из одного репозитория. MIT notice сохраняет
 благодарность Stefan O'Shea за исходный `rlm-tools` и Roman Starchenko за
 адаптацию `rlm-tools-bsl`.
+Nuitka применяется только как инструмент сборки и не расширяет публичный API
+Unica.
 
 ## Внешние сервисы
 

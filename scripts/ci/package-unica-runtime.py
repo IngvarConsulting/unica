@@ -8,6 +8,9 @@ import gzip
 import hashlib
 import io
 import json
+import os
+import re
+import stat
 import tarfile
 from pathlib import Path, PurePosixPath
 
@@ -17,6 +20,7 @@ SUPPORTED_TARGETS = {
     "linux-x64": "x86_64-unknown-linux-gnu",
     "win-x64": "x86_64-pc-windows-msvc",
 }
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def sha256(path: Path) -> str:
@@ -28,10 +32,107 @@ def sha256(path: Path) -> str:
 
 
 def safe_relative_path(value: str) -> PurePosixPath:
+    if not isinstance(value, str):
+        raise SystemExit(f"unsafe runtime path: {value}")
     path = PurePosixPath(value)
-    if not value or "\\" in value or path.is_absolute() or ".." in path.parts:
+    if (
+        not value
+        or "\\" in value
+        or "\x00" in value
+        or path.is_absolute()
+        or any(part in ("", ".", "..") for part in value.split("/"))
+        or path.as_posix() != value
+    ):
         raise SystemExit(f"unsafe runtime path: {value}")
     return path
+
+
+def runtime_file_set(
+    bundle_root: Path,
+    manifest: dict,
+    *,
+    target: str,
+) -> tuple[list[tuple[PurePosixPath, Path, bool]], dict[str, dict]]:
+    if manifest.get("schemaVersion") != 2:
+        raise SystemExit(
+            f"unsupported tools manifest schemaVersion: {manifest.get('schemaVersion')}"
+        )
+    declared = manifest.get("runtimeFiles")
+    if not isinstance(declared, list) or not declared:
+        raise SystemExit("runtimeFiles closure must be a non-empty array")
+
+    prefix = PurePosixPath("bin") / target
+    by_path: dict[str, dict] = {}
+    source_files: list[tuple[PurePosixPath, Path, bool]] = []
+    for index, item in enumerate(declared):
+        if not isinstance(item, dict):
+            raise SystemExit(f"runtimeFiles[{index}] must be an object")
+        expected_fields = {"path", "sha256", "size", "executable"}
+        if set(item) != expected_fields:
+            raise SystemExit(
+                f"runtimeFiles[{index}] fields mismatch: "
+                f"missing={sorted(expected_fields - set(item))}, "
+                f"unknown={sorted(set(item) - expected_fields)}"
+            )
+        relative = safe_relative_path(item["path"])
+        if relative.parent != prefix and prefix not in relative.parents:
+            raise SystemExit(f"runtime file is outside {prefix}: {relative}")
+        relative_text = relative.as_posix()
+        if relative_text in by_path:
+            raise SystemExit(f"duplicate runtime file path: {relative}")
+        digest = item["sha256"]
+        if not isinstance(digest, str) or not SHA256.fullmatch(digest):
+            raise SystemExit(f"invalid runtime file sha256: {relative}")
+        size = item["size"]
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise SystemExit(f"invalid runtime file size: {relative}")
+        executable = item["executable"]
+        if not isinstance(executable, bool):
+            raise SystemExit(f"invalid runtime file executable flag: {relative}")
+
+        path = bundle_root.joinpath(*relative.parts)
+        if path.is_symlink():
+            raise SystemExit(f"runtime file must not be a symlink: {relative}")
+        if not path.is_file():
+            raise SystemExit(f"runtime file is missing: {relative}")
+        file_stat = path.stat()
+        if file_stat.st_nlink != 1:
+            raise SystemExit(f"runtime file must not be hard-linked: {relative}")
+        if file_stat.st_size != size:
+            raise SystemExit(f"runtime file size mismatch: {relative}")
+        if sha256(path) != digest:
+            raise SystemExit(f"runtime file checksum mismatch: {relative}")
+        if os.name != "nt":
+            actual_executable = bool(stat.S_IMODE(file_stat.st_mode) & 0o111)
+            if actual_executable != executable:
+                raise SystemExit(f"runtime file executable mode mismatch: {relative}")
+        by_path[relative_text] = item
+        source_files.append((relative, path, executable))
+
+    target_root = bundle_root / "bin" / target
+    actual_paths: set[str] = set()
+    if target_root.is_symlink():
+        raise SystemExit(f"runtime target directory must not be a symlink: {prefix}")
+    if not target_root.is_dir():
+        raise SystemExit(f"runtime target directory is missing: {prefix}")
+    for path in target_root.rglob("*"):
+        relative = path.relative_to(bundle_root).as_posix()
+        if path.is_symlink():
+            raise SystemExit(f"runtime path must not be a symlink: {relative}")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise SystemExit(f"runtime path must be an ordinary file: {relative}")
+        actual_paths.add(relative)
+    declared_paths = set(by_path)
+    if actual_paths != declared_paths:
+        raise SystemExit(
+            "runtime file set mismatch: "
+            f"missing={sorted(declared_paths - actual_paths)}, "
+            f"unexpected={sorted(actual_paths - declared_paths)}"
+        )
+    source_files.sort(key=lambda item: item[0].as_posix())
+    return source_files, by_path
 
 
 def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path, bool]]]:
@@ -43,13 +144,18 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
     if manifest.get("targetTriple") != SUPPORTED_TARGETS[target]:
         raise SystemExit(f"runtime target triple mismatch for {target}")
 
+    runtime_files, runtime_by_path = runtime_file_set(
+        bundle_root,
+        manifest,
+        target=target,
+    )
+
     tools = manifest.get("tools")
     if not isinstance(tools, list) or not tools:
         raise SystemExit(f"runtime tool manifest is empty: {manifest_path}")
 
     seen_names: set[str] = set()
     seen_paths: set[str] = set()
-    runtime_files: list[tuple[PurePosixPath, Path, bool]] = []
     for tool in tools:
         name = tool.get("name")
         if not name or name in seen_names:
@@ -68,14 +174,13 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
             raise SystemExit(f"duplicate runtime binary path: {relative}")
         seen_paths.add(relative.as_posix())
 
-        binary = bundle_root.joinpath(*relative.parts)
-        if binary.is_symlink():
-            raise SystemExit(f"runtime binary must not be a symlink: {relative}")
-        if not binary.is_file():
-            raise SystemExit(f"runtime binary is missing: {relative}")
-        if sha256(binary) != tool.get("sha256"):
+        declaration = runtime_by_path.get(relative.as_posix())
+        if declaration is None:
+            raise SystemExit(f"runtime tool {name} is outside the declared closure: {relative}")
+        if not declaration["executable"]:
+            raise SystemExit(f"runtime tool {name} is not declared executable: {relative}")
+        if declaration["sha256"] != tool.get("sha256"):
             raise SystemExit(f"runtime binary checksum mismatch: {relative}")
-        runtime_files.append((relative, binary, True))
 
     unica = [tool for tool in tools if tool["name"] == "unica"]
     if len(unica) != 1:
