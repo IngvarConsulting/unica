@@ -3,7 +3,9 @@
 use super::redaction;
 use crate::domain::cache::CacheAccess;
 use crate::domain::events::{runtime_event_kind, DomainEvent};
-use crate::infrastructure::platform::filesystem::{replace_file_atomically, sync_parent_directory};
+use crate::infrastructure::platform::filesystem::{
+    metadata_is_link_or_reparse_point, replace_file_atomically, sync_parent_directory,
+};
 use crate::infrastructure::platform::{
     cancel_runtime_job_process_tree, configure_runtime_job_command,
 };
@@ -788,23 +790,29 @@ impl RuntimeJobStore {
     /// reports every such failure as `false`. A record that is present but
     /// corrupt or of an unknown schema is likewise not absent.
     fn record_is_provably_absent(&self, id: &str) -> bool {
-        let Ok(record_path) = self.record_path(id) else {
+        let jobs_root = self.jobs_root();
+        let jobs_root_metadata = match fs::symlink_metadata(&jobs_root) {
+            Ok(metadata) => metadata,
+            Err(_) => return false,
+        };
+        if metadata_is_link_or_reparse_point(&jobs_root_metadata) || !jobs_root_metadata.is_dir() {
+            return false;
+        }
+
+        let Ok(job_dir) = self.job_dir(id) else {
             return false;
         };
-        // The record path alone cannot answer this. When its parent is a file
-        // rather than a directory, Unix reports `NotADirectory` but Windows
-        // reports the same `NotFound` an absent record produces, so trusting
-        // `try_exists` there turns "I cannot tell" into proof of absence and
-        // releases the lock under a live job. Prove the parent first.
-        if let Some(parent) = record_path.parent() {
-            match fs::metadata(parent) {
-                Ok(metadata) if metadata.is_dir() => {}
-                Ok(_) => return false,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
-                Err(_) => return false,
-            }
+        match fs::symlink_metadata(&job_dir) {
+            Ok(metadata) if metadata.is_dir() && !metadata_is_link_or_reparse_point(&metadata) => {}
+            Ok(_) => return false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+            Err(_) => return false,
         }
-        matches!(record_path.try_exists(), Ok(false))
+
+        match fs::symlink_metadata(job_dir.join("record.json")) {
+            Ok(_) => false,
+            Err(error) => error.kind() == io::ErrorKind::NotFound,
+        }
     }
 
     /// Whether `active.lock` itself has outlived the staleness window. The lock
@@ -1701,6 +1709,10 @@ pub(crate) use tests::assert_system_cancellation_reaps_process_tree;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::platform::testing::{
+        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+        FileLinkFixtureOutcome,
+    };
     use std::{
         collections::HashMap,
         io::Cursor,
@@ -2073,6 +2085,60 @@ mod tests {
                 .expect("read retained active lock")
                 .trim(),
             live
+        );
+    }
+
+    #[test]
+    fn a_missing_jobs_root_is_not_proof_that_a_record_is_absent() {
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        let live = Uuid::new_v4().to_string();
+
+        assert!(
+            !store.record_is_provably_absent(&live),
+            "absence is unproven until the jobs root is a real directory"
+        );
+    }
+
+    #[test]
+    fn a_linked_job_directory_is_not_proof_that_a_record_is_absent() {
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        let live = Uuid::new_v4().to_string();
+        fs::create_dir_all(store.jobs_root()).expect("create jobs root");
+        let linked_target = cache.path().join("linked-job-target");
+        fs::create_dir_all(&linked_target).expect("create linked job target");
+        let linked_job_dir = store.job_dir(&live).expect("job directory path");
+        let outcome = create_directory_link_fixture_for_test(&linked_target, &linked_job_dir)
+            .expect("create linked job directory fixture");
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
+
+        assert!(
+            !store.record_is_provably_absent(&live),
+            "a linked job directory cannot prove where the record would live"
+        );
+    }
+
+    #[test]
+    fn a_broken_record_link_is_not_proof_that_a_record_is_absent() {
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        let live = Uuid::new_v4().to_string();
+        let record_path = store.record_path(&live).expect("record path");
+        fs::create_dir_all(record_path.parent().expect("record parent"))
+            .expect("create job directory");
+        let missing_target = cache.path().join("missing-record-target.json");
+        let outcome = create_file_link_fixture_for_test(&missing_target, &record_path)
+            .expect("create broken record link fixture");
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
+
+        assert!(
+            !store.record_is_provably_absent(&live),
+            "a broken record link is unknown rather than absent"
         );
     }
 
