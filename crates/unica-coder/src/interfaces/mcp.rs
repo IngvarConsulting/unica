@@ -342,7 +342,19 @@ fn render_tool_result(
     }
     let text = serde_json::to_string_pretty(&value)
         .map_err(|error| ErrorData::new(ErrorCode::INTERNAL_ERROR, error.to_string(), None))?;
-    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+    let content = vec![ContentBlock::text(text)];
+    Ok(if result.ok || !is_tool_execution_error(&result) {
+        CallToolResult::success(content)
+    } else {
+        CallToolResult::error(content)
+    })
+}
+
+fn is_tool_execution_error(result: &OperationResult) -> bool {
+    result
+        .errors
+        .iter()
+        .any(|error| error.starts_with("runtime_operation_unbounded:"))
 }
 
 #[cfg(test)]
@@ -723,6 +735,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn applied_runtime_refusal_is_one_terminal_result_without_input_disclosure() {
+        const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-workspace";
+        const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": "runtime-refusal",
+                "method": "tools/call",
+                "params": {
+                    "name": "unica.runtime.execute",
+                    "arguments": {
+                        "cwd": CWD_SENTINEL,
+                        "dryRun": false,
+                        "operation": "config-init",
+                        "config": "v8project.yaml",
+                        "connection": CONNECTION_SENTINEL
+                    }
+                }
+            }))
+            .await;
+
+        let response = client.receive().await;
+        assert_eq!(response["id"], "runtime-refusal", "{response}");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let receipt: Value = serde_json::from_str(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("terminal refusal text"),
+        )
+        .unwrap();
+        assert_eq!(receipt["ok"], false, "{receipt}");
+        assert!(receipt["errors"][0]
+            .as_str()
+            .is_some_and(|error| error.starts_with("runtime_operation_unbounded:")));
+        let serialized = response.to_string();
+        assert!(!serialized.contains(CWD_SENTINEL), "{response}");
+        assert!(!serialized.contains(CONNECTION_SENTINEL), "{response}");
+        assert!(
+            timeout(Duration::from_millis(50), client.reader.next_line())
+                .await
+                .is_err(),
+            "one tools/call must produce exactly one terminal response"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn tools_list_round_trips_the_data_driven_registry() {
         let (mut client, _) = spawn_server(application_handler());
         client.initialize().await;
@@ -746,6 +808,30 @@ mod tests {
         assert!(
             compact_result_bytes < 1_285_000,
             "tools/list result consumes {compact_result_bytes} compact JSON bytes"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tools_list_describes_runtime_execute_dry_run_as_preview_only() {
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
+            .await;
+        let response = client.receive().await;
+        let listed = response["result"]["tools"].as_array().unwrap();
+        let runtime = listed
+            .iter()
+            .find(|tool| tool["name"] == "unica.runtime.execute")
+            .expect("runtime tool is listed");
+        assert_eq!(
+            runtime["description"],
+            "Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn."
+        );
+        assert_eq!(
+            runtime["inputSchema"]["properties"]["dryRun"]["description"],
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
         );
         client.shutdown().await;
     }

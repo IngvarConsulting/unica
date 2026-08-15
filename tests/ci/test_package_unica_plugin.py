@@ -64,6 +64,21 @@ class PackageUnicaPluginTests(unittest.TestCase):
         source_manifest = (repo_root / "plugins" / "unica" / server["args"][manifest_index]).resolve()
         self.assertEqual(source_manifest, repo_root / "Cargo.toml")
         self.assertIn("orchestrator", server["note"])
+        self.assertNotIn(
+            "timeout",
+            server,
+            "the current preview-only runtime surface must not weaken Claude's watchdog for every unica.* call",
+        )
+        self.assertNotIn(
+            "tool_timeout_sec",
+            server,
+            "the current preview-only runtime surface must not weaken Codex's watchdog for every unica.* call",
+        )
+        self.assertNotIn(
+            "UNICA_MCP_CALL_BUDGET_SECONDS",
+            server.get("env", {}),
+            "a server marker must not claim a host budget that no current applied runtime call uses",
+        )
         self.assertNotIn("bash", json.dumps(server))
         self.assertNotIn("run-unica.sh", json.dumps(server))
 
@@ -602,6 +617,13 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertEqual(server["command"], "git")
         self.assertEqual(server["args"][2], "unica-bootstrap")
         self.assertEqual(server["cwd"], ".")
+        self.assertEqual(
+            server["env"]["UNICA_RUNTIME_CACHE_DIR"],
+            module.PACKAGED_MCP_CACHE_DIR,
+        )
+        self.assertNotIn("timeout", server)
+        self.assertNotIn("tool_timeout_sec", server)
+        self.assertNotIn("UNICA_MCP_CALL_BUDGET_SECONDS", server["env"])
         self.assertNotIn("win-x64", json.dumps(server))
         self.assertNotIn("run-unica.sh", json.dumps(server))
 

@@ -9,7 +9,8 @@ description: Создать пустой make-ready scaffold внешней об
 
 - Использовать MCP `unica` tool `unica.epf.init` для scaffold XML/BSL.
 - Не вызывать внутренние adapters и не добавлять skill-local scripts.
-- Для сборки результата использовать `v8-runner` через `unica.runtime.execute` с `operation=make`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- Для будущей сборки результата предпросмотреть `operation=make` через `v8-runner`; текущий вызов не создаёт артефакт.
 
 ## Порядок работы
 
@@ -19,7 +20,7 @@ description: Создать пустой make-ready scaffold внешней об
 4. Если source-set ещё не объявлен, создать scaffold в выбранном новом каталоге, затем явно добавить этот каталог как корень Designer source-set. Проверить регистрацию через `unica.project.map`: `kind=external_processor`, `sourceFormat=platform_xml`.
 5. Передать `FormName`, только если нужна пустая управляемая форма. Без него создаются descriptor и `ObjectModule.bsl`.
 6. Сначала проверить точный список файлов через `dryRun: true`; при явном запросе пользователя повторить с `dryRun: false`.
-7. Собрать `.epf` через `unica.runtime.execute operation=make`. Для make в `v8project.yaml` должна быть доступная `infobase.connection`.
+7. Предпросмотреть `unica.runtime.execute operation=make`; для будущей applied-сборки в `v8project.yaml` потребуется доступная `infobase.connection`. Текущий preview не собирает `.epf`.
 
 `Name` и `FormName` должны быть идентификаторами 1С. Существующие descriptor или одноимённый каталог не перезаписываются. При `format: EDT` остановиться и объяснить несовместимость, не создавать Designer XML внутри EDT source-set.
 
@@ -47,7 +48,7 @@ source-set:
     path: src/external-processors
 ```
 
-`operation=init` допустима только по явному запросу или разрешению пользователя и только для новой изолированной пустой ИБ. Не выполнять `init` ради самого scaffold или для существующей проектной базы. Для существующей connection использовать её без переинициализации; при проблемах доступа следовать skill `v8-runner`/`db-auth-check`.
+Текущий applied `operation=init` не допускается даже по явному запросу пользователя: он возвращает fail-closed до запуска процесса. Не выполнять `init` ради scaffold или существующей проектной базы. Для существующей connection сохранить настройки без переинициализации; `db-auth-check` может классифицировать только уже предоставленное runtime evidence и не запускает auth probe.
 
 ## Параметры
 
@@ -104,7 +105,7 @@ Preview обработки с формой:
 
 `unica.epf.init` разбирает весь сгенерированный XML до публикации. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить через `unica.form.validate` с путём к её `Ext/Form.xml`. Отдельный generic Meta validator не использовать: он не принимает root `ExternalDataProcessor`. Не создавать `Configuration.xml` или platform-generated CDFI sidecar; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
 
-Перед реальной сборкой проверить ту же команду с `dryRun: true`. Повторить с `dryRun: false` только если пользователь явно запросил сборку EPF:
+Предпросмотреть будущую команду сборки только с `dryRun: true`:
 
 ```json
 {
@@ -123,6 +124,6 @@ Preview обработки с формой:
 }
 ```
 
-После проверки заменить только `dryRun` на `false`.
+Не заменять `dryRun` на `false`: applied `make` сейчас fail-closed.
 
 Не использовать `operation=load` для `.epf`.

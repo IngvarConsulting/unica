@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Run the opt-in live round-trip reproducer for Unica issue #76.
+"""Report why the opt-in live reproducer for Unica issue #76 cannot run.
 
-The verifier never points Unica or 1C at the supplied inputs.  It first copies
-the file infobase and the Designer source tree into a fresh private workspace,
-then performs every mutation and runtime operation through the public Unica MCP
-surface.  This is developer evidence, not a product or release entry point.
+Applied ``unica.runtime.execute`` operations currently fail closed before
+workspace discovery and process spawn.  A ``dryRun`` preview cannot prove a
+source-to-database-to-source round trip, so the command emits a terminal blocked
+report before reading runtime input contents, creating evidence, starting MCP,
+or mutating anything.  This is developer diagnostics, not a product or release
+entry point.
 """
 
 from __future__ import annotations
@@ -31,6 +33,12 @@ from pathlib import Path
 
 
 SCENARIO = "issue-76-live-roundtrip"
+RUNTIME_BLOCK_CODE = "runtime_operation_unbounded"
+RUNTIME_BLOCK_MESSAGE = (
+    "live issue #76 round-trip is unavailable: applied unica.runtime.execute "
+    "operations fail closed with runtime_operation_unbounded; dryRun previews "
+    "cannot verify source-to-database-to-source persistence"
+)
 SOURCE_SET = "main"
 CATALOG_METADATA_PATH = "Catalog.ЗависимостиСчетов"
 MODULE_METADATA_PATH = (
@@ -194,8 +202,8 @@ def _platform_version(value: str) -> str:
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Copy a file infobase and Designer source tree, mutate the copies "
-            "through packaged Unica, build them, and verify a safe full dump."
+            "Write a preflight report explaining why the issue #76 live "
+            "round-trip is unavailable while applied runtime operations fail closed."
         )
     )
     parser.add_argument("--binary", required=True, type=Path)
@@ -213,8 +221,8 @@ def _argument_parser() -> argparse.ArgumentParser:
         required=True,
         type=Path,
         help=(
-            "exact УправлениеХолдингом.cf vendor payload copied only into the "
-            "private source tree"
+            "legacy live-verifier input; retained for CLI compatibility and "
+            "not opened while the scenario is blocked"
         ),
     )
     parser.add_argument("--platform-path", required=True, type=Path)
@@ -236,13 +244,13 @@ def _argument_parser() -> argparse.ArgumentParser:
         "--execute",
         action="store_true",
         required=True,
-        help="explicitly opt in to running the mutating live scenario on copies",
+        help="retain the live verifier's explicit opt-in contract",
     )
     parser.add_argument(
         "--allow-empty-password",
         action="store_true",
         required=True,
-        help="explicitly confirm the selected copied infobase uses an empty password",
+        help="retain the live verifier's explicit credential opt-in contract",
     )
     return parser
 
@@ -1384,7 +1392,7 @@ def _guard_is_blocked(payload: dict) -> bool:
     )
 
 
-def run_roundtrip_flow(
+def _run_roundtrip_flow_legacy_for_test(
     client,
     *,
     workspace: Path,
@@ -1392,11 +1400,13 @@ def run_roundtrip_flow(
     marker: str | None = None,
     before_full_dump=None,
 ) -> tuple[int, dict]:
-    """Run issue #76 against one already-private workspace.
+    """Exercise the retired live flow as a regression-test seam.
 
-    ``client`` is the intentionally small test seam: it provides
-    ``call(tool_name, arguments) -> dict``.  Production supplies the MCP stdio
-    client below; unit tests supply a scripted public-tool fake.
+    Production does not call this function while applied
+    ``unica.runtime.execute`` is fail-closed.  It is retained only to keep the
+    copy/integrity design testable for a possible future reactivation after a
+    separate architectural decision.  ``client`` provides
+    ``call(tool_name, arguments) -> dict``.
     """
 
     workspace = _resolved_absolute(
@@ -2133,7 +2143,70 @@ def _record_source_error(report: dict, message: str) -> None:
     report["sourceError"] = {"message": message}
 
 
-def execute_gate(
+def _runtime_blocked_report() -> dict:
+    return {
+        "schemaVersion": 1,
+        "scenario": SCENARIO,
+        "status": "blocked",
+        "exitCode": 1,
+        "steps": [],
+        "capability": {
+            "tool": "unica.runtime.execute",
+            "code": RUNTIME_BLOCK_CODE,
+            "appliedAvailable": False,
+            "previewOnly": True,
+            "mutationsAttempted": False,
+            "processStarted": False,
+            "jobFallbackUsed": False,
+        },
+        "roundTrip": {
+            "verified": False,
+            "reason": RUNTIME_BLOCK_MESSAGE,
+        },
+        "evidence": {
+            "created": False,
+            "retained": False,
+        },
+        "summary": {
+            "passed": False,
+            "stepCount": 0,
+            "failures": [RUNTIME_BLOCK_MESSAGE],
+        },
+    }
+
+
+def _resolved_for_report_protection(path: Path) -> Path:
+    try:
+        return Path(path).resolve(strict=False)
+    except OSError as error:
+        raise SourceError(f"cannot resolve protected report path: {error}") from error
+
+
+def _validate_gate_preconditions(
+    *,
+    builder: str,
+    platform_version: str,
+    timeout_seconds: float,
+    execute: bool,
+    allow_empty_password: bool,
+) -> None:
+    """Validate the shared opt-in and bounded live-flow arguments."""
+
+    if execute is not True or allow_empty_password is not True:
+        raise SourceError("both live mutation opt-ins must be explicit")
+    if builder not in {"DESIGNER", "IBCMD"}:
+        raise SourceError("builder must be DESIGNER or IBCMD")
+    if PLATFORM_VERSION_RE.fullmatch(platform_version) is None:
+        raise SourceError("platform version must be exact 8.3.27.x")
+    if (
+        not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+        or timeout_seconds > MAX_TIMEOUT_SECONDS
+    ):
+        raise SourceError("timeout must be finite, positive, and no more than 24 hours")
+
+
+def _execute_gate_legacy_for_test(
     *,
     binary: Path,
     binary_args: list[str],
@@ -2152,18 +2225,21 @@ def execute_gate(
     allow_empty_password: bool,
     session_factory=McpSession,
 ) -> tuple[int, dict]:
-    if execute is not True or allow_empty_password is not True:
-        raise SourceError("both live mutation opt-ins must be explicit")
-    if builder not in {"DESIGNER", "IBCMD"}:
-        raise SourceError("builder must be DESIGNER or IBCMD")
-    if PLATFORM_VERSION_RE.fullmatch(platform_version) is None:
-        raise SourceError("platform version must be exact 8.3.27.x")
-    if (
-        not math.isfinite(timeout_seconds)
-        or timeout_seconds <= 0
-        or timeout_seconds > MAX_TIMEOUT_SECONDS
-    ):
-        raise SourceError("timeout must be finite, positive, and no more than 24 hours")
+    """Exercise retired live-flow safety checks without exposing them to the CLI.
+
+    This seam exists only so the verifier's copy, integrity, cleanup, and
+    redaction protections remain regression-tested for a possible future
+    reactivation after a separate architectural decision.  Production must not
+    call it while applied ``unica.runtime.execute`` is fail-closed.
+    """
+
+    _validate_gate_preconditions(
+        builder=builder,
+        platform_version=platform_version,
+        timeout_seconds=timeout_seconds,
+        execute=execute,
+        allow_empty_password=allow_empty_password,
+    )
 
     initial_redactions = [
         (database, "$DATABASE_INPUT"),
@@ -2418,7 +2494,7 @@ def execute_gate(
         close_error = None
         try:
             session.start(REQUIRED_TOOLS)
-            exit_code, report = run_roundtrip_flow(
+            exit_code, report = _run_roundtrip_flow_legacy_for_test(
                 session,
                 workspace=workspace,
                 redactions=redactions,
@@ -2544,6 +2620,57 @@ def execute_gate(
     return exit_code, report
 
 
+def execute_gate(
+    *,
+    binary: Path,
+    binary_args: list[str],
+    plugin_root: Path,
+    database: Path,
+    sources: Path,
+    parent_configuration: Path,
+    platform_path: Path,
+    platform_version: str,
+    report_path: Path,
+    evidence_dir: Path | None,
+    builder: str,
+    db_user: str,
+    timeout_seconds: float,
+    execute: bool,
+    allow_empty_password: bool,
+    session_factory=McpSession,
+) -> tuple[int, dict]:
+    """Write a refusal without reading input contents or starting runtime work."""
+
+    del binary_args, evidence_dir, db_user, session_factory
+    _validate_gate_preconditions(
+        builder=builder,
+        platform_version=platform_version,
+        timeout_seconds=timeout_seconds,
+        execute=execute,
+        allow_empty_password=allow_empty_password,
+    )
+
+    protected_report_paths = tuple(
+        (_resolved_for_report_protection(path), label)
+        for path, label in (
+            (database, "the database input"),
+            (sources, "the source input"),
+            (parent_configuration, "the parent configuration input"),
+            (binary, "the Unica executable"),
+            (plugin_root, "the plugin root"),
+            (platform_path, "the platform root"),
+            (Path(__file__).resolve().parents[2], "the repository"),
+        )
+    )
+    report_target = _validate_report_path(
+        report_path,
+        protected_paths=protected_report_paths,
+    )
+    report = _runtime_blocked_report()
+    _atomic_write_report(report_target, report)
+    return 1, report
+
+
 def main(argv=None) -> int:
     arguments = _argument_parser().parse_args(argv)
     try:
@@ -2572,7 +2699,8 @@ def main(argv=None) -> int:
         detail = "; ".join(str(item) for item in failures) or report.get(
             "sourceError", {}
         ).get("message", "verification failed")
-        print(f"issue #76 verification failed: {detail}", file=sys.stderr)
+        outcome = "blocked" if report.get("status") == "blocked" else "failed"
+        print(f"issue #76 verification {outcome}: {detail}", file=sys.stderr)
     return exit_code
 
 

@@ -430,7 +430,7 @@ const RUNTIME_ARGS: &[&str] = &[
     "workdir",
 ];
 
-const RUNTIME_OPERATIONS: &[&str] = &[
+pub(super) const RUNTIME_OPERATIONS: &[&str] = &[
     "config-init",
     "init",
     "build",
@@ -487,7 +487,7 @@ const RUNTIME_TEST_SCOPES: &[&str] = &["all", "module"];
 const RUNTIME_TOOLS: &[&str] = &["yaxunit", "vanessa", "client-mcp"];
 const RUNTIME_DUMP_MODES: &[&str] = &["full", "incremental", "partial"];
 const RUNTIME_LOAD_MODES: &[&str] = &["load", "merge"];
-const RUNTIME_SYNTAX_MODES: &[&str] = &["designer-config", "designer-modules", "edt"];
+pub(super) const RUNTIME_SYNTAX_MODES: &[&str] = &["designer-config", "designer-modules", "edt"];
 
 const RUNTIME_CONFIG_INIT_ARGS: &[&str] = &[
     "operation",
@@ -3568,6 +3568,13 @@ fn description_for_arg(name: &str) -> Option<&'static str> {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if tool.name == "unica.runtime.execute" && name == "dryRun" {
+        return json!({
+            "type": "boolean",
+            "default": true,
+            "description": "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+        });
+    }
     if tool.name == "unica.role.edit" {
         return match name {
             "sourceSet" => json!({
@@ -6595,6 +6602,10 @@ mod tests {
         assert_eq!(schema["properties"]["ignoreTags"]["type"], "array");
         assert_eq!(schema["properties"]["scenarioFilters"]["type"], "array");
         assert_eq!(schema["properties"]["projects"]["type"], "array");
+        assert_eq!(
+            schema["properties"]["dryRun"]["description"],
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+        );
     }
 
     #[test]
