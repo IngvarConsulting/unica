@@ -783,6 +783,10 @@ def indexed_code_search_state(payload: dict[str, Any] | None) -> str:
     the role reports `timedOut` with a retryable `dependencyPending`
     termination. Reading the code rather than the prose is what keeps this
     poller from mistaking a pending index for a permanent failure.
+
+    Both halves of that pair have to hold. `retryable` is what promises the
+    next attempt can differ, so a payload carrying the code without it is
+    invalid and waiting on it would only spend the deadline.
     """
     data = payload.get("data") if isinstance(payload, dict) else None
     sections = data.get("sections") if isinstance(data, dict) else None
@@ -806,6 +810,7 @@ def indexed_code_search_state(payload: dict[str, Any] | None) -> str:
         section.get("status") == "timedOut"
         and isinstance(section.get("termination"), dict)
         and section["termination"].get("code") == "dependencyPending"
+        and section["termination"].get("retryable") is True
         for section in indexed.values()
     ):
         return "building"

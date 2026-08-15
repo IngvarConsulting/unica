@@ -921,6 +921,35 @@ for raw in sys.stdin:
 
         self.assertEqual("building", module.indexed_code_search_state(payload))
 
+    def test_indexed_code_search_treats_a_non_retryable_pending_role_as_terminal(self) -> None:
+        """`dependencyPending` promises a retry; without one there is none.
+
+        The code alone does not say the wait is worth taking — the contract
+        pairs it with `retryable`, and a payload that drops the pair is
+        invalid. Reading only the code would spend the whole readiness
+        deadline before failing on something already known to be broken.
+        """
+        module = load_assessment_module()
+        pending = self.building_section("semantic", "rlm")
+        pending["termination"]["retryable"] = False
+        payload = self.search_payload(
+            semantic=pending,
+            symbol=self.failed_section("symbol", "bsl-analyzer"),
+        )
+        sleeps: list[float] = []
+
+        self.assertEqual("terminal", module.indexed_code_search_state(payload))
+
+        scenario, _payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: (self.search_scenario(status="passed"), payload),
+            timeout_seconds=300,
+            sleep=sleeps.append,
+        )
+
+        self.assertEqual("failed", scenario["status"])
+        self.assertEqual(1, scenario["metrics"]["indexAttempts"])
+        self.assertEqual([], sleeps)
+
     def test_indexed_code_search_fails_when_no_role_can_become_ready(self) -> None:
         module = load_assessment_module()
         terminal_payload = self.search_payload(
