@@ -425,9 +425,9 @@ Unica. Каждая запись формулирует одно нормати�
   соответствие классификации ведомости проверяет
   `tool_specs_match_reviewed_result_contracts`. `unica.code.definition`
   публикует предметный результат только при готовом текущем состоянии `RLM`:
-  `building` возвращает `index_pending`, остальные неготовые состояния —
-  `index_unavailable`, а пустой список при `ready` означает доказанное
-  отсутствие совпадений.
+  `building` и `incomplete` возвращают `index_pending`, потому что обслуживание
+  индекса запущено, остальные неготовые состояния — `index_unavailable`, а
+  пустой список при `ready` означает доказанное отсутствие совпадений.
 - **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0062
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`

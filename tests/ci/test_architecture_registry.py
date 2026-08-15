@@ -1861,6 +1861,32 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         for foreign_concern in ("DiagnosticProviderRegistry", "directSwitch"):
             self.assertNotIn(foreign_concern, rlm)
 
+    def test_readiness_states_named_by_the_rule_are_the_states_the_code_has(
+        self,
+    ) -> None:
+        """`incomplete` answers `index_pending`, so the rule must say so.
+
+        The registry may not describe a closed matrix that the build
+        contradicts: `IndexReadiness::Incomplete` is a seventh state, and
+        `definition_readiness_matrix_never_reports_false_typed_success`
+        proves it is retryable-pending rather than unavailable.
+        """
+        readiness = (REPO_ROOT / "crates" / "unica-coder" / "src"
+                     / "infrastructure" / "workspace_index.rs").read_text(
+            encoding="utf-8"
+        )
+        declared = readiness.split("pub enum IndexReadiness {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("Incomplete", declared, "the state under test still exists")
+
+        rule = self.records["INV-MCP-TYPED-RESULT"].one("Rule") or ""
+        decision = (
+            DECISIONS_DIR / "0062-tipizirovannaya-gotovnost-rlm.md"
+        ).read_text(encoding="utf-8")
+
+        for text, where in ((rule, "INV-MCP-TYPED-RESULT"), (decision, "ADR-0062")):
+            with self.subTest(where=where):
+                self.assertIn("incomplete", text)
+
     def test_each_diagnostics_decision_keeps_one_change_axis(self) -> None:
         def decision_body(filename: str) -> str:
             text = (DECISIONS_DIR / filename).read_text(encoding="utf-8")
