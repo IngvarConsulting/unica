@@ -30,11 +30,21 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
             binary = bundle / "bin" / "linux-x64" / "unica"
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"linux-x64")
+            binary.chmod(0o755)
             (bundle / "tools.json").write_text(
                 json.dumps(
                     {
+                        "schemaVersion": 2,
                         "target": "linux-x64",
                         "targetTriple": "x86_64-unknown-linux-gnu",
+                        "runtimeFiles": [
+                            {
+                                "path": "bin/linux-x64/unica",
+                                "sha256": packager.sha256(binary),
+                                "size": binary.stat().st_size,
+                                "executable": True,
+                            }
+                        ],
                         "tools": [
                             {
                                 "name": "unica",
@@ -75,11 +85,21 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                 binary = bundle / "bin" / target / f"unica{exe}"
                 binary.parent.mkdir(parents=True)
                 binary.write_bytes(target.encode())
+                binary.chmod(0o755)
                 (bundle / "tools.json").write_text(
                     json.dumps(
                         {
+                            "schemaVersion": 2,
                             "target": target,
                             "targetTriple": triple,
+                            "runtimeFiles": [
+                                {
+                                    "path": f"bin/{target}/unica{exe}",
+                                    "sha256": packager.sha256(binary),
+                                    "size": binary.stat().st_size,
+                                    "executable": True,
+                                }
+                            ],
                             "tools": [
                                 {
                                     "name": "unica",

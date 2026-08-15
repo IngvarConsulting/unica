@@ -1,6 +1,6 @@
 # ADR-0045: Диагностика и RLM различают завершённый типизированный результат
 
-- Статус: `superseded` — заменено ADR-0061, ADR-0062 и ADR-0063
+- Статус: `superseded` — заменено ADR-0062, ADR-0063 и ADR-0064
 - Дата: `2026-08-10`
 - Задача: [#291](https://github.com/IngvarConsulting/unica/issues/291), [#292](https://github.com/IngvarConsulting/unica/issues/292)
 - Обновлено: номер исправлен после слияния ADR-0044 в целевую ветку

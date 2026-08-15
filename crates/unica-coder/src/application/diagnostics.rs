@@ -196,9 +196,9 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                     .map_observations(outcome.observations, &context, cancellation);
             // Two different failures hide behind one `Err`. A handle outside
             // the permitted scope is an adapter contract breach and costs the
-            // whole section (ADR-0063 §12); a resource the mapper simply could
+            // whole section (ADR-0064 §12); a resource the mapper simply could
             // not prove belongs to itself and must not withdraw the findings
-            // proven around it (ADR-0063 §10).
+            // proven around it (ADR-0064 §10).
             let mut out_of_scope = None;
             let mut unproven = None;
             let mut provider_items = Vec::with_capacity(mapped.len());
@@ -2766,7 +2766,7 @@ mod tests {
 
     #[test]
     fn diagnostics_out_of_scope_handle_still_costs_the_whole_provider_section() {
-        // ADR-0063 §12: a handle outside the permitted scope is an adapter
+        // ADR-0064 §12: a handle outside the permitted scope is an adapter
         // contract breach, not one unprovable resource, so its siblings are
         // not trustworthy either.
         let breaching = successful(vec![

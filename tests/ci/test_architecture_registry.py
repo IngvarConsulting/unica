@@ -1763,7 +1763,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
 
 
 class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
-    """ADR-0061..0064 stay atomic and own separate derived rules."""
+    """ADR-0062..0065 stay atomic and own separate derived rules."""
 
     def setUp(self) -> None:
         self.records = {record.id: record for record in all_records()}
@@ -1777,10 +1777,10 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
             "\n## ", 1
         )[0]
         files = [
-            "0061-tipizirovannaya-gotovnost-rlm.md",
-            "0062-logicheskie-nablyudeniya-diagnostiki.md",
-            "0063-neytralnaya-kompoziciya-diagnostik.md",
-            "0064-yavnyy-rezhim-migracii-chitatelya.md",
+            "0062-tipizirovannaya-gotovnost-rlm.md",
+            "0063-logicheskie-nablyudeniya-diagnostiki.md",
+            "0064-neytralnaya-kompoziciya-diagnostik.md",
+            "0065-yavnyy-rezhim-migracii-chitatelya.md",
         ]
 
         for filename in files:
@@ -1800,17 +1800,17 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            "- Статус: `superseded` — заменено ADR-0061, ADR-0062 и ADR-0063",
+            "- Статус: `superseded` — заменено ADR-0062, ADR-0063 и ADR-0064",
             typed_reader,
         )
         self.assertIn(
-            "- Статус: `superseded` — заменено ADR-0064", reader_bridge
+            "- Статус: `superseded` — заменено ADR-0065", reader_bridge
         )
 
     def test_atomic_diagnostics_rules_have_one_exact_owner_and_real_checks(self) -> None:
         expected = {
             "INV-MCP-DIAGNOSTIC-TARGET": (
-                "ADR-0062",
+                "ADR-0063",
                 ["location", "focus", "абсолют"],
                 [
                     "crates/unica-coder/src/application/tool_contracts.rs",
@@ -1818,7 +1818,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
                 ],
             ),
             "INV-APP-DIAGNOSTIC-PROVIDERS": (
-                "ADR-0063",
+                "ADR-0064",
                 ["provider", "поряд", "дедуп"],
                 [
                     "crates/unica-coder/src/application/diagnostics.rs",
@@ -1826,7 +1826,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
                 ],
             ),
             "INV-SOURCE-READER-MIGRATION": (
-                "ADR-0064",
+                "ADR-0065",
                 ["bridge", "directSwitch", "unica.code.diagnostics"],
                 [
                     "tests/ci/test_architecture_registry.py",
@@ -1853,10 +1853,10 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         typed = self.records["INV-MCP-TYPED-RESULT"]
         decisions = typed.one("Decision") or ""
 
-        self.assertIn("ADR-0061", decisions)
+        self.assertIn("ADR-0062", decisions)
         self.assertNotIn("ADR-0045", decisions)
         rlm = (
-            DECISIONS_DIR / "0061-tipizirovannaya-gotovnost-rlm.md"
+            DECISIONS_DIR / "0062-tipizirovannaya-gotovnost-rlm.md"
         ).read_text(encoding="utf-8")
         for foreign_concern in ("DiagnosticProviderRegistry", "directSwitch"):
             self.assertNotIn(foreign_concern, rlm)
@@ -1866,12 +1866,12 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
             text = (DECISIONS_DIR / filename).read_text(encoding="utf-8")
             return text.split("## Решение", 1)[1].split("## Неграницы", 1)[0]
 
-        target = decision_body("0062-logicheskie-nablyudeniya-diagnostiki.md")
+        target = decision_body("0063-logicheskie-nablyudeniya-diagnostiki.md")
         providers = decision_body(
-            "0063-neytralnaya-kompoziciya-diagnostik.md"
+            "0064-neytralnaya-kompoziciya-diagnostik.md"
         )
         migration = decision_body(
-            "0064-yavnyy-rezhim-migracii-chitatelya.md"
+            "0065-yavnyy-rezhim-migracii-chitatelya.md"
         )
 
         self.assertNotIn("legacy_target_removed", target)
@@ -1890,7 +1890,7 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
         self.assertIn("`action=analyze`", runtime)
         self.assertNotIn("diagnostics` в режиме `analyze`", runtime)
         self.assertEqual(
-            config_snapshot.one("Decision"), "ADR-0040, ADR-0056, ADR-0058, ADR-0062"
+            config_snapshot.one("Decision"), "ADR-0040, ADR-0056, ADR-0058, ADR-0063"
         )
         for identifier in (
             "INV-MCP-DIAGNOSTIC-TARGET",
@@ -1909,6 +1909,37 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
             "тест",
         ):
             self.assertIn(artifact, checklist.lower())
+
+class RlmStandalonePackagingContractTests(unittest.TestCase):
+    def test_accepted_decision_owns_the_multifile_runtime_choice(self) -> None:
+        decision = (
+            REPO_ROOT
+            / "spec"
+            / "decisions"
+            / "0061-rlm-mnogofaylovyy-runtime-iz-proveryaemogo-arhiva.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Статус: `accepted`", decision)
+        self.assertIn("`Nuitka standalone multidist`", decision)
+        self.assertIn("`runtimeFiles`", decision)
+        self.assertIn("скачивает общий архив цели ровно один раз", decision)
+        self.assertIn("Bootstrap остаётся нейтральным", decision)
+
+    def test_registry_rule_owns_the_exact_runtime_closure(self) -> None:
+        records = {record.id: record for record in all_records()}
+        record = records["INV-PKG-TOOL-CLOSURE"]
+        rendered = record.one("Rule") or ""
+
+        self.assertEqual(record.one("Decision"), "ADR-0061")
+        for contract in (
+            "полная полезная нагрузка закреплённого архива",
+            "только обычные файлы",
+            "точный набор",
+            "потерянная зависимость",
+            "необъявленный файл",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, rendered)
 
 
 class ActiveLayerTests(unittest.TestCase):

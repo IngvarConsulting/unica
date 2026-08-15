@@ -428,7 +428,7 @@ Unica. Каждая запись формулирует одно нормати�
   `building` возвращает `index_pending`, остальные неготовые состояния —
   `index_unavailable`, а пустой список при `ready` означает доказанное
   отсутствие совпадений.
-- **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0061
+- **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0062
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`
@@ -445,7 +445,7 @@ Unica. Каждая запись формулирует одно нормати�
   публичные поля не содержат абсолютный физический путь, а безопасное
   относительное наблюдение без доказуемой цели явно имеет
   `location.kind=unaddressable`.
-- **Decision:** ADR-0062
+- **Decision:** ADR-0063
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
@@ -803,7 +803,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0040, ADR-0056, ADR-0058, ADR-0062
+- **Decision:** ADR-0040, ADR-0056, ADR-0058, ADR-0063
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
@@ -832,7 +832,7 @@ Unica. Каждая запись формулирует одно нормати�
   отдельных секциях; полезный ответ одного поставщика допускает только явно
   частичный общий результат другого, а отмена всего вызова не публикует
   частичный набор.
-- **Decision:** ADR-0063
+- **Decision:** ADR-0064
 - **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
 - **Scope:** source, runtime
@@ -1130,7 +1130,7 @@ Unica. Каждая запись формулирует одно нормати�
   них, отклоняет одновременную передачу обоих стабильным `selector_conflict` до
   вызова обработчика и отвечает на логический вызов теми же типизированными
   данными, что на файловый.
-- **Decision:** ADR-0064
+- **Decision:** ADR-0065
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs`
 - **Scope:** source, runtime
@@ -1143,7 +1143,7 @@ Unica. Каждая запись формулирует одно нормати�
   `directSwitch` требует поинструментного решения и атомарной смены всего
   публичного контура; единственный действующий прямой переход принадлежит
   `unica.code.diagnostics`, остальные читатели остаются в режиме `bridge`.
-- **Decision:** ADR-0064
+- **Decision:** ADR-0065
 - **Check:** `ci-test` — `tests/ci/test_architecture_registry.py`
 - **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
@@ -1394,6 +1394,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_package_unica_runtime.py`
 - **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
 - **Scope:** packaged, release, runtime
+
+### INV-PKG-TOOL-CLOSURE — Многофайловый инструмент входит в runtime полностью
+
+- **Rule:** Многофайловый сторонний инструмент входит в runtime только как
+  полная полезная нагрузка закреплённого архива: сборщик сверяет внешний
+  SHA-256, безопасно извлекает только обычные файлы в изолированный staging,
+  проверяет внутренние идентичности исходника и цели, точки входа, точный набор
+  файлов, SHA-256, размеры и режимы, а упаковщик перечисляет и сохраняет каждый
+  файл с относительным соседством. Небезопасная запись, ссылка, повтор пути,
+  коллизия, потерянная зависимость или необъявленный файл прекращает сборку до
+  публикации.
+- **Decision:** ADR-0061
+- **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
+- **Check:** `ci-test` — `tests/ci/test_package_unica_runtime.py`
+- **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
+- **Scope:** source, packaged, release, runtime
 
 ### INV-PKG-BINARY-NAME — Публичный бинарник runtime называется `unica`
 

@@ -9,6 +9,92 @@ import unittest
 from pathlib import Path
 
 
+RLM_STANDALONE_TARGET_EVIDENCE = {
+    "darwin-arm64": {
+        "archive": {
+            "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
+            "sha256": "55caf6a245b3bb47344e2191408841f45aefb614b23480d9941f2cb3e2d8af2c",
+            "size": 72_708_783,
+        },
+        "checksumAsset": "checksums-rlm-tools-bsl-darwin-arm64.txt",
+        "provenanceAsset": "provenance-rlm-tools-bsl-darwin-arm64.json",
+        "runtimeManifestSha256": "d4b032d798857a5ab752953c562f13e974906438d169b95f6881a8caf0cb639f",
+        "payload": {
+            "fileCount": 79,
+            "size": 239_958_372,
+            "entrypointSha256": "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e",
+        },
+        "builder": {
+            "kind": "python-nuitka-standalone",
+            "python": "3.12.10",
+            "uv": "0.11.29",
+            "nuitka": "4.1.3",
+            "compiler": {
+                "cCompiler": "Clang",
+                "ccName": "clang",
+                "compiler": "clang",
+            },
+        },
+        "entrypoints": {
+            "rlm-bsl-index": "rlm-bsl-index",
+            "rlm-bsl-mcp": "rlm-bsl-mcp",
+        },
+    },
+    "linux-x64": {
+        "archive": {
+            "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+            "sha256": "1a27e1305c159c01f4b928fa63358567236197844af4663188bd5b30aa780f40",
+            "size": 106_083_876,
+        },
+        "checksumAsset": "checksums-rlm-tools-bsl-linux-x64.txt",
+        "provenanceAsset": "provenance-rlm-tools-bsl-linux-x64.json",
+        "runtimeManifestSha256": "51ee9f88787f0d51305ab9056ccf3447a14b47d0a23f189ff3a52d22172400cc",
+        "payload": {
+            "fileCount": 83,
+            "size": 295_193_488,
+            "entrypointSha256": "d63ea531fb67c30f921e59333ec009cd45df99f9d35d24bd2345f1a023d83027",
+        },
+        "builder": {
+            "kind": "python-nuitka-standalone",
+            "python": "3.12.10",
+            "uv": "0.11.29",
+            "nuitka": "4.1.3",
+            "compiler": {"cCompiler": "gcc", "ccName": "gcc", "compiler": "gcc"},
+        },
+        "entrypoints": {
+            "rlm-bsl-index": "rlm-bsl-index",
+            "rlm-bsl-mcp": "rlm-bsl-mcp",
+        },
+    },
+    "win-x64": {
+        "archive": {
+            "assetName": "rlm-tools-bsl-win-x64.tar.gz",
+            "sha256": "9655a8d052ae3d033ea8761e7a503ffd1d9a7e4f303b17ed6c8bc9fd86e5abb2",
+            "size": 75_235_914,
+        },
+        "checksumAsset": "checksums-rlm-tools-bsl-win-x64.txt",
+        "provenanceAsset": "provenance-rlm-tools-bsl-win-x64.json",
+        "runtimeManifestSha256": "fb2f6e6b2d64a9b55a355242d16e12933a4023e926ce300dea8e6851ac29da59",
+        "payload": {
+            "fileCount": 62,
+            "size": 224_722_940,
+            "entrypointSha256": "dd7f12096475eca857d6d144eaf9bd7af3446690f0cef4a0e2c6ac5ba4dee5b3",
+        },
+        "builder": {
+            "kind": "python-nuitka-standalone",
+            "python": "3.12.10",
+            "uv": "0.11.29",
+            "nuitka": "4.1.3",
+            "compiler": {"cCompiler": "MSVC", "ccName": "cl", "compiler": "cl"},
+        },
+        "entrypoints": {
+            "rlm-bsl-index": "rlm-bsl-index.exe",
+            "rlm-bsl-mcp": "rlm-bsl-mcp.exe",
+        },
+    },
+}
+
+
 def load_upstream_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "check-skill-upstreams.py"
     spec = importlib.util.spec_from_file_location("check_skill_upstreams", module_path)
@@ -34,6 +120,12 @@ class SkillProvenanceTests(unittest.TestCase):
 
     def product_backlog_path(self) -> Path:
         return self.reviews_dir() / "2026-08-12-product-update-backlog.json"
+
+    def rlm_standalone_review_path(self) -> Path:
+        return (
+            self.reviews_dir()
+            / "2026-08-14-rlm-v1-33-nuitka-standalone.json"
+        )
 
     def load_provenance(self) -> dict:
         return json.loads(self.provenance_path().read_text(encoding="utf-8"))
@@ -74,6 +166,43 @@ class SkillProvenanceTests(unittest.TestCase):
             },
         )
         self.assertEqual(set(review["tools"]), {"rlm-bsl-mcp", "rlm-bsl-index"})
+
+    def assert_rlm_standalone_review_identity(self, review: dict) -> None:
+        self.assertEqual(review["schemaVersion"], 1)
+        self.assertEqual(review["id"], "2026-08-14-rlm-v1-33-nuitka-standalone")
+        self.assertEqual(review["generatedAt"], "2026-08-14")
+        self.assertEqual(
+            review["source"],
+            {
+                "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
+                "tag": "v1.33.0",
+                "commit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+                "tree": "4b321de0454d4d0998762659891374a3a1326cd0",
+                "patches": [],
+            },
+        )
+        self.assertEqual(
+            review["toolchain"],
+            {
+                "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+                "releaseTag": "rlm-tools-bsl-v1.33.0-build.3",
+                "buildRevision": 3,
+                "commit": "b41e85c751bd542265591d3d0fc41dd29c26b8c5",
+            },
+        )
+        self.assertEqual(review["targets"], RLM_STANDALONE_TARGET_EVIDENCE)
+        self.assertEqual(
+            review["compatibility"],
+            {
+                "builder": "15",
+                "previousBuilder": "14",
+                "strategy": "cold-generation-cutover",
+                "packaging": "nuitka-standalone-multidist",
+                "legacyStateDeleted": False,
+                "runtimeLoaderChanged": False,
+                "publicMcpChanged": False,
+            },
+        )
 
     def load_product_backlog(self) -> dict:
         return json.loads(self.product_backlog_path().read_text(encoding="utf-8"))
@@ -516,13 +645,7 @@ class SkillProvenanceTests(unittest.TestCase):
             "7ce1b062843d86644fe55741dbe0ee79f7ca767d",
         )
 
-    def test_rlm_tools_are_locked_to_reviewed_1_33_pair(self) -> None:
-        tool_lock = json.loads(
-            (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        locked_tools = {tool["name"]: tool for tool in tool_lock["tools"]}
+    def test_historical_rlm_build_2_review_is_immutable(self) -> None:
         review = json.loads(
             (
                 self.reviews_dir()
@@ -532,21 +655,59 @@ class SkillProvenanceTests(unittest.TestCase):
 
         expected_names = {"rlm-bsl-mcp", "rlm-bsl-index"}
         self.assert_rlm_review_identity(review)
+        self.assertEqual(set(review["tools"]), expected_names)
         for name in expected_names:
-            locked = locked_tools[name]
-            recorded = review["tools"][name]
-            self.assertEqual(locked["version"], "1.33.0")
-            self.assertEqual(locked["sourceTag"], "v1.33.0")
-            self.assertEqual(
-                locked["sourceCommit"],
-                "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+            self.assertEqual(set(review["tools"][name]), {"assets"})
+
+    def test_rlm_standalone_review_binds_the_published_archive_contract(self) -> None:
+        path = self.rlm_standalone_review_path()
+        self.assertTrue(path.is_file())
+        review = json.loads(path.read_text(encoding="utf-8"))
+        self.assert_rlm_standalone_review_identity(review)
+
+        tool_lock = json.loads(
+            (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(
+                encoding="utf-8"
             )
-            self.assertEqual(
-                locked["assetTag"],
-                "rlm-tools-bsl-v1.33.0-build.2",
-            )
-            self.assertEqual(locked["releaseName"], "rlm-tools-bsl")
-            self.assertEqual(locked["assets"], recorded["assets"])
+        )
+        locked = {
+            tool["name"]: tool
+            for tool in tool_lock["tools"]
+            if tool["name"] in {"rlm-bsl-index", "rlm-bsl-mcp"}
+        }
+        for target, evidence in review["targets"].items():
+            for name, tool in locked.items():
+                self.assertEqual(tool["assetTag"], review["toolchain"]["releaseTag"])
+                asset = tool["assets"][target]
+                self.assertEqual(
+                    {key: asset[key] for key in ("assetName", "sha256", "size")},
+                    evidence["archive"],
+                )
+                self.assertEqual(
+                    asset["archiveBinary"],
+                    evidence["entrypoints"][name],
+                )
+
+    def test_rlm_standalone_review_rejects_mutated_immutable_metadata(self) -> None:
+        review = json.loads(self.rlm_standalone_review_path().read_text(encoding="utf-8"))
+        mutations = [
+            (("source", "tree"), "0" * 40),
+            (("toolchain", "commit"), "0" * 40),
+            (("targets", "darwin-arm64", "archive", "sha256"), "0" * 64),
+            (("targets", "linux-x64", "payload", "fileCount"), 2),
+            (("targets", "win-x64", "builder", "nuitka"), "0.0.0"),
+            (("targets", "win-x64", "entrypoints", "rlm-bsl-mcp"), "legacy.exe"),
+            (("compatibility", "runtimeLoaderChanged"), True),
+        ]
+        for path, value in mutations:
+            with self.subTest(path=path):
+                mutated = copy.deepcopy(review)
+                target = mutated
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                with self.assertRaises(AssertionError):
+                    self.assert_rlm_standalone_review_identity(mutated)
 
     def test_rlm_review_identity_rejects_mutated_immutable_metadata(self) -> None:
         review = json.loads(
