@@ -44,6 +44,8 @@ BLOCKQUOTE_PREFIX = re.compile(r"^(?:[ \t]*>[ \t]?)+")
 LIST_ITEM_PREFIX = re.compile(
     r"^[ \t]*(?:[-+*]|[0-9]{1,9}[.)])[ \t]+"
 )
+INDENTED_CODE_LINE = re.compile(r"^(?: {4}|\t)(?P<content>.*)$")
+DRY_RUN_FALSE = re.compile(r'"dryRun"\s*:\s*false\b')
 
 
 def markdown_container_content(line: str) -> str:
@@ -126,6 +128,33 @@ def block_mentions_runtime_tool(block: str) -> bool:
     return "unica.runtime.execute" in decode_active_json_unicode_escapes(block)
 
 
+def indented_code_blocks(text: str) -> list[str]:
+    blocks = []
+    current = []
+    for line in text.splitlines():
+        indented = INDENTED_CODE_LINE.match(line)
+        if indented is not None:
+            current.append(indented.group("content"))
+            continue
+        if current and not line.strip():
+            current.append("")
+            continue
+        if current:
+            blocks.append("\n".join(current))
+            current = []
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def reject_indented_applied_runtime_examples(text: str) -> None:
+    for block_number, block in enumerate(indented_code_blocks(text), start=1):
+        if block_mentions_runtime_tool(block) and DRY_RUN_FALSE.search(block):
+            raise ValueError(
+                f"indented runtime JSON example #{block_number} uses dryRun false"
+            )
+
+
 def runtime_execute_json_examples(text: str) -> list[dict]:
     examples = []
     for block_number, block in enumerate(fenced_json_blocks(text), start=1):
@@ -151,6 +180,7 @@ def runtime_execute_json_examples(text: str) -> list[dict]:
 
 
 def runtime_guidance_document(text: str) -> tuple[bool, list[dict]]:
+    reject_indented_applied_runtime_examples(text)
     examples = runtime_execute_json_examples(text)
     return (
         bool(examples)
@@ -158,6 +188,30 @@ def runtime_guidance_document(text: str) -> tuple[bool, list[dict]]:
         or "v8-runner" in text,
         examples,
     )
+
+
+def collect_runtime_guidance(
+    docs: list[tuple[Path, str]],
+) -> tuple[list[tuple[Path, str]], list[tuple[Path, dict]], list[tuple[Path, str]]]:
+    runtime_docs = []
+    runtime_examples = []
+    parse_failures = []
+    for doc, text in docs:
+        try:
+            is_runtime_document, payloads = runtime_guidance_document(text)
+        except ValueError as error:
+            parse_failures.append((doc, str(error)))
+            continue
+        if not is_runtime_document:
+            continue
+        runtime_docs.append((doc, text))
+        for payload in payloads:
+            if (
+                payload.get("method") == "tools/call"
+                and payload.get("params", {}).get("name") == "unica.runtime.execute"
+            ):
+                runtime_examples.append((doc, payload["params"]["arguments"]))
+    return runtime_docs, runtime_examples, parse_failures
 
 
 def stale_route_guard_text(path: Path, text: str) -> str:
@@ -2066,29 +2120,64 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertTrue(is_runtime_document)
         self.assertEqual(len(payloads), 1)
 
+    def test_runtime_guidance_document_rejects_indented_applied_runtime_example(
+        self,
+    ) -> None:
+        example = """
+    {
+      "method": "tools/call",
+      "params": {
+        "name": "unica.runtime.execute",
+        "arguments": {"operation": "build", "dryRun": false}
+      }
+    }
+"""
+
+        with self.assertRaisesRegex(ValueError, "indented runtime JSON example"):
+            runtime_guidance_document(example)
+
+    def test_runtime_guidance_collection_skips_parse_failures_without_stale_payloads(
+        self,
+    ) -> None:
+        good = Path("good.md")
+        bad = Path("bad.md")
+
+        runtime_docs, runtime_examples, parse_failures = collect_runtime_guidance(
+            [
+                (
+                    good,
+                    '''```json
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":true}}}
+```''',
+                ),
+                (
+                    bad,
+                    '''```json
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}
+```''',
+                ),
+            ]
+        )
+
+        self.assertEqual([doc for doc, _text in runtime_docs], [good])
+        self.assertEqual([doc for doc, _arguments in runtime_examples], [good])
+        self.assertEqual([doc for doc, _error in parse_failures], [bad])
+
     def test_all_runtime_execute_skill_guidance_is_preview_only(self) -> None:
-        runtime_docs = []
-        runtime_examples = []
         shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
             self.reference_root().glob("**/*.md")
         )
-        for doc in sorted(shipped_docs):
-            text = doc.read_text(encoding="utf-8")
-            with self.subTest(path=doc.relative_to(self.repo_root())):
-                try:
-                    is_runtime_document, payloads = runtime_guidance_document(text)
-                except ValueError as error:
-                    self.fail(str(error))
-            if not is_runtime_document:
-                continue
-            runtime_docs.append((doc, text))
-            for payload in payloads:
-                if (
-                    payload.get("method") == "tools/call"
-                    and payload.get("params", {}).get("name")
-                    == "unica.runtime.execute"
-                ):
-                    runtime_examples.append((doc, payload["params"]["arguments"]))
+        runtime_docs, runtime_examples, parse_failures = collect_runtime_guidance(
+            [
+                (doc, doc.read_text(encoding="utf-8"))
+                for doc in sorted(shipped_docs)
+            ]
+        )
+        if parse_failures:
+            for doc, error in parse_failures:
+                with self.subTest(path=doc.relative_to(self.repo_root())):
+                    self.fail(error)
+            return
 
         required_runtime_references = {
             self.reference_root() / relative_path
