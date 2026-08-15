@@ -12,6 +12,7 @@ artifact instead of being forgotten.
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -91,6 +92,51 @@ def design_documents() -> list[Path]:
 
 
 class LayoutTests(unittest.TestCase):
+    def test_rlm_cutover_archives_do_not_embed_private_workspace_identity(self) -> None:
+        paths = [
+            DESIGN_DIR / "2026-08-13-rlm-v1-33-generational-cutover-design.md",
+            PLANS_DIR / "2026-08-13-rlm-v1-33-generational-cutover.md",
+        ]
+        offenders = []
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for marker in ("/Users/", "Sendbox", "ingvarvilkman"):
+                if marker in text:
+                    offenders.append(f"{path.name}: {marker}")
+        self.assertEqual(offenders, [])
+
+    def test_registry_contract_tests_do_not_read_the_dated_rlm_plan(self) -> None:
+        registry_tests = (REPO_ROOT / "tests/ci/test_architecture_registry.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(
+            "2026-08-13-rlm-v1-33-generational-cutover.md",
+            registry_tests,
+        )
+
+    def test_rlm_cutover_design_preserves_its_historical_immutable_release(self) -> None:
+        design = (
+            DESIGN_DIR / "2026-08-13-rlm-v1-33-generational-cutover-design.md"
+        ).read_text(encoding="utf-8")
+        release_match = re.search(
+            r"toolchain manifest и immutable release tag:\s+`(?P<tag>[^`]+)`",
+            design,
+        )
+        self.assertIsNotNone(release_match)
+        self.assertEqual(
+            release_match.group("tag"),
+            "rlm-tools-bsl-v1.33.0-build.2",
+        )
+
+    def test_rlm_standalone_design_preserves_the_pyinstaller_baseline(self) -> None:
+        design = (
+            DESIGN_DIR / "2026-08-14-rlm-nuitka-standalone-multidist-design.md"
+        ).read_text(encoding="utf-8")
+        context = design.split("## Цели", maxsplit=1)[0]
+        self.assertIn("`rlm-tools-bsl-v1.33.0-build.2`", context)
+        self.assertNotIn("`rlm-tools-bsl-v1.33.0-build.3`", context)
+        self.assertIn("PyInstaller", context)
+
     def test_both_archive_trees_exist_and_are_marked(self) -> None:
         offenders = []
         for directory in (DESIGN_DIR, PLANS_DIR):
@@ -118,6 +164,30 @@ class LayoutTests(unittest.TestCase):
             path.relative_to(REPO_ROOT).as_posix() for path in retired if path.exists()
         ]
         self.assertEqual(existing, [])
+
+    def test_search_result_examples_have_consistent_match_counts(self) -> None:
+        offenders = []
+        for path in design_documents():
+            text = path.read_text(encoding="utf-8")
+            for index, block in enumerate(
+                re.findall(r"```json\s*\n(.*?)\n```", text, re.DOTALL), start=1
+            ):
+                try:
+                    payload = json.loads(block)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                matches = payload.get("matches")
+                hits = payload.get("hits")
+                if isinstance(matches, dict) and isinstance(hits, list):
+                    returned = matches.get("returned")
+                    if returned != len(hits):
+                        offenders.append(
+                            f"{path.name}: JSON example {index} returns {returned} "
+                            f"but contains {len(hits)} hits"
+                        )
+        self.assertEqual(offenders, [])
 
     def test_session_scratch_is_never_tracked(self) -> None:
         """`.superpowers/` is ignored on purpose; `git add -f` defeats that."""

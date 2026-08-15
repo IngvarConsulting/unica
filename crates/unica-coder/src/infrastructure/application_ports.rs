@@ -10,14 +10,18 @@ use crate::application::source_navigation::{
 };
 use crate::application::source_resources::{SourceReadRequest, SourceResourcesRequest};
 use crate::application::{
-    project_map, project_status, AdapterOutcome, InvocationMode, ToolExecution, ToolHandler,
-    ToolSpec, TypedReadOutcome,
+    project_map, AdapterOutcome, InvocationMode, ToolExecution, ToolHandler, ToolSpec,
+    TypedReadOutcome,
 };
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-    CodeIntelligenceRegistry, ProviderDeadline,
+    CodeIntelligenceRegistry, CodeSearchScope, ProviderDeadline,
+};
+use crate::domain::diagnostics::{
+    DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
+    DiagnosticProvider, DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
 };
 use crate::domain::events::DomainEvent;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
@@ -26,9 +30,9 @@ use crate::domain::source_resources::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
+use crate::infrastructure::diagnostics::BslAnalyzerDiagnosticProvider;
 use crate::infrastructure::internal_adapters::{
-    BslAnalyzerMcpAdapter, CliAdapter, ConfigDumpInfoGitCheck, GitTrackingAdapter, RuntimeAdapter,
-    RuntimeJobAdapter, StandardsAdapter,
+    BslAnalyzerMcpAdapter, CliAdapter, RuntimeAdapter, RuntimeJobAdapter, StandardsAdapter,
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
 use crate::infrastructure::native_operations::subsystem;
@@ -111,6 +115,22 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         crate::infrastructure::operational_config::load_operational_config(&context.workspace_root)
     }
 
+    fn inspect_project_health(
+        &self,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<
+        crate::domain::project_health::ProjectHealthSnapshot,
+        crate::domain::project_health::ProjectHealthInspectionError,
+    > {
+        crate::infrastructure::project_health::inspect_project_health(
+            context,
+            cancellation,
+            deadline,
+        )
+    }
+
     fn read_metadata_local(
         &self,
         request: &MetaInfoRequest,
@@ -182,6 +202,86 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         Ok(CodeIntelligenceContext::new(workspace, source_root))
     }
 
+    fn resolve_code_search_context(
+        &self,
+        context: &WorkspaceContext,
+        args: &Map<String, Value>,
+    ) -> Result<(CodeIntelligenceContext, CodeSearchScope), String> {
+        let source_set = args.get("sourceSet").and_then(Value::as_str);
+        let source_dir = args.get("sourceDir").and_then(Value::as_str);
+        let metadata_path = args.get("metadataPath").and_then(Value::as_str);
+        if source_set.is_some() == source_dir.is_some() {
+            return Err(
+                "code search requires exactly one of `sourceSet` or `sourceDir`".to_string(),
+            );
+        }
+        if metadata_path.is_some() && source_set.is_none() {
+            return Err("code search `metadataPath` requires `sourceSet`".to_string());
+        }
+        if let Some(source_set) = source_set {
+            let selected =
+                crate::infrastructure::source_roots::resolve_named_source_set(context, source_set)
+                    .map_err(|error| {
+                        format!("sourceSet `{source_set}` could not be resolved: {error}")
+                    })?;
+            let source_root = crate::domain::source_roots::ResolvedSourceRoot {
+                source_set: Some(source_set.to_string()),
+                path: selected.path,
+            };
+            let mut workspace = context.clone();
+            workspace.workspace_root =
+                crate::infrastructure::source_roots::normalize_path_identity(
+                    &workspace.workspace_root,
+                )?;
+            workspace.cwd =
+                crate::infrastructure::source_roots::normalize_path_identity(&workspace.cwd)?;
+            let filters = metadata_path
+                .map(|raw| {
+                    let address = crate::domain::source_target::MetadataAddress::parse(
+                        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                        raw,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let target = crate::domain::source_target::SourceTarget {
+                        source_set: source_set.to_string(),
+                        metadata_path: Some(address),
+                    };
+                    crate::infrastructure::platform_xml_source_targets::resolve_platform_xml_target(
+                        context,
+                        &target,
+                        crate::infrastructure::platform_xml_source_targets::TargetKindPolicy::Any,
+                    )
+                    .and_then(|resolution| resolution.handle.search_filters())
+                    .map_err(|error| error.to_string())
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let scope = CodeSearchScope {
+                source_set: source_set.to_string(),
+                source_root: source_root.path.clone(),
+                filters,
+                legacy_selector: false,
+            };
+            return Ok((
+                CodeIntelligenceContext::new(workspace, source_root)
+                    .with_search_scope(scope.clone()),
+                scope,
+            ));
+        }
+
+        let provider_context = self.resolve_code_intelligence_context(context, args)?;
+        let scope = CodeSearchScope::all(
+            provider_context
+                .source_root
+                .source_set
+                .clone()
+                .unwrap_or_else(|| "legacy".to_string()),
+            provider_context.source_root.path.clone(),
+            true,
+        );
+        Ok((provider_context.with_search_scope(scope.clone()), scope))
+    }
+
     fn normalize_code_intelligence_read_request(
         &self,
         request: CodeIntelligenceReadRequest,
@@ -197,6 +297,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             Arc::new(GitGrepProvider::new()),
         ];
         CodeIntelligenceRegistry::new(providers)
+    }
+
+    fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
+        let providers: Vec<Arc<dyn DiagnosticProvider>> =
+            vec![Arc::new(BslAnalyzerDiagnosticProvider::new())];
+        DiagnosticProviderRegistry::new(providers).map_err(|error| error.to_string())
     }
 
     fn resolve_source_navigation(
@@ -234,6 +340,45 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         crate::infrastructure::platform_xml_source_targets::locate_platform_xml_source_path(
             context,
             &request,
+            cancellation,
+        )
+    }
+
+    fn resolve_diagnostic_context(
+        &self,
+        request: &DiagnosticRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<DiagnosticContext, DiagnosticRequestError> {
+        crate::infrastructure::diagnostics::resolve_diagnostic_context(
+            request,
+            context,
+            cancellation,
+        )
+    }
+
+    fn map_diagnostic_observation(
+        &self,
+        observation: DiagnosticObservation,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Result<DiagnosticItem, DiagnosticMapError> {
+        crate::infrastructure::diagnostics::map_diagnostic_observation(
+            observation,
+            context,
+            cancellation,
+        )
+    }
+
+    fn map_diagnostic_observations(
+        &self,
+        observations: Vec<DiagnosticObservation>,
+        context: &DiagnosticContext,
+        cancellation: &CancellationToken,
+    ) -> Vec<Result<DiagnosticItem, DiagnosticMapError>> {
+        crate::infrastructure::diagnostics::map_diagnostic_observations(
+            observations,
+            context,
             cancellation,
         )
     }
@@ -398,28 +543,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     handler
                 })
             }
-            ToolHandler::ProjectStatus => {
-                let source_map =
-                    crate::infrastructure::project_sources::discover_project_source_map(
-                        &context.workspace_root,
-                    );
-                if cancellation.is_cancelled() {
-                    return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
-                        "unica.project.status source-set discovery stopped",
-                    )));
-                }
-                let warning = match GitTrackingAdapter::new()
-                    .config_dump_info_warning(context, cancellation)
-                {
-                    ConfigDumpInfoGitCheck::Complete(warning) => warning,
-                    ConfigDumpInfoGitCheck::Cancelled => {
-                        return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
-                            "unica.project.status Git tracking check stopped",
-                        )));
-                    }
-                };
-                Ok(typed_read(project_status(context, source_map, warning)))
-            }
+            ToolHandler::ProjectStatus => Err(
+                "unica.project.status must be dispatched through the project health coordinator"
+                    .into(),
+            ),
             ToolHandler::ProjectMap => {
                 let source_map =
                     crate::infrastructure::project_sources::discover_project_source_map(
@@ -430,17 +557,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         "unica.project.map source-set discovery stopped",
                     )));
                 }
-                let warning = match GitTrackingAdapter::new()
-                    .config_dump_info_warning(context, cancellation)
-                {
-                    ConfigDumpInfoGitCheck::Complete(warning) => warning,
-                    ConfigDumpInfoGitCheck::Cancelled => {
-                        return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(
-                            "unica.project.map Git tracking check stopped",
-                        )));
-                    }
-                };
-                Ok(typed_read(project_map(source_map, warning)))
+                Ok(typed_read(project_map(source_map)))
             }
             ToolHandler::BuildRuntime { command, .. } => {
                 CliAdapter::new("v8-runner", command, "build/runtime")
@@ -491,9 +608,11 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 "{} must be dispatched through the provider-neutral source resource port",
                 spec.name
             )),
-            ToolHandler::CodeAdapter {
-                command: ["graph"] | ["analyze"],
-            } => BslAnalyzerMcpAdapter::new()
+            ToolHandler::Diagnostics => Err(format!(
+                "{} must be dispatched through the provider-neutral diagnostics coordinator",
+                spec.name
+            )),
+            ToolHandler::CodeAdapter { command: ["graph"] } => BslAnalyzerMcpAdapter::new()
                 .invoke_cancellable_with_operational_config(
                     spec.name,
                     args,
@@ -1186,6 +1305,7 @@ mod tests {
         verified_full_dump_invocation,
     };
     use crate::application::metadata::MetaInfoRequest;
+    use crate::application::ports::ApplicationPorts;
     use crate::application::{InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
@@ -1212,6 +1332,52 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn code_search_logical_selector_resolves_one_named_scope_and_fails_closed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace_root = temporary.path().join("workspace");
+        std::fs::create_dir_all(workspace_root.join("src")).unwrap();
+        std::fs::write(
+            workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  main:\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            workspace_root: workspace_root.clone(),
+            cache_root: workspace_root.join(".build"),
+            workspace_epoch: 1,
+        };
+        let ports = super::InfrastructureApplicationPorts::new();
+        let args = json!({"sourceSet": "main", "query": "needle"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let (provider_context, scope) = ports.resolve_code_search_context(&context, &args).unwrap();
+
+        assert_eq!(scope.source_set, "main");
+        assert!(!scope.legacy_selector);
+        assert!(scope.filters.is_empty());
+        assert_eq!(scope.source_root, provider_context.source_root.path);
+
+        let invalid = json!({
+            "sourceSet": "missing",
+            "sourceDir": "src",
+            "query": "needle"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let error = ports
+            .resolve_code_search_context(&context, &invalid)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "code search requires exactly one of `sourceSet` or `sourceDir`"
+        );
+    }
+
     fn spec(name: &'static str, handler: ToolHandler) -> ToolSpec {
         let mut spec = crate::application::tools()
             .into_iter()
@@ -1219,6 +1385,19 @@ mod tests {
             .unwrap_or_else(|| panic!("{name} must be registered"));
         spec.handler = handler;
         spec
+    }
+
+    #[test]
+    fn production_diagnostic_registry_matches_the_canonical_live_composition() {
+        use crate::application::ports::ApplicationPorts;
+        use crate::domain::diagnostics::LIVE_DIAGNOSTIC_PROVIDERS;
+
+        let ports = super::InfrastructureApplicationPorts::new();
+        let registry = ApplicationPorts::diagnostic_provider_registry(&ports).unwrap();
+        let registered = registry.ids().collect::<Vec<_>>();
+        let published = LIVE_DIAGNOSTIC_PROVIDERS.to_vec();
+
+        assert_eq!(registered, published);
     }
 
     #[derive(Clone)]

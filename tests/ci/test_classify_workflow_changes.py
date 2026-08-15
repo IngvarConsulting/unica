@@ -20,6 +20,7 @@ OUTPUT_NAMES = (
     "rust_changed",
     "platform_changed",
     "toolchain_changed",
+    "search_integration_changed",
     "package_changed",
     "plugin_content_changed",
     "ci_changed",
@@ -59,7 +60,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
     def test_platform_independent_domain_or_application_rust_uses_primary_rust_contour(self) -> None:
         for path in (
             "crates/unica-coder/src/domain/cache.rs",
-            "crates/unica-coder/src/application/ports.rs",
+            "crates/unica-coder/src/application/metadata.rs",
         ):
             with self.subTest(path=path):
                 self.assert_classification([path], rust_changed=True, release_required=True)
@@ -79,11 +80,17 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/infrastructure/platform/unknown.future",
         ):
             with self.subTest(path=path):
+                search_integration_changed = path in {
+                    "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
+                    "crates/unica-coder/src/infrastructure/source_roots.rs",
+                }
                 self.assert_classification(
                     [path],
                     rust_changed=True,
                     platform_changed=True,
+                    search_integration_changed=search_integration_changed,
                     release_required=True,
+                    assessment_required=search_integration_changed,
                 )
 
     def test_cargo_and_toolchain_changes_require_full_rust_and_package_contours(self) -> None:
@@ -93,7 +100,55 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     [path],
                     rust_changed=True,
                     toolchain_changed=True,
+                    search_integration_changed=True,
                     package_changed=True,
+                    release_required=True,
+                    assessment_required=True,
+                )
+
+    def test_search_and_rlm_mechanism_changes_route_the_long_integration_test(self) -> None:
+        for path in (
+            "crates/unica-coder/src/application/code_intelligence.rs",
+            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-coder/src/application/operational_config.rs",
+            "crates/unica-coder/src/application/ports.rs",
+            "crates/unica-coder/src/application/source_navigation.rs",
+            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-coder/src/domain/code_intelligence.rs",
+            "crates/unica-coder/src/domain/operational_config.rs",
+            "crates/unica-coder/src/domain/source_location.rs",
+            "crates/unica-coder/src/domain/source_revision.rs",
+            "crates/unica-coder/src/infrastructure/application_ports.rs",
+            "crates/unica-coder/src/infrastructure/code_intelligence.rs",
+            "crates/unica-coder/src/infrastructure/internal_adapters.rs",
+            "crates/unica-coder/src/infrastructure/operational_config.rs",
+            "crates/unica-coder/src/infrastructure/platform/process.rs",
+            "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
+            "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
+            "crates/unica-coder/src/infrastructure/source_revision.rs",
+            "crates/unica-coder/src/infrastructure/source_roots.rs",
+            "crates/unica-coder/src/infrastructure/workspace_index.rs",
+            "crates/unica-coder/src/infrastructure/workspace_services.rs",
+            "crates/unica-coder/src/interfaces/mcp.rs",
+            "crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs",
+            "crates/unica-coder/tests/issue_89_workspace_service.rs",
+            "crates/unica-coder/tests/platform/issue_89_workspace_service.rs",
+        ):
+            with self.subTest(path=path):
+                platform_changed = (
+                    "/platform/" in path
+                    or "/tests/platform/" in path
+                    or path
+                    in {
+                        "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
+                        "crates/unica-coder/src/infrastructure/source_roots.rs",
+                    }
+                )
+                self.assert_classification(
+                    [path],
+                    rust_changed=True,
+                    platform_changed=platform_changed,
+                    search_integration_changed=True,
                     release_required=True,
                     assessment_required=True,
                 )
@@ -147,6 +202,26 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_classification([path], **expected)
 
+    def test_release_matrix_reports_standalone_runtime_size_evidence(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[2]
+            / ".github"
+            / "workflows"
+            / "unica-plugin-release.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("Report standalone runtime size evidence", workflow)
+        for label in (
+            "RLM source archive bytes",
+            "RLM extracted payload bytes",
+            "Final runtime archive bytes",
+            "Runtime file count",
+        ):
+            with self.subTest(label=label):
+                self.assertIn(label, workflow)
+        self.assertIn('manifest["runtimeFiles"]', workflow)
+        self.assertIn('archive.extractfile("manifest.json")', workflow)
+
     def test_local_installer_change_requires_ci_contour(self) -> None:
         self.assert_classification(
             ["scripts/dev/install-local-unica.sh"],
@@ -162,6 +237,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             ],
             rust_changed=True,
             platform_changed=True,
+            search_integration_changed=True,
             package_changed=True,
             plugin_content_changed=True,
             release_required=True,
@@ -169,25 +245,31 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         )
 
     def test_release_assessment_routes_only_affected_mechanism(self) -> None:
-        for path in (
-            "crates/unica-coder/src/application/code_intelligence.rs",
-            "crates/unica-coder/src/infrastructure/code_intelligence.rs",
-            "crates/unica-coder/src/infrastructure/platform/process.rs",
-            "crates/unica-coder/src/infrastructure/workspace_index.rs",
-        ):
-            with self.subTest(path=path):
-                self.assert_classification(
-                    [path],
-                    rust_changed=True,
-                    platform_changed=path.endswith("platform/process.rs"),
-                    release_required=True,
-                    assessment_required=True,
-                )
+        """The hour-long BSP assessment is not the price of any Rust change.
 
+        The contour above proves the search mechanism routes it. What this one
+        states is the boundary: unrelated Rust stays out, and the packaged
+        runtime the assessment unpacks routes it without belonging to the
+        search contour at all.
+        """
         self.assert_classification(
             ["crates/unica-coder/src/domain/cache.rs"],
             rust_changed=True,
             release_required=True,
+        )
+
+        self.assert_classification(
+            ["crates/unica-coder/src/infrastructure/plugin_runtime.rs"],
+            rust_changed=True,
+            release_required=True,
+            assessment_required=True,
+        )
+
+        self.assert_classification(
+            ["scripts/ci/release-assessment.py"],
+            package_changed=True,
+            release_required=True,
+            assessment_required=True,
         )
 
     def test_forced_full_contour_enables_every_output(self) -> None:
@@ -210,6 +292,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                 "rust_changed=true",
                 "platform_changed=false",
                 "toolchain_changed=false",
+                "search_integration_changed=false",
                 "package_changed=false",
                 "plugin_content_changed=true",
                 "ci_changed=false",

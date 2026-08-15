@@ -4,3 +4,4 @@
 для клиентов MCP и авторов автоматизаций.
 
 - [0.12.0 — типизированная поверхность `unica.meta.*`](0.12.0-meta-surface.md)
+- [0.13.0 — логическая адресация `unica.code.diagnostics`](0.13.0-logical-diagnostics.md)

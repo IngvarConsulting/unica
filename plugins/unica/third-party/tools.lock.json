@@ -32,27 +32,27 @@
   "tools": [
     {
       "name": "bsl-analyzer",
-      "version": "0.2.62",
+      "version": "0.2.67",
       "repository": "https://github.com/itrous/bsl-analyzer",
-      "sourceTag": "v0.2.62",
-      "sourceCommit": "9a6cb15d60c0381dce6a3b5e536434adb12da89b",
+      "sourceTag": "v0.2.67",
+      "sourceCommit": "9a92766691bbd0191a5ff02c34fa9058e4570b85",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "bsl-analyzer-v0.2.62-build.1",
+      "assetTag": "bsl-analyzer-v0.2.67-build.1",
       "license": "LGPL-3.0-or-later",
       "assetStrategy": "direct-release-asset",
       "binaryName": "bsl-analyzer",
       "assets": {
         "darwin-arm64": {
           "assetName": "bsl-analyzer-darwin-arm64",
-          "sha256": "97c599b2be9e8c4e267d7a8567b21d01d5d6939060d28084ae1f598d15c084a4"
+          "sha256": "d18c3b79d017d60f229faf4e427bcefc0a9da59a93b57acbb867b064c52926bd"
         },
         "linux-x64": {
           "assetName": "bsl-analyzer-linux-x64",
-          "sha256": "070374453c933025c0750d59a658dfe9edd6415f7b5aa80d122268acc08ae8b9"
+          "sha256": "c476c10fcdfa6eb7d310e83d0e69b02a27f9afeec0d394681feadb889de97301"
         },
         "win-x64": {
           "assetName": "bsl-analyzer-win-x64.exe",
-          "sha256": "9c42ef7d6b379b3f80afb525f9cbec757abd2ba1877bbdcfb5db49df9972fd22"
+          "sha256": "a54d883bcb7ed0e0039953fb4d5cd7c2efbf30155de9951952f1a4060776eb3e"
         }
       }
     },
@@ -83,54 +83,68 @@
       }
     },
     {
-      "name": "rlm-tools-bsl",
-      "version": "1.29.1",
+      "name": "rlm-bsl-mcp",
+      "version": "1.33.0",
       "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-      "sourceTag": "v1.29.1",
-      "sourceCommit": "8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed",
+      "sourceTag": "v1.33.0",
+      "sourceCommit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "rlm-tools-bsl-v1.29.1-build.2",
+      "assetTag": "rlm-tools-bsl-v1.33.0-build.3",
+      "releaseName": "rlm-tools-bsl",
       "license": "MIT",
-      "assetStrategy": "direct-release-asset",
-      "binaryName": "rlm-tools-bsl",
+      "assetStrategy": "archive-release-asset",
+      "binaryName": "rlm-bsl-mcp",
       "assets": {
         "darwin-arm64": {
-          "assetName": "rlm-tools-bsl-darwin-arm64",
-          "sha256": "4a1cd5c2fc0c6c27f049241a4008dbe382a7d23ab01b5e9cfdc91a75d9eaba65"
+          "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
+          "archiveBinary": "rlm-bsl-mcp",
+          "sha256": "55caf6a245b3bb47344e2191408841f45aefb614b23480d9941f2cb3e2d8af2c",
+          "size": 72708783
         },
         "linux-x64": {
-          "assetName": "rlm-tools-bsl-linux-x64",
-          "sha256": "dec0334cb640ee94d97b80ff3d0c8e4c39e4426eceffbfe932378526876c4417"
+          "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+          "archiveBinary": "rlm-bsl-mcp",
+          "sha256": "1a27e1305c159c01f4b928fa63358567236197844af4663188bd5b30aa780f40",
+          "size": 106083876
         },
         "win-x64": {
-          "assetName": "rlm-tools-bsl-win-x64.exe",
-          "sha256": "349d6002ecf551f1ab99e24aa097aeb207087acf9de8ab4adef42c2b7eaf6539"
+          "assetName": "rlm-tools-bsl-win-x64.tar.gz",
+          "archiveBinary": "rlm-bsl-mcp.exe",
+          "sha256": "9655a8d052ae3d033ea8761e7a503ffd1d9a7e4f303b17ed6c8bc9fd86e5abb2",
+          "size": 75235914
         }
       }
     },
     {
       "name": "rlm-bsl-index",
-      "version": "1.29.1",
+      "version": "1.33.0",
       "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-      "sourceTag": "v1.29.1",
-      "sourceCommit": "8bc6e9fc83b522f9a79eab3193eb13fc2cecb8ed",
+      "sourceTag": "v1.33.0",
+      "sourceCommit": "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "rlm-tools-bsl-v1.29.1-build.2",
+      "assetTag": "rlm-tools-bsl-v1.33.0-build.3",
+      "releaseName": "rlm-tools-bsl",
       "license": "MIT",
-      "assetStrategy": "direct-release-asset",
+      "assetStrategy": "archive-release-asset",
       "binaryName": "rlm-bsl-index",
       "assets": {
         "darwin-arm64": {
-          "assetName": "rlm-bsl-index-darwin-arm64",
-          "sha256": "b20725360b889944547cb2b1823df7ce8bc4b6b39c103debb602d572648d42ad"
+          "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
+          "archiveBinary": "rlm-bsl-index",
+          "sha256": "55caf6a245b3bb47344e2191408841f45aefb614b23480d9941f2cb3e2d8af2c",
+          "size": 72708783
         },
         "linux-x64": {
-          "assetName": "rlm-bsl-index-linux-x64",
-          "sha256": "5e68d6048ad384df36a54a7edf0f4fd0c89cd583cf978cc91d7144cd5f788a5d"
+          "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
+          "archiveBinary": "rlm-bsl-index",
+          "sha256": "1a27e1305c159c01f4b928fa63358567236197844af4663188bd5b30aa780f40",
+          "size": 106083876
         },
         "win-x64": {
-          "assetName": "rlm-bsl-index-win-x64.exe",
-          "sha256": "e72ddea7ecc841800a3dde479ac4ef1680f7ea0ca60c9cd75004e727fa939cef"
+          "assetName": "rlm-tools-bsl-win-x64.tar.gz",
+          "archiveBinary": "rlm-bsl-index.exe",
+          "sha256": "9655a8d052ae3d033ea8761e7a503ffd1d9a7e4f303b17ed6c8bc9fd86e5abb2",
+          "size": 75235914
         }
       }
     },

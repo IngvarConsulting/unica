@@ -9,7 +9,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use sha2::{Digest, Sha256};
 use tar::{Builder, EntryType, Header};
-use unica_bootstrap::{Downloader, HostTarget, RuntimeInstaller, RuntimeManifest};
+use unica_bootstrap::{Downloader, HostTarget, RuntimeFile, RuntimeInstaller, RuntimeManifest};
 use uuid::Uuid;
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -141,6 +141,39 @@ fn valid_archive_is_published_with_a_ready_marker() {
         .expect("runtime install");
 
     assert_eq!(fs::read(&installed.entrypoint).unwrap(), runtime);
+    assert!(installed.root.join(".ready.json").is_file());
+    fs::remove_dir_all(cache).expect("remove temp directory");
+}
+
+#[test]
+fn ready_marker_waits_for_the_complete_runtime_file_closure() {
+    let runtime = b"unica-runtime";
+    let library = b"shared-library";
+    let library_path = "bin/linux-x64/libpython3.12.so.1.0";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime), (library_path, library)]);
+    let mut manifest = manifest(&archive, runtime);
+    manifest
+        .targets
+        .get_mut("linux-x64")
+        .expect("linux fixture")
+        .files
+        .push(RuntimeFile {
+            path: library_path.to_owned(),
+            sha256: sha256(library),
+            executable: false,
+        });
+    let cache = temp_dir("complete-closure");
+    let downloader = Arc::new(FakeDownloader::new(archive));
+    let installer = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader);
+
+    let installed = installer
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect("runtime install");
+
+    assert_eq!(
+        fs::read(installed.root.join(library_path)).unwrap(),
+        library
+    );
     assert!(installed.root.join(".ready.json").is_file());
     fs::remove_dir_all(cache).expect("remove temp directory");
 }

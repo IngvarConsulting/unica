@@ -97,6 +97,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "verify-source",
             "test-rust-primary",
             "test-rust-platforms",
+            "test-search-integration",
             "build-tools",
             "package-thin",
             "probe-thin-bootstrap",
@@ -116,6 +117,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "rust_changed",
             "platform_changed",
             "toolchain_changed",
+            "search_integration_changed",
             "package_changed",
             "plugin_content_changed",
             "ci_changed",
@@ -177,8 +179,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         source = job_block(text, "verify-source")
         primary = job_block(text, "test-rust-primary")
         platforms = job_block(text, "test-rust-platforms")
+        search_integration = job_block(text, "test-search-integration")
 
         self.assertNotIn("cargo test", source)
+        self.assertIn("search_integration_changed == 'true'", search_integration)
+        self.assertIn("ci_changed == 'true'", search_integration)
+        self.assertIn("--test issue_89_workspace_service -- --ignored", search_integration)
         self.assertNotIn("dtolnay/rust-toolchain", source)
         self.assertIn("runs-on: macos-14", primary)
         self.assertIn("rust_changed == 'true'", primary)
@@ -188,6 +194,16 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("toolchain_changed == 'true'", platforms)
         self.assertIn("ci_changed == 'true'", platforms)
         self.assertEqual(2, platforms.count("if: matrix.runner == 'macos-14'"))
+
+    def test_search_integration_checkout_does_not_persist_credentials(self) -> None:
+        integration = job_block(self.release_text(), "test-search-integration")
+
+        self.assertIn(
+            "      - uses: actions/checkout@v7\n"
+            "        with:\n"
+            "          persist-credentials: false",
+            integration,
+        )
 
     def test_package_contour_and_pr_smoke_do_not_publish_release_assets(self) -> None:
         text = self.release_text()
@@ -324,6 +340,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(outcome=outcome):
                 self.assertIn(outcome, build)
         self.assertIn("cargoBuildSeconds", build)
+        self.assertIn("archiveDownloadSeconds", build)
+        self.assertIn("RLM archive download duration", build)
         self.assertIn("GITHUB_STEP_SUMMARY", build)
 
     def test_runtime_matrix_builds_verifies_and_exports_narrow_artifacts(self) -> None:
@@ -356,6 +374,26 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("matrix.target == 'linux-x64'", build)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", build)
         self.assertGreaterEqual(build.count("retention-days: 1"), 3)
+
+    def test_mcp_smoke_runs_against_extracted_deterministic_runtime(self) -> None:
+        build = job_block(self.release_text(), "build-tools")
+
+        package = build.index("name: Package deterministic runtime")
+        extract = build.index("name: Extract deterministic runtime for MCP smoke")
+        smoke = build.index("name: Smoke packaged Unica MCP")
+        stage = build.index("name: Stage exact bootstrap payload", smoke)
+        smoke_step = build[smoke:stage]
+        self.assertLess(package, extract)
+        self.assertLess(extract, smoke)
+        self.assertIn('runtime_root=".build/runtime-smoke/${{ matrix.target }}"', build)
+        self.assertIn(
+            'tar -xzf ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz"',
+            build,
+        )
+        self.assertIn('--plugin-root "$runtime_root"', build)
+        self.assertIn('executable="$runtime_root/bin/${{ matrix.target }}/unica"', build)
+        self.assertIn("timeout-minutes: 3", smoke_step)
+        self.assertIn("--total-timeout-seconds 120", smoke_step)
 
     def test_thin_payload_downloads_only_metadata_and_bootstrap(self) -> None:
         text = self.release_text()

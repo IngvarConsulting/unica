@@ -14,6 +14,7 @@ OUTPUT_NAMES = (
     "rust_changed",
     "platform_changed",
     "toolchain_changed",
+    "search_integration_changed",
     "package_changed",
     "plugin_content_changed",
     "ci_changed",
@@ -69,8 +70,42 @@ PLATFORM_PREFIXES = (
     "crates/unica-coder/src/infrastructure/platform/",
     "crates/unica-bootstrap/src/platform/",
 )
+SEARCH_INTEGRATION_PATHS = {
+    "crates/unica-coder/src/application/code_intelligence.rs",
+    "crates/unica-coder/src/application/mod.rs",
+    "crates/unica-coder/src/application/operational_config.rs",
+    "crates/unica-coder/src/application/ports.rs",
+    "crates/unica-coder/src/application/source_navigation.rs",
+    "crates/unica-coder/src/application/tool_contracts.rs",
+    "crates/unica-coder/src/domain/code_intelligence.rs",
+    "crates/unica-coder/src/domain/operational_config.rs",
+    "crates/unica-coder/src/domain/source_location.rs",
+    "crates/unica-coder/src/domain/source_revision.rs",
+    "crates/unica-coder/src/infrastructure/application_ports.rs",
+    "crates/unica-coder/src/infrastructure/code_intelligence.rs",
+    "crates/unica-coder/src/infrastructure/internal_adapters.rs",
+    "crates/unica-coder/src/infrastructure/operational_config.rs",
+    "crates/unica-coder/src/infrastructure/platform/process.rs",
+    "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
+    "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
+    "crates/unica-coder/src/infrastructure/source_revision.rs",
+    "crates/unica-coder/src/infrastructure/source_roots.rs",
+    "crates/unica-coder/src/infrastructure/workspace_index.rs",
+    "crates/unica-coder/src/infrastructure/workspace_services.rs",
+    "crates/unica-coder/src/interfaces/mcp.rs",
+    "crates/unica-coder/tests/issue_89_workspace_service.rs",
+    "crates/unica-coder/tests/platform/issue_89_workspace_service.rs",
+}
+SEARCH_INTEGRATION_PREFIXES = (
+    "crates/unica-coder/src/infrastructure/platform/source_revision_fence",
+)
+# The long BSP assessment runs the packaged runtime end to end, so it follows
+# the search contour it exercises. These paths add what that contour does not
+# name: the runtime the assessment unpacks, and the routing that decides
+# whether the assessment runs at all.
 ASSESSMENT_PATHS = {
     ".github/workflows/unica-plugin-release.yml",
+    "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
     "plugins/unica/third-party/tools.lock.json",
     "scripts/ci/build-unica-tools.py",
     "scripts/ci/classify-workflow-changes.py",
@@ -81,21 +116,6 @@ ASSESSMENT_PATHS = {
     "tests/ci/test_evaluate_ci_gate.py",
     "tests/ci/test_release_assessment.py",
     "tests/ci/test_unica_workflow.py",
-    "crates/unica-coder/src/application/code_intelligence.rs",
-    "crates/unica-coder/src/application/mod.rs",
-    "crates/unica-coder/src/domain/code_intelligence.rs",
-    "crates/unica-coder/src/domain/operational_config.rs",
-    "crates/unica-coder/src/infrastructure/application_ports.rs",
-    "crates/unica-coder/src/infrastructure/code_intelligence.rs",
-    "crates/unica-coder/src/infrastructure/internal_adapters.rs",
-    "crates/unica-coder/src/infrastructure/operational_config.rs",
-    "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
-    "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
-    "crates/unica-coder/src/infrastructure/workspace_index.rs",
-    "crates/unica-coder/src/infrastructure/workspace_services.rs",
-    "crates/unica-coder/src/infrastructure/platform/mod.rs",
-    "crates/unica-coder/src/infrastructure/platform/process.rs",
-    "crates/unica-coder/src/interfaces/mcp.rs",
 }
 
 
@@ -103,6 +123,7 @@ class Classification(NamedTuple):
     rust_changed: bool = False
     platform_changed: bool = False
     toolchain_changed: bool = False
+    search_integration_changed: bool = False
     package_changed: bool = False
     plugin_content_changed: bool = False
     ci_changed: bool = False
@@ -167,7 +188,7 @@ def _is_ci_contract_path(path: str) -> bool:
 
 
 def _is_assessment_path(path: str) -> bool:
-    return path in ASSESSMENT_PATHS or _is_toolchain_path(path)
+    return path in ASSESSMENT_PATHS
 
 
 def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classification:
@@ -177,6 +198,7 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
     rust_changed = False
     platform_changed = False
     toolchain_changed = False
+    search_integration_changed = False
     package_changed = False
     plugin_content_changed = False
     ci_changed = False
@@ -189,6 +211,11 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
         rust_changed |= _is_rust_path(path)
         platform_changed |= _is_platform_path(path)
         toolchain_changed |= _is_toolchain_path(path)
+        search_integration_changed |= (
+            path in SEARCH_INTEGRATION_PATHS
+            or path.startswith(SEARCH_INTEGRATION_PREFIXES)
+            or _is_toolchain_path(path)
+        )
         package_changed |= path in PACKAGE_PATHS or _is_toolchain_path(path)
         plugin_content_changed |= path.startswith("plugins/unica/")
         ci_changed |= _is_ci_contract_path(path)
@@ -197,11 +224,17 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
     # The platform boundary is the source of truth. Unknown files inside it
     # must route conservatively even when their extension is not yet known.
     rust_changed |= platform_changed or toolchain_changed
+    # The assessment drives the search mechanism against a real BSP, so every
+    # path that routes the search contour routes the assessment too. Keeping it
+    # a derivation rather than a second list is what stops the two from
+    # drifting apart.
+    assessment_required |= search_integration_changed
     release_required = rust_changed or package_changed
     return Classification(
         rust_changed=rust_changed,
         platform_changed=platform_changed,
         toolchain_changed=toolchain_changed,
+        search_integration_changed=search_integration_changed,
         package_changed=package_changed,
         plugin_content_changed=plugin_content_changed,
         ci_changed=ci_changed,

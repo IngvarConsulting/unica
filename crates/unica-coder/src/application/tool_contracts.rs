@@ -1,4 +1,7 @@
-use super::operation_descriptors::{native_operation_descriptor, native_path_alias_groups};
+use super::operation_descriptors::{
+    diagnostic_action_descriptor, native_operation_descriptor, native_path_alias_groups,
+    DIAGNOSTIC_ACTION_DESCRIPTORS,
+};
 use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
 #[cfg(test)]
 use super::ToolExecution;
@@ -6,6 +9,7 @@ use super::{
     CodeIntelligenceOperation, InvocationMode, RuntimeJobAction, SourceNavigationOperation,
     SourceResourceOperation, ToolHandler, ToolSpec,
 };
+use crate::domain::diagnostics::{DiagnosticAction, LIVE_DIAGNOSTIC_PROVIDERS};
 use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
 use crate::domain::role::{
     all_role_right_names, parse_role_edit_request, ROLE_METADATA_PATH_PATTERN,
@@ -606,7 +610,7 @@ const CODE_ARGS: &[&str] = &[
 
 const CODE_DEFINITION_ARGS: &[&str] = &["limit", "moduleHint", "name", "sourceDir"];
 const CODE_OUTLINE_ARGS: &[&str] = &["includeMethods", "path", "sourceDir"];
-const CODE_SEARCH_ARGS: &[&str] = &["limit", "query", "sourceDir"];
+const CODE_SEARCH_ARGS: &[&str] = &["limit", "metadataPath", "query", "sourceDir", "sourceSet"];
 const CODE_GRAPH_ARGS: &[&str] = &[
     "detail",
     "dir",
@@ -632,24 +636,7 @@ const CODE_GRAPH_MODES: &[&str] = &[
 ];
 const CODE_GRAPH_DIRECTIONS: &[&str] = &["in", "out", "both"];
 const CODE_GRAPH_DETAIL: &[&str] = &["names", "signatures", "bodies"];
-const CODE_DIAGNOSTICS_ARGS: &[&str] = &[
-    "codes",
-    "config",
-    "detail",
-    "format",
-    "limit",
-    "maxFiles",
-    "minSeverity",
-    "mode",
-    "path",
-    "rangeEnd",
-    "rangeStart",
-    "sourceDir",
-    "timeoutSeconds",
-];
-const CODE_DIAGNOSTIC_MODES: &[&str] = &["analyze", "status", "catalog", "file", "workspace"];
 const CODE_DIAGNOSTIC_SEVERITIES: &[&str] = &["error", "warning", "info", "hint"];
-const CODE_DIAGNOSTIC_DETAIL: &[&str] = &["concise", "detailed"];
 const STANDARDS_ARGS: &[&str] = &[
     "body_limit",
     "bodyLimit",
@@ -673,6 +660,9 @@ const DOCUMENTATION_SEARCH_ARGS: &[&str] = &[
 const DOCUMENTATION_GET_ARGS: &[&str] = &["documentId", "language", "platformVersion"];
 
 pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
+    if matches!(tool.handler, ToolHandler::Diagnostics) {
+        return diagnostics_input_schema();
+    }
     if let ToolHandler::Metadata { operation } = tool.handler {
         return super::metadata::metadata_input_schema(operation);
     }
@@ -760,6 +750,21 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             }
         ]);
     }
+    if tool.name == "unica.code.search" {
+        schema["oneOf"] = json!([
+            {
+                "required": ["sourceSet"],
+                "not": {"required": ["sourceDir"]}
+            },
+            {
+                "required": ["sourceDir"],
+                "not": {"anyOf": [
+                    {"required": ["sourceSet"]},
+                    {"required": ["metadataPath"]}
+                ]}
+            }
+        ]);
+    }
     if tool.name == "unica.source.resources" {
         schema["oneOf"] = json!([
             {
@@ -810,6 +815,147 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         ]);
     }
     schema
+}
+
+fn diagnostics_input_schema() -> Value {
+    let provider_ids = LIVE_DIAGNOSTIC_PROVIDERS
+        .iter()
+        .map(|provider| provider.as_str())
+        .collect::<Vec<_>>();
+    let code_filter = || {
+        json!({
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "provider": {"type": "string", "enum": provider_ids},
+                    "code": {"type": "string", "minLength": 1, "pattern": r"\S"}
+                },
+                "required": ["provider", "code"]
+            }
+        })
+    };
+    let filter = |action: DiagnosticAction| {
+        let mut properties = Map::new();
+        properties.insert("codes".to_string(), code_filter());
+        if !matches!(action, DiagnosticAction::Catalog) {
+            properties.insert(
+                "minSeverity".to_string(),
+                json!({"type": "string", "enum": CODE_DIAGNOSTIC_SEVERITIES, "default": "warning"}),
+            );
+        }
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": properties
+        })
+    };
+    let range = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "startLine": {"type": "integer", "minimum": 0},
+            "startColumn": {"type": "integer", "minimum": 0},
+            "endLine": {"type": "integer", "minimum": 0},
+            "endColumn": {"type": "integer", "minimum": 0}
+        },
+        "required": ["startLine", "startColumn", "endLine", "endColumn"]
+    });
+    let branches = DIAGNOSTIC_ACTION_DESCRIPTORS
+        .iter()
+        .map(|descriptor| {
+            let mut properties = Map::new();
+            for name in descriptor.allowed_args {
+                let schema = match *name {
+                    "action" => json!({
+                        "type": "string",
+                        "const": descriptor.action.as_str(),
+                        "description": "Closed diagnostics action selecting analyze, findings, status, or catalog behavior."
+                    }),
+                    "sourceSet" => json!({
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": r"^\S(?:.*\S)?$",
+                        "description": "Exact source-set name from the workspace project map; no implicit fallback is used."
+                    }),
+                    "metadataPath" => json!({
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": r"^\S(?:.*\S)?$",
+                        "description": "Exact logical 1C target address inside sourceSet; required only by findings."
+                    }),
+                    "cwd" => json!({
+                        "type": "string",
+                        "description": "Absolute path selecting the workspace context; it never identifies a diagnostic target and is not echoed in result data."
+                    }),
+                    "filter" => {
+                        let mut schema = filter(descriptor.action);
+                        schema["description"] = json!("Strict diagnostic severity and provider-qualified code filter applied after normalization.");
+                        schema
+                    },
+                    "range" => {
+                        let mut schema = range.clone();
+                        schema["description"] = json!("Zero-based, end-exclusive source range accepted only by findings for a module target.");
+                        schema
+                    },
+                    "limit" => {
+                        json!({
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "default": 200,
+                            "description": "Maximum number of diagnostic entities returned after filtering and deterministic ordering."
+                        })
+                    },
+                    "timeoutSeconds" => json!({
+                        "type": "integer",
+                        "minimum": DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+                        "maximum": DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
+                        "description": "Total action=analyze budget. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config."
+                    }),
+                    _ => unreachable!("diagnostic descriptor contains unknown field {name}"),
+                };
+                properties.insert((*name).to_string(), schema);
+            }
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": properties,
+                "required": descriptor.required_args
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut properties = Map::new();
+    for branch in &branches {
+        for (name, schema) in branch["properties"]
+            .as_object()
+            .expect("diagnostics action branch properties are an object")
+        {
+            properties
+                .entry(name.clone())
+                .or_insert_with(|| schema.clone());
+        }
+    }
+    properties.insert(
+        "action".to_string(),
+        json!({
+            "type": "string",
+            "enum": DIAGNOSTIC_ACTION_DESCRIPTORS
+                .iter()
+                .map(|descriptor| descriptor.action.as_str())
+                .collect::<Vec<_>>(),
+            "description": "Closed diagnostics action selecting analyze, findings, status, or catalog behavior."
+        }),
+    );
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": [],
+        "oneOf": branches
+    })
 }
 
 fn xdto_edit_schema_branch(operation: &str, required: &[&str], forbidden: &[&str]) -> Value {
@@ -1389,6 +1535,16 @@ fn validate_removed_target_arguments(
                 .to_string(),
         );
     }
+    if tool.name == "unica.code.diagnostics"
+        && ["mode", "sourceDir", "path"]
+            .iter()
+            .any(|field| args.contains_key(*field))
+    {
+        return Err(
+            "legacy_target_removed: unica.code.diagnostics no longer accepts `mode`, `sourceDir`, or `path`; use `action + sourceSet` and `metadataPath` for findings"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -1767,7 +1923,7 @@ fn validate_enum_alias_argument(
 fn validate_code_arguments(
     tool: ToolSpec,
     args: &Map<String, Value>,
-    dry_run: bool,
+    _dry_run: bool,
 ) -> Result<(), String> {
     match tool.name {
         "unica.code.search" => {
@@ -1782,6 +1938,32 @@ fn validate_code_arguments(
                 ));
             }
             validate_integer_bound(tool.name, args, "limit", 1, 50)?;
+            let source_set = args.get("sourceSet").and_then(Value::as_str);
+            let source_dir = args.get("sourceDir").and_then(Value::as_str);
+            if source_set.is_some() == source_dir.is_some() {
+                return Err(format!(
+                    "{} requires exactly one of `sourceSet` or migration `sourceDir`",
+                    tool.name
+                ));
+            }
+            if args.contains_key("metadataPath") && source_set.is_none() {
+                return Err(format!(
+                    "{} argument `metadataPath` requires `sourceSet`",
+                    tool.name
+                ));
+            }
+            for name in ["sourceSet", "sourceDir", "metadataPath"] {
+                if args
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.trim().is_empty())
+                {
+                    return Err(format!(
+                        "{} argument `{name}` must be a non-empty string",
+                        tool.name
+                    ));
+                }
+            }
         }
         "unica.code.graph" => {
             validate_enum_argument(tool.name, args, "mode", CODE_GRAPH_MODES)?;
@@ -1789,77 +1971,178 @@ fn validate_code_arguments(
             validate_enum_argument(tool.name, args, "detail", CODE_GRAPH_DETAIL)?;
         }
         "unica.code.diagnostics" => {
-            validate_enum_argument(tool.name, args, "mode", CODE_DIAGNOSTIC_MODES)?;
-            validate_enum_argument(tool.name, args, "minSeverity", CODE_DIAGNOSTIC_SEVERITIES)?;
-            validate_enum_argument(tool.name, args, "detail", CODE_DIAGNOSTIC_DETAIL)?;
-            validate_enum_argument(tool.name, args, "format", &["json", "jsonl"])?;
-            validate_integer_bound(tool.name, args, "limit", 1, 200)?;
-            validate_diagnostic_codes(tool.name, args)?;
-            let mode = args
-                .get("mode")
-                .and_then(Value::as_str)
-                .unwrap_or("analyze");
-            if mode != "analyze" && args.contains_key("format") {
-                return Err(format!(
-                    "{} argument `format` is only supported for mode `analyze`",
-                    tool.name
-                ));
-            }
-            // `path` scopes a single-file read, which only mode `file` performs.
-            // Every other mode dropped it silently: `analyze` then scanned the
-            // whole source set although the caller had named one file.
-            if mode != "file" && args.contains_key("path") {
-                return Err(format!(
-                    "{} mode `{mode}` does not support `path`; use mode `file` for one file",
-                    tool.name
-                ));
-            }
-            if args.contains_key("timeoutSeconds") {
-                if mode != "analyze" {
-                    return Err(format!(
-                        "{} argument `timeoutSeconds` is only supported for mode `analyze`",
-                        tool.name
-                    ));
-                }
-                validate_integer_bound(
-                    tool.name,
-                    args,
-                    "timeoutSeconds",
-                    DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
-                    DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
-                )?;
-            }
-            if !dry_run && mode == "file" && !args.contains_key("path") {
-                return Err(format!(
-                    "{} mode `file` requires `path` argument",
-                    tool.name
-                ));
-            }
+            validate_diagnostics_arguments(tool.name, args)?;
         }
         _ => {}
     }
     Ok(())
 }
 
-fn validate_diagnostic_codes(tool_name: &str, args: &Map<String, Value>) -> Result<(), String> {
-    let Some(codes) = args.get("codes").and_then(Value::as_array) else {
+fn validate_diagnostics_arguments(
+    tool_name: &str,
+    args: &Map<String, Value>,
+) -> Result<(), String> {
+    let action = args
+        .get("action")
+        .and_then(Value::as_str)
+        .and_then(DiagnosticAction::parse)
+        .ok_or_else(|| {
+            format!(
+                "{tool_name} argument `action` must be one of: analyze, findings, status, catalog"
+            )
+        })?;
+    for required in diagnostic_action_descriptor(action).required_args {
+        let value = args.get(*required).ok_or_else(|| {
+            format!(
+                "{tool_name} action `{}` requires `{required}` argument",
+                action.as_str()
+            )
+        })?;
+        if matches!(*required, "action" | "sourceSet" | "metadataPath") {
+            let value = value.as_str().ok_or_else(|| {
+                format!("{tool_name} argument `{required}` must be a non-empty string")
+            })?;
+            if value.trim().is_empty() {
+                return Err(format!(
+                    "{tool_name} argument `{required}` must be a non-empty string"
+                ));
+            }
+            if value != value.trim() {
+                return Err(format!(
+                    "{tool_name} argument `{required}` must not have surrounding whitespace"
+                ));
+            }
+        }
+    }
+    let allowed = diagnostic_action_descriptor(action)
+        .allowed_args
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for field in args.keys() {
+        if !allowed.contains(field.as_str()) {
+            return Err(format!(
+                "{tool_name} action `{}` does not accept `{field}` argument",
+                action.as_str()
+            ));
+        }
+    }
+    validate_integer_bound(tool_name, args, "limit", 1, 200)?;
+    if args.contains_key("timeoutSeconds") {
+        validate_integer_bound(
+            tool_name,
+            args,
+            "timeoutSeconds",
+            DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+            DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
+        )?;
+    }
+    validate_diagnostic_filter(tool_name, action, args.get("filter"))?;
+    if let Some(range) = args.get("range") {
+        validate_diagnostic_range(tool_name, range)?;
+    }
+    Ok(())
+}
+
+fn validate_diagnostic_filter(
+    tool_name: &str,
+    action: DiagnosticAction,
+    filter: Option<&Value>,
+) -> Result<(), String> {
+    let Some(filter) = filter else {
         return Ok(());
     };
-    let mut seen = std::collections::BTreeSet::new();
-    for code in codes {
-        let Some(code) = code.as_str() else {
-            return Err(format!("{tool_name} argument `codes` must contain strings"));
-        };
-        if code.trim().is_empty() {
+    let filter = filter
+        .as_object()
+        .ok_or_else(|| format!("{tool_name} argument `filter` must be object"))?;
+    for field in filter.keys() {
+        if field != "codes" && !(field == "minSeverity" && action != DiagnosticAction::Catalog) {
             return Err(format!(
-                "{tool_name} argument `codes` must contain non-empty strings"
+                "{tool_name} argument `filter` does not accept `{field}`"
             ));
         }
-        if !seen.insert(code) {
+    }
+    if let Some(severity) = filter.get("minSeverity") {
+        let severity = severity
+            .as_str()
+            .ok_or_else(|| format!("{tool_name} argument `filter.minSeverity` must be string"))?;
+        if !CODE_DIAGNOSTIC_SEVERITIES.contains(&severity) {
             return Err(format!(
-                "{tool_name} argument `codes` must contain unique strings"
+                "{tool_name} argument `filter.minSeverity` must be one of: {}",
+                CODE_DIAGNOSTIC_SEVERITIES.join(", ")
             ));
         }
+    }
+    let Some(codes) = filter.get("codes") else {
+        return Ok(());
+    };
+    let codes = codes
+        .as_array()
+        .ok_or_else(|| format!("{tool_name} argument `filter.codes` must be array"))?;
+    let mut seen = BTreeSet::new();
+    for entry in codes {
+        let entry = entry
+            .as_object()
+            .ok_or_else(|| format!("{tool_name} argument `filter.codes` must contain objects"))?;
+        if entry.len() != 2 || !entry.contains_key("provider") || !entry.contains_key("code") {
+            return Err(format!(
+                "{tool_name} argument `filter.codes` entries require only `provider` and `code`"
+            ));
+        }
+        let provider = entry
+            .get("provider")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!("{tool_name} argument `filter.codes.provider` must be string")
+            })?;
+        let code = entry
+            .get("code")
+            .and_then(Value::as_str)
+            .filter(|code| !code.trim().is_empty())
+            .ok_or_else(|| {
+                format!("{tool_name} argument `filter.codes.code` must be a non-empty string")
+            })?;
+        if !LIVE_DIAGNOSTIC_PROVIDERS
+            .iter()
+            .any(|candidate| candidate.as_str() == provider)
+        {
+            return Err(format!(
+                "{tool_name} unknown diagnostic provider `{provider}`"
+            ));
+        }
+        if !seen.insert((provider, code)) {
+            return Err(format!(
+                "{tool_name} argument `filter.codes` must contain unique provider/code pairs"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_diagnostic_range(tool_name: &str, range: &Value) -> Result<(), String> {
+    let range = range
+        .as_object()
+        .ok_or_else(|| format!("{tool_name} argument `range` must be object"))?;
+    const FIELDS: [&str; 4] = ["startLine", "startColumn", "endLine", "endColumn"];
+    if range.len() != FIELDS.len() || FIELDS.iter().any(|field| !range.contains_key(*field)) {
+        return Err(format!(
+            "{tool_name} argument `range` requires only startLine, startColumn, endLine, endColumn"
+        ));
+    }
+    let values = FIELDS
+        .map(|field| {
+            range.get(field).and_then(Value::as_u64).ok_or_else(|| {
+                format!("{tool_name} argument `range.{field}` must be a non-negative integer")
+            })
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let start = (values[0], values[1]);
+    let end = (values[2], values[3]);
+    if start >= end {
+        return Err(format!(
+            "{tool_name} argument `range` must be ordered and non-empty"
+        ));
     }
     Ok(())
 }
@@ -2321,6 +2604,14 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
             SourceResourceOperation::Resources => SOURCE_RESOURCES_ARGS,
             SourceResourceOperation::Read => SOURCE_READ_ARGS,
         }),
+        ToolHandler::Diagnostics => {
+            names.clear();
+            names.extend(
+                DIAGNOSTIC_ACTION_DESCRIPTORS
+                    .iter()
+                    .flat_map(|descriptor| descriptor.allowed_args.iter().copied()),
+            );
+        }
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
         ToolHandler::StandardsAdapter { .. } => names.extend(STANDARDS_ARGS),
         ToolHandler::Documentation { operation: "get" } => names.extend(DOCUMENTATION_GET_ARGS),
@@ -2396,6 +2687,7 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
             SourceResourceOperation::Resources => Vec::new(),
             SourceResourceOperation::Read => vec!["snapshotId", "resourceId"],
         },
+        ToolHandler::Diagnostics => vec!["action", "sourceSet"],
         ToolHandler::CodeAdapter { .. } => match tool.name {
             "unica.code.graph" => vec!["mode"],
             _ => Vec::new(),
@@ -2415,7 +2707,6 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
         "unica.code.definition" => CODE_DEFINITION_ARGS,
         "unica.code.outline" => CODE_OUTLINE_ARGS,
         "unica.code.graph" => CODE_GRAPH_ARGS,
-        "unica.code.diagnostics" => CODE_DIAGNOSTICS_ARGS,
         _ => CODE_ARGS,
     }
 }
@@ -2660,7 +2951,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "codes",
-        "Array of diagnostic codes such as \"АПК:142\" or \"LineLength\"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, on code.diagnostics it filters the catalog, and standards.search ignores it.",
+        "Array of diagnostic codes such as \"АПК:142\" or \"LineLength\"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, while standards.search ignores it. Diagnostics uses provider-qualified entries inside filter.codes instead.",
     ),
     (
         "compatibilityMode",
@@ -2668,7 +2959,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "config",
-        "Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml; on unica.code.diagnostics `config` is a separate passthrough to the bsl-analyzer run and is not the project config.",
+        "Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml.",
     ),
     (
         "configDir",
@@ -2736,7 +3027,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "detail",
-        "How much detail to return, with a per-tool enum: names, signatures or bodies for unica.code.graph; concise or detailed for unica.code.diagnostics",
+        "How much detail to return from unica.code.graph: names, signatures or bodies",
     ),
     (
         "detailed",
@@ -2886,15 +3177,11 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "limit",
-        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per provider), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
+        "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
     ),
     (
         "maxErrors",
         "Stop a validate tool after this many errors: default 30 for `unica.cf.validate`, `cfe.validate`, `form.validate` and `interface.validate`, 20 for `unica.dcs.validate` and `unica.mxl.validate`; `unica.role.validate` and `unica.subsystem.validate` accept the key but ignore it.",
-    ),
-    (
-        "maxFiles",
-        "Integer cap on how many files one unica.code.diagnostics read covers, forwarded to the analyzer as max_files",
     ),
     (
         "maxOutputTokens",
@@ -2938,7 +3225,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "mode",
-        "Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full|incremental|partial for dump, load|merge for load, designer-config|designer-modules|edt for syntax, and the client kind for an mcp or mcp-va launch, while every other tool defines its own values (for example analyze|status|catalog|file|workspace on unica.code.diagnostics) — always use the enum published in that tool's own schema.",
+        "Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full|incremental|partial for dump, load|merge for load, designer-config|designer-modules|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum.",
     ),
     (
         "module",
@@ -3015,7 +3302,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "path",
-        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for the path-based unica.code.* tools — on unica.code.diagnostics only mode `file` reads one file, so every other mode rejects `path` instead of ignoring it — the canonical alias of the object/config path argument on the native XML tools, and a plain --path passthrough on unica.build.*.",
+        "Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for path-based unica.code.* tools, the canonical alias of the object/config path argument on native XML tools, and a plain --path passthrough on unica.build.*.",
     ),
     (
         "platformVersion",
@@ -3044,14 +3331,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "query",
         "Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback",
-    ),
-    (
-        "rangeEnd",
-        "Integer end of the source line range for unica.code.diagnostics, forwarded as range_end; pair it with rangeStart to scope a mode=file read",
-    ),
-    (
-        "rangeStart",
-        "Integer start of the source line range for unica.code.diagnostics, forwarded as range_start; pair it with rangeEnd to scope a mode=file read",
     ),
     (
         "raw",
@@ -3135,7 +3414,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "sources",
-        "Boolean that also downloads tool sources on operation tools-download; supported only for tool yaxunit or client-mcp and rejected for vanessa",
+        "Boolean that on operation tools-download fetches sources instead of the prebuilt release artifact; omit it to get the ready artifact, such as build/tools/client_mcp.cfe. What the source route yields differs by tool: client-mcp gets an EDT tree that only 1cedtcli can build and no .cfe at all, while yaxunit gets the tests source-set. Supported only for tool yaxunit or client-mcp and rejected for vanessa",
     ),
     (
         "srcDir",
@@ -3211,7 +3490,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "timeoutSeconds",
-        "Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics mode analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120.",
+        "Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics action=analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120.",
     ),
     (
         "tool",
@@ -3394,6 +3673,24 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         return match name {
             "query" => json!({ "type": "string", "minLength": 1, "pattern": r"\S" }),
             "limit" => json!({ "type": "integer", "minimum": 1, "maximum": 50 }),
+            "sourceSet" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"^\S(?:.*\S)?$",
+                "description": "Canonical configured source-set name that scopes every search role."
+            }),
+            "metadataPath" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
+                "description": "Optional canonical logical address inside sourceSet; every role is restricted to the resolved module or metadata-object subtree."
+            }),
+            "sourceDir" => json!({
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
+                "description": "Legacy workspace-relative migration selector used instead of sourceSet; it searches the entire resolved source root and cannot be combined with metadataPath. Prefer sourceSet for logical addressing."
+            }),
             _ => property_schema(name),
         };
     }
@@ -3532,35 +3829,6 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
             "mode" => return json!({ "type": "string", "enum": CODE_GRAPH_MODES }),
             "dir" => return json!({ "type": "string", "enum": CODE_GRAPH_DIRECTIONS }),
             "detail" => return json!({ "type": "string", "enum": CODE_GRAPH_DETAIL }),
-            _ => {}
-        },
-        "unica.code.diagnostics" => match name {
-            "mode" => return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_MODES }),
-            "format" => return json!({ "type": "string", "enum": ["json", "jsonl"] }),
-            "codes" => {
-                return json!({
-                    "type": "array",
-                    "items": {"type": "string", "minLength": 1},
-                    "uniqueItems": true
-                });
-            }
-            "timeoutSeconds" => {
-                return json!({
-                    "type": "integer",
-                    "minimum": DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
-                    "maximum": DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
-                    "description": "Only supported for mode analyze. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config, whose compiled fallback is 120 seconds."
-                });
-            }
-            "minSeverity" => {
-                return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_SEVERITIES, "default": "warning" });
-            }
-            "detail" => {
-                return json!({ "type": "string", "enum": CODE_DIAGNOSTIC_DETAIL, "default": "concise" })
-            }
-            "limit" => {
-                return json!({ "type": "integer", "minimum": 1, "maximum": 200, "default": 200 });
-            }
             _ => {}
         },
         _ => {}
@@ -3803,13 +4071,18 @@ mod tests {
     }
 
     fn sorted_property_names(value: &Value) -> Vec<&str> {
-        let mut names = value["properties"]
-            .as_object()
-            .expect("schema node must publish properties")
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
+        let mut names = Vec::new();
+        if let Some(properties) = value.get("properties").and_then(Value::as_object) {
+            names.extend(properties.keys().map(String::as_str));
+        } else if let Some(branches) = value.get("oneOf").and_then(Value::as_array) {
+            for branch in branches {
+                names.extend(sorted_property_names(branch));
+            }
+        } else {
+            panic!("schema node must publish properties or full-object oneOf branches");
+        }
         names.sort_unstable();
+        names.dedup();
         names
     }
 
@@ -4188,14 +4461,26 @@ mod tests {
         let mut undescribed: Vec<String> = Vec::new();
         for tool in tools() {
             let schema = input_schema_for_tool(&tool);
-            let properties = schema["properties"].as_object().unwrap();
-            for (name, property) in properties {
-                let described = property
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .is_some_and(|text| text.trim().len() >= 15);
-                if !described {
-                    undescribed.push(format!("{}:{name}", tool.name));
+            let property_maps =
+                if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+                    vec![properties]
+                } else {
+                    schema["oneOf"]
+                        .as_array()
+                        .expect("schema must publish properties or oneOf")
+                        .iter()
+                        .map(|branch| branch["properties"].as_object().unwrap())
+                        .collect::<Vec<_>>()
+                };
+            for properties in property_maps {
+                for (name, property) in properties {
+                    let described = property
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| text.trim().len() >= 15);
+                    if !described {
+                        undescribed.push(format!("{}:{name}", tool.name));
+                    }
                 }
             }
         }
@@ -4246,26 +4531,70 @@ mod tests {
 
         assert!(!CODE_SEARCH_ARGS.contains(&"config"));
         assert!(!description.contains("unica.code.search"), "{description}");
-        assert!(CODE_DIAGNOSTICS_ARGS.contains(&"config"));
         assert!(
-            description.contains("unica.code.diagnostics"),
+            !description.contains("unica.code.diagnostics"),
             "{description}"
+        );
+    }
+
+    /// #346. `sources` is exclusive, not additive. Pinned v8-runner 0.5.1
+    /// reports `mode: artifacts` without it and writes the prebuilt
+    /// `build/tools/client_mcp.cfe`; with it the runner reports `mode: sources`
+    /// and writes an EDT tree under `build/tools/onec-client-mcp-devkit/exts/`
+    /// and no `.cfe` at all. The description said the flag "also" downloads
+    /// sources, which reads as artifact plus sources, so a caller who wanted
+    /// the ready extension asked for the EDT path, took a `1cedtcli` dependency
+    /// it never announced, and still lacked the artifact that
+    /// `tools.client_mcp.extension.artifact.path` and the `build` preflight
+    /// require.
+    #[test]
+    fn sources_description_says_it_replaces_the_prebuilt_artifact() {
+        let (_, description) = ARG_DESCRIPTIONS
+            .iter()
+            .find(|(name, _)| *name == "sources")
+            .expect("sources must have a shared description");
+
+        assert!(
+            !description.contains("also"),
+            "`also` reads as artifact plus sources, but the flag replaces one with the other: {description}"
+        );
+        assert!(
+            description.contains("instead of"),
+            "the description has to say the source tree replaces the release artifact: {description}"
+        );
+        assert!(
+            description.contains("1cedtcli"),
+            "the source tree is EDT and still has to be built, so the description names that cost: {description}"
+        );
+        assert!(
+            description.contains("omit"),
+            "a caller who wants the prebuilt artifact needs to be told to leave the flag off: {description}"
+        );
+        // One description serves both tools, and their source routes differ:
+        // yaxunit lays down the tests source-set, with no EDT tree and no
+        // 1cedtcli anywhere in it. Naming that keeps the client-mcp cost from
+        // reading as the price of the flag itself.
+        assert!(
+            description.contains("source-set"),
+            "the yaxunit source route is not EDT, so the description says what it yields instead of letting the client-mcp cost stand for both: {description}"
         );
     }
 
     #[test]
     fn described_arguments_are_still_reachable() {
-        let published: std::collections::BTreeSet<String> = tools()
-            .into_iter()
-            .flat_map(|tool| allowed_args(&tool))
-            .map(|name| {
+        let mut published = std::collections::BTreeSet::new();
+        for tool in tools() {
+            let schema = input_schema_for_tool(&tool);
+            let mut names = Vec::new();
+            collect_schema_property_names(&schema, &mut names);
+            published.extend(names.into_iter().map(|name| {
                 let mut chars = name.chars();
                 match chars.next() {
                     Some(first) => first.to_lowercase().chain(chars).collect(),
                     None => String::new(),
                 }
-            })
-            .collect();
+            }));
+        }
         let stale: Vec<&str> = ARG_DESCRIPTIONS
             .iter()
             .map(|(name, _)| *name)
@@ -4476,11 +4805,9 @@ mod tests {
         for tool in tools() {
             let error = reject_argument(tool.name, "definitelyNotAnArgument");
             let schema = input_schema_for_tool(&tool);
-            let published = schema["properties"].as_object().unwrap();
-
-            for name in published.keys() {
+            for name in sorted_property_names(&schema) {
                 assert!(
-                    error.contains(name.as_str()),
+                    error.contains(name),
                     "{} rejection omits accepted argument `{name}`: {error}",
                     tool.name
                 );
@@ -6603,6 +6930,31 @@ mod tests {
         assert_eq!(search_schema["properties"]["query"]["minLength"], 1);
         assert_eq!(search_schema["properties"]["limit"]["minimum"], 1);
         assert_eq!(search_schema["properties"]["limit"]["maximum"], 50);
+        assert!(search_schema["properties"].get("sourceSet").is_some());
+        assert!(search_schema["properties"].get("metadataPath").is_some());
+        assert!(search_schema["properties"].get("sourceDir").is_some());
+        let source_dir_description = search_schema["properties"]["sourceDir"]["description"]
+            .as_str()
+            .expect("code.search sourceDir must describe its migration branch");
+        assert!(source_dir_description.contains("migration selector"));
+        assert!(source_dir_description.contains("entire resolved source root"));
+        assert!(source_dir_description.contains("cannot be combined with metadataPath"));
+        assert_eq!(
+            search_schema["oneOf"],
+            json!([
+                {
+                    "required": ["sourceSet"],
+                    "not": {"required": ["sourceDir"]}
+                },
+                {
+                    "required": ["sourceDir"],
+                    "not": {"anyOf": [
+                        {"required": ["sourceSet"]},
+                        {"required": ["metadataPath"]}
+                    ]}
+                }
+            ])
+        );
         for removed in [
             "excludePath",
             "fileTypes",
@@ -6627,13 +6979,13 @@ mod tests {
             .unwrap();
 
         for args in [
-            json!({"query": "   "}),
-            json!({"query": 42}),
-            json!({"query": null}),
-            json!({"query": true}),
-            json!({"query": {}}),
-            json!({"query": "Post", "limit": 0}),
-            json!({"query": "Post", "limit": 51}),
+            json!({"sourceSet":"main", "query": "   "}),
+            json!({"sourceSet":"main", "query": 42}),
+            json!({"sourceSet":"main", "query": null}),
+            json!({"sourceSet":"main", "query": true}),
+            json!({"sourceSet":"main", "query": {}}),
+            json!({"sourceSet":"main", "query": "Post", "limit": 0}),
+            json!({"sourceSet":"main", "query": "Post", "limit": 51}),
         ] {
             assert!(
                 validate_tool_arguments(search, args.as_object().unwrap(), false).is_err(),
@@ -6642,10 +6994,41 @@ mod tests {
         }
         validate_tool_arguments(
             search,
-            json!({"query": "Post", "limit": 50}).as_object().unwrap(),
+            json!({"sourceSet":"main", "query": "Post", "limit": 50})
+                .as_object()
+                .unwrap(),
             false,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn code_search_requires_one_fail_closed_logical_or_migration_selector() {
+        let search = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.search")
+            .unwrap();
+
+        for rejected in [
+            json!({"query":"Post"}),
+            json!({"query":"Post", "metadataPath":"CommonModule.X.Module"}),
+            json!({"query":"Post", "sourceSet":"main", "sourceDir":"src"}),
+            json!({"query":"Post", "sourceDir":"src", "metadataPath":"CommonModule.X.Module"}),
+        ] {
+            assert!(
+                validate_tool_arguments(search, rejected.as_object().unwrap(), false).is_err(),
+                "payload must fail closed: {rejected}"
+            );
+        }
+
+        for accepted in [
+            json!({"query":"Post", "sourceSet":"main"}),
+            json!({"query":"Post", "sourceSet":"main", "metadataPath":"CommonModule.X.Module"}),
+            json!({"query":"Post", "sourceDir":"src"}),
+        ] {
+            validate_tool_arguments(search, accepted.as_object().unwrap(), false)
+                .unwrap_or_else(|error| panic!("valid selector rejected: {accepted}: {error}"));
+        }
     }
 
     #[test]
@@ -7012,162 +7395,171 @@ mod tests {
         assert!(error.contains("must be one of"));
     }
 
-    #[test]
-    fn bsl_diagnostics_contract_exposes_modes_and_configured_analyze_fallback() {
-        let diagnostics = tools()
+    fn diagnostic_tool() -> ToolSpec {
+        tools()
             .into_iter()
             .find(|tool| tool.name == "unica.code.diagnostics")
-            .expect("unica.code.diagnostics must be registered");
+            .expect("unica.code.diagnostics must be registered")
+    }
 
-        let schema = input_schema_for_tool(&diagnostics);
-        assert_eq!(schema["additionalProperties"], false);
-        assert!(schema["properties"].get("args").is_none());
-        assert!(schema["properties"].get("argv").is_none());
-        assert!(schema["properties"].get("cwd").is_some());
-        assert!(schema["properties"].get("sourceDir").is_some());
-        assert_eq!(schema["properties"]["codes"]["type"], "array");
-        assert_eq!(schema["properties"]["codes"]["items"]["type"], "string");
-        assert_eq!(schema["properties"]["codes"]["items"]["minLength"], 1);
-        assert_eq!(schema["properties"]["codes"]["uniqueItems"], true);
-        assert_eq!(schema["properties"]["rangeStart"]["type"], "integer");
-        assert_eq!(schema["properties"]["maxFiles"]["type"], "integer");
-        assert_eq!(schema["properties"]["timeoutSeconds"]["type"], "integer");
-        assert_eq!(schema["properties"]["timeoutSeconds"]["minimum"], 30);
-        assert_eq!(schema["properties"]["timeoutSeconds"]["maximum"], 3600);
-        assert_eq!(
-            schema["properties"]["format"]["enum"],
-            json!(["json", "jsonl"])
-        );
-        assert_eq!(schema["properties"]["minSeverity"]["default"], "warning");
-        assert_eq!(schema["properties"]["detail"]["default"], "concise");
-        assert_eq!(schema["properties"]["limit"]["minimum"], 1);
-        assert_eq!(schema["properties"]["limit"]["maximum"], 200);
-        assert_eq!(schema["properties"]["limit"]["default"], 200);
-        assert!(schema["properties"]["timeoutSeconds"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("operational.code_diagnostics.analyze_timeout_seconds"));
-        assert!(schema.get("oneOf").is_none());
-        assert!(schema["properties"]["mode"]["enum"]
+    #[test]
+    fn diagnostics_contract_is_a_strict_discriminated_action_union() {
+        let schema = input_schema_for_tool(&diagnostic_tool());
+        let text = serde_json::to_string(&schema).unwrap();
+
+        for expected in [
+            "\"action\"",
+            "\"sourceSet\"",
+            "\"analyze\"",
+            "\"findings\"",
+            "\"status\"",
+            "\"catalog\"",
+        ] {
+            assert!(text.contains(expected), "schema misses {expected}: {text}");
+        }
+        let branches = schema["oneOf"]
             .as_array()
-            .unwrap()
-            .contains(&json!("workspace")));
-
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
-        assert!(error.contains("requires `path`"));
-
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("analyze"));
-        args.insert(
-            "path".to_string(),
-            json!("src/CommonModules/Probe/Ext/Module.bsl"),
-        );
-        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
-        assert!(error.contains("does not support `path`"));
-
-        let mut args = Map::new();
-        args.insert(
-            "path".to_string(),
-            json!("src/CommonModules/Probe/Ext/Module.bsl"),
-        );
-        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
-        assert!(error.contains("does not support `path`"));
-
-        for mode in ["status", "catalog", "workspace"] {
-            let mut args = Map::new();
-            args.insert("mode".to_string(), json!(mode));
-            args.insert(
-                "path".to_string(),
-                json!("src/CommonModules/Probe/Ext/Module.bsl"),
-            );
-            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+            .expect("diagnostics must publish one strict branch per action");
+        assert_eq!(branches.len(), 4);
+        for branch in branches {
+            assert_eq!(branch["additionalProperties"], false);
+            let properties = branch["properties"].as_object().unwrap();
             assert!(
-                error.contains(&format!("mode `{mode}` does not support `path`")),
-                "mode {mode} must reject `path` instead of dropping it: {error}"
+                !properties.contains_key("providers"),
+                "provider execution is routed internally: {branch}"
             );
-        }
-
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("file"));
-        args.insert(
-            "path".to_string(),
-            json!("src/CommonModules/Probe/Ext/Module.bsl"),
-        );
-        validate_tool_arguments(diagnostics, &args, false).unwrap();
-
-        let mut args = Map::new();
-        args.insert("mode".to_string(), json!("raw"));
-        let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
-        assert!(error.contains("must be one of"));
-
-        let args = Map::new();
-        validate_tool_arguments(diagnostics, &args, false).unwrap();
-
-        for format in ["json", "jsonl"] {
-            let mut args = Map::new();
-            args.insert("format".to_string(), json!(format));
-            validate_tool_arguments(diagnostics, &args, false).unwrap();
-        }
-        for format in ["console", "sarif"] {
-            let mut args = Map::new();
-            args.insert("format".to_string(), json!(format));
-            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
-            assert!(error.contains("must be one of: json, jsonl"), "{error}");
-        }
-        for mode in ["status", "catalog", "file", "workspace"] {
-            let mut args = Map::new();
-            args.insert("mode".to_string(), json!(mode));
-            args.insert("format".to_string(), json!("jsonl"));
-            if mode == "file" {
-                args.insert("path".to_string(), json!("Module.bsl"));
+            for removed in [
+                "mode",
+                "sourceDir",
+                "path",
+                "config",
+                "format",
+                "detail",
+                "maxFiles",
+                "rangeStart",
+                "rangeEnd",
+            ] {
+                assert!(!properties.contains_key(removed), "{removed}");
             }
-            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
+        }
+    }
+
+    #[test]
+    fn diagnostics_timeout_description_uses_the_action_contract() {
+        let schema = input_schema_for_tool(&diagnostic_tool());
+        let description = schema["properties"]["timeoutSeconds"]["description"]
+            .as_str()
+            .expect("timeoutSeconds is described at the summary object");
+
+        assert!(description.contains("action=analyze"), "{description}");
+        assert!(!description.contains("mode analyze"), "{description}");
+    }
+
+    #[test]
+    fn diagnostics_contract_accepts_only_fields_of_the_selected_action() {
+        let schema = input_schema_for_tool(&diagnostic_tool());
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for valid in [
+            json!({
+                "action": "analyze",
+                "sourceSet": "main",
+                "filter": {
+                    "minSeverity": "warning",
+                    "codes": [{"provider": "bsl-analyzer", "code": "LineLength"}]
+                },
+                "limit": 200,
+                "timeoutSeconds": 30
+            }),
+            json!({
+                "action": "findings",
+                "sourceSet": "main",
+                "metadataPath": "CommonModule.Проверка.Module",
+                "range": {
+                    "startLine": 0,
+                    "startColumn": 0,
+                    "endLine": 1,
+                    "endColumn": 0
+                }
+            }),
+            json!({"action": "status", "sourceSet": "main"}),
+            json!({
+                "action": "catalog",
+                "sourceSet": "main",
+                "filter": {"codes": [{"provider": "bsl-analyzer", "code": "LineLength"}]}
+            }),
+        ] {
+            assert!(validator.is_valid(&valid), "schema rejected {valid}");
+        }
+
+        for invalid in [
+            json!({"action": "analyze"}),
+            json!({"action": "analyze", "sourceSet": " main "}),
+            json!({"action": "findings", "sourceSet": "main"}),
+            json!({"action": "analyze", "sourceSet": "main", "metadataPath": "Catalog.Товары"}),
+            json!({"action": "status", "sourceSet": "main", "range": {}}),
+            json!({"action": "findings", "sourceSet": "main", "metadataPath": "Catalog.Товары", "timeoutSeconds": 30}),
+            json!({"action": "catalog", "sourceSet": "main", "filter": {"minSeverity": "warning"}}),
+            json!({"action": "status", "sourceSet": "main", "providers": ["bsl-analyzer"]}),
+            json!({"action": "status", "sourceSet": "main", "providers": []}),
+            json!({"action": "status", "sourceSet": "main", "providers": ["bsl-analyzer", "bsl-analyzer"]}),
+            json!({"action": "analyze", "sourceSet": "main", "filter": {"codes": [
+                {"provider": "bsl-analyzer", "code": "LineLength"},
+                {"provider": "bsl-analyzer", "code": "LineLength"}
+            ]}}),
+        ] {
+            assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn diagnostics_legacy_target_removed_precedes_unknown_argument_validation() {
+        let tool = diagnostic_tool();
+        for legacy in ["mode", "sourceDir", "path"] {
+            let args = Map::from_iter([
+                ("action".into(), json!("analyze")),
+                ("sourceSet".into(), json!("main")),
+                (legacy.into(), json!("legacy")),
+            ]);
+            let error = validate_tool_argument_shape(tool, &args).unwrap_err();
+            assert!(error.starts_with("legacy_target_removed:"), "{error}");
+            assert!(error.contains("action + sourceSet"), "{error}");
+        }
+    }
+
+    #[test]
+    fn diagnostics_contract_semantics_reject_malformed_action_payloads() {
+        let tool = diagnostic_tool();
+        for valid in [
+            json!({"action": "analyze", "sourceSet": "main", "limit": 1}),
+            json!({
+                "action": "findings",
+                "sourceSet": "main",
+                "metadataPath": "CommonModule.Проверка.Module",
+                "range": {"startLine": 0, "startColumn": 0, "endLine": 0, "endColumn": 1}
+            }),
+        ] {
+            validate_tool_arguments(tool, valid.as_object().unwrap(), false)
+                .unwrap_or_else(|error| panic!("valid request {valid} failed: {error}"));
+        }
+
+        for invalid in [
+            json!({"action": "analyze", "sourceSet": " main "}),
+            json!({"action": "findings", "sourceSet": "main"}),
+            json!({"action": "findings", "sourceSet": "main", "metadataPath": "Module", "timeoutSeconds": 30}),
+            json!({"action": "catalog", "sourceSet": "main", "filter": {"minSeverity": "warning"}}),
+            json!({"action": "status", "sourceSet": "main", "providers": []}),
+            json!({"action": "findings", "sourceSet": "main", "metadataPath": "Module", "range": {
+                "startLine": 1, "startColumn": 0, "endLine": 1, "endColumn": 0
+            }}),
+            json!({"action": "analyze", "sourceSet": "main", "filter": {"codes": [
+                {"provider": "bsl-analyzer", "code": "LineLength"},
+                {"provider": "bsl-analyzer", "code": "LineLength"}
+            ]}}),
+        ] {
             assert!(
-                error.contains("only supported for mode `analyze`"),
-                "{mode}: {error}"
+                validate_tool_arguments(tool, invalid.as_object().unwrap(), false).is_err(),
+                "semantic validator accepted {invalid}"
             );
-        }
-
-        for limit in [1, 200] {
-            let mut args = Map::new();
-            args.insert("limit".to_string(), json!(limit));
-            validate_tool_arguments(diagnostics, &args, false).unwrap();
-        }
-        for limit in [json!(0), json!(201), json!("200"), json!(1.5)] {
-            let mut args = Map::new();
-            args.insert("limit".to_string(), limit);
-            assert!(validate_tool_arguments(diagnostics, &args, false).is_err());
-        }
-
-        for codes in [json!([""]), json!(["LineLength", "LineLength"]), json!([1])] {
-            let mut args = Map::new();
-            args.insert("codes".to_string(), codes);
-            assert!(validate_tool_arguments(diagnostics, &args, false).is_err());
-        }
-
-        for timeout in [30, 900, 3600] {
-            let mut args = Map::new();
-            args.insert("timeoutSeconds".to_string(), json!(timeout));
-            validate_tool_arguments(diagnostics, &args, false).unwrap();
-        }
-
-        for mode in ["status", "catalog", "file", "workspace"] {
-            let mut args = Map::new();
-            args.insert("mode".to_string(), json!(mode));
-            args.insert("timeoutSeconds".to_string(), json!(900));
-            let error = validate_tool_arguments(diagnostics, &args, false).unwrap_err();
-            assert!(
-                error.contains("only supported for mode `analyze`"),
-                "{mode}: {error}"
-            );
-        }
-
-        for timeout in [json!("900"), json!(29), json!(3601), json!(-1), json!(30.5)] {
-            let mut args = Map::new();
-            args.insert("timeoutSeconds".to_string(), timeout);
-            assert!(validate_tool_arguments(diagnostics, &args, false).is_err());
         }
     }
 

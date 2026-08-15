@@ -32,6 +32,72 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def building_section(self, role: str, provider: str) -> dict:
+        """A role whose index is still being built: retryable, not broken."""
+        return {
+            "role": role,
+            "provider": provider,
+            "status": "timedOut",
+            "termination": {
+                "code": "dependencyPending",
+                "retryable": True,
+                "detailCode": "index_building",
+            },
+            "hits": [],
+            "diagnostics": [],
+        }
+
+    def ready_section(self, role: str, provider: str) -> dict:
+        return {
+            "role": role,
+            "provider": provider,
+            "status": "empty",
+            "termination": None,
+            "hits": [],
+            "diagnostics": [],
+        }
+
+    def failed_section(self, role: str, provider: str) -> dict:
+        return {
+            "role": role,
+            "provider": provider,
+            "status": "failed",
+            "termination": {"code": "providerFailed", "retryable": False},
+            "hits": [],
+            "diagnostics": ["index build failed"],
+        }
+
+    def search_payload(self, *, semantic: dict | None = None, symbol: dict | None = None) -> dict:
+        return {
+            "data": {
+                "sections": [
+                    semantic or self.building_section("semantic", "rlm"),
+                    symbol or self.building_section("symbol", "bsl-analyzer"),
+                    {
+                        "role": "lexical",
+                        "provider": "git-grep",
+                        "status": "empty",
+                        "termination": None,
+                        "hits": [],
+                        "diagnostics": [],
+                    },
+                ]
+            }
+        }
+
+    def search_scenario(self, *, status: str, errors: list[str] | None = None) -> dict:
+        module = load_assessment_module()
+        return module.scenario_result(
+            scenario_id="code-search",
+            title="search",
+            tool="unica.code.search",
+            arguments={},
+            status=status,
+            duration_ms=5,
+            blocking=True,
+            errors=errors,
+        )
+
     def test_release_gate_requires_only_the_four_current_meta_tools(self) -> None:
         module = load_assessment_module()
         meta_tools = {
@@ -221,16 +287,56 @@ for raw in sys.stdin:
                     {"name": "main", "path": "src/cf", "sourceFormat": "platform_xml"}
                 ]
             }
-        elif name == "unica.code.diagnostics" and arguments.get("mode") == "workspace":
-            payload["diagnostics"] = [
-                {"code": "UnusedLocalVariable", "file": "CommonModules/Test/Ext/Module.bsl"}
-            ]
-        elif name == "unica.code.search":
+        elif name == "unica.code.diagnostics" and arguments.get("action") == "analyze":
+            payload.pop("stdout")
             payload["data"] = {
+                "action": "analyze",
+                "state": "completed",
+                "complete": True,
+                "providers": [],
+                "itemsTotal": 1,
+                "itemsReturned": 1,
+                "truncated": False,
+                "items": [{
+                    "kind": "diagnostic",
+                    "provider": "bsl-analyzer",
+                    "location": {
+                        "kind": "addressed",
+                        "sourceSet": "main",
+                        "targetKind": "sourceRoot",
+                    },
+                    "focus": {"kind": "target"},
+                    "code": "UnusedLocalVariable",
+                    "severity": "warning",
+                    "message": "fixture",
+                    "tags": [],
+                }],
+            }
+        elif name == "unica.code.search":
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {
+                    "progressToken": "release-assessment-code-search",
+                    "progress": 3,
+                    "total": 3,
+                    "_meta": {"io.unica/searchProgress": {
+                        "schemaVersion": 1,
+                        "providers": [
+                            {"role": "semantic", "provider": "rlm", "state": "completed", "phase": "searching", "resultsFound": 0},
+                            {"role": "symbol", "provider": "bsl-analyzer", "state": "completed", "phase": "searching", "resultsFound": 0},
+                            {"role": "lexical", "provider": "git-grep", "state": "completed", "phase": "searching", "resultsFound": 0},
+                        ],
+                    }},
+                },
+            }), flush=True)
+            payload["data"] = {
+                "coverage": "complete",
+                "elapsedMs": 1,
                 "sections": [
-                    {"provider": "rlm", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
-                    {"provider": "bsl-analyzer", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
-                    {"provider": "git-grep", "status": "empty", "hits": [], "diagnostics": [], "artifacts": []},
+                    {"role": "semantic", "provider": "rlm", "status": "empty", "termination": None, "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
+                    {"role": "symbol", "provider": "bsl-analyzer", "status": "empty", "termination": None, "searchComplete": True, "ranking": "provider", "ordering": "provider", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
+                    {"role": "lexical", "provider": "git-grep", "status": "empty", "termination": None, "searchComplete": True, "ranking": "none", "ordering": "providerTraversal", "matches": {"returned": 0, "total": 0, "relation": "exact"}, "hits": [], "diagnostics": []},
                 ]
             }
         elif name == "unica.standards.explain":
@@ -558,15 +664,28 @@ for raw in sys.stdin:
         self.assertEqual(summary["blockingFailures"], 0)
         self.assertEqual(summary["qualityFindings"]["nonBlockingFailures"], 1)
 
-    def test_code_search_is_blocking_and_requires_fixed_provider_sections(self) -> None:
+    def test_code_search_is_blocking_and_requires_fixed_role_sections(self) -> None:
         module = load_assessment_module()
+        project_map = {
+            "data": {
+                "sourceSets": [
+                    {
+                        "name": "configuration",
+                        "path": module.SOURCE_DIR,
+                        "sourceFormat": "platform_xml",
+                    }
+                ]
+            }
+        }
         scenarios = {
-            scenario_id: (blocking, require_payload_ok)
-            for scenario_id, _title, _tool, _arguments, blocking, require_payload_ok
-            in module.base_tool_scenarios(Path("/missing-bsp"))
+            scenario_id: (arguments, blocking, require_payload_ok)
+            for scenario_id, _title, _tool, arguments, blocking, require_payload_ok
+            in module.base_tool_scenarios(Path("/missing-bsp"), project_map)
         }
 
-        self.assertEqual(scenarios["code-search"], (True, True))
+        self.assertEqual(scenarios["code-search"][1:], (True, True))
+        self.assertEqual(scenarios["code-search"][0]["sourceSet"], "configuration")
+        self.assertNotIn("sourceDir", scenarios["code-search"][0])
 
         scenario = module.scenario_result(
             scenario_id="code-search",
@@ -589,170 +708,229 @@ for raw in sys.stdin:
                 },
             },
         )
-
         self.assertEqual(scenario["status"], "failed")
         self.assertTrue(
-            any("rlm, bsl-analyzer, git-grep" in error for error in scenario["errors"]),
+            any("semantic, symbol, lexical" in error for error in scenario["errors"]),
             scenario,
         )
 
-    def test_indexed_code_search_waits_for_building_provider_to_become_ready(self) -> None:
+    def test_diagnostics_release_probe_uses_logical_analyze_contract(self) -> None:
         module = load_assessment_module()
-        pending_payload = {
-            "ok": False,
-            "errors": ["no provider served the request"],
+        project_map = {
             "data": {
-                "sections": [
+                "sourceSets": [
                     {
-                        "provider": "rlm",
-                        "status": "unavailable",
-                        "hits": [],
-                        "diagnostics": ["rlm index building"],
-                        "artifacts": [],
-                    },
-                    {
-                        "provider": "bsl-analyzer",
-                        "status": "unavailable",
-                        "hits": [],
-                        "diagnostics": ["Search index is being built, please try again in a moment."],
-                        "artifacts": [],
-                    },
-                    {
-                        "provider": "git-grep",
-                        "status": "failed",
-                        "hits": [],
-                        "diagnostics": ["git-grep search was too slow"],
-                        "artifacts": [],
-                    },
+                        "name": "configuration",
+                        "path": module.SOURCE_DIR,
+                        "sourceFormat": "platform_xml",
+                    }
                 ]
-            },
+            }
         }
-        ready_payload = {
-            "ok": True,
-            "errors": [],
-            "data": {
-                "sections": [
-                    {
-                        "provider": "rlm",
-                        "status": "empty",
-                        "hits": [],
-                        "diagnostics": [],
-                        "artifacts": [],
-                    },
-                    {
-                        "provider": "bsl-analyzer",
-                        "status": "unavailable",
-                        "hits": [],
-                        "diagnostics": ["Search index is being built"],
-                        "artifacts": [],
-                    },
-                    {
-                        "provider": "git-grep",
-                        "status": "failed",
-                        "hits": [],
-                        "diagnostics": ["git-grep search was too slow"],
-                        "artifacts": [],
-                    },
-                ]
-            },
-        }
-        attempts = iter(
-            [
-                (
-                    module.scenario_result(
-                        scenario_id="code-search",
-                        title="search",
-                        tool="unica.code.search",
-                        arguments={},
-                        status="failed",
-                        duration_ms=7,
-                        blocking=True,
-                        errors=["no provider served the request"],
-                    ),
-                    pending_payload,
-                ),
-                (
-                    module.scenario_result(
-                        scenario_id="code-search",
-                        title="search",
-                        tool="unica.code.search",
-                        arguments={},
-                        status="passed",
-                        duration_ms=5,
-                        blocking=True,
-                    ),
-                    ready_payload,
-                ),
-            ]
+        diagnostics = next(
+            scenario
+            for scenario in module.base_tool_scenarios(
+                Path("/missing-bsp"), project_map
+            )
+            if scenario[2] == "unica.code.diagnostics"
         )
-        now = [0.0]
-        sleeps: list[float] = []
+        arguments = diagnostics[3]
 
-        def sleep(seconds: float) -> None:
-            sleeps.append(seconds)
-            now[0] += seconds
+        self.assertEqual(arguments["action"], "analyze")
+        self.assertEqual(arguments["sourceSet"], "configuration")
+        for legacy in ("mode", "sourceDir", "path", "codes"):
+            self.assertNotIn(legacy, arguments)
 
-        scenario, payload = module.wait_for_indexed_code_search(
-            lambda _remaining_seconds: next(attempts),
-            timeout_seconds=10,
-            poll_interval_seconds=1,
-            monotonic=lambda: now[0],
-            sleep=sleep,
-        )
-
-        self.assertEqual("passed", scenario["status"])
-        self.assertIs(payload, ready_payload)
-        self.assertEqual(12, scenario["durationMs"])
-        self.assertEqual(2, scenario["metrics"]["indexAttempts"])
-        self.assertEqual("ready", scenario["metrics"]["indexedState"])
-        self.assertEqual([1], sleeps)
-
-    def test_indexed_code_search_fails_when_no_indexed_provider_can_become_ready(self) -> None:
+    def test_diagnostic_code_extraction_reads_provider_neutral_items(self) -> None:
         module = load_assessment_module()
-        terminal_payload = {
-            "ok": True,
-            "errors": [],
+        payload = {
             "data": {
-                "sections": [
+                "items": [
                     {
-                        "provider": "rlm",
-                        "status": "unavailable",
-                        "hits": [],
-                        "diagnostics": ["rlm is not installed"],
-                        "artifacts": [],
-                    },
-                    {
+                        "kind": "diagnostic",
                         "provider": "bsl-analyzer",
-                        "status": "failed",
-                        "hits": [],
-                        "diagnostics": ["index build failed"],
-                        "artifacts": [],
+                        "code": "UnusedLocalVariable",
                     },
-                    {
-                        "provider": "git-grep",
-                        "status": "ok",
-                        "hits": [{"path": "Module.bsl", "line": 1}],
-                        "diagnostics": [],
-                        "artifacts": [],
-                    },
+                    {"kind": "resourceFailure", "error": {"code": "source_failed"}},
                 ]
-            },
+            }
         }
-        sleeps: list[float] = []
 
-        scenario, payload = module.wait_for_indexed_code_search(
-            lambda _remaining_seconds: (
-                module.scenario_result(
+        self.assertEqual(module.extract_diagnostic_codes(payload), ["UnusedLocalVariable"])
+
+    def test_code_search_rejects_an_invalid_match_count_contract(self) -> None:
+        module = load_assessment_module()
+
+        def section(role: str, provider: str, ranking: str, ordering: str) -> dict:
+            return {
+                "role": role,
+                "provider": provider,
+                "status": "empty",
+                "termination": None,
+                "searchComplete": True,
+                "ranking": ranking,
+                "ordering": ordering,
+                "matches": {"returned": 0, "total": 0, "relation": "exact"},
+                "hits": [],
+                "diagnostics": [],
+            }
+
+        invalid_matches = (
+            {},
+            {"returned": 0, "total": 0, "relation": "estimated"},
+            {"returned": False, "total": 0, "relation": "exact"},
+        )
+        for matches in invalid_matches:
+            with self.subTest(matches=matches):
+                scenario = module.scenario_result(
                     scenario_id="code-search",
                     title="search",
                     tool="unica.code.search",
                     arguments={},
                     status="passed",
-                    duration_ms=5,
+                    duration_ms=1,
                     blocking=True,
+                )
+                sections = [
+                    section("semantic", "rlm", "provider", "provider"),
+                    section("symbol", "bsl-analyzer", "provider", "provider"),
+                    section("lexical", "git-grep", "none", "providerTraversal"),
+                ]
+                sections[0]["matches"] = matches
+
+                module.validate_code_search(
+                    scenario,
+                    {"ok": True, "data": {"sections": sections}},
+                )
+
+                self.assertEqual(scenario["status"], "failed", scenario)
+                self.assertTrue(
+                    any("count" in error for error in scenario["errors"]), scenario
+                )
+
+    def test_code_search_rejects_a_missing_or_inconsistent_terminal_reason(self) -> None:
+        module = load_assessment_module()
+
+        def section(role: str, provider: str, ranking: str, ordering: str) -> dict:
+            return {
+                "role": role,
+                "provider": provider,
+                "status": "empty",
+                "termination": None,
+                "searchComplete": True,
+                "ranking": ranking,
+                "ordering": ordering,
+                "matches": {"returned": 0, "total": 0, "relation": "exact"},
+                "hits": [],
+                "diagnostics": [],
+            }
+
+        invalid_termination = object()
+        for termination in (
+            invalid_termination,
+            {"code": "deadlineExceeded", "retryable": True},
+        ):
+            with self.subTest(termination=termination):
+                scenario = module.scenario_result(
+                    scenario_id="code-search",
+                    title="search",
+                    tool="unica.code.search",
+                    arguments={},
+                    status="passed",
+                    duration_ms=1,
+                    blocking=True,
+                )
+                sections = [
+                    section("semantic", "rlm", "provider", "provider"),
+                    section("symbol", "bsl-analyzer", "provider", "provider"),
+                    section("lexical", "git-grep", "none", "providerTraversal"),
+                ]
+                if termination is invalid_termination:
+                    sections[0].pop("termination")
+                else:
+                    sections[0]["termination"] = termination
+
+                module.validate_code_search(
+                    scenario,
+                    {"ok": True, "data": {"sections": sections}},
+                )
+
+                self.assertEqual(scenario["status"], "failed", scenario)
+                self.assertTrue(
+                    any("termination" in error for error in scenario["errors"]),
+                    scenario,
+                )
+
+    def test_code_search_call_requests_and_records_typed_progress(self) -> None:
+        module = load_assessment_module()
+
+        message = module.tool_call_message(
+            1,
+            "unica.code.search",
+            {"sourceSet": "main", "query": "Procedure"},
+            progress_token="release-assessment-code-search",
+        )
+
+        self.assertEqual(
+            message["params"]["_meta"]["progressToken"],
+            "release-assessment-code-search",
+        )
+
+    def test_indexed_code_search_waits_for_a_building_role_to_become_ready(self) -> None:
+        """A fresh BSP has no index, and that is not a release defect.
+
+        The pending state arrives as a typed retryable `dependencyPending`
+        termination, so the poller must read the code rather than the
+        diagnostics prose it happens to carry.
+        """
+        module = load_assessment_module()
+        attempts = iter(
+            [
+                (
+                    self.search_scenario(status="failed", errors=["no role served the request"]),
+                    self.search_payload(semantic=self.building_section("semantic", "rlm")),
                 ),
-                terminal_payload,
-            ),
+                (
+                    self.search_scenario(status="passed"),
+                    self.search_payload(semantic=self.ready_section("semantic", "rlm")),
+                ),
+            ]
+        )
+        sleeps: list[float] = []
+
+        scenario, payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: next(attempts),
+            timeout_seconds=10,
+            poll_interval_seconds=2,
+            sleep=sleeps.append,
+        )
+
+        self.assertEqual("passed", scenario["status"])
+        self.assertEqual(2, scenario["metrics"]["indexAttempts"])
+        self.assertEqual("ready", scenario["metrics"]["indexedState"])
+        self.assertEqual([2], sleeps)
+        self.assertEqual("ready", module.indexed_code_search_state(payload))
+
+    def test_indexed_code_search_waits_while_one_role_can_still_become_ready(self) -> None:
+        """A permanently failed role does not settle the search on its own."""
+        module = load_assessment_module()
+        payload = self.search_payload(
+            semantic=self.building_section("semantic", "rlm"),
+            symbol=self.failed_section("symbol", "bsl-analyzer"),
+        )
+
+        self.assertEqual("building", module.indexed_code_search_state(payload))
+
+    def test_indexed_code_search_fails_when_no_role_can_become_ready(self) -> None:
+        module = load_assessment_module()
+        terminal_payload = self.search_payload(
+            semantic=self.failed_section("semantic", "rlm"),
+            symbol=self.failed_section("symbol", "bsl-analyzer"),
+        )
+        sleeps: list[float] = []
+
+        scenario, payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: (self.search_scenario(status="passed"), terminal_payload),
             timeout_seconds=10,
             sleep=sleeps.append,
         )
@@ -767,157 +945,38 @@ for raw in sys.stdin:
         )
         self.assertEqual([], sleeps)
 
-    def test_indexed_code_search_fails_when_readiness_deadline_expires(self) -> None:
+    def test_indexed_code_search_caps_each_attempt_to_the_remaining_deadline(self) -> None:
+        """Retrying must not buy another full per-attempt timeout."""
         module = load_assessment_module()
-        payload = {
-            "ok": False,
-            "errors": ["no provider served the request"],
-            "data": {
-                "sections": [
-                    {
-                        "provider": "rlm",
-                        "status": "unavailable",
-                        "hits": [],
-                        "diagnostics": ["rlm index building"],
-                        "artifacts": [],
-                    },
-                    {
-                        "provider": "bsl-analyzer",
-                        "status": "unavailable",
-                        "hits": [],
-                        "diagnostics": ["Search index is being built"],
-                        "artifacts": [],
-                    },
-                    {
-                        "provider": "git-grep",
-                        "status": "failed",
-                        "hits": [],
-                        "diagnostics": ["git-grep search was too slow"],
-                        "artifacts": [],
-                    },
-                ]
-            },
-        }
+        pending_payload = self.search_payload(
+            semantic=self.building_section("semantic", "rlm"),
+            symbol=self.building_section("symbol", "bsl-analyzer"),
+        )
         now = [0.0]
-        attempts = [0]
+        budgets: list[float] = []
 
-        def run_attempt(_remaining_seconds: float):
-            attempts[0] += 1
-            if attempts[0] > 1:
-                self.fail("the readiness deadline must stop a second MCP attempt")
+        def run_attempt(remaining_seconds: float):
+            budgets.append(remaining_seconds)
+            now[0] += 4.0
             return (
-                module.scenario_result(
-                    scenario_id="code-search",
-                    title="search",
-                    tool="unica.code.search",
-                    arguments={},
-                    status="failed",
-                    duration_ms=7,
-                    blocking=True,
-                    errors=["no provider served the request"],
-                ),
-                payload,
+                self.search_scenario(status="failed", errors=["still indexing"]),
+                pending_payload,
             )
 
-        scenario, returned_payload = module.wait_for_indexed_code_search(
+        scenario, _payload = module.wait_for_indexed_code_search(
             run_attempt,
-            timeout_seconds=1,
+            timeout_seconds=10,
             poll_interval_seconds=1,
             monotonic=lambda: now[0],
             sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
         )
 
         self.assertEqual("failed", scenario["status"])
-        self.assertIs(returned_payload, payload)
-        self.assertEqual(1, scenario["metrics"]["indexAttempts"])
+        self.assertEqual([10.0, 5.0], budgets)
         self.assertTrue(
-            any("did not become ready within 1 seconds" in error for error in scenario["errors"]),
+            any("did not become ready within 10 seconds" in error for error in scenario["errors"]),
             scenario,
         )
-
-    def test_indexed_code_search_caps_each_attempt_to_remaining_deadline(self) -> None:
-        module = load_assessment_module()
-        pending_payload = {
-            "ok": False,
-            "errors": ["no provider served the request"],
-            "data": {
-                "sections": [
-                    {
-                        "provider": provider,
-                        "status": "unavailable",
-                        "hits": [],
-                        "diagnostics": [f"{provider} index building"],
-                        "artifacts": [],
-                    }
-                    for provider in ("rlm", "bsl-analyzer")
-                ]
-            },
-        }
-        now = [0.0]
-        attempt_budgets: list[float] = []
-
-        def run_attempt(remaining_seconds: float):
-            attempt_budgets.append(remaining_seconds)
-            if len(attempt_budgets) == 1:
-                return (
-                    module.scenario_result(
-                        scenario_id="code-search",
-                        title="search",
-                        tool="unica.code.search",
-                        arguments={},
-                        status="failed",
-                        duration_ms=7,
-                        blocking=True,
-                        errors=["no provider served the request"],
-                    ),
-                    pending_payload,
-                )
-            return (
-                module.scenario_result(
-                    scenario_id="code-search",
-                    title="search",
-                    tool="unica.code.search",
-                    arguments={},
-                    status="passed",
-                    duration_ms=5,
-                    blocking=True,
-                ),
-                {
-                    "ok": True,
-                    "data": {
-                        "sections": [
-                            {
-                                "provider": "rlm",
-                                "status": "empty",
-                                "hits": [],
-                                "diagnostics": [],
-                                "artifacts": [],
-                            },
-                            {
-                                "provider": "bsl-analyzer",
-                                "status": "unavailable",
-                                "hits": [],
-                                "diagnostics": ["index building"],
-                                "artifacts": [],
-                            },
-                        ]
-                    },
-                },
-            )
-
-        scenario, _ = module.wait_for_indexed_code_search(
-            run_attempt,
-            timeout_seconds=1,
-            poll_interval_seconds=0.75,
-            monotonic=lambda: now[0],
-            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
-        )
-
-        self.assertEqual("passed", scenario["status"])
-        self.assertEqual(2, len(attempt_budgets))
-        self.assertEqual("ready", scenario["metrics"]["indexedState"])
-        self.assertAlmostEqual(1.0, attempt_budgets[0])
-        self.assertAlmostEqual(0.25, attempt_budgets[1])
 
     def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:
         module = load_assessment_module()

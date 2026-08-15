@@ -15,6 +15,7 @@ CLASSIFICATION_OUTPUTS = (
     "rust_changed",
     "platform_changed",
     "toolchain_changed",
+    "search_integration_changed",
     "package_changed",
     "plugin_content_changed",
     "ci_changed",
@@ -113,6 +114,11 @@ def expected_results(
 
     expected["test-rust-primary"] = "success" if primary_rust else "skipped"
     expected["test-rust-platforms"] = "success" if full_matrix else "skipped"
+    expected["test-search-integration"] = (
+        "success"
+        if values["search_integration_changed"] or values["ci_changed"]
+        else "skipped"
+    )
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
     expected[ASSESSMENT_JOB] = "success" if values["assessment_required"] else "skipped"
     expected["probe-thin-bootstrap"] = (

@@ -15,12 +15,13 @@
   "unica.project.status": {
     "result": {
       "contract": "typed",
-      "now": "`data`: корни рабочего пространства и наборы исходников (ADR-0023)",
+      "now": "`data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные общие и адресные по уникально адресуемому набору `checks[]` (группа с повторяющимся именем получает одну диагностику рабочего пространства с полным `count`, без неразличимых строк `sourceSet`), `sourceSets` (`array` после завершённой source discovery, `null` когда discovery не доказала наборы; `sourceSets[].sourceFormat` отражает working-tree discovery, а применимость repository-проверок может дополнительно доказываться staged index без изменения опубликованного формата) и `diagnostics[]` с безопасной remediation (ADR-0060)",
       "target": "достигнут"
     },
     "scenarios": [
-      "Понять, готов ли workspace к работе после клонирования",
-      "Выяснить, устарел ли BSL-индекс перед серией поисковых вызовов"
+      "Понять, может ли Unica безопасно работать с source sets после клонирования",
+      "Отдельно проверить переносимость Git ignore, attributes и EOL для другого clone",
+      "Получить типизированные шаги remediation без автоматического изменения файлов или index"
     ],
     "scope": "in"
   },
@@ -88,7 +89,7 @@
   "unica.code.search": {
     "result": {
       "contract": "typed",
-      "now": "`data`: три секции поставщиков с попаданиями, диагностикой и статусом (ADR-0023)",
+      "now": "`data`: три ролевые секции с логическими местоположениями, полнотой, машинной причиной завершения и retryability, ранжированием, счётом и происхождением; ход приходит через typed MCP progress (ADR-0056)",
       "target": "достигнут"
     },
     "scenarios": [
@@ -136,7 +137,7 @@
   "unica.code.diagnostics": {
     "result": {
       "contract": "typed",
-      "now": "`data`: ответ MCP анализатора как есть, тем же путём, что `code.graph`. `analyze` — имя инструмента анализатора, а не внешний процесс 1С, поэтому исключение ADR-0023 §4 на него не распространяется",
+      "now": "`data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; физические пути и формат одного анализатора наружу не выходят",
       "target": "достигнут"
     },
     "scenarios": [

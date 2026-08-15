@@ -549,7 +549,7 @@ pub(crate) fn load_subsystem_edit_model(path: &Path) -> Result<SubsystemEditMode
 
 pub(crate) fn emit_subsystem_edit_model(model: &SubsystemEditModel) -> String {
     let mut lines = Vec::new();
-    lines.push("<?xml version=\"1.0\" encoding=\"utf-8\"?>".to_string());
+    lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
         "<MetaDataObject {} version=\"{}\">",
         full_md_namespace_declarations(),
@@ -1430,8 +1430,8 @@ pub(crate) fn stable_uuid(index: usize) -> String {
 #[cfg(test)]
 mod mutation_tests {
     use super::{
-        format_compatibility_warning, guard_active_format_owner, read_utf8_sig_snapshot,
-        utf8_bom_bytes, write_utf8_bom,
+        emit_subsystem_edit_model, format_compatibility_warning, guard_active_format_owner,
+        read_utf8_sig_snapshot, utf8_bom_bytes, write_utf8_bom,
     };
     use crate::domain::format_profile::{ExportFormatVersion, FormatCompatibility};
     use crate::domain::workspace::WorkspaceContext;
@@ -1439,8 +1439,33 @@ mod mutation_tests {
     use crate::infrastructure::native_operations::single_file_publisher::{
         with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
     };
+    use crate::infrastructure::native_operations::subsystem::SubsystemEditModel;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn subsystem_edit_emits_platform_canonical_utf8_declaration() {
+        let xml = emit_subsystem_edit_model(&SubsystemEditModel {
+            version: "2.20".to_string(),
+            uuid: "11111111-2222-4333-8444-555555555555".to_string(),
+            name: "CanonicalEncoding".to_string(),
+            synonym: String::new(),
+            comment: String::new(),
+            include_help: "true".to_string(),
+            include_ci: "true".to_string(),
+            use_one_command: "false".to_string(),
+            explanation: String::new(),
+            picture: String::new(),
+            content: Vec::new(),
+            children: Vec::new(),
+        });
+
+        assert!(
+            xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"),
+            "subsystem XML must use the platform-canonical declaration: {}",
+            xml.lines().next().unwrap_or_default()
+        );
+    }
 
     fn format_owner_context(name: &str, version: &str) -> (WorkspaceContext, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(

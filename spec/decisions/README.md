@@ -72,7 +72,17 @@
 - [ADR-0051: Аргументы команды публикует тот инструмент, который её исполняет](0051-argumenty-komandy-prinadlezhat-instrumentu.md)
 - [ADR-0052: Аргумент, которого не читает ни один обработчик, не публикуется](0052-nechitaemyy-argument-ne-publikuetsya.md)
 - [ADR-0054: Состояние поддержки читается по логической цели через порт](0054-provider-neutral-support-state-reader.md)
-- [ADR-0055: Резервный `git-grep` ограничен результатом или коротким бюджетом](0055-ogranichennyy-rezervnyy-poisk-git-grep.md)
+- [ADR-0055: Дымовая проверка исполняет извлечённый проверенный архив runtime](0055-smoke-proveryaet-upakovannyy-runtime.md)
+- [ADR-0056: Поиск кода наблюдаем и опирается на роли поставщиков](0056-observable-provider-neutral-code-search.md)
+- [ADR-0057: Свежесть RLM доказывается доверенным поколением исходников](0057-rlm-source-revision-freshness.md)
+- [ADR-0058: `git-grep` возвращает ограниченный неранжируемый префикс](0058-bounded-unranked-git-grep-search.md)
+- [ADR-0059: Несовместимая версия RLM получает новое поколение состояния](0059-rlm-generacionnyy-perehod.md)
+- [ADR-0060: `unica.project.status` публикует типизированную готовность проекта](0060-project-status-publikuet-gotovnost-proekta.md)
+- [ADR-0061: Многофайловый RLM входит в runtime замкнутой полезной нагрузкой](0061-rlm-mnogofaylovyy-runtime-iz-proveryaemogo-arhiva.md)
+- [ADR-0062: Готовность RLM является типизированным состоянием](0062-tipizirovannaya-gotovnost-rlm.md)
+- [ADR-0063: Публичная диагностика адресует логические цели](0063-logicheskie-nablyudeniya-diagnostiki.md)
+- [ADR-0064: Поставщики диагностик сохраняют происхождение и отказывают независимо](0064-neytralnaya-kompoziciya-diagnostik.md)
+- [ADR-0065: Миграция читателя выбирает мост или прямое переключение явно](0065-yavnyy-rezhim-migracii-chitatelya.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

@@ -23,6 +23,7 @@ jobs:
       rust_changed: ${{ steps.scope.outputs.rust_changed }}
       platform_changed: ${{ steps.scope.outputs.platform_changed }}
       toolchain_changed: ${{ steps.scope.outputs.toolchain_changed }}
+      search_integration_changed: ${{ steps.scope.outputs.search_integration_changed }}
       package_changed: ${{ steps.scope.outputs.package_changed }}
       plugin_content_changed: ${{ steps.scope.outputs.plugin_content_changed }}
       ci_changed: ${{ steps.scope.outputs.ci_changed }}
@@ -126,11 +127,28 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace -- --test-threads=1
 
+  test-search-integration:
+    name: Search integration (macos-14)
+    runs-on: macos-14
+    timeout-minutes: 30
+    needs: classify-changes
+    if: >-
+      ${{
+        needs.classify-changes.outputs.search_integration_changed == 'true' ||
+        needs.classify-changes.outputs.ci_changed == 'true'
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p unica-coder --test issue_89_workspace_service -- --ignored --test-threads=1
+
   build-tools:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: [classify-changes, verify-source, test-rust-primary, test-rust-platforms]
+    needs: [classify-changes, verify-source, test-rust-primary, test-rust-platforms, test-search-integration]
     if: >-
       ${{
         always() &&
@@ -138,6 +156,7 @@ jobs:
         needs.verify-source.result == 'success' &&
         (needs.test-rust-primary.result == 'success' || needs.test-rust-primary.result == 'skipped') &&
         (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
+        (needs.test-search-integration.result == 'success' || needs.test-search-integration.result == 'skipped') &&
         (needs.classify-changes.outputs.release_required == 'true' ||
          needs.classify-changes.outputs.ci_changed == 'true')
       }}
@@ -225,26 +244,21 @@ jobs:
           fi
           cargo_seconds="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["cargoBuildSeconds"])' "$METRICS_FILE" 2>/dev/null || true)"
           if [ -z "$cargo_seconds" ]; then cargo_seconds=unavailable; fi
+          archive_download_seconds="$(python -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["archiveDownloadSeconds"])' "$METRICS_FILE" 2>/dev/null || true)"
+          if [ -z "$archive_download_seconds" ]; then archive_download_seconds=unavailable; fi
           {
             echo "### Cargo build ($TARGET)"
             echo
             echo "- Target: \`$TARGET\`"
             echo "- Cache outcome: \`$cache_outcome\`"
             echo "- Cargo build duration: \`$cargo_seconds\` seconds"
+            echo "- RLM archive download duration: \`$archive_download_seconds\` seconds"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Check bundled tool contracts
         run: >
           python scripts/ci/check-tool-contracts.py
           --target "${{ matrix.target }}"
           --tools-dir ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}"
-      - name: Smoke packaged Unica MCP
-        shell: bash
-        run: |
-          executable=".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}/unica"
-          if [ "${{ matrix.target }}" = "win-x64" ]; then executable="${executable}.exe"; fi
-          python scripts/ci/smoke-unica-mcp.py \
-            --binary "$executable" \
-            --plugin-root ".build/tool-bundles/${{ matrix.target }}"
       - name: Package deterministic runtime
         run: >
           python scripts/ci/package-unica-runtime.py
@@ -255,6 +269,83 @@ jobs:
           python scripts/ci/verify-release-assets.py
           --asset-dir ".build/runtime-assets/${{ matrix.target }}"
           --target "${{ matrix.target }}"
+      - name: Report standalone runtime size evidence
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BUNDLE_ROOT: .build/tool-bundles/${{ matrix.target }}
+          WORK_ROOT: .build/tool-work/${{ matrix.target }}
+          ASSET_ROOT: .build/runtime-assets/${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import tarfile
+          from pathlib import Path
+
+          target = os.environ["TARGET"]
+          lock = json.loads(
+              Path("plugins/unica/third-party/tools.lock.json").read_text(encoding="utf-8")
+          )
+          rlm_tools = [
+              tool
+              for tool in lock["tools"]
+              if tool["name"] in {"rlm-bsl-index", "rlm-bsl-mcp"}
+          ]
+          assets = [tool["assets"][target] for tool in rlm_tools]
+          asset_names = {asset["assetName"] for asset in assets}
+          asset_sizes = {asset["size"] for asset in assets}
+          if len(rlm_tools) != 2 or len(asset_names) != 1 or len(asset_sizes) != 1:
+              raise SystemExit("RLM archive lock identity is not shared")
+          asset_name = next(iter(asset_names))
+          expected_archive_bytes = next(iter(asset_sizes))
+          matches = sorted(Path(os.environ["WORK_ROOT"]).joinpath("downloads").glob(f"*-{asset_name}"))
+          if len(matches) != 1:
+              raise SystemExit(f"expected one downloaded RLM archive, found {len(matches)}")
+          source_archive = matches[0]
+          if source_archive.stat().st_size != expected_archive_bytes:
+              raise SystemExit("downloaded RLM archive size differs from lock")
+          with tarfile.open(source_archive, "r:gz") as archive:
+              stream = archive.extractfile("manifest.json")
+              if stream is None:
+                  raise SystemExit("RLM archive manifest is missing")
+              rlm_manifest = json.load(stream)
+          extracted_rlm_bytes = sum(item["size"] for item in rlm_manifest["files"])
+
+          tools_path = Path(os.environ["BUNDLE_ROOT"]) / "tools.json"
+          manifest = json.loads(tools_path.read_text(encoding="utf-8"))
+          runtime_file_count = len(manifest["runtimeFiles"])
+          runtime_archive = (
+              Path(os.environ["ASSET_ROOT"]) / f"unica-runtime-{target}.tar.gz"
+          )
+          final_runtime_bytes = runtime_archive.stat().st_size
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write(f"### Standalone runtime size ({target})\n\n")
+              summary.write(f"- RLM source archive bytes: `{source_archive.stat().st_size}`\n")
+              summary.write(f"- RLM extracted payload bytes: `{extracted_rlm_bytes}`\n")
+              summary.write(f"- Final runtime archive bytes: `{final_runtime_bytes}`\n")
+              summary.write(f"- Runtime file count: `{runtime_file_count}`\n")
+          PY
+      - name: Extract deterministic runtime for MCP smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_root=".build/runtime-smoke/${{ matrix.target }}"
+          mkdir -p "$runtime_root"
+          tar -xzf ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz" \
+            -C "$runtime_root"
+      - name: Smoke packaged Unica MCP
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          runtime_root=".build/runtime-smoke/${{ matrix.target }}"
+          executable="$runtime_root/bin/${{ matrix.target }}/unica"
+          if [ "${{ matrix.target }}" = "win-x64" ]; then executable="${executable}.exe"; fi
+          python scripts/ci/smoke-unica-mcp.py \
+            --binary "$executable" \
+            --plugin-root "$runtime_root" \
+            --total-timeout-seconds 120
       - name: Stage exact bootstrap payload
         shell: bash
         run: |
@@ -537,6 +628,7 @@ jobs:
       - verify-source
       - test-rust-primary
       - test-rust-platforms
+      - test-search-integration
       - build-tools
       - package-thin
       - probe-thin-bootstrap

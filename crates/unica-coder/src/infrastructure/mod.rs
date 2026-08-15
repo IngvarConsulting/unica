@@ -3,6 +3,7 @@ pub(crate) mod bsl_outline;
 pub(crate) mod bundled_tools;
 pub(crate) mod code_intelligence;
 pub(crate) mod configuration_help;
+pub(crate) mod diagnostics;
 pub(crate) mod diagnostics_jsonl;
 pub(crate) mod documentation_policy;
 pub(crate) mod documentation_retrieval;
@@ -24,10 +25,13 @@ pub(crate) mod standards_documentation;
 #[allow(dead_code)]
 pub(crate) mod platform_xml_source_targets;
 pub mod plugin_runtime;
+#[allow(dead_code)]
+pub(crate) mod project_health;
 pub(crate) mod project_sources;
 pub(crate) mod redaction;
 pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_jobs;
+pub(crate) mod source_revision;
 pub(crate) mod source_roots;
 // The topology provider is introduced before both public consumers migrate to it.
 #[allow(dead_code)]

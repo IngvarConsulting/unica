@@ -339,6 +339,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dispatch2"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -899,8 +908,8 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lexer"
-version = "0.2.62"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
+version = "0.2.67"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a92766691bbd0191a5ff02c34fa9058e4570b85#9a92766691bbd0191a5ff02c34fa9058e4570b85"
 dependencies = [
  "logos",
  "smol_str",
@@ -1073,6 +1082,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
+name = "objc2-core-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b"
+dependencies = [
+ "dispatch2",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1109,8 +1137,8 @@ dependencies = [
 
 [[package]]
 name = "parser"
-version = "0.2.62"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
+version = "0.2.67"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a92766691bbd0191a5ff02c34fa9058e4570b85#9a92766691bbd0191a5ff02c34fa9058e4570b85"
 dependencies = [
  "lexer",
  "parser-error",
@@ -1122,8 +1150,8 @@ dependencies = [
 
 [[package]]
 name = "parser-error"
-version = "0.2.62"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
+version = "0.2.67"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a92766691bbd0191a5ff02c34fa9058e4570b85#9a92766691bbd0191a5ff02c34fa9058e4570b85"
 dependencies = [
  "lexer",
  "smallvec",
@@ -1568,8 +1596,8 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stdx"
-version = "0.2.62"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
+version = "0.2.67"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a92766691bbd0191a5ff02c34fa9058e4570b85#9a92766691bbd0191a5ff02c34fa9058e4570b85"
 dependencies = [
  "crossbeam-channel",
  "crossbeam-utils",
@@ -1620,8 +1648,8 @@ dependencies = [
 
 [[package]]
 name = "syntax"
-version = "0.2.62"
-source = "git+https://github.com/itrous/bsl-analyzer?rev=9a6cb15d60c0381dce6a3b5e536434adb12da89b#9a6cb15d60c0381dce6a3b5e536434adb12da89b"
+version = "0.2.67"
+source = "git+https://github.com/itrous/bsl-analyzer?rev=9a92766691bbd0191a5ff02c34fa9058e4570b85#9a92766691bbd0191a5ff02c34fa9058e4570b85"
 dependencies = [
  "parser-error",
  "rowan",
@@ -1824,10 +1852,13 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "diffy",
+ "dispatch2",
  "flate2",
  "fs2",
  "jsonschema",
  "libc",
+ "objc2-core-foundation",
+ "objc2-core-services",
  "parser",
  "regex",
  "rmcp",
@@ -1841,7 +1872,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "unsafe-libyaml",
  "ureq",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
  "zip",

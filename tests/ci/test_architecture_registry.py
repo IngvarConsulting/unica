@@ -1325,57 +1325,6 @@ class RegistryCheckTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
-class OperationalConfigDecisionOwnershipTests(unittest.TestCase):
-    """The fallback amendment keeps the retained snapshot decision active."""
-
-    def test_config_snapshot_names_the_base_decision_and_fallback_amendment(self) -> None:
-        records = {record.id: record for record in all_records()}
-        snapshot = records["INV-APP-CONFIG-SNAPSHOT"]
-        base = (
-            DECISIONS_DIR / "0040-workspace-operational-config-snapshot.md"
-        ).read_text(encoding="utf-8")
-        fallback = (
-            DECISIONS_DIR / "0055-ogranichennyy-rezervnyy-poisk-git-grep.md"
-        ).read_text(encoding="utf-8")
-
-        self.assertEqual(snapshot.one("Decision"), "ADR-0040, ADR-0055")
-        self.assertIn("- Статус: `accepted`", base)
-        self.assertIn("Эта запись уточняет ADR-0040", fallback)
-
-    def test_fallback_plan_uses_the_renumbered_amendment_relationship(self) -> None:
-        plan = (
-            REPO_ROOT / "docs" / "plans" / "2026-08-12-bounded-git-grep-fallback.md"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("ADR-0055, уточняющий ADR-0040", plan)
-        self.assertNotIn("ADR-0040/ADR-0054", plan)
-
-    def test_config_snapshot_separates_file_defaults_from_compiled_fallback(self) -> None:
-        records = {record.id: record for record in all_records()}
-        rule = records["INV-APP-CONFIG-SNAPSHOT"].one("Rule") or ""
-
-        self.assertIn("скомпилированное умолчание `git-grep` равно 500 мс", rule)
-        self.assertNotIn("120 с, 45 с, 500 мс, 45 с и 120 с", rule)
-
-    def test_fallback_decision_limits_the_diagnostics_non_goal(self) -> None:
-        fallback = (
-            DECISIONS_DIR / "0055-ogranichennyy-rezervnyy-poisk-git-grep.md"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("диагностику других поставщиков", fallback)
-        self.assertIn("Диагностика таймаута `git-grep`", fallback)
-
-    def test_fallback_plan_names_the_whole_execution_policy_amendment(self) -> None:
-        plan = (
-            REPO_ROOT / "docs" / "plans" / "2026-08-12-bounded-git-grep-fallback.md"
-        ).read_text(encoding="utf-8")
-        normalized = " ".join(plan.split())
-
-        self.assertIn("ограниченного потокового чтения", normalized)
-        self.assertIn("остановки дерева процесса", normalized)
-        self.assertIn("исходов таймаута и отмены", normalized)
-
-
 class LogicalSourceContractTests(unittest.TestCase):
     """The accepted source contract stays tied to executable evidence."""
 
@@ -1564,6 +1513,99 @@ class IndexSynchronizationTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class RuntimeArtifactFlowContractTests(unittest.TestCase):
+    """The runtime bytes exercised by smoke are the bytes approved for release."""
+
+    def setUp(self) -> None:
+        self.records = all_records()
+
+    def test_extracted_runtime_smoke_is_owned_by_the_superseding_decision(self) -> None:
+        legacy = (
+            DECISIONS_DIR / "0010-ci-build-cache-and-artifact-flow.md"
+        ).read_text(encoding="utf-8")
+        current_path = DECISIONS_DIR / "0055-smoke-proveryaet-upakovannyy-runtime.md"
+        self.assertTrue(current_path.exists(), "missing ADR-0055 runtime smoke decision")
+        current = current_path.read_text(encoding="utf-8")
+        design = (
+            REPO_ROOT / "docs/design/2026-08-12-bsl-analyzer-v0-2-67-design.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Статус: `superseded` — заменено ADR-0055", legacy)
+        self.assertIn("- Статус: `accepted`", current)
+        self.assertIn("извлеч", current.lower())
+        self.assertIn("архив", current.lower())
+        self.assertIn("- Decision: `ADR-0055`", design)
+        self.assertFalse(
+            any("ADR-0010" in (record.one("Decision") or "") for record in self.records),
+            "active registry rules must name ADR-0055 instead of superseded ADR-0010",
+        )
+        self.assertTrue(
+            any("ADR-0055" in (record.one("Decision") or "") for record in self.records),
+            "ADR-0055 must own the derived runtime artifact-flow rules",
+        )
+
+
+class RlmGenerationCutoverContractTests(unittest.TestCase):
+    """The builder-15 layout and transition wording stay unambiguous."""
+
+    def setUp(self) -> None:
+        self.records = {
+            record.id: record for record in parse_records(INVARIANTS)
+        }
+
+    def test_generation_rule_owns_the_complete_pair_scoped_layout(self) -> None:
+        record = self.records.get("INV-CACHE-GENERATION-CUTOVER")
+        self.assertIsNotNone(record, "missing generation-cutover invariant")
+        rule = record.one("Rule") or ""
+
+        for token in [
+            "`workspaceRoot + sourceRoot`",
+            "`rlm-bsl/index-v15`",
+            "`caches/rlm-bsl/index-v15/bsl_index_status.json`",
+            "`locks/rlm-bsl/index-v15/bsl_index.lock`",
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, rule)
+
+    def test_glossary_delegates_generation_policy_to_its_normative_owners(self) -> None:
+        glossary = (ARCHITECTURE_DIR / "glossary.md").read_text(encoding="utf-8")
+        rlm_entry = glossary.split("- **RLM**", 1)[1].split("\n- **", 1)[0]
+
+        self.assertIn("`ADR-0059`", rlm_entry)
+        self.assertIn("`INV-CACHE-GENERATION-CUTOVER`", rlm_entry)
+        for duplicated_policy in (
+            "`rlm-bsl/index-v15`",
+            "маркерами состояния и блокировки",
+            "поколение построителя 14",
+        ):
+            with self.subTest(duplicated_policy=duplicated_policy):
+                self.assertNotIn(duplicated_policy, rlm_entry)
+
+    def test_provenance_keeps_rlm_mcp_internal_and_unica_public(self) -> None:
+        provenance = (REPO_ROOT / "spec/provenance/README.md").read_text(
+            encoding="utf-8"
+        )
+        normalized = " ".join(provenance.split())
+        self.assertNotIn("опубликованный MCP API `rlm-bsl-mcp`", normalized)
+        self.assertIn("внутренний MCP API поставляемого процесса", normalized)
+        self.assertIn("Единственный публичный MCP-сервер — `unica`", normalized)
+
+    def test_decision_context_marks_the_old_executable_as_pre_transition(self) -> None:
+        decision = (
+            DECISIONS_DIR / "0059-rlm-generacionnyy-perehod.md"
+        ).read_text(encoding="utf-8")
+        context = decision.split("## Контекст", 1)[1].split("## Решение", 1)[0]
+
+        self.assertRegex(
+            context,
+            r"До перехода Unica поставляла[^.]*`rlm-tools-bsl`",
+        )
+        self.assertNotRegex(
+            context,
+            r"(?m)^Unica поставляет[^.]*`rlm-tools-bsl`",
+        )
+
+
 class ReaderInvocationContractTests(unittest.TestCase):
     """ADR-0044 stays activated through derived executable rules."""
 
@@ -1628,6 +1670,16 @@ class ReaderInvocationContractTests(unittest.TestCase):
         )
         self.assertNotIn("признак мутации", building_blocks)
         self.assertNotIn("Сегодня таких две", building_blocks)
+
+    def test_building_blocks_describe_the_typed_project_health_git_boundary(self) -> None:
+        building_blocks = (
+            REPO_ROOT / "spec" / "architecture" / "building-blocks.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("GitTrackingAdapter", building_blocks)
+        self.assertIn("`project_health`", building_blocks)
+        self.assertIn("`unica.project.status`", building_blocks)
+        self.assertIn("`unica.project.map` не выполняет Git-проверок", building_blocks)
 
     def test_checklist_cites_only_records_that_exist(self) -> None:
         """The change checklist attributes each item to a registry record.
@@ -1708,6 +1760,212 @@ class ReaderInvocationContractTests(unittest.TestCase):
             if re.match(r"^\d{2}-", path.name)
         ]
         self.assertEqual(numbered, [], "name documents by subject, not by chapter number")
+
+
+class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
+    """ADR-0062..0065 stay atomic and own separate derived rules."""
+
+    def setUp(self) -> None:
+        self.records = {record.id: record for record in all_records()}
+
+    def test_decisions_are_accepted_and_indexed_only_as_accepted(self) -> None:
+        index = DECISIONS_INDEX.read_text(encoding="utf-8")
+        accepted = index.split("## Принятые решения", 1)[1].split(
+            "## Предложенные решения", 1
+        )[0]
+        proposed = index.split("## Предложенные решения", 1)[1].split(
+            "\n## ", 1
+        )[0]
+        files = [
+            "0062-tipizirovannaya-gotovnost-rlm.md",
+            "0063-logicheskie-nablyudeniya-diagnostiki.md",
+            "0064-neytralnaya-kompoziciya-diagnostik.md",
+            "0065-yavnyy-rezhim-migracii-chitatelya.md",
+        ]
+
+        for filename in files:
+            with self.subTest(filename=filename):
+                decision = (DECISIONS_DIR / filename).read_text(encoding="utf-8")
+                self.assertIn("- Статус: `accepted`", decision)
+                self.assertIn(f"({filename})", accepted)
+                self.assertNotIn(f"({filename})", proposed)
+
+    def test_historical_records_only_name_their_replacements(self) -> None:
+        typed_reader = (
+            DECISIONS_DIR / "0045-typed-reader-completion-contract.md"
+        ).read_text(encoding="utf-8")
+        reader_bridge = (
+            DECISIONS_DIR
+            / "0049-most-logicheskoy-adresacii-predmetnyh-chitateley.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "- Статус: `superseded` — заменено ADR-0062, ADR-0063 и ADR-0064",
+            typed_reader,
+        )
+        self.assertIn(
+            "- Статус: `superseded` — заменено ADR-0065", reader_bridge
+        )
+
+    def test_atomic_diagnostics_rules_have_one_exact_owner_and_real_checks(self) -> None:
+        expected = {
+            "INV-MCP-DIAGNOSTIC-TARGET": (
+                "ADR-0063",
+                ["location", "focus", "абсолют"],
+                [
+                    "crates/unica-coder/src/application/tool_contracts.rs",
+                    "crates/unica-coder/src/application/diagnostics.rs",
+                ],
+            ),
+            "INV-APP-DIAGNOSTIC-PROVIDERS": (
+                "ADR-0064",
+                ["provider", "поряд", "дедуп"],
+                [
+                    "crates/unica-coder/src/application/diagnostics.rs",
+                    "crates/unica-coder/src/infrastructure/diagnostics.rs",
+                ],
+            ),
+            "INV-SOURCE-READER-MIGRATION": (
+                "ADR-0065",
+                ["bridge", "directSwitch", "unica.code.diagnostics"],
+                [
+                    "tests/ci/test_architecture_registry.py",
+                    "tests/ci/test_unica_skills.py",
+                ],
+            ),
+        }
+
+        for identifier, (decision, tokens, checks) in expected.items():
+            with self.subTest(identifier=identifier):
+                record = self.records.get(identifier)
+                self.assertIsNotNone(record, f"missing {identifier}")
+                if record is None:
+                    continue
+                self.assertEqual(record.one("Decision"), decision)
+                rule = record.one("Rule") or ""
+                for token in tokens:
+                    self.assertIn(token, rule)
+                rendered_checks = " ".join(record.fields.get("Check", []))
+                for check in checks:
+                    self.assertIn(check, rendered_checks)
+
+    def test_rlm_readiness_replaces_adr_0045_without_absorbing_diagnostics(self) -> None:
+        typed = self.records["INV-MCP-TYPED-RESULT"]
+        decisions = typed.one("Decision") or ""
+
+        self.assertIn("ADR-0062", decisions)
+        self.assertNotIn("ADR-0045", decisions)
+        rlm = (
+            DECISIONS_DIR / "0062-tipizirovannaya-gotovnost-rlm.md"
+        ).read_text(encoding="utf-8")
+        for foreign_concern in ("DiagnosticProviderRegistry", "directSwitch"):
+            self.assertNotIn(foreign_concern, rlm)
+
+    def test_readiness_states_named_by_the_rule_are_the_states_the_code_has(
+        self,
+    ) -> None:
+        """`incomplete` answers `index_pending`, so the rule must say so.
+
+        The registry may not describe a closed matrix that the build
+        contradicts: `IndexReadiness::Incomplete` is a seventh state, and
+        `definition_readiness_matrix_never_reports_false_typed_success`
+        proves it is retryable-pending rather than unavailable.
+        """
+        readiness = (REPO_ROOT / "crates" / "unica-coder" / "src"
+                     / "infrastructure" / "workspace_index.rs").read_text(
+            encoding="utf-8"
+        )
+        declared = readiness.split("pub enum IndexReadiness {", 1)[1].split("\n}", 1)[0]
+        self.assertIn("Incomplete", declared, "the state under test still exists")
+
+        rule = self.records["INV-MCP-TYPED-RESULT"].one("Rule") or ""
+        decision = (
+            DECISIONS_DIR / "0062-tipizirovannaya-gotovnost-rlm.md"
+        ).read_text(encoding="utf-8")
+
+        for text, where in ((rule, "INV-MCP-TYPED-RESULT"), (decision, "ADR-0062")):
+            with self.subTest(where=where):
+                self.assertIn("incomplete", text)
+
+    def test_each_diagnostics_decision_keeps_one_change_axis(self) -> None:
+        def decision_body(filename: str) -> str:
+            text = (DECISIONS_DIR / filename).read_text(encoding="utf-8")
+            return text.split("## Решение", 1)[1].split("## Неграницы", 1)[0]
+
+        target = decision_body("0063-logicheskie-nablyudeniya-diagnostiki.md")
+        providers = decision_body(
+            "0064-neytralnaya-kompoziciya-diagnostik.md"
+        )
+        migration = decision_body(
+            "0065-yavnyy-rezhim-migracii-chitatelya.md"
+        )
+
+        self.assertNotIn("legacy_target_removed", target)
+        self.assertNotIn("порядку поставщика", target)
+        self.assertNotIn("legacy_target_removed", providers)
+        self.assertNotIn("DiagnosticProvider", migration)
+        self.assertNotIn("location.kind", migration)
+
+    def test_runtime_and_checklist_use_the_action_contract(self) -> None:
+        runtime = (ARCHITECTURE_DIR / "runtime.md").read_text(encoding="utf-8")
+        checklist = (ARCHITECTURE_DIR / "change-checklist.md").read_text(
+            encoding="utf-8"
+        )
+        config_snapshot = self.records["INV-APP-CONFIG-SNAPSHOT"]
+
+        self.assertIn("`action=analyze`", runtime)
+        self.assertNotIn("diagnostics` в режиме `analyze`", runtime)
+        self.assertEqual(
+            config_snapshot.one("Decision"), "ADR-0040, ADR-0056, ADR-0058, ADR-0063"
+        )
+        for identifier in (
+            "INV-MCP-DIAGNOSTIC-TARGET",
+            "INV-APP-DIAGNOSTIC-PROVIDERS",
+            "INV-SOURCE-READER-MIGRATION",
+        ):
+            self.assertIn(identifier, checklist)
+        for artifact in (
+            "схем",
+            "обработчик",
+            "скилл",
+            "примеры",
+            "ведомость",
+            "миграц",
+            "релиз",
+            "тест",
+        ):
+            self.assertIn(artifact, checklist.lower())
+
+class RlmStandalonePackagingContractTests(unittest.TestCase):
+    def test_accepted_decision_owns_the_multifile_runtime_choice(self) -> None:
+        decision = (
+            REPO_ROOT
+            / "spec"
+            / "decisions"
+            / "0061-rlm-mnogofaylovyy-runtime-iz-proveryaemogo-arhiva.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Статус: `accepted`", decision)
+        self.assertIn("`Nuitka standalone multidist`", decision)
+        self.assertIn("`runtimeFiles`", decision)
+        self.assertIn("скачивает общий архив цели ровно один раз", decision)
+        self.assertIn("Bootstrap остаётся нейтральным", decision)
+
+    def test_registry_rule_owns_the_exact_runtime_closure(self) -> None:
+        records = {record.id: record for record in all_records()}
+        record = records["INV-PKG-TOOL-CLOSURE"]
+        rendered = record.one("Rule") or ""
+
+        self.assertEqual(record.one("Decision"), "ADR-0061")
+        for contract in (
+            "полная полезная нагрузка закреплённого архива",
+            "только обычные файлы",
+            "точный набор",
+            "потерянная зависимость",
+            "необъявленный файл",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, rendered)
 
 
 class ActiveLayerTests(unittest.TestCase):

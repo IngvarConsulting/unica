@@ -21,6 +21,7 @@ fs2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+unsafe-libyaml.workspace = true
 sha2.workspace = true
 rmcp.workspace = true
 tokio.workspace = true
@@ -28,13 +29,20 @@ toml.workspace = true
 roxmltree.workspace = true
 rust-stemmers.workspace = true
 regex.workspace = true
+tempfile.workspace = true
 ureq.workspace = true
+url.workspace = true
 uuid.workspace = true
 # `flate2` кодом крейта не вызывается: она объявлена, чтобы `zip` получил
 # чистый Rust-backend для deflate вместо системного zlib и без `zopfli`
 # (см. комментарий у `zip` в корневом Cargo.toml).
 flate2.workspace = true
 zip.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-services.workspace = true
+objc2-core-foundation.workspace = true
+dispatch2.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -47,4 +55,3 @@ cap-fs-ext.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
-tempfile.workspace = true

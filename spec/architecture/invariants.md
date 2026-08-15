@@ -423,14 +423,49 @@ Unica. Каждая запись формулирует одно нормати�
   отсутствие завершает вызов стабильной ошибкой `typed_result_missing`;
   текстовый дубль завершает вызов ошибкой `typed_result_textual`, а
   соответствие классификации ведомости проверяет
-  `tool_specs_match_reviewed_result_contracts`.
-- **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0045
+  `tool_specs_match_reviewed_result_contracts`. `unica.code.definition`
+  публикует предметный результат только при готовом текущем состоянии `RLM`:
+  `building` и `incomplete` возвращают `index_pending`, потому что обслуживание
+  индекса запущено, остальные неготовые состояния — `index_unavailable`, а
+  пустой список при `ready` означает доказанное отсутствие совпадений.
+- **Decision:** ADR-0020, ADR-0023, ADR-0044, ADR-0062
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics_jsonl.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/rlm_navigation.rs`
 - **Check:** `ci-test` — `tests/ci/test_tool_surface_ledger.py`
 - **Scope:** source, runtime
+
+### INV-MCP-DIAGNOSTIC-TARGET — Диагностика адресует логическую цель и фокус
+
+- **Rule:** `unica.code.diagnostics` выбирает цель через `action`, точный
+  `sourceSet` и обязательный для `findings` логический `metadataPath`, выводит
+  `targetKind` из разрешённой цели, не принимает публичный параметр выбора поставщика
+  и публикует каждое наблюдение через общий тип `SourceLocation` в поле `location`
+  и внутренний `focus`; адресуемая ветвь и все остальные
+  публичные поля не содержат абсолютный физический путь, а безопасное
+  относительное наблюдение без доказуемой цели явно имеет
+  `location.kind=unaddressable`.
+- **Decision:** ADR-0063
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
+- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
+- **Scope:** source, packaged, runtime
+
+### INV-MCP-PROJECT-READINESS — Готовность проекта публикуется двумя независимыми контурами
+
+- **Rule:** `unica.project.status` остаётся единственной полной читающей
+  инспекцией проекта и при достоверном снимке возвращает в типизированных
+  `data` независимые `ready` и `repositoryReady`, полные общие и адресные по
+  уникально адресуемому набору `checks[]`, а также `diagnostics[]` с `ok=true`
+  даже при найденных проблемах проекта, тогда как
+  `unica.project.map` возвращает только карту наборов исходников и не запускает
+  проверки Git.
+- **Decision:** ADR-0060
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `tests/ci/test_unica_mcp_smoke.py`
+- **Check:** `doc-assert` — `tests/ci/test_project_health_contract.py`
+- **Scope:** source, packaged, runtime
 
 ### INV-MCP-PREVIEW-MUTATION-ONLY — Предпросмотр принадлежит мутации
 
@@ -457,20 +492,30 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
 - **Scope:** source, runtime
 
-### INV-MCP-CODE-SEARCH-SECTIONS — Поиск сохраняет независимые секции поставщиков
+### INV-MCP-CODE-SEARCH-ROLES — Поиск наблюдаем и адресуется логически
 
-- **Rule:** `unica.code.search` возвращает в фиксированном порядке секции
-  `rlm`, `bsl-analyzer` и `git-grep`, не сравнивает их оценки и не скрывает
-  отказ секции; результат успешен, когда хотя бы одна секция имеет состояние
-  `ok` или `empty`, а отмена не возвращает частичный успех. Резервный
-  `git-grep` по умолчанию получает 500 мс, намеренно завершает дерево процесса
-  после `limit` полных попаданий, принимает естественное завершение с меньшей
-  выдачей и при таймауте возвращает `failed` без накопленных попаданий, а не
-  ложный `empty` или частичный успех.
-- **Decision:** ADR-0017, ADR-0055
+- **Rule:** `unica.code.search` принимает ровно один селектор: канонический
+  непустой `sourceSet` с необязательным `metadataPath` либо переходный
+  `sourceDir`; после ошибки логического разрешения резервного перехода к
+  физическому селектору нет.
+  Поиск параллельно запускает роли `semantic`, `symbol`, `lexical`, возвращает
+  их в этом порядке с отдельным изменяемым `provider`, ждёт терминального
+  состояния каждой роли в пределах общего срока и не сравнивает локальные
+  оценки. Секция типизированно сообщает полноту, способ ранжирования, порядок,
+  точность счёта и обязательную общую причину завершения: `null` только для
+  `ok`/`empty`, иначе согласованный со статусом закрытый код и признак
+  возможности повтора; ожидание индекса после срока является допускающим
+  повтор `dependencyPending`, а не постоянной недоступностью. `empty` означает
+  только доказанный точный ноль, а
+  `limitReached` и `timedOut` сохраняют неполный префикс. Попадание содержит логическое
+  `addressed` либо ограниченное набором `unaddressable` местоположение. При
+  наличии маркера уведомлений ход и контрольные уведомления публикуются через
+  MCP;
+  отмена не возвращает частичный успех.
+- **Decision:** ADR-0056, ADR-0058
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
-- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/process.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
 - **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
 - **Scope:** runtime, packaged
 
@@ -731,7 +776,7 @@ Unica. Каждая запись формулирует одно нормати�
 ### INV-APP-CONFIG-SNAPSHOT — Конфигурация вызова изолирована рабочим пространством
 
 - **Rule:** Для `unica.code.search`, `unica.code.definition`,
-  `unica.code.outline` и `unica.code.diagnostics` в режиме `analyze` приложение
+  `unica.code.outline` и `unica.code.diagnostics` с `action=analyze` приложение
   после обнаружения рабочего пространства разрешает ровно один неизменяемый
   `OperationalConfig`: все сроки данного вызова выводятся из этого снимка без
   повторного чтения файлов, следующий вызов разрешает его заново, а снимок
@@ -740,10 +785,10 @@ Unica. Каждая запись формулирует одно нормати�
   `operational`, `network`, `providers`, что и сетевая политика; `version`
   считается неизвестным на корне, а недопустимый общий корень отказывает всем
   его потребителям. Все файловые сроки — целые секунды не меньше 1 без верхнего
-  ограничения операционной политики; их значения по умолчанию равны 120 с,
-  45 с, 45 с и 120 с, а скомпилированное умолчание `git-grep` равно 500 мс.
-  Все эти значения — умолчания, а не потолки; сроки `RLM` и `git-grep` не
-  превышают общий срок поиска, а публичный явный
+  ограничения операционной политики; значения 300, 300, 2, 45 и 120 —
+  умолчания, а не потолки; сроки `RLM` и
+  `git-grep` не превышают общий срок
+  поиска, а публичный явный
   `unica.code.diagnostics.timeoutSeconds` сохраняет отдельный диапазон
   `30..=3600`. Операционный потребитель проверяет только `[operational]`:
   ошибка `network` или
@@ -758,7 +803,7 @@ Unica. Каждая запись формулирует одно нормати�
   вызовы не разрешают `OperationalConfig` и не читают `[operational]`; отдельные
   потребители сетевой политики документации и стандартов продолжают читать те
   же файлы по `INV-APP-DOCUMENTATION-NETWORK-POLICY`.
-- **Decision:** ADR-0040, ADR-0055
+- **Decision:** ADR-0040, ADR-0056, ADR-0058, ADR-0063
 - **Check:** `ci-test` — `crates/unica-coder/src/application/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/operational_config.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/operational_config.rs`
@@ -777,6 +822,19 @@ Unica. Каждая запись формулирует одно нормати�
 - **Decision:** ADR-0017
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
+- **Scope:** source, runtime
+
+### INV-APP-DIAGNOSTIC-PROVIDERS — Наблюдения поставщиков компонуются независимо
+
+- **Rule:** Слой application вызывает диагностики через упорядоченный реестр
+  `DiagnosticProvider`, сохраняет `provider + code` у каждого наблюдения, не
+  выполняет дедупликацию между поставщиками и локализует их неполноту и отказ в
+  отдельных секциях; полезный ответ одного поставщика допускает только явно
+  частичный общий результат другого, а отмена всего вызова не публикует
+  частичный набор.
+- **Decision:** ADR-0064
+- **Check:** `ci-test` — `crates/unica-coder/src/application/diagnostics.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
 - **Scope:** source, runtime
 
 ### INV-APP-DOCUMENTATION-NO-DISK-STATE — Разбор корпуса справки не создаёт состояния на диске
@@ -856,6 +914,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Scope:** runtime
 
+### INV-CACHE-PROVIDER-STATE-OUTSIDE-SOURCE — Постоянное состояние поставщика не индексирует само себя
+
+- **Rule:** Постоянное состояние `RLM` выводится из нормализованных `workspaceRoot + sourceRoot`, остаётся вне индексируемого `sourceRoot`, изолирует разные рабочие пространства, `worktree` и корни исходников и передаётся одинаково индексатору и читающему процессу.
+- **Decision:** ADR-0018
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
+- **Scope:** runtime
+
+### INV-CACHE-GENERATION-CUTOVER — Несовместимый индекс получает новое поколение
+
+- **Rule:** Для постоянного корня нормализованной пары `workspaceRoot + sourceRoot` несовместимая версия построителя `RLM` получает каталог данных `rlm-bsl/index-v15`, маркер состояния `caches/rlm-bsl/index-v15/bsl_index_status.json` и маркер блокировки `locks/rlm-bsl/index-v15/bsl_index.lock`; новая версия строит это поколение с нуля, не открывает, не обновляет и не удаляет предыдущее поколение, а состояния `building` и `incomplete` запрещают чтение, поддерживаемое `RLM`.
+- **Decision:** ADR-0059
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
+- **Scope:** runtime, packaged
+
 ### INV-CACHE-WRITE-FREE-PREVIEW — Сухой прогон сообщает о последствиях, не записывая состояние
 
 - **Rule:** Вызов в режиме сухого прогона сообщает о своём влиянии на кеш и не
@@ -892,6 +966,31 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/code_intelligence_symlinked_workspace.rs`
 - **Scope:** runtime
 
+### INV-CACHE-RLM-REVISION — Готовность RLM привязана к доверенной ревизии
+
+- **Rule:** Для нормализованной пары рабочего пространства и корня исходников
+  скрытый сервис владеет одним `SourceRevisionService` с монотонным поколением,
+  версионированным SHA-256 и состояниями `Trusted`, `Reconciling`, `Untrusted`.
+  На поддерживаемой локальной файловой системе macOS тёплый снимок использует
+  доказанный событийный барьер и не обходит дерево; точное событие файла читает
+  только изменённый файл и обновляет карту корпуса. Холодный старт, неточное событие
+  каталога и потеря доверия выполняют полное согласование только там, где
+  следующий барьер может доказать непрерывность. Платформа или файловая система
+  без доказуемого барьера оставляет ревизию недоверенной, а семантический поиск
+  недоступным; повторные обходы не служат доказательством свежести. Маркер
+  готовности индекса хранит полную ревизию,
+  прежний маркер только с числом считается устаревшим, сборка или обновление
+  сверяет
+  ревизию перед публикацией, а RLM-ответ принимается только при одинаковой
+  доверенной ревизии до и после исполнения.
+- **Decision:** ADR-0057
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/source_revision.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/source_revision.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_index.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/workspace_services.rs`
+- **Scope:** source, runtime
+
 ### INV-CACHE-RUNTIME-ROOT-ORDER — Разрешение корня кеша runtime детерминировано
 
 - **Rule:** `unica-bootstrap` разрешает корень кеша runtime в фиксированном
@@ -907,6 +1006,35 @@ Unica. Каждая запись формулирует одно нормати�
 - **Scope:** packaged, runtime
 
 ## SOURCE — наборы исходников рабочего пространства
+
+### INV-SOURCE-ROOT-SEPARATION — Корень исходников отделён от рабочего пространства
+
+- **Rule:** Полная инспекция считает каждый уникально адресуемый корень набора
+  исходников строгим потомком корня рабочего пространства, поэтому равенство
+  после нормализации или разрешения физической идентичности, включая `path: .`,
+  `./` и ссылочный псевдоним, даёт одну первичную ошибку
+  `source_set.root_is_workspace`, закрывает `ready` и не порождает производные
+  ошибки о служебных путях внутри того же корня.
+- **Decision:** ADR-0060
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/layout.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
+- **Scope:** source, runtime
+
+### INV-SOURCE-PORTABLE-GIT — Переносимость Git доказывается содержимым репозитория
+
+- **Rule:** `repositoryReady` вычисляется отдельно от `ready` и требует
+  отслеживаемых правил исключений, ролевой классификации атрибутов и окончаний
+  строк выгрузки платформы и безопасной классификации подготовленного
+  `ConfigDumpInfo.xml`; локальные правила не считаются переносимыми, а отдельное
+  хранилище больших файлов предлагается только как необязательная подсказка и
+  не меняет ни один флаг.
+- **Decision:** ADR-0060
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/project_health.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/git.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_health/resources.rs`
+- **Check:** `ci-test` — `crates/unica-coder/tests/platform/project_health.rs`
+- **Scope:** source, runtime
 
 ### INV-SOURCE-PER-SET-FORMAT — Формат — свойство набора исходников
 
@@ -953,11 +1081,17 @@ Unica. Каждая запись формулирует одно нормати�
   запроса, иначе побеждает набор исходников с именем `main`, а за ним —
   единственный набор исходников конфигурации; разрешённый корень нормализуется,
   остаётся внутри рабочего пространства и служит тем же корнем для анализатора,
-  индекса, идентичности сервиса, `unica.project.status` и `unica.project.map`.
-- **Decision:** ADR-0006
+  индекса и идентичности сервиса. Этот выбор не сужает карту проекта:
+  `unica.project.map` публикует все наборы, а `unica.project.status` проверяет
+  каждый уникально адресуемый набор. Группа с повторяющимся именем получает
+  одну диагностику рабочего пространства с полным `count` и не создаёт
+  неразличимые проверки с `sourceSet`, потому что этот ключ не различает записи
+  этой группы.
+- **Decision:** ADR-0006, ADR-0060
 - **Check:** `ci-test` — `crates/unica-coder/tests/platform/issue_89_workspace_service.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/tool_context.rs`
-- **Scope:** runtime
+- **Check:** `ci-test` — `tests/ci/test_project_health_contract.py`
+- **Scope:** source, runtime
 
 ### INV-SOURCE-LOGICAL-IDENTITY — Точная цель не зависит от файловой раскладки
 
@@ -996,10 +1130,24 @@ Unica. Каждая запись формулирует одно нормати�
   них, отклоняет одновременную передачу обоих стабильным `selector_conflict` до
   вызова обработчика и отвечает на логический вызов теми же типизированными
   данными, что на файловый.
-- **Decision:** ADR-0049
+- **Decision:** ADR-0065
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/logical_selector.rs`
 - **Scope:** source, runtime
+
+### INV-SOURCE-READER-MIGRATION — Режим миграции читателя объявлен явно
+
+- **Rule:** Каждый предметный читатель мигрирует физический селектор только в
+  явно выбранном режиме `bridge` или `directSwitch`: `bridge` сохраняет
+  взаимоисключающие логический и файловый входы до отдельного снятия, а
+  `directSwitch` требует поинструментного решения и атомарной смены всего
+  публичного контура; единственный действующий прямой переход принадлежит
+  `unica.code.diagnostics`, остальные читатели остаются в режиме `bridge`.
+- **Decision:** ADR-0065
+- **Check:** `ci-test` — `tests/ci/test_architecture_registry.py`
+- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Scope:** source, packaged, runtime
 
 ### INV-SOURCE-WRITE-TARGET-KIND — Писатель принимает только терминал модуля
 
@@ -1247,6 +1395,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
 - **Scope:** packaged, release, runtime
 
+### INV-PKG-TOOL-CLOSURE — Многофайловый инструмент входит в runtime полностью
+
+- **Rule:** Многофайловый сторонний инструмент входит в runtime только как
+  полная полезная нагрузка закреплённого архива: сборщик сверяет внешний
+  SHA-256, безопасно извлекает только обычные файлы в изолированный staging,
+  проверяет внутренние идентичности исходника и цели, точки входа, точный набор
+  файлов, SHA-256, размеры и режимы, а упаковщик перечисляет и сохраняет каждый
+  файл с относительным соседством. Небезопасная запись, ссылка, повтор пути,
+  коллизия, потерянная зависимость или необъявленный файл прекращает сборку до
+  публикации.
+- **Decision:** ADR-0061
+- **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
+- **Check:** `ci-test` — `tests/ci/test_package_unica_runtime.py`
+- **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
+- **Scope:** source, packaged, release, runtime
+
 ### INV-PKG-BINARY-NAME — Публичный бинарник runtime называется `unica`
 
 - **Rule:** Встроенный публичный бинарник, собираемый из Cargo-воркспейса,
@@ -1407,7 +1571,7 @@ Unica. Каждая запись формулирует одно нормати�
   одним обязательным вызовом `cargo build --locked` в отдельный для целевой
   платформы каталог сборки Cargo; восстановленный кеш эту команду ускоряет, но
   никогда не заменяет.
-- **Decision:** ADR-0010
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci
@@ -1418,7 +1582,7 @@ Unica. Каждая запись формулирует одно нормати�
   разрешённый ключ тулчейна и хеш `Cargo.lock`, префиксные ключи восстановления
   не используются, а каждая платформенная сборка сообщает свою целевую
   платформу, исход обращения к кешу и длительность сборки.
-- **Decision:** ADR-0010
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci
 
@@ -1429,7 +1593,7 @@ Unica. Каждая запись формулирует одно нормати�
   runtime со сроком хранения в одни сутки, тогда как тонкая полезная нагрузка
   для маркетплейса сохраняет более длительный срок хранения для ручного
   размещения и продвижения.
-- **Decision:** ADR-0010
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci, release
 
@@ -1440,7 +1604,7 @@ Unica. Каждая запись формулирует одно нормати�
   элементов, режимы исполнения и обнулённые отметки времени до того, как архив
   будет выгружен или отброшен; при публикации по тегу проверка повторяется на
   скачанных опубликованных байтах.
-- **Decision:** ADR-0010, ADR-0008
+- **Decision:** ADR-0055, ADR-0008
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
 - **Scope:** ci, release
@@ -1451,7 +1615,7 @@ Unica. Каждая запись формулирует одно нормати�
   pull request и ручные прогоны собирают пакет и прогоняют дымовые проверки без
   публикации, а размещение и продвижение каталога остаются отдельными явными
   задачами.
-- **Decision:** ADR-0008, ADR-0010
+- **Decision:** ADR-0008, ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Scope:** ci, release
 
@@ -1460,7 +1624,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** Каждый pull request решается единственным стабильным агрегирующим
   шлюзом, который вместе оценивает задачи по исходникам, по Rust, по упаковке,
   по bootstrap, по оценке релиза и по опубликованным артефактам.
-- **Decision:** ADR-0010
+- **Decision:** ADR-0055
 - **Check:** `ci-test` — `tests/ci/test_unica_workflow.py`
 - **Check:** `ci-test` — `tests/ci/test_evaluate_ci_gate.py`
 - **Scope:** ci

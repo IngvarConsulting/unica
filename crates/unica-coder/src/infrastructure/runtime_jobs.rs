@@ -3,7 +3,9 @@
 use super::redaction;
 use crate::domain::cache::CacheAccess;
 use crate::domain::events::{runtime_event_kind, DomainEvent};
-use crate::infrastructure::platform::filesystem::{replace_file_atomically, sync_parent_directory};
+use crate::infrastructure::platform::filesystem::{
+    metadata_is_link_or_reparse_point, replace_file_atomically, sync_parent_directory,
+};
 use crate::infrastructure::platform::{
     cancel_runtime_job_process_tree, configure_runtime_job_command,
 };
@@ -401,8 +403,16 @@ pub(crate) struct RuntimeJobList {
     pub(crate) warnings: Vec<String>,
 }
 
+/// Compatibility rule for this record. `schema_version` is an exact-match gate,
+/// so a bump makes every build that does not know the new number reject the
+/// record outright. Additive fields therefore keep the version and carry
+/// `#[serde(default)]`, and unknown fields are tolerated on read so that a field
+/// added by a later build does not make this build fail `read_record`. That
+/// failure is not cosmetic: an unreadable record named by `active.lock` pins the
+/// lock with no automatic recovery. The version is reserved for changes that
+/// genuinely cannot be read by an older build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct RuntimeJobRecord {
     #[serde(rename = "schemaVersion")]
     schema_version: u8,
@@ -417,6 +427,13 @@ struct RuntimeJobRecord {
     finished_at_ms: Option<u64>,
     pid: Option<u32>,
     pid_identity: Option<String>,
+    /// Persisted immediately before the worker asks the runner for a child, so a
+    /// record can prove whether an orphaned child process may exist. Absent means
+    /// unknown, not "no child": a build that predates this field could die after
+    /// `runner.spawn()` and before persisting `pid`, leaving a live child behind
+    /// a queued record with no trace of it. Only an explicit `false` is proof.
+    #[serde(default)]
+    child_spawn_attempted: Option<bool>,
     exit_code: Option<i32>,
     cancel_policy: CancelPolicy,
     cancelled: bool,
@@ -449,6 +466,7 @@ impl RuntimeJobRecord {
             finished_at_ms: None,
             pid: None,
             pid_identity: None,
+            child_spawn_attempted: Some(false),
             exit_code: None,
             cancel_policy: request.operation.cancel_policy(),
             cancelled: false,
@@ -487,6 +505,16 @@ impl RuntimeJobRecord {
             warnings: self.warnings.clone(),
             wait_timed_out,
         }
+    }
+
+    /// Whether an orphaned child process of this job may still be running, and
+    /// therefore whether releasing `active.lock` could admit a second job into a
+    /// workspace the first one is still mutating. Releasing requires proof that
+    /// no child exists: an explicit `child_spawn_attempted: false`, which this
+    /// build persists before it asks the runner for a child. An absent flag is
+    /// unknown and keeps the lock, as does any recorded `pid`.
+    fn may_have_orphan_child(&self) -> bool {
+        self.child_spawn_attempted.unwrap_or(true) || self.pid.is_some()
     }
 
     fn transition(&mut self, next: RuntimeJobPhase) -> JobResult<()> {
@@ -614,10 +642,28 @@ impl RuntimeJobStore {
                 let id = id.trim();
                 let existing = if id.is_empty() { "unknown" } else { id };
                 redacted_error(&format!(
-                    "workspace already has active runtime job {existing}"
+                    "workspace already has active runtime job {existing}{}",
+                    self.orphan_retention_hint(existing)
                 ))
             }
             Err(error) => io_error("read active runtime job lock", &error),
+        }
+    }
+
+    /// A lock held by a `lost` job that reached its child spawn is never released
+    /// automatically: whether that child is still mutating the workspace cannot
+    /// be decided from the record. Say so in the conflict, otherwise the state is
+    /// indistinguishable from a job that is simply still running and the caller
+    /// waits for a heartbeat that will never come.
+    fn orphan_retention_hint(&self, id: &str) -> String {
+        match self.read_record(id) {
+            Ok(record)
+                if record.phase == RuntimeJobPhase::Lost && record.may_have_orphan_child() =>
+            {
+                "; it is lost and holds the lock because its child process may still be running"
+                    .to_string()
+            }
+            _ => String::new(),
         }
     }
 
@@ -696,16 +742,28 @@ impl RuntimeJobStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(io_error("read active runtime job lock", &error)),
         };
+        if self.record_is_provably_absent(&id) {
+            // The lock is created before the record it names. A parent that died
+            // inside that window never reached the spawn, so no child exists and
+            // no worker will ever claim this id. A parent still inside that
+            // window keeps its lock and is not reported as recoverable.
+            if !self.active_lock_outlived_stale_window()? {
+                return Ok(false);
+            }
+            self.release_active_lock_for(&id)?;
+            return Ok(true);
+        }
         let mut record = self.read_record(&id)?;
         if record.phase.is_terminal() {
             // A terminal write can succeed while the final lock removal fails.
-            // Its own id makes this cleanup safe. Lost is deliberately excluded:
-            // its child may still be alive after a worker crash.
-            if record.phase != RuntimeJobPhase::Lost {
-                self.release_active_lock_for(&id)?;
-                return Ok(true);
+            // Its own id makes this cleanup safe. A lost job that reached its
+            // child spawn is the exception: that child may still be alive after
+            // a worker crash, so it keeps the lock it owns.
+            if record.phase == RuntimeJobPhase::Lost && record.may_have_orphan_child() {
+                return Ok(false);
             }
-            return Ok(false);
+            self.release_active_lock_for(&id)?;
+            return Ok(true);
         }
         if !self.stale(&record) {
             return Ok(false);
@@ -714,7 +772,65 @@ impl RuntimeJobStore {
         record.finished_at_ms = Some(now_millis());
         record.warnings.push("stale worker heartbeat".to_string());
         self.write_record(&record)?;
+        if record.may_have_orphan_child() {
+            return Ok(false);
+        }
+        // Nothing ever spawned for this job, so the workspace it was holding is
+        // provably idle. The release is scoped to this id and leaves a lock that
+        // a replacement owner has already claimed untouched.
+        self.release_active_lock_for(&id)?;
         Ok(true)
+    }
+
+    /// Whether the durable record named by an id is *provably* absent. Only a
+    /// successful negative answer counts: an id that is not a job id, and a path
+    /// whose metadata cannot be read at all — a permission error, an I/O error,
+    /// a broken link — prove nothing and must never be mistaken for proof that
+    /// no child exists. `Path::exists` cannot express that difference because it
+    /// reports every such failure as `false`. A record that is present but
+    /// corrupt or of an unknown schema is likewise not absent.
+    fn record_is_provably_absent(&self, id: &str) -> bool {
+        let jobs_root = self.jobs_root();
+        let jobs_root_metadata = match fs::symlink_metadata(&jobs_root) {
+            Ok(metadata) => metadata,
+            Err(_) => return false,
+        };
+        if metadata_is_link_or_reparse_point(&jobs_root_metadata) || !jobs_root_metadata.is_dir() {
+            return false;
+        }
+
+        let Ok(job_dir) = self.job_dir(id) else {
+            return false;
+        };
+        match fs::symlink_metadata(&job_dir) {
+            Ok(metadata) if metadata.is_dir() && !metadata_is_link_or_reparse_point(&metadata) => {}
+            Ok(_) => return false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+            Err(_) => return false,
+        }
+
+        match fs::symlink_metadata(job_dir.join("record.json")) {
+            Ok(_) => false,
+            Err(error) => error.kind() == io::ErrorKind::NotFound,
+        }
+    }
+
+    /// Whether `active.lock` itself has outlived the staleness window. The lock
+    /// file carries its own creation time, which is the only clock available for
+    /// a job that never got far enough to write a heartbeat.
+    fn active_lock_outlived_stale_window(&self) -> JobResult<bool> {
+        let metadata = match fs::metadata(self.active_lock_path()) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(io_error("read active runtime job lock", &error)),
+        };
+        let Ok(created) = metadata.modified() else {
+            return Ok(false);
+        };
+        Ok(created
+            .elapsed()
+            .map(|age| age > self.stale_after)
+            .unwrap_or(false))
     }
 
     fn read_record(&self, id: &str) -> JobResult<RuntimeJobRecord> {
@@ -937,6 +1053,14 @@ impl RuntimeJobService {
             return Err(redacted_error(
                 "runtime job worker operation does not match queued job",
             ));
+        }
+        // The child must never be able to exist before the record admits it. A
+        // worker killed between the spawn and the `Running` write would otherwise
+        // leave a queued record that wrongly proves the workspace is childless.
+        record.child_spawn_attempted = Some(true);
+        if let Err(error) = self.store.write_record(&record) {
+            let _ = self.fail_start(&mut record, &error);
+            return Err(error);
         }
         let mut process = match self.runner.spawn(request) {
             Ok(process) => process,
@@ -1290,7 +1414,13 @@ impl RuntimeJobService {
 }
 
 pub(crate) fn run_worker_from_args(_args: &[String]) -> Result<(), String> {
-    let handoff: WorkerStartRequest = serde_json::from_reader(io::stdin())
+    run_worker_from_reader(io::stdin().lock())
+}
+
+/// Decodes the handoff frame from an arbitrary source so that EOF, malformed and
+/// truncated first frames are deterministically reproducible without a real pipe.
+fn run_worker_from_reader(reader: impl Read) -> Result<(), String> {
+    let handoff: WorkerStartRequest = serde_json::from_reader(reader)
         .map_err(|error| redacted_error(&format!("read runtime job worker request: {error}")))?;
     let runner = Arc::new(SystemRuntimeJobRunner {
         program: handoff.program.clone(),
@@ -1579,6 +1709,10 @@ pub(crate) use tests::assert_system_cancellation_reaps_process_tree;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::platform::testing::{
+        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+        FileLinkFixtureOutcome,
+    };
     use std::{
         collections::HashMap,
         io::Cursor,
@@ -1716,13 +1850,16 @@ mod tests {
     }
 
     #[test]
-    fn stale_queued_job_is_lost_but_retains_the_active_lock() {
+    fn stale_job_that_reached_its_child_spawn_is_lost_and_retains_the_active_lock() {
         let cache = TestCache::new();
         let request = fake_request(RuntimeJobOperation::Build);
         let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue stale job");
         let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
         let mut record = store.read_record(&queued.id).expect("read queued record");
         record.heartbeat_at_ms = Some(0);
+        // The worker persisted its intent to spawn, so an orphaned child tree may
+        // still be mutating this workspace.
+        record.child_spawn_attempted = Some(true);
         store.write_record(&record).expect("age queued record");
 
         let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
@@ -1734,6 +1871,10 @@ mod tests {
 
         assert_eq!(recovered.phase, RuntimeJobPhase::Lost);
         assert!(error.contains(&queued.id), "{error}");
+        assert!(
+            error.contains("child process may still be running"),
+            "a lock that is never released automatically must say why: {error}"
+        );
         assert_eq!(
             fs::read_to_string(store.active_lock_path())
                 .expect("read retained active lock")
@@ -1763,6 +1904,370 @@ mod tests {
 
         assert_eq!(terminal.phase, RuntimeJobPhase::Failed);
         assert!(!store.active_lock_path().exists());
+    }
+
+    /// Reproduces the parent that acquired `active.lock` and created the durable
+    /// record, then died without ever terminalizing it. The five minute staleness
+    /// window has already elapsed.
+    fn abandoned_queued_job(cache: &TestCache) -> (RuntimeJobStore, String) {
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let queued =
+            RuntimeJobService::enqueue(cache.path(), &fake_request(RuntimeJobOperation::Build))
+                .expect("queue job before the parent dies");
+        let mut record = store.read_record(&queued.id).expect("read queued record");
+        record.heartbeat_at_ms = Some(0);
+        store.write_record(&record).expect("age queued record");
+        (store, queued.id)
+    }
+
+    fn assert_childless_handoff_failure_frees_the_workspace(frame: &[u8]) {
+        let cache = TestCache::new();
+        let (store, abandoned) = abandoned_queued_job(&cache);
+
+        // The worker cannot decode its identity, so it exits without touching
+        // the durable record or the lock it never learned about.
+        run_worker_from_reader(frame)
+            .expect_err("a first frame that never decodes cannot claim a job");
+        assert_eq!(
+            store
+                .read_record(&abandoned)
+                .expect("record survives the failed handoff")
+                .phase,
+            RuntimeJobPhase::Queued
+        );
+
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let replacement = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("a job whose child never existed must not wedge the workspace");
+
+        assert_eq!(
+            store
+                .read_record(&abandoned)
+                .expect("read recovered record")
+                .phase,
+            RuntimeJobPhase::Lost,
+            "the abandoned record must reach a terminal phase"
+        );
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read active lock")
+                .trim(),
+            replacement.id,
+            "the released lock must be owned by the replacement job"
+        );
+        assert!(!store.recovery_lock_path().exists());
+    }
+
+    #[test]
+    fn eof_before_the_first_handoff_frame_frees_a_childless_workspace() {
+        assert_childless_handoff_failure_frees_the_workspace(b"");
+    }
+
+    #[test]
+    fn malformed_first_handoff_frame_frees_a_childless_workspace() {
+        assert_childless_handoff_failure_frees_the_workspace(b"{not json");
+    }
+
+    #[test]
+    fn truncated_first_handoff_frame_frees_a_childless_workspace() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Build);
+        let frame = serde_json::to_vec(&worker_request(
+            &cache,
+            &Uuid::new_v4().to_string(),
+            &request,
+        ))
+        .expect("serialize handoff frame");
+        let truncated = &frame[..frame.len() / 2];
+
+        assert_childless_handoff_failure_frees_the_workspace(truncated);
+    }
+
+    #[test]
+    fn parent_that_died_before_spawning_a_worker_frees_a_childless_workspace() {
+        // No worker exists at all, so no worker-side identity could ever recover
+        // this. Only the durable record can prove the workspace is free.
+        let cache = TestCache::new();
+        let (store, abandoned) = abandoned_queued_job(&cache);
+
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let replacement = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("an unspawned worker must not wedge the workspace");
+
+        assert_eq!(
+            store
+                .read_record(&abandoned)
+                .expect("read recovered record")
+                .phase,
+            RuntimeJobPhase::Lost
+        );
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read active lock")
+                .trim(),
+            replacement.id
+        );
+    }
+
+    #[test]
+    fn recovery_never_releases_a_lock_owned_by_another_job() {
+        let cache = TestCache::new();
+        let (store, abandoned) = abandoned_queued_job(&cache);
+
+        // A replacement owner claimed the lock while the abandoned record was
+        // still non-terminal. Recovery is scoped to the id the lock names, so the
+        // childless record next to it never becomes a reason to free somebody
+        // else's workspace.
+        let replacement = Uuid::new_v4().to_string();
+        store
+            .create_record(&replacement, &fake_request(RuntimeJobOperation::Test))
+            .expect("create replacement record");
+        fs::write(store.active_lock_path(), &replacement).expect("replace active lock");
+
+        RuntimeJobService::status_at(cache.path(), &abandoned).expect("recover stale job");
+
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read replacement active lock")
+                .trim(),
+            replacement
+        );
+        assert_eq!(
+            store
+                .read_record(&abandoned)
+                .expect("read untouched record")
+                .phase,
+            RuntimeJobPhase::Queued,
+            "recovery must not terminalize a record the lock does not name"
+        );
+    }
+
+    #[test]
+    fn a_lock_taken_before_its_record_existed_frees_a_childless_workspace() {
+        // The parent died between acquire_active_lock and create_record, so no
+        // worker was ever spawned and the durable record does not exist at all.
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        let abandoned = Uuid::new_v4().to_string();
+        store
+            .acquire_active_lock(&abandoned)
+            .expect("take a lock the parent never backed with a record");
+        thread::sleep(Duration::from_millis(5));
+
+        assert!(
+            store
+                .recover_stale_active()
+                .expect("recover a record-less lock"),
+            "a lock whose job never reached a record must be recoverable"
+        );
+        assert!(!store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn a_lock_taken_before_its_record_existed_is_kept_inside_the_staleness_window() {
+        // A parent that is still between acquire_active_lock and create_record
+        // must not be recovered out from underneath.
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let live = Uuid::new_v4().to_string();
+        store.acquire_active_lock(&live).expect("take a fresh lock");
+
+        assert!(
+            !store
+                .recover_stale_active()
+                .expect("probe a fresh record-less lock"),
+            "a fresh lock must survive recovery"
+        );
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read retained active lock")
+                .trim(),
+            live
+        );
+    }
+
+    #[test]
+    fn a_missing_jobs_root_is_not_proof_that_a_record_is_absent() {
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        let live = Uuid::new_v4().to_string();
+
+        assert!(
+            !store.record_is_provably_absent(&live),
+            "absence is unproven until the jobs root is a real directory"
+        );
+    }
+
+    #[test]
+    fn a_linked_job_directory_is_not_proof_that_a_record_is_absent() {
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        let live = Uuid::new_v4().to_string();
+        fs::create_dir_all(store.jobs_root()).expect("create jobs root");
+        let linked_target = cache.path().join("linked-job-target");
+        fs::create_dir_all(&linked_target).expect("create linked job target");
+        let linked_job_dir = store.job_dir(&live).expect("job directory path");
+        let outcome = create_directory_link_fixture_for_test(&linked_target, &linked_job_dir)
+            .expect("create linked job directory fixture");
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
+
+        assert!(
+            !store.record_is_provably_absent(&live),
+            "a linked job directory cannot prove where the record would live"
+        );
+    }
+
+    #[test]
+    fn a_broken_record_link_is_not_proof_that_a_record_is_absent() {
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        let live = Uuid::new_v4().to_string();
+        let record_path = store.record_path(&live).expect("record path");
+        fs::create_dir_all(record_path.parent().expect("record parent"))
+            .expect("create job directory");
+        let missing_target = cache.path().join("missing-record-target.json");
+        let outcome = create_file_link_fixture_for_test(&missing_target, &record_path)
+            .expect("create broken record link fixture");
+        if outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
+
+        assert!(
+            !store.record_is_provably_absent(&live),
+            "a broken record link is unknown rather than absent"
+        );
+    }
+
+    #[test]
+    fn a_record_path_that_cannot_be_read_is_never_treated_as_absent() {
+        // "I cannot tell" must never become the proof that no child exists: the
+        // lock would be released while a job is still mutating the workspace.
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        let live = Uuid::new_v4().to_string();
+        store.acquire_active_lock(&live).expect("take a lock");
+        let job_dir = store.job_dir(&live).expect("job directory path");
+        fs::write(&job_dir, "not a directory").expect("block the record path");
+        thread::sleep(Duration::from_millis(5));
+
+        assert!(
+            !store.record_is_provably_absent(&live),
+            "an unreadable record path is not proof of absence"
+        );
+        store
+            .recover_stale_active()
+            .expect_err("an unreadable record cannot prove the workspace is idle");
+        assert!(
+            store.active_lock_path().exists(),
+            "the lock must be retained while the record cannot be read"
+        );
+
+        // The other side of the same rule: a job directory that is genuinely
+        // missing does prove absence, on every platform. Without this the
+        // guard above could be satisfied by never proving absence at all.
+        let never_started = Uuid::new_v4().to_string();
+        assert!(
+            store.record_is_provably_absent(&never_started),
+            "an absent job directory proves the record is absent"
+        );
+    }
+
+    #[test]
+    fn a_lock_naming_something_that_is_not_a_job_id_is_never_treated_as_absent() {
+        let cache = TestCache::new();
+        let store = RuntimeJobStore::new(cache.path(), Duration::from_millis(1));
+        fs::create_dir_all(store.jobs_root()).expect("create jobs root");
+        fs::write(store.active_lock_path(), "not-a-uuid").expect("write a corrupt lock");
+        thread::sleep(Duration::from_millis(5));
+
+        assert!(!store.record_is_provably_absent("not-a-uuid"));
+        store
+            .recover_stale_active()
+            .expect_err("a lock that names no job proves nothing about a child");
+        assert!(store.active_lock_path().exists());
+    }
+
+    #[test]
+    fn a_legacy_record_without_the_spawn_flag_is_lost_and_retains_the_active_lock() {
+        // A record written before `childSpawnAttempted` existed proves nothing:
+        // the previous worker could die after `runner.spawn()` and before it
+        // persisted `pid`, leaving a live child behind a queued record. Absence
+        // of the flag is unknown, never "no child was spawned".
+        let cache = TestCache::new();
+        let (store, abandoned) = abandoned_queued_job(&cache);
+        let path = store.record_path(&abandoned).expect("record path");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read record"))
+                .expect("parse record");
+        value
+            .as_object_mut()
+            .expect("record object")
+            .remove("childSpawnAttempted");
+        assert_eq!(
+            value["pid"],
+            serde_json::Value::Null,
+            "the legacy shape under test carries no pid either"
+        );
+        fs::write(
+            &path,
+            serde_json::to_vec(&value).expect("serialize legacy record"),
+        )
+        .expect("write legacy record");
+
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let error = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect_err("an unprovable legacy record must not free the workspace");
+
+        assert!(error.contains(&abandoned), "{error}");
+        assert_eq!(
+            store
+                .read_record(&abandoned)
+                .expect("read recovered record")
+                .phase,
+            RuntimeJobPhase::Lost,
+            "the record must still be terminalized"
+        );
+        assert_eq!(
+            fs::read_to_string(store.active_lock_path())
+                .expect("read retained active lock")
+                .trim(),
+            abandoned,
+            "the lock must be retained while the child cannot be ruled out"
+        );
+    }
+
+    #[test]
+    fn a_record_written_by_a_later_build_stays_readable_and_recoverable() {
+        let cache = TestCache::new();
+        let (store, abandoned) = abandoned_queued_job(&cache);
+
+        // A later build added a field this build does not know. Rejecting the
+        // record would pin active.lock with no automatic recovery at all.
+        let path = store.record_path(&abandoned).expect("record path");
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read record"))
+                .expect("parse record");
+        value["fieldFromALaterBuild"] = serde_json::Value::Bool(true);
+        fs::write(&path, serde_json::to_vec(&value).expect("serialize record"))
+            .expect("write forward-compatible record");
+
+        assert_eq!(
+            store
+                .read_record(&abandoned)
+                .expect("a later build's record must stay readable")
+                .phase,
+            RuntimeJobPhase::Queued
+        );
+
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("recovery must still free a provably childless workspace");
     }
 
     pub(crate) fn assert_system_cancellation_reaps_process_tree(

@@ -1,7 +1,8 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
-    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
+    CodeIntelligenceReadRequest, NoopSearchProgressSink, ProviderDeadline, SearchProgressSink,
+    SearchRequest,
 };
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
 use crate::domain::workspace::WorkspaceContext;
@@ -18,12 +19,14 @@ pub(crate) use tool_contracts::{
 };
 
 pub(crate) mod code_intelligence;
+pub(crate) mod diagnostics;
 pub(crate) mod documentation;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
 pub(crate) mod operational_config;
 mod outcome;
 pub(crate) mod ports;
+pub(crate) mod project_health;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
@@ -157,6 +160,7 @@ pub enum ToolHandler {
     SourceResources {
         operation: SourceResourceOperation,
     },
+    Diagnostics,
     CodeAdapter {
         command: &'static [&'static str],
     },
@@ -333,6 +337,148 @@ pub fn role_edit_output_schema() -> Value {
     schema
 }
 
+/// Closed MCP schema for the provider-neutral code-search result.
+///
+/// Provider-specific attributes remain an intentionally open JSON object, but
+/// the envelope, role sections, terminal reasons, completeness claims, counts,
+/// hits, and logical location algebra are all machine-checkable. Once a search reaches the tool
+/// result boundary it always carries `data`, including the three failed or
+/// unavailable role sections when no provider served the request. Failures
+/// before that boundary remain JSON-RPC errors and do not use this schema.
+pub fn code_search_output_schema() -> Value {
+    let string_array = || json!({"type": "array", "items": {"type": "string"}});
+    let logical_location = json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "addressed"},
+                    "sourceSet": {"type": "string", "minLength": 1},
+                    "metadataPath": {"type": "string", "minLength": 1},
+                    "targetKind": {
+                        "type": "string",
+                        "enum": ["sourceRoot", "metadataObject", "module"]
+                    }
+                },
+                "required": ["kind", "sourceSet", "targetKind"]
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "unaddressable"},
+                    "sourceSet": {"type": "string", "minLength": 1},
+                    "ownerMetadataPath": {"type": "string", "minLength": 1},
+                    "path": {"type": "string", "minLength": 1}
+                },
+                "required": ["kind", "sourceSet", "path"]
+            }
+        ]
+    });
+    let hit = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "rank": {"type": "integer", "minimum": 1},
+            "providerScore": {"type": "number"},
+            "location": logical_location,
+            "line": {"type": "integer", "minimum": 1},
+            "endLine": {"type": ["integer", "null"], "minimum": 1},
+            "symbol": {"type": ["string", "null"]},
+            "kind": {"type": ["string", "null"]},
+            "snippet": {"type": "string"},
+            "attributes": {
+                "type": "object",
+                "description": "Provider-specific evidence; consumers must not branch on it."
+            }
+        },
+        "required": [
+            "location", "line", "endLine", "symbol", "kind", "snippet", "attributes"
+        ]
+    });
+    let section = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "role": {"type": "string", "enum": ["semantic", "symbol", "lexical"]},
+            "provider": {"type": "string", "minLength": 1},
+            "status": {
+                "type": "string",
+                "enum": ["ok", "empty", "limitReached", "timedOut", "unavailable", "failed"]
+            },
+            "termination": {
+                "oneOf": [
+                    {"type": "null"},
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "code": {
+                                "type": "string",
+                                "enum": [
+                                    "limitReached", "deadlineExceeded", "dependencyPending",
+                                    "unsupportedScope", "capacityExhausted",
+                                    "providerUnavailable", "providerFailed"
+                                ]
+                            },
+                            "retryable": {"type": "boolean"},
+                            "detailCode": {"type": "string", "minLength": 1}
+                        },
+                        "required": ["code", "retryable"]
+                    }
+                ]
+            },
+            "searchComplete": {"type": "boolean"},
+            "ranking": {"type": "string", "enum": ["provider", "none"]},
+            "ordering": {"type": "string", "enum": ["provider", "providerTraversal"]},
+            "matches": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "returned": {"type": "integer", "minimum": 0},
+                    "total": {"type": "integer", "minimum": 0},
+                    "relation": {"type": "string", "enum": ["exact", "lowerBound", "unknown"]}
+                },
+                "required": ["returned", "relation"]
+            },
+            "hits": {"type": "array", "items": hit},
+            "diagnostics": string_array(),
+            "artifacts": string_array()
+        },
+        "required": [
+            "role", "provider", "status", "termination", "searchComplete", "ranking", "ordering",
+            "matches", "hits", "diagnostics"
+        ]
+    });
+    let mut schema = operation_result_output_schema();
+    if let Some(properties) = schema["properties"].as_object_mut() {
+        for forbidden in ["stdout", "stderr", "command", "job"] {
+            properties.remove(forbidden);
+        }
+    }
+    schema["properties"]["data"] = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "coverage": {"type": "string", "enum": ["complete", "partial", "none"]},
+            "elapsedMs": {"type": "integer", "minimum": 0},
+            "sections": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": section
+            }
+        },
+        "required": ["coverage", "elapsedMs", "sections"]
+    });
+    schema["required"]
+        .as_array_mut()
+        .expect("OperationResult required fields are an array")
+        .push(json!("data"));
+    schema
+}
+
 /// Project invalid Meta arguments into the stable operation envelope for an
 /// MCP adapter without changing the direct application-call error contract.
 pub fn metadata_argument_failure_result(
@@ -431,6 +577,16 @@ impl UnicaApplication {
         args: &Map<String, Value>,
         cancellation: CancellationToken,
     ) -> Result<OperationResult, String> {
+        self.call_tool_observed(name, args, cancellation, Arc::new(NoopSearchProgressSink))
+    }
+
+    pub fn call_tool_observed(
+        &self,
+        name: &str,
+        args: &Map<String, Value>,
+        cancellation: CancellationToken,
+        progress: Arc<dyn SearchProgressSink>,
+    ) -> Result<OperationResult, String> {
         let deadline = ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE);
         let spec = tools()
             .into_iter()
@@ -443,7 +599,14 @@ impl UnicaApplication {
                     format!("unknown unica tool: {name}")
                 }
             })?;
-        call_tool(spec, args, self.ports.as_ref(), &cancellation, deadline)
+        call_tool_observed(
+            spec,
+            args,
+            self.ports.as_ref(),
+            &cancellation,
+            deadline,
+            progress.as_ref(),
+        )
     }
 }
 
@@ -459,7 +622,7 @@ pub fn tools() -> Vec<ToolSpec> {
     specs.extend([
         ToolSpec {
             name: "unica.project.status",
-            description: "Inspect current Unica workspace, source set, and cache state.",
+            description: "Inspect typed workspace, source-set, and portable Git readiness without changing the project.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess::default(),
@@ -682,7 +845,7 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.search",
-            description: "Search code concurrently through provider-local RLM, bsl-analyzer, and literal git-grep sections. Migration: use sourceDir instead of the former path/config fields and a per-provider limit from 1 to 50.",
+            description: "Search one logical code scope concurrently through semantic, symbol, and lexical roles. Results preserve role-local ranking, explicit completeness and retryability, logical locations, and observable progress; sourceDir remains a mutually exclusive migration selector.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
@@ -764,16 +927,14 @@ pub fn tools() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "unica.code.diagnostics",
-            description: "Run BSL diagnostics through the internal code analysis adapter.",
+            description: "Read provider-neutral diagnostics addressed by logical 1C source targets.",
             execution: ToolExecution::Read,
             result_contract: ResultContract::Typed,
             cache_access: CacheAccess {
                 reads: &["bsl_diagnostics"],
                 writes: &[],
             },
-            handler: ToolHandler::CodeAdapter {
-                command: &["analyze"],
-            },
+            handler: ToolHandler::Diagnostics,
         },
         ToolSpec {
             name: "unica.standards.search",
@@ -820,12 +981,31 @@ pub fn tools() -> Vec<ToolSpec> {
     specs
 }
 
+#[cfg(test)]
 fn call_tool(
     spec: ToolSpec,
     args: &Map<String, Value>,
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
+) -> Result<OperationResult, String> {
+    call_tool_observed(
+        spec,
+        args,
+        ports,
+        cancellation,
+        deadline,
+        &NoopSearchProgressSink,
+    )
+}
+
+fn call_tool_observed(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    ports: &dyn ApplicationPorts,
+    cancellation: &CancellationToken,
+    deadline: ProviderDeadline,
+    progress: &dyn SearchProgressSink,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
@@ -1125,6 +1305,7 @@ fn call_tool(
                     "code intelligence call is missing operational config".to_string()
                 })?,
                 cancellation,
+                progress,
             )?,
             ToolHandler::CodeIntelligence { operation } => {
                 invoke_code_intelligence_read(CodeIntelligenceReadInvocation {
@@ -1144,6 +1325,16 @@ fn call_tool(
             }
             ToolHandler::SourceResources { operation } => {
                 source_resources::invoke(operation, ports, args, &context, cancellation)?
+            }
+            ToolHandler::Diagnostics => diagnostics::invoke(
+                ports,
+                args,
+                &context,
+                operational_config.as_ref(),
+                cancellation,
+            )?,
+            ToolHandler::ProjectStatus => {
+                project_health::invoke(ports, &context, cancellation, deadline)
             }
             _ => ports.invoke_handler_with_operational_config(
                 spec,
@@ -1227,8 +1418,15 @@ fn call_tool(
             Err(result) => return Ok(*result),
         }
     } else {
-        ports.cache_report(&context, &events, mode, spec.cache_access)?
+        let cache = ports.cache_report(&context, &events, mode, spec.cache_access);
+        if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
+            return Ok(cancelled_operation_result(&context, mode));
+        }
+        cache?
     };
+    if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
+        return Ok(cancelled_operation_result(&context, mode));
+    }
     outcome.warnings.append(&mut cache.publication_warnings);
     if spec.execution.is_mutating() && !dry_run && outcome.ok && !events.is_empty() {
         ports.notify_invalidation(&context, &events);
@@ -1242,7 +1440,8 @@ fn call_tool(
     );
 
     let role_typed = role_target.is_some();
-    if role_typed {
+    let diagnostics_typed = matches!(spec.handler, ToolHandler::Diagnostics);
+    if role_typed || diagnostics_typed {
         cache.root.clear();
     }
     let artifacts = if let Some(target) = role_target.as_ref() {
@@ -1254,6 +1453,9 @@ fn call_tool(
     } else {
         outcome.artifacts
     };
+    if matches!(spec.handler, ToolHandler::ProjectStatus) && cancellation.is_cancelled() {
+        return Ok(cancelled_operation_result(&context, mode));
+    }
     Ok(OperationResult {
         ok: outcome.ok,
         summary: outcome.summary,
@@ -1273,6 +1475,40 @@ fn call_tool(
             handler_outcome.job
         },
     })
+}
+
+fn cancelled_operation_result(context: &WorkspaceContext, mode: InvocationMode) -> OperationResult {
+    OperationResult {
+        ok: false,
+        summary: "operation cancelled".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec!["cancelled: operation stopped before result publication".to_string()],
+        artifacts: Vec::new(),
+        cache: CacheReport {
+            mode: match mode {
+                InvocationMode::Read => "read",
+                InvocationMode::Preview => "preview",
+                InvocationMode::Apply => "apply",
+            }
+            .to_string(),
+            root: context.cache_root.display().to_string(),
+            workspace_epoch: context.workspace_epoch,
+            events: Vec::new(),
+            invalidated: Vec::new(),
+            refreshed: Vec::new(),
+            lazy_rebuilt: Vec::new(),
+            stale: Vec::new(),
+            fresh: Vec::new(),
+            publication_warnings: Vec::new(),
+        },
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        data: None,
+        job: None,
+    }
 }
 
 fn enforce_result_contract(
@@ -1570,8 +1806,9 @@ fn invoke_code_intelligence_search(
     workspace: &WorkspaceContext,
     operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
+    progress: &dyn SearchProgressSink,
 ) -> Result<ports::HandlerOutcome, String> {
-    let context = ports.resolve_code_intelligence_context(workspace, args)?;
+    let (context, _scope) = ports.resolve_code_search_context(workspace, args)?;
     let request = SearchRequest {
         query: args
             .get("query")
@@ -1588,7 +1825,7 @@ fn invoke_code_intelligence_search(
         ports.code_intelligence_registry()?,
         operational_config.code_intelligence(),
     )
-    .search(&request, &context, cancellation)?;
+    .search_observed(&request, &context, cancellation, progress)?;
     let artifacts = execution
         .result
         .sections
@@ -1654,7 +1891,7 @@ fn invoke_code_intelligence_read(
             request.capability()
         )
     })?;
-    let provider_id = provider.id();
+    let provider_identity = provider.identity();
     let mut outcome = code_intelligence::execute_provider_read(
         provider,
         request,
@@ -1664,13 +1901,12 @@ fn invoke_code_intelligence_read(
             .provider_read_timeout(),
         cancellation,
     )?;
-    if outcome.provider != provider_id {
+    if outcome.provider != provider_identity {
         outcome.warnings.insert(
             0,
             format!(
                 "provider registry selected {}, but the response identified {}",
-                provider_id.as_str(),
-                outcome.provider.as_str()
+                provider_identity.provider, outcome.provider.provider
             ),
         );
     }
@@ -2134,64 +2370,8 @@ pub(crate) struct TypedReadOutcome {
     pub(crate) data: Option<Value>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProjectStatusData {
-    workspace_root: String,
-    cache_root: String,
-    /// `null` when discovery failed: the caller must not read an empty list as
-    /// a workspace that has no source sets.
-    source_sets: Option<Vec<crate::domain::project_sources::ProjectSourceSet>>,
-}
-
-pub(crate) fn project_status(
-    context: &WorkspaceContext,
-    source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
-    tracked_config_dump_info_warning: Option<String>,
-) -> TypedReadOutcome {
-    let mut outcome = AdapterOutcome::ok(format!(
-        "workspace root: {}; cache root: {}",
-        context.workspace_root.display(),
-        context.cache_root.display()
-    ));
-    outcome
-        .artifacts
-        .push(context.workspace_root.display().to_string());
-    outcome
-        .artifacts
-        .push(context.cache_root.display().to_string());
-    let source_sets = match source_map {
-        Ok(source_map) => {
-            outcome
-                .summary
-                .push_str(&format!("; source sets: {}", source_map.source_sets.len()));
-            Some(source_map.source_sets)
-        }
-        Err(error) => {
-            outcome
-                .warnings
-                .push(format!("source-set discovery failed: {error}"));
-            None
-        }
-    };
-    if let Some(warning) = tracked_config_dump_info_warning {
-        outcome.warnings.push(warning);
-    }
-    let data = serde_json::to_value(ProjectStatusData {
-        workspace_root: context.workspace_root.display().to_string(),
-        cache_root: context.cache_root.display().to_string(),
-        source_sets,
-    })
-    .expect("project status data serializes");
-    TypedReadOutcome {
-        outcome,
-        data: Some(data),
-    }
-}
-
 pub(crate) fn project_map(
     source_map: Result<crate::domain::project_sources::ProjectSourceMap, String>,
-    tracked_config_dump_info_warning: Option<String>,
 ) -> TypedReadOutcome {
     match source_map {
         Ok(source_map) => {
@@ -2201,9 +2381,6 @@ pub(crate) fn project_map(
             ));
             if let Some(error) = &source_map.source_selection_error {
                 outcome.warnings.push(error.clone());
-            }
-            if let Some(warning) = tracked_config_dump_info_warning {
-                outcome.warnings.push(warning);
             }
             // The map used to be serialized into `stdout`, which put a JSON
             // string inside the JSON envelope -- exactly the shape ADR-0020
@@ -2219,7 +2396,7 @@ pub(crate) fn project_map(
                 ok: false,
                 summary: "project map discovery failed".to_string(),
                 changes: Vec::new(),
-                warnings: tracked_config_dump_info_warning.into_iter().collect(),
+                warnings: Vec::new(),
                 errors: vec![error],
                 artifacts: Vec::new(),
                 stdout: None,
@@ -2813,6 +2990,22 @@ mod tests {
         crate::test_support::canonical_path(path)
     }
 
+    fn object_schema_property_maps(schema: &Value) -> Vec<&Map<String, Value>> {
+        if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+            return vec![properties];
+        }
+        schema["oneOf"]
+            .as_array()
+            .expect("tool schema publishes properties or closed object oneOf branches")
+            .iter()
+            .map(|branch| {
+                branch["properties"]
+                    .as_object()
+                    .expect("oneOf branch properties are an object")
+            })
+            .collect()
+    }
+
     fn call_public_tool_from_workspace(
         workspace: &std::path::Path,
         name: &str,
@@ -2824,6 +3017,32 @@ mod tests {
 
     fn path_text(path: &std::path::Path) -> String {
         path.display().to_string().replace('\\', "/")
+    }
+
+    #[test]
+    fn code_search_schema_requires_a_machine_readable_section_termination() {
+        let schema = code_search_output_schema();
+        let section = &schema["properties"]["data"]["properties"]["sections"]["items"];
+
+        assert!(section["required"]
+            .as_array()
+            .is_some_and(|required| required.iter().any(|field| field == "termination")));
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["code"]["enum"],
+            json!([
+                "limitReached",
+                "deadlineExceeded",
+                "dependencyPending",
+                "unsupportedScope",
+                "capacityExhausted",
+                "providerUnavailable",
+                "providerFailed"
+            ])
+        );
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["retryable"]["type"],
+            "boolean"
+        );
     }
 
     #[derive(Default)]
@@ -2921,6 +3140,316 @@ mod tests {
         }
     }
 
+    static DIAGNOSTICS_BOUNDARY_DESCRIPTOR:
+        crate::domain::diagnostics::DiagnosticProviderDescriptor =
+        crate::domain::diagnostics::DiagnosticProviderDescriptor {
+            id: crate::domain::diagnostics::BSL_ANALYZER_PROVIDER,
+            actions: &[
+                crate::domain::diagnostics::DiagnosticAction::Analyze,
+                crate::domain::diagnostics::DiagnosticAction::Status,
+            ],
+            findings_target_kinds: &[],
+            emits_focus_kinds: &[],
+        };
+
+    struct DiagnosticsBoundaryProvider {
+        calls: Arc<AtomicUsize>,
+        observed_budget: Arc<Mutex<Option<Duration>>>,
+        fail: bool,
+    }
+
+    impl crate::domain::diagnostics::DiagnosticProvider for DiagnosticsBoundaryProvider {
+        fn descriptor(&self) -> &'static crate::domain::diagnostics::DiagnosticProviderDescriptor {
+            &DIAGNOSTICS_BOUNDARY_DESCRIPTOR
+        }
+
+        fn execute(
+            &self,
+            request: &crate::domain::diagnostics::DiagnosticProviderRequest,
+            _context: &crate::domain::diagnostics::DiagnosticContext,
+            deadline: crate::domain::diagnostics::ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> crate::domain::diagnostics::DiagnosticProviderOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.observed_budget.lock().unwrap() = Some(deadline.remaining());
+            if self.fail {
+                return crate::domain::diagnostics::DiagnosticProviderOutcome {
+                    status: crate::domain::diagnostics::DiagnosticProviderStatus::Failed,
+                    complete: false,
+                    version: Some("test".to_string()),
+                    observations: Vec::new(),
+                    rules: Vec::new(),
+                    readiness: None,
+                    error: Some(crate::domain::diagnostics::DiagnosticError {
+                        code: "provider_unavailable".to_string(),
+                        message: "test provider is unavailable".to_string(),
+                        retryable: true,
+                    }),
+                };
+            }
+            crate::domain::diagnostics::DiagnosticProviderOutcome {
+                status: if request.action == crate::domain::diagnostics::DiagnosticAction::Analyze {
+                    crate::domain::diagnostics::DiagnosticProviderStatus::Empty
+                } else {
+                    crate::domain::diagnostics::DiagnosticProviderStatus::Completed
+                },
+                complete: true,
+                version: Some("test".to_string()),
+                observations: Vec::new(),
+                rules: Vec::new(),
+                readiness: (request.action == crate::domain::diagnostics::DiagnosticAction::Status)
+                    .then_some(crate::domain::diagnostics::DiagnosticReadiness {
+                        state: crate::domain::diagnostics::DiagnosticReadinessState::Ready,
+                        retryable: false,
+                    }),
+                error: None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct DiagnosticsBoundaryPorts {
+        handler_calls: AtomicUsize,
+        provider_calls: Arc<AtomicUsize>,
+        observed_budget: Arc<Mutex<Option<Duration>>>,
+        fail_provider: bool,
+    }
+
+    impl ports::ApplicationPorts for DiagnosticsBoundaryPorts {
+        fn discover_workspace(
+            &self,
+            requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            let root = requested_cwd.unwrap_or_else(|| PathBuf::from("workspace"));
+            Ok(WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 7,
+            })
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _mode: InvocationMode,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn diagnostic_provider_registry(
+            &self,
+        ) -> Result<crate::domain::diagnostics::DiagnosticProviderRegistry, String> {
+            crate::domain::diagnostics::DiagnosticProviderRegistry::new(vec![Arc::new(
+                DiagnosticsBoundaryProvider {
+                    calls: Arc::clone(&self.provider_calls),
+                    observed_budget: Arc::clone(&self.observed_budget),
+                    fail: self.fail_provider,
+                },
+            )])
+            .map_err(|error| error.to_string())
+        }
+
+        fn resolve_diagnostic_context(
+            &self,
+            request: &crate::domain::diagnostics::DiagnosticRequest,
+            workspace: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<
+            crate::domain::diagnostics::DiagnosticContext,
+            crate::domain::diagnostics::DiagnosticRequestError,
+        > {
+            Ok(crate::domain::diagnostics::DiagnosticContext::new(
+                workspace.clone(),
+                crate::domain::project_sources::ProjectSourceSet {
+                    name: request.source_set.clone(),
+                    kind: crate::domain::project_sources::SourceSetKind::Configuration,
+                    path: "src".to_string(),
+                    source_format: crate::domain::project_sources::SourceFormat::PlatformXml,
+                    format_evidence: Vec::new(),
+                    format_probe_error: None,
+                },
+                crate::domain::source_roots::ResolvedSourceRoot {
+                    source_set: Some(request.source_set.clone()),
+                    path: workspace.workspace_root.join("src"),
+                },
+                crate::domain::source_target::ResolvedTarget {
+                    source_set: request.source_set.clone(),
+                    metadata_path: request.metadata_path.clone(),
+                    target_kind: crate::domain::source_target::TargetKind::SourceRoot,
+                },
+            ))
+        }
+
+        fn map_diagnostic_observation(
+            &self,
+            _observation: crate::domain::diagnostics::DiagnosticObservation,
+            _context: &crate::domain::diagnostics::DiagnosticContext,
+            _cancellation: &CancellationToken,
+        ) -> Result<
+            crate::domain::diagnostics::DiagnosticItem,
+            crate::domain::diagnostics::DiagnosticMapError,
+        > {
+            unreachable!("status providers do not emit observations")
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            Ok(SupportGuardCheck::Allow)
+        }
+
+        fn invoke_handler(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _mode: InvocationMode,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.handler_calls.fetch_add(1, Ordering::SeqCst);
+            Err("diagnostics was misrouted to the generic handler".to_string())
+        }
+
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            _mode: InvocationMode,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            Ok(CacheReport {
+                mode: "read".to_string(),
+                root: context.cache_root.display().to_string(),
+                workspace_epoch: context.workspace_epoch,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+                publication_warnings: Vec::new(),
+            })
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_routes_only_through_coordinator_and_data() {
+        fn contains_string(value: &Value, needle: &str) -> bool {
+            match value {
+                Value::Object(object) => {
+                    object.values().any(|value| contains_string(value, needle))
+                }
+                Value::Array(items) => items.iter().any(|value| contains_string(value, needle)),
+                Value::String(text) => text.contains(needle),
+                _ => false,
+            }
+        }
+
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let workspace = std::env::temp_dir().join("unica-diagnostics-private-workspace");
+        let args = json!({
+            "action": "status",
+            "sourceSet": "main",
+            "cwd": workspace
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+        let wire = serde_json::to_value(&result).unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["state"], "completed");
+        assert_eq!(wire["cache"]["root"], "");
+        assert!(
+            !contains_string(&wire, &workspace.display().to_string()),
+            "serialized diagnostics result leaked workspace path: {wire}"
+        );
+        assert!(result.stdout.is_none());
+        assert!(result.stderr.is_none());
+        assert!(result.command.is_none());
+        assert!(result.diagnostics.is_none());
+        assert!(result.artifacts.is_empty());
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_preserves_failed_useful_result_semantics() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts {
+            fail_provider: true,
+            ..Default::default()
+        });
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({"action": "status", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["state"], "failed");
+        assert!(result.diagnostics.is_none());
+        assert!(result.stdout.is_none());
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_analyze_timeout_override_reaches_provider_deadline() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({
+            "action": "analyze",
+            "sourceSet": "main",
+            "timeoutSeconds": 900
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+        let observed = ports.observed_budget.lock().unwrap().unwrap();
+
+        assert!(result.ok, "{result:?}");
+        // The override is proven by the band it lands in, not by the second it
+        // lands on: the deadline starts before the provider reads it, and a
+        // loaded runner can spend more than a second in between.
+        assert!(observed <= Duration::from_secs(900), "{observed:?}");
+        assert!(observed > Duration::from_secs(880), "{observed:?}");
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_cancellation_publishes_no_partial_data() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+        let args = json!({"action": "status", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let error = app
+            .call_tool_cancellable("unica.code.diagnostics", &args, cancellation)
+            .unwrap_err();
+
+        assert!(error.contains("cancel"), "{error}");
+        assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn invocation_mode_is_derived_from_validated_tool_execution() {
         let reader = tools()
@@ -2955,6 +3484,7 @@ mod tests {
         load_calls: AtomicUsize,
         prepare_calls: AtomicUsize,
         handler_calls: AtomicUsize,
+        project_health_calls: AtomicUsize,
         code_context_calls: AtomicUsize,
         fail_load: bool,
         cancellation_on_load: Option<CancellationToken>,
@@ -2997,8 +3527,8 @@ mod tests {
     struct FullRangeReadProvider;
 
     impl crate::domain::code_intelligence::CodeIntelligenceProvider for FullRangeReadProvider {
-        fn id(&self) -> crate::domain::code_intelligence::ProviderId {
-            crate::domain::code_intelligence::ProviderId::Rlm
+        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+            crate::domain::code_intelligence::ProviderId::Rlm.identity()
         }
 
         fn capabilities(&self) -> &[crate::domain::code_intelligence::ProviderCapability] {
@@ -3052,7 +3582,7 @@ mod tests {
                 }
             };
             Ok(crate::domain::code_intelligence::ProviderReadOutcome {
-                provider: crate::domain::code_intelligence::ProviderId::Rlm,
+                provider: crate::domain::code_intelligence::ProviderId::Rlm.identity(),
                 ok: true,
                 summary: "read".to_string(),
                 warnings: Vec::new(),
@@ -3129,6 +3659,23 @@ mod tests {
             Ok(crate::domain::operational_config::OperationalConfig::compiled_defaults())
         }
 
+        fn inspect_project_health(
+            &self,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+            _deadline: ProviderDeadline,
+        ) -> Result<
+            crate::domain::project_health::ProjectHealthSnapshot,
+            crate::domain::project_health::ProjectHealthInspectionError,
+        > {
+            self.project_health_calls.fetch_add(1, Ordering::SeqCst);
+            Err(
+                crate::domain::project_health::ProjectHealthInspectionError::Fatal(
+                    "recording project health inspector stopped".into(),
+                ),
+            )
+        }
+
         fn prepare_tool_invocation(
             &self,
             spec: ToolSpec,
@@ -3145,6 +3692,15 @@ mod tests {
                     handler: Some(ports::HandlerOutcome::with_data(
                         AdapterOutcome::ok("prepared code search"),
                         json!({"sections": []}),
+                    )),
+                });
+            }
+            if matches!(spec.handler, ToolHandler::Diagnostics) {
+                return Ok(ports::PreparedToolInvocation {
+                    format_guard: None,
+                    handler: Some(ports::HandlerOutcome::with_data(
+                        AdapterOutcome::ok("prepared diagnostics"),
+                        json!({"state": "completed"}),
                     )),
                 });
             }
@@ -3178,6 +3734,26 @@ mod tests {
                 );
             }
             Err("code intelligence context should not be resolved in this test".to_string())
+        }
+
+        fn resolve_code_search_context(
+            &self,
+            context: &WorkspaceContext,
+            args: &Map<String, Value>,
+        ) -> Result<
+            (
+                crate::domain::code_intelligence::CodeIntelligenceContext,
+                crate::domain::code_intelligence::CodeSearchScope,
+            ),
+            String,
+        > {
+            let provider_context = self.resolve_code_intelligence_context(context, args)?;
+            let scope = crate::domain::code_intelligence::CodeSearchScope::all(
+                "main".to_string(),
+                provider_context.source_root.path.clone(),
+                false,
+            );
+            Ok((provider_context.with_search_scope(scope.clone()), scope))
         }
 
         fn normalize_code_intelligence_read_request(
@@ -3277,25 +3853,29 @@ mod tests {
         let app = UnicaApplication::with_ports(ports.clone());
 
         let mut status = Map::new();
-        status.insert("mode".to_string(), json!("status"));
+        status.insert("action".to_string(), json!("status"));
+        status.insert("sourceSet".to_string(), json!("main"));
         app.call_tool("unica.code.diagnostics", &status).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 0);
 
         let mut analyze = Map::new();
+        analyze.insert("action".to_string(), json!("analyze"));
+        analyze.insert("sourceSet".to_string(), json!("main"));
         analyze.insert("timeoutSeconds".to_string(), json!(900));
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            *ports.observed_analyze_timeout.lock().unwrap(),
-            Some(Duration::from_secs(900))
-        );
 
-        app.call_tool("unica.project.status", &Map::new()).unwrap();
+        let status = app.call_tool("unica.project.status", &Map::new()).unwrap();
+        assert!(!status.ok);
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ports.project_health_calls.load(Ordering::SeqCst), 1);
 
         for (tool_name, args) in [
-            ("unica.code.search", json!({"query": "needle"})),
+            (
+                "unica.code.search",
+                json!({"query": "needle", "sourceDir": "."}),
+            ),
             ("unica.code.definition", json!({"name": "Needle"})),
             ("unica.code.outline", json!({"path": "Module.bsl"})),
         ] {
@@ -3316,7 +3896,9 @@ mod tests {
         let result = app
             .call_tool(
                 "unica.code.search",
-                json!({"query": "needle"}).as_object().unwrap(),
+                json!({"query": "needle", "sourceDir": "."})
+                    .as_object()
+                    .unwrap(),
             )
             .expect("prepared handler must serve code search");
 
@@ -3331,10 +3913,16 @@ mod tests {
     #[test]
     fn invalid_operational_config_stops_before_handler_execution() {
         let cases = [
-            ("unica.code.search", json!({"query": "needle"})),
+            (
+                "unica.code.search",
+                json!({"query": "needle", "sourceDir": "."}),
+            ),
             ("unica.code.definition", json!({"name": "Needle"})),
             ("unica.code.outline", json!({"path": "Module.bsl"})),
-            ("unica.code.diagnostics", json!({"timeoutSeconds": 900})),
+            (
+                "unica.code.diagnostics",
+                json!({"action": "analyze", "sourceSet": "main", "timeoutSeconds": 900}),
+            ),
         ];
 
         for (tool_name, args) in cases {
@@ -3367,7 +3955,9 @@ mod tests {
         let error = app
             .call_tool_cancellable(
                 "unica.code.search",
-                json!({"query": "needle"}).as_object().unwrap(),
+                json!({"query": "needle", "sourceDir": "."})
+                    .as_object()
+                    .unwrap(),
                 token,
             )
             .expect_err("cancellation must win over invalid config");
@@ -5675,13 +6265,89 @@ mod tests {
             .unwrap();
         assert!(result.ok);
         assert_eq!(result.cache.mode, "read");
-        assert!(result.summary.contains("workspace root"));
+        assert!(result.summary.contains("project health inspected"));
         let data = result.data.unwrap();
         assert!(data["workspaceRoot"].is_string());
         assert!(data["cacheRoot"].is_string());
+        assert!(data["ready"].is_boolean());
+        assert!(data["repositoryReady"].is_boolean());
+        assert!(data["checks"].is_array());
+        assert!(data["diagnostics"].is_array());
         // Discovery either proves the sets or says it could not: an empty list
         // must never stand in for "we did not look".
         assert!(data["sourceSets"].is_array() || data["sourceSets"].is_null());
+    }
+
+    #[test]
+    fn project_status_without_git_separates_source_and_repository_readiness() {
+        let root = temp_project_status_workspace("without-git", "src");
+        let mut args = Map::new();
+        args.insert("cwd".into(), Value::String(root.display().to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.status", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let data = result.data.unwrap();
+        assert_eq!(data["ready"], true);
+        assert_eq!(data["repositoryReady"], false);
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "git.repository_absent" }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_status_reports_workspace_root_source_set_without_mutation() {
+        let root = temp_project_status_workspace("root-source", ".");
+        let before = std::fs::read(root.join("v8project.yaml")).unwrap();
+        let mut args = Map::new();
+        args.insert("cwd".into(), Value::String(root.display().to_string()));
+
+        let result = UnicaApplication::new()
+            .call_tool("unica.project.status", &args)
+            .unwrap();
+
+        assert!(result.ok, "{:?}", result.errors);
+        let data = result.data.unwrap();
+        assert_eq!(data["ready"], false);
+        assert!(data["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| { diagnostic["code"] == "source_set.root_is_workspace" }));
+        assert_eq!(std::fs::read(root.join("v8project.yaml")).unwrap(), before);
+        assert!(!root.join(".build/unica/services").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn temp_project_status_workspace(name: &str, source_path: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "unica-project-status-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_root = if source_path == "." {
+            root.clone()
+        } else {
+            root.join(source_path)
+        };
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::write(source_root.join("Configuration.xml"), "<MetaDataObject/>\n").unwrap();
+        std::fs::write(
+            root.join("v8project.yaml"),
+            format!(
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: {source_path}\n"
+            ),
+        )
+        .unwrap();
+        root
     }
 
     #[test]
@@ -5723,7 +6389,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_warns_when_config_dump_info_is_tracked_by_git() {
+    fn project_map_does_not_mix_git_health_into_source_map() {
         let root = test_workspace_root("project-map-tracked-cdfi");
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -5757,11 +6423,15 @@ mod tests {
             .unwrap();
 
         assert!(result.ok);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("src/configdumpinfo.xml")
-                && warning.contains("git rm --cached")));
+        assert!(
+            result.warnings.iter().all(|warning| {
+                !warning.contains("ConfigDumpInfo.xml")
+                    && !warning.contains("git rm")
+                    && !warning.contains("manual review")
+            }),
+            "{:?}",
+            result.warnings
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -5844,7 +6514,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_classifies_config_dump_info_from_git_index_not_worktree() {
+    fn project_map_is_independent_of_config_dump_info_index_and_worktree_content() {
         let runtime_index = test_workspace_root("project-map-cdfi-runtime-index");
         std::fs::create_dir_all(runtime_index.join("epf")).unwrap();
         std::fs::write(
@@ -5885,11 +6555,15 @@ mod tests {
             .call_tool("unica.project.map", &args)
             .unwrap();
 
-        assert!(result.warnings.iter().any(|warning| {
-            warning.contains("epf/ConfigDumpInfo.xml")
-                && warning.contains("git rm --cached")
-                && warning.contains("workspace-relative paths")
-        }));
+        assert!(
+            result.warnings.iter().all(|warning| {
+                !warning.contains("ConfigDumpInfo.xml")
+                    && !warning.contains("git rm")
+                    && !warning.contains("manual review")
+            }),
+            "{:?}",
+            result.warnings
+        );
 
         let external_index = test_workspace_root("project-map-cdfi-external-index");
         std::fs::create_dir_all(external_index.join("epf")).unwrap();
@@ -5991,7 +6665,7 @@ mod tests {
     }
 
     #[test]
-    fn project_map_preserves_tracked_config_dump_info_warning_when_map_fails() {
+    fn project_map_failure_does_not_run_git_health_inspection() {
         let root = test_workspace_root("project-map-invalid-with-tracked-cdfi");
         std::fs::write(root.join("v8project.yaml"), "source-set: [").unwrap();
         std::fs::write(root.join("ConfigDumpInfo.xml"), "<ConfigDumpInfo/>").unwrap();
@@ -6013,11 +6687,7 @@ mod tests {
             .unwrap();
 
         assert!(!result.ok);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("ConfigDumpInfo.xml")
-                && warning.contains("git rm --cached")));
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7453,21 +8123,20 @@ mod tests {
     fn reader_schemas_never_publish_dry_run_and_mutations_keep_it() {
         for tool in tools() {
             let schema = input_schema_for_tool(&tool);
-            let properties = schema["properties"]
-                .as_object()
-                .expect("tool input schema properties are an object");
-            assert_eq!(
-                properties.contains_key("dryRun"),
-                tool.execution.is_mutating(),
-                "{} publishes the wrong invocation switch",
-                tool.name,
-            );
-            if tool.execution.is_mutating() {
+            for properties in object_schema_property_maps(&schema) {
                 assert_eq!(
-                    properties["dryRun"]["default"], true,
-                    "{} publishes the wrong preview default",
+                    properties.contains_key("dryRun"),
+                    tool.execution.is_mutating(),
+                    "{} publishes the wrong invocation switch",
                     tool.name,
                 );
+                if tool.execution.is_mutating() {
+                    assert_eq!(
+                        properties["dryRun"]["default"], true,
+                        "{} publishes the wrong preview default",
+                        tool.name,
+                    );
+                }
             }
         }
     }
@@ -9742,23 +10411,37 @@ mod tests {
                 Ok(SupportGuardCheck::Allow)
             }
 
+            fn inspect_project_health(
+                &self,
+                _context: &WorkspaceContext,
+                cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<
+                crate::domain::project_health::ProjectHealthSnapshot,
+                crate::domain::project_health::ProjectHealthInspectionError,
+            > {
+                *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
+                if cancellation.is_cancelled() {
+                    return Err(
+                        crate::domain::project_health::ProjectHealthInspectionError::Cancelled,
+                    );
+                }
+                Err(
+                    crate::domain::project_health::ProjectHealthInspectionError::Fatal(
+                        "recording project health inspector expected cancellation".into(),
+                    ),
+                )
+            }
+
             fn invoke_handler(
                 &self,
                 _spec: ToolSpec,
                 _args: &Map<String, Value>,
                 _context: &WorkspaceContext,
                 _mode: InvocationMode,
-                cancellation: &CancellationToken,
+                _cancellation: &CancellationToken,
             ) -> Result<ports::HandlerOutcome, String> {
-                *self.observed_cancelled.lock().unwrap() = Some(cancellation.is_cancelled());
-                if cancellation.is_cancelled() {
-                    return Ok(ports::HandlerOutcome::plain(AdapterOutcome::cancelled(
-                        "recording port stopped",
-                    )));
-                }
-                Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(
-                    "recording port completed",
-                )))
+                panic!("project.status must use inspect_project_health")
             }
 
             fn cache_report(
@@ -9808,6 +10491,175 @@ mod tests {
             .unwrap();
 
         assert!(!result.ok);
+        assert!(result.errors[0].starts_with("cancelled:"));
+    }
+
+    #[test]
+    fn cancellation_during_cache_report_wins_before_public_result_publication() {
+        struct CancellingCachePorts {
+            cancellation: CancellationToken,
+            fail_cache_report: bool,
+        }
+
+        impl ports::ApplicationPorts for CancellingCachePorts {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                let root = requested_cwd.unwrap_or_else(|| PathBuf::from("/workspace"));
+                Ok(WorkspaceContext {
+                    cwd: root.clone(),
+                    workspace_root: root.clone(),
+                    cache_root: root.join(".build/unica"),
+                    workspace_epoch: 1,
+                })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _mode: InvocationMode,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
+            }
+
+            fn inspect_project_health(
+                &self,
+                _context: &WorkspaceContext,
+                _cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<
+                crate::domain::project_health::ProjectHealthSnapshot,
+                crate::domain::project_health::ProjectHealthInspectionError,
+            > {
+                use crate::domain::project_health::{
+                    DiagnosticScope, ProjectCheckId, ProjectCheckObservation, ProjectCheckOutcome,
+                    ProjectHealthSnapshot,
+                };
+                use crate::domain::project_sources::{
+                    ProjectSourceSet, SourceFormat, SourceSetKind,
+                };
+
+                let observation = |id, source_set: Option<&str>| ProjectCheckObservation {
+                    id,
+                    scope: id.scope(),
+                    source_set: source_set.map(str::to_string),
+                    outcome: ProjectCheckOutcome::Completed,
+                };
+                let mut observations = ProjectCheckId::ALL
+                    .into_iter()
+                    .map(|id| {
+                        observation(
+                            id,
+                            (id.scope() == DiagnosticScope::SourceSet).then_some("main"),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                observations.extend(
+                    [
+                        ProjectCheckId::RepositoryIgnore,
+                        ProjectCheckId::RepositoryGeneratedPaths,
+                        ProjectCheckId::RepositoryConfigDumpInfo,
+                        ProjectCheckId::RepositoryAttributes,
+                        ProjectCheckId::RepositoryIndexEol,
+                        ProjectCheckId::RepositoryWorkingEol,
+                        ProjectCheckId::RepositoryLfs,
+                    ]
+                    .into_iter()
+                    .map(|id| observation(id, Some("main"))),
+                );
+                Ok(ProjectHealthSnapshot {
+                    workspace_root: "/workspace".into(),
+                    cache_root: "/workspace/.build/unica".into(),
+                    repository_root: Some("/workspace".into()),
+                    source_sets: Some(vec![ProjectSourceSet {
+                        name: "main".into(),
+                        kind: SourceSetKind::Configuration,
+                        path: "src".into(),
+                        source_format: SourceFormat::PlatformXml,
+                        format_evidence: vec!["src/Configuration.xml".into()],
+                        format_probe_error: None,
+                    }]),
+                    source_targets_complete: true,
+                    observations,
+                    facts: Vec::new(),
+                })
+            }
+
+            fn invoke_handler(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+                _mode: InvocationMode,
+                _cancellation: &CancellationToken,
+            ) -> Result<ports::HandlerOutcome, String> {
+                panic!("project.status must use the typed project-health coordinator")
+            }
+
+            fn cache_report(
+                &self,
+                context: &WorkspaceContext,
+                _events: &[DomainEvent],
+                _mode: InvocationMode,
+                _cache_access: CacheAccess,
+            ) -> Result<CacheReport, String> {
+                self.cancellation.cancel();
+                if self.fail_cache_report {
+                    return Err("competing cache report failure".into());
+                }
+                Ok(CacheReport {
+                    mode: "read".to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: Vec::new(),
+                    invalidated: Vec::new(),
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: Vec::new(),
+                    fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
+                })
+            }
+
+            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+        }
+
+        let cancellation = CancellationToken::new();
+        let ports = Arc::new(CancellingCachePorts {
+            cancellation: cancellation.clone(),
+            fail_cache_report: false,
+        });
+        let result = UnicaApplication::with_ports(ports)
+            .call_tool_cancellable("unica.project.status", &Map::new(), cancellation)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
+        assert!(result.errors[0].starts_with("cancelled:"));
+
+        let cancellation = CancellationToken::new();
+        let ports = Arc::new(CancellingCachePorts {
+            cancellation: cancellation.clone(),
+            fail_cache_report: true,
+        });
+        let result = UnicaApplication::with_ports(ports)
+            .call_tool_cancellable("unica.project.status", &Map::new(), cancellation)
+            .unwrap();
+
+        assert!(!result.ok);
+        assert!(result.data.is_none());
         assert!(result.errors[0].starts_with("cancelled:"));
     }
 
@@ -11073,12 +11925,12 @@ mod tests {
             outcome: AdapterOutcome::ok("reader omitted its typed payload"),
             data: None,
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect_err("successful typed reader without data must fail closed");
 
         assert_eq!(
             error,
-            "typed_result_missing: unica.project.status returned ok without OperationResult.data"
+            "typed_result_missing: unica.project.map returned ok without OperationResult.data"
         );
     }
 
@@ -11091,12 +11943,12 @@ mod tests {
             outcome,
             data: Some(json!({"fixture": true})),
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect_err("successful typed reader must not duplicate data in stdout");
 
         assert_eq!(
             error,
-            "typed_result_textual: unica.project.status returned ok with a stdout duplicate"
+            "typed_result_textual: unica.project.map returned ok with a stdout duplicate"
         );
     }
 
@@ -11110,7 +11962,7 @@ mod tests {
             outcome,
             data: None,
         }))
-        .call_tool("unica.project.status", &Map::new())
+        .call_tool("unica.project.map", &Map::new())
         .expect("typed reader failure may omit data");
 
         assert!(!result.ok);

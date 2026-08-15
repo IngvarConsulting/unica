@@ -1516,6 +1516,84 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("compiled 120-second fallback", text)
         self.assertIn("do not read this operational config", text)
 
+    def test_code_diagnostics_routes_providers_internally(self) -> None:
+        text = (self.skill_root() / "code-diagnostics" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("no_applicable_provider", text)
+        self.assertIn("Provider execution is routed internally", text)
+        self.assertNotIn('providers: ["bsl-analyzer"]', text)
+        self.assertIn("inline/range disable markers", text)
+        self.assertIn("suppression-комментарии", text)
+
+    def test_code_diagnostics_examples_use_logical_action_contract(self) -> None:
+        calls = []
+        for path in sorted(self.skill_root().glob("*/SKILL.md")):
+            text = path.read_text(encoding="utf-8")
+            for block in re.findall(r"```(?:json|jsonc)\n(.*?)\n```", text, flags=re.S):
+                try:
+                    payload = json.loads(block)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                params = payload.get("params", {})
+                if params.get("name") == "unica.code.diagnostics":
+                    calls.append((path, params.get("arguments", {})))
+
+        self.assertGreaterEqual(len(calls), 2)
+        forbidden = {
+            "mode",
+            "sourceDir",
+            "path",
+            "codes",
+            "minSeverity",
+            "rangeStart",
+            "rangeEnd",
+            "config",
+            "format",
+            "detail",
+            "maxFiles",
+        }
+        for path, arguments in calls:
+            with self.subTest(
+                path=path.relative_to(self.repo_root()), arguments=arguments
+            ):
+                self.assertIn(
+                    arguments.get("action"),
+                    {"analyze", "findings", "status", "catalog"},
+                )
+                self.assertIsInstance(arguments.get("sourceSet"), str)
+                self.assertTrue(arguments["sourceSet"].strip())
+                self.assertEqual(forbidden.intersection(arguments), set())
+                if arguments["action"] == "findings":
+                    self.assertRegex(
+                        arguments.get("metadataPath", ""),
+                        r"^[^.]+\.[^.]+(?:\..+)?$",
+                    )
+                for code in arguments.get("filter", {}).get("codes", []):
+                    self.assertEqual(set(code), {"provider", "code"})
+                    self.assertTrue(code["provider"])
+                    self.assertTrue(code["code"])
+
+        code_diagnostics_calls = [
+            arguments
+            for path, arguments in calls
+            if path.parent.name == "code-diagnostics"
+        ]
+        self.assertTrue(
+            any(call["action"] == "analyze" for call in code_diagnostics_calls)
+        )
+        findings = next(
+            call
+            for call in code_diagnostics_calls
+            if call["action"] == "findings"
+        )
+        self.assertEqual(findings["sourceSet"], "main")
+        self.assertIn("metadataPath", findings)
+        self.assertTrue(findings.get("filter", {}).get("codes"))
+
     def test_unica_owned_guidance_contains_required_operational_concepts(self) -> None:
         docs = {
             "code-search": self.skill_root() / "code-search" / "SKILL.md",
@@ -1773,6 +1851,62 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         self.assertIn("`data.external_epf_wait`", skill_text)
         self.assertIn("`diagnostics.external_epf_wait`", skill_text)
+
+    def test_v8_runner_leads_client_mcp_download_with_the_prebuilt_artifact(
+        self,
+    ) -> None:
+        """#346. Pinned v8-runner 0.5.1 downloads the prebuilt
+        `build/tools/client_mcp.cfe` when `sources` is left off, and an EDT
+        source tree with no `.cfe` when it is passed. The skill published only
+        the `sources: true` recipe, so a caller who wanted the ready extension
+        took a `1cedtcli` dependency and still failed the `build` preflight that
+        wants `tools.client_mcp.extension.artifact.path`.
+        """
+        skill_dir = self.skill_root() / "v8-runner"
+        skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        command_selection = (
+            skill_dir / "references" / "command-selection.md"
+        ).read_text(encoding="utf-8")
+
+        client_mcp_calls = [
+            payload["params"]["arguments"]
+            for payload in (
+                json.loads(block)
+                for block in re.findall(
+                    r"```json\n(.*?)\n```", skill_text, flags=re.S
+                )
+                if '"method": "tools/call"' in block
+            )
+            if payload["params"]["arguments"].get("operation") == "tools-download"
+            and payload["params"]["arguments"].get("tool") == "client-mcp"
+        ]
+        self.assertTrue(
+            client_mcp_calls, "the skill has to show how to prepare client MCP"
+        )
+
+        # `dryRun: false` is part of the oracle: a preview never downloads, so
+        # a recipe that only previews leaves the caller without the artifact
+        # the `build` preflight wants. `sources: false` is accepted alongside an
+        # omitted key because the mapper emits `--sources` only for a literal
+        # true, so both spellings produce the same runner argv.
+        artifact_calls = [
+            call
+            for call in client_mcp_calls
+            if not call.get("sources") and call.get("dryRun") is False
+        ]
+        self.assertTrue(
+            artifact_calls,
+            "an executable default call returns the prebuilt client_mcp.cfe and "
+            f"has to be published: {client_mcp_calls}",
+        )
+        self.assertIn("build/tools/client_mcp.cfe", skill_text)
+
+        # The EDT route may stay, but never unlabelled: it replaces the
+        # artifact and needs a toolchain the workspace may not have.
+        if any(call.get("sources") for call in client_mcp_calls):
+            self.assertIn("1cedtcli", skill_text)
+
+        self.assertIn("1cedtcli", command_selection)
 
     def test_v8_runner_metadata_describes_runtime_trigger_surface(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
@@ -2195,6 +2329,27 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
         self.assertNotIn("sourceFormat=mixed", joined)
         self.assertNotIn("source_format=mixed", joined)
+
+    def test_workspace_runtime_routes_project_health_without_granting_mutation(self) -> None:
+        reference = (
+            self.reference_root() / "use-cases" / "workspace-runtime.md"
+        ).read_text(encoding="utf-8")
+        skill = (self.skill_root() / "v8-runner" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        joined = reference + "\n" + skill
+
+        for token in (
+            "unica.project.status",
+            "ready",
+            "repositoryReady",
+            "remediation",
+            "sourceSet.path: .",
+        ):
+            self.assertIn(token, joined)
+        self.assertIn("does not mean Unica is unusable without Git", joined)
+        self.assertIn("never execute them automatically", joined)
+        self.assertIn("call `unica.project.status` again", joined)
 
     def test_references_do_not_contain_stale_upstream_instructions(self) -> None:
         forbidden_patterns = [

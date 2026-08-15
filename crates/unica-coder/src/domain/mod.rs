@@ -1,15 +1,20 @@
 pub mod cache;
 pub mod cancellation;
 pub mod code_intelligence;
+pub mod diagnostics;
 pub mod documentation;
 pub mod events;
 pub mod form_edit;
 pub mod format_profile;
 pub(crate) mod metadata;
 pub mod operational_config;
+#[allow(dead_code)]
+pub(crate) mod project_health;
 pub mod project_sources;
 pub mod role;
+pub mod source_location;
 pub mod source_resources;
+pub mod source_revision;
 pub mod source_roots;
 pub mod source_target;
 pub mod subsystem;

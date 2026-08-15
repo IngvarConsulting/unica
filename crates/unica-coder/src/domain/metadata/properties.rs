@@ -137,6 +137,18 @@ const fn property(
     }
 }
 
+/// Provider-neutral metadata property vocabulary used by diagnostic focus.
+/// Object properties come from the same registry as typed metadata mutation;
+/// element-local properties are the closed names exposed by the typed element
+/// model. XML-only field names intentionally fail this boundary.
+pub(crate) fn diagnostic_metadata_property_is_canonical(value: &str) -> bool {
+    const ELEMENT_PROPERTIES: &[&str] = &["Name", "Synonym", "Comment", "Type", "FillValue"];
+    ELEMENT_PROPERTIES.contains(&value)
+        || METADATA_PROPERTY_SPECS
+            .iter()
+            .any(|spec| spec.public_name == value)
+}
+
 const fn enum_property(
     public_name: &'static str,
     xml_name: &'static str,
@@ -1290,5 +1302,13 @@ mod tests {
             serde_json::to_string(&MetaPropertyKey::NumberLength).unwrap(),
             "\"NumberLength\""
         );
+    }
+
+    #[test]
+    fn diagnostic_focus_property_vocabulary_contains_only_typed_model_names() {
+        for canonical in ["Name", "Synonym", "Comment", "Type", "FillValue"] {
+            assert!(diagnostic_metadata_property_is_canonical(canonical));
+        }
+        assert!(!diagnostic_metadata_property_is_canonical("Required"));
     }
 }

@@ -1,6 +1,8 @@
 use crate::domain::cancellation::CancellationToken;
+#[cfg(test)]
+use std::cell::Cell;
 use std::ffi::OsString;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -12,6 +14,11 @@ const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
 pub(crate) const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
 pub(crate) const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static INJECT_WAIT_ERROR: Cell<bool> = const { Cell::new(false) };
+}
 
 #[cfg(unix)]
 pub(crate) fn configure_runtime_job_command(command: &mut Command) {
@@ -76,9 +83,11 @@ fn runtime_job_io_error(context: &str, error: &io::Error) -> String {
 #[derive(Debug, Clone)]
 pub struct ManagedCommand {
     pub program: PathBuf,
-    pub args: Vec<String>,
+    pub args: Vec<OsString>,
     pub cwd: PathBuf,
     pub env: Vec<(OsString, OsString)>,
+    pub env_remove: Vec<OsString>,
+    pub capture_limits: Option<(usize, usize)>,
     pub timeout: Option<Duration>,
     pub cancellation: CancellationToken,
 }
@@ -93,6 +102,8 @@ pub struct ManagedOutput {
     pub cancelled: bool,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    pub stdout_had_invalid_utf8: bool,
+    pub stderr_had_invalid_utf8: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +118,7 @@ pub struct ManagedLineOutput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineReadControl {
+pub enum StreamControl {
     Continue,
     Stop,
 }
@@ -118,6 +129,7 @@ pub struct ManagedChild {
     state: ChildState,
     timeout: Option<Duration>,
     cancellation: CancellationToken,
+    capture_limits: Option<(usize, usize)>,
 }
 
 /// Owns a freshly spawned long-lived process tree until its readiness handshake
@@ -135,26 +147,35 @@ enum ChildState {
     Reaped,
 }
 
-enum ConsumerStopOutcome {
-    Exited(ExitStatus),
-    Stopped,
-    Pending,
-}
-
 impl ManagedChild {
     pub fn spawn(command: ManagedCommand) -> Result<Self, String> {
         let mut process = Command::new(&command.program);
-        process
-            .args(&command.args)
-            .current_dir(&command.cwd)
-            .envs(command.env);
-        Self::spawn_process(process, command.timeout, command.cancellation)
+        process.args(&command.args).current_dir(&command.cwd);
+        for name in command.env_remove {
+            process.env_remove(name);
+        }
+        process.envs(command.env);
+        Self::spawn_process_with_limits(
+            process,
+            command.timeout,
+            command.cancellation,
+            command.capture_limits,
+        )
     }
 
     pub(crate) fn spawn_process(
+        process: Command,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+    ) -> Result<Self, String> {
+        Self::spawn_process_with_limits(process, timeout, cancellation, None)
+    }
+
+    fn spawn_process_with_limits(
         mut process: Command,
         timeout: Option<Duration>,
         cancellation: CancellationToken,
+        capture_limits: Option<(usize, usize)>,
     ) -> Result<Self, String> {
         process
             .stdin(Stdio::piped())
@@ -175,12 +196,46 @@ impl ManagedChild {
             state: ChildState::Running,
             timeout,
             cancellation,
+            capture_limits,
         })
     }
 
     pub fn run(command: ManagedCommand) -> Result<ManagedOutput, String> {
         let mut child = Self::spawn(command)?;
         child.wait_for_output()
+    }
+
+    pub fn run_with_input(
+        command: ManagedCommand,
+        input: Vec<u8>,
+    ) -> Result<ManagedOutput, String> {
+        let mut child = Self::spawn(command)?;
+        let mut stdin = child
+            .take_stdin()
+            .ok_or_else(|| "process_failed: process stdin is unavailable".to_string())?;
+        let writer = thread::spawn(move || stdin.write_all(&input));
+        let output = child.wait_for_output();
+        if output.is_err() {
+            child.terminate_after_wait_error();
+            // A failed wait no longer proves that every descendant released the
+            // inherited stdin pipe. Joining the producer here would make this
+            // error path unbounded, so preserve the wait error after best-effort
+            // process-tree cleanup and detach the writer handle.
+            drop(writer);
+            return output;
+        }
+        let write_result = writer
+            .join()
+            .map_err(|_| "process_failed: process stdin writer panicked".to_string())?;
+
+        match output {
+            Ok(output) if output.timed_out || output.cancelled => Ok(output),
+            Ok(output) => {
+                write_result.map_err(process_error)?;
+                Ok(output)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn take_stdin(&mut self) -> Option<ChildStdin> {
@@ -226,8 +281,15 @@ impl ManagedChild {
         F: FnMut(),
     {
         drop(self.take_stdin());
-        let stdout = start_reader(self.take_stdout(), STDOUT_CAPTURE_LIMIT);
-        let stderr = start_reader(self.take_stderr(), STDERR_CAPTURE_LIMIT);
+        let (stdout_limit, stderr_limit) = self
+            .capture_limits
+            .unwrap_or((STDOUT_CAPTURE_LIMIT, STDERR_CAPTURE_LIMIT));
+        let stdout = start_reader(self.take_stdout(), stdout_limit);
+        let stderr = start_reader(self.take_stderr(), stderr_limit);
+        #[cfg(test)]
+        if INJECT_WAIT_ERROR.with(|slot| slot.replace(false)) {
+            return Err("process_failed: injected process wait failure".to_string());
+        }
         let started = Instant::now();
         let mut last_callback = Instant::now();
 
@@ -260,7 +322,7 @@ impl ManagedChild {
         mut on_line: F,
     ) -> Result<ManagedLineOutput, String>
     where
-        F: FnMut(usize, &[u8]) -> LineReadControl,
+        F: FnMut(usize, &[u8]) -> StreamControl,
     {
         drop(self.take_stdin());
         let stdout = start_line_reader(self.take_stdout(), max_line_bytes);
@@ -269,9 +331,17 @@ impl ManagedChild {
         let mut first_line_error = None;
 
         loop {
-            if drain_line_messages(&stdout, &mut on_line, &mut first_line_error, false) {
+            if drain_line_messages(&stdout, &mut on_line, &mut first_line_error, false)
+                == StreamControl::Stop
+            {
                 if self.cancellation.is_cancelled() {
                     self.terminate_gracefully()?;
+                    drain_line_messages(
+                        &stdout,
+                        &mut |_, _| StreamControl::Continue,
+                        &mut first_line_error,
+                        true,
+                    );
                     return Ok(finish_line_output(
                         None,
                         stderr,
@@ -281,47 +351,25 @@ impl ManagedChild {
                         first_line_error,
                     ));
                 }
-                if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
-                    self.terminate()?;
-                    return Ok(finish_line_output(
-                        None,
-                        stderr,
-                        true,
-                        false,
-                        false,
-                        first_line_error,
-                    ));
-                }
-                return match self.terminate_for_consumer_stop()? {
-                    ConsumerStopOutcome::Exited(status) => Ok(finish_line_output(
-                        Some(status),
-                        stderr,
-                        false,
-                        false,
-                        false,
-                        first_line_error,
-                    )),
-                    ConsumerStopOutcome::Stopped => Ok(finish_line_output(
-                        None,
-                        stderr,
-                        false,
-                        false,
-                        true,
-                        first_line_error,
-                    )),
-                    ConsumerStopOutcome::Pending => Ok(finish_line_output(
-                        None,
-                        stderr,
-                        false,
-                        false,
-                        false,
-                        first_line_error,
-                    )),
-                };
+                self.terminate()?;
+                drain_line_messages(
+                    &stdout,
+                    &mut |_, _| StreamControl::Continue,
+                    &mut first_line_error,
+                    true,
+                );
+                return Ok(finish_line_output(
+                    None,
+                    stderr,
+                    false,
+                    false,
+                    true,
+                    first_line_error,
+                ));
             }
             if self.cancellation.is_cancelled() {
                 self.terminate_gracefully()?;
-                let _ = drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
                 return Ok(finish_line_output(
                     None,
                     stderr,
@@ -333,7 +381,7 @@ impl ManagedChild {
             }
             if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
                 self.terminate()?;
-                let _ = drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
                 return Ok(finish_line_output(
                     None,
                     stderr,
@@ -346,8 +394,7 @@ impl ManagedChild {
             if let Some(status) = self.child.try_wait().map_err(process_error)? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
-                let _consumer_stopped_reading =
-                    drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
+                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
                 return Ok(finish_line_output(
                     Some(status),
                     stderr,
@@ -362,40 +409,36 @@ impl ManagedChild {
     }
 
     pub fn terminate(&mut self) -> Result<(), String> {
-        self.terminate_with_observed_exit().map(|_| ())
-    }
-
-    fn terminate_with_observed_exit(&mut self) -> Result<Option<ExitStatus>, String> {
         if self.state == ChildState::Reaped {
             self.process_tree.cleanup_after_leader_exit(&mut self.child);
-            return Ok(None);
+            return Ok(());
         }
         if self.state == ChildState::Running {
-            if let Some(status) = self.child.try_wait().map_err(process_error)? {
+            if self.child.try_wait().map_err(process_error)?.is_some() {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
-                return Ok(Some(status));
+                return Ok(());
             }
             if let Err(error) = self.process_tree.terminate(&mut self.child) {
-                if let Some(status) = self.child.try_wait().map_err(process_error)? {
-                    self.process_tree.cleanup_after_leader_exit(&mut self.child);
+                if self.child.try_wait().map_err(process_error)?.is_some() {
                     self.state = ChildState::Reaped;
-                    return Ok(Some(status));
+                    return Ok(());
                 }
                 return Err(process_error(error));
             }
             self.state = ChildState::Terminating;
         }
-        self.reap_bounded()?;
-        Ok(None)
+        self.reap_bounded()
     }
 
-    fn terminate_for_consumer_stop(&mut self) -> Result<ConsumerStopOutcome, String> {
-        match self.terminate_with_observed_exit()? {
-            Some(status) => Ok(ConsumerStopOutcome::Exited(status)),
-            None if self.state == ChildState::Reaped => Ok(ConsumerStopOutcome::Stopped),
-            None => Ok(ConsumerStopOutcome::Pending),
+    fn terminate_after_wait_error(&mut self) {
+        if self.state == ChildState::Reaped {
+            return;
         }
+        let _ = self.process_tree.terminate(&mut self.child);
+        let _ = self.child.kill();
+        self.state = ChildState::Terminating;
+        let _ = self.reap_bounded();
     }
 
     fn terminate_gracefully(&mut self) -> Result<(), String> {
@@ -473,15 +516,19 @@ impl ManagedChild {
 
         let stdout = receive_output(stdout);
         let stderr = receive_output(stderr);
+        let (stdout_text, stdout_had_invalid_utf8) = decode_captured_text(&stdout.bytes);
+        let (stderr_text, stderr_had_invalid_utf8) = decode_captured_text(&stderr.bytes);
         let mut output = ManagedOutput {
             status_success: false,
             status: "termination pending".to_string(),
-            stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
+            stdout: stdout_text,
+            stderr: stderr_text,
             timed_out,
             cancelled,
             stdout_truncated: stdout.truncated,
             stderr_truncated: stderr.truncated,
+            stdout_had_invalid_utf8,
+            stderr_had_invalid_utf8,
         };
         ensure_truncation_diagnostics(&mut output);
         Ok(output)
@@ -1002,12 +1049,12 @@ fn drain_line_messages<F>(
     on_line: &mut F,
     first_error: &mut Option<(usize, String)>,
     wait_for_end: bool,
-) -> bool
+) -> StreamControl
 where
-    F: FnMut(usize, &[u8]) -> LineReadControl,
+    F: FnMut(usize, &[u8]) -> StreamControl,
 {
     let Some(receiver) = receiver else {
-        return false;
+        return StreamControl::Continue;
     };
     loop {
         let message = if wait_for_end {
@@ -1020,8 +1067,8 @@ where
         };
         match message {
             LineMessage::Line(number, bytes) => {
-                if on_line(number, &bytes) == LineReadControl::Stop {
-                    return true;
+                if on_line(number, &bytes) == StreamControl::Stop {
+                    return StreamControl::Stop;
                 }
             }
             LineMessage::TooLong(number) => {
@@ -1036,7 +1083,7 @@ where
             }
         }
     }
-    false
+    StreamControl::Continue
 }
 
 fn start_reader<R>(pipe: Option<R>, limit: usize) -> Option<Receiver<CapturedOutput>>
@@ -1076,18 +1123,29 @@ fn finish_output(
             STDERR_CAPTURE_LIMIT,
         );
     }
+    let (stdout_text, stdout_had_invalid_utf8) = decode_captured_text(&stdout.bytes);
+    let (stderr_text, stderr_had_invalid_utf8) = decode_captured_text(&stderr.bytes);
     let mut output = ManagedOutput {
         status_success: status.success() && !stdout.truncated && !cancelled && !timed_out,
         status: status.to_string(),
-        stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
+        stdout: stdout_text,
+        stderr: stderr_text,
         timed_out,
         cancelled,
         stdout_truncated: stdout.truncated,
         stderr_truncated: stderr.truncated,
+        stdout_had_invalid_utf8,
+        stderr_had_invalid_utf8,
     };
     ensure_truncation_diagnostics(&mut output);
     output
+}
+
+fn decode_captured_text(bytes: &[u8]) -> (String, bool) {
+    match String::from_utf8(bytes.to_vec()) {
+        Ok(text) => (text, false),
+        Err(error) => (String::from_utf8_lossy(error.as_bytes()).into_owned(), true),
+    }
 }
 
 fn finish_line_output(
@@ -1100,9 +1158,10 @@ fn finish_line_output(
 ) -> ManagedLineOutput {
     let stderr = receive_output(stderr);
     ManagedLineOutput {
-        status_success: (status.is_some_and(|status| status.success()) || stopped_by_consumer)
+        status_success: status.is_some_and(|status| status.success())
             && !timed_out
-            && !cancelled,
+            && !cancelled
+            && !stopped_by_consumer,
         status: status.map_or_else(
             || {
                 if cancelled {
@@ -1180,12 +1239,11 @@ mod tests {
     #[cfg(windows)]
     use super::ProcessTree;
     use super::{
-        ChildState, LineReadControl, ManagedChild, ManagedCommand, ManagedOutput,
-        ManagedStartupChild,
+        ChildState, ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild, StreamControl,
     };
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
     #[cfg(windows)]
     use std::process::Child;
@@ -1197,6 +1255,20 @@ mod tests {
 
     const HELPER_ENV: &str = "UNICA_MANAGED_CHILD_HELPER";
     const HELPER_PID_FILE_ENV: &str = "UNICA_MANAGED_CHILD_PID_FILE";
+
+    fn with_wait_error<T>(action: impl FnOnce() -> T) -> T {
+        struct Reset(bool);
+
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::INJECT_WAIT_ERROR.with(|slot| slot.set(self.0));
+            }
+        }
+
+        let previous = super::INJECT_WAIT_ERROR.with(|slot| slot.replace(true));
+        let _reset = Reset(previous);
+        action()
+    }
 
     #[cfg(unix)]
     static HELPER_SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
@@ -1239,22 +1311,30 @@ mod tests {
                 std::io::stdin().read_to_string(&mut input).unwrap();
                 print!("stdin closed");
             }
+            "echo_stdin_len" => {
+                let mut input = Vec::new();
+                std::io::stdin().read_to_end(&mut input).unwrap();
+                print!(
+                    "bytes={} nul={}",
+                    input.len(),
+                    input.iter().filter(|byte| **byte == 0).count()
+                );
+            }
+            "write_invalid_utf8" => {
+                std::io::stdout().write_all(b"ok\xffend").unwrap();
+                std::io::stderr().write_all(b"err\xffend").unwrap();
+            }
+            "write_literal_replacement" => print!("ok\u{fffd}end"),
+            "print_removed_env" => print!(
+                "{}",
+                std::env::var("PATH").unwrap_or_else(|_| "missing".into())
+            ),
             "sleep" => thread::sleep(Duration::from_secs(10)),
-            "stream_lines" => {
-                for line in 1..=20 {
-                    println!("line-{line}");
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                    thread::sleep(Duration::from_millis(10));
-                }
-                thread::sleep(Duration::from_secs(10));
-            }
-            "stream_six_then_exit_nonzero" => {
-                for line in 1..=6 {
-                    println!("line-{line}");
-                }
+            "stream_forever" => loop {
+                println!("streamed line");
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                std::process::exit(7);
-            }
+                thread::sleep(Duration::from_millis(5));
+            },
             "process_tree_immediate_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
                 let mut child = Command::new(std::env::current_exe().unwrap())
@@ -1556,15 +1636,207 @@ mod tests {
         ManagedChild::run(ManagedCommand {
             program: std::env::current_exe().map_err(|error| error.to_string())?,
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().map_err(|error| error.to_string())?,
             env: vec![(OsString::from(HELPER_ENV), OsString::from(mode))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(timeout),
             cancellation,
         })
+    }
+
+    fn run_helper_with_input(
+        mode: &str,
+        input: Vec<u8>,
+        timeout: Duration,
+        cancellation: CancellationToken,
+    ) -> Result<ManagedOutput, String> {
+        ManagedChild::run_with_input(
+            ManagedCommand {
+                program: std::env::current_exe().map_err(|error| error.to_string())?,
+                args: vec![
+                    "--exact".into(),
+                    "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: std::env::current_dir().map_err(|error| error.to_string())?,
+                env: vec![(OsString::from(HELPER_ENV), OsString::from(mode))],
+                env_remove: Vec::new(),
+                capture_limits: None,
+                timeout: Some(timeout),
+                cancellation,
+            },
+            input,
+        )
+    }
+
+    #[test]
+    fn managed_child_writes_binary_stdin_and_closes_it() {
+        let input = b"src/.build/probe\0src/ConfigDumpInfo.xml\0".to_vec();
+        let expected_bytes = input.len();
+
+        let output = run_helper_with_input(
+            "echo_stdin_len",
+            input,
+            Duration::from_secs(2),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(output.status_success, "{}", output.status);
+        assert!(
+            output.stdout.contains(&format!("bytes={expected_bytes}")),
+            "{}",
+            output.stdout
+        );
+        assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
+    }
+
+    #[test]
+    fn managed_child_input_wait_error_terminates_before_joining_writer() {
+        let started = Instant::now();
+        let error = with_wait_error(|| {
+            run_helper_with_input(
+                "sleep",
+                vec![b'x'; 8 * 1024 * 1024],
+                Duration::from_secs(20),
+                CancellationToken::new(),
+            )
+        })
+        .expect_err("injected wait failure must remain an error");
+
+        assert!(error.contains("injected process wait failure"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stdin writer was joined before terminating the child: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn managed_child_removes_selected_inherited_environment() {
+        let output = ManagedChild::run(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(
+                OsString::from(HELPER_ENV),
+                OsString::from("print_removed_env"),
+            )],
+            env_remove: vec![OsString::from("PATH")],
+            capture_limits: None,
+            timeout: Some(Duration::from_secs(5)),
+            cancellation: CancellationToken::new(),
+        })
+        .unwrap();
+
+        assert!(output.status_success, "{output:?}");
+        assert!(output.stdout.contains("missing"), "{}", output.stdout);
+    }
+
+    #[test]
+    fn managed_child_drains_output_while_writing_more_than_a_pipe_buffer() {
+        let input = vec![b'x'; 2 * 1024 * 1024];
+        let expected_bytes = input.len();
+
+        let output = run_helper_with_input(
+            "echo_stdin_len",
+            input,
+            Duration::from_secs(5),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(
+            output.status_success,
+            "{}: {}",
+            output.status, output.stderr
+        );
+        assert!(
+            output.stdout.contains(&format!("bytes={expected_bytes}")),
+            "{}",
+            output.stdout
+        );
+    }
+
+    #[test]
+    fn managed_child_input_writer_stops_after_timeout() {
+        let started = Instant::now();
+        let output = run_helper_with_input(
+            "sleep",
+            vec![b'x'; 2 * 1024 * 1024],
+            Duration::from_millis(50),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(output.timed_out);
+        assert!(!output.cancelled);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn managed_child_input_writer_stops_after_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let started = Instant::now();
+        let output = run_helper_with_input(
+            "sleep",
+            vec![b'x'; 2 * 1024 * 1024],
+            Duration::from_secs(5),
+            cancellation,
+        )
+        .unwrap();
+
+        assert!(output.cancelled);
+        assert!(!output.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn managed_child_reports_early_stdin_close_as_bounded_process_failure() {
+        let started = Instant::now();
+        let error = run_helper_with_input(
+            "success",
+            vec![b'x'; 2 * 1024 * 1024],
+            Duration::from_secs(2),
+            CancellationToken::new(),
+        )
+        .expect_err("early stdin close must not be reported as a successful write");
+
+        assert!(error.starts_with("process_failed:"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn managed_child_reports_invalid_utf8_without_misclassifying_literal_replacement() {
+        let invalid = run_helper(
+            "write_invalid_utf8",
+            Duration::from_secs(2),
+            CancellationToken::new(),
+        )
+        .unwrap();
+        let literal = run_helper(
+            "write_literal_replacement",
+            Duration::from_secs(2),
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(invalid.stdout_had_invalid_utf8);
+        assert!(invalid.stderr_had_invalid_utf8);
+        assert!(invalid.stdout.contains('\u{fffd}'));
+        assert!(!literal.stdout_had_invalid_utf8);
+        assert!(!literal.stderr_had_invalid_utf8);
+        assert!(literal.stdout.contains('\u{fffd}'));
     }
 
     #[test]
@@ -1594,6 +1866,8 @@ mod tests {
             args: Vec::new(),
             cwd: std::env::current_dir().unwrap(),
             env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1616,153 +1890,6 @@ mod tests {
         assert!(output.timed_out);
         assert!(!output.cancelled);
         assert!(started.elapsed() < Duration::from_secs(2));
-    }
-
-    #[test]
-    fn managed_child_stops_streaming_process_when_consumer_has_enough_lines() {
-        let mut managed = ManagedChild::spawn(ManagedCommand {
-            program: std::env::current_exe().unwrap(),
-            args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
-            ],
-            cwd: std::env::current_dir().unwrap(),
-            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_lines"))],
-            timeout: Some(Duration::from_secs(5)),
-            cancellation: CancellationToken::new(),
-        })
-        .unwrap();
-        let process_id = managed.id();
-        let started = Instant::now();
-        let mut lines = Vec::new();
-
-        let output = managed
-            .wait_for_line_output(1024, |_, bytes| {
-                lines.push(String::from_utf8_lossy(bytes).into_owned());
-                if lines.len() == 6 {
-                    LineReadControl::Stop
-                } else {
-                    LineReadControl::Continue
-                }
-            })
-            .unwrap();
-
-        assert_eq!(lines.len(), 6, "{lines:?}");
-        assert!(output.status_success, "status was {}", output.status);
-        assert!(output.stopped_by_consumer);
-        assert!(!output.timed_out);
-        assert!(!output.cancelled);
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(wait_until_dead(process_id, Duration::from_secs(2)));
-    }
-
-    #[test]
-    fn streaming_consumer_stop_preserves_an_already_observed_nonzero_exit() {
-        let mut managed = ManagedChild::spawn(ManagedCommand {
-            program: std::env::current_exe().unwrap(),
-            args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
-            ],
-            cwd: std::env::current_dir().unwrap(),
-            env: vec![(
-                OsString::from(HELPER_ENV),
-                OsString::from("stream_six_then_exit_nonzero"),
-            )],
-            timeout: Some(Duration::from_secs(5)),
-            cancellation: CancellationToken::new(),
-        })
-        .unwrap();
-        let mut lines = Vec::new();
-
-        let output = managed
-            .wait_for_line_output(1024, |_, bytes| {
-                lines.push(String::from_utf8_lossy(bytes).into_owned());
-                if lines.len() == 6 {
-                    LineReadControl::Stop
-                } else {
-                    LineReadControl::Continue
-                }
-            })
-            .unwrap();
-
-        assert_eq!(lines.len(), 6, "{lines:?}");
-        assert!(!output.status_success, "status was {}", output.status);
-        assert!(output.status.contains('7'), "status was {}", output.status);
-        assert!(!output.stopped_by_consumer);
-        assert!(!output.timed_out);
-        assert!(!output.cancelled);
-    }
-
-    #[test]
-    fn streaming_consumer_stop_is_not_success_until_termination_is_reaped() {
-        let mut managed = ManagedChild::spawn(ManagedCommand {
-            program: std::env::current_exe().unwrap(),
-            args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
-            ],
-            cwd: std::env::current_dir().unwrap(),
-            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_lines"))],
-            timeout: Some(Duration::from_secs(5)),
-            cancellation: CancellationToken::new(),
-        })
-        .unwrap();
-        managed.state = ChildState::Terminating;
-        let mut lines = 0;
-
-        let output = managed
-            .wait_for_line_output(1024, |_, _| {
-                lines += 1;
-                if lines == 6 {
-                    LineReadControl::Stop
-                } else {
-                    LineReadControl::Continue
-                }
-            })
-            .unwrap();
-        assert_eq!(managed.state, ChildState::Terminating);
-        managed.state = ChildState::Running;
-        managed.terminate().unwrap();
-
-        assert_eq!(lines, 6);
-        assert!(!output.status_success, "status was {}", output.status);
-        assert_eq!(output.status, "termination pending");
-        assert!(!output.stopped_by_consumer);
-        assert!(!output.timed_out);
-        assert!(!output.cancelled);
-    }
-
-    #[test]
-    fn streaming_cancellation_wins_over_simultaneous_consumer_stop() {
-        let cancellation = CancellationToken::new();
-        let mut managed = ManagedChild::spawn(ManagedCommand {
-            program: std::env::current_exe().unwrap(),
-            args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
-            ],
-            cwd: std::env::current_dir().unwrap(),
-            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_lines"))],
-            timeout: Some(Duration::from_secs(5)),
-            cancellation: cancellation.clone(),
-        })
-        .unwrap();
-
-        let output = managed
-            .wait_for_line_output(1024, |_, _| {
-                cancellation.cancel();
-                LineReadControl::Stop
-            })
-            .unwrap();
-
-        assert!(output.cancelled);
-        assert!(!output.stopped_by_consumer);
-        assert!(!output.status_success);
     }
 
     #[test]
@@ -1868,6 +1995,8 @@ mod tests {
                     pid_file.clone().into_os_string(),
                 ),
             ],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1887,12 +2016,14 @@ mod tests {
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("sleep"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1907,16 +2038,57 @@ mod tests {
     }
 
     #[test]
+    fn line_consumer_can_stop_and_reap_the_process_before_timeout() {
+        let mut managed = ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_forever"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: Some(Duration::from_secs(5)),
+            cancellation: CancellationToken::new(),
+        })
+        .unwrap();
+        let mut lines = 0;
+        let started = Instant::now();
+
+        let output = managed
+            .wait_for_line_output(1024, |_, _| {
+                lines += 1;
+                if lines == 3 {
+                    StreamControl::Stop
+                } else {
+                    StreamControl::Continue
+                }
+            })
+            .unwrap();
+
+        assert_eq!(lines, 3);
+        assert!(output.stopped_by_consumer);
+        assert!(!output.timed_out);
+        assert!(!output.cancelled);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
     fn managed_child_reaps_already_exited_process_without_tree_kill() {
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("success"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1932,12 +2104,14 @@ mod tests {
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![(OsString::from(HELPER_ENV), OsString::from("sleep"))],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
@@ -1962,9 +2136,9 @@ mod tests {
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![
@@ -1977,6 +2151,8 @@ mod tests {
                     pid_file.clone().into_os_string(),
                 ),
             ],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(Duration::from_secs(10)),
             cancellation: cancellation.clone(),
         })
@@ -2013,9 +2189,9 @@ mod tests {
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![
@@ -2028,6 +2204,8 @@ mod tests {
                     pid_file.clone().into_os_string(),
                 ),
             ],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(Duration::from_secs(10)),
             cancellation: cancellation.clone(),
         })
@@ -2064,9 +2242,9 @@ mod tests {
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
-                "--exact".to_string(),
-                "infrastructure::platform::process::tests::managed_child_test_helper".to_string(),
-                "--nocapture".to_string(),
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
             env: vec![
@@ -2079,6 +2257,8 @@ mod tests {
                     pid_file.clone().into_os_string(),
                 ),
             ],
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: Some(Duration::from_millis(200)),
             cancellation: cancellation.clone(),
         })

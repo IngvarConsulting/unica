@@ -2,18 +2,18 @@ use crate::application::{
     AdapterOutcome, RuntimeJobAction, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
     DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
-use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::operational_config::OperationalConfig;
-use crate::domain::project_sources::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
 use crate::infrastructure::diagnostics_jsonl::{
-    DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
+    AnalyzerDiagnosticsBatch, DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
 };
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
+    StreamControl,
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
@@ -25,20 +25,20 @@ use crate::infrastructure::source_roots::resolve_source_root;
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-
-pub(crate) use crate::infrastructure::platform::LineReadControl as ProcessLineControl;
+use std::time::Duration;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
-const GIT_TRACKING_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ProcessCommand {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    pub env: Vec<(OsString, OsString)>,
+    pub env_remove: Vec<OsString>,
+    pub capture_limits: Option<(usize, usize)>,
     pub timeout: Option<Duration>,
     pub cancellation: CancellationToken,
 }
@@ -52,6 +52,9 @@ pub struct ProcessOutput {
     pub timed_out: bool,
     pub cancelled: bool,
     pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_had_invalid_utf8: bool,
+    pub stderr_had_invalid_utf8: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -68,11 +71,23 @@ pub struct ProcessStreamOutput {
 pub trait ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
 
+    fn run_with_input(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+    ) -> Result<ProcessOutput, String> {
+        if input.is_empty() {
+            self.run(command)
+        } else {
+            Err("process_failed: process runner does not support stdin".to_string())
+        }
+    }
+
     fn run_streaming(
         &self,
         command: &ProcessCommand,
         max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineControl,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
     ) -> Result<ProcessStreamOutput, String> {
         let output = self.run(command)?;
         let mut line_error = None;
@@ -91,17 +106,13 @@ pub trait ProcessRunner {
                     (index + 1, "line exceeds configured byte limit".to_string())
                 });
             } else {
-                if on_line(index + 1, bytes) == ProcessLineControl::Stop
-                    && output.status_success
-                    && !output.timed_out
-                    && !output.cancelled
-                {
+                if on_line(index + 1, bytes) == StreamControl::Stop {
                     return Ok(ProcessStreamOutput {
-                        status_success: true,
+                        status_success: false,
                         status: "stopped by consumer".to_string(),
                         stderr: output.stderr,
                         timed_out: false,
-                        cancelled: false,
+                        cancelled: output.cancelled,
                         stopped_by_consumer: true,
                         line_error,
                     });
@@ -183,30 +194,6 @@ pub struct RuntimeJobAdapterOutcome {
 }
 
 pub struct RuntimeJobAdapter;
-
-pub(crate) struct GitTrackingAdapter<'a> {
-    runner: &'a dyn ProcessRunner,
-    timeout: Duration,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ConfigDumpInfoGitCheck {
-    Complete(Option<String>),
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GitIndexPath {
-    path: String,
-    blob_oid: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GitBlobClassification {
-    Classified(ConfigDumpInfoXmlKind),
-    Inconclusive,
-    Cancelled,
-}
 
 pub struct BslAnalyzerMcpAdapter<'a> {
     runner: &'a dyn BslMcpRunner,
@@ -319,6 +306,9 @@ impl<'a> CliAdapter<'a> {
             program: bundled_tool.program.clone(),
             args: process_args,
             cwd: context.cwd.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         })?;
@@ -369,268 +359,6 @@ impl<'a> CliAdapter<'a> {
             command: Some(command),
         })
     }
-}
-
-impl<'a> GitTrackingAdapter<'a> {
-    pub(crate) fn new() -> Self {
-        Self {
-            runner: &SYSTEM_PROCESS_RUNNER,
-            timeout: GIT_TRACKING_TIMEOUT,
-        }
-    }
-
-    #[cfg(test)]
-    fn with_runner(runner: &'a dyn ProcessRunner) -> Self {
-        Self {
-            runner,
-            timeout: GIT_TRACKING_TIMEOUT,
-        }
-    }
-
-    pub(crate) fn config_dump_info_warning(
-        &self,
-        context: &WorkspaceContext,
-        cancellation: &CancellationToken,
-    ) -> ConfigDumpInfoGitCheck {
-        if cancellation.is_cancelled() {
-            return ConfigDumpInfoGitCheck::Cancelled;
-        }
-        let started = Instant::now();
-        let deadline = started.checked_add(self.timeout).unwrap_or(started);
-
-        let output = match self.runner.run(&ProcessCommand {
-            program: PathBuf::from("git"),
-            args: [
-                "ls-files",
-                "--cached",
-                "--stage",
-                "-z",
-                "--",
-                ":(icase)ConfigDumpInfo.xml",
-                ":(icase,glob)**/ConfigDumpInfo.xml",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-            cwd: context.workspace_root.clone(),
-            timeout: Some(self.timeout),
-            cancellation: cancellation.clone(),
-        }) {
-            Ok(output) => output,
-            Err(error) if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) => {
-                return ConfigDumpInfoGitCheck::Cancelled;
-            }
-            Err(_) => return ConfigDumpInfoGitCheck::Complete(None),
-        };
-
-        if output.cancelled || cancellation.is_cancelled() {
-            return ConfigDumpInfoGitCheck::Cancelled;
-        }
-        if output.timed_out {
-            return ConfigDumpInfoGitCheck::Complete(Some(format!(
-                "ConfigDumpInfo.xml Git tracking check timed out after {} seconds; project inspection continued without tracking diagnostics",
-                self.timeout.as_secs()
-            )));
-        }
-        if output.stdout_truncated {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check exceeded its bounded output capture; inspect the Git index manually because the tracked-path list is incomplete"
-                    .to_string(),
-            ));
-        }
-        if output.stdout.contains('\u{fffd}') {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check returned non-UTF-8 paths; inspect the Git index manually because matching paths cannot be classified safely"
-                    .to_string(),
-            ));
-        }
-        if !output.status_success {
-            return ConfigDumpInfoGitCheck::Complete(None);
-        }
-
-        let Some(index_paths) = parse_git_index_paths(&output.stdout) else {
-            return ConfigDumpInfoGitCheck::Complete(Some(
-                "ConfigDumpInfo.xml Git tracking check returned an unrecognized index record; inspect matching tracked paths manually"
-                    .to_string(),
-            ));
-        };
-        if index_paths.is_empty() {
-            return ConfigDumpInfoGitCheck::Complete(None);
-        }
-
-        let mut runtime_paths = Vec::new();
-        let mut ambiguous_paths = Vec::new();
-        let mut blob_cache = BTreeMap::new();
-        let mut entries = index_paths.into_iter();
-        while let Some(entry) = entries.next() {
-            if cancellation.is_cancelled() {
-                return ConfigDumpInfoGitCheck::Cancelled;
-            }
-            if Instant::now() >= deadline {
-                ambiguous_paths.push(entry.path);
-                ambiguous_paths.extend(entries.map(|remaining| remaining.path));
-                break;
-            }
-            let Some(oid) = entry.blob_oid else {
-                ambiguous_paths.push(entry.path);
-                continue;
-            };
-            let classification = if let Some(cached) = blob_cache.get(&oid) {
-                *cached
-            } else {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let Some(remaining) = (!remaining.is_zero()).then_some(remaining) else {
-                    ambiguous_paths.push(entry.path);
-                    continue;
-                };
-                let classification = self.classify_git_blob(context, &oid, remaining, cancellation);
-                if classification != GitBlobClassification::Cancelled {
-                    blob_cache.insert(oid, classification);
-                }
-                classification
-            };
-            match classification {
-                GitBlobClassification::Cancelled => {
-                    return ConfigDumpInfoGitCheck::Cancelled;
-                }
-                GitBlobClassification::Classified(ConfigDumpInfoXmlKind::RuntimeSidecar) => {
-                    runtime_paths.push(entry.path);
-                }
-                GitBlobClassification::Classified(
-                    ConfigDumpInfoXmlKind::ExternalProcessor
-                    | ConfigDumpInfoXmlKind::ExternalReport
-                    | ConfigDumpInfoXmlKind::MetadataDescriptor,
-                ) => {}
-                GitBlobClassification::Classified(ConfigDumpInfoXmlKind::Other)
-                | GitBlobClassification::Inconclusive => {
-                    ambiguous_paths.push(entry.path);
-                }
-            }
-        }
-
-        ConfigDumpInfoGitCheck::Complete(config_dump_info_warnings(runtime_paths, ambiguous_paths))
-    }
-
-    fn classify_git_blob(
-        &self,
-        context: &WorkspaceContext,
-        oid: &str,
-        timeout: Duration,
-        cancellation: &CancellationToken,
-    ) -> GitBlobClassification {
-        let output = match self.runner.run(&ProcessCommand {
-            program: PathBuf::from("git"),
-            args: ["--no-replace-objects", "cat-file", "blob", oid]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            cwd: context.workspace_root.clone(),
-            timeout: Some(timeout),
-            cancellation: cancellation.clone(),
-        }) {
-            Ok(output) => output,
-            Err(error) if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) => {
-                return GitBlobClassification::Cancelled;
-            }
-            Err(_) => return GitBlobClassification::Inconclusive,
-        };
-        if output.cancelled || cancellation.is_cancelled() {
-            return GitBlobClassification::Cancelled;
-        }
-        if output.timed_out
-            || output.stdout_truncated
-            || output.stdout.contains('\u{fffd}')
-            || !output.status_success
-        {
-            return GitBlobClassification::Inconclusive;
-        }
-        GitBlobClassification::Classified(config_dump_info_xml_kind(output.stdout.as_bytes()))
-    }
-}
-
-fn parse_git_index_paths(stdout: &str) -> Option<Vec<GitIndexPath>> {
-    #[derive(Default)]
-    struct EntryState {
-        records: usize,
-        blob_oid: Option<String>,
-    }
-
-    let mut entries = BTreeMap::<String, EntryState>::new();
-    for record in stdout.split('\0').filter(|record| !record.is_empty()) {
-        let (metadata, path) = record.split_once('\t')?;
-        if path.is_empty() {
-            return None;
-        }
-        let fields = metadata.split_whitespace().collect::<Vec<_>>();
-        if fields.len() != 3 {
-            return None;
-        }
-        let mode = fields[0];
-        let oid = fields[1];
-        let stage = fields[2];
-        let usable_blob = matches!(mode, "100644" | "100755")
-            && stage == "0"
-            && !oid.is_empty()
-            && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
-            && oid.bytes().any(|byte| byte != b'0');
-        let entry = entries.entry(path.to_string()).or_default();
-        entry.records += 1;
-        if entry.records == 1 && usable_blob {
-            entry.blob_oid = Some(oid.to_string());
-        } else {
-            entry.blob_oid = None;
-        }
-    }
-    Some(
-        entries
-            .into_iter()
-            .map(|(path, state)| GitIndexPath {
-                path,
-                blob_oid: state.blob_oid,
-            })
-            .collect(),
-    )
-}
-
-fn config_dump_info_warnings(
-    mut runtime_paths: Vec<String>,
-    mut ambiguous_paths: Vec<String>,
-) -> Option<String> {
-    runtime_paths.sort();
-    runtime_paths.dedup();
-    ambiguous_paths.sort();
-    ambiguous_paths.dedup();
-    let mut warnings = Vec::new();
-    if !runtime_paths.is_empty() {
-        warnings.push(format!(
-            "per-infobase ConfigDumpInfo.xml runtime state is tracked by Git at {}; from the workspace root, remove only these paths with `git rm --cached -- <path>` and add the same workspace-relative paths to that workspace's .gitignore",
-            format_git_paths(runtime_paths.iter().map(String::as_str))
-        ));
-    }
-    if !ambiguous_paths.is_empty() {
-        warnings.push(manual_config_dump_info_warning(
-            ambiguous_paths.iter().map(String::as_str),
-            "the staged blob classification is inconclusive",
-        ));
-    }
-    (!warnings.is_empty()).then(|| warnings.join("; "))
-}
-
-fn manual_config_dump_info_warning<'a>(
-    paths: impl Iterator<Item = &'a str>,
-    reason: &str,
-) -> String {
-    format!(
-        "tracked ConfigDumpInfo.xml paths require manual review at {} because {reason}; keep platform-generated runtime sidecars out of Git, but do not untrack legitimate metadata object descriptors with the same filename",
-        format_git_paths(paths)
-    )
-}
-
-fn format_git_paths<'a>(paths: impl Iterator<Item = &'a str>) -> String {
-    paths
-        .map(|path| serde_json::to_string(path).expect("Git path serializes as JSON string"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 impl<'a> RuntimeAdapter<'a> {
@@ -729,6 +457,9 @@ impl<'a> RuntimeAdapter<'a> {
             program: bundled_tool.program.clone(),
             args: execution_args,
             cwd: context.cwd.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
@@ -1575,6 +1306,39 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         }
     }
 
+    pub(crate) fn analyze_diagnostic_batch(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<AnalyzerDiagnosticsBatch, String> {
+        let mut args = Map::new();
+        args.insert(
+            "sourceDir".to_string(),
+            Value::String(source_root.display().to_string()),
+        );
+        if let Some(timeout_seconds) = analyzer_analyze_timeout_seconds(timeout) {
+            args.insert("timeoutSeconds".to_string(), json!(timeout_seconds));
+        }
+        let result = self.invoke_diagnostics_analyze(
+            "unica.code.diagnostics",
+            &args,
+            context,
+            false,
+            None,
+            cancellation,
+        )?;
+        result.diagnostics.ok_or_else(|| {
+            result
+                .outcome
+                .errors
+                .first()
+                .cloned()
+                .unwrap_or(result.outcome.summary)
+        })
+    }
+
     #[allow(dead_code)]
     pub fn invoke(
         &self,
@@ -1610,7 +1374,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
-        operational_config: Option<&OperationalConfig>,
+        _operational_config: Option<&OperationalConfig>,
         cancellation: &CancellationToken,
     ) -> Result<BslAnalyzerOutcome, String> {
         if cancellation.is_cancelled() {
@@ -1618,24 +1382,6 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 format!("{tool_name} cancelled before adapter work"),
             )));
         }
-        let diagnostics_path = match (tool_name, args.get("path")) {
-            ("unica.code.diagnostics", Some(Value::String(path))) => Some(path.as_str()),
-            ("unica.code.diagnostics", Some(_)) => {
-                return Err("invalid_diagnostics_path: argument `path` must be string".to_string());
-            }
-            _ => None,
-        };
-        if tool_name == "unica.code.diagnostics" && diagnostics_mode(args) == "analyze" {
-            return self.invoke_diagnostics_analyze(
-                tool_name,
-                args,
-                context,
-                dry_run,
-                operational_config,
-                cancellation,
-            );
-        }
-
         let plugin_root = match find_plugin_root(&context.cwd) {
             Some(plugin_root) => plugin_root,
             None => {
@@ -1647,9 +1393,6 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             }
         };
         let source_dir = resolve_source_dir(context, args)?;
-        if let Some(path) = diagnostics_path {
-            validate_diagnostics_path(&source_dir, path)?;
-        }
         let (remote_tool, tool_args) = bsl_mcp_tool_request(tool_name, args)?;
         // A workspace that has not downloaded the tools has no analyzer in its
         // manifest. `code.search` already answers that state with an
@@ -1688,31 +1431,9 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         }
 
         let output = self.runner.call(&command)?;
-        let section = if command.tool_name == "graph" {
-            "bsl-analyzer-graph"
-        } else {
-            "bsl-analyzer-diagnostics"
-        };
+        let section = "bsl-analyzer-graph";
         let readiness_warnings = bsl_mcp_readiness_warnings(&output.result_text);
-        let diagnostics_pending = tool_name == "unica.code.diagnostics"
-            && diagnostics_mode_reports_findings(diagnostics_mode(args))
-            && !readiness_warnings.is_empty();
-        let (summary, warnings, errors) = if diagnostics_pending {
-            (
-                format!("{tool_name} is pending while bsl-analyzer prepares diagnostics"),
-                Vec::new(),
-                readiness_warnings
-                    .into_iter()
-                    .map(|warning| format!("{DIAGNOSTICS_PENDING_PREFIX} {warning}"))
-                    .collect(),
-            )
-        } else {
-            (
-                format!("{tool_name} completed through typed bsl-analyzer MCP adapter"),
-                readiness_warnings,
-                Vec::new(),
-            )
-        };
+        let summary = format!("{tool_name} completed through typed bsl-analyzer MCP adapter");
         // ADR-0023: the analyzer answers this tool with JSON, and wrapping that
         // JSON in a section header made the caller unwrap a string to reach it.
         // `analyze` is the analyzer MCP tool name, not a spawned 1C process, so
@@ -1723,30 +1444,26 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         // dropped the analyzer text, its stderr and the reported command, so a
         // plain-text diagnostic became "unparsable reply" and nothing else.
         let mut parse_error = None;
-        let data = if diagnostics_pending {
-            None
-        } else {
-            match serde_json::from_str::<Value>(output.result_text.trim()) {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    parse_error = Some(format!(
-                        "{tool_name} received an unparsable bsl-analyzer reply: {error}"
-                    ));
-                    None
-                }
+        let data = match serde_json::from_str::<Value>(output.result_text.trim()) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                parse_error = Some(format!(
+                    "{tool_name} received an unparsable bsl-analyzer reply: {error}"
+                ));
+                None
             }
         };
-        let mut errors = errors;
+        let mut errors = Vec::new();
         if let Some(parse_error) = parse_error {
             errors.push(parse_error);
         }
-        let unparsable = data.is_none() && !diagnostics_pending;
+        let unparsable = data.is_none();
         Ok(BslAnalyzerOutcome {
             outcome: AdapterOutcome {
-                ok: !diagnostics_pending && !unparsable,
+                ok: !unparsable,
                 summary,
                 changes: Vec::new(),
-                warnings,
+                warnings: readiness_warnings,
                 errors,
                 artifacts: vec![
                     source_dir.display().to_string(),
@@ -1765,6 +1482,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 command: Some(reported_command),
             },
             data,
+            diagnostics: None,
         })
     }
 
@@ -1806,16 +1524,19 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
 
         let mut process_args = vec!["analyze".to_string()];
         process_args.extend(execution_args);
-        let mut parser = DiagnosticsJsonlParser::new(&source_dir, args.clone())?;
+        let mut parser = DiagnosticsJsonlParser::new(&source_dir)?;
         let mut consume = |line_number, bytes: &[u8]| {
             parser.push_line(line_number, bytes);
-            ProcessLineControl::Continue
+            StreamControl::Continue
         };
         let output = self.process_runner.run_streaming(
             &ProcessCommand {
                 program: bundled_tool.program,
                 args: process_args,
                 cwd: context.cwd.clone(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(process_timeout),
                 cancellation: cancellation.clone(),
             },
@@ -1866,8 +1587,8 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             }));
         }
 
-        let projection = parser.finish();
-        let protocol_error = projection.error.as_ref();
+        let batch = parser.finish();
+        let protocol_error = batch.outcome.error.as_ref();
         let outcome = AdapterOutcome {
             ok: protocol_error.is_none(),
             summary: if let Some(error) = protocol_error {
@@ -1895,7 +1616,8 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         };
         Ok(BslAnalyzerOutcome {
             outcome,
-            data: Some(projection.data),
+            data: None,
+            diagnostics: Some(batch),
         })
     }
 }
@@ -1906,6 +1628,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
 pub struct BslAnalyzerOutcome {
     pub outcome: AdapterOutcome,
     pub data: Option<Value>,
+    pub(crate) diagnostics: Option<AnalyzerDiagnosticsBatch>,
 }
 
 impl BslAnalyzerOutcome {
@@ -1913,6 +1636,7 @@ impl BslAnalyzerOutcome {
         Self {
             outcome,
             data: None,
+            diagnostics: None,
         }
     }
 }
@@ -1952,19 +1676,18 @@ fn required_string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a st
         .ok_or_else(|| format!("missing required `{key}` argument"))
 }
 
-/// Machine-readable marker for a retryable diagnostics reply.
-const DIAGNOSTICS_PENDING_PREFIX: &str = "diagnostics_pending:";
-
-fn diagnostics_mode(args: &Map<String, Value>) -> &str {
-    args.get("mode")
-        .and_then(Value::as_str)
-        .unwrap_or("analyze")
-}
-
-/// Modes whose reply is a finding set, so an empty result reads as "clean code".
-/// Readiness probes and catalogs may report loading without failing.
-fn diagnostics_mode_reports_findings(mode: &str) -> bool {
-    matches!(mode, "analyze" | "file" | "workspace")
+/// Caller budget the analyzer run is allowed to take, in whole seconds.
+///
+/// The remaining budget is always a fraction below the configured one because
+/// the deadline starts before the provider worker does, so truncating would
+/// push the documented minimum of 30 seconds out of the accepted band and drop
+/// the caller budget entirely.
+fn analyzer_analyze_timeout_seconds(timeout: Duration) -> Option<u64> {
+    let seconds = timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0);
+    Some(seconds.clamp(
+        DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+        DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
+    ))
 }
 
 fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
@@ -2050,19 +1773,6 @@ fn bsl_mcp_tool_request(
             copy_json_arg(&mut payload, args, "maxOutputTokens", "max_output_tokens");
             Ok(("graph", Value::Object(payload)))
         }
-        "unica.code.diagnostics" => {
-            let mut payload = Map::new();
-            payload.insert("action".to_string(), json!(diagnostics_mode(args)));
-            copy_json_arg(&mut payload, args, "codes", "codes");
-            copy_json_arg(&mut payload, args, "path", "path");
-            copy_json_arg(&mut payload, args, "detail", "detail");
-            copy_json_arg(&mut payload, args, "minSeverity", "min_severity");
-            copy_json_arg(&mut payload, args, "rangeStart", "range_start");
-            copy_json_arg(&mut payload, args, "rangeEnd", "range_end");
-            copy_json_arg(&mut payload, args, "limit", "max_findings");
-            copy_json_arg(&mut payload, args, "maxFiles", "max_files");
-            Ok(("diagnostics", Value::Object(payload)))
-        }
         _ => Err(format!("unsupported bsl-analyzer MCP tool: {tool_name}")),
     }
 }
@@ -2084,28 +1794,6 @@ fn resolve_source_dir(
 ) -> Result<PathBuf, String> {
     resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str))
         .map(|resolved| resolved.path)
-}
-
-fn validate_diagnostics_path(source_dir: &Path, raw_path: &str) -> Result<(), String> {
-    let raw_path = Path::new(raw_path);
-    let candidate = if raw_path.is_absolute() {
-        raw_path.to_path_buf()
-    } else {
-        source_dir.join(raw_path)
-    };
-    let path = normalize_path_identity(&candidate)
-        .map_err(|error| format!("invalid_diagnostics_path: {error}"))?;
-    let source_dir = normalize_path_identity(source_dir)
-        .map_err(|error| format!("invalid_diagnostics_path: {error}"))?;
-    if path.starts_with(&source_dir) {
-        Ok(())
-    } else {
-        Err(format!(
-            "invalid_diagnostics_path: path {} is outside sourceDir {}",
-            path.display(),
-            source_dir.display()
-        ))
-    }
 }
 
 fn bsl_mcp_readiness_warnings(text: &str) -> Vec<String> {
@@ -2150,12 +1838,35 @@ impl ProcessRunner for SystemProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         let output = ManagedChild::run(ManagedCommand {
             program: command.program.clone(),
-            args: command.args.clone(),
+            args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
-            env: Vec::new(),
+            env: command.env.clone(),
+            env_remove: command.env_remove.clone(),
+            capture_limits: command.capture_limits,
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
         })?;
+        Ok(map_managed_process_output(output))
+    }
+
+    fn run_with_input(
+        &self,
+        command: &ProcessCommand,
+        input: &[u8],
+    ) -> Result<ProcessOutput, String> {
+        let output = ManagedChild::run_with_input(
+            ManagedCommand {
+                program: command.program.clone(),
+                args: command.args.iter().map(Into::into).collect(),
+                cwd: command.cwd.clone(),
+                env: command.env.clone(),
+                env_remove: command.env_remove.clone(),
+                capture_limits: command.capture_limits,
+                timeout: command.timeout,
+                cancellation: command.cancellation.clone(),
+            },
+            input.to_vec(),
+        )?;
         Ok(map_managed_process_output(output))
     }
 
@@ -2163,13 +1874,15 @@ impl ProcessRunner for SystemProcessRunner {
         &self,
         command: &ProcessCommand,
         max_line_bytes: usize,
-        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineControl,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
     ) -> Result<ProcessStreamOutput, String> {
         let mut child = ManagedChild::spawn(ManagedCommand {
             program: command.program.clone(),
-            args: command.args.clone(),
+            args: command.args.iter().map(Into::into).collect(),
             cwd: command.cwd.clone(),
-            env: Vec::new(),
+            env: command.env.clone(),
+            env_remove: command.env_remove.clone(),
+            capture_limits: command.capture_limits,
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
         })?;
@@ -2180,6 +1893,9 @@ impl ProcessRunner for SystemProcessRunner {
 
 fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
     let stdout_truncated = output.stdout_truncated;
+    let stderr_truncated = output.stderr_truncated;
+    let stdout_had_invalid_utf8 = output.stdout_had_invalid_utf8;
+    let stderr_had_invalid_utf8 = output.stderr_had_invalid_utf8;
     ensure_truncation_diagnostics(&mut output);
     let output = ProcessOutput {
         status_success: output.status_success,
@@ -2189,6 +1905,9 @@ fn map_managed_process_output(mut output: ManagedOutput) -> ProcessOutput {
         timed_out: output.timed_out,
         cancelled: output.cancelled,
         stdout_truncated,
+        stderr_truncated,
+        stdout_had_invalid_utf8,
+        stderr_had_invalid_utf8,
     };
     debug_assert!(!(output.timed_out && output.cancelled));
     output
@@ -3242,358 +2961,34 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn config_dump_info_git_check_uses_bounded_cancellable_process() {
-        let context = temp_context("tracked-config-dump-info");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "100644 0000000000000000000000000000000000000000 0\tnested/ConfigDumpInfo.xml\0",
-                    "100644 0000000000000000000000000000000000000000 0\tsrc/ConfigDumpInfo.xml\0",
-                )
-                .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-        let cancellation = CancellationToken::new();
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &cancellation);
-
+    fn analyzer_analyze_budget_survives_the_deadline_that_already_started() {
+        // The provider deadline starts before the worker thread does, so the
+        // smallest configured budget always arrives here a fraction short.
+        let almost_minimum =
+            Duration::from_secs(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS) - Duration::from_millis(1);
         assert_eq!(
-            result,
-            ConfigDumpInfoGitCheck::Complete(Some(
-                "tracked ConfigDumpInfo.xml paths require manual review at \"nested/ConfigDumpInfo.xml\", \"src/ConfigDumpInfo.xml\" because the staged blob classification is inconclusive; keep platform-generated runtime sidecars out of Git, but do not untrack legitimate metadata object descriptors with the same filename"
-                    .to_string()
-            ))
-        );
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].program, PathBuf::from("git"));
-        assert_eq!(
-            commands[0].args,
-            [
-                "ls-files",
-                "--cached",
-                "--stage",
-                "-z",
-                "--",
-                ":(icase)ConfigDumpInfo.xml",
-                ":(icase,glob)**/ConfigDumpInfo.xml",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-        );
-        assert_eq!(commands[0].cwd, context.workspace_root);
-        assert_eq!(commands[0].timeout, Some(GIT_TRACKING_TIMEOUT));
-        assert!(!commands[0].cancellation.is_cancelled());
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_reports_truncated_index_output_as_incomplete() {
-        let context = temp_context("tracked-config-dump-info-truncated");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: false,
-                status: "exit status: 0".to_string(),
-                stdout: "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tConfigDumpInfo.xml"
-                    .to_string(),
-                stderr: "stdout capture truncated".to_string(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: true,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("truncated Git output must remain visible");
-        };
-        assert!(warning.contains("tracked-path list is incomplete"));
-        assert!(!warning.contains("git rm --cached"));
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_does_not_suggest_removal_when_blob_is_truncated() {
-        let context = temp_context("tracked-config-dump-info-truncated-blob");
-        fs::create_dir_all(context.workspace_root.join("epf")).unwrap();
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: processors\n",
-                "    type: EXTERNAL_DATA_PROCESSORS\n",
-                "    path: epf\n",
-            ),
-        )
-        .unwrap();
-        let runner = SequenceProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tepf/ConfigDumpInfo.xml\0"
-                        .to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                },
-                ProcessOutput {
-                    status_success: false,
-                    status: "exit status: 0".to_string(),
-                    stdout: "<MetaDataObject>".to_string(),
-                    stderr: "stdout capture truncated".to_string(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: true,
-                },
-            ]),
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("truncated index blob must require manual review");
-        };
-        assert!(warning.contains("manual review"));
-        assert!(!warning.contains("git rm --cached"));
-        assert_eq!(runner.commands.borrow().len(), 2);
-        assert_eq!(
-            runner.commands.borrow()[1].args,
-            [
-                "--no-replace-objects",
-                "cat-file",
-                "blob",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
+            analyzer_analyze_timeout_seconds(almost_minimum),
+            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS),
+            "the caller budget must reach the analyzer instead of being dropped"
         );
 
-        let lossy_runner = SequenceProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tepf/ConfigDumpInfo.xml\0"
-                        .to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                },
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "<MetaDataObject><ExternalDataProcessor><Comment>\u{fffd}</Comment></ExternalDataProcessor></MetaDataObject>"
-                        .to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                },
-            ]),
-        };
-
-        let result = GitTrackingAdapter::with_runner(&lossy_runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("lossy index blob must require manual review");
-        };
-        assert!(warning.contains("manual review"));
-        assert!(!warning.contains("git rm --cached"));
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_index_parser_marks_unmerged_and_intent_to_add_as_ambiguous() {
-        let entries = parse_git_index_paths(concat!(
-            "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tconflict/ConfigDumpInfo.xml\0",
-            "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\tconflict/ConfigDumpInfo.xml\0",
-            "100644 0000000000000000000000000000000000000000 0\tnew/ConfigDumpInfo.xml\0",
-            "100644 cccccccccccccccccccccccccccccccccccccccc 0\tvalid/ConfigDumpInfo.xml\0",
-        ))
-        .unwrap();
-
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].path, "conflict/ConfigDumpInfo.xml");
-        assert_eq!(entries[0].blob_oid, None);
-        assert_eq!(entries[1].path, "new/ConfigDumpInfo.xml");
-        assert_eq!(entries[1].blob_oid, None);
+        let almost_maximum =
+            Duration::from_secs(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS) - Duration::from_millis(1);
         assert_eq!(
-            entries[2].blob_oid.as_deref(),
-            Some("cccccccccccccccccccccccccccccccccccccccc")
-        );
-    }
-
-    #[test]
-    fn config_dump_info_warning_escapes_unusual_git_paths() {
-        assert_eq!(
-            format_git_paths(
-                [
-                    "line\nbreak/ConfigDumpInfo.xml",
-                    "comma,path/ConfigDumpInfo.xml"
-                ]
-                .into_iter()
-            ),
-            r#""line\nbreak/ConfigDumpInfo.xml", "comma,path/ConfigDumpInfo.xml""#
-        );
-    }
-
-    #[test]
-    fn config_dump_info_git_check_keeps_unmerged_runtime_path_non_destructive() {
-        let context = temp_context("tracked-config-dump-info-unmerged-runtime");
-        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            concat!(
-                "format: DESIGNER\n",
-                "source-set:\n",
-                "  - name: main\n",
-                "    type: CONFIGURATION\n",
-                "    path: src\n",
-            ),
-        )
-        .unwrap();
-        fs::write(
-            context.workspace_root.join("src/Configuration.xml"),
-            "<MetaDataObject/>",
-        )
-        .unwrap();
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: concat!(
-                    "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1\tsrc/ConfigDumpInfo.xml\0",
-                    "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2\tsrc/ConfigDumpInfo.xml\0",
-                )
-                .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("unmerged index stages must require manual review");
-        };
-        assert!(warning.contains("manual review"));
-        assert!(warning.contains("src/ConfigDumpInfo.xml"));
-        assert!(!warning.contains("git rm --cached"));
-        assert_eq!(runner.commands.borrow().len(), 1);
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_rejects_lossy_index_paths() {
-        let context = temp_context("tracked-config-dump-info-lossy-path");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0\tbad\u{fffd}/ConfigDumpInfo.xml\0"
-                    .to_string(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("lossy Git paths must remain visible");
-        };
-        assert!(warning.contains("non-UTF-8 paths"));
-        assert!(!warning.contains("git rm --cached"));
-
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_propagates_process_cancellation() {
-        let context = temp_context("tracked-config-dump-info-cancelled");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: false,
-                status: "cancelled".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: true,
-                stdout_truncated: false,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        assert_eq!(result, ConfigDumpInfoGitCheck::Cancelled);
-        assert_eq!(
-            runner.commands.borrow()[0].timeout,
-            Some(GIT_TRACKING_TIMEOUT)
+            analyzer_analyze_timeout_seconds(almost_maximum),
+            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
         );
 
-        let _ = fs::remove_dir_all(context.workspace_root);
-    }
-
-    #[test]
-    fn config_dump_info_git_check_reports_timeout_without_failing_inspection() {
-        let context = temp_context("tracked-config-dump-info-timeout");
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: false,
-                status: "timed out".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: true,
-                cancelled: false,
-                stdout_truncated: false,
-            },
-        };
-
-        let result = GitTrackingAdapter::with_runner(&runner)
-            .config_dump_info_warning(&context, &CancellationToken::new());
-
-        let ConfigDumpInfoGitCheck::Complete(Some(warning)) = result else {
-            panic!("timeout should remain a non-fatal project warning");
-        };
-        assert!(warning.contains("timed out after 5 seconds"));
-
-        let _ = fs::remove_dir_all(context.workspace_root);
+        // An exhausted deadline still bounds the analyzer by the smallest
+        // accepted value rather than handing it its own default.
+        assert_eq!(
+            analyzer_analyze_timeout_seconds(Duration::from_secs(1)),
+            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS)
+        );
+        assert_eq!(
+            analyzer_analyze_timeout_seconds(Duration::from_secs(7_200)),
+            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
+        );
     }
 
     #[test]
@@ -3653,6 +3048,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3693,6 +3091,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3833,6 +3234,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3882,6 +3286,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -3978,6 +3385,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -4172,6 +3582,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = json!({
@@ -4234,6 +3647,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = json!({
@@ -4293,6 +3709,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = bounded_external_epf_args();
@@ -4338,6 +3757,9 @@ mod tests {
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let args = bounded_external_epf_args();
@@ -4665,10 +4087,7 @@ source-set:
         args.insert("format".to_string(), json!("json"));
         args.insert("limit".to_string(), json!(20));
 
-        let outcome = BslAnalyzerMcpAdapter::new()
-            .invoke("unica.code.diagnostics", &args, &context, true)
-            .unwrap()
-            .outcome;
+        let outcome = invoke_analyze(&BslAnalyzerMcpAdapter::new(), &args, &context, true).outcome;
 
         let command = outcome.command.unwrap().join(" ");
         assert!(command.contains("bin/"));
@@ -4694,14 +4113,21 @@ source-set:
             )),
         };
 
-        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &Map::new(), &context, false)
-            .unwrap();
+        let analyzer = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &Map::new(),
+            &context,
+            false,
+        );
 
         assert!(analyzer.outcome.ok, "{:?}", analyzer.outcome);
         assert!(analyzer.outcome.stdout.is_none());
-        assert_eq!(analyzer.data.as_ref().unwrap()["state"], "completed");
-        assert_eq!(analyzer.data.as_ref().unwrap()["items"], json!([]));
+        let batch = analyzer.diagnostics.as_ref().expect("typed diagnostics");
+        assert_eq!(
+            batch.outcome.status,
+            crate::domain::diagnostics::DiagnosticProviderStatus::Empty
+        );
+        assert!(batch.outcome.observations.is_empty());
         assert!(runner.commands.borrow()[0]
             .args
             .windows(2)
@@ -4740,20 +4166,29 @@ source-set:
             )),
         };
 
-        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &Map::new(), &context, false)
-            .unwrap();
+        let analyzer = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &Map::new(),
+            &context,
+            false,
+        );
 
         assert!(analyzer.outcome.ok, "{:?}", analyzer.outcome);
         assert!(analyzer.outcome.stdout.is_none());
-        assert_eq!(
-            analyzer.data.as_ref().unwrap()["items"][0]["path"],
-            expected_path
-        );
-        assert_eq!(
-            analyzer.data.as_ref().unwrap()["items"][0]["message"],
-            "Длина строки превышает максимальную"
-        );
+        let observation = &analyzer
+            .diagnostics
+            .as_ref()
+            .expect("typed diagnostics")
+            .outcome
+            .observations[0];
+        assert!(matches!(
+            observation,
+            crate::domain::diagnostics::DiagnosticObservation::Diagnostic {
+                location: crate::domain::diagnostics::DiagnosticObservationLocation::Resource { handle },
+                message,
+                ..
+            } if handle == expected_path && message == "Длина строки превышает максимальную"
+        ));
         assert!(runner.commands.borrow()[0]
             .args
             .windows(2)
@@ -4771,9 +4206,12 @@ source-set:
         let mut args = Map::new();
         args.insert("timeoutSeconds".to_string(), json!(900));
 
-        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+        let analyzer = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &args,
+            &context,
+            false,
+        );
         let outcome = analyzer.outcome;
 
         assert!(outcome.ok);
@@ -4807,7 +4245,7 @@ source-set:
             .unwrap();
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke_cancellable_with_operational_config(
+            .invoke_diagnostics_analyze(
                 "unica.code.diagnostics",
                 &Map::new(),
                 &context,
@@ -4847,7 +4285,7 @@ analyze_timeout_seconds = 900
             .unwrap();
 
         let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke_cancellable_with_operational_config(
+            .invoke_diagnostics_analyze(
                 "unica.code.diagnostics",
                 &Map::new(),
                 &context,
@@ -4878,14 +4316,20 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
         args.insert("timeoutSeconds".to_string(), json!(900));
 
-        let analyzer = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+        let analyzer = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &args,
+            &context,
+            false,
+        );
         let outcome = analyzer.outcome;
 
         assert!(!outcome.ok);
@@ -5008,7 +4452,7 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn bsl_diagnostics_adapter_maps_file_mode_to_allowlisted_mcp_call() {
+    fn legacy_diagnostics_file_route_is_not_available_through_graph_adapter() {
         let context = temp_context("diagnostics-mcp");
         let runner = RecordingBslMcpRunner {
             commands: RefCell::new(Vec::new()),
@@ -5030,29 +4474,20 @@ analyze_timeout_seconds = 900
         args.insert("detail".to_string(), json!("detailed"));
         args.insert("limit".to_string(), json!(5));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        assert!(outcome.ok);
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].tool_name, "diagnostics");
-        assert_eq!(commands[0].tool_args["action"], "file");
         assert_eq!(
-            commands[0].tool_args["path"],
-            "CommonModules/SmokeModule/Ext/Module.bsl"
+            error,
+            "unsupported bsl-analyzer MCP tool: unica.code.diagnostics"
         );
-        assert_eq!(commands[0].tool_args["min_severity"], "warning");
-        assert_eq!(commands[0].tool_args["range_start"], 3);
-        assert_eq!(commands[0].tool_args["range_end"], 7);
-        assert_eq!(commands[0].tool_args["max_findings"], 5);
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn diagnostics_mcp_adapter_accepts_absolute_path_inside_source_dir() {
+    fn legacy_absolute_diagnostics_path_does_not_restore_adapter_route() {
         let context = temp_context("diagnostics-absolute-inside");
         let path = context
             .cwd
@@ -5070,20 +4505,17 @@ analyze_timeout_seconds = 900
         args.insert("mode".to_string(), json!("file"));
         args.insert("path".to_string(), json!(path));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        assert!(outcome.ok);
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].tool_args["path"], path);
+        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn diagnostics_mcp_adapter_rejects_paths_outside_source_dir() {
+    fn legacy_diagnostics_paths_are_rejected_before_any_runner_call() {
         let context = temp_context("diagnostics-path-containment");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
         let outside = context.workspace_root.with_file_name(format!(
@@ -5127,7 +4559,10 @@ analyze_timeout_seconds = 900
             let error = BslAnalyzerMcpAdapter::with_runner(&runner)
                 .invoke("unica.code.diagnostics", &args, &context, false)
                 .unwrap_err();
-            assert!(error.starts_with("invalid_diagnostics_path:"), "{error}");
+            assert!(
+                error.starts_with("unsupported bsl-analyzer MCP tool:"),
+                "{error}"
+            );
             assert!(runner.commands.borrow().is_empty());
         }
 
@@ -5136,7 +4571,7 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn diagnostics_mcp_adapter_rejects_non_string_path_before_runner() {
+    fn legacy_non_string_diagnostics_paths_cannot_reach_runner() {
         let context = temp_context("diagnostics-non-string-path");
 
         for path in [Value::Null, json!(true), json!(1), json!([]), json!({})] {
@@ -5155,7 +4590,7 @@ analyze_timeout_seconds = 900
                 .invoke("unica.code.diagnostics", &args, &context, false)
                 .unwrap_err();
             assert!(
-                error.starts_with("invalid_diagnostics_path:"),
+                error.starts_with("unsupported bsl-analyzer MCP tool:"),
                 "{path}: {error}"
             );
             assert!(runner.commands.borrow().is_empty(), "{path}");
@@ -5192,7 +4627,7 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
-    fn diagnostics_mcp_adapter_reports_loading_as_retryable_failure() {
+    fn legacy_diagnostics_loading_route_is_not_available() {
         let context = temp_context("diagnostics-loading");
         let runner = RecordingBslMcpRunner {
             commands: RefCell::new(Vec::new()),
@@ -5208,24 +4643,17 @@ analyze_timeout_seconds = 900
             json!("CommonModules/Probe/Ext/Module.bsl"),
         );
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        assert!(!outcome.ok);
-        assert!(outcome.warnings.is_empty());
-        assert!(outcome.summary.contains("pending"));
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)
-                && error.contains("not ready")));
+        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn diagnostics_status_mode_reports_loading_without_failing() {
+    fn legacy_diagnostics_status_route_is_not_available() {
         let context = temp_context("diagnostics-status-loading");
         let runner = RecordingBslMcpRunner {
             commands: RefCell::new(Vec::new()),
@@ -5238,25 +4666,17 @@ analyze_timeout_seconds = 900
         let mut args = Map::new();
         args.insert("mode".to_string(), json!("status"));
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        // `status` is the readiness probe callers are told to run first: it
-        // answered the question it was asked, so a loading model is its result
-        // and not a failed call.
-        assert!(outcome.ok);
-        assert!(outcome.errors.is_empty());
-        assert!(outcome
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("not ready")));
+        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
     #[test]
-    fn diagnostics_findings_quoting_loading_state_stay_successful() {
+    fn legacy_diagnostics_findings_route_is_not_available() {
         let context = temp_context("diagnostics-quoted-loading");
         let runner = RecordingBslMcpRunner {
             commands: RefCell::new(Vec::new()),
@@ -5273,16 +4693,12 @@ analyze_timeout_seconds = 900
             json!("CommonModules/Probe/Ext/Module.bsl"),
         );
 
-        let outcome = BslAnalyzerMcpAdapter::with_runner(&runner)
+        let error = BslAnalyzerMcpAdapter::with_runner(&runner)
             .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap()
-            .outcome;
+            .unwrap_err();
 
-        // Readiness lives in the reply's own fields; a finding that quotes the
-        // words must not turn a complete result into a retryable failure.
-        assert!(outcome.ok);
-        assert!(outcome.errors.is_empty());
-        assert!(outcome.warnings.is_empty());
+        assert!(error.starts_with("unsupported bsl-analyzer MCP tool:"));
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
@@ -5301,7 +4717,28 @@ analyze_timeout_seconds = 900
             timed_out: false,
             cancelled: false,
             stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
         }
+    }
+
+    fn invoke_analyze(
+        adapter: &BslAnalyzerMcpAdapter<'_>,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+    ) -> BslAnalyzerOutcome {
+        adapter
+            .invoke_diagnostics_analyze(
+                "bsl-analyzer diagnostics provider",
+                args,
+                context,
+                dry_run,
+                None,
+                &CancellationToken::new(),
+            )
+            .unwrap()
     }
 
     fn analyze_outcome(format: Option<&str>, stdout: &str, label: &str) -> BslAnalyzerOutcome {
@@ -5314,9 +4751,12 @@ analyze_timeout_seconds = 900
             args.insert("format".to_string(), json!(format));
         }
 
-        let outcome = BslAnalyzerMcpAdapter::with_process_runner(&runner)
-            .invoke("unica.code.diagnostics", &args, &context, false)
-            .unwrap();
+        let outcome = invoke_analyze(
+            &BslAnalyzerMcpAdapter::with_process_runner(&runner),
+            &args,
+            &context,
+            false,
+        );
 
         cleanup_context(&context);
         outcome
@@ -5334,13 +4774,21 @@ analyze_timeout_seconds = 900
         );
 
         assert!(!outcome.outcome.ok);
-        assert_eq!(outcome.data.as_ref().unwrap()["state"], "pending");
+        assert_eq!(
+            outcome
+                .diagnostics
+                .as_ref()
+                .expect("typed diagnostics")
+                .outcome
+                .status,
+            crate::domain::diagnostics::DiagnosticProviderStatus::Unavailable
+        );
         assert!(outcome.outcome.stdout.is_none());
         assert!(outcome
             .outcome
             .errors
             .iter()
-            .any(|error| error.starts_with(DIAGNOSTICS_PENDING_PREFIX)
+            .any(|error| error.starts_with("diagnostics_pending")
                 && error.contains("did not report files")));
     }
 
@@ -5367,7 +4815,16 @@ analyze_timeout_seconds = 900
         assert!(outcome.outcome.ok, "{:?}", outcome.outcome);
         assert!(outcome.outcome.errors.is_empty());
         assert!(outcome.outcome.stdout.is_none());
-        assert_eq!(outcome.data.as_ref().unwrap()["itemsTotal"], 1);
+        assert_eq!(
+            outcome
+                .diagnostics
+                .as_ref()
+                .expect("typed diagnostics")
+                .outcome
+                .observations
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -5387,8 +4844,8 @@ analyze_timeout_seconds = 900
             assert!(result.outcome.ok, "{:?}", result.outcome);
             assert!(result.outcome.stdout.is_none());
         }
-        assert_eq!(results[0].data, results[1].data);
-        assert_eq!(results[1].data, results[2].data);
+        assert_eq!(results[0].diagnostics, results[1].diagnostics);
+        assert_eq!(results[1].diagnostics, results[2].diagnostics);
     }
 
     #[test]
@@ -5410,10 +4867,10 @@ analyze_timeout_seconds = 900
 
         assert!(result.outcome.ok, "{:?}", result.outcome);
         assert!(result.outcome.stdout.is_none());
-        let data = result.data.unwrap();
-        assert_eq!(data["itemsTotal"], files);
-        assert_eq!(data["itemsReturned"], 200);
-        assert_eq!(data["truncated"], true);
+        let batch = result.diagnostics.unwrap();
+        assert_eq!(batch.files.discovered, Some(files));
+        assert_eq!(batch.files.failed, Some(files));
+        assert_eq!(batch.outcome.observations.len(), files);
     }
 
     #[test]
@@ -5424,8 +4881,11 @@ analyze_timeout_seconds = 900
 
         assert!(!result.outcome.ok);
         assert!(result.outcome.stdout.is_none());
-        assert!(result.outcome.errors[0].starts_with("diagnostics_invalid:"));
-        assert_eq!(result.data.unwrap()["state"], "invalid");
+        assert!(result.outcome.errors[0].starts_with("diagnostics_invalid"));
+        assert_eq!(
+            result.diagnostics.unwrap().outcome.error.unwrap().code,
+            "diagnostics_invalid"
+        );
     }
 
     #[test]
@@ -5494,6 +4954,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5524,6 +4987,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let cancellation = CancellationToken::new();
@@ -5556,6 +5022,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: true,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5579,6 +5048,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: true,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5605,6 +5077,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5636,6 +5111,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5667,6 +5145,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
 
@@ -5694,6 +5175,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5726,6 +5210,9 @@ analyze_timeout_seconds = 900
                 timed_out: false,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5767,6 +5254,9 @@ analyze_timeout_seconds = 900
                 timed_out: true,
                 cancelled: false,
                 stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
             },
         };
         let mut args = Map::new();
@@ -5855,6 +5345,9 @@ analyze_timeout_seconds = 900
                     "--nocapture".to_string(),
                 ],
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: CancellationToken::new(),
             })
@@ -5890,6 +5383,33 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
+    fn system_process_runner_honors_larger_bounded_capture_limit() {
+        let output = SYSTEM_PROCESS_RUNNER
+            .run(&ProcessCommand {
+                program: std::env::current_exe().unwrap(),
+                args: vec![
+                    "--ignored".to_string(),
+                    "--exact".to_string(),
+                    "infrastructure::internal_adapters::tests::system_process_runner_large_stdout_helper"
+                        .to_string(),
+                    "--nocapture".to_string(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: Some((8 * 1024 * 1024, 256 * 1024)),
+                timeout: Some(Duration::from_secs(10)),
+                cancellation: CancellationToken::new(),
+            })
+            .unwrap();
+
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.stdout_truncated);
+        assert!(output.stdout.len() > 1024 * 1024);
+        assert!(output.stdout.contains("large-stdout-complete"));
+    }
+
+    #[test]
     fn system_process_runner_drains_large_stderr_while_running() {
         let output = SYSTEM_PROCESS_RUNNER
             .run(&ProcessCommand {
@@ -5902,6 +5422,9 @@ analyze_timeout_seconds = 900
                     "--nocapture".to_string(),
                 ],
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: CancellationToken::new(),
             })
@@ -5934,6 +5457,9 @@ analyze_timeout_seconds = 900
                 program: command.program,
                 args: command.args,
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: None,
                 cancellation: CancellationToken::new(),
             })
@@ -5955,6 +5481,9 @@ analyze_timeout_seconds = 900
                 program: command.program,
                 args: command.args,
                 cwd: std::env::current_dir().unwrap(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
                 timeout: Some(Duration::from_secs(10)),
                 cancellation: token,
             })
@@ -6056,6 +5585,41 @@ analyze_timeout_seconds = 900
         }
     }
 
+    #[test]
+    fn default_process_runner_rejects_nonempty_stdin_without_running_command() {
+        let runner = FakeProcessRunner {
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let command = ProcessCommand {
+            program: PathBuf::from("unused"),
+            args: Vec::new(),
+            cwd: PathBuf::from("."),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        };
+
+        let error = runner.run_with_input(&command, b"nonempty").unwrap_err();
+
+        assert_eq!(
+            error,
+            "process_failed: process runner does not support stdin"
+        );
+    }
+
     struct FailingProcessRunner {
         error: String,
     }
@@ -6075,18 +5639,6 @@ analyze_timeout_seconds = 900
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.commands.borrow_mut().push(command.clone());
             Ok(self.output.clone())
-        }
-    }
-
-    struct SequenceProcessRunner {
-        commands: RefCell<Vec<ProcessCommand>>,
-        outputs: RefCell<Vec<ProcessOutput>>,
-    }
-
-    impl ProcessRunner for SequenceProcessRunner {
-        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-            self.commands.borrow_mut().push(command.clone());
-            Ok(self.outputs.borrow_mut().remove(0))
         }
     }
 
@@ -6238,7 +5790,13 @@ fn managed_truncation_is_visible_at_process_adapter_boundary() {
         cancelled: false,
         stdout_truncated: true,
         stderr_truncated: true,
+        stdout_had_invalid_utf8: true,
+        stderr_had_invalid_utf8: true,
     });
     assert!(output.stderr.contains("stdout capture truncated"));
     assert!(output.stderr.contains("earlier stderr diagnostics omitted"));
+    assert!(output.stdout_truncated);
+    assert!(output.stderr_truncated);
+    assert!(output.stdout_had_invalid_utf8);
+    assert!(output.stderr_had_invalid_utf8);
 }
