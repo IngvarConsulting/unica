@@ -2165,6 +2165,15 @@ mod tests {
             store.active_lock_path().exists(),
             "the lock must be retained while the record cannot be read"
         );
+
+        // The other side of the same rule: a job directory that is genuinely
+        // missing does prove absence, on every platform. Without this the
+        // guard above could be satisfied by never proving absence at all.
+        let never_started = Uuid::new_v4().to_string();
+        assert!(
+            store.record_is_provably_absent(&never_started),
+            "an absent job directory proves the record is absent"
+        );
     }
 
     #[test]

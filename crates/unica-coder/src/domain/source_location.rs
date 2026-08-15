@@ -1,7 +1,7 @@
 use crate::domain::source_target::{MetadataAddress, TargetKind};
 use serde::Serialize;
 
-/// Closed logical location shared by source navigation and code search.
+/// Closed logical location shared by source navigation, code search, and diagnostics.
 ///
 /// An unaddressable location is still contained by a named source set. It is
 /// observable evidence, not a stable metadata identity.

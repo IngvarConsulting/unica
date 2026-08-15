@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod cancellation;
 pub mod code_intelligence;
+pub mod diagnostics;
 pub mod documentation;
 pub mod events;
 pub mod form_edit;

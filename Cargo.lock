@@ -1874,6 +1874,7 @@ dependencies = [
  "toml",
  "unsafe-libyaml",
  "ureq",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
  "zip",

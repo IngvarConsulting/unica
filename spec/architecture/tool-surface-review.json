@@ -137,7 +137,7 @@
   "unica.code.diagnostics": {
     "result": {
       "contract": "typed",
-      "now": "`data`: ответ MCP анализатора как есть, тем же путём, что `code.graph`. `analyze` — имя инструмента анализатора, а не внешний процесс 1С, поэтому исключение ADR-0023 §4 на него не распространяется",
+      "now": "`data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; физические пути и формат одного анализатора наружу не выходят",
       "target": "достигнут"
     },
     "scenarios": [

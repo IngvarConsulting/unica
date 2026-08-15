@@ -24,6 +24,7 @@ struct BundledManifest {
 #[serde(rename_all = "camelCase")]
 struct ManifestTool {
     name: String,
+    version: Option<String>,
     binaries: Option<BTreeMap<String, ManifestBinary>>,
     binary_path: Option<String>,
     sha256: Option<String>,
@@ -54,9 +55,36 @@ struct LockTarget {
 #[serde(rename_all = "camelCase")]
 struct LockTool {
     name: String,
+    version: Option<String>,
     binary_name: String,
     #[serde(default)]
     assets: BTreeMap<String, serde_json::Value>,
+}
+
+pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Result<String, String> {
+    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    if let Ok(text) = fs::read_to_string(&manifest_path) {
+        let manifest: BundledManifest = serde_json::from_str(&text)
+            .map_err(|error| format!("invalid Unica third-party manifest: {error}"))?;
+        if let Some(version) = manifest
+            .tools
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .and_then(|tool| tool.version.clone())
+        {
+            return Ok(version);
+        }
+    }
+    let lock_path = plugin_root.join("third-party").join("tools.lock.json");
+    let text = fs::read_to_string(&lock_path)
+        .map_err(|error| format!("failed to read Unica tools lock: {error}"))?;
+    let lock: ToolsLock = serde_json::from_str(&text)
+        .map_err(|error| format!("invalid Unica tools lock: {error}"))?;
+    lock.tools
+        .into_iter()
+        .find(|tool| tool.name == tool_name)
+        .and_then(|tool| tool.version)
+        .ok_or_else(|| format!("tool {tool_name} has no pinned version"))
 }
 
 pub(crate) fn resolve_bundled_tool(
@@ -268,6 +296,10 @@ mod tests {
         let plugin_root = temp_plugin_root("win-target");
         write_manifest_with_bsl_analyzer(&plugin_root);
 
+        assert_eq!(
+            bundled_tool_version(&plugin_root, "bsl-analyzer").unwrap(),
+            "test"
+        );
         let tool =
             resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", "win-x64", true).unwrap();
 

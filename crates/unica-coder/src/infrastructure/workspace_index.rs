@@ -5053,7 +5053,11 @@ source-set:
                     .unwrap()
                     .into_os_string(),
             )],
-            timeout: Duration::from_secs(5),
+            // These fixtures assert on a finished run, not on how fast it
+            // finished. The Windows fixture shells out to `powershell`, whose
+            // cold start alone can take seconds on a loaded runner, so a tight
+            // budget reports `timed_out` for a command that did its job.
+            timeout: Duration::from_secs(30),
             cancellation: CancellationToken::new(),
         }
     }
@@ -5115,7 +5119,9 @@ source-set:
                     .unwrap()
                     .into_os_string(),
             )],
-            timeout: Duration::from_secs(5),
+            // See `index_command`: the budget bounds a hung fixture, it does
+            // not assert how quickly `powershell` starts.
+            timeout: Duration::from_secs(30),
             cancellation,
         }
     }
