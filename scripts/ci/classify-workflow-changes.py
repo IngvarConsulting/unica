@@ -42,6 +42,10 @@ PACKAGE_PATHS = {
     "scripts/ci/package-unica-plugin.py",
     "scripts/ci/package-unica-runtime.py",
     "scripts/ci/release-assessment.py",
+    # The test travels with the script it guards. Without it a test-only change
+    # would claim the assessment contour while claiming no release or CI
+    # contour, and `evaluate-ci-gate.py` rejects that pair as contradictory.
+    "tests/ci/test_release_assessment.py",
     "scripts/ci/smoke-unica-bootstrap.py",
     "scripts/ci/smoke-unica-mcp.py",
     "scripts/ci/verify-release-assets.py",

@@ -272,6 +272,25 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             assessment_required=True,
         )
 
+    def test_every_assessment_path_also_claims_a_release_or_ci_contour(self) -> None:
+        """`evaluate-ci-gate.py` reads a lone assessment contour as a contradiction.
+
+        The assessment job hangs off the package pipeline, so a path that
+        routes it while claiming neither contour describes a run that cannot
+        happen — and the gate fails the whole workflow rather than the one
+        job. Deriving the contour from the search paths hides this, so the
+        explicit list is what needs stating.
+        """
+        module = load_classifier_module()
+
+        offenders = []
+        for path in sorted(module.ASSESSMENT_PATHS):
+            values = module.classify_paths([path]).as_dict()
+            if not (values["release_required"] or values["ci_changed"]):
+                offenders.append(path)
+
+        self.assertEqual([], offenders)
+
     def test_forced_full_contour_enables_every_output(self) -> None:
         module = load_classifier_module()
 
