@@ -1762,6 +1762,38 @@ class ReaderInvocationContractTests(unittest.TestCase):
         self.assertEqual(numbered, [], "name documents by subject, not by chapter number")
 
 
+class RlmStandalonePackagingContractTests(unittest.TestCase):
+    def test_accepted_decision_owns_the_multifile_runtime_choice(self) -> None:
+        decision = (
+            REPO_ROOT
+            / "spec"
+            / "decisions"
+            / "0061-rlm-mnogofaylovyy-runtime-iz-proveryaemogo-arhiva.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("- Статус: `accepted`", decision)
+        self.assertIn("`Nuitka standalone multidist`", decision)
+        self.assertIn("`runtimeFiles`", decision)
+        self.assertIn("скачивает общий архив цели ровно один раз", decision)
+        self.assertIn("Bootstrap остаётся нейтральным", decision)
+
+    def test_registry_rule_owns_the_exact_runtime_closure(self) -> None:
+        records = {record.id: record for record in all_records()}
+        record = records["INV-PKG-TOOL-CLOSURE"]
+        rendered = record.one("Rule") or ""
+
+        self.assertEqual(record.one("Decision"), "ADR-0061")
+        for contract in (
+            "полная полезная нагрузка закреплённого архива",
+            "только обычные файлы",
+            "точный набор",
+            "потерянная зависимость",
+            "необъявленный файл",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, rendered)
+
+
 class ActiveLayerTests(unittest.TestCase):
     def active_documents(self) -> list[Path]:
         """Documents that describe the system as it is now.

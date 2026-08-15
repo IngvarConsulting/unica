@@ -185,6 +185,26 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_classification([path], **expected)
 
+    def test_release_matrix_reports_standalone_runtime_size_evidence(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[2]
+            / ".github"
+            / "workflows"
+            / "unica-plugin-release.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("Report standalone runtime size evidence", workflow)
+        for label in (
+            "RLM source archive bytes",
+            "RLM extracted payload bytes",
+            "Final runtime archive bytes",
+            "Runtime file count",
+        ):
+            with self.subTest(label=label):
+                self.assertIn(label, workflow)
+        self.assertIn('manifest["runtimeFiles"]', workflow)
+        self.assertIn('archive.extractfile("manifest.json")', workflow)
+
     def test_local_installer_change_requires_ci_contour(self) -> None:
         self.assert_classification(
             ["scripts/dev/install-local-unica.sh"],

@@ -1348,6 +1348,22 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `release-gate` — `scripts/ci/verify-release-assets.py`
 - **Scope:** packaged, release, runtime
 
+### INV-PKG-TOOL-CLOSURE — Многофайловый инструмент входит в runtime полностью
+
+- **Rule:** Многофайловый сторонний инструмент входит в runtime только как
+  полная полезная нагрузка закреплённого архива: сборщик сверяет внешний
+  SHA-256, безопасно извлекает только обычные файлы в изолированный staging,
+  проверяет внутренние идентичности исходника и цели, точки входа, точный набор
+  файлов, SHA-256, размеры и режимы, а упаковщик перечисляет и сохраняет каждый
+  файл с относительным соседством. Небезопасная запись, ссылка, повтор пути,
+  коллизия, потерянная зависимость или необъявленный файл прекращает сборку до
+  публикации.
+- **Decision:** ADR-0061
+- **Check:** `ci-test` — `tests/ci/test_build_unica_tools.py`
+- **Check:** `ci-test` — `tests/ci/test_package_unica_runtime.py`
+- **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
+- **Scope:** source, packaged, release, runtime
+
 ### INV-PKG-BINARY-NAME — Публичный бинарник runtime называется `unica`
 
 - **Rule:** Встроенный публичный бинарник, собираемый из Cargo-воркспейса,
