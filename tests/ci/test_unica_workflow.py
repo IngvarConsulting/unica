@@ -552,10 +552,17 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("git tag -f", text)
         self.assertNotIn("--force", text)
         # Two releases must not interleave, and a stale straggler must fail
-        # forward-only instead of rolling the catalog back — in both writers.
+        # forward-only instead of rolling the catalog back — in both writers,
+        # over both host catalogs, and again after a rebase retry in promote.
         self.assertIn("group: publish-unica-marketplace", text)
         self.assertIn("cancel-in-progress: false", text)
+        self.assertEqual(text.count("require_forward()"), 2)
         self.assertEqual(text.count('test "$newest" = "$RELEASE_TAG"'), 2)
+        self.assertEqual(
+            text.count(".agents/plugins/marketplace.json .claude-plugin/marketplace.json"),
+            3,  # both guard loops and the promote `git add`
+        )
+        self.assertIn('require_forward "HEAD~1"', text)
         # The payload is trusted only from the successful push build of the
         # very tag its manifest declares — dispatch cannot smuggle another one.
         self.assertIn('test "$run_event" = "push"', text)

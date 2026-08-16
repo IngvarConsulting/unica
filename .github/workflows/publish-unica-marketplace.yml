@@ -93,10 +93,17 @@ jobs:
           set -euo pipefail
           gh repo clone IngvarConsulting/unica-marketplace marketplace
           # A rerun of an old release after a newer one is live must fail here,
-          # not roll the branch back: the catalog only ever moves forward.
-          current_ref="$(sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' marketplace/.agents/plugins/marketplace.json | head -n 1)"
-          newest="$(printf '%s\n%s\n' "$current_ref" "$RELEASE_TAG" | sort -V | tail -n 1)"
-          test "$newest" = "$RELEASE_TAG"
+          # not roll the branch back: the catalog only ever moves forward. Both
+          # host catalogs are read — guarding one would trust them to be in
+          # lockstep, which is the invariant, not a given.
+          require_forward() {
+            for catalog in .agents/plugins/marketplace.json .claude-plugin/marketplace.json; do
+              current_ref="$(sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "marketplace/$catalog" | head -n 1)"
+              newest="$(printf '%s\n%s\n' "$current_ref" "$RELEASE_TAG" | sort -V | tail -n 1)"
+              test "$newest" = "$RELEASE_TAG"
+            done
+          }
+          require_forward
           rm -rf marketplace/plugins/unica
           mkdir -p marketplace/plugins
           cp -R payload/plugins/unica marketplace/plugins/unica
@@ -338,11 +345,23 @@ jobs:
         run: |
           set -euo pipefail
           gh repo clone IngvarConsulting/unica-marketplace marketplace
-          # The same forward-only guard as staging: a stale run that lost the
-          # race to a newer release fails instead of serving a rollback.
-          current_ref="$(sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' marketplace/.agents/plugins/marketplace.json | head -n 1)"
-          newest="$(printf '%s\n%s\n' "$current_ref" "$RELEASE_TAG" | sort -V | tail -n 1)"
-          test "$newest" = "$RELEASE_TAG"
+          # The same forward-only guard as staging, over both host catalogs: a
+          # stale run that lost the race to a newer release fails instead of
+          # serving a rollback.
+          require_forward() {
+            # With a rev argument the catalogs are read from that revision,
+            # otherwise from the working tree.
+            for catalog in .agents/plugins/marketplace.json .claude-plugin/marketplace.json; do
+              if [ -n "${1:-}" ]; then
+                current_ref="$(git -C marketplace show "$1:$catalog" | sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+              else
+                current_ref="$(sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "marketplace/$catalog" | head -n 1)"
+              fi
+              newest="$(printf '%s\n%s\n' "$current_ref" "$RELEASE_TAG" | sort -V | tail -n 1)"
+              test "$newest" = "$RELEASE_TAG"
+            done
+          }
+          require_forward
           mkdir -p marketplace/.agents/plugins marketplace/.claude-plugin
           cp payload/.agents/plugins/marketplace.json marketplace/.agents/plugins/marketplace.json
           cp payload/.claude-plugin/marketplace.json marketplace/.claude-plugin/marketplace.json
@@ -356,5 +375,10 @@ jobs:
           if ! git -C marketplace push origin HEAD:main; then
             git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
               pull --rebase origin main
+            # The rebase replayed this commit onto whatever main holds now
+            # (HEAD~1). A conflicting catalog already failed the rebase above;
+            # an unrelated edit rebases clean — prove the move is still
+            # forward against that state before publishing it.
+            require_forward "HEAD~1"
             git -C marketplace push origin HEAD:main
           fi
