@@ -317,6 +317,16 @@ impl SourceRevisionService {
             self.lose_incremental_trust();
             return Err("source revision event escaped its root".to_string());
         }
+        // The corpus scan prunes the generated directory; an incremental
+        // event under it must stay just as invisible, or the incremental
+        // digest would diverge from the digest a full scan produces.
+        if relative_path
+            .components()
+            .any(|component| component.as_os_str() == OsStr::new(GENERATED_DIR_NAME))
+        {
+            manifest.remove(relative_path);
+            return Ok(true);
+        }
         let path = self.source_root.join(relative_path);
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
@@ -839,6 +849,85 @@ mod tests {
             .unwrap();
         assert!(recovered.generation > initial_revision.generation);
         assert_ne!(recovered.digest, initial_revision.digest);
+    }
+
+    #[test]
+    fn generated_directory_event_does_not_perturb_the_incremental_digest() {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(source_root.join("Module.bsl"), "Процедура A()\n").unwrap();
+        // A cache file with a source extension inside the pruned directory:
+        // the full scan never records it, so the incremental path must not
+        // record it either.
+        fs::create_dir_all(source_root.join(".build/unica")).unwrap();
+        fs::write(source_root.join(".build/unica/state.yaml"), "a: 1\n").unwrap();
+        let full_scans = Arc::new(AtomicUsize::new(0));
+        let incremental_reads = Arc::new(AtomicUsize::new(0));
+        let service = SourceRevisionService {
+            workspace_root: fs::canonicalize(workspace.path()).unwrap(),
+            source_root: fs::canonicalize(&source_root).unwrap(),
+            record_path: workspace.path().join("revision.json"),
+            machine: Mutex::new(SourceRevisionMachine::default()),
+            manifest: Mutex::new(None),
+            operation: Mutex::new(()),
+            fence: Arc::new(ScriptedFence {
+                outcomes: Mutex::new(VecDeque::from([
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: Vec::new(),
+                    },
+                    FenceOutcome::Proven {
+                        changed_paths: vec![PathBuf::from(".build/unica/state.yaml")],
+                    },
+                ])),
+            }),
+            scanner: Arc::new({
+                let full_scans = Arc::clone(&full_scans);
+                move |root, should_stop| {
+                    full_scans.fetch_add(1, Ordering::AcqRel);
+                    scan_source_manifest(root, should_stop)
+                }
+            }),
+            file_reader: Arc::new({
+                let incremental_reads = Arc::clone(&incremental_reads);
+                move |path| {
+                    incremental_reads.fetch_add(1, Ordering::AcqRel);
+                    read_source_file(path)
+                }
+            }),
+        };
+        let cancellation = CancellationToken::new();
+        let snapshot = || {
+            service
+                .snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(60)),
+                    &cancellation,
+                )
+                .unwrap()
+        };
+
+        let cold = snapshot();
+        let scans_after_cold = full_scans.load(Ordering::Acquire);
+
+        fs::write(source_root.join(".build/unica/state.yaml"), "a: 2\n").unwrap();
+        let after_cache_write = snapshot();
+        assert_eq!(
+            after_cache_write.digest, cold.digest,
+            "a generated-directory event must not change the corpus digest"
+        );
+        assert_eq!(
+            full_scans.load(Ordering::Acquire),
+            scans_after_cold,
+            "a generated-directory event must not trigger a full rescan"
+        );
+        assert_eq!(
+            incremental_reads.load(Ordering::Acquire),
+            0,
+            "a generated-directory file must not be read"
+        );
     }
 
     #[test]
