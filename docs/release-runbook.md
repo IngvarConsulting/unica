@@ -43,9 +43,14 @@ automatically when the tag-triggered build succeeds:
 | | green → move the catalog → **live** |
 
 Your signed source tag is the human approval and the cryptographic anchor of
-the release. The marketplace tag is created by the pipeline: it is the ref the
-catalog resolves, and nothing verifies its signature — the runbook used to ask
-for a second signed tag, and ADR-0068 retired it.
+the release. Be honest about what enforces it: the pipeline proves the tag
+exists and that the payload came from its successful push build, but it does
+not verify the signature itself — GitHub reports these signatures as
+unverified today. What keeps the tag trustworthy is write access and the
+repository's tag protection rules; keep those protections on. The marketplace
+tag is created by the pipeline: it is the ref the catalog resolves, and
+nothing verifies its signature — the runbook used to ask for a second signed
+tag, and ADR-0068 retired it.
 
 There is no scheduler and no waiting window: a failed stage is a red run
 attached to the release tag, and the catalog stays where it was. Rerunning the
