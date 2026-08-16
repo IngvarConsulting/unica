@@ -166,6 +166,48 @@ class ReleaseWardenTests(unittest.TestCase):
 
         self.assertEqual(action.kind, "wait")
 
+    def test_the_promotion_run_is_selected_by_event_and_head_sha(self) -> None:
+        """The branch also carries runs of other workflows and other commits.
+
+        `runs[0]` of a bare branch listing can be a newer unrelated run; kicking
+        it would rerun someone else's jobs, and its attempt count would fake a
+        second-attempt failure. The blocking checks belong to the pull_request
+        run at the PR head, so that is the only run worth selecting.
+        """
+        runs = [
+            {"databaseId": 99, "attempt": 3, "event": "push", "headSha": "aaa"},
+            {"databaseId": 42, "attempt": 1, "event": "pull_request", "headSha": "abc"},
+        ]
+
+        selected = self.module.select_promotion_run(runs, "abc")
+
+        self.assertEqual(selected, self.module.WorkflowRun(id=42, attempt=1))
+
+    def test_an_unidentifiable_promotion_run_is_not_kicked(self) -> None:
+        """No matching run means nothing safe to rerun — surface it instead."""
+        self.assertIsNone(
+            self.module.select_promotion_run(
+                [{"databaseId": 99, "attempt": 1, "event": "pull_request", "headSha": "zzz"}],
+                "abc",
+            )
+        )
+
+        promote = self.pull(
+            "codex/promote-v0.9.2-1",
+            checks=(("consumer-fresh-install", "COMPLETED", "FAILURE"),),
+        )
+        action = self.module.decide(
+            self.module.ReleaseState(
+                "v0.9.2",
+                "v0.9.1",
+                promote_pr=promote,
+                marketplace_tag_exists=True,
+                promotion_checks_run=None,
+            )
+        )
+
+        self.assertEqual(action.kind, "alert")
+
     def test_a_green_promotion_publishes_the_release(self) -> None:
         promote = self.pull("codex/promote-v0.9.2-1", checks=self.green())
 

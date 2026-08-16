@@ -51,12 +51,16 @@ PENDING_STATES = {"PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", No
 PASSING_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
+PROMOTION_WORKFLOW = "verify.yml"
+
+
 @dataclass(frozen=True)
 class PullRequest:
     number: int
     branch: str
     files: tuple[str, ...]
     checks: tuple[tuple[str, str | None, str | None], ...]  # name, status, conclusion
+    head_sha: str | None = None
 
     @property
     def release_tag(self) -> str | None:
@@ -178,6 +182,26 @@ def decide(state: ReleaseState) -> Action:
     return Action("alert", f"release is stalled with no open pull request; {detail_suffix}")
 
 
+def select_promotion_run(runs: Sequence[dict], head_sha: str | None) -> WorkflowRun | None:
+    """Pick the run whose failed checks the promotion is actually blocked on.
+
+    A bare branch listing carries runs of every workflow and every pushed
+    commit, newest first. Kicking whatever sits at index zero could rerun an
+    unrelated workflow, and reading its attempt count could fake the
+    second-attempt failure that turns a kick into an alert. The blocking
+    checks belong to the pull_request run at the pull request's head, so only
+    that run is safe to select — and none at all is an answer, not an excuse
+    to guess.
+    """
+    for run in runs or []:
+        if run.get("event") != "pull_request":
+            continue
+        if head_sha and run.get("headSha") != head_sha:
+            continue
+        return WorkflowRun(id=run["databaseId"], attempt=run.get("attempt") or 1)
+    return None
+
+
 def latest_servable_release(releases: Sequence[dict]) -> str | None:
     """The newest release that is meant to reach consumers.
 
@@ -215,6 +239,7 @@ def load_pull_request(entry: dict) -> PullRequest:
         branch=entry["headRefName"],
         files=tuple(item["path"] for item in entry.get("files") or []),
         checks=checks,
+        head_sha=entry.get("headRefOid"),
     )
 
 
@@ -259,7 +284,7 @@ def observe() -> ReleaseState:
             "--state",
             "open",
             "--json",
-            "number,headRefName,files,statusCheckRollup",
+            "number,headRefName,headRefOid,files,statusCheckRollup",
         ]
     )
     stage_pr = None
@@ -291,18 +316,17 @@ def observe() -> ReleaseState:
                 "list",
                 "--repo",
                 MARKETPLACE,
+                "--workflow",
+                PROMOTION_WORKFLOW,
                 "--branch",
                 promote_pr.branch,
                 "--limit",
-                "1",
+                "10",
                 "--json",
-                "databaseId,attempt",
+                "databaseId,attempt,event,headSha",
             ]
         )
-        if runs:
-            promotion_checks_run = WorkflowRun(
-                id=runs[0]["databaseId"], attempt=runs[0].get("attempt") or 1
-            )
+        promotion_checks_run = select_promotion_run(runs or [], promote_pr.head_sha)
 
     return ReleaseState(
         latest,
