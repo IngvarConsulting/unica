@@ -586,35 +586,44 @@ class ProductContractTests(unittest.TestCase):
 
         text = runbook.read_text(encoding="utf-8")
         for value in (
-            "staging merge commit",
             "bump-version.py",
             "check-version-contract.py",
             "publish-unica-marketplace.yml",
+            # One human action starts the pipeline; the runbook must say which.
+            "git tag -s vX.Y.Z",
+            "stage → tag → verify → promote",
             # A release that fails part-way has to have a documented way out.
             "One-way doors",
             "never reuse a version number",
             "Rolling back a live release",
-            "Release Warden",
         ):
             with self.subTest(value=value):
                 self.assertIn(value, text)
 
-    def test_warden_cannot_publish_without_the_human_tag(self) -> None:
+    def test_the_catalog_moves_only_behind_green_consumer_installs(self) -> None:
+        """The linear pipeline replaces the warden's greenness check (ADR-0068).
+
+        The marketplace default branch has no protection rules, so the job
+        ordering here is the only thing standing between unverified bytes and
+        every consumer: promote must require the install checks, the anchor tag
+        must exist before them, and staging must never touch the catalog.
+        """
         repo_root = Path(__file__).resolve().parents[2]
-        warden = (repo_root / "scripts/ci/release-warden.py").read_text(encoding="utf-8")
-        workflow = (repo_root / ".github/workflows/release-warden.yml").read_text(
+        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
             encoding="utf-8"
         )
 
-        # The marketplace default branch has no protection rules, so the
-        # greenness check in the warden is the only thing standing between a red
-        # promotion and every consumer.
-        self.assertIn("def is_green", warden)
-        self.assertIn("PASSING_CONCLUSIONS", warden)
-        # A stalled release has to surface rather than sit quietly, which is the
-        # failure this whole workflow exists to prevent.
-        self.assertIn("--alert-is-failure", workflow)
-        self.assertIn("schedule:", workflow)
+        self.assertIn("needs: [stage, tag, verify-fresh-install, verify-upgrade]", publish)
+        self.assertIn("needs: [stage, tag]", publish)
+        # Staging pushes the payload only; the catalog files move in promote.
+        self.assertNotIn("stage: Unica catalog", publish)
+        self.assertIn("without changing the stable catalog", publish)
+        # A published tag never moves; a rerun proves sameness instead.
+        self.assertNotIn("git tag -f", publish)
+        self.assertNotIn("--force", publish)
+        # No scheduled babysitter exists anymore; the pipeline is one pass.
+        self.assertFalse((repo_root / ".github/workflows/release-warden.yml").exists())
+        self.assertFalse((repo_root / "scripts/ci/release-warden.py").exists())
 
     def test_release_tag_is_not_hardcoded_in_the_build_workflow(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -712,16 +721,17 @@ class ProductContractTests(unittest.TestCase):
             # a failure part-way through has to leave everything untouched.
             self.assertEqual(cargo.read_text(encoding="utf-8"), before)
 
-    def test_promotion_pr_points_the_tag_at_the_staging_merge(self) -> None:
+    def test_the_anchor_tag_names_the_staging_commit(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
             encoding="utf-8"
         )
 
         # Naming the promotion commit would require tagging a commit that does
-        # not exist until the promotion step has already run, which leaves the
-        # consumer install checks red on their first run every release.
-        self.assertIn("staging merge commit ${STAGING_MERGE_SHA}", publish)
+        # not exist until the catalog has already moved, which is exactly the
+        # order the two-phase invariant forbids. The staging commit carries the
+        # plugin bytes and exists before the install checks run.
+        self.assertIn('tag -a "$RELEASE_TAG" "$STAGING_SHA"', publish)
         self.assertNotIn("tag at commit ${promotion_sha}", publish)
 
     def test_readme_documents_public_marketplace_lifecycle(self) -> None:

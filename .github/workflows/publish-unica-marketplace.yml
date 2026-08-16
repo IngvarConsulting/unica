@@ -1,27 +1,21 @@
 name: Publish Unica Marketplace
 
+# The linear delivery pipeline (ADR-0068). One human action — the signed
+# source tag — starts the build; this workflow runs after it and carries the
+# release to consumers in one pass: stage the payload, create the resolve
+# anchor tag, verify the candidate the way a consumer installs it, and only
+# then move the catalog. Every stage is idempotent, so rerunning the whole
+# workflow resumes a partial publication instead of corrupting it.
+
 on:
   workflow_run:
     workflows: ["Build Unica Codex Plugin"]
     types: [completed]
   workflow_dispatch:
     inputs:
-      mode:
-        description: stage or promote
-        required: true
-        type: choice
-        options: [stage, promote]
       source_run_id:
         description: Successful source release workflow run ID
         required: true
-        type: string
-      release_tag:
-        description: Marketplace version tag, for example v0.7.8
-        required: true
-        type: string
-      staging_merge_sha:
-        description: Staging merge commit containing the verified plugin payload
-        required: false
         type: string
 
 permissions:
@@ -36,19 +30,21 @@ jobs:
       github.repository == 'IngvarConsulting/unica' &&
       ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push') ||
-      (github.event_name == 'workflow_dispatch' && inputs.mode == 'stage'))
+      github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      release_tag: ${{ steps.identity.outputs.release_tag }}
+      staging_sha: ${{ steps.push.outputs.staging_sha }}
+      source_run_id: ${{ steps.identity.outputs.source_run_id }}
     env:
       GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
       SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
-      RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
       - name: Require explicit cross-repository credential
         run: test -n "$GH_TOKEN"
       - name: Configure Git credentials
         run: gh auth setup-git
-      - uses: actions/checkout@v7
       - name: Download verified thin payload
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
       - name: Require package contract files
@@ -60,72 +56,271 @@ jobs:
           test -f payload/.agents/plugins/marketplace.json
           test -f payload/.claude-plugin/marketplace.json
       - name: Read the pinned release identity
+        id: identity
         run: |
           release_tag="$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' payload/plugins/unica/runtime-manifest.json | head -n 1)"
           case "$release_tag" in v[0-9A-Za-z._-]*) ;; *) exit 65 ;; esac
           echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
-      - name: Open staging PR without changing stable catalog
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+      - name: Push the staged payload without changing the stable catalog
+        id: push
         run: |
           set -euo pipefail
           gh repo clone IngvarConsulting/unica-marketplace marketplace
-          branch="codex/stage-${RELEASE_TAG}-${SOURCE_RUN_ID}"
-          git -C marketplace switch -c "$branch"
           rm -rf marketplace/plugins/unica
           mkdir -p marketplace/plugins
           cp -R payload/plugins/unica marketplace/plugins/unica
           git -C marketplace add plugins/unica
+          if git -C marketplace diff --cached --quiet; then
+            # A rerun after a completed stage: the payload is already on the
+            # branch, so the staged state is whatever main already carries.
+            echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
             commit -m "stage: Unica ${RELEASE_TAG}"
-          git -C marketplace push -u origin "$branch"
-          gh pr create --repo IngvarConsulting/unica-marketplace --head "$branch" --base main \
-            --title "Stage Unica ${RELEASE_TAG}" \
-            --body "Stages the verified thin payload from IngvarConsulting/unica run ${SOURCE_RUN_ID}. The stable catalog is unchanged."
+          # The push may race a concurrent catalog edit; one rebase retry keeps
+          # the staged tree identical because the commit carries only
+          # plugins/unica.
+          if ! git -C marketplace push origin HEAD:main; then
+            git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
+              pull --rebase origin main
+            git -C marketplace push origin HEAD:main
+          fi
+          echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  promote:
-    if: >-
-      github.repository == 'IngvarConsulting/unica' &&
-      github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
+  tag:
+    needs: stage
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
-      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-      RELEASE_TAG: ${{ inputs.release_tag }}
-      STAGING_MERGE_SHA: ${{ inputs.staging_merge_sha }}
+      RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
+      STAGING_SHA: ${{ needs.stage.outputs.staging_sha }}
     steps:
-      - name: Require staging identity and credential
-        run: |
-          test -n "$GH_TOKEN"
-          test -n "$STAGING_MERGE_SHA"
+      - name: Require explicit cross-repository credential
+        run: test -n "$GH_TOKEN"
       - name: Configure Git credentials
         run: gh auth setup-git
-      - name: Download catalog candidate
-        run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
-      - name: Require stable catalog candidates
-        run: |
-          test -f payload/.agents/plugins/marketplace.json
-          test -f payload/.claude-plugin/marketplace.json
-      - name: Open catalog-only promotion PR
+      - name: Create the resolve anchor at the staged payload
         run: |
           set -euo pipefail
           gh repo clone IngvarConsulting/unica-marketplace marketplace
-          git -C marketplace fetch origin "$STAGING_MERGE_SHA"
-          git -C marketplace merge-base --is-ancestor "$STAGING_MERGE_SHA" "origin/main"
-          test "$(git -C marketplace rev-parse "$STAGING_MERGE_SHA:plugins/unica")" = \
-            "$(git -C marketplace rev-parse "origin/main:plugins/unica")"
-          branch="codex/promote-${RELEASE_TAG}-${SOURCE_RUN_ID}"
-          git -C marketplace switch -c "$branch"
+          if git -C marketplace rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" > /dev/null; then
+            # A published tag never moves (ADR-0008). A rerun may see it
+            # already present; that is fine exactly when it carries the same
+            # plugin bytes as the staged payload. Anything else is a burnt
+            # version, not a retry.
+            tagged_tree="$(git -C marketplace rev-parse "${RELEASE_TAG}^{commit}:plugins/unica")"
+            staged_tree="$(git -C marketplace rev-parse "${STAGING_SHA}:plugins/unica")"
+            test "$tagged_tree" = "$staged_tree"
+            exit 0
+          fi
+          # The tag names the staging commit, which already carries the plugin
+          # bytes and exists before the catalog moves. The signed source tag in
+          # the source repository is the human approval; this one is the anchor
+          # the catalog resolves.
+          git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
+            tag -a "$RELEASE_TAG" "$STAGING_SHA" -m "Unica ${RELEASE_TAG}"
+          git -C marketplace push origin "refs/tags/${RELEASE_TAG}"
+
+  verify-fresh-install:
+    needs: [stage, tag]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: darwin-arm64
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: windows-2022
+            target: win-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
+      STAGING_SHA: ${{ needs.stage.outputs.staging_sha }}
+      SOURCE_RUN_ID: ${{ needs.stage.outputs.source_run_id }}
+    steps:
+      - name: Materialize the candidate marketplace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/IngvarConsulting/unica-marketplace.git candidate
+          git -C candidate fetch --tags origin
+          git -C candidate checkout --detach "$STAGING_SHA"
+      - name: Download the candidate catalog
+        shell: bash
+        env:
+          DOWNLOAD_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
+        run: |
+          GH_TOKEN="$DOWNLOAD_TOKEN" gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
+          mkdir -p candidate/.agents/plugins candidate/.claude-plugin
+          cp payload/.agents/plugins/marketplace.json candidate/.agents/plugins/marketplace.json
+          cp payload/.claude-plugin/marketplace.json candidate/.claude-plugin/marketplace.json
+      - name: Install the current locked Codex CLI
+        uses: IngvarConsulting/unica-marketplace/.github/actions/setup-locked-codex@main
+        with:
+          profile: current
+          target: ${{ matrix.target }}
+          codex-home: ${{ runner.temp }}/codex-home
+      - name: Install from the candidate catalog and verify MCP
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TARGET -eq 'win-x64') {
+            $env:PATH = "$env:CODEX_BIN_DIR;$env:SystemRoot\System32;$env:SystemRoot;$env:ProgramFiles\Git\cmd"
+          } else {
+            $env:PATH = "$env:CODEX_BIN_DIR`:/usr/bin:/bin"
+          }
+          if (Get-Command node -ErrorAction SilentlyContinue) { throw 'Node.js leaked into the consumer PATH' }
+          $expected = $env:RELEASE_TAG.TrimStart('v')
+          $candidate = Join-Path $env:GITHUB_WORKSPACE 'candidate'
+          & $env:CODEX_BIN plugin marketplace add $candidate --json
+          & $env:CODEX_BIN plugin add unica@unica --json
+          $state = (& $env:CODEX_BIN plugin list --available --json) | ConvertFrom-Json
+          $found = @($state.installed | Where-Object {
+            $_.pluginId -eq 'unica@unica' -and $_.version -eq $expected
+          })
+          if ($found.Count -ne 1) { throw "Expected exactly one installed unica@unica $expected" }
+          $installed = Get-ChildItem -LiteralPath $env:CODEX_HOME -Filter runtime-manifest.json -Recurse -File |
+            Select-Object -First 1
+          if (-not $installed) { throw 'Codex did not install the Unica package' }
+          $pluginRoot = $installed.Directory.FullName
+          $executable = if ($env:TARGET -eq 'win-x64') { 'unica-bootstrap.exe' } else { 'unica-bootstrap' }
+          $bootstrap = Join-Path $pluginRoot "bootstrap/bin/$env:TARGET/$executable"
+          if ($env:TARGET -ne 'win-x64') { chmod +x $bootstrap }
+          & $bootstrap verify --plugin-root $pluginRoot
+
+  verify-upgrade:
+    needs: [stage, tag]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: darwin-arm64
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: windows-2022
+            target: win-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
+      STAGING_SHA: ${{ needs.stage.outputs.staging_sha }}
+      SOURCE_RUN_ID: ${{ needs.stage.outputs.source_run_id }}
+    steps:
+      - name: Materialize the candidate marketplace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/IngvarConsulting/unica-marketplace.git candidate
+          git -C candidate fetch --tags origin
+          git -C candidate checkout --detach "$STAGING_SHA"
+      - name: Install the current locked Codex CLI
+        uses: IngvarConsulting/unica-marketplace/.github/actions/setup-locked-codex@main
+        with:
+          profile: current
+          target: ${{ matrix.target }}
+          codex-home: ${{ runner.temp }}/codex-home
+      - name: Install the previous stable from the staged tree
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TARGET -eq 'win-x64') {
+            $env:PATH = "$env:CODEX_BIN_DIR;$env:SystemRoot\System32;$env:SystemRoot;$env:ProgramFiles\Git\cmd"
+          } else {
+            $env:PATH = "$env:CODEX_BIN_DIR`:/usr/bin:/bin"
+          }
+          if (Get-Command node -ErrorAction SilentlyContinue) { throw 'Node.js leaked into the consumer PATH' }
+          # The staging commit still carries the previous catalog: the payload
+          # replaced plugins/unica only. Installing from it seeds exactly the
+          # version a real consumer holds before this release.
+          $candidate = Join-Path $env:GITHUB_WORKSPACE 'candidate'
+          & $env:CODEX_BIN plugin marketplace add $candidate --json
+          & $env:CODEX_BIN plugin add unica@unica --json
+      - name: Download the candidate catalog
+        shell: bash
+        env:
+          DOWNLOAD_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
+        run: |
+          GH_TOKEN="$DOWNLOAD_TOKEN" gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
+          mkdir -p candidate/.agents/plugins candidate/.claude-plugin
+          cp payload/.agents/plugins/marketplace.json candidate/.agents/plugins/marketplace.json
+          cp payload/.claude-plugin/marketplace.json candidate/.claude-plugin/marketplace.json
+      - name: Upgrade to the candidate and verify MCP
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TARGET -eq 'win-x64') {
+            $env:PATH = "$env:CODEX_BIN_DIR;$env:SystemRoot\System32;$env:SystemRoot;$env:ProgramFiles\Git\cmd"
+          } else {
+            $env:PATH = "$env:CODEX_BIN_DIR`:/usr/bin:/bin"
+          }
+          if (Get-Command node -ErrorAction SilentlyContinue) { throw 'Node.js leaked into the consumer PATH' }
+          $expected = $env:RELEASE_TAG.TrimStart('v')
+          & $env:CODEX_BIN plugin marketplace upgrade unica --json
+          $state = (& $env:CODEX_BIN plugin list --available --json) | ConvertFrom-Json
+          $found = @($state.installed | Where-Object {
+            $_.pluginId -eq 'unica@unica' -and $_.version -eq $expected
+          })
+          if ($found.Count -ne 1) { throw "Expected exactly one installed unica@unica $expected after upgrade" }
+          $installed = Get-ChildItem -LiteralPath $env:CODEX_HOME -Filter runtime-manifest.json -Recurse -File |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $installed) { throw 'Codex did not install the upgraded Unica package' }
+          $pluginRoot = $installed.Directory.FullName
+          $executable = if ($env:TARGET -eq 'win-x64') { 'unica-bootstrap.exe' } else { 'unica-bootstrap' }
+          $bootstrap = Join-Path $pluginRoot "bootstrap/bin/$env:TARGET/$executable"
+          if ($env:TARGET -ne 'win-x64') { chmod +x $bootstrap }
+          & $bootstrap verify --plugin-root $pluginRoot
+
+  promote:
+    # The single commit point (ADR-0008): consumers see nothing until this job
+    # moves the catalog, and it runs only behind green consumer installs.
+    needs: [stage, tag, verify-fresh-install, verify-upgrade]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
+      RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
+      SOURCE_RUN_ID: ${{ needs.stage.outputs.source_run_id }}
+    steps:
+      - name: Require explicit cross-repository credential
+        run: test -n "$GH_TOKEN"
+      - name: Configure Git credentials
+        run: gh auth setup-git
+      - name: Download the candidate catalog
+        run: |
+          gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
+          test -f payload/.agents/plugins/marketplace.json
+          test -f payload/.claude-plugin/marketplace.json
+      - name: Move both host catalogs to the published tag
+        run: |
+          set -euo pipefail
+          gh repo clone IngvarConsulting/unica-marketplace marketplace
           mkdir -p marketplace/.agents/plugins marketplace/.claude-plugin
           cp payload/.agents/plugins/marketplace.json marketplace/.agents/plugins/marketplace.json
           cp payload/.claude-plugin/marketplace.json marketplace/.claude-plugin/marketplace.json
           git -C marketplace add .agents/plugins/marketplace.json .claude-plugin/marketplace.json
+          if git -C marketplace diff --cached --quiet; then
+            echo "catalog already serves ${RELEASE_TAG}"
+            exit 0
+          fi
           git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
             commit -m "promote: Unica ${RELEASE_TAG}"
-          git -C marketplace push -u origin "$branch"
-          # The tag has to carry the plugin bytes, and the staging merge already
-          # does. Naming the promotion commit instead would demand a tag on a
-          # commit that does not exist until this step has run, which left the
-          # consumer install checks failing on their first run every release.
-          gh pr create --repo IngvarConsulting/unica-marketplace --head "$branch" --base main \
-            --title "Promote Unica ${RELEASE_TAG}" \
-            --body "Points the stable catalog at ${RELEASE_TAG}. Publish the signed ${RELEASE_TAG} tag at the staging merge commit ${STAGING_MERGE_SHA} before merging this PR; until it exists the consumer install checks cannot resolve the catalog ref. See docs/release-runbook.md."
+          if ! git -C marketplace push origin HEAD:main; then
+            git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
+              pull --rebase origin main
+            git -C marketplace push origin HEAD:main
+          fi
