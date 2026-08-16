@@ -11,6 +11,7 @@ The state machine is deliberately small:
 
     catalog ref == latest release      -> nothing in flight
     staging pull request, all green    -> merge it, then ask for promotion
+    promotion red, tag now exists      -> rerun the failed checks, once
     promotion pull request, all green  -> merge it, the release goes live
     anything else                      -> report what is being waited on
 
@@ -19,6 +20,12 @@ marketplace tag exists, because its checks install through the catalog ref, so
 merging on green keeps the tag as the human approval rather than bypassing it.
 The marketplace default branch has no protection rules, so the greenness check
 here is the only gate and must never be relaxed.
+
+The rerun exists because a tag push re-triggers nothing on the pull request:
+the checks that failed before the tag stay failed on their own, and the release
+would stall right after the human's approval. One rerun is enough — a failure
+on a later attempt cannot be explained by the missing tag, so it is an alert,
+not another retry.
 """
 
 from __future__ import annotations
@@ -75,16 +82,24 @@ class PullRequest:
 
 
 @dataclass(frozen=True)
+class WorkflowRun:
+    id: int
+    attempt: int
+
+
+@dataclass(frozen=True)
 class ReleaseState:
     latest_release: str | None
     catalog_ref: str | None
     stage_pr: PullRequest | None = None
     promote_pr: PullRequest | None = None
+    marketplace_tag_exists: bool = False
+    promotion_checks_run: WorkflowRun | None = None
 
 
 @dataclass(frozen=True)
 class Action:
-    kind: str  # noop | merge-stage | merge-promote | wait | alert
+    kind: str  # noop | merge-stage | merge-promote | kick-promotion | wait | alert
     detail: str
     pull_request: int | None = None
     context: dict[str, str] = field(default_factory=dict)
@@ -126,6 +141,28 @@ def decide(state: ReleaseState) -> Action:
         if blocking:
             # The install checks resolve the catalog ref, so they cannot pass
             # before the marketplace tag is published. That is the human gate.
+            pending = any(item.endswith(": pending") for item in blocking)
+            if state.marketplace_tag_exists and not pending:
+                # A tag push re-triggers nothing on the pull request, so a
+                # failure observed before the tag existed stays red on its own.
+                # The first rerun is the warden's to make; a failure on a later
+                # attempt cannot be explained by the missing tag and retrying
+                # it would only hide a broken install path.
+                run = state.promotion_checks_run
+                if run is not None and run.attempt == 1:
+                    return Action(
+                        "kick-promotion",
+                        f"the {promote.release_tag} tag exists, rerunning the failed "
+                        f"promotion checks: {', '.join(blocking)}",
+                        promote.number,
+                        {"run_id": str(run.id)},
+                    )
+                return Action(
+                    "alert",
+                    f"promotion checks failed although the {promote.release_tag} tag "
+                    f"exists: {', '.join(blocking)}",
+                    promote.number,
+                )
             return Action(
                 "wait",
                 f"promotion is waiting for the {promote.release_tag} tag or a green run: "
@@ -234,7 +271,47 @@ def observe() -> ReleaseState:
         elif PROMOTE_BRANCH.match(pull.branch):
             promote_pr = pull
 
-    return ReleaseState(latest, catalog_ref, stage_pr, promote_pr)
+    marketplace_tag_exists = False
+    promotion_checks_run = None
+    if promote_pr is not None and promote_pr.release_tag:
+        probe = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{MARKETPLACE}/git/ref/tags/{promote_pr.release_tag}",
+                "--silent",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        marketplace_tag_exists = probe.returncode == 0
+        runs = gh_json(
+            [
+                "run",
+                "list",
+                "--repo",
+                MARKETPLACE,
+                "--branch",
+                promote_pr.branch,
+                "--limit",
+                "1",
+                "--json",
+                "databaseId,attempt",
+            ]
+        )
+        if runs:
+            promotion_checks_run = WorkflowRun(
+                id=runs[0]["databaseId"], attempt=runs[0].get("attempt") or 1
+            )
+
+    return ReleaseState(
+        latest,
+        catalog_ref,
+        stage_pr,
+        promote_pr,
+        marketplace_tag_exists=marketplace_tag_exists,
+        promotion_checks_run=promotion_checks_run,
+    )
 
 
 def apply(action: Action, *, dry_run: bool) -> None:
@@ -278,6 +355,19 @@ def apply(action: Action, *, dry_run: bool) -> None:
     elif action.kind == "merge-promote":
         subprocess.run(
             ["gh", "pr", "merge", str(action.pull_request), "--repo", MARKETPLACE, "--merge"],
+            check=True,
+        )
+    elif action.kind == "kick-promotion":
+        subprocess.run(
+            [
+                "gh",
+                "run",
+                "rerun",
+                action.context["run_id"],
+                "--failed",
+                "--repo",
+                MARKETPLACE,
+            ],
             check=True,
         )
 

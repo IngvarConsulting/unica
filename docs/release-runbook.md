@@ -38,10 +38,13 @@ gate: nothing reaches consumers until it exists.
 
 **Release Warden** (`.github/workflows/release-warden.yml`) advances the release
 whenever it can. It runs every 20 minutes, merges the staging pull request once
-its checks are green, asks for the promotion, and merges the promotion once its
+its checks are green, asks for the promotion, reruns the failed promotion
+checks once it sees the marketplace tag, and merges the promotion once its
 checks are green. It cannot skip the tag: the promotion checks install through
 the catalog ref, so they stay red until the tag is published, which keeps the tag
-as the approval rather than a formality.
+as the approval rather than a formality. The rerun happens once — a failure on
+a second attempt with the tag in place is a real defect and surfaces as an
+alert instead of another retry.
 
 That leaves two actions, both tags:
 
@@ -178,8 +181,9 @@ merge itself. Run it by hand only if the warden is disabled or failing.
 
 Order differs between the two paths, and both are fine. By hand, tagging first
 means the promotion pull request is green on its first run. The warden opens it
-as soon as staging lands, so it sits red until you publish the tag and then goes
-green on the next run. Either way nothing merges before the tag exists.
+as soon as staging lands, so it sits red until you publish the tag; on its next
+cycle the warden notices the tag and reruns the failed checks itself. Either
+way nothing merges before the tag exists.
 
 ```bash
 gh workflow run publish-unica-marketplace.yml --repo IngvarConsulting/unica \
@@ -301,7 +305,7 @@ Protecting tags in the marketplace repository removes the first cause outright.
 
 | Symptom | Cause | Action |
 | --- | --- | --- |
-| Promotion checks fail with `pathspec 'vX.Y.Z' did not match any file(s)` | The marketplace tag is missing | Do step 4, then `gh run rerun <run-id> --failed` |
+| Promotion checks fail with `pathspec 'vX.Y.Z' did not match any file(s)` | The marketplace tag is missing | Do step 4; the warden reruns the failed checks on its next cycle. `gh run rerun <run-id> --failed` only if you want it sooner |
 | `regression-policy` reports `consumer-fresh-install is required but concluded failure` | Aggregate gate reflecting the row above | Same as above |
 | Packaging fails with `release tag ... != ...` | Step 0 missed the workflow `RELEASE_TAG` fallback | Bump it and re-run |
 | Scheduled warden run fails with `release is stalled` | A published release nothing is serving, and nothing open to advance | Finish the release, or mark it a prerelease if it was abandoned |
