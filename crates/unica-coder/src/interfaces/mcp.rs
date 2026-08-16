@@ -2034,12 +2034,16 @@ mod tests {
 
     #[test]
     fn eof_cleanup_shares_one_aggregate_grace_between_calls_and_provider_workers() {
-        // The call is released by a channel rather than by a sleep, and the
-        // budget is compared against the *measured* time the call stayed
-        // tracked. A loaded runner moves both sides of that comparison
-        // together, so the aggregate grace only has to outlast the test, not
-        // the scheduler.
-        const AGGREGATE_GRACE: Duration = Duration::from_secs(30);
+        // The tracked call outlives the whole grace: its release is only
+        // published after the drain has returned, so the call phase provably
+        // consumes the entire aggregate budget and provider cleanup must be
+        // handed exactly the remainder — zero. A drain that granted provider
+        // cleanup a fresh grace would hand over the full `AGGREGATE_GRACE`
+        // instead. Every assertion below rests on event ordering alone
+        // (channels and thread joins), never on wall-clock measurements, so
+        // scheduler delays on a loaded runner stretch the test but can never
+        // flip a comparison.
+        const AGGREGATE_GRACE: Duration = Duration::from_millis(200);
 
         let registry = Arc::new(InFlightRegistry::default());
         let guard = registry.admit().unwrap();
@@ -2065,32 +2069,34 @@ mod tests {
             (drained, provider_budget)
         });
 
-        // Cancellation only reaches the call from inside the drain, so the
-        // deadline was already running when this arrives: everything measured
-        // from here is budget the call spent before provider cleanup starts.
+        // Liveness handshake, deliberately not bounded by the grace: it only
+        // proves the drain cancelled the tracked call, so the zero remainder
+        // below is the shared deadline at work and not an idle registry.
         cancelled_rx
-            .recv_timeout(AGGREGATE_GRACE)
-            .expect("cancellation did not reach the tracked call within the aggregate grace");
-        let held_since = Instant::now();
-        std::thread::sleep(Duration::from_millis(20));
-        // Sampled *before* the release is published, so `held` is a strict
-        // sub-interval of what the drain observes. Sampling after the send
-        // charges this thread's own scheduling delay to `held` while the drain
-        // never sees it, and a loaded runner then inverts the comparison.
-        let held = held_since.elapsed();
-        release_tx.send(()).unwrap();
+            .recv_timeout(4 * TEST_STEP)
+            .expect("cancellation did not reach the tracked call");
 
+        // Joining before the release is the point of the test: the call is
+        // still tracked for the drain's whole lifetime, purely by ordering.
         let (drained, provider_budget) = drain_thread.join().unwrap();
         assert!(
-            drained,
-            "the drain gave up while the call was still tracked"
+            !drained,
+            "the drain reported success while the call was still tracked"
         );
-        assert!(
-            provider_budget.unwrap() <= AGGREGATE_GRACE.saturating_sub(held),
+        assert_eq!(
+            provider_budget,
+            Some(Duration::ZERO),
             "provider cleanup received a fresh grace instead of the aggregate remainder"
         );
 
+        // The call still cleans up after the grace expired; the registry must
+        // come back to idle once the release is published.
+        release_tx.send(()).unwrap();
         guard_thread.join().unwrap();
+        assert!(
+            registry.wait_idle(Duration::ZERO),
+            "the released call did not leave the in-flight registry"
+        );
     }
 
     #[tokio::test]
