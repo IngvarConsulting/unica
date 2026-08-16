@@ -407,6 +407,18 @@ mod macos {
                 if !path_is_within(path, &state.source_root) {
                     continue;
                 }
+                let Some(relative) = relative_path_bytes(path, &state.source_root) else {
+                    state.trust_loss.store(WATCHER_GAP, Ordering::Release);
+                    continue;
+                };
+                // The manifest scanner prunes the generated directory, so the
+                // fence has to prune it as well. Unica writes its own caches
+                // there — index databases, service records, revision records —
+                // and without this the tool's own writes read as source
+                // changes and the reconcile never stabilizes.
+                if is_within_generated_dir(relative) {
+                    continue;
+                }
                 if flags & kFSEventStreamEventFlagItemIsDir != 0
                     || flags
                         & (kFSEventStreamEventFlagItemIsFile | kFSEventStreamEventFlagItemIsSymlink)
@@ -415,10 +427,6 @@ mod macos {
                     state.trust_loss.store(WATCHER_GAP, Ordering::Release);
                     continue;
                 }
-                let Some(relative) = relative_path_bytes(path, &state.source_root) else {
-                    state.trust_loss.store(WATCHER_GAP, Ordering::Release);
-                    continue;
-                };
                 state
                     .changed_paths
                     .lock()
@@ -426,6 +434,12 @@ mod macos {
                     .insert(PathBuf::from(OsString::from_vec(relative.to_vec())));
             }
         });
+    }
+
+    fn is_within_generated_dir(relative: &[u8]) -> bool {
+        relative.split(|byte| *byte == b'/').any(|component| {
+            component == crate::infrastructure::source_roots::GENERATED_DIR_NAME.as_bytes()
+        })
     }
 
     fn relative_path_bytes<'a>(path: &'a [u8], root: &[u8]) -> Option<&'a [u8]> {
@@ -530,5 +544,63 @@ mod tests {
                 "a delayed event for an older marker must not satisfy the next fence"
             );
         }
+    }
+
+    #[test]
+    fn macos_fsevents_flush_ignores_writes_inside_the_generated_directory() {
+        let root = tempdir().unwrap();
+        let cache = root.path().join(".build/unica");
+        fs::create_dir_all(&cache).unwrap();
+        let module = root.path().join("Module.bsl");
+        fs::write(&module, "Процедура A()\n").unwrap();
+        let fence = platform_fence(root.path(), &cache).unwrap();
+        if fence.capability() != FenceCapability::ProvenFast {
+            return;
+        }
+        fence
+            .flush(
+                ProviderDeadline::from_budget(Duration::from_secs(2)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        // Unica writes its own caches under `<source root>/.build`, and the
+        // manifest scanner prunes that directory. The fence has to prune it
+        // too: otherwise every index or service write reads as a source
+        // change and the reconcile never stabilizes.
+        fs::create_dir_all(cache.join("caches/rlm-bsl/index-v15")).unwrap();
+        fs::write(
+            cache.join("caches/rlm-bsl/index-v15/bsl_index_status.json"),
+            "{\"status\":\"ready\"}",
+        )
+        .unwrap();
+        let outcome = fence
+            .flush(
+                ProviderDeadline::from_budget(Duration::from_secs(2)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FenceOutcome::Proven {
+                changed_paths: Vec::new()
+            },
+            "generated-directory writes must not perturb the source revision fence"
+        );
+
+        fs::write(&module, "Процедура B()\n").unwrap();
+        let outcome = fence
+            .flush(
+                ProviderDeadline::from_budget(Duration::from_secs(2)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FenceOutcome::Proven {
+                changed_paths: vec![PathBuf::from("Module.bsl")]
+            },
+            "pruning the generated directory must not blind the fence to source writes"
+        );
     }
 }

@@ -7,6 +7,9 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::source_revision_fence::{
     platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
 };
+// The corpus scan and the platform fence must prune the same directory: a
+// fence that reports what the manifest ignores can never converge.
+use crate::infrastructure::source_roots::GENERATED_DIR_NAME;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -19,7 +22,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-const GENERATED_DIR_NAME: &str = ".build";
 const MAX_SOURCE_DEPTH: usize = 64;
 const REVISION_RECORD_SCHEMA_VERSION: u32 = 2;
 
