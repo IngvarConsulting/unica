@@ -21,6 +21,14 @@ on:
 permissions:
   contents: read
 
+# Two releases publishing at once could interleave their catalog writes, so
+# runs queue instead. Cancelling would abandon a publication half-way; the
+# later release simply waits its turn and the monotonicity guards below make
+# a stale straggler fail instead of rolling the catalog back.
+concurrency:
+  group: publish-unica-marketplace
+  cancel-in-progress: false
+
 jobs:
   stage:
     # Publishing targets the IngvarConsulting marketplace and needs the shared
@@ -63,11 +71,32 @@ jobs:
           echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+      - name: Require the payload to come from its own tag's successful build
+        run: |
+          set -euo pipefail
+          # A dispatch caller could name any run holding a compatible artifact.
+          # The artifact is only trusted when it was produced by the successful
+          # push build of the very tag its manifest declares — the signed
+          # source tag is the human approval, and this binds the payload to it.
+          run_name="$(gh api "repos/IngvarConsulting/unica/actions/runs/${SOURCE_RUN_ID}" --jq .name)"
+          run_event="$(gh api "repos/IngvarConsulting/unica/actions/runs/${SOURCE_RUN_ID}" --jq .event)"
+          run_conclusion="$(gh api "repos/IngvarConsulting/unica/actions/runs/${SOURCE_RUN_ID}" --jq .conclusion)"
+          run_branch="$(gh api "repos/IngvarConsulting/unica/actions/runs/${SOURCE_RUN_ID}" --jq .head_branch)"
+          test "$run_name" = "Build Unica Codex Plugin"
+          test "$run_event" = "push"
+          test "$run_conclusion" = "success"
+          test "$run_branch" = "$RELEASE_TAG"
+          gh api "repos/IngvarConsulting/unica/git/ref/tags/${RELEASE_TAG}" --silent
       - name: Push the staged payload without changing the stable catalog
         id: push
         run: |
           set -euo pipefail
           gh repo clone IngvarConsulting/unica-marketplace marketplace
+          # A rerun of an old release after a newer one is live must fail here,
+          # not roll the branch back: the catalog only ever moves forward.
+          current_ref="$(sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' marketplace/.agents/plugins/marketplace.json | head -n 1)"
+          newest="$(printf '%s\n%s\n' "$current_ref" "$RELEASE_TAG" | sort -V | tail -n 1)"
+          test "$newest" = "$RELEASE_TAG"
           rm -rf marketplace/plugins/unica
           mkdir -p marketplace/plugins
           cp -R payload/plugins/unica marketplace/plugins/unica
@@ -309,6 +338,11 @@ jobs:
         run: |
           set -euo pipefail
           gh repo clone IngvarConsulting/unica-marketplace marketplace
+          # The same forward-only guard as staging: a stale run that lost the
+          # race to a newer release fails instead of serving a rollback.
+          current_ref="$(sed -n 's/.*"ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' marketplace/.agents/plugins/marketplace.json | head -n 1)"
+          newest="$(printf '%s\n%s\n' "$current_ref" "$RELEASE_TAG" | sort -V | tail -n 1)"
+          test "$newest" = "$RELEASE_TAG"
           mkdir -p marketplace/.agents/plugins marketplace/.claude-plugin
           cp payload/.agents/plugins/marketplace.json marketplace/.agents/plugins/marketplace.json
           cp payload/.claude-plugin/marketplace.json marketplace/.claude-plugin/marketplace.json
