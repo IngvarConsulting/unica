@@ -630,13 +630,78 @@ def ci_invocations() -> str:
     return "\n".join(blobs)
 
 
-def decision_numbers_on_disk() -> set[str]:
-    numbers = set()
-    for path in DECISIONS_DIR.glob("*.md"):
+def relative_to_repo(path: Path) -> str:
+    """Render a path the way a reader will look it up.
+
+    Fixture catalogues live outside the repository, so their claimants are
+    reported by absolute path rather than not at all.
+    """
+    if path.is_relative_to(REPO_ROOT):
+        return path.relative_to(REPO_ROOT).as_posix()
+    return path.as_posix()
+
+
+def decision_number_claims(directory: Path = DECISIONS_DIR) -> dict[str, list[Path]]:
+    """Which decision files claim each ADR number, in file-name order.
+
+    The claims stay a list on purpose. `ADR-NNNN` is the stable identity a
+    reader cites, so two files sharing a number are two records claiming one
+    identity — and a scan that collapses file names into a set of numbers
+    cannot represent that collision, let alone report it.
+    """
+    claims: dict[str, list[Path]] = {}
+    for path in sorted(directory.glob("*.md")):
         match = ADR_FILE.match(path.name)
         if match:
-            numbers.add(match.group("number"))
-    return numbers
+            claims.setdefault(match.group("number"), []).append(path)
+    return claims
+
+
+def decision_numbers_on_disk(directory: Path = DECISIONS_DIR) -> set[str]:
+    return set(decision_number_claims(directory))
+
+
+def indexed_decision_claims(index: Path = DECISIONS_INDEX) -> dict[str, set[str]]:
+    """Which decision file names the index links, keyed by claimed number."""
+    claims: dict[str, set[str]] = {}
+    for target in MARKDOWN_LINK.findall(index.read_text(encoding="utf-8")):
+        match = ADR_FILE.match(Path(target).name)
+        if match:
+            claims.setdefault(match.group("number"), set()).add(Path(target).name)
+    return claims
+
+
+def decision_catalogue_offenders(
+    directory: Path = DECISIONS_DIR, index: Path = DECISIONS_INDEX
+) -> list[str]:
+    """Everything wrong with the identity bookkeeping of the decision catalogue."""
+    disk_claims = decision_number_claims(directory)
+    index_claims = indexed_decision_claims(index)
+    offenders: list[str] = []
+    # Uniqueness is proven on the raw claims, before the set conversion below:
+    # a set of numbers is exactly the representation under which two 0056
+    # files looked like one record and the collision passed CI silently.
+    for number, paths in sorted(disk_claims.items()):
+        if len(paths) > 1:
+            offenders.append(
+                f"ADR-{number} is claimed by {len(paths)} records: "
+                + ", ".join(relative_to_repo(path) for path in paths)
+            )
+    for number, names in sorted(index_claims.items()):
+        if len(names) > 1:
+            offenders.append(
+                f"{relative_to_repo(index)} links ADR-{number} as "
+                f"{len(names)} different files: " + ", ".join(sorted(names))
+            )
+    linked = set(index_claims)
+    on_disk = set(disk_claims)
+    for number in sorted(on_disk - linked):
+        offenders.append(f"{relative_to_repo(index)} does not link ADR-{number}")
+    for number in sorted(linked - on_disk):
+        offenders.append(
+            f"{relative_to_repo(index)} links ADR-{number} which has no file on disk"
+        )
+    return offenders
 
 
 class RegistryFormatTests(unittest.TestCase):
@@ -1476,17 +1541,11 @@ class LogicalSourceContractTests(unittest.TestCase):
 
 class IndexSynchronizationTests(unittest.TestCase):
     def test_decision_index_lists_exactly_the_records_on_disk(self) -> None:
-        index_text = DECISIONS_INDEX.read_text(encoding="utf-8")
-        linked = {
-            match.group("number")
-            for target in MARKDOWN_LINK.findall(index_text)
-            for match in [ADR_FILE.match(Path(target).name)]
-            if match
-        }
         self.assertEqual(
-            linked,
-            decision_numbers_on_disk(),
-            "spec/decisions/README.md must link every decision record and nothing else",
+            decision_catalogue_offenders(),
+            [],
+            "spec/decisions/README.md must link every decision record and "
+            "nothing else, and one number must name exactly one record",
         )
 
     def test_no_architecture_document_enumerates_the_decision_records(self) -> None:
@@ -1511,6 +1570,75 @@ class IndexSynchronizationTests(unittest.TestCase):
                     "cite by ID and leave the list to spec/decisions/README.md"
                 )
         self.assertEqual(offenders, [])
+
+
+class DecisionNumberCollisionTests(unittest.TestCase):
+    """Two records claiming one ADR number must fail, naming both claimants.
+
+    While a branch was being updated from main, two `0056-*.md` files with
+    different decisions coexisted, both were linked from the index, and the
+    guardrail stayed silent: each scan collapsed file names into a set of
+    numbers before comparing, and a set cannot hold the same number twice.
+    Uniqueness therefore has to be proven on the raw claims, before any set
+    conversion.
+    """
+
+    def write_catalogue(
+        self, directory: Path, files: list[str], links: list[str]
+    ) -> Path:
+        for name in files:
+            (directory / name).write_text(f"# {name}\n", encoding="utf-8")
+        index = directory / "README.md"
+        index.write_text(
+            "# Реестр решений\n\n"
+            + "".join(f"- [{name}]({name})\n" for name in links),
+            encoding="utf-8",
+        )
+        return index
+
+    def test_two_files_claiming_one_number_are_reported_with_both_paths(self) -> None:
+        first = "0056-observable-code-search.md"
+        second = "0056-terminal-runtime-receipt.md"
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            index = self.write_catalogue(directory, [first, second], [first, second])
+            offenders = decision_catalogue_offenders(directory, index)
+            self.assertTrue(
+                offenders,
+                "a catalogue with two 0056 records passed the guardrail silently",
+            )
+            rendered = "\n".join(offenders)
+            self.assertIn("ADR-0056", rendered)
+            self.assertIn((directory / first).as_posix(), rendered)
+            self.assertIn((directory / second).as_posix(), rendered)
+
+    def test_index_linking_one_number_as_two_files_names_both_targets(self) -> None:
+        present = "0056-observable-code-search.md"
+        phantom = "0056-terminal-runtime-receipt.md"
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            index = self.write_catalogue(directory, [present], [present, phantom])
+            offenders = decision_catalogue_offenders(directory, index)
+            self.assertTrue(
+                offenders,
+                "an index claiming ADR-0056 with two file names passed silently",
+            )
+            rendered = "\n".join(offenders)
+            self.assertIn("ADR-0056", rendered)
+            self.assertIn(present, rendered)
+            self.assertIn(phantom, rendered)
+
+    def test_honest_catalogue_reports_nothing(self) -> None:
+        first = "0055-smoke-checks-packaged-runtime.md"
+        second = "0056-observable-code-search.md"
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            # The same file linked twice is a wording question for the index,
+            # not an identity collision: one number still names one record.
+            index = self.write_catalogue(
+                directory, [first, second], [first, second, second]
+            )
+            self.assertEqual(decision_catalogue_offenders(directory, index), [])
 
 
 class RuntimeArtifactFlowContractTests(unittest.TestCase):
