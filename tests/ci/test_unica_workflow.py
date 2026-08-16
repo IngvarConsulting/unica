@@ -312,9 +312,16 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertIn(f"timeout-minutes: {minutes}", job_block(release, job_id))
 
-        for job_id in ("stage", "promote"):
+        expected_publish_timeouts = {
+            "stage": 20,
+            "tag": 10,
+            "verify-fresh-install": 30,
+            "verify-upgrade": 30,
+            "promote": 10,
+        }
+        for job_id, minutes in expected_publish_timeouts.items():
             with self.subTest(job_id=job_id):
-                self.assertIn("timeout-minutes: 20", job_block(publish, job_id))
+                self.assertIn(f"timeout-minutes: {minutes}", job_block(publish, job_id))
 
     def test_platform_build_uses_exact_cargo_cache_and_reports_outcome(self) -> None:
         text = self.release_text()
@@ -514,33 +521,61 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertGreaterEqual(publish.count("gh auth setup-git"), 2)
 
-    def test_staging_and_promotion_are_explicit_separate_jobs(self) -> None:
+    def test_publication_is_one_linear_pass_ordered_by_needs(self) -> None:
+        """ADR-0068: stage → tag → verify → promote, no pull requests, no warden.
+
+        The order is the contract: the anchor tag exists before the install
+        checks run, and the catalog moves only behind their green result. A
+        rerun of the whole workflow resumes a partial publication, so every
+        stage states its idempotent escape.
+        """
         text = self.publish_text()
 
         self.assertIn("workflow_run:", text)
         self.assertIn("workflow_dispatch:", text)
-        self.assertIn("mode:", text)
-        self.assertIn("staging_merge_sha:", text)
-        self.assertIn("stage:", text)
-        self.assertIn("promote:", text)
-        self.assertIn("codex/stage-", text)
-        self.assertIn("codex/promote-", text)
-        self.assertIn('git -C marketplace merge-base --is-ancestor "$STAGING_MERGE_SHA" "origin/main"', text)
-        # The tag names the staging merge, which already carries the plugin bytes
-        # and exists before this job runs. The promotion commit does not, so
-        # naming it kept the consumer install checks red on their first run.
-        self.assertIn(
-            "tag at the staging merge commit ${STAGING_MERGE_SHA} before merging this PR",
-            text,
+        self.assertIn("source_run_id:", text)
+        for job in ("stage:", "tag:", "verify-fresh-install:", "verify-upgrade:", "promote:"):
+            self.assertIn(f"\n  {job}", text)
+        self.assertIn("needs: stage", text)
+        self.assertIn("needs: [stage, tag]", text)
+        self.assertIn("needs: [stage, tag, verify-fresh-install, verify-upgrade]", text)
+        # The PR ceremony is gone with the warden: nothing opens pull requests
+        # and no metadata travels in branch names.
+        self.assertNotIn("pr create", text)
+        self.assertNotIn("codex/stage-", text)
+        self.assertNotIn("codex/promote-", text)
+        self.assertNotIn("mode:", text)
+        # Idempotent escapes: a completed stage and a completed promote are
+        # detected, and an existing tag is proven identical, never moved.
+        self.assertEqual(text.count("diff --cached --quiet"), 2)
+        self.assertIn('rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}"', text)
+        self.assertNotIn("git tag -f", text)
+        self.assertNotIn("--force", text)
+        # Two releases must not interleave, and a stale straggler must fail
+        # forward-only instead of rolling the catalog back — in both writers,
+        # over both host catalogs, and again after a rebase retry in promote.
+        self.assertIn("group: publish-unica-marketplace", text)
+        self.assertIn("cancel-in-progress: false", text)
+        self.assertEqual(text.count("require_forward()"), 2)
+        self.assertEqual(text.count('test "$newest" = "$RELEASE_TAG"'), 2)
+        self.assertEqual(
+            text.count(".agents/plugins/marketplace.json .claude-plugin/marketplace.json"),
+            3,  # both guard loops and the promote `git add`
         )
-        self.assertNotIn("${promotion_sha}", text)
-        self.assertNotIn("git ls-remote", text)
-        self.assertNotIn('"refs/tags/${RELEASE_TAG}^{}"', text)
+        self.assertIn('require_forward "HEAD~1"', text)
+        # The payload is trusted only from the successful push build of the
+        # very tag its manifest declares — dispatch cannot smuggle another one.
+        self.assertIn('test "$run_event" = "push"', text)
+        self.assertIn('test "$run_branch" = "$RELEASE_TAG"', text)
+        self.assertIn('gh api "repos/IngvarConsulting/unica/git/ref/tags/${RELEASE_TAG}" --silent', text)
         self.assertIn("payload/plugins/unica/.codex-plugin/plugin.json", text)
         self.assertIn("payload/plugins/unica/.mcp.json", text)
         self.assertIn("payload/.agents/plugins/marketplace.json", text)
-        self.assertNotIn("git tag -f", text)
-        self.assertNotIn("--force", text)
+        # Consumer verification installs the candidate the way a consumer does,
+        # on every supported host, before the catalog moves.
+        self.assertEqual(text.count("plugin marketplace add $candidate --json"), 2)
+        self.assertIn("plugin marketplace upgrade unica", text)
+        self.assertIn("verify --plugin-root $pluginRoot", text)
 
 
 if __name__ == "__main__":

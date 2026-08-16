@@ -9,17 +9,13 @@ argument-hint: [version, for example v0.9.2]
 Follow [docs/release-runbook.md](../../../docs/release-runbook.md). It is the
 authoritative procedure; do not improvise an order.
 
-## Most of it is automated
+## One human action, one pipeline
 
-Release Warden merges the staging pull request, requests the promotion, and
-merges the promotion, each once its checks are green. The user's part is two
-tags: the source release tag and the marketplace tag. Before doing any of those
-steps by hand, check whether the warden is simply about to do it:
-
-```bash
-gh workflow run release-warden.yml --repo IngvarConsulting/unica -f dry_run=true
-gh run list --workflow "Release Warden" --repo IngvarConsulting/unica --limit 3
-```
+The user's part is a single signed source tag. Its push builds the release, and
+the successful build starts **Publish Unica Marketplace** on its own:
+stage → tag → verify → promote, with the catalog moving only behind green
+consumer install checks (ADR-0068). There are no pull requests to merge and no
+scheduler to wait for.
 
 ## Before anything
 
@@ -30,41 +26,52 @@ first unfinished step:
 ```bash
 version=vX.Y.Z   # the version the user named, if they named one
 gh release view "$version" --repo IngvarConsulting/unica --json tagName,isPrerelease
+gh run list --workflow "Publish Unica Marketplace" --repo IngvarConsulting/unica --limit 3 \
+  --json databaseId,status,conclusion
 gh api "repos/IngvarConsulting/unica-marketplace/git/ref/tags/$version" || echo "no marketplace tag yet"
-gh pr list --repo IngvarConsulting/unica-marketplace --state open
 gh api repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/marketplace.json \
   --jq '.content' | base64 -d | grep '"ref"'
 ```
 
-If the user named a version, act on that one and stop if the open pull requests
-belong to a different version — resuming the wrong release is worse than asking.
-Without a named version, take the newest release that is not a prerelease.
+If the user named a version, act on that one. Without a named version, take the
+newest release that is not a prerelease.
 
-A source release whose tag is newer than the catalog `ref` means the release is
-live for nobody. That is the common stall, and it is silent.
+A source release newer than the catalog `ref` with no publish run in flight
+means the pipeline did not finish: find its failed run and rerun it — every
+stage is idempotent, a rerun resumes the publication:
+
+```bash
+gh run rerun <publish-run-id> --failed
+```
+
+If the `workflow_run` trigger was missed entirely, dispatch the pipeline with
+the build's run id:
+
+```bash
+gh workflow run publish-unica-marketplace.yml --repo IngvarConsulting/unica \
+  -f source_run_id=<build-run-id>
+```
 
 ## When something goes wrong
 
-Only the promotion merge is visible to consumers, so nothing before it needs
-undoing on their behalf. What cleanup is required depends on how far the release
-got, and the runbook's abort table is per step: closing a pull request is enough
-only while one is open, whereas a merged staging commit may need reverting and a
-published tag is left alone.
+Only the catalog commit is visible to consumers, so nothing before it needs
+undoing on their behalf. A pipeline that failed before promote left the catalog
+untouched; fix the cause and rerun, or abandon the version.
 
 Once assets are published the version is burnt. Never re-cut it with different
-bytes; take the next patch, and mark the abandoned release a prerelease so the
-warden stops reporting it as stalled. Rolling back a live release is a revert of
-the promotion commit, which is safe because published bytes never move.
+bytes; take the next patch, and mark the abandoned release a prerelease.
+Rolling back a live release is a revert of the promotion commit, which is safe
+because published bytes never move.
 
 ## Rules
 
 - Never move or delete a published tag, and never force-push the marketplace
   default branch. A catalog naming a missing tag breaks every install, and it is
   the only genuinely corrupt state this process can reach.
-- Tag the staging merge commit, not the promotion commit. The promotion pull
-  request cannot go green before that tag exists.
-- Stop and ask before merging anything in `unica-marketplace` or creating a tag.
-  Those are the publishing steps and they are the user's call.
+- Never point the catalog at a tag by hand: the promote job is the catalog's
+  only writer, and it runs only behind green install checks.
+- Stop and ask before creating the source tag or dispatching the publish
+  pipeline by hand. Those are the publishing steps and they are the user's call.
 - Signing is the user's: the key is theirs and the passphrase must not be handled
   for them. If `gpg` fails with `Operation cancelled`, tell them to unlock it and
   give them the exact tag command to run.
