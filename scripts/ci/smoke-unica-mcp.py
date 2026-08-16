@@ -1798,15 +1798,19 @@ def _bsl_search_is_ready(payload: dict) -> bool:
         )
     bsl = sections[1]
     status = bsl.get("status")
-    diagnostics = bsl.get("diagnostics")
-    if status == "unavailable":
-        detail = json.dumps(diagnostics, ensure_ascii=False).lower()
-        if (
-            "not_ready" in detail
-            or "not ready" in detail
-            or "search index is being built" in detail
-        ):
+    # A still-building index is a typed fact: `timedOut` with a retryable
+    # `dependencyPending` termination. The prose in the diagnostics is for
+    # people; deciding retry from it is what previously let a permanent
+    # `unavailable` masquerade as a wait.
+    if status == "timedOut":
+        termination = bsl.get("termination")
+        code = termination.get("code") if isinstance(termination, dict) else None
+        if code == "dependencyPending" and termination.get("retryable") is True:
             return False
+        raise SystemExit(
+            f"Unica MCP bsl-analyzer timed out without a retryable dependency: {bsl}"
+        )
+    if status == "unavailable":
         raise SystemExit(f"Unica MCP bsl-analyzer is unavailable: {bsl}")
     if status != "ok":
         raise SystemExit(
