@@ -30,6 +30,8 @@ pub(crate) mod project_health;
 pub(crate) mod project_sources;
 pub(crate) mod redaction;
 pub(crate) mod rlm_navigation;
+pub(crate) mod runtime_build_fallback;
+pub(crate) mod runtime_build_preflight;
 pub(crate) mod runtime_jobs;
 pub(crate) mod source_revision;
 pub(crate) mod source_roots;
@@ -46,3 +48,6 @@ pub(crate) mod workspace_config;
 pub mod workspace_index;
 pub mod workspace_services;
 pub mod workspace_state;
+
+#[cfg(test)]
+pub(crate) static V8TR_CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

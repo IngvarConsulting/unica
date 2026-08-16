@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from contextlib import nullcontext
 import gc
 import importlib.util
@@ -116,6 +117,65 @@ class ProductContractTests(unittest.TestCase):
         self.assertEqual(
             errors,
             ["v8-runner partial-load contract: binary not found: /missing/v8-runner"],
+        )
+
+    def test_v8_runner_failed_partial_receipt_requires_exit_four_and_closed_shape(
+        self,
+    ) -> None:
+        module = load_contract_module()
+        validator = getattr(
+            module,
+            "validate_v8_runner_failed_partial_receipt",
+            None,
+        )
+        self.assertIsNotNone(validator)
+        message = (
+            "load failed for source-set 'main' with exit code 1; "
+            "platform log: rejected; platform log path: /tmp/out.log; "
+            "partial load list path: /tmp/partial.lst"
+        )
+        envelope = {
+            "ok": False,
+            "command": "build",
+            "duration_ms": 12,
+            "data": {
+                "ok": False,
+                "steps": [
+                    {
+                        "source_set": "main",
+                        "mode": {"partial": {"file_count": 1}},
+                        "ok": False,
+                        "message": f"platform error: {message}",
+                        "duration_ms": 0,
+                    }
+                ],
+                "duration_ms": 12,
+            },
+            "warnings": [],
+            "steps": [],
+            "error": {
+                "code": "platform_failure",
+                "kind": "platform",
+                "message": message,
+            },
+        }
+
+        self.assertEqual(validator(envelope, 4, "main"), [])
+        self.assertTrue(
+            any("exit code 4" in error for error in validator(envelope, 1, "main"))
+        )
+        invalid_duration = copy.deepcopy(envelope)
+        invalid_duration["data"]["steps"][0]["duration_ms"] = "0"
+        self.assertTrue(
+            any(
+                "duration_ms" in error
+                for error in validator(invalid_duration, 4, "main")
+            )
+        )
+        unknown_field = copy.deepcopy(envelope)
+        unknown_field["data"]["steps"][0]["mode"]["partial"]["unknown"] = True
+        self.assertTrue(
+            any("closed" in error for error in validator(unknown_field, 4, "main"))
         )
 
     def test_v8_runner_bounded_external_epf_result_accepts_exit_seven_artifacts(

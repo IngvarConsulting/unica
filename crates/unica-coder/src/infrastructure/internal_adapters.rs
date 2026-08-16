@@ -2,7 +2,7 @@ use crate::application::{
     AdapterOutcome, RuntimeJobAction, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
     DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
 };
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::operational_config::OperationalConfig;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
@@ -17,6 +17,9 @@ use crate::infrastructure::platform::{
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
+use crate::infrastructure::runtime_build_preflight::{
+    RuntimeBuildPreflight, RuntimeInvocationPlan,
+};
 use crate::infrastructure::runtime_jobs::{
     self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
 };
@@ -195,6 +198,13 @@ pub struct RuntimeJobAdapterOutcome {
 
 pub struct RuntimeJobAdapter;
 
+pub(crate) struct RuntimeInvocation<'a> {
+    pub(crate) tool_name: &'a str,
+    pub(crate) args: &'a Map<String, Value>,
+    pub(crate) context: &'a WorkspaceContext,
+    pub(crate) dry_run: bool,
+    pub(crate) mutating: bool,
+}
 pub struct BslAnalyzerMcpAdapter<'a> {
     runner: &'a dyn BslMcpRunner,
     process_runner: &'a dyn ProcessRunner,
@@ -361,6 +371,19 @@ impl<'a> CliAdapter<'a> {
     }
 }
 
+fn plan_runtime_invocation(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<RuntimeInvocationPlan, String> {
+    if args.get("operation").and_then(Value::as_str) == Some("build") {
+        validate_runtime_mapper_payload("build", args)?;
+    }
+    crate::infrastructure::runtime_build_preflight::plan_runtime_invocation(args, context)
+}
+fn merge_warnings(mut left: Vec<String>, right: Vec<String>) -> Vec<String> {
+    left.extend(right);
+    left
+}
 impl<'a> RuntimeAdapter<'a> {
     pub fn new() -> Self {
         Self {
@@ -413,24 +436,54 @@ impl<'a> RuntimeAdapter<'a> {
         mutating: bool,
         cancellation: &CancellationToken,
     ) -> Result<RuntimeAdapterOutcome, String> {
+        self.invoke_cancellable(
+            RuntimeInvocation {
+                tool_name,
+                args,
+                context,
+                dry_run,
+                mutating,
+            },
+            cancellation,
+        )
+    }
+
+    pub(crate) fn invoke_cancellable(
+        &self,
+        invocation: RuntimeInvocation<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<RuntimeAdapterOutcome, String> {
+        let RuntimeInvocation {
+            tool_name,
+            args,
+            context,
+            dry_run,
+            mutating,
+        } = invocation;
         if cancellation.is_cancelled() {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
                 format!("{tool_name} cancelled before adapter work"),
             )));
         }
-        reject_missing_client_mcp_extension(args, context)?;
+        let invocation = plan_runtime_invocation(args, context)?;
+        reject_missing_client_mcp_extension(&invocation.args, context)?;
         if let Some(outcome) = bind_external_processor_config(args, context, dry_run)? {
             return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
-        let report_args = runtime_args(args, true)?;
-        let execution_args = runtime_args(args, false)?;
-        validate_bounded_external_epf_artifact_paths(args, &context.cwd)?;
+        if cancellation.is_cancelled() {
+            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
+                format!("{tool_name} cancelled during runtime build preflight"),
+            )));
+        }
+        let report_args = runtime_args(&invocation.args, true)?;
+        let execution_args = runtime_args(&invocation.args, false)?;
+        validate_bounded_external_epf_artifact_paths(&invocation.args, &context.cwd)?;
         let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
         let mut command = vec![bundled_tool.program.display().to_string()];
-        command.extend(report_args);
+        command.extend(report_args.iter().cloned());
 
         if dry_run {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
@@ -443,13 +496,19 @@ impl<'a> RuntimeAdapter<'a> {
                 } else {
                     Vec::new()
                 },
-                warnings: bundled_tool.warnings,
+                warnings: merge_warnings(invocation.warnings, bundled_tool.warnings),
                 errors: Vec::new(),
                 artifacts: Vec::new(),
                 stdout: None,
                 stderr: None,
                 command: Some(command),
             }));
+        }
+
+        if cancellation.is_cancelled() {
+            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
+                format!("{tool_name} cancelled before v8-runner launch"),
+            )));
         }
 
         let process_timeout = None;
@@ -463,19 +522,21 @@ impl<'a> RuntimeAdapter<'a> {
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
+        let runtime_warnings = invocation.warnings;
         let output = match self.runner.run(&process_command) {
             Ok(output) => output,
             Err(error) => {
                 let error = redactor(&error);
+                let mut warnings = runtime_warnings;
+                warnings
+                    .push("internal v8-runner runtime adapter failed to spawn process".to_string());
                 return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
                     ok: false,
                     summary: format!(
                         "{tool_name} failed through internal v8-runner runtime adapter"
                     ),
                     changes: Vec::new(),
-                    warnings: vec![
-                        "internal v8-runner runtime adapter failed to spawn process".to_string()
-                    ],
+                    warnings,
                     errors: vec![error.clone()],
                     artifacts: Vec::new(),
                     stdout: None,
@@ -484,16 +545,26 @@ impl<'a> RuntimeAdapter<'a> {
                 }));
             }
         };
+        // The one full retry belongs to the durable entry point alone. An
+        // applied `unica.runtime.execute` is refused by INV-MCP-RUNTIME-RECEIPT
+        // before it reaches this adapter, so there is no first attempt here to
+        // classify and nothing to retry (ADR-0066, ADR-0067).
+        let mut runner_error = if args.get("operation").and_then(Value::as_str) == Some("build")
+            && !output.status_success
+        {
+            parse_runner_json_envelope(&output.stdout)
+                .ok()
+                .and_then(|envelope| runner_error_message(&envelope).map(redactor))
+        } else {
+            None
+        };
         let mut ok = output.status_success;
         let stdout = redactor(&output.stdout);
         let stderr = redactor(&output.stderr);
         if output.cancelled {
-            return Ok(RuntimeAdapterOutcome::plain(cancelled_process_outcome(
-                tool_name,
-                stdout,
-                stderr,
-                Some(command),
-            )));
+            let mut outcome = cancelled_process_outcome(tool_name, stdout, stderr, Some(command));
+            outcome.warnings = merge_warnings(runtime_warnings, outcome.warnings);
+            return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
         let waited_epf = args
             .get("waitForExit")
@@ -501,7 +572,6 @@ impl<'a> RuntimeAdapter<'a> {
             .unwrap_or(false);
         let mut artifacts = Vec::new();
         let mut wait_error = None;
-        let mut runner_error = None;
         let mut data = None;
         if waited_epf {
             match parse_runner_json_envelope(&output.stdout) {
@@ -575,14 +645,20 @@ impl<'a> RuntimeAdapter<'a> {
                     Vec::new()
                 },
                 warnings: if ok || wait_failed {
-                    Vec::new()
+                    runtime_warnings
                 } else if output.timed_out {
-                    vec!["internal v8-runner runtime adapter timed out".to_string()]
+                    merge_warnings(
+                        runtime_warnings,
+                        vec!["internal v8-runner runtime adapter timed out".to_string()],
+                    )
                 } else {
-                    vec![format!(
-                        "internal v8-runner runtime adapter exited with status {}",
-                        output.status
-                    )]
+                    merge_warnings(
+                        runtime_warnings,
+                        vec![format!(
+                            "internal v8-runner runtime adapter exited with status {}",
+                            output.status
+                        )],
+                    )
                 },
                 errors: if let Some(error) = wait_error {
                     vec![error]
@@ -941,6 +1017,7 @@ fn yaml_mapping_string<'a>(mapping: &'a serde_yaml::Mapping, key: &str) -> Optio
 }
 
 impl RuntimeJobAdapter {
+    #[cfg(test)]
     pub fn invoke(
         action: RuntimeJobAction,
         tool_name: &str,
@@ -948,8 +1025,26 @@ impl RuntimeJobAdapter {
         context: &WorkspaceContext,
         dry_run: bool,
     ) -> Result<RuntimeJobAdapterOutcome, String> {
+        Self::invoke_cancellable(
+            action,
+            tool_name,
+            args,
+            context,
+            dry_run,
+            &CancellationToken::new(),
+        )
+    }
+
+    pub(crate) fn invoke_cancellable(
+        action: RuntimeJobAction,
+        tool_name: &str,
+        args: &Map<String, Value>,
+        context: &WorkspaceContext,
+        dry_run: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<RuntimeJobAdapterOutcome, String> {
         match action {
-            RuntimeJobAction::Start => Self::start(tool_name, args, context, dry_run),
+            RuntimeJobAction::Start => Self::start(tool_name, args, context, dry_run, cancellation),
             RuntimeJobAction::Status => Self::status(tool_name, args, context),
             RuntimeJobAction::Wait => Self::wait(tool_name, args, context),
             RuntimeJobAction::Logs => Self::logs(tool_name, args, context),
@@ -963,6 +1058,7 @@ impl RuntimeJobAdapter {
         args: &Map<String, Value>,
         context: &WorkspaceContext,
         dry_run: bool,
+        cancellation: &CancellationToken,
     ) -> Result<RuntimeJobAdapterOutcome, String> {
         for argument in ["waitForExit", "waitTimeoutMs", "stderrOutput"] {
             if args.contains_key(argument) {
@@ -976,11 +1072,22 @@ impl RuntimeJobAdapter {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
             "could not locate Unica plugin root for internal adapter lookup".to_string()
         })?;
-        let reported_args = runtime_args(args, true)?;
-        let execution_args = runtime_args(args, false)?;
+        let invocation = plan_runtime_invocation(args, context)?;
+        if cancellation.is_cancelled() {
+            return Ok(RuntimeJobAdapterOutcome {
+                outcome: AdapterOutcome::cancelled(format!(
+                    "{tool_name} cancelled during runtime build preflight"
+                )),
+                job: None,
+            });
+        }
+        let reported_args = runtime_args(&invocation.args, true)?;
+        let execution_args = runtime_args(&invocation.args, false)?;
+        let build_preflight = invocation.build_preflight.clone();
         let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
         let mut command = vec![bundled_tool.program.display().to_string()];
         command.extend(reported_args);
+        let warnings = merge_warnings(invocation.warnings, bundled_tool.warnings);
 
         if dry_run {
             return Ok(RuntimeJobAdapterOutcome {
@@ -988,7 +1095,7 @@ impl RuntimeJobAdapter {
                     ok: true,
                     summary: format!("dry run: {tool_name} would start a durable runtime job"),
                     changes: vec!["no runtime job started because dryRun is true".to_string()],
-                    warnings: bundled_tool.warnings,
+                    warnings,
                     errors: Vec::new(),
                     artifacts: Vec::new(),
                     stdout: None,
@@ -999,31 +1106,30 @@ impl RuntimeJobAdapter {
             });
         }
 
-        let operation_name = args
-            .get("operation")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("{tool_name} requires string `operation` argument"))?;
-        let operation = RuntimeJobOperation::from_label(operation_name)?;
-        let request = RuntimeJobRequest::new(
-            operation,
-            execution_args,
-            runtime_job_safe_target(context),
-            args.get("output")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        );
+        if cancellation.is_cancelled() {
+            return Ok(RuntimeJobAdapterOutcome {
+                outcome: AdapterOutcome::cancelled(format!(
+                    "{tool_name} cancelled before durable runtime job start"
+                )),
+                job: None,
+            });
+        }
+
+        let request =
+            runtime_job_start_request(tool_name, args, context, execution_args, build_preflight)?;
         match runtime_jobs::start_detached_worker(
             context.cache_root.clone(),
             bundled_tool.program,
             context.cwd.clone(),
             request,
+            cancellation,
         ) {
             Ok(snapshot) => Ok(RuntimeJobAdapterOutcome {
                 outcome: AdapterOutcome {
                     ok: true,
                     summary: format!("{tool_name} queued durable runtime job {}", snapshot.id),
                     changes: Vec::new(),
-                    warnings: bundled_tool.warnings,
+                    warnings,
                     errors: Vec::new(),
                     artifacts: Vec::new(),
                     stdout: None,
@@ -1032,7 +1138,19 @@ impl RuntimeJobAdapter {
                 },
                 job: Some(runtime_job_snapshot_value(&snapshot)),
             }),
-            Err(error) => Ok(Self::failure(tool_name, error, Some(command))),
+            Err(error) => {
+                if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) {
+                    return Ok(RuntimeJobAdapterOutcome {
+                        outcome: AdapterOutcome::cancelled(format!(
+                            "{tool_name} cancelled before durable runtime job launch"
+                        )),
+                        job: None,
+                    });
+                }
+                let mut outcome = Self::failure(tool_name, error, Some(command));
+                outcome.outcome.warnings = merge_warnings(warnings, outcome.outcome.warnings);
+                Ok(outcome)
+            }
         }
     }
 
@@ -1202,6 +1320,29 @@ impl RuntimeJobAdapter {
             job: None,
         }
     }
+}
+
+fn runtime_job_start_request(
+    tool_name: &str,
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    execution_args: Vec<String>,
+    build_preflight: Option<RuntimeBuildPreflight>,
+) -> Result<RuntimeJobRequest, String> {
+    let operation_name = args
+        .get("operation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{tool_name} requires string `operation` argument"))?;
+    let operation = RuntimeJobOperation::from_label(operation_name)?;
+    Ok(RuntimeJobRequest::new(
+        operation,
+        execution_args,
+        runtime_job_safe_target(context),
+        args.get("output")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    )
+    .with_build_preflight(build_preflight))
 }
 
 fn runtime_job_id<'a>(tool_name: &str, args: &'a Map<String, Value>) -> Result<&'a str, String> {
@@ -2481,7 +2622,9 @@ fn append_runtime_global_args(
     args: &Map<String, Value>,
     redact: bool,
 ) {
-    if args.get("waitForExit").and_then(Value::as_bool) == Some(true) {
+    if args.get("waitForExit").and_then(Value::as_bool) == Some(true)
+        || (operation == "build" && args.get("fullRebuild").and_then(Value::as_bool) != Some(true))
+    {
         result.push("--json-message".to_string());
     }
     if operation != "config-init" {
@@ -2954,6 +3097,7 @@ mod tests {
     use crate::infrastructure::platform::testing;
     use serde_json::json;
     use std::cell::RefCell;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -3064,9 +3208,10 @@ mod tests {
 
         assert!(outcome.ok);
         let commands = runner.commands.borrow();
-        assert_eq!(
-            commands[0].args,
-            vec!["build", "--full-rebuild", "--source-set", "main"]
+        assert_runtime_args_with_primary(
+            &context,
+            &commands[0].args,
+            &["build", "--full-rebuild", "--source-set", "main"],
         );
         assert!(commands[0].timeout.is_none());
         assert!(commands[0].program.to_string_lossy().contains("bin/"));
@@ -3078,9 +3223,543 @@ mod tests {
         cleanup_context(&context);
     }
 
+    /// #404 and ADR-0067. The one full retry belongs to the durable entry
+    /// point. An applied `unica.runtime.execute` never reaches this adapter
+    /// (INV-MCP-RUNTIME-RECEIPT), so a partial-failure receipt here must not
+    /// start a second process: the retry would escape the one call that owns
+    /// the lifecycle.
+    #[test]
+    fn runtime_adapter_never_retries_a_failed_partial_build() {
+        let mut context = temp_context("runtime-partial-no-sync-retry");
+        configure_supported_designer_source(&mut context);
+        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst";
+        let runner = SequenceProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            outputs: RefCell::new(vec![ProcessOutput {
+                status_success: false,
+                status: "exit status: 4".to_string(),
+                stdout: build_failure_json(
+                    json!({ "partial": { "file_count": 1 } }),
+                    partial_message,
+                ),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            }]),
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(!outcome.ok);
+        assert_eq!(
+            runner.commands.borrow().len(),
+            1,
+            "the synchronous adapter owns exactly one process"
+        );
+        assert!(
+            !outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("retried once")),
+            "{:?}",
+            outcome.warnings
+        );
+        // The structured error still reaches the caller; only the retry is gone.
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("load failed for source-set")),
+            "{:?}",
+            outcome.errors
+        );
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_trims_selector_for_the_initial_build() {
+        let mut context = temp_context("runtime-supported-configuration-trimmed-selector");
+        configure_supported_designer_source(&mut context);
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!(" main ")),
+        ]);
+
+        let invocation = plan_runtime_invocation(&args, &context)
+            .expect("runner-compatible selector must reach v8-runner");
+
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build", "--source-set", "main"],
+        );
+        assert!(invocation.build_preflight.is_some());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_ignores_invalid_unselected_configuration_format() {
+        let mut context = temp_context("runtime-unselected-invalid-configuration-format");
+        configure_designer_source(&mut context);
+        fs::write(
+            context.workspace_root.join("src/.project"),
+            "<projectDescription/>",
+        )
+        .unwrap();
+        fs::create_dir_all(context.workspace_root.join("extension")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+                "  - name: extension\n",
+                "    type: EXTENSION\n",
+                "    path: extension\n",
+            ),
+        )
+        .unwrap();
+        refresh_test_context(&mut context);
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("extension")),
+        ]);
+
+        let invocation = plan_runtime_invocation(&args, &context)
+            .expect("unselected contradictory evidence must not block an extension build");
+
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build", "--source-set", "extension"],
+        );
+        assert!(invocation.build_preflight.is_some());
+        cleanup_context(&context);
+    }
+
+    /// The durable path gets the same initial/default build and one fallback
+    /// plan as the synchronous runtime entry point.
+    #[test]
+    fn runtime_job_dry_run_reports_the_initial_default_build() {
+        let mut context = temp_context("runtime-job-supported-configuration-build");
+        configure_supported_designer_source(&mut context);
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let outcome = RuntimeJobAdapter::invoke(
+            RuntimeJobAction::Start,
+            "unica.runtime.job.start",
+            &args,
+            &context,
+            true,
+        )
+        .unwrap();
+
+        let command = outcome.outcome.command.unwrap();
+        assert_runtime_args_with_primary(&context, &command[1..], &["build"]);
+        assert!(outcome
+            .outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("retry once")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_job_request_carries_one_full_fallback() {
+        let mut context = temp_context("runtime-job-request-supported-configuration");
+        configure_supported_designer_source(&mut context);
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let invocation = plan_runtime_invocation(&args, &context).unwrap();
+        let execution_args = runtime_args(&invocation.args, false).unwrap();
+        let request = runtime_job_start_request(
+            "unica.runtime.job.start",
+            &args,
+            &context,
+            execution_args,
+            invocation.build_preflight,
+        )
+        .unwrap();
+
+        assert_runtime_args_with_primary(&context, request.raw_argv(), &["build"]);
+        let fallback = request
+            .full_rebuild_fallback_argv()
+            .expect("durable full fallback");
+        assert_runtime_args_with_primary(&context, fallback, &["build", "--full-rebuild"]);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_keeps_incremental_build_for_unsupported_configuration() {
+        let mut context = temp_context("runtime-unsupported-configuration-build");
+        configure_designer_source(&mut context);
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: "incremental build completed".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert_runtime_args_with_primary(&context, &runner.commands.borrow()[0].args, &["build"]);
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("retry once")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_binds_preflight_config_against_runner_environment_override() {
+        let _environment_lock = crate::infrastructure::V8TR_CONFIG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut context = temp_context("runtime-preflight-config-binding");
+        configure_designer_source(&mut context);
+        let alternate = context.workspace_root.join("alternate.yaml");
+        fs::write(&alternate, "format: DESIGNER\nsource-set: []\n")
+            .expect("write alternate runner config");
+        let _environment = EnvVarGuard::set("V8TR_CONFIG", &alternate);
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: "incremental build completed".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert_runtime_args_with_primary(&context, &runner.commands.borrow()[0].args, &["build"]);
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_keeps_incremental_build_for_removed_configuration_support() {
+        let mut context = temp_context("runtime-removed-configuration-support");
+        configure_designer_source(&mut context);
+        let marker = context
+            .workspace_root
+            .join("src/Ext/ParentConfigurations.bin");
+        fs::create_dir_all(marker.parent().expect("support marker parent")).unwrap();
+        fs::write(marker, []).expect("write removed support marker");
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        let invocation = plan_runtime_invocation(&args, &context).unwrap();
+
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build"],
+        );
+        assert!(invocation
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("retry once")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_keeps_the_default_strategy_for_edt_configuration() {
+        let mut context = temp_context("runtime-edt-configuration-build");
+        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: EDT\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        refresh_test_context(&mut context);
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("fullRebuild".to_string(), json!(false)),
+        ]);
+
+        let invocation = plan_runtime_invocation(&args, &context).unwrap();
+
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build"],
+        );
+        assert!(invocation.build_preflight.is_some());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_does_not_force_nonselected_supported_configuration() {
+        let mut context = temp_context("runtime-nonselected-supported-configuration");
+        configure_supported_designer_source(&mut context);
+        fs::create_dir_all(context.workspace_root.join("extension")).unwrap();
+        fs::write(
+            context.workspace_root.join("extension/Configuration.xml"),
+            include_bytes!(
+                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+                "  - name: extension\n",
+                "    type: EXTENSION\n",
+                "    path: extension\n",
+            ),
+        )
+        .unwrap();
+        refresh_test_context(&mut context);
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: "extension build completed".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+        args.insert("sourceSet".to_string(), json!("extension"));
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert_runtime_args_with_primary(
+            &context,
+            &runner.commands.borrow()[0].args,
+            &["build", "--source-set", "extension"],
+        );
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("retry once")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn explicit_full_build_bypasses_unreadable_support_state() {
+        let mut context = temp_context("runtime-explicit-full-unreadable-support-state");
+        configure_supported_designer_source(&mut context);
+        fs::write(
+            context
+                .workspace_root
+                .join("src/Ext/ParentConfigurations.bin"),
+            b"not a support-state marker",
+        )
+        .unwrap();
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: "full build completed".to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+        args.insert("fullRebuild".to_string(), json!(true));
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .unwrap();
+
+        assert!(outcome.ok);
+        assert_runtime_args_with_primary(
+            &context,
+            &runner.commands.borrow()[0].args,
+            &["build", "--full-rebuild"],
+        );
+        assert!(outcome.warnings.is_empty());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn incremental_build_with_explicit_config_uses_the_same_fallback_policy() {
+        let context = temp_context("runtime-nonprimary-build-config");
+        let alternate = context.workspace_root.join("alternate");
+        fs::create_dir_all(&alternate).unwrap();
+        fs::write(
+            alternate.join("v8project.yaml"),
+            "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+        args.insert("config".to_string(), json!("alternate/v8project.yaml"));
+
+        let outcome = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .expect("fallback policy must not depend on the primary support reader");
+
+        assert!(outcome.ok);
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0]
+            .args
+            .iter()
+            .any(|argument| argument == "--json-message"));
+        assert!(!commands[0]
+            .args
+            .iter()
+            .any(|argument| argument == "--full-rebuild"));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn incremental_build_keeps_a_case_distinct_explicit_config() {
+        let mut context = temp_context("runtime-case-distinct-nonprimary-config");
+        configure_designer_source(&mut context);
+        let alternate = context.workspace_root.join("V8PROJECT.YAML");
+        fs::write(
+            &alternate,
+            "format: DESIGNER\nsource-set:\n  - name: alternate\n    type: CONFIGURATION\n    path: other\n",
+        )
+        .unwrap();
+        if fs::canonicalize(&alternate).unwrap()
+            == fs::canonicalize(context.workspace_root.join("v8project.yaml")).unwrap()
+        {
+            cleanup_context(&context);
+            return;
+        }
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            (
+                "config".to_string(),
+                json!(alternate.file_name().unwrap().to_string_lossy()),
+            ),
+        ]);
+
+        let plan = plan_runtime_invocation(&args, &context)
+            .expect("an explicit config has its own build identity");
+
+        assert_eq!(
+            plan.args.get("config").and_then(Value::as_str),
+            alternate.to_str()
+        );
+        assert!(plan.build_preflight.is_some());
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_uses_global_edt_mode_despite_platform_xml_evidence() {
+        let mut context = temp_context("runtime-edt-mode-with-platform-evidence");
+        fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: EDT\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            context.workspace_root.join("src/Configuration.xml"),
+            "<MetaDataObject/>",
+        )
+        .unwrap();
+        refresh_test_context(&mut context);
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("sourceSet".to_string(), json!("main")),
+        ]);
+
+        let invocation = plan_runtime_invocation(&args, &context)
+            .expect("global EDT mode reaches v8-runner unchanged");
+
+        assert_runtime_args_with_primary(
+            &context,
+            &runtime_args(&invocation.args, false).unwrap(),
+            &["build", "--source-set", "main"],
+        );
+        assert!(invocation.build_preflight.is_some());
+        cleanup_context(&context);
+    }
+
     #[test]
     fn runtime_adapter_delegates_successful_build_without_wrapper_timeout() {
-        let context = temp_context("runtime-build-success");
+        let mut context = temp_context("runtime-build-success");
+        configure_designer_source(&mut context);
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
             output: ProcessOutput {
@@ -3182,6 +3861,49 @@ mod tests {
 
         std::fs::write(context.cwd.join("v8project.yaml"), "format: DESIGNER\n").unwrap();
         reject_missing_client_mcp_extension(&args, &context).unwrap();
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_adapter_rejects_external_config_before_reading_its_declared_artifacts() {
+        let context = temp_context("external-runtime-config-containment");
+        let outside = tempfile::tempdir().unwrap();
+        let outside_config = outside.path().join("v8project.yaml");
+        std::fs::write(
+            &outside_config,
+            "format: DESIGNER\ntools:\n  client_mcp:\n    extension:\n      artifact:\n        path: outside.cfe\n",
+        )
+        .unwrap();
+        let runner = RecordingProcessRunner {
+            commands: RefCell::new(Vec::new()),
+            output: ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            },
+        };
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            (
+                "config".to_string(),
+                json!(outside_config.to_string_lossy().into_owned()),
+            ),
+        ]);
+
+        let error = RuntimeAdapter::with_runner(&runner)
+            .invoke("unica.runtime.execute", &args, &context, false, true)
+            .expect_err("external config must be rejected before its YAML is inspected");
+
+        assert!(error.contains("outside the workspace"), "{error}");
+        assert!(!error.contains("outside.cfe"), "{error}");
+        assert!(runner.commands.borrow().is_empty());
         cleanup_context(&context);
     }
 
@@ -5038,7 +5760,8 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn cancellation_prefix_is_stable_for_cancelled_runtime_output() {
-        let context = temp_context("runtime-cancelled-output");
+        let mut context = temp_context("runtime-cancelled-output");
+        configure_designer_source(&mut context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -5165,7 +5888,8 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn runtime_adapter_does_not_report_wrapper_timeout_seconds_without_local_timeout() {
-        let context = temp_context("runtime-timeout-no-local-budget");
+        let mut context = temp_context("runtime-timeout-no-local-budget");
+        configure_designer_source(&mut context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -5198,7 +5922,8 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn runtime_adapter_redacts_non_zero_process_output() {
-        let context = temp_context("runtime-non-zero-diagnostics");
+        let mut context = temp_context("runtime-non-zero-diagnostics");
+        configure_designer_source(&mut context);
         let runner = FakeProcessRunner {
             output: ProcessOutput {
                 status_success: false,
@@ -5283,7 +6008,8 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn runtime_adapter_returns_failure_outcome_for_spawn_failure() {
-        let context = temp_context("runtime-spawn-failure-diagnostics");
+        let mut context = temp_context("runtime-spawn-failure-diagnostics");
+        configure_designer_source(&mut context);
         let runner = FailingProcessRunner {
             error: "failed to execute process: no such file or directory; apiToken=token-secret"
                 .to_string(),
@@ -5635,6 +6361,29 @@ analyze_timeout_seconds = 900
         output: ProcessOutput,
     }
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     impl ProcessRunner for RecordingProcessRunner {
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.commands.borrow_mut().push(command.clone());
@@ -5642,6 +6391,42 @@ analyze_timeout_seconds = 900
         }
     }
 
+    struct SequenceProcessRunner {
+        commands: RefCell<Vec<ProcessCommand>>,
+        outputs: RefCell<Vec<ProcessOutput>>,
+    }
+    fn build_failure_json(mode: Value, message: &str) -> String {
+        serde_json::to_string(&json!({
+            "ok": false,
+            "command": "build",
+            "duration_ms": 12,
+            "data": {
+                "ok": false,
+                "steps": [{
+                    "source_set": "main",
+                    "mode": mode,
+                    "ok": false,
+                    "message": format!("platform error: {message}"),
+                    "duration_ms": 0
+                }],
+                "duration_ms": 12
+            },
+            "warnings": [],
+            "steps": [],
+            "error": {
+                "code": "platform_failure",
+                "kind": "platform",
+                "message": message
+            }
+        }))
+        .expect("serialize build failure")
+    }
+    impl ProcessRunner for SequenceProcessRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.commands.borrow_mut().push(command.clone());
+            Ok(self.outputs.borrow_mut().remove(0))
+        }
+    }
     struct RecordingBslMcpRunner {
         commands: RefCell<Vec<BslMcpCommand>>,
         output: BslMcpOutput,
@@ -5667,12 +6452,87 @@ analyze_timeout_seconds = 900
         )
         .unwrap();
         create_fake_plugin_root(&root);
-        WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build").join("unica"),
-            workspace_epoch: 1,
-        }
+        let mut context =
+            discover_workspace(Some(root.clone())).expect("discover temporary workspace");
+        context.cache_root = root.join(".build").join("unica");
+        context
+    }
+
+    fn assert_runtime_args_with_primary(
+        context: &WorkspaceContext,
+        actual: &[String],
+        expected_tail: &[&str],
+    ) {
+        let actual = if actual.first().map(String::as_str) == Some("--json-message") {
+            &actual[1..]
+        } else {
+            actual
+        };
+        assert_eq!(actual.first().map(String::as_str), Some("--config"));
+        let expected_config =
+            crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
+                &context
+                    .workspace_root
+                    .join("v8project.yaml")
+                    .canonicalize()
+                    .expect("canonical primary runtime config"),
+            );
+        assert_eq!(
+            actual.get(1).map(Path::new),
+            Some(expected_config.as_path())
+        );
+        assert_eq!(
+            actual.get(2..).expect("runtime command after config"),
+            expected_tail
+        );
+    }
+
+    fn configure_designer_source(context: &mut WorkspaceContext) {
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            source_root.join("Configuration.xml"),
+            include_bytes!(
+                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+            ),
+        )
+        .unwrap();
+        refresh_test_context(context);
+    }
+
+    fn configure_supported_designer_source(context: &mut WorkspaceContext) {
+        configure_designer_source(context);
+        let marker = context
+            .workspace_root
+            .join("src/Ext/ParentConfigurations.bin");
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(
+            marker,
+            include_bytes!(
+                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
+            ),
+        )
+        .unwrap();
+        refresh_test_context(context);
+    }
+
+    fn refresh_test_context(context: &mut WorkspaceContext) {
+        let cache_root = context.cache_root.clone();
+        let mut current = discover_workspace(Some(context.cwd.clone()))
+            .expect("rediscover configured test workspace");
+        current.cache_root = cache_root;
+        *context = current;
     }
 
     /// Rewrites the fake manifest without `tool_name`, the way a checkout that

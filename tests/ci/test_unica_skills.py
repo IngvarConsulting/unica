@@ -1956,6 +1956,79 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             (skill_dir / "SKILL.md").read_text(encoding="utf-8"),
         )
 
+    def test_v8_runner_documents_support_independent_partial_fallback_contract(
+        self,
+    ) -> None:
+        skill_dir = self.skill_root() / "v8-runner"
+        skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        workflows = (skill_dir / "references" / "project-workflows.md").read_text(
+            encoding="utf-8"
+        )
+        troubleshooting = (
+            skill_dir / "references" / "troubleshooting.md"
+        ).read_text(encoding="utf-8")
+        skill_contract = " ".join(skill.split())
+        workflow_contract = " ".join(workflows.split())
+        troubleshooting_contract = " ".join(troubleshooting.split())
+        all_text = " ".join(
+            [skill_contract, workflow_contract, troubleshooting_contract]
+        )
+
+        self.assertIn("сначала запускает обычную сборку", skill_contract)
+        self.assertIn("не читает состояние поддержки", skill_contract)
+        self.assertIn("корректный структурированный", skill_contract)
+        self.assertIn("внешнего кода `4`", skill_contract)
+        self.assertIn("завершившийся ошибкой шаг partial load", skill_contract)
+        # ADR-0066 refused the applied synchronous entry point, so the shipped
+        # guidance must scope the retry to the durable job instead of promising
+        # it for a call that never starts a process.
+        self.assertIn("Политика повтора живёт только в долговременном задании", skill_contract)
+        self.assertIn("Only a durable build carries the one full retry", workflow_contract)
+        self.assertIn(
+            "synchronous entry point owns exactly one process and never repeats it",
+            troubleshooting_contract,
+        )
+        self.assertIn("Ровно одну полную повторную попытку", skill_contract)
+        self.assertIn("не определяет причину ошибки", skill_contract)
+        self.assertIn("Явный `fullRebuild: true`", skill_contract)
+        self.assertIn("одну полную сборку без fallback", skill_contract)
+        self.assertIn(
+            "тайм-аут внешнего процесса, зафиксированный Unica", skill_contract
+        )
+        self.assertIn("отложенного внутреннего тайм-аута", skill_contract)
+        self.assertIn("третьей попытки нет", skill_contract)
+
+        self.assertIn("normal build first", workflow_contract)
+        self.assertIn("does not inspect support state", workflow_contract)
+        self.assertIn("External exit code `4`", workflow_contract)
+        self.assertIn("completed partial load", workflow_contract)
+        self.assertIn("the only result", workflow_contract)
+        self.assertIn("one full retry", workflow_contract)
+        self.assertIn("does not identify the cause", workflow_contract)
+        self.assertIn("Explicit `fullRebuild=true`", workflow_contract)
+        self.assertIn("is never retried", workflow_contract)
+        self.assertIn("process timeout observed by Unica", workflow_contract)
+        self.assertIn("deferred internal timeout", workflow_contract)
+
+        self.assertIn("Do not retry", troubleshooting_contract)
+        self.assertIn("external exit code `4`", troubleshooting_contract)
+        self.assertIn("cancellation", troubleshooting_contract)
+        self.assertIn("process timeout observed by Unica", troubleshooting_contract)
+        self.assertIn("deferred internal timeout", troubleshooting_contract)
+        self.assertIn("malformed", troubleshooting_contract)
+
+        self.assertIn("v14", all_text)
+        self.assertIn("temporary", all_text.lower())
+        for stale_claim in [
+            "точное изменение не доказано безопасным для partial load",
+            "активная поддержка поставщика",
+            "разрешающий ответ о поддержке",
+            "support-state preflight",
+            "supported Designer configuration",
+        ]:
+            with self.subTest(stale_claim=stale_claim):
+                self.assertNotIn(stale_claim, all_text)
+
     def test_v8_runner_examples_are_parameterized_mcp_calls(self) -> None:
         skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
         text = skill_doc.read_text(encoding="utf-8")

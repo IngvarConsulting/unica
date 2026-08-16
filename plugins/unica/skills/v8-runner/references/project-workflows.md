@@ -21,6 +21,30 @@ MCP tool extensions when the project has `tools.client_mcp.extension`.
 Currently only preview `fullRebuild=true` when that generated state may be
 stale; the preview does not prepare the extension.
 
+Only a durable build carries the one full retry. The synchronous entry point is
+refused before it ever starts a process, so it has no first attempt to repeat,
+and its preview still shows the normalized command. In a durable build without
+`fullRebuild=true`, Unica runs the normal build first and does not inspect
+support state or preselect the full path. External exit code `4` together with a valid structured runner
+failure that proves a completed partial load is the only result that starts one
+full retry. It classifies the failed stage but does not identify the cause or
+claim that vendor support caused it.
+
+That normal build carries `--json-message`, so the runner prints one structured
+envelope at process exit instead of streaming text. The durable job therefore
+keeps empty logs until it finishes; liveness comes from `phase` and the
+heartbeat, not from log growth.
+
+Explicit `fullRebuild=true` runs one full build and is never retried. Malformed
+or unstructured output, a non-matching error, process spawn failure,
+cancellation, a process timeout observed by Unica, or truncated output does not
+start the fallback. The pinned receipt has no deferred internal timeout
+metadata: a critical runner step that crosses its internal deadline and then
+returns the exact completed partial failure is indistinguishable from the same
+failure without that deadline and can still start the retry. A failed full retry
+does not start a third attempt. This temporary Unica fallback does not replace
+the separate runtime/runner redesign planned for v14.
+
 Preview `extensions` with `dryRun=true` when only extension properties need synchronization; applied synchronization is not currently admitted.
 
 Preview `tools-download` with `dryRun=true` when the project needs

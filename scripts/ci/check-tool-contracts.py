@@ -108,6 +108,127 @@ def validate_v8_runner_partial_load_list(payload: bytes, expected_path: str) -> 
     return errors
 
 
+def validate_v8_runner_failed_partial_receipt(
+    envelope: object,
+    process_exit_code: int,
+    expected_source_set: str,
+) -> list[str]:
+    """Validate the pinned failure receipt consumed by Unica's one-shot fallback."""
+
+    errors: list[str] = []
+    if process_exit_code != 4:
+        errors.append(
+            "v8-runner failed-partial receipt requires external exit code 4, "
+            f"got {process_exit_code}"
+        )
+
+    def closed_mapping(
+        value: object,
+        expected_keys: set[str],
+        label: str,
+    ) -> dict[str, object] | None:
+        if not isinstance(value, dict):
+            errors.append(f"{label} must be an object")
+            return None
+        actual_keys = set(value)
+        if actual_keys != expected_keys:
+            errors.append(
+                f"{label} is not a closed object: expected {sorted(expected_keys)}, "
+                f"got {sorted(actual_keys)}"
+            )
+            return None
+        return value
+
+    root = closed_mapping(
+        envelope,
+        {"ok", "command", "duration_ms", "data", "warnings", "steps", "error"},
+        "failure envelope",
+    )
+    if root is None:
+        return errors
+    if root["ok"] is not False or root["command"] != "build":
+        errors.append("failure envelope must report ok=false and command=build")
+    if root["warnings"] != [] or root["steps"] != []:
+        errors.append("failure envelope warnings and top-level steps must be empty")
+
+    data = closed_mapping(root["data"], {"ok", "steps", "duration_ms"}, "build data")
+    error = closed_mapping(root["error"], {"code", "kind", "message"}, "runner error")
+    if data is None or error is None:
+        return errors
+    for label, duration in [
+        ("failure envelope", root["duration_ms"]),
+        ("build data", data["duration_ms"]),
+    ]:
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, int)
+            or duration < 0
+        ):
+            errors.append(f"{label} duration_ms must be a non-negative integer")
+    if data["ok"] is not False:
+        errors.append("build data must report ok=false")
+    if root["duration_ms"] != data["duration_ms"]:
+        errors.append("failure envelope and build data duration_ms must match")
+    if error["code"] != "platform_failure" or error["kind"] != "platform":
+        errors.append("runner error must be platform_failure of kind platform")
+    message = error["message"]
+    if not isinstance(message, str) or not message:
+        errors.append("runner error message must be non-empty text")
+        return errors
+
+    steps = data["steps"]
+    if not isinstance(steps, list) or len(steps) != 1:
+        errors.append("producer smoke must contain exactly one failed partial step")
+        return errors
+    step = closed_mapping(
+        steps[0],
+        {"source_set", "mode", "ok", "message", "duration_ms"},
+        "build step",
+    )
+    if step is None:
+        return errors
+    step_duration = step["duration_ms"]
+    if (
+        isinstance(step_duration, bool)
+        or not isinstance(step_duration, int)
+        or step_duration < 0
+    ):
+        errors.append("build step duration_ms must be a non-negative integer")
+    mode = closed_mapping(step["mode"], {"partial"}, "build step mode")
+    partial = (
+        closed_mapping(mode["partial"], {"file_count"}, "partial mode")
+        if mode is not None
+        else None
+    )
+    if partial is None:
+        return errors
+    file_count = partial["file_count"]
+    if isinstance(file_count, bool) or not isinstance(file_count, int) or file_count <= 0:
+        errors.append("partial mode file_count must be a positive integer")
+    if step["source_set"] != expected_source_set or step["ok"] is not False:
+        errors.append("failed partial step does not match the requested source-set")
+    if step["message"] != f"platform error: {message}":
+        errors.append("failed partial step message does not match the runner error")
+
+    prefix = f"load failed for source-set '{expected_source_set}' with exit code "
+    remainder = message.removeprefix(prefix) if message.startswith(prefix) else None
+    if remainder is None or "; " not in remainder:
+        errors.append("runner error is not a completed partial load failure")
+        return errors
+    inner_code_text, _ = remainder.split("; ", 1)
+    try:
+        inner_code = int(inner_code_text)
+    except ValueError:
+        inner_code = 0
+    if inner_code <= 0:
+        errors.append("completed partial load must carry a positive platform exit code")
+    marker = "; partial load list path: "
+    _, separator, list_path = message.rpartition(marker)
+    if not separator or not list_path.strip() or "; " in list_path:
+        errors.append("completed partial load must carry a final list path")
+    return errors
+
+
 def check_v8_runner_partial_load_contract(runner: Path, target: str) -> list[str]:
     label = "v8-runner partial-load contract"
     if not runner.is_file():
@@ -138,6 +259,7 @@ def check_v8_runner_partial_load_contract(runner: Path, target: str) -> list[str
 use std::{env, ffi::OsString, fs, path::PathBuf};
 
 fn main() {
+    let fail_partial = env::var_os("UNICA_V8_RUNNER_FAIL_PARTIAL").is_some();
     let mut previous: Option<OsString> = None;
     for argument in env::args_os().skip(1) {
         if previous.as_deref() == Some(std::ffi::OsStr::new("-listFile")) {
@@ -148,9 +270,17 @@ fn main() {
             fs::copy(&argument, destination).expect("copy partial-load list");
         }
         if previous.as_deref() == Some(std::ffi::OsStr::new("/Out")) {
-            fs::write(&argument, b"platform stub completed\\n").expect("write /Out log");
+            let output: &[u8] = if fail_partial {
+                b"platform stub rejected partial load\\n"
+            } else {
+                b"platform stub completed\\n"
+            };
+            fs::write(&argument, output).expect("write /Out log");
         }
         previous = Some(argument);
+    }
+    if fail_partial {
+        std::process::exit(1);
     }
 }
 """.lstrip(),
@@ -244,11 +374,41 @@ fn main() {
             ]
 
         expected_path = str(Path("Catalogs.Товары") / "ObjectModule.bsl")
-        return [
+        errors = [
             f"{label}: {error}"
             for error in validate_v8_runner_partial_load_list(
                 captured_list.read_bytes(),
                 expected_path,
+            )
+        ]
+        if errors:
+            return errors
+
+        captured_list.unlink(missing_ok=True)
+        (object_root / "ObjectModule.bsl").write_text(
+            "Procedure Проверка()\n    // Ещё одно изменение\nEndProcedure\n",
+            encoding="utf-8",
+        )
+        environment["UNICA_V8_RUNNER_FAIL_PARTIAL"] = "1"
+        failed = subprocess.run(
+            command,
+            cwd=root,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        try:
+            failed_envelope = json.loads(failed.stdout)
+        except json.JSONDecodeError as error:
+            return [f"{label}: failed partial returned invalid JSON: {error}"]
+        return [
+            f"{label}: {error}"
+            for error in validate_v8_runner_failed_partial_receipt(
+                failed_envelope,
+                failed.returncode,
+                "main",
             )
         ]
 

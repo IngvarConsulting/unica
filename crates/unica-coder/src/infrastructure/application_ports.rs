@@ -32,7 +32,8 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
 use crate::infrastructure::diagnostics::BslAnalyzerDiagnosticProvider;
 use crate::infrastructure::internal_adapters::{
-    BslAnalyzerMcpAdapter, CliAdapter, RuntimeAdapter, RuntimeJobAdapter, StandardsAdapter,
+    BslAnalyzerMcpAdapter, CliAdapter, RuntimeAdapter, RuntimeInvocation, RuntimeJobAdapter,
+    StandardsAdapter,
 };
 use crate::infrastructure::metadata_operations::MetadataOperations;
 use crate::infrastructure::native_operations::subsystem;
@@ -572,20 +573,27 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .map(HandlerOutcome::plain)
             }
             ToolHandler::RuntimeAdapter => RuntimeAdapter::new()
-                .invoke_cancellable_with_data(
-                    spec.name,
-                    args,
-                    context,
-                    dry_run,
-                    spec.execution.is_mutating(),
+                .invoke_cancellable(
+                    RuntimeInvocation {
+                        tool_name: spec.name,
+                        args,
+                        context,
+                        dry_run,
+                        mutating: spec.execution.is_mutating(),
+                    },
                     cancellation,
                 )
                 .map(|outcome| match outcome.data {
                     Some(data) => HandlerOutcome::with_data(outcome.outcome, data),
                     None => HandlerOutcome::plain(outcome.outcome),
                 }),
-            ToolHandler::RuntimeJob { action } => RuntimeJobAdapter::invoke(
-                action, spec.name, args, context, dry_run,
+            ToolHandler::RuntimeJob { action } => RuntimeJobAdapter::invoke_cancellable(
+                action,
+                spec.name,
+                args,
+                context,
+                dry_run,
+                cancellation,
             )
             .map(|outcome| HandlerOutcome {
                 adapter: outcome.outcome,
@@ -1328,7 +1336,7 @@ mod tests {
     };
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -1419,6 +1427,8 @@ mod tests {
     struct StaticObjectSupportStateReaderFactory(ObjectSupportState);
 
     struct StaticObjectSupportStateReader(ObjectSupportState);
+
+    struct PanickingSupportStateReaderFactory;
 
     impl SupportStateReaderFactory for RecordingSupportStateReaderFactory {
         fn create<'a>(
@@ -1544,6 +1554,15 @@ mod tests {
             _target: &ResolvedSubsystemTarget,
         ) -> Result<ObjectSupportData, SupportReadError> {
             unreachable!("meta.info reads object support")
+        }
+    }
+
+    impl SupportStateReaderFactory for PanickingSupportStateReaderFactory {
+        fn create<'a>(
+            &'a self,
+            _context: &'a WorkspaceContext,
+        ) -> Box<dyn SupportStateReader + 'a> {
+            panic!("runtime handlers must not request a support-state reader")
         }
     }
 
@@ -1763,6 +1782,89 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn runtime_build_entry_points_do_not_select_strategy_from_support_state() {
+        use crate::application::ports::ApplicationPorts;
+
+        let root = tempfile::Builder::new()
+            .prefix("unica-runtime-support-preflight")
+            .tempdir()
+            .unwrap();
+        let workspace = root.path().canonicalize().unwrap();
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            concat!(
+                "format: DESIGNER\n",
+                "source-set:\n",
+                "  - name: main\n",
+                "    type: CONFIGURATION\n",
+                "    path: src\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("src/Configuration.xml"),
+            include_bytes!(
+                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+            ),
+        )
+        .unwrap();
+        let plugin_root = workspace.join("plugins/unica");
+        std::fs::create_dir_all(plugin_root.join("skills")).unwrap();
+        std::fs::create_dir_all(plugin_root.join("third-party")).unwrap();
+        std::fs::write(
+            plugin_root.join("third-party/tools.lock.json"),
+            include_bytes!("../../../../plugins/unica/third-party/tools.lock.json"),
+        )
+        .unwrap();
+        let mut context =
+            crate::infrastructure::workspace::discover_workspace(Some(workspace.clone()))
+                .expect("discover runtime preflight workspace");
+        context.cache_root = workspace.join(".build/unica");
+        let ports = super::InfrastructureApplicationPorts::with_support_reader_factory(Arc::new(
+            PanickingSupportStateReaderFactory,
+        ));
+        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
+
+        for (name, handler) in [
+            ("unica.runtime.execute", ToolHandler::RuntimeAdapter),
+            (
+                "unica.runtime.job.start",
+                ToolHandler::RuntimeJob {
+                    action: RuntimeJobAction::Start,
+                },
+            ),
+        ] {
+            let outcome = ports
+                .invoke_handler(
+                    spec(name, handler),
+                    &args,
+                    &context,
+                    InvocationMode::Preview,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let command = outcome.adapter.command.unwrap();
+            assert_eq!(command[1], "--json-message");
+            assert_eq!(command[2], "--config");
+            assert_eq!(
+                Path::new(&command[3]),
+                crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
+                    &workspace.join("v8project.yaml").canonicalize().unwrap(),
+                ),
+                "{name} must bind the command to the selected config"
+            );
+            assert_eq!(
+                command[4..],
+                ["build"],
+                "{name} must try the normal runner strategy before any fallback"
+            );
+        }
+
+        assert!(!context.cache_root.join("jobs").exists());
     }
 
     fn meta_info_request() -> MetaInfoRequest {
