@@ -19,6 +19,7 @@ OUTPUT_NAMES = (
     "plugin_content_changed",
     "ci_changed",
     "release_required",
+    "assessment_required",
 )
 
 TOOLCHAIN_PATHS = {
@@ -41,6 +42,10 @@ PACKAGE_PATHS = {
     "scripts/ci/package-unica-plugin.py",
     "scripts/ci/package-unica-runtime.py",
     "scripts/ci/release-assessment.py",
+    # The test travels with the script it guards. Without it a test-only change
+    # would claim the assessment contour while claiming no release or CI
+    # contour, and `evaluate-ci-gate.py` rejects that pair as contradictory.
+    "tests/ci/test_release_assessment.py",
     "scripts/ci/smoke-unica-bootstrap.py",
     "scripts/ci/smoke-unica-mcp.py",
     "scripts/ci/verify-release-assets.py",
@@ -98,6 +103,24 @@ SEARCH_INTEGRATION_PATHS = {
 SEARCH_INTEGRATION_PREFIXES = (
     "crates/unica-coder/src/infrastructure/platform/source_revision_fence",
 )
+# The long BSP assessment runs the packaged runtime end to end, so it follows
+# the search contour it exercises. These paths add what that contour does not
+# name: the runtime the assessment unpacks, and the routing that decides
+# whether the assessment runs at all.
+ASSESSMENT_PATHS = {
+    ".github/workflows/unica-plugin-release.yml",
+    "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
+    "plugins/unica/third-party/tools.lock.json",
+    "scripts/ci/build-unica-tools.py",
+    "scripts/ci/classify-workflow-changes.py",
+    "scripts/ci/evaluate-ci-gate.py",
+    "scripts/ci/package-unica-runtime.py",
+    "scripts/ci/release-assessment.py",
+    "tests/ci/test_classify_workflow_changes.py",
+    "tests/ci/test_evaluate_ci_gate.py",
+    "tests/ci/test_release_assessment.py",
+    "tests/ci/test_unica_workflow.py",
+}
 
 
 class Classification(NamedTuple):
@@ -109,6 +132,7 @@ class Classification(NamedTuple):
     plugin_content_changed: bool = False
     ci_changed: bool = False
     release_required: bool = False
+    assessment_required: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return dict(zip(OUTPUT_NAMES, self, strict=True))
@@ -167,6 +191,10 @@ def _is_ci_contract_path(path: str) -> bool:
     return path.startswith(".github/workflows/") or path in CI_CONTRACT_PATHS or path in PLATFORM_CONTRACT_PATHS
 
 
+def _is_assessment_path(path: str) -> bool:
+    return path in ASSESSMENT_PATHS
+
+
 def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classification:
     if force_full:
         return Classification(*([True] * len(OUTPUT_NAMES)))
@@ -178,6 +206,7 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
     package_changed = False
     plugin_content_changed = False
     ci_changed = False
+    assessment_required = False
 
     for raw_path in paths:
         path = normalize_path(raw_path)
@@ -194,10 +223,16 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
         package_changed |= path in PACKAGE_PATHS or _is_toolchain_path(path)
         plugin_content_changed |= path.startswith("plugins/unica/")
         ci_changed |= _is_ci_contract_path(path)
+        assessment_required |= _is_assessment_path(path)
 
     # The platform boundary is the source of truth. Unknown files inside it
     # must route conservatively even when their extension is not yet known.
     rust_changed |= platform_changed or toolchain_changed
+    # The assessment drives the search mechanism against a real BSP, so every
+    # path that routes the search contour routes the assessment too. Keeping it
+    # a derivation rather than a second list is what stops the two from
+    # drifting apart.
+    assessment_required |= search_integration_changed
     release_required = rust_changed or package_changed
     return Classification(
         rust_changed=rust_changed,
@@ -208,6 +243,7 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
         plugin_content_changed=plugin_content_changed,
         ci_changed=ci_changed,
         release_required=release_required,
+        assessment_required=assessment_required,
     )
 
 

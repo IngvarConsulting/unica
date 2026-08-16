@@ -25,6 +25,7 @@ OUTPUT_NAMES = (
     "plugin_content_changed",
     "ci_changed",
     "release_required",
+    "assessment_required",
 )
 
 
@@ -89,6 +90,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     platform_changed=True,
                     search_integration_changed=search_integration_changed,
                     release_required=True,
+                    assessment_required=search_integration_changed,
                 )
 
     def test_cargo_and_toolchain_changes_require_full_rust_and_package_contours(self) -> None:
@@ -101,6 +103,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     search_integration_changed=True,
                     package_changed=True,
                     release_required=True,
+                    assessment_required=True,
                 )
 
     def test_search_and_rlm_mechanism_changes_route_the_long_integration_test(self) -> None:
@@ -147,6 +150,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     platform_changed=platform_changed,
                     search_integration_changed=True,
                     release_required=True,
+                    assessment_required=True,
                 )
 
     def test_package_contract_changes_require_package_contour(self) -> None:
@@ -161,13 +165,26 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     package_changed=True,
                     plugin_content_changed=path.startswith("plugins/unica/"),
                     release_required=True,
+                    assessment_required=path in {
+                        "plugins/unica/third-party/tools.lock.json",
+                        "scripts/ci/package-unica-runtime.py",
+                    },
                 )
 
     def test_classifier_workflow_and_platform_guard_changes_fail_closed(self) -> None:
         cases = {
-            ".github/workflows/unica-plugin-release.yml": {"ci_changed": True},
-            "scripts/ci/classify-workflow-changes.py": {"ci_changed": True},
-            "tests/ci/test_classify_workflow_changes.py": {"ci_changed": True},
+            ".github/workflows/unica-plugin-release.yml": {
+                "ci_changed": True,
+                "assessment_required": True,
+            },
+            "scripts/ci/classify-workflow-changes.py": {
+                "ci_changed": True,
+                "assessment_required": True,
+            },
+            "tests/ci/test_classify_workflow_changes.py": {
+                "ci_changed": True,
+                "assessment_required": True,
+            },
             "scripts/ci/check-rust-platform-boundary.py": {
                 "rust_changed": True,
                 "platform_changed": True,
@@ -224,7 +241,55 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             package_changed=True,
             plugin_content_changed=True,
             release_required=True,
+            assessment_required=True,
         )
+
+    def test_release_assessment_routes_only_affected_mechanism(self) -> None:
+        """The hour-long BSP assessment is not the price of any Rust change.
+
+        The contour above proves the search mechanism routes it. What this one
+        states is the boundary: unrelated Rust stays out, and the packaged
+        runtime the assessment unpacks routes it without belonging to the
+        search contour at all.
+        """
+        self.assert_classification(
+            ["crates/unica-coder/src/domain/cache.rs"],
+            rust_changed=True,
+            release_required=True,
+        )
+
+        self.assert_classification(
+            ["crates/unica-coder/src/infrastructure/plugin_runtime.rs"],
+            rust_changed=True,
+            release_required=True,
+            assessment_required=True,
+        )
+
+        self.assert_classification(
+            ["scripts/ci/release-assessment.py"],
+            package_changed=True,
+            release_required=True,
+            assessment_required=True,
+        )
+
+    def test_every_assessment_path_also_claims_a_release_or_ci_contour(self) -> None:
+        """`evaluate-ci-gate.py` reads a lone assessment contour as a contradiction.
+
+        The assessment job hangs off the package pipeline, so a path that
+        routes it while claiming neither contour describes a run that cannot
+        happen — and the gate fails the whole workflow rather than the one
+        job. Deriving the contour from the search paths hides this, so the
+        explicit list is what needs stating.
+        """
+        module = load_classifier_module()
+
+        offenders = []
+        for path in sorted(module.ASSESSMENT_PATHS):
+            values = module.classify_paths([path]).as_dict()
+            if not (values["release_required"] or values["ci_changed"]):
+                offenders.append(path)
+
+        self.assertEqual([], offenders)
 
     def test_forced_full_contour_enables_every_output(self) -> None:
         module = load_classifier_module()
@@ -251,6 +316,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                 "plugin_content_changed=true",
                 "ci_changed=false",
                 "release_required=true",
+                "assessment_required=false",
             },
             set(output.splitlines()),
         )

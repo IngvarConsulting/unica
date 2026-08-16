@@ -335,11 +335,22 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             Ok(output) => {
                 let mut section =
                     parse_bsl_analyzer_search(&output.result_text, context, cancellation);
+                // Keep stderr wherever the section is the provider's own
+                // account of why it cannot serve — that includes waiting on
+                // the index, whose stderr names the dependency. A plain
+                // deadline timeout stays quiet: its stderr is a truncated
+                // stream, not an explanation.
                 let retain_stderr = match section.status {
                     ProviderSectionStatus::Ok
                     | ProviderSectionStatus::Empty
-                    | ProviderSectionStatus::LimitReached
-                    | ProviderSectionStatus::TimedOut => false,
+                    | ProviderSectionStatus::LimitReached => false,
+                    ProviderSectionStatus::TimedOut => section
+                        .termination
+                        .as_ref()
+                        .is_some_and(|termination| {
+                            termination.code
+                                == crate::domain::code_intelligence::SearchTerminationCode::DependencyPending
+                        }),
                     ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => true,
                 };
                 if retain_stderr && !output.stderr.trim().is_empty() {
@@ -772,11 +783,25 @@ fn parse_bsl_analyzer_search(
     }
     if let Ok(envelope) = serde_json::from_str::<Value>(trimmed) {
         if envelope.get("status").and_then(Value::as_str) == Some("not_ready") {
+            // The analyzer models this as pending and even ships
+            // `retry_after_ms` next to it: the next attempt is promised to
+            // differ. That is the retryable dependency the search contract
+            // spells `dependencyPending` — a permanent `unavailable` here
+            // told waiting consumers to give up on an index that was about
+            // to finish.
             let detail = envelope
                 .get("detail")
                 .and_then(Value::as_str)
                 .unwrap_or("bsl-analyzer search index is not ready");
-            return unavailable_section(ProviderId::BslAnalyzer, detail.to_string());
+            return ProviderSearchSection::dependency_pending(
+                ProviderId::BslAnalyzer.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                Vec::new(),
+                vec![detail.to_string()],
+                "buildingIndex",
+            )
+            .expect("dependency-pending bsl-analyzer section is valid");
         }
         return failed_section(
             ProviderId::BslAnalyzer,
@@ -1960,13 +1985,24 @@ mod tests {
     }
 
     #[test]
-    fn bsl_analyzer_not_ready_envelope_is_unavailable() {
+    fn bsl_analyzer_not_ready_envelope_is_a_retryable_dependency() {
+        // The analyzer names this state `Pending` and ships `retry_after_ms`
+        // alongside: it promises the next attempt can differ. Flattening that
+        // promise into a permanent `unavailable` is what made the release
+        // assessment refuse to wait for an index that was about to finish.
         let section = parse_bsl_analyzer_search(
             r#"{"status":"not_ready","detail":"indexing 40%","retry_after_ms":1500}"#,
             &context(),
         );
 
-        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+        let termination = section.termination.as_ref().unwrap();
+        assert_eq!(
+            termination.code,
+            crate::domain::code_intelligence::SearchTerminationCode::DependencyPending
+        );
+        assert!(termination.retryable);
+        assert_eq!(termination.detail_code.as_deref(), Some("buildingIndex"));
         assert_eq!(section.diagnostics, vec!["indexing 40%".to_string()]);
     }
 
@@ -2147,7 +2183,7 @@ mod tests {
     }
 
     #[test]
-    fn bsl_analyzer_unavailable_search_keeps_provider_stderr() {
+    fn bsl_analyzer_pending_index_search_keeps_provider_stderr() {
         let client = FakeBslClient {
             calls: Mutex::new(Vec::new()),
             output: WorkspaceServiceBslOutput {
@@ -2168,7 +2204,11 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+        assert_eq!(
+            section.termination.as_ref().unwrap().code,
+            crate::domain::code_intelligence::SearchTerminationCode::DependencyPending
+        );
         assert!(section
             .diagnostics
             .iter()

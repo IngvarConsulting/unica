@@ -122,6 +122,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "plugin_content_changed",
             "ci_changed",
             "release_required",
+            "assessment_required",
         ):
             with self.subTest(output=output):
                 self.assertIn(f"      {output}:", classifier)
@@ -215,6 +216,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event_name == 'pull_request'", probe)
         self.assertIn("github.event_name == 'workflow_dispatch'", probe)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
+
+    def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
+        text = self.release_text()
+        assessment = job_block(text, "release-assessment")
+
+        self.assertIn("needs: [classify-changes, build-tools]", assessment)
+        self.assertIn("assessment_required == 'true'", assessment)
+        self.assertIn("needs.build-tools.result == 'success'", assessment)
 
     def test_only_tag_pushes_enable_release_behavior(self) -> None:
         text = self.release_text()

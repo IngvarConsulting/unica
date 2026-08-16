@@ -17,6 +17,7 @@ import tarfile
 import threading
 import time
 import zipfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,9 @@ EXPECTED_PUBLIC_TOOLS = {
     "unica.meta.remove",
     "unica.standards.explain",
 }
+INDEX_WAIT_TIMEOUT_SECONDS = 300
+INDEX_POLL_INTERVAL_SECONDS = 1
+INDEXED_SEARCH_ROLES = ("semantic", "symbol")
 
 
 def utc_now() -> str:
@@ -162,7 +166,7 @@ def call_mcp(
     *,
     cwd: Path,
     cache_dir: Path,
-    timeout_seconds: int,
+    timeout_seconds: float,
 ) -> tuple[list[dict[str, Any]], int, str, str, int]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     # The rmcp-based server requires the MCP handshake before requests; prepend
@@ -538,7 +542,7 @@ def run_tool_scenario(
     title: str,
     tool: str,
     arguments: dict[str, Any],
-    timeout_seconds: int,
+    timeout_seconds: float,
     blocking: bool,
     require_payload_ok: bool,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -770,6 +774,141 @@ def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | Non
     if errors:
         scenario["status"] = "failed"
         scenario["errors"].extend(errors)
+
+
+def indexed_code_search_state(payload: dict[str, Any] | None) -> str:
+    """Classify how far the two indexed roles are from serving a search.
+
+    A still-building index is a typed fact, not a phrase in the diagnostics:
+    the role reports `timedOut` with a retryable `dependencyPending`
+    termination. Reading the code rather than the prose is what keeps this
+    poller from mistaking a pending index for a permanent failure.
+
+    Both halves of that pair have to hold. `retryable` is what promises the
+    next attempt can differ, so a payload carrying the code without it is
+    invalid and waiting on it would only spend the deadline.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    sections = data.get("sections") if isinstance(data, dict) else None
+    if not isinstance(sections, list):
+        return "terminal"
+    indexed = {
+        section.get("role"): section
+        for section in sections
+        if isinstance(section, dict) and section.get("role") in INDEXED_SEARCH_ROLES
+    }
+    if set(indexed) != set(INDEXED_SEARCH_ROLES):
+        return "terminal"
+    if any(
+        section.get("status") in {"ok", "empty", "limitReached"} for section in indexed.values()
+    ):
+        return "ready"
+    # One role that can still become ready is reason enough to wait: the other
+    # may have failed permanently and the search still succeeds once this one
+    # finishes indexing.
+    if any(
+        section.get("status") == "timedOut"
+        and isinstance(section.get("termination"), dict)
+        and section["termination"].get("code") == "dependencyPending"
+        and section["termination"].get("retryable") is True
+        for section in indexed.values()
+    ):
+        return "building"
+    return "terminal"
+
+
+def describe_indexed_roles(payload: dict[str, Any] | None) -> str:
+    """Name what each indexed role actually reported.
+
+    The report keeps counts, not payloads, so a bare "no indexed provider
+    became ready" leaves the next reader with nothing to act on: a role that
+    is missing, one that is still building, and one whose binary is absent all
+    produce the same sentence. Naming the status, the termination code and the
+    first diagnostic is what makes the failure answerable from the artifact
+    alone.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    sections = data.get("sections") if isinstance(data, dict) else None
+    if not isinstance(sections, list):
+        return "no sections were reported"
+    described = []
+    for section in sections:
+        if not isinstance(section, dict) or section.get("role") not in INDEXED_SEARCH_ROLES:
+            continue
+        termination = section.get("termination")
+        code = termination.get("code") if isinstance(termination, dict) else None
+        diagnostics = section.get("diagnostics")
+        detail = diagnostics[0] if isinstance(diagnostics, list) and diagnostics else ""
+        described.append(
+            f"{section.get('role')}={section.get('status')}"
+            + (f"/{code}" if code else "")
+            + (f" ({detail})" if detail else "")
+        )
+    return "; ".join(described) if described else "no indexed roles were reported"
+
+
+def wait_for_indexed_code_search(
+    run_attempt: Callable[[float], tuple[dict[str, Any], dict[str, Any] | None]],
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float = INDEX_POLL_INTERVAL_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    deadline = monotonic() + timeout_seconds
+    attempts = 0
+    total_duration_ms = 0
+    last: tuple[dict[str, Any], dict[str, Any] | None] | None = None
+
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            if last is None:
+                raise ValueError("indexed code search timeout must be positive")
+            scenario, payload = last
+            scenario["status"] = "failed"
+            scenario["errors"].append(
+                f"indexed code search did not become ready within {timeout_seconds:g} seconds"
+            )
+            scenario["durationMs"] = total_duration_ms
+            scenario["metrics"] = {
+                **scenario["metrics"],
+                "indexAttempts": attempts,
+                "indexedState": "building",
+            }
+            return scenario, payload
+
+        scenario, payload = run_attempt(remaining)
+        attempts += 1
+        total_duration_ms += int(scenario.get("durationMs", 0))
+        last = scenario, payload
+        state = indexed_code_search_state(payload)
+        if state == "ready":
+            scenario["durationMs"] = total_duration_ms
+            scenario["metrics"] = {
+                **scenario["metrics"],
+                "indexAttempts": attempts,
+                "indexedState": state,
+            }
+            return scenario, payload
+        if state == "terminal":
+            scenario["status"] = "failed"
+            scenario["errors"].append(
+                "indexed code search terminated; no indexed provider became ready: "
+                + describe_indexed_roles(payload)
+            )
+            scenario["durationMs"] = total_duration_ms
+            scenario["metrics"] = {
+                **scenario["metrics"],
+                "indexAttempts": attempts,
+                "indexedState": state,
+            }
+            return scenario, payload
+
+        sleep_budget = deadline - monotonic()
+        if sleep_budget <= 0:
+            continue
+        sleep(min(poll_interval_seconds, sleep_budget))
 
 
 def relpath(path: Path, root: Path) -> str:
@@ -1016,20 +1155,32 @@ def build_assessment_report(
         base_scenarios = []
 
     for scenario_id, title, tool, arguments, blocking, require_payload_ok in base_scenarios:
-        scenario, payload = run_tool_scenario(
-            run_unica,
-            bsp_root=bsp_root,
-            cache_dir=cache_dir,
-            scenario_id=scenario_id,
-            title=title,
-            tool=tool,
-            arguments=arguments,
-            timeout_seconds=timeout_seconds,
-            blocking=blocking,
-            require_payload_ok=require_payload_ok,
-        )
+        def run_attempt(attempt_timeout_seconds: float) -> tuple[dict[str, Any], dict[str, Any] | None]:
+            return run_tool_scenario(
+                run_unica,
+                bsp_root=bsp_root,
+                cache_dir=cache_dir,
+                scenario_id=scenario_id,
+                title=title,
+                tool=tool,
+                arguments=arguments,
+                timeout_seconds=attempt_timeout_seconds,
+                blocking=blocking,
+                require_payload_ok=require_payload_ok,
+            )
+
+        # A fresh BSP has no index yet, so the search scenario is allowed to
+        # retry until one indexed role is ready. Every attempt draws from the
+        # one readiness deadline, so retrying cannot extend the assessment by
+        # another full per-attempt timeout.
         if scenario_id == "code-search":
+            scenario, payload = wait_for_indexed_code_search(
+                run_attempt,
+                timeout_seconds=min(timeout_seconds, INDEX_WAIT_TIMEOUT_SECONDS),
+            )
             validate_code_search(scenario, payload)
+        else:
+            scenario, payload = run_attempt(float(timeout_seconds))
         scenarios.append(scenario)
         diagnostic_codes.extend(extract_diagnostic_codes(payload))
 

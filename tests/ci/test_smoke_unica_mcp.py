@@ -1614,6 +1614,33 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("inconsistent success state", result.stderr)
 
+    def test_unavailable_bsl_analyzer_is_terminal_even_with_building_prose(self) -> None:
+        """`unavailable` is permanent; prose in the diagnostics cannot soften it.
+
+        The building state now arrives as `timedOut`/`dependencyPending`, so an
+        `unavailable` carrying the old sentence is a provider defect to surface,
+        not a wait to keep taking.
+        """
+        payload = {
+            "data": {
+                "sections": [
+                    {"provider": "rlm", "status": "empty", "hits": []},
+                    {
+                        "provider": "bsl-analyzer",
+                        "status": "unavailable",
+                        "hits": [],
+                        "diagnostics": [
+                            "Search index is being built, please try again in a moment."
+                        ],
+                    },
+                    {"provider": "git-grep", "status": "empty", "hits": []},
+                ]
+            }
+        }
+
+        with self.assertRaises(SystemExit):
+            load_module()._bsl_search_is_ready(payload)
+
     def test_retries_bsl_analyzer_while_search_index_is_being_built(self) -> None:
         payload = {
             "data": {
@@ -1627,7 +1654,12 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     },
                     {
                         "provider": "bsl-analyzer",
-                        "status": "unavailable",
+                        "status": "timedOut",
+                        "termination": {
+                            "code": "dependencyPending",
+                            "retryable": True,
+                            "detailCode": "buildingIndex",
+                        },
                         "hits": [],
                         "diagnostics": [
                             "Search index is being built, please try again in a moment."
@@ -1656,7 +1688,12 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                     {"provider": "rlm", "status": "empty", "hits": []},
                     {
                         "provider": "bsl-analyzer",
-                        "status": "unavailable",
+                        "status": "timedOut",
+                        "termination": {
+                            "code": "dependencyPending",
+                            "retryable": True,
+                            "detailCode": "buildingIndex",
+                        },
                         "hits": [],
                         "diagnostics": ["Search index is being built"],
                     },

@@ -26,13 +26,14 @@ OUTPUT_NAMES = (
     "plugin_content_changed",
     "ci_changed",
     "release_required",
+    "assessment_required",
 )
 ALWAYS_SUCCESS = {"classify-changes": "success", "verify-source": "success"}
 PACKAGE_SUCCESS = {
     "build-tools": "success",
     "package-thin": "success",
-    "release-assessment": "success",
 }
+ASSESSMENT_SUCCESS = {"release-assessment": "success"}
 PUBLISH_SKIPPED = {
     "publish-release-assets": "skipped",
     "smoke-thin-plugin": "skipped",
@@ -102,6 +103,34 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("platform", evaluation.contour)
         self.assertEqual("skipped", evaluation.expected["test-rust-primary"])
 
+    def test_long_assessment_requires_affected_mechanism_or_full_contour(self) -> None:
+        module = load_gate_module()
+        ordinary_outputs = classification(rust_changed=True, release_required=True)
+        ordinary_results = {
+            **source_results(),
+            "test-rust-primary": "success",
+            **PACKAGE_SUCCESS,
+            "probe-thin-bootstrap": "success",
+        }
+        affected_outputs = classification(
+            rust_changed=True,
+            release_required=True,
+            assessment_required=True,
+        )
+        affected_results = {**ordinary_results, **ASSESSMENT_SUCCESS}
+
+        ordinary = module.evaluate_gate(
+            "pull_request", "refs/pull/155/merge", ordinary_outputs, ordinary_results
+        )
+        affected = module.evaluate_gate(
+            "pull_request", "refs/pull/155/merge", affected_outputs, affected_results
+        )
+
+        self.assertTrue(ordinary.ok)
+        self.assertEqual("skipped", ordinary.expected["release-assessment"])
+        self.assertTrue(affected.ok)
+        self.assertEqual("success", affected.expected["release-assessment"])
+
     def test_ci_full_pr_runs_all_validation_and_package_jobs_without_publication(self) -> None:
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
@@ -110,6 +139,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "test-rust-platforms": "success",
             "test-search-integration": "success",
             **PACKAGE_SUCCESS,
+            **ASSESSMENT_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
 
@@ -146,6 +176,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "test-rust-platforms": "success",
             "test-search-integration": "success",
             **PACKAGE_SUCCESS,
+            **ASSESSMENT_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
         tag = {
@@ -172,6 +203,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "test-rust-platforms": "success",
             "test-search-integration": "success",
             **PACKAGE_SUCCESS,
+            **ASSESSMENT_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
 
@@ -212,6 +244,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "test-rust-platforms": "failure",
             "test-search-integration": "success",
             **PACKAGE_SUCCESS,
+            **ASSESSMENT_SUCCESS,
             "package-thin": "skipped",
             "probe-thin-bootstrap": "success",
         }

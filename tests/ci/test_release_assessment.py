@@ -32,6 +32,72 @@ def load_bsp_harvest_module():
 
 
 class ReleaseAssessmentTests(unittest.TestCase):
+    def building_section(self, role: str, provider: str) -> dict:
+        """A role whose index is still being built: retryable, not broken."""
+        return {
+            "role": role,
+            "provider": provider,
+            "status": "timedOut",
+            "termination": {
+                "code": "dependencyPending",
+                "retryable": True,
+                "detailCode": "index_building",
+            },
+            "hits": [],
+            "diagnostics": [],
+        }
+
+    def ready_section(self, role: str, provider: str) -> dict:
+        return {
+            "role": role,
+            "provider": provider,
+            "status": "empty",
+            "termination": None,
+            "hits": [],
+            "diagnostics": [],
+        }
+
+    def failed_section(self, role: str, provider: str) -> dict:
+        return {
+            "role": role,
+            "provider": provider,
+            "status": "failed",
+            "termination": {"code": "providerFailed", "retryable": False},
+            "hits": [],
+            "diagnostics": ["index build failed"],
+        }
+
+    def search_payload(self, *, semantic: dict | None = None, symbol: dict | None = None) -> dict:
+        return {
+            "data": {
+                "sections": [
+                    semantic or self.building_section("semantic", "rlm"),
+                    symbol or self.building_section("symbol", "bsl-analyzer"),
+                    {
+                        "role": "lexical",
+                        "provider": "git-grep",
+                        "status": "empty",
+                        "termination": None,
+                        "hits": [],
+                        "diagnostics": [],
+                    },
+                ]
+            }
+        }
+
+    def search_scenario(self, *, status: str, errors: list[str] | None = None) -> dict:
+        module = load_assessment_module()
+        return module.scenario_result(
+            scenario_id="code-search",
+            title="search",
+            tool="unica.code.search",
+            arguments={},
+            status=status,
+            duration_ms=5,
+            blocking=True,
+            errors=errors,
+        )
+
     def test_release_gate_requires_only_the_four_current_meta_tools(self) -> None:
         module = load_assessment_module()
         meta_tools = {
@@ -808,6 +874,168 @@ for raw in sys.stdin:
         self.assertEqual(
             message["params"]["_meta"]["progressToken"],
             "release-assessment-code-search",
+        )
+
+    def test_indexed_code_search_waits_for_a_building_role_to_become_ready(self) -> None:
+        """A fresh BSP has no index, and that is not a release defect.
+
+        The pending state arrives as a typed retryable `dependencyPending`
+        termination, so the poller must read the code rather than the
+        diagnostics prose it happens to carry.
+        """
+        module = load_assessment_module()
+        attempts = iter(
+            [
+                (
+                    self.search_scenario(status="failed", errors=["no role served the request"]),
+                    self.search_payload(semantic=self.building_section("semantic", "rlm")),
+                ),
+                (
+                    self.search_scenario(status="passed"),
+                    self.search_payload(semantic=self.ready_section("semantic", "rlm")),
+                ),
+            ]
+        )
+        sleeps: list[float] = []
+
+        scenario, payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: next(attempts),
+            timeout_seconds=10,
+            poll_interval_seconds=2,
+            sleep=sleeps.append,
+        )
+
+        self.assertEqual("passed", scenario["status"])
+        self.assertEqual(2, scenario["metrics"]["indexAttempts"])
+        self.assertEqual("ready", scenario["metrics"]["indexedState"])
+        self.assertEqual([2], sleeps)
+        self.assertEqual("ready", module.indexed_code_search_state(payload))
+
+    def test_indexed_code_search_waits_while_one_role_can_still_become_ready(self) -> None:
+        """A permanently failed role does not settle the search on its own."""
+        module = load_assessment_module()
+        payload = self.search_payload(
+            semantic=self.building_section("semantic", "rlm"),
+            symbol=self.failed_section("symbol", "bsl-analyzer"),
+        )
+
+        self.assertEqual("building", module.indexed_code_search_state(payload))
+
+    def test_indexed_code_search_treats_a_non_retryable_pending_role_as_terminal(self) -> None:
+        """`dependencyPending` promises a retry; without one there is none.
+
+        The code alone does not say the wait is worth taking — the contract
+        pairs it with `retryable`, and a payload that drops the pair is
+        invalid. Reading only the code would spend the whole readiness
+        deadline before failing on something already known to be broken.
+        """
+        module = load_assessment_module()
+        pending = self.building_section("semantic", "rlm")
+        pending["termination"]["retryable"] = False
+        payload = self.search_payload(
+            semantic=pending,
+            symbol=self.failed_section("symbol", "bsl-analyzer"),
+        )
+        sleeps: list[float] = []
+
+        self.assertEqual("terminal", module.indexed_code_search_state(payload))
+
+        scenario, _payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: (self.search_scenario(status="passed"), payload),
+            timeout_seconds=300,
+            sleep=sleeps.append,
+        )
+
+        self.assertEqual("failed", scenario["status"])
+        self.assertEqual(1, scenario["metrics"]["indexAttempts"])
+        self.assertEqual([], sleeps)
+
+    def test_indexed_code_search_fails_when_no_role_can_become_ready(self) -> None:
+        module = load_assessment_module()
+        terminal_payload = self.search_payload(
+            semantic=self.failed_section("semantic", "rlm"),
+            symbol=self.failed_section("symbol", "bsl-analyzer"),
+        )
+        sleeps: list[float] = []
+
+        scenario, payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: (self.search_scenario(status="passed"), terminal_payload),
+            timeout_seconds=10,
+            sleep=sleeps.append,
+        )
+
+        self.assertEqual("failed", scenario["status"])
+        self.assertIs(payload, terminal_payload)
+        self.assertEqual(1, scenario["metrics"]["indexAttempts"])
+        self.assertEqual("terminal", scenario["metrics"]["indexedState"])
+        self.assertTrue(
+            any("no indexed provider became ready" in error for error in scenario["errors"]),
+            scenario,
+        )
+        self.assertEqual([], sleeps)
+
+    def test_terminal_indexed_search_names_what_each_role_reported(self) -> None:
+        """The artifact keeps counts, not payloads, so the error must carry them.
+
+        A role that is absent, one still building, and one whose binary is
+        missing all end the wait the same way. Without the status, the
+        termination code and the diagnostic in the message, the report cannot
+        tell a reader which of those happened.
+        """
+        module = load_assessment_module()
+        payload = self.search_payload(
+            semantic=self.failed_section("semantic", "rlm"),
+            symbol=self.failed_section("symbol", "bsl-analyzer"),
+        )
+
+        described = module.describe_indexed_roles(payload)
+
+        self.assertIn("semantic=failed/providerFailed", described)
+        self.assertIn("symbol=failed/providerFailed", described)
+        self.assertIn("index build failed", described)
+
+        scenario, _payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: (self.search_scenario(status="passed"), payload),
+            timeout_seconds=10,
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertTrue(
+            any("semantic=failed/providerFailed" in error for error in scenario["errors"]),
+            scenario["errors"],
+        )
+
+    def test_indexed_code_search_caps_each_attempt_to_the_remaining_deadline(self) -> None:
+        """Retrying must not buy another full per-attempt timeout."""
+        module = load_assessment_module()
+        pending_payload = self.search_payload(
+            semantic=self.building_section("semantic", "rlm"),
+            symbol=self.building_section("symbol", "bsl-analyzer"),
+        )
+        now = [0.0]
+        budgets: list[float] = []
+
+        def run_attempt(remaining_seconds: float):
+            budgets.append(remaining_seconds)
+            now[0] += 4.0
+            return (
+                self.search_scenario(status="failed", errors=["still indexing"]),
+                pending_payload,
+            )
+
+        scenario, _payload = module.wait_for_indexed_code_search(
+            run_attempt,
+            timeout_seconds=10,
+            poll_interval_seconds=1,
+            monotonic=lambda: now[0],
+            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        )
+
+        self.assertEqual("failed", scenario["status"])
+        self.assertEqual([10.0, 5.0], budgets)
+        self.assertTrue(
+            any("did not become ready within 10 seconds" in error for error in scenario["errors"]),
+            scenario,
         )
 
     def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:
