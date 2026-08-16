@@ -93,6 +93,121 @@ class ReleaseWardenTests(unittest.TestCase):
         self.assertEqual(action.kind, "wait")
         self.assertIn("v0.9.2", action.detail)
 
+    def test_a_failed_promotion_is_kicked_once_the_tag_exists(self) -> None:
+        """Pushing the tag re-triggers nothing by itself.
+
+        The install checks failed before the tag existed, and GitHub does not
+        re-run a pull request's checks on a tag push. Without this action the
+        release stalls right after the human does their part, until someone
+        reruns the failed run by hand — the one manual step the runbook still
+        carried.
+        """
+        promote = self.pull(
+            "codex/promote-v0.9.2-1",
+            checks=(("consumer-fresh-install", "COMPLETED", "FAILURE"),),
+        )
+
+        action = self.module.decide(
+            self.module.ReleaseState(
+                "v0.9.2",
+                "v0.9.1",
+                promote_pr=promote,
+                marketplace_tag_exists=True,
+                promotion_checks_run=self.module.WorkflowRun(id=42, attempt=1),
+            )
+        )
+
+        self.assertEqual(action.kind, "kick-promotion")
+        self.assertEqual(action.pull_request, 7)
+        self.assertEqual(action.context["run_id"], "42")
+
+    def test_a_promotion_that_failed_after_the_kick_is_an_alert_not_a_loop(self) -> None:
+        """A second failure with the tag published is a real defect.
+
+        The first failure is expected — the checks ran before the tag. A rerun
+        that fails again cannot be explained by the missing tag, so kicking it
+        every scheduled run would just hide a broken install path behind
+        retries.
+        """
+        promote = self.pull(
+            "codex/promote-v0.9.2-1",
+            checks=(("consumer-fresh-install", "COMPLETED", "FAILURE"),),
+        )
+
+        action = self.module.decide(
+            self.module.ReleaseState(
+                "v0.9.2",
+                "v0.9.1",
+                promote_pr=promote,
+                marketplace_tag_exists=True,
+                promotion_checks_run=self.module.WorkflowRun(id=42, attempt=2),
+            )
+        )
+
+        self.assertEqual(action.kind, "alert")
+        self.assertIn("tag", action.detail)
+
+    def test_a_pending_promotion_run_is_not_kicked(self) -> None:
+        """A rerun of an in-flight run would cancel the very evidence awaited."""
+        promote = self.pull(
+            "codex/promote-v0.9.2-1",
+            checks=(("consumer-fresh-install", "IN_PROGRESS", None),),
+        )
+
+        action = self.module.decide(
+            self.module.ReleaseState(
+                "v0.9.2",
+                "v0.9.1",
+                promote_pr=promote,
+                marketplace_tag_exists=True,
+                promotion_checks_run=self.module.WorkflowRun(id=42, attempt=1),
+            )
+        )
+
+        self.assertEqual(action.kind, "wait")
+
+    def test_the_promotion_run_is_selected_by_event_and_head_sha(self) -> None:
+        """The branch also carries runs of other workflows and other commits.
+
+        `runs[0]` of a bare branch listing can be a newer unrelated run; kicking
+        it would rerun someone else's jobs, and its attempt count would fake a
+        second-attempt failure. The blocking checks belong to the pull_request
+        run at the PR head, so that is the only run worth selecting.
+        """
+        runs = [
+            {"databaseId": 99, "attempt": 3, "event": "push", "headSha": "aaa"},
+            {"databaseId": 42, "attempt": 1, "event": "pull_request", "headSha": "abc"},
+        ]
+
+        selected = self.module.select_promotion_run(runs, "abc")
+
+        self.assertEqual(selected, self.module.WorkflowRun(id=42, attempt=1))
+
+    def test_an_unidentifiable_promotion_run_is_not_kicked(self) -> None:
+        """No matching run means nothing safe to rerun — surface it instead."""
+        self.assertIsNone(
+            self.module.select_promotion_run(
+                [{"databaseId": 99, "attempt": 1, "event": "pull_request", "headSha": "zzz"}],
+                "abc",
+            )
+        )
+
+        promote = self.pull(
+            "codex/promote-v0.9.2-1",
+            checks=(("consumer-fresh-install", "COMPLETED", "FAILURE"),),
+        )
+        action = self.module.decide(
+            self.module.ReleaseState(
+                "v0.9.2",
+                "v0.9.1",
+                promote_pr=promote,
+                marketplace_tag_exists=True,
+                promotion_checks_run=None,
+            )
+        )
+
+        self.assertEqual(action.kind, "alert")
+
     def test_a_green_promotion_publishes_the_release(self) -> None:
         promote = self.pull("codex/promote-v0.9.2-1", checks=self.green())
 
