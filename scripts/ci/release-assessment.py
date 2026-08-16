@@ -817,6 +817,36 @@ def indexed_code_search_state(payload: dict[str, Any] | None) -> str:
     return "terminal"
 
 
+def describe_indexed_roles(payload: dict[str, Any] | None) -> str:
+    """Name what each indexed role actually reported.
+
+    The report keeps counts, not payloads, so a bare "no indexed provider
+    became ready" leaves the next reader with nothing to act on: a role that
+    is missing, one that is still building, and one whose binary is absent all
+    produce the same sentence. Naming the status, the termination code and the
+    first diagnostic is what makes the failure answerable from the artifact
+    alone.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    sections = data.get("sections") if isinstance(data, dict) else None
+    if not isinstance(sections, list):
+        return "no sections were reported"
+    described = []
+    for section in sections:
+        if not isinstance(section, dict) or section.get("role") not in INDEXED_SEARCH_ROLES:
+            continue
+        termination = section.get("termination")
+        code = termination.get("code") if isinstance(termination, dict) else None
+        diagnostics = section.get("diagnostics")
+        detail = diagnostics[0] if isinstance(diagnostics, list) and diagnostics else ""
+        described.append(
+            f"{section.get('role')}={section.get('status')}"
+            + (f"/{code}" if code else "")
+            + (f" ({detail})" if detail else "")
+        )
+    return "; ".join(described) if described else "no indexed roles were reported"
+
+
 def wait_for_indexed_code_search(
     run_attempt: Callable[[float], tuple[dict[str, Any], dict[str, Any] | None]],
     *,
@@ -864,7 +894,8 @@ def wait_for_indexed_code_search(
         if state == "terminal":
             scenario["status"] = "failed"
             scenario["errors"].append(
-                "indexed code search terminated; no indexed provider became ready"
+                "indexed code search terminated; no indexed provider became ready: "
+                + describe_indexed_roles(payload)
             )
             scenario["durationMs"] = total_duration_ms
             scenario["metrics"] = {

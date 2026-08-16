@@ -974,6 +974,37 @@ for raw in sys.stdin:
         )
         self.assertEqual([], sleeps)
 
+    def test_terminal_indexed_search_names_what_each_role_reported(self) -> None:
+        """The artifact keeps counts, not payloads, so the error must carry them.
+
+        A role that is absent, one still building, and one whose binary is
+        missing all end the wait the same way. Without the status, the
+        termination code and the diagnostic in the message, the report cannot
+        tell a reader which of those happened.
+        """
+        module = load_assessment_module()
+        payload = self.search_payload(
+            semantic=self.failed_section("semantic", "rlm"),
+            symbol=self.failed_section("symbol", "bsl-analyzer"),
+        )
+
+        described = module.describe_indexed_roles(payload)
+
+        self.assertIn("semantic=failed/providerFailed", described)
+        self.assertIn("symbol=failed/providerFailed", described)
+        self.assertIn("index build failed", described)
+
+        scenario, _payload = module.wait_for_indexed_code_search(
+            lambda _remaining_seconds: (self.search_scenario(status="passed"), payload),
+            timeout_seconds=10,
+            sleep=lambda _seconds: None,
+        )
+
+        self.assertTrue(
+            any("semantic=failed/providerFailed" in error for error in scenario["errors"]),
+            scenario["errors"],
+        )
+
     def test_indexed_code_search_caps_each_attempt_to_the_remaining_deadline(self) -> None:
         """Retrying must not buy another full per-attempt timeout."""
         module = load_assessment_module()
