@@ -1,6 +1,6 @@
 ---
 name: test-authoring
-description: "Проектирование и запуск тестов 1С: test-authoring, yaxunit-test и Vanessa Automation. Используй когда нужно написать тест, подобрать сценарии, запустить all/module тесты или проверить изменение через Unica runtime."
+description: "Проектирование тестов 1С и preview команд YaXUnit/Vanessa Automation. Используй когда нужно написать тест, подобрать сценарии или подготовить all/module запуск; текущий Unica runtime не выполняет applied-запуск."
 ---
 
 # Test Authoring
@@ -8,6 +8,7 @@ description: "Проектирование и запуск тестов 1С: tes
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.project.map`, `unica.runtime.execute`, and the relevant `unica.*.info` tools.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `unica.standards.search` or `unica.standards.explain` only when test design depends on a `development-standard`. Expected platform API or mechanics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap.
 - Do not call internal runtime, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -17,8 +18,8 @@ description: "Проектирование и запуск тестов 1С: tes
 2. Search existing tests and fixtures with `unica.code.search`; follow local naming, setup, teardown, and assertion style.
 3. Prefer YaXUnit for module/unit-level BSL behavior and Vanessa Automation for UI/business scenarios that require a client.
 4. Build the smallest stable fixture. Avoid dependence on production data unless the user explicitly requests an integration test.
-5. Run `unica.runtime.execute` with `operation=syntax` after adding test code, then `operation=test` with `testRunner=yaxunit` or `testRunner=va`.
-6. Report exact failing test, expected/actual behavior, and whether the failure is test setup or product behavior.
+5. Preview `unica.runtime.execute` with `operation=syntax` after adding test code, then preview `operation=test` with `testRunner=yaxunit` or `testRunner=va`; neither call executes the test suite.
+6. Report that runtime verification was not performed. If separate test evidence is supplied, report the exact failing test, expected/actual behavior, and whether the failure is test setup or product behavior.
 
 ## Verification gate
 
@@ -27,9 +28,9 @@ description: "Проектирование и запуск тестов 1С: tes
 - For public API, integration, release, or metadata behavior, include impact
   analysis evidence from the relevant `unica.*` tools before treating the test
   plan as complete.
-- Do not call donor-specific check commands; route verification through
-  `unica.runtime.execute`, `unica.code.diagnostics`, and focused `unica.*.info`
-  tools.
+- Do not call donor-specific check commands. Use `unica.code.diagnostics` and
+  focused `unica.*.info` tools for available static checks; use
+  `unica.runtime.execute` only to preview the intended runtime request.
 
 ## Scenario design
 
@@ -37,7 +38,7 @@ description: "Проектирование и запуск тестов 1С: tes
 - Read `../../references/platform/runtime-diagnostics.md` when a test is meant to reproduce a user-facing runtime failure.
 - Treat tests as executable debugging: one test should prove the intended user/API scenario, the failure mode, and the regression boundary.
 - For API scenarios, cover success, validation error, auth error, duplicate/idempotent retry, remote timeout, and stable error semantics.
-- For UI or web-client scenarios, use `operation=test` for the 1C test suite and hand a concrete autonomous URL to an external browser-testing tool when UI automation is required.
+- For UI or web-client scenarios, preview `operation=test` for the 1C test suite. Hand a concrete autonomous URL to an external browser-testing tool only when that URL and its running environment were supplied independently.
 
 ## MCP examples
 
@@ -53,7 +54,7 @@ description: "Проектирование и запуск тестов 1С: tes
       "testRunner": "yaxunit",
       "testScope": "module",
       "module": "ТестДокументаЗаказКлиента",
-      "dryRun": false
+      "dryRun": true
     }
   }
 }
@@ -69,7 +70,7 @@ description: "Проектирование и запуск тестов 1С: tes
       "cwd": "<workspace>",
       "operation": "test",
       "testRunner": "va",
-      "dryRun": false
+      "dryRun": true
     }
   }
 }

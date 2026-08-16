@@ -1,14 +1,20 @@
 # v8project.yaml Contract
 
 `v8project.yaml` is the only project configuration format used by Unica skills.
-Use MCP `unica.runtime.execute` argument `config` when the config file is not located at `./v8project.yaml`.
+In a preview, use MCP `unica.runtime.execute` argument `config` when the config
+file is not located at `./v8project.yaml`.
+
+По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
+только с `dryRun: true`; любой applied-режим возвращает fail-closed до
+workspace discovery и process spawn. Preview не является runtime verification.
+Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 
 For a new repository with no workspace, use the `v8-runner` skill first. It
-creates `v8project.yaml` through MCP `unica.runtime.execute`, prepares the
-default `src` source-set, checks database access, and stops on license problems
-instead of attempting environment repair.
+can preview creation of `v8project.yaml` through MCP `unica.runtime.execute`.
+It does not create the file, prepare the default `src` source-set, check
+database access, or inspect a live license in the current contract.
 
-Create or refresh the config through MCP `unica.runtime.execute`:
+Preview the config-init arguments through MCP `unica.runtime.execute`:
 
 ```json
 {
@@ -17,9 +23,11 @@ Create or refresh the config through MCP `unica.runtime.execute`:
   "params": {
     "name": "unica.runtime.execute",
     "arguments": {
+      "cwd": "<workspace>",
       "operation": "config-init",
       "config": "./v8project.yaml",
-      "connection": "<connection-string>"
+      "connection": "<connection-string>",
+      "dryRun": true
     }
   }
 }
@@ -51,8 +59,9 @@ directory containing the primary config.
 
 `execution_timeout` is the v8-runner operation budget in milliseconds. The
 default is `300000`; v8-runner validates the value in the `1..=86400000` range.
-For a known long operation, change this project config value instead of adding a
-Unica wrapper timeout argument.
+For a future admitted long operation, this project config value is the runner
+budget; it is not a reason to attempt the currently blocked applied call or add
+a Unica wrapper timeout argument.
 
 Server infobase connections use the normal 1C connection string form in
 `infobase.connection`, for example `Srvr="srv01";Ref="dev";`. IBCMD server
@@ -110,30 +119,36 @@ has global `format: EDT`.
 
 ## Command Mapping
 
-Use the `v8-runner` skill and MCP `unica.runtime.execute` for runtime operations.
+Use the `v8-runner` skill and MCP `unica.runtime.execute` only for previews of
+runtime operation arguments.
 
 | Operation | MCP arguments |
 | --- | --- |
-| Create project config | `operation=config-init`, `connection=<connection>` |
-| Initialize infobase/workspace | `operation=init` |
-| Load XML sources and update DB | `operation=build` |
-| Force full source load | `operation=build`, `fullRebuild=true` |
-| Dump configuration/extension XML sources | synchronous `operation=dump`, `mode=full`; Unica verifies exact platform 8.3.27.x and staged raw format 2.20 before publication |
+| Preview project config creation | `operation=config-init`, `connection=<connection>`, `dryRun=true` |
+| Preview infobase/workspace initialization | `operation=init`, `dryRun=true` |
+| Preview loading XML sources | `operation=build`, `dryRun=true` |
+| Preview a full source load | `operation=build`, `fullRebuild=true`, `dryRun=true` |
+| Preview configuration/extension XML dump | synchronous `operation=dump`, `mode=full`, `dryRun=true`; applied post-run validation/publication has no proved receipt bound |
 | Preview external source-set dump | `operation=dump`, `mode=full`, `sourceSet=<external>`, `dryRun=true`; applied external dump is fail-closed |
-| Preview incremental/selected dump | `operation=dump`, `mode=incremental|partial`, `dryRun=true`; partial also requires `object=TYPE:NAME` or `objects=[...]` |
-| Load `.cf` / `.cfe` artifact | `operation=load`, `path=<file>`, `mode=load|merge` |
-| Export `.cf` / `.cfe` artifact | `operation=make`, `output=<file>` |
-| Launch 1C | `operation=launch`, `clientMode=thin|thick|designer|ordinary` |
-| Run syntax checks | `operation=syntax`, `mode=designer-config|designer-modules|edt` |
-| Run tests | `operation=test`, `testRunner=yaxunit|va` |
-| Download configured tools | `operation=tools-download`, `tool=yaxunit|vanessa|client-mcp` |
+| Preview incremental/selected dump | `operation=dump`, `mode=incremental` or `mode=partial`, `dryRun=true`; partial also requires `object=TYPE:NAME` or `objects=[...]` |
+| Preview `.cf` / `.cfe` artifact load | `operation=load`, `path=<file>`, `mode=load` or `mode=merge`, `dryRun=true` |
+| Preview `.cf` / `.cfe` artifact export | `operation=make`, `output=<file>`, `dryRun=true` |
+| Preview 1C launch arguments | `operation=launch`, one of `clientMode=thin`, `clientMode=thick`, `clientMode=designer`, or `clientMode=ordinary`, `dryRun=true` |
+| Preview syntax arguments | `operation=syntax`, one of `mode=designer-config`, `mode=designer-modules`, or `mode=edt`, `dryRun=true` |
+| Preview test arguments | `operation=test`, one of `testRunner=yaxunit` or `testRunner=va`, `dryRun=true` |
+| Preview configured tool download | `operation=tools-download`, one of `tool=yaxunit`, `tool=vanessa`, or `tool=client-mcp`, `dryRun=true` |
 
-On Windows, macOS, and Linux, verified transactional publication supports
-synchronous applied `mode=full` for DESIGNER `CONFIGURATION` and `EXTENSION`
-source-sets. ADR-0016 owns the publication contract;
-`INV-SOURCE-BOUND-PREIMAGES` and `INV-SOURCE-ROLLBACK-VISIBLE` describe its
-preimage and rollback guarantees, while OS-specific mechanics stay behind
-`INV-PLATFORM-OS-BEHIND-FACADE`.
+All current applied modes are fail-closed before workspace discovery and
+process spawn. Operation-specific blockers include non-interruptible phases,
+persistent writes without bounded recovery, and unproved ownership of
+separately grouped 1C processes. ADR-0016 continues to own the future full-dump
+publication contract; its transaction guarantees do not make the current
+applied route executable.
+
+On Windows, macOS, and Linux, synchronous full dump (`mode=full`) for DESIGNER
+`CONFIGURATION` and `EXTENSION` source-sets remains preview-only: verified
+transactional publication still has post-run work without a proved terminal
+receipt bound.
 
 On Windows, Unica attests a local system installation through no-follow handles:
 its trusted owner and DACL must prevent mutation of the install tree by the
@@ -143,19 +158,26 @@ validates physical DESIGNER markers, attests the exact installation with sibling
 `ibcmd --version`, and requires a root-owned, link-free install tree without
 group/world write or ACLs. Effective configuration and credentials are never
 retained in recovery. User-owned platform installs are rejected before `ibcmd`
-or `v8-runner` executes; other Unix hosts fail closed.
+or `v8-runner` would execute; other Unix hosts fail closed as well.
 
 ## Skill Rules
 
 - Do not create or read any legacy JSON project registry.
 - Resolve the active config from the explicit MCP `config` argument when present; otherwise use `./v8project.yaml`.
-- If the config is missing, use `operation=config-init` or ask for the connection string.
+- If the config is missing, preview `operation=config-init` with `dryRun=true`,
+  then ask the user to provide the config; preview cannot create it.
 - Prefer `source-set` names over ad hoc source directories.
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
-- Use `execution_timeout` in `v8project.yaml` for long runtime operations; Unica does not expose `timeoutMs` for `unica.runtime.execute`.
+- `execution_timeout` in `v8project.yaml` describes a future runner-operation
+  budget; Unica does not expose `timeoutMs` for `unica.runtime.execute`, and
+  changing this value does not admit a current applied operation.
 - Do not use `mode=update` for `operation=load`; v8-runner rejects it. Use `mode=load` or `mode=merge` with `settings`.
-- Applied `convert` is blocked until it uses the verified private-stage publication boundary.
+- Every applied operation is currently blocked; `convert` additionally lacks a
+  verified private-stage publication boundary.
 - Do not pass `DumpConfigToFiles` or `LoadConfigFromFiles` through Designer `rawKeys`; Unica rejects these unverified source bypasses.
-- When credentials are absent, try only empty-password `Администратор`, then empty-password `Admin`; if both fail, ask the user.
+- When credentials are absent, do not initiate a runtime probe while applied execution is blocked. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
-- If a runtime flag or debug-server step is missing from `unica.runtime.execute`, treat it as a Unica MCP contract gap. EPF/ERF build flows use external source sets through `unica.runtime.execute`; their dump flow is preview-only for now.
+- If a runtime flag or debug-server step is missing from
+  `unica.runtime.execute`, treat it as a Unica MCP contract gap. EPF/ERF
+  external-source-set build/dump flows can currently be previewed only with
+  `dryRun=true`; neither flow performs runtime work.

@@ -15,8 +15,6 @@ const LOCAL_RUNTIME_CONFIG_FILE_NAME: &str = "v8project.local.yaml";
 thread_local! {
     static BEFORE_REAUTHORIZATION_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
         std::cell::RefCell::new(None);
-    static AFTER_REAUTHORIZATION_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
-        std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -42,40 +40,6 @@ pub(crate) fn set_before_reauthorization_hook_for_test(
         *slot = Some(Box::new(hook));
     });
     BeforeReauthorizationHookGuard
-}
-
-#[cfg(test)]
-pub(crate) struct AfterReauthorizationHookGuard;
-
-#[cfg(test)]
-impl Drop for AfterReauthorizationHookGuard {
-    fn drop(&mut self) {
-        AFTER_REAUTHORIZATION_HOOK.with(|slot| {
-            slot.borrow_mut().take();
-        });
-    }
-}
-
-#[cfg(test)]
-#[must_use]
-pub(crate) fn set_after_reauthorization_hook_for_test(
-    hook: impl FnMut() + 'static,
-) -> AfterReauthorizationHookGuard {
-    AFTER_REAUTHORIZATION_HOOK.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        assert!(slot.is_none(), "runtime build reauthorization hook leaked");
-        *slot = Some(Box::new(hook));
-    });
-    AfterReauthorizationHookGuard
-}
-
-fn run_after_reauthorization_hook() {
-    #[cfg(test)]
-    AFTER_REAUTHORIZATION_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().as_mut() {
-            hook();
-        }
-    });
 }
 
 fn run_before_reauthorization_hook() {
@@ -131,13 +95,6 @@ impl RuntimeBuildPreflight {
         })
     }
 
-    pub(crate) fn reauthorize_in_context(&self, context: &WorkspaceContext) -> Result<(), String> {
-        if path_lock_identity(&self.workspace_root) != path_lock_identity(&context.workspace_root) {
-            return Err(workspace_identity_changed_error());
-        }
-        self.reauthorize_current_workspace()
-    }
-
     pub(crate) fn reauthorize_current_workspace(&self) -> Result<(), String> {
         run_before_reauthorization_hook();
         let current = discover_workspace(Some(self.cwd.clone())).map_err(|error| {
@@ -164,7 +121,6 @@ impl RuntimeBuildPreflight {
                 "runtime build local project config changed before v8-runner launch".to_string(),
             );
         }
-        run_after_reauthorization_hook();
         Ok(())
     }
 }
@@ -172,7 +128,7 @@ impl RuntimeBuildPreflight {
 /// Normalizes build identity without inspecting configuration support. A
 /// default build remains a default v8-runner build; Unica decides about one
 /// full fallback only from the structured result of an actually failed partial
-/// step (#404, ADR-0066).
+/// step (#404, ADR-0067).
 pub(crate) fn plan_runtime_invocation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -231,7 +187,7 @@ pub(crate) fn plan_runtime_invocation(
             // what leaves the job logs empty until the build ends. A caller
             // polling `unica.runtime.job.logs` has to be told that up front.
             vec![
-                "v8-runner runs its normal build strategy first and reports one structured result when the process exits, so this build streams no progress into its logs; if that result proves a failed partial platform step, Unica will retry once with a full rebuild"
+                "v8-runner runs its normal build strategy first and reports one structured result when the process exits, so a durable build streams no progress into its logs; if that result proves a failed partial platform step, `unica.runtime.job.start` will retry once with a full rebuild"
                     .to_string(),
             ]
         },
@@ -374,7 +330,7 @@ mod tests {
         .unwrap();
 
         let error = preflight
-            .reauthorize_in_context(&context)
+            .reauthorize_current_workspace()
             .expect_err("changed config must fail closed");
 
         assert!(error.contains("identity changed") || error.contains("config changed"));
@@ -459,20 +415,6 @@ mod tests {
             .expect_err("a linked local overlay must not escape the workspace binding");
 
         assert!(error.contains("regular file"), "{error}");
-    }
-
-    #[test]
-    fn build_preflight_rejects_a_different_workspace_root() {
-        let (_directory, context) = workspace();
-        let (_other_directory, other_context) = workspace();
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-        let preflight = RuntimeBuildPreflight::capture(&args, &context).unwrap();
-
-        let error = preflight
-            .reauthorize_in_context(&other_context)
-            .expect_err("authorization must stay bound to one workspace root");
-
-        assert!(error.contains("workspace identity changed"), "{error}");
     }
 
     #[test]

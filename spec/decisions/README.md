@@ -83,7 +83,8 @@
 - [ADR-0063: Публичная диагностика адресует логические цели](0063-logicheskie-nablyudeniya-diagnostiki.md)
 - [ADR-0064: Поставщики диагностик сохраняют происхождение и отказывают независимо](0064-neytralnaya-kompoziciya-diagnostik.md)
 - [ADR-0065: Миграция читателя выбирает мост или прямое переключение явно](0065-yavnyy-rezhim-migracii-chitatelya.md)
-- [ADR-0066: Доказанный отказ частичной runtime-сборки один раз повторяется полным путём](0066-failed-partial-runtime-build-fallback.md)
+- [ADR-0066: Терминальный результат runtime возвращается в том же вызове](0066-terminalnyy-receipt-runtime-v-odnom-vyzove.md)
+- [ADR-0067: Доказанный отказ частичной runtime-сборки один раз повторяется полным путём](0067-failed-partial-runtime-build-fallback.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

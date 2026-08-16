@@ -8,6 +8,7 @@ description: "Безопасная аутентификация и крипто�
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.meta.info`, `unica.role.info`, `unica.code.diagnostics`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use integration and autonomous-server skills when auth behavior must be verified through HTTP service or web-client runtime.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -23,7 +24,7 @@ description: "Безопасная аутентификация и крипто�
 2. Inspect existing auth and role paths with `unica.code.search`, `unica.meta.info`, and `unica.role.info`.
 3. Define secret lifecycle: source, storage, rotation, masking, runtime process user, test fixture policy, and log redaction.
 4. Define auth error semantics: missing credentials, expired token, invalid certificate, provider unavailable, denied rights, tenant mismatch, and remote auth failure.
-5. Verify code with `unica.code.diagnostics` and syntax/tests through `unica.runtime.execute` when feasible.
+5. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` only to preview typed syntax/test arguments and report runtime behavior as unverified.
 
 ## Review checklist
 

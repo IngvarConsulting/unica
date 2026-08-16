@@ -1544,7 +1544,6 @@ class RuntimeArtifactFlowContractTests(unittest.TestCase):
             "ADR-0055 must own the derived runtime artifact-flow rules",
         )
 
-
 class RlmGenerationCutoverContractTests(unittest.TestCase):
     """The builder-15 layout and transition wording stay unambiguous."""
 
@@ -1603,6 +1602,39 @@ class RlmGenerationCutoverContractTests(unittest.TestCase):
         self.assertNotRegex(
             context,
             r"(?m)^Unica поставляет[^.]*`rlm-tools-bsl`",
+        )
+
+
+class RuntimeReceiptContractTests(unittest.TestCase):
+    """ADR-0066 owns the fail-closed runtime and no-fallback policy."""
+
+    def setUp(self) -> None:
+        self.records = {record.id: record for record in all_records()}
+        self.decision = (
+            DECISIONS_DIR / "0066-terminalnyy-receipt-runtime-v-odnom-vyzove.md"
+        ).read_text(encoding="utf-8")
+
+    def test_fallback_policy_is_in_the_normative_decision_section(self) -> None:
+        section = DECISION_SECTION.search(self.decision)
+        self.assertIsNotNone(section, "ADR-0066 must have a Decision section")
+        body = section.group("body")
+        self.assertIn("`unica.build.*`", body)
+        self.assertRegex(body, r"запасн\w* пут")
+        self.assertRegex(
+            body,
+            r"(?s)`unica\.runtime\.job\.\*`[^.]*"
+            r"не используется как продолжение[^.]*"
+            r"запасной путь этого вызова\.",
+        )
+
+    def test_runtime_receipt_rule_covers_packaged_guidance(self) -> None:
+        record = self.records.get("INV-MCP-RUNTIME-RECEIPT")
+        self.assertIsNotNone(record, "missing INV-MCP-RUNTIME-RECEIPT")
+        self.assertEqual(record.one("Decision"), "ADR-0066")
+        self.assertIn("packaged", record.one("Scope").split(", "))
+        self.assertIn(
+            "tests/ci/test_unica_skills.py",
+            " ".join(record.fields.get("Check", [])),
         )
 
 

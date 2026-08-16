@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 import unittest
@@ -8,6 +9,8 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MIN_RUNTIME_GUIDANCE_DOCS = 31
+MIN_RUNTIME_EXECUTE_EXAMPLES = 21
 
 
 # Both ways a document points at another one: a backticked path, where the
@@ -32,6 +35,183 @@ XDTO_DONOR_EVIDENCE = re.compile(
 
 def document_links(text: str) -> list[str]:
     return [match for pattern in DOCUMENT_LINK_PATTERNS for match in pattern.findall(text)]
+
+
+FENCED_BLOCK_START = re.compile(
+    r"^[ \t]*(?P<fence>`{3,}|~{3,})(?P<info>[^\r\n]*)$"
+)
+BLOCKQUOTE_PREFIX = re.compile(r"^(?:[ \t]*>[ \t]?)+")
+LIST_ITEM_PREFIX = re.compile(
+    r"^[ \t]*(?:[-+*]|[0-9]{1,9}[.)])[ \t]+"
+)
+INDENTED_CODE_LINE = re.compile(r"^(?: {4}|\t)(?P<content>.*)$")
+DRY_RUN_FALSE = re.compile(r'"dryRun"\s*:\s*false\b')
+
+
+def markdown_container_content(line: str) -> str:
+    while True:
+        content = BLOCKQUOTE_PREFIX.sub("", line)
+        content = LIST_ITEM_PREFIX.sub("", content, count=1)
+        if content == line:
+            return content
+        line = content
+
+
+def fenced_json_blocks(text: str) -> list[str]:
+    lines = text.splitlines()
+    blocks = []
+    line_number = 0
+    while line_number < len(lines):
+        opening = FENCED_BLOCK_START.fullmatch(
+            markdown_container_content(lines[line_number])
+        )
+        if opening is None:
+            line_number += 1
+            continue
+
+        fence = opening.group("fence")
+        closing = re.compile(
+            rf"^[ \t]*{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$"
+        )
+        info = html.unescape(opening.group("info").strip())
+        language = info.split(maxsplit=1)[0].casefold() if info else ""
+        line_number += 1
+        body = []
+        while (
+            line_number < len(lines)
+            and closing.fullmatch(
+                markdown_container_content(lines[line_number])
+            )
+            is None
+        ):
+            body.append(markdown_container_content(lines[line_number]))
+            line_number += 1
+        block = "\n".join(body)
+        if language == "json" or block_mentions_runtime_tool(block):
+            blocks.append(block)
+        if line_number < len(lines):
+            line_number += 1
+    return blocks
+
+
+def decode_active_json_unicode_escapes(text: str) -> str:
+    decoded = []
+    index = 0
+    while index < len(text):
+        if text[index] != "\\":
+            decoded.append(text[index])
+            index += 1
+            continue
+
+        slash_start = index
+        while index < len(text) and text[index] == "\\":
+            index += 1
+        slash_count = index - slash_start
+        decoded.append("\\" * (slash_count // 2))
+        if (
+            slash_count % 2 == 1
+            and index + 5 <= len(text)
+            and text[index] == "u"
+            and all(
+                character in "0123456789abcdefABCDEF"
+                for character in text[index + 1 : index + 5]
+            )
+        ):
+            decoded.append(chr(int(text[index + 1 : index + 5], 16)))
+            index += 5
+        elif slash_count % 2 == 1:
+            decoded.append("\\")
+    return "".join(decoded)
+
+
+def block_mentions_runtime_tool(block: str) -> bool:
+    return "unica.runtime.execute" in decode_active_json_unicode_escapes(block)
+
+
+def indented_code_blocks(text: str) -> list[str]:
+    blocks = []
+    current = []
+    for line in text.splitlines():
+        indented = INDENTED_CODE_LINE.match(line)
+        if indented is not None:
+            current.append(indented.group("content"))
+            continue
+        if current and not line.strip():
+            current.append("")
+            continue
+        if current:
+            blocks.append("\n".join(current))
+            current = []
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def reject_indented_applied_runtime_examples(text: str) -> None:
+    for block_number, block in enumerate(indented_code_blocks(text), start=1):
+        if block_mentions_runtime_tool(block) and DRY_RUN_FALSE.search(block):
+            raise ValueError(
+                f"indented runtime JSON example #{block_number} uses dryRun false"
+            )
+
+
+def runtime_execute_json_examples(text: str) -> list[dict]:
+    examples = []
+    for block_number, block in enumerate(fenced_json_blocks(text), start=1):
+        try:
+            payload = json.loads(block)
+        except json.JSONDecodeError as error:
+            if block_mentions_runtime_tool(block):
+                raise ValueError(
+                    f"invalid fenced runtime JSON example #{block_number}: {error}"
+                ) from error
+            continue
+        candidates = payload if isinstance(payload, list) else [payload]
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            params = candidate.get("params")
+            if not isinstance(params, dict):
+                continue
+            if params.get("name") != "unica.runtime.execute":
+                continue
+            examples.append(candidate)
+    return examples
+
+
+def runtime_guidance_document(text: str) -> tuple[bool, list[dict]]:
+    reject_indented_applied_runtime_examples(text)
+    examples = runtime_execute_json_examples(text)
+    return (
+        bool(examples)
+        or "unica.runtime.execute" in text
+        or "v8-runner" in text,
+        examples,
+    )
+
+
+def collect_runtime_guidance(
+    docs: list[tuple[Path, str]],
+) -> tuple[list[tuple[Path, str]], list[tuple[Path, dict]], list[tuple[Path, str]]]:
+    runtime_docs = []
+    runtime_examples = []
+    parse_failures = []
+    for doc, text in docs:
+        try:
+            is_runtime_document, payloads = runtime_guidance_document(text)
+        except ValueError as error:
+            parse_failures.append((doc, str(error)))
+            continue
+        if not is_runtime_document:
+            continue
+        runtime_docs.append((doc, text))
+        for payload in payloads:
+            if (
+                payload.get("method") == "tools/call"
+                and payload.get("params", {}).get("name") == "unica.runtime.execute"
+            ):
+                runtime_examples.append((doc, payload["params"]["arguments"]))
+    return runtime_docs, runtime_examples, parse_failures
 
 
 def stale_route_guard_text(path: Path, text: str) -> str:
@@ -1798,8 +1978,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("не читает состояние поддержки", skill_contract)
         self.assertIn("корректный структурированный", skill_contract)
         self.assertIn("внешнего кода `4`", skill_contract)
-        self.assertIn("завершившийся partial load", skill_contract)
-        self.assertIn("ровно одну полную повторную попытку", skill_contract)
+        self.assertIn("завершившийся ошибкой шаг partial load", skill_contract)
+        # ADR-0066 refused the applied synchronous entry point, so the shipped
+        # guidance must scope the retry to the durable job instead of promising
+        # it for a call that never starts a process.
+        self.assertIn("Политика повтора живёт только в долговременном задании", skill_contract)
+        self.assertIn("Only a durable build carries the one full retry", workflow_contract)
+        self.assertIn(
+            "synchronous entry point owns exactly one process and never repeats it",
+            troubleshooting_contract,
+        )
+        self.assertIn("Ровно одну полную повторную попытку", skill_contract)
         self.assertIn("не определяет причину ошибки", skill_contract)
         self.assertIn("Явный `fullRebuild: true`", skill_contract)
         self.assertIn("одну полную сборку без fallback", skill_contract)
@@ -1878,6 +2067,542 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn('"sourceSet": "external-reports"', text)
         self.assertIn('"output": "build/external"', text)
 
+    def test_db_auth_check_numbers_only_the_two_credential_candidates(self) -> None:
+        text = (
+            self.skill_root() / "db-auth-check" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        credential_rule = text.split(
+            "## Правило пустых учетных данных", maxsplit=1
+        )[1].split("## Workflow", maxsplit=1)[0]
+
+        self.assertEqual(
+            re.findall(r"(?m)^(\d+)\.\s+(.+)$", credential_rule),
+            [
+                ("1", "`Администратор` с пустым паролем."),
+                ("2", "`Admin` с пустым паролем."),
+            ],
+        )
+        self.assertRegex(
+            credential_rule,
+            r"(?m)^После двух подтверждённых отказов остановись и спроси "
+            r"пользователя, из-под кого подключаться\.$",
+        )
+
+    def test_runtime_json_guard_accepts_case_insensitive_fence_labels(self) -> None:
+        example = """```JSON
+{
+  "method": "tools/call",
+  "params": {
+    "name": "unica.runtime.execute",
+    "arguments": {"operation": "build", "dryRun": false}
+  }
+}
+```"""
+
+        self.assertEqual(
+            runtime_execute_json_examples(example),
+            [
+                {
+                    "method": "tools/call",
+                    "params": {
+                        "name": "unica.runtime.execute",
+                        "arguments": {"operation": "build", "dryRun": False},
+                    },
+                }
+            ],
+        )
+
+    def test_runtime_json_guard_checks_jsonc_runtime_blocks_before_language_filtering(
+        self,
+    ) -> None:
+        example = """```jsonc
+{
+  "method": "tools/call",
+  "params": {
+    "name": "unica.runtime.execute",
+    "arguments": {"operation": "build", "dryRun": false}
+  }
+}
+```"""
+
+        payloads = runtime_execute_json_examples(example)
+
+        self.assertEqual(len(payloads), 1)
+        self.assertIs(payloads[0]["params"]["arguments"]["dryRun"], False)
+
+    def test_runtime_json_guard_decodes_tool_name_before_classification(self) -> None:
+        example = r"""```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "unica\u002eruntime.execute",
+    "arguments": {"operation": "build", "dryRun": false}
+  }
+}
+```"""
+
+        payloads = runtime_execute_json_examples(example)
+
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["params"]["name"], "unica.runtime.execute")
+        self.assertIs(payloads[0]["params"]["arguments"]["dryRun"], False)
+
+    def test_runtime_json_guard_keeps_malformed_block_boundary(self) -> None:
+        self.assertEqual(
+            runtime_execute_json_examples("```json\n{not runtime JSON}\n```"),
+            [],
+        )
+        self.assertEqual(
+            runtime_execute_json_examples(
+                r'''```json
+{"note":"unica\\u002eruntime.execute",
+```'''
+            ),
+            [],
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, r"invalid fenced runtime JSON example #1"
+        ):
+            runtime_execute_json_examples(
+                '```json\n{"name":"unica.runtime.execute",\n```'
+            )
+
+    def test_runtime_json_guard_rejects_malformed_escaped_tool_name(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, r"invalid fenced runtime JSON example #1"
+        ):
+            runtime_execute_json_examples(
+                r'''```json
+{"params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}},
+```'''
+            )
+
+        with self.assertRaisesRegex(
+            ValueError, r"invalid fenced runtime JSON example #1"
+        ):
+            runtime_execute_json_examples(
+                r'''```json
+{"params":{"name":"unica\u002eruntime.execute
+```'''
+            )
+
+    def test_runtime_json_guard_handles_commonmark_fences_and_batches(self) -> None:
+        examples = r'''~~~JSON
+[{"method":"tools/call","params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}}}]
+~~~
+``` json
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+```
+````json
+{"note":"```","method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+````'''
+
+        payloads = runtime_execute_json_examples(examples)
+
+        self.assertEqual(len(payloads), 3)
+        self.assertTrue(
+            all(
+                payload["params"]["name"] == "unica.runtime.execute"
+                and payload["params"]["arguments"]["dryRun"] is False
+                for payload in payloads
+            )
+        )
+
+    def test_runtime_json_guard_handles_commonmark_containers_and_info(self) -> None:
+        examples = '''> ```json
+> {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+> ```
+- example:
+
+    ```json
+    {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+    ```
+```json title=request
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+```'''
+
+        payloads = runtime_execute_json_examples(examples)
+
+        self.assertEqual(len(payloads), 3)
+        self.assertTrue(
+            all(
+                payload["params"]["arguments"]["dryRun"] is False
+                for payload in payloads
+            )
+        )
+
+    def test_runtime_json_guard_handles_fence_after_list_marker(self) -> None:
+        examples = '''- ```json
+  {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+  ```
+> - ```json
+>   {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+>   ```'''
+
+        payloads = runtime_execute_json_examples(examples)
+
+        self.assertEqual(len(payloads), 2)
+
+    def test_runtime_json_guard_handles_nested_indent_and_info_entities(self) -> None:
+        examples = '''123. outer
+     - ```json
+       {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+       ```
+123. outer
+     > ```json
+     > {"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+     > ```
+```j&#x73;on
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}}
+```'''
+
+        payloads = runtime_execute_json_examples(examples)
+
+        self.assertEqual(len(payloads), 3)
+
+    def test_runtime_guidance_document_detects_decoded_tool_name(self) -> None:
+        example = r'''```json
+{"method":"tools/call","params":{"name":"unica\u002eruntime.execute","arguments":{"dryRun":false}}}
+```'''
+
+        is_runtime_document, payloads = runtime_guidance_document(example)
+
+        self.assertTrue(is_runtime_document)
+        self.assertEqual(len(payloads), 1)
+
+    def test_runtime_guidance_document_rejects_indented_applied_runtime_example(
+        self,
+    ) -> None:
+        example = """
+    {
+      "method": "tools/call",
+      "params": {
+        "name": "unica.runtime.execute",
+        "arguments": {"operation": "build", "dryRun": false}
+      }
+    }
+"""
+
+        with self.assertRaisesRegex(ValueError, "indented runtime JSON example"):
+            runtime_guidance_document(example)
+
+    def test_runtime_guidance_collection_skips_parse_failures_without_stale_payloads(
+        self,
+    ) -> None:
+        good = Path("good.md")
+        bad = Path("bad.md")
+
+        runtime_docs, runtime_examples, parse_failures = collect_runtime_guidance(
+            [
+                (
+                    good,
+                    '''```json
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":true}}}
+```''',
+                ),
+                (
+                    bad,
+                    '''```json
+{"method":"tools/call","params":{"name":"unica.runtime.execute","arguments":{"dryRun":false}}
+```''',
+                ),
+            ]
+        )
+
+        self.assertEqual([doc for doc, _text in runtime_docs], [good])
+        self.assertEqual([doc for doc, _arguments in runtime_examples], [good])
+        self.assertEqual([doc for doc, _error in parse_failures], [bad])
+
+    def test_all_runtime_execute_skill_guidance_is_preview_only(self) -> None:
+        shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
+            self.reference_root().glob("**/*.md")
+        )
+        runtime_docs, runtime_examples, parse_failures = collect_runtime_guidance(
+            [
+                (doc, doc.read_text(encoding="utf-8"))
+                for doc in sorted(shipped_docs)
+            ]
+        )
+        if parse_failures:
+            for doc, error in parse_failures:
+                with self.subTest(path=doc.relative_to(self.repo_root())):
+                    self.fail(error)
+            return
+
+        required_runtime_references = {
+            self.reference_root() / relative_path
+            for relative_path in (
+                "use-cases/workspace-runtime.md",
+                "use-cases/autonomous-server-debug.md",
+                "use-cases/reports-printing.md",
+                "use-cases/integrations.md",
+                "use-cases/code-quality-review.md",
+                "use-cases/extensions-cfe.md",
+                "use-cases/rights-access.md",
+                "tooling/v8project.md",
+                "tooling/runtime-build.md",
+            )
+        }
+        required_runtime_skills = {
+            self.skill_root() / relative_path
+            for relative_path in (
+                "db-auth-check/SKILL.md",
+                "epf-bsp-init/SKILL.md",
+                "epf-init/SKILL.md",
+                "erf-init/SKILL.md",
+            )
+        }
+        self.assertTrue(
+            required_runtime_references.issubset(
+                {doc for doc, _text in runtime_docs}
+            )
+        )
+        self.assertTrue(
+            required_runtime_skills.issubset({doc for doc, _text in runtime_docs})
+        )
+        self.assertGreaterEqual(len(runtime_docs), MIN_RUNTIME_GUIDANCE_DOCS)
+        self.assertGreaterEqual(
+            len(runtime_examples), MIN_RUNTIME_EXECUTE_EXAMPLES
+        )
+        for doc, arguments in runtime_examples:
+            with self.subTest(
+                path=doc.relative_to(self.repo_root()),
+                operation=arguments.get("operation"),
+            ):
+                self.assertIs(arguments.get("dryRun"), True)
+
+        contract_tokens = (
+            "INV-MCP-RUNTIME-RECEIPT",
+            "preview-only",
+            "`dryRun: true`",
+            "fail-closed",
+            "workspace discovery",
+            "process spawn",
+            "Preview не является runtime verification",
+            "прямым runner-ом",
+            "`unica.build.*`",
+            "`unica.runtime.job.*`",
+        )
+        forbidden_applied_claims = (
+            r"Verify with `unica\.runtime\.execute`",
+            r"Verify syntax/tests with `unica\.runtime\.execute`",
+            r"syntax/tests through `unica\.runtime\.execute`",
+            r"Run `unica\.runtime\.execute`",
+            r"use `unica\.runtime\.execute` for (?:related )?syntax/tests",
+            r"through `unica\.runtime\.execute` operations in order",
+            r"Launch .* with `unica\.runtime\.execute`",
+            r"[Сс]обрать .*`unica\.runtime\.execute`",
+            r"для публикации .*`unica\.runtime\.execute`",
+            r"запускай следующую необходимую операцию",
+            r"`operation=init` допустима",
+            r"подготовить external source-set .* через `v8-runner`",
+            r"Проверь `Администратор` с пустым паролем",
+            r"допускается только два предположения",
+            r"When credentials are absent, try only",
+            r"Authentication failure without credentials allows only",
+            r"Use `dump` to bring database changes into Git-visible files",
+        )
+        for doc, text in runtime_docs:
+            with self.subTest(path=doc.relative_to(self.repo_root())):
+                for token in contract_tokens:
+                    self.assertIn(token, text)
+                for claim in forbidden_applied_claims:
+                    self.assertNotRegex(text, claim)
+
+    def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
+        self,
+    ) -> None:
+        shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
+            self.reference_root().glob("**/*.md")
+        )
+        namespace_pattern = (
+            r"`(?:unica\.build|unica\.runtime\.job)\."
+            r"(?:\*|[a-z][a-z0-9.-]*)`"
+        )
+        namespace = re.compile(namespace_pattern)
+        fallback_context = re.compile(
+            r"(?i)\bfallback\b|\bfall\s+back\b|\bcontinuation\b|"
+            r"\bretry\b|\binstead\b|\bworkaround\b|"
+            r"(?:after|around|when).{0,60}\b(?:runtime )?refus\w*\b|"
+            r"запасн\w*\s+пут\w*|продолжени\w*|повтор\w*|вместо|обход\w*|"
+            r"(?:после|при).{0,60}отказ\w*"
+        )
+        negative_fallback = tuple(
+            re.compile(pattern)
+            for pattern in (
+                rf"(?i)\b(?:do not|don't|never|must not)\s+"
+                rf"(?:use|call|invoke|route)\b[^,.;!?]{{0,80}}{namespace_pattern}",
+                rf"(?i)\b(?:нельзя|запрещено)\s+"
+                rf"(?:использовать|вызывать|направлять)\b[^,.;!?]{{0,80}}"
+                rf"{namespace_pattern}",
+                rf"(?i)\bне\s+(?:используй|вызывай|вызови|направь|перейди)\b"
+                rf"[^,.;!?]{{0,80}}{namespace_pattern}",
+                rf"(?i)\b(?:do not|don't|never|must not)\b[^.;!?]{{0,120}}"
+                rf"\bbypass\b[^.;!?]{{0,120}}{namespace_pattern}",
+                rf"(?i)\bне\s+обходи\b[^.;!?]{{0,160}}{namespace_pattern}",
+                rf"(?i){namespace_pattern}[^.;!?]{{0,100}}"
+                rf"(?:\bis not\b|\bisn't\b|\bnot\s+as\b|"
+                rf"\bdo not use (?:it|them)\b)[^.;!?]{{0,60}}"
+                rf"(?:fallback|continuation|retry|workaround)",
+                rf"(?i){namespace_pattern}[^.;!?]{{0,100}}"
+                rf"\bне\s+(?:является|служит|используй (?:его|их))\b"
+                rf"[^.;!?]{{0,60}}(?:запасн\w*\s+пут\w*|fallback|продолжени\w*)",
+            )
+        )
+
+        def logical_clauses(text: str) -> list[str]:
+            return [
+                clause.strip()
+                for clause in re.split(
+                    r"(?<=[.!?;])\s+|^\s*(?:[-*]|\d+[.)])\s+",
+                    text,
+                    flags=re.MULTILINE,
+                )
+                if clause.strip()
+            ]
+
+        def is_fallback_route(clause: str) -> bool:
+            return bool(
+                namespace.search(clause)
+                and fallback_context.search(clause)
+                and not any(pattern.search(clause) for pattern in negative_fallback)
+            )
+
+        unsafe_examples = (
+            "Use `unica.build.load` as fallback.",
+            "Route through `unica.runtime.job.start` as continuation after runtime refusal.",
+            "Используй `unica.build.*` как запасной путь.",
+            "После отказа перейди в `unica.runtime.job.status`.",
+            "Fall back to `unica.build.load` after runtime refusal.",
+            "After runtime refusal, call `unica.runtime.job.start`.",
+            "После отказа вызови `unica.build.load`.",
+            "If runtime.execute cannot run, use `unica.runtime.job.start` as fallback.",
+            "Не вызывай runtime.execute повторно, используй `unica.runtime.job.start` как запасной путь.",
+            "Если runtime.execute нельзя вызвать, используй `unica.build.load` вместо него.",
+        )
+        safe_examples = (
+            "Do not use `unica.build.load` as fallback.",
+            "Не используй `unica.runtime.job.start` после отказа.",
+            "Use `unica.runtime.job.start` for an explicitly requested durable job.",
+            "Используй `unica.build.load` для независимого build workflow.",
+            "Use `unica.runtime.job.start` for an explicitly requested durable job; do not use it as fallback.",
+            "Используй `unica.build.load` для отдельного workflow; не используй его как запасной путь.",
+        )
+        for example in unsafe_examples:
+            self.assertTrue(
+                any(is_fallback_route(clause) for clause in logical_clauses(example)),
+                example,
+            )
+        for example in safe_examples:
+            self.assertFalse(
+                any(is_fallback_route(clause) for clause in logical_clauses(example)),
+                example,
+            )
+        for doc in shipped_docs:
+            text = doc.read_text(encoding="utf-8")
+            with self.subTest(path=doc.relative_to(self.repo_root())):
+                violating = [
+                    clause
+                    for clause in logical_clauses(text)
+                    if is_fallback_route(clause)
+                ]
+                self.assertEqual(violating, [])
+
+    def test_runtime_reference_tables_do_not_hide_alternatives_as_separators(
+        self,
+    ) -> None:
+        docs = (
+            self.reference_root() / "tooling" / "v8project.md",
+            self.skill_root()
+            / "v8-runner"
+            / "references"
+            / "command-selection.md",
+        )
+        for doc in docs:
+            for line_number, line in enumerate(
+                doc.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if not line.lstrip().startswith("|"):
+                    continue
+                with self.subTest(
+                    path=doc.relative_to(self.repo_root()), line=line_number
+                ):
+                    for code_span in re.findall(r"`([^`]*)`", line):
+                        self.assertNotIn("|", code_span)
+
+    def test_code_quality_runtime_preview_preserves_test_first_order(self) -> None:
+        doc = self.reference_root() / "use-cases" / "code-quality-review.md"
+        text = doc.read_text(encoding="utf-8")
+        test_first = re.search(
+            r"write a reproducing test.{0,160}confirm that it fails.{0,160}before changing",
+            text,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(test_first)
+        self.assertLess(test_first.start(), text.index("preview intended syntax/test"))
+
+    def test_vanessa_preview_never_claims_to_create_the_epf(self) -> None:
+        skill = self.skill_root() / "v8-runner" / "SKILL.md"
+        text = skill.read_text(encoding="utf-8")
+        self.assertIsNotNone(
+            re.search(r"Vanessa EPF.{0,100}уже существовать", text, flags=re.DOTALL)
+        )
+        self.assertIsNotNone(
+            re.search(
+                r"`tools-download`.{0,160}`dryRun: true`.{0,160}не (?:создаёт|сохраняет)",
+                text,
+                flags=re.DOTALL,
+            )
+        )
+
+        workflows = (
+            self.skill_root()
+            / "v8-runner"
+            / "references"
+            / "project-workflows.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("the preview does not prepare the extension", workflows)
+        self.assertIsNotNone(
+            re.search(
+                r"`tools-download`.{0,240}preview, but not publish, that artifact",
+                workflows,
+                flags=re.DOTALL,
+            )
+        )
+
+    def test_v8_runner_examples_respect_single_call_runtime_admission(self) -> None:
+        skill_doc = self.skill_root() / "v8-runner" / "SKILL.md"
+        text = skill_doc.read_text(encoding="utf-8")
+        try:
+            calls = runtime_execute_json_examples(text)
+        except ValueError as error:
+            self.fail(str(error))
+        arguments = [
+            call["params"]["arguments"]
+            for call in calls
+            if call.get("method") == "tools/call"
+            and call.get("params", {}).get("name") == "unica.runtime.execute"
+        ]
+
+        for example in arguments:
+            operation = example["operation"]
+            with self.subTest(operation=operation, example=example):
+                self.assertIs(example.get("dryRun"), True)
+
+        for required in (
+            r"исходн\w* `tools/call`",
+            r"`notifications/progress`",
+            r"не увеличивает крайний срок",
+            r"терминальн\w* fail-closed результат",
+            r"`unica\.runtime\.job\.\*`",
+        ):
+            with self.subTest(required=required):
+                self.assertRegex(text, required)
+
+        self.assertNotIn("Для долгих операций меняй `execution_timeout`", text)
+        self.assertIn("Для будущей допущенной операции", text)
+
     def test_v8_runner_documents_bounded_vanessa_launch_contract(self) -> None:
         skill_dir = self.skill_root() / "v8-runner"
         skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
@@ -1907,24 +2632,25 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             skill_text,
         )
         self.assertIn("`tools.va.epf_path`", skill_text)
+        self.assertRegex(
+            skill_text,
+            r'(?s)"waitForExit": true.{0,400}"dryRun": true',
+        )
+        self.assertIn("Любой применённый launch отказывает", skill_text)
         self.assertIn("платформенный `/Out`", all_text)
         self.assertIn("stderr клиентского процесса 1\u0421", all_text)
-        self.assertIn(
-            "`unica.runtime.job.start` не принимает bounded-поля",
-            skill_text,
-        )
-        self.assertIn("`data.external_epf_wait`", skill_text)
-        self.assertIn("`diagnostics.external_epf_wait`", skill_text)
+        self.assertIn("Не обходи отказ через `unica.runtime.job.start`", skill_text)
+        self.assertNotIn("`data.external_epf_wait`", skill_text)
+        self.assertNotIn("`diagnostics.external_epf_wait`", skill_text)
 
     def test_v8_runner_leads_client_mcp_download_with_the_prebuilt_artifact(
         self,
     ) -> None:
-        """#346. Pinned v8-runner 0.5.1 downloads the prebuilt
-        `build/tools/client_mcp.cfe` when `sources` is left off, and an EDT
-        source tree with no `.cfe` when it is passed. The skill published only
-        the `sources: true` recipe, so a caller who wanted the ready extension
-        took a `1cedtcli` dependency and still failed the `build` preflight that
-        wants `tools.client_mcp.extension.artifact.path`.
+        """#346. The prebuilt client MCP artifact remains the default route.
+
+        Current runtime.execute guidance is preview-only, but it still has to
+        keep the ready `build/tools/client_mcp.cfe` artifact distinct from the
+        `sources: true` EDT tree that needs `1cedtcli` and produces no `.cfe`.
         """
         skill_dir = self.skill_root() / "v8-runner"
         skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
@@ -1948,22 +2674,21 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             client_mcp_calls, "the skill has to show how to prepare client MCP"
         )
 
-        # `dryRun: false` is part of the oracle: a preview never downloads, so
-        # a recipe that only previews leaves the caller without the artifact
-        # the `build` preflight wants. `sources: false` is accepted alongside an
-        # omitted key because the mapper emits `--sources` only for a literal
-        # true, so both spellings produce the same runner argv.
+        # `dryRun: true` is part of the current runtime contract. The oracle is
+        # that the prebuilt artifact route is still documented separately from
+        # the sources route, without advertising applied tools-download.
         artifact_calls = [
             call
             for call in client_mcp_calls
-            if not call.get("sources") and call.get("dryRun") is False
+            if not call.get("sources") and call.get("dryRun") is True
         ]
         self.assertTrue(
             artifact_calls,
-            "an executable default call returns the prebuilt client_mcp.cfe and "
-            f"has to be published: {client_mcp_calls}",
+            "the default preview call must name the prebuilt client_mcp.cfe "
+            f"route: {client_mcp_calls}",
         )
         self.assertIn("build/tools/client_mcp.cfe", skill_text)
+        self.assertIn("готовый артефакт должен уже существовать", skill_text)
 
         # The EDT route may stay, but never unlabelled: it replaces the
         # artifact and needs a toolchain the workspace may not have.
@@ -2522,9 +3247,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertNotIn("V8_PATH", runtime_build)
         self.assertNotIn("V8_BASE", runtime_build)
 
-    def test_verified_applied_full_dump_documents_supported_hosts_and_verified_publication(
-        self,
-    ) -> None:
+    def test_verified_full_dump_documents_preview_only_publication_contract(self) -> None:
         docs = [
             self.skill_root() / "v8-runner" / "SKILL.md",
             self.skill_root()
@@ -2542,7 +3265,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                 r"\b(?:synchronous|синхронн\w*)\b",
                 re.IGNORECASE,
             ),
-            "applied": re.compile(r"\bapplied\b", re.IGNORECASE),
             "full dump": re.compile(
                 r"(?:\bfull\s+dump\b|\bmode\s*=\s*full\b)",
                 re.IGNORECASE,
@@ -2554,35 +3276,23 @@ Use `.claude/commands/xdto.md` as the execution route.
                 re.IGNORECASE,
             ),
         }
-        stale_restriction = re.compile(
-            r"(?:fail(?:ed)?[- ]closed|blocked|unsupported)",
-            re.IGNORECASE,
-        )
+        preview_only = re.compile(r"(?:preview[- ]only|предпросмотр|fail[- ]closed)", re.I)
 
         def markdown_paragraphs(text: str) -> list[str]:
             return re.split(r"\n(?:[ \t]*|>[ \t]*)\n", text)
 
-        def support_paragraphs(text: str) -> list[str]:
+        def contract_paragraphs(text: str) -> list[str]:
             return [
                 paragraph
                 for paragraph in markdown_paragraphs(text)
                 if all(pattern.search(paragraph) for pattern in required.values())
+                and preview_only.search(paragraph)
             ]
 
         def contract_errors(text: str) -> list[str]:
             errors = []
-            if not support_paragraphs(text):
-                errors.append("missing complete applied full dump support paragraph")
-            for paragraph in markdown_paragraphs(text):
-                for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
-                    if (
-                        required["Windows"].search(sentence)
-                        and required["full dump"].search(sentence)
-                        and stale_restriction.search(sentence)
-                    ):
-                        errors.append(
-                            "Windows applied full dump is documented as restricted"
-                        )
+            if not contract_paragraphs(text):
+                errors.append("missing complete preview-only full dump contract paragraph")
             return errors
 
         document_texts = {
@@ -2594,19 +3304,18 @@ Use `.claude/commands/xdto.md` as the execution route.
                 self.assertEqual([], contract_errors(document_texts[path]))
 
         mixed_claims = (
-            "Windows, macOS, and Linux support synchronous applied full dump "
-            "for CONFIGURATION and EXTENSION through verified transactional "
-            "publication. Incremental dump without receipts remains fail-closed "
-            "on Linux."
+            "On Windows, macOS, and Linux, synchronous full dump mode=full for "
+            "CONFIGURATION and EXTENSION remains preview-only while verified "
+            "transactional publication lacks a bounded terminal receipt."
         )
         self.assertEqual(
             [],
             contract_errors(mixed_claims),
-            "a restriction on a different operation is not a Windows full-dump restriction",
+            "the full-dump contract must combine publication and lifecycle scope",
         )
 
         for path, text in document_texts.items():
-            complete_paragraphs = support_paragraphs(text)
+            complete_paragraphs = contract_paragraphs(text)
             for missing, pattern in required.items():
                 mutated = text
                 for paragraph in complete_paragraphs:
@@ -2614,24 +3323,6 @@ Use `.claude/commands/xdto.md` as the execution route.
                     mutated = mutated.replace(paragraph, mutated_paragraph, 1)
                 with self.subTest(document=path.name, missing=missing):
                     self.assertTrue(contract_errors(mutated), missing)
-
-        stale_mutations = {
-            "natural fail-closed wording": (
-                "Windows applied full dump is currently fail-closed."
-            ),
-            "unsupported wording": "Windows full dump is unsupported.",
-            "blocked mode wording": "Windows mode=full is blocked.",
-            "reversed fail-closed wording": (
-                "Fail-closed: Windows applied full dump."
-            ),
-        }
-        for path, text in document_texts.items():
-            for mutation, stale_claim in stale_mutations.items():
-                with self.subTest(document=path.name, mutation=mutation):
-                    self.assertTrue(
-                        contract_errors(f"{text}\n\n{stale_claim}\n"),
-                        mutation,
-                    )
 
     def test_code_patch_skill_uses_only_logical_configuration_and_extension_targets(
         self,

@@ -1,13 +1,17 @@
 # Troubleshooting
 
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+
 Classify failures before retrying:
 
 - License text means hard stop. Do not repair licensing automatically.
-- Authentication failure without credentials allows only `Администратор` with empty password, then `Admin` with empty password, then ask the user.
+- Classify only authentication evidence supplied by the user or another verified boundary; do not initiate a runtime probe while applied execution is blocked. Without credentials, ask the user instead of cycling accounts.
 - Missing platform, runner, tool, VA, or MCP extension is an environment/setup issue; report the exact missing component.
-- Stale generated state after branch switch or rebase should use `build` with `fullRebuild=true`.
-- Empty `unica.runtime.job.logs` during a default `build` is expected, not a hang: that build runs with `--json-message`, so the runner emits one structured envelope at exit and streams no progress. Judge liveness from `phase` and the heartbeat in `unica.runtime.job.status`; use `fullRebuild=true` when the streamed text output matters more than the automatic retry.
-- A default `build` runs the normal strategy first. One full retry is automatic only when external exit code `4` accompanies a valid structured failure for the completed partial load step. Treat that as stage evidence, not a diagnosis of vendor support or any other cause.
+- Stale generated state after branch switch or rebase should preview `build` with `fullRebuild=true`; applied build is currently fail-closed before spawn.
+- Missing project config, artifact, or managed tool payload may be previewed with `config-init`, `make`, or `tools-download`, but their applied persistent writes are currently fail-closed before spawn; do not bypass them with a direct runner invocation.
+- Only a durable build carries the one full retry after a failed partial load. The synchronous entry point owns exactly one process and never repeats it, so its terminal result is not the fallback declining.
+- Empty `unica.runtime.job.logs` during a default durable `build` is expected, not a hang: that build runs with `--json-message`, so the runner emits one structured envelope at exit and streams no progress. Judge liveness from `phase` and the heartbeat in `unica.runtime.job.status`; use `fullRebuild=true` when the streamed text output matters more than the automatic retry.
+- That retry is automatic only when external exit code `4` accompanies a valid structured failure for the completed partial load step. Treat it as stage evidence, not a diagnosis of vendor support or any other cause. When the pinned exit code arrives and the retry still does not happen, the job warning names the check that refused the receipt.
 - Do not retry arbitrary or malformed errors, process spawn failures, cancellation, a process timeout observed by Unica, truncated output, or failures from another build step. Explicit `fullRebuild=true` and a failed full fallback also do not start another attempt.
 - The pinned receipt has no deferred internal timeout metadata. If a critical runner step crosses its own deadline and later returns the exact completed partial failure, the temporary Unica layer cannot distinguish that case and may still start the one full retry.
 - The support-independent fallback is temporary; the runtime/runner redesign for v14 is a separate change.

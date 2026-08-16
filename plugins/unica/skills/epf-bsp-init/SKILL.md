@@ -13,6 +13,8 @@ allowed-tools:
 
 Добавляет в модуль объекта обработки функцию `СведенияОВнешнейОбработке()`, необходимую для регистрации в подсистеме «Дополнительные отчёты и обработки» БСП.
 
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+
 ## Usage
 
 ```
@@ -147,7 +149,7 @@ allowed-tools:
 1. Найди `ObjectModule.bsl` через Glob: `src/{{ProcessorName}}/Ext/ObjectModule.bsl`
 2. Прочитай файл
 3. Если `СведенияОВнешнейОбработке` уже есть — сообщи пользователю и не дублируй
-4. Если файл не найден — предложи сначала подготовить external source-set `EXTERNAL_DATA_PROCESSORS` через `v8-runner`
+4. Если файл не найден — предложи создать scaffold через `unica.epf.init`; если external source-set не зарегистрирован в предоставленном `v8project.yaml`, сообщи о runtime contract gap и не обходи его прямым runner-ом, `unica.build.*` или `unica.runtime.job.*`
 5. Найди область `#Область ПрограммныйИнтерфейс` ... `#КонецОбласти`
 6. Вставь функцию `СведенияОВнешнейОбработке()` внутрь этой области
 7. Если вид требует серверный обработчик — вставь его тоже в эту область, после функции
@@ -202,7 +204,9 @@ allowed-tools:
 
 ## Дальнейшие шаги
 
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+
 - Добавить ещё команду: `/epf-bsp-add-command`
 - Добавить форму: `/form-add`
 - Добавить макет: `/template-add`
-- Собрать EPF: `v8-runner` skill, MCP `unica.runtime.execute`, `operation=make`, `sourceSet=<external-processors>`, `output=build/external`
+- Предпросмотреть команду сборки EPF: `v8-runner` skill, MCP `unica.runtime.execute`, `operation=make`, `sourceSet=<external-processors>`, `output=build/external`, `dryRun=true`; сам `.epf` этот preview не собирает.

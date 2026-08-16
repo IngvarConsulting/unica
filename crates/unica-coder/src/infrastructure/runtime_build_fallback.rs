@@ -7,7 +7,7 @@ pub(crate) const PARTIAL_FALLBACK_WARNING: &str =
 /// A build that reached the pinned failure code but whose receipt refused the
 /// classification must say so. Silence here is indistinguishable from a runtime
 /// that never considered the retry, so a receipt that drifts away from the
-/// pinned shape would look exactly like #404 being unfixed (ADR-0066).
+/// pinned shape would look exactly like #404 being unfixed (ADR-0067).
 const PARTIAL_FALLBACK_REJECTED: &str =
     "v8-runner exited with the pinned partial-load failure code, but its structured result did not \
      prove a completed partial load, so no full rebuild was retried";
@@ -109,16 +109,6 @@ pub(crate) fn full_rebuild_argv(argv: &[String]) -> Option<Vec<String>> {
     let mut full = argv.to_vec();
     full.insert(build_index.saturating_add(1), "--full-rebuild".to_string());
     Some(full)
-}
-
-pub(crate) fn process_exit_code(status: &str) -> Option<i32> {
-    let status = status.trim();
-    status.parse::<i32>().ok().or_else(|| {
-        ["exit status: ", "exit code: "]
-            .iter()
-            .find_map(|prefix| status.strip_prefix(prefix))
-            .and_then(|code| code.parse::<i32>().ok())
-    })
 }
 
 fn build_subcommand_index(argv: &[String]) -> Option<usize> {
@@ -547,10 +537,5 @@ mod tests {
         let full = full_rebuild_argv(&colliding_global_values).expect("fallback argv");
         assert_eq!(full[5], "build");
         assert_eq!(full[6], "--full-rebuild");
-
-        assert_eq!(process_exit_code("exit status: 4"), Some(4));
-        assert_eq!(process_exit_code("exit code: 4"), Some(4));
-        assert_eq!(process_exit_code("4"), Some(4));
-        assert_eq!(process_exit_code("signal: 9 (SIGKILL)"), None);
     }
 }

@@ -1,5 +1,7 @@
 # Config And Backends
 
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+
 Important `v8project.yaml` concepts:
 
 - `format`: `designer` or `edt`.
@@ -41,11 +43,12 @@ its `version` is ignored. When `path` is absent, omitted/false `strict`
 preserves normal root/`PATH` discovery; `strict: true` alone adds no boundary.
 This is project configuration, not a new `unica.runtime.execute` argument.
 
-Backend guidance:
+Backend argument guidance for previews; these capabilities do not make the
+current public applied modes executable:
 
-- Designer format with Designer builder covers init/build/extensions/dump/syntax/tests/make/load.
-- Designer format with IBCMD supports file infobases and server infobases when `infobase.dbms.kind/server/name` are configured.
-- EDT format can build, run EDT syntax checks, synchronize extensions, and run configured tests, but `syntax edt` uses `projects` rather than Designer module flags.
+- Designer format with Designer builder defines arguments for init/build/extensions/dump/syntax/tests/make/load previews.
+- Designer format with IBCMD models file infobases and server infobases when `infobase.dbms.kind/server/name` are configured.
+- EDT format models build, EDT syntax, extension, and configured-test previews; `syntax edt` uses `projects` rather than Designer module flags.
 - `convert` is a file workflow and accepts only `sourceSet` and `output` from the Unica wrapper.
-- `make` requires a backend that can publish the requested artifact. For external processors/reports, `output` is a publish directory.
+- A future applied `make` requires a backend that can publish the requested artifact. In its preview for external processors/reports, `output` is a publish directory.
 - `load` accepts `mode=load` or `mode=merge`; `mode=merge` requires `settings`. `mode=update` is rejected by v8-runner.

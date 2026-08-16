@@ -8,6 +8,7 @@ description: "Поиск и применение паттернов БСП. Ис
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.meta.info`, `unica.form.info`, `unica.role.info`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
+- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Use `epf-bsp-init` and `epf-bsp-add-command` only for BSP external processing registration helpers.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -17,7 +18,7 @@ description: "Поиск и применение паттернов БСП. Ис
 2. Search existing project usage with `unica.code.search` before writing new code. Prefer local project conventions over generic snippets.
 3. Inspect affected metadata, forms, roles, and external processing registration with `unica.*.info` skills.
 4. Use `unica.standards.search` only for a `development-standard` that constrains the pattern. Do not treat it as platform or BSP documentation. Exact platform mechanics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap. Treat local BSP code as corroborating implementation evidence, not as the platform contract.
-5. Implement the smallest integration point and verify with `unica.runtime.execute` syntax/tests.
+5. Implement the smallest integration point; use `unica.runtime.execute` only to preview typed syntax/test arguments, and do not claim runtime verification from that preview.
 
 ## References
 

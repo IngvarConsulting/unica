@@ -17,10 +17,6 @@ use crate::infrastructure::platform::{
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
-use crate::infrastructure::runtime_build_fallback::{
-    classify_partial_platform_failure, full_rebuild_argv, process_exit_code, BuildAttempt,
-    PARTIAL_FALLBACK_WARNING,
-};
 use crate::infrastructure::runtime_build_preflight::{
     RuntimeBuildPreflight, RuntimeInvocationPlan,
 };
@@ -509,9 +505,6 @@ impl<'a> RuntimeAdapter<'a> {
             }));
         }
 
-        if let Some(build_preflight) = &invocation.build_preflight {
-            build_preflight.reauthorize_in_context(context)?;
-        }
         if cancellation.is_cancelled() {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
                 format!("{tool_name} cancelled before v8-runner launch"),
@@ -529,8 +522,8 @@ impl<'a> RuntimeAdapter<'a> {
             timeout: process_timeout,
             cancellation: cancellation.clone(),
         };
-        let mut runtime_warnings = invocation.warnings;
-        let mut output = match self.runner.run(&process_command) {
+        let runtime_warnings = invocation.warnings;
+        let output = match self.runner.run(&process_command) {
             Ok(output) => output,
             Err(error) => {
                 let error = redactor(&error);
@@ -552,88 +545,10 @@ impl<'a> RuntimeAdapter<'a> {
                 }));
             }
         };
-        let mut initial_partial_output = None;
-        let proven_partial_failure = classify_partial_platform_failure(&BuildAttempt {
-            argv: &process_command.args,
-            process_exit_code: process_exit_code(&output.status),
-            status_success: output.status_success,
-            timed_out: output.timed_out,
-            cancelled: output.cancelled,
-            stdout_truncated: output.stdout_truncated,
-            stdout_had_invalid_utf8: output.stdout_had_invalid_utf8,
-            stdout: &output.stdout,
-        });
-        let fallback_args = match &proven_partial_failure {
-            Ok(_) => full_rebuild_argv(&process_command.args),
-            Err(rejection) => {
-                // A receipt that reached the pinned failure code and was still
-                // refused has to say so. Without it a drifted receipt looks
-                // exactly like a runtime that never considered the retry (#404).
-                runtime_warnings.extend(rejection.warning());
-                None
-            }
-        };
-        if let Some(fallback_args) = fallback_args {
-            if cancellation.is_cancelled() {
-                let stdout = redactor(&output.stdout);
-                let stderr = redactor(&output.stderr);
-                let mut outcome =
-                    cancelled_process_outcome(tool_name, stdout, stderr, Some(command));
-                outcome.warnings = merge_warnings(runtime_warnings, outcome.warnings);
-                return Ok(RuntimeAdapterOutcome::plain(outcome));
-            }
-            if let Some(build_preflight) = &invocation.build_preflight {
-                if let Err(error) = build_preflight.reauthorize_in_context(context) {
-                    return Ok(RuntimeAdapterOutcome::plain(fallback_error_outcome(
-                        tool_name,
-                        &output,
-                        runtime_warnings,
-                        "full rebuild fallback was not started because build identity changed",
-                        "full rebuild fallback was not started",
-                        &error,
-                        Some(command),
-                    )));
-                }
-            }
-            if cancellation.is_cancelled() {
-                let stdout = redactor(&output.stdout);
-                let stderr = redactor(&output.stderr);
-                let mut outcome =
-                    cancelled_process_outcome(tool_name, stdout, stderr, Some(command));
-                outcome.warnings = merge_warnings(runtime_warnings, outcome.warnings);
-                return Ok(RuntimeAdapterOutcome::plain(outcome));
-            }
-            initial_partial_output = Some(output.clone());
-            let fallback_command = ProcessCommand {
-                args: fallback_args,
-                ..process_command.clone()
-            };
-            output = match self.runner.run(&fallback_command) {
-                Ok(output) => output,
-                Err(error) => {
-                    return Ok(RuntimeAdapterOutcome::plain(
-                        fallback_error_outcome(
-                            tool_name,
-                            &output,
-                            runtime_warnings,
-                            "full rebuild fallback did not produce a result; process start state is unknown",
-                            "full rebuild fallback result is unavailable",
-                            &error,
-                            Some(command),
-                        ),
-                    ));
-                }
-            };
-            // The full attempt is the one whose result is reported, so the
-            // reported command must be the one that produced it. Leaving the
-            // partial argv here hands the caller a command that never ran.
-            if let Some(reported_fallback_args) = full_rebuild_argv(&report_args) {
-                command = std::iter::once(bundled_tool.program.display().to_string())
-                    .chain(reported_fallback_args)
-                    .collect();
-            }
-            runtime_warnings.push(PARTIAL_FALLBACK_WARNING.to_string());
-        }
+        // The one full retry belongs to the durable entry point alone. An
+        // applied `unica.runtime.execute` is refused by INV-MCP-RUNTIME-RECEIPT
+        // before it reaches this adapter, so there is no first attempt here to
+        // classify and nothing to retry (ADR-0066, ADR-0067).
         let mut runner_error = if args.get("operation").and_then(Value::as_str) == Some("build")
             && !output.status_success
         {
@@ -643,18 +558,6 @@ impl<'a> RuntimeAdapter<'a> {
         } else {
             None
         };
-        if !output.status_success {
-            if let Some(initial) = initial_partial_output {
-                output.stdout = format!(
-                    "--- initial partial attempt ---\n{}\n--- full rebuild fallback ---\n{}",
-                    initial.stdout, output.stdout
-                );
-                output.stderr = format!(
-                    "--- initial partial attempt ---\n{}\n--- full rebuild fallback ---\n{}",
-                    initial.stderr, output.stderr
-                );
-            }
-        }
         let mut ok = output.status_success;
         let stdout = redactor(&output.stdout);
         let stderr = redactor(&output.stderr);
@@ -1502,44 +1405,6 @@ fn cancelled_process_outcome(
     outcome.stderr = Some(stderr);
     outcome.command = command;
     outcome
-}
-
-fn fallback_error_outcome(
-    tool_name: &str,
-    initial: &ProcessOutput,
-    mut warnings: Vec<String>,
-    warning: &str,
-    fallback_diagnostic_heading: &str,
-    fallback_error: &str,
-    command: Option<Vec<String>>,
-) -> AdapterOutcome {
-    warnings.push(warning.to_string());
-    let fallback_error = redactor(fallback_error);
-    let mut errors = parse_runner_json_envelope(&initial.stdout)
-        .ok()
-        .and_then(|envelope| runner_error_message(&envelope).map(redactor))
-        .into_iter()
-        .collect::<Vec<_>>();
-    errors.push(fallback_error.clone());
-    let initial_stderr = redactor(&initial.stderr);
-    let stderr = if initial_stderr.trim().is_empty() {
-        fallback_error
-    } else {
-        format!(
-            "--- initial partial attempt ---\n{initial_stderr}\n--- {fallback_diagnostic_heading} ---\n{fallback_error}"
-        )
-    };
-    AdapterOutcome {
-        ok: false,
-        summary: format!("{tool_name} failed through internal v8-runner runtime adapter"),
-        changes: Vec::new(),
-        warnings,
-        errors,
-        artifacts: Vec::new(),
-        stdout: Some(redactor(&initial.stdout)),
-        stderr: Some(stderr),
-        command,
-    }
 }
 
 fn process_timeout_error(label: &str, timeout: Option<Duration>) -> String {
@@ -3358,447 +3223,25 @@ mod tests {
         cleanup_context(&context);
     }
 
-    /// #404. The retry decision follows the mode actually selected by
-    /// v8-runner, rather than the configuration support marker: a failed
-    /// partial platform step gets one full rebuild attempt.
+    /// #404 and ADR-0067. The one full retry belongs to the durable entry
+    /// point. An applied `unica.runtime.execute` never reaches this adapter
+    /// (INV-MCP-RUNTIME-RECEIPT), so a partial-failure receipt here must not
+    /// start a second process: the retry would escape the one call that owns
+    /// the lifecycle.
     #[test]
-    fn runtime_adapter_falls_back_after_a_structured_partial_platform_failure() {
-        let mut context = temp_context("runtime-partial-full-fallback");
+    fn runtime_adapter_never_retries_a_failed_partial_build() {
+        let mut context = temp_context("runtime-partial-no-sync-retry");
         configure_supported_designer_source(&mut context);
-        let runner = SequenceProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: false,
-                    status: "exit status: 4".to_string(),
-                    stdout: serde_json::to_string(&json!({
-                        "ok": false,
-                        "command": "build",
-                        "duration_ms": 12,
-                        "data": {
-                            "ok": false,
-                            "steps": [{
-                                "source_set": "main",
-                                "mode": { "partial": { "file_count": 1 } },
-                                "ok": false,
-                                "message": "platform error: load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst",
-                                "duration_ms": 0
-                            }],
-                            "duration_ms": 12
-                        },
-                        "warnings": [],
-                        "steps": [],
-                        "error": {
-                            "code": "platform_failure",
-                            "kind": "platform",
-                            "message": "load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst"
-                        }
-                    }))
-                    .unwrap(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: serde_json::to_string(&json!({
-                        "ok": true,
-                        "command": "build",
-                        "data": { "steps": [] }
-                    }))
-                    .unwrap(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-            ]),
-        };
-        let mut args = Map::new();
-        args.insert("operation".to_string(), json!("build"));
-
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
-
-        assert!(outcome.ok);
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 2);
-        assert_runtime_args_with_primary(&context, &commands[0].args[1..], &["build"]);
-        assert_eq!(
-            commands[0].args.first().map(String::as_str),
-            Some("--json-message")
-        );
-        assert_runtime_args_with_primary(
-            &context,
-            &commands[1].args[1..],
-            &["build", "--full-rebuild"],
-        );
-        assert_eq!(
-            commands[1].args.first().map(String::as_str),
-            Some("--json-message")
-        );
-        assert!(outcome
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("retried once with `--full-rebuild`")));
-        // The full attempt decided the reported result, so the reported command
-        // has to be the one that produced it.
-        let reported = outcome.command.expect("reported command");
-        assert_eq!(
-            reported[1..],
-            commands[1].args[..],
-            "the reported command must be the attempt whose result was published"
-        );
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_cancellation_during_fallback_reauthorization_prevents_spawn() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-
-        let mut context = temp_context("runtime-fallback-cancelled-after-reauthorization");
-        configure_designer_source(&mut context);
-        let cancellation = CancellationToken::new();
-        let cancellation_for_hook = cancellation.clone();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_hook = Arc::clone(&calls);
-        let _hook =
-            crate::infrastructure::runtime_build_preflight::set_after_reauthorization_hook_for_test(
-                move || {
-                    if calls_for_hook.fetch_add(1, Ordering::SeqCst) == 1 {
-                        cancellation_for_hook.cancel();
-                    }
-                },
-            );
         let partial_message = "load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst";
         let runner = SequenceProcessRunner {
             commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: false,
-                    status: "exit status: 4".to_string(),
-                    stdout: build_failure_json(
-                        json!({ "partial": { "file_count": 1 } }),
-                        partial_message,
-                    ),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "full build completed".to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-            ]),
-        };
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke_cancellable_with_data(
-                "unica.runtime.execute",
-                &args,
-                &context,
-                false,
-                true,
-                &cancellation,
-            )
-            .expect("runtime outcome");
-
-        assert!(!outcome.outcome.ok);
-        assert!(outcome.outcome.summary.contains("cancel"));
-        assert_eq!(runner.commands.borrow().len(), 1);
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_rejects_config_change_between_partial_and_full_attempts() {
-        let mut context = temp_context("runtime-fallback-config-change");
-        configure_designer_source(&mut context);
-        let config = context.workspace_root.join("v8project.yaml");
-        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst";
-        let runner = MutatingAfterFirstProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: false,
-                    status: "exit status: 4".to_string(),
-                    stdout: build_failure_json(
-                        json!({ "partial": { "file_count": 1 } }),
-                        partial_message,
-                    ),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "full build completed".to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-            ]),
-            after_first: RefCell::new(Some(Box::new(move || {
-                fs::write(
-                    config,
-                    "format: DESIGNER\nsource-set: []\n# changed before fallback\n",
-                )
-                .expect("change config after first attempt");
-            }))),
-        };
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .expect("identity refusal is a failed runtime outcome");
-
-        assert!(!outcome.ok);
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| error.contains("identity changed") || error.contains("config changed")));
-        assert!(outcome
-            .stdout
-            .as_deref()
-            .is_some_and(|stdout| stdout.contains(partial_message)));
-        assert!(outcome
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("fallback was not started")));
-        assert_eq!(runner.commands.borrow().len(), 1);
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_preserves_partial_diagnostics_when_fallback_execution_errors() {
-        let mut context = temp_context("runtime-partial-fallback-spawn-error");
-        configure_designer_source(&mut context);
-        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: first; platform log path: /tmp/first.log; partial load list path: /tmp/partial.lst";
-        let runner = FailingAfterFirstProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            first: ProcessOutput {
+            outputs: RefCell::new(vec![ProcessOutput {
                 status_success: false,
                 status: "exit status: 4".to_string(),
                 stdout: build_failure_json(
                     json!({ "partial": { "file_count": 1 } }),
                     partial_message,
                 ),
-                stderr: "first stderr".to_string(),
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: false,
-                stderr_truncated: false,
-                stdout_had_invalid_utf8: false,
-                stderr_had_invalid_utf8: false,
-            },
-            error: "fallback spawn failed".to_string(),
-        };
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .expect("spawn refusal is a failed runtime outcome");
-
-        assert!(!outcome.ok);
-        assert!(outcome.errors.iter().any(|error| error == partial_message));
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| error.contains("fallback spawn failed")));
-        assert!(outcome
-            .stdout
-            .as_deref()
-            .is_some_and(|stdout| stdout.contains(partial_message)));
-        assert!(outcome
-            .stderr
-            .as_deref()
-            .is_some_and(|stderr| stderr.contains("first stderr")));
-        assert!(outcome
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("process start state is unknown")));
-        assert!(!outcome
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("could not be spawned")));
-        assert!(!outcome
-            .warnings
-            .iter()
-            .any(|warning| warning == PARTIAL_FALLBACK_WARNING));
-        assert_eq!(runner.commands.borrow().len(), 2);
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_preserves_both_diagnostics_when_full_fallback_fails() {
-        let mut context = temp_context("runtime-partial-full-fallback-fails");
-        configure_designer_source(&mut context);
-        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: first; platform log path: /tmp/first.log; partial load list path: /tmp/partial.lst";
-        let full_message =
-            "full load failed for source-set 'main' with exit code 2; platform log: second";
-        let runner = SequenceProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: false,
-                    status: "exit status: 4".to_string(),
-                    stdout: build_failure_json(
-                        json!({ "partial": { "file_count": 1 } }),
-                        partial_message,
-                    ),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-                ProcessOutput {
-                    status_success: false,
-                    status: "exit status: 4".to_string(),
-                    stdout: build_failure_json(json!("full"), full_message),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-            ]),
-        };
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
-
-        assert!(!outcome.ok);
-        assert!(outcome
-            .errors
-            .iter()
-            .any(|error| error.contains(full_message)));
-        let stdout = outcome.stdout.expect("combined attempt output");
-        assert!(stdout.contains("--- initial partial attempt ---"));
-        assert!(stdout.contains(partial_message));
-        assert!(stdout.contains("--- full rebuild fallback ---"));
-        assert!(stdout.contains(full_message));
-        assert_eq!(runner.commands.borrow().len(), 2);
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_does_not_fallback_from_a_lossy_json_receipt() {
-        let mut context = temp_context("runtime-partial-lossy-receipt");
-        configure_designer_source(&mut context);
-        let partial_message = "load failed for source-set 'main' with exit code 1; platform log: sanitized\u{fffd}; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst";
-        let runner = SequenceProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            outputs: RefCell::new(vec![
-                ProcessOutput {
-                    status_success: false,
-                    status: "exit status: 4".to_string(),
-                    stdout: build_failure_json(
-                        json!({ "partial": { "file_count": 1 } }),
-                        partial_message,
-                    ),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: true,
-                    stderr_had_invalid_utf8: false,
-                },
-                ProcessOutput {
-                    status_success: true,
-                    status: "exit status: 0".to_string(),
-                    stdout: "full build completed".to_string(),
-                    stderr: String::new(),
-                    timed_out: false,
-                    cancelled: false,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    stdout_had_invalid_utf8: false,
-                    stderr_had_invalid_utf8: false,
-                },
-            ]),
-        };
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-
-        let outcome = RuntimeAdapter::with_runner(&runner)
-            .invoke("unica.runtime.execute", &args, &context, false, true)
-            .unwrap();
-
-        assert!(!outcome.ok);
-        assert_eq!(runner.commands.borrow().len(), 1);
-        // The pinned exit code arrived and the retry still did not happen. That
-        // has to be visible, or it is indistinguishable from #404 unfixed.
-        assert!(
-            outcome
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("no full rebuild was retried")
-                    && warning.contains("not valid UTF-8")),
-            "{:?}",
-            outcome.warnings
-        );
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn runtime_adapter_does_not_fallback_when_the_initial_partial_build_succeeds() {
-        let mut context = temp_context("runtime-supported-partial-success");
-        configure_supported_designer_source(&mut context);
-        let runner = RecordingProcessRunner {
-            commands: RefCell::new(Vec::new()),
-            output: ProcessOutput {
-                status_success: true,
-                status: "exit status: 0".to_string(),
-                stdout: serde_json::to_string(&json!({
-                    "ok": true,
-                    "command": "build",
-                    "data": {
-                        "steps": [{
-                            "source_set": "main",
-                            "mode": { "partial": { "file_count": 1 } },
-                            "ok": true
-                        }]
-                    }
-                }))
-                .unwrap(),
                 stderr: String::new(),
                 timed_out: false,
                 cancelled: false,
@@ -3806,7 +3249,7 @@ mod tests {
                 stderr_truncated: false,
                 stdout_had_invalid_utf8: false,
                 stderr_had_invalid_utf8: false,
-            },
+            }]),
         };
         let args = Map::from_iter([("operation".to_string(), json!("build"))]);
 
@@ -3814,13 +3257,28 @@ mod tests {
             .invoke("unica.runtime.execute", &args, &context, false, true)
             .unwrap();
 
-        assert!(outcome.ok);
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 1);
-        assert_runtime_args_with_primary(&context, &commands[0].args[1..], &["build"]);
+        assert!(!outcome.ok);
         assert_eq!(
-            commands[0].args.first().map(String::as_str),
-            Some("--json-message")
+            runner.commands.borrow().len(),
+            1,
+            "the synchronous adapter owns exactly one process"
+        );
+        assert!(
+            !outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("retried once")),
+            "{:?}",
+            outcome.warnings
+        );
+        // The structured error still reaches the caller; only the retry is gone.
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("load failed for source-set")),
+            "{:?}",
+            outcome.errors
         );
         cleanup_context(&context);
     }
@@ -6937,16 +6395,6 @@ analyze_timeout_seconds = 900
         commands: RefCell<Vec<ProcessCommand>>,
         outputs: RefCell<Vec<ProcessOutput>>,
     }
-    struct FailingAfterFirstProcessRunner {
-        commands: RefCell<Vec<ProcessCommand>>,
-        first: ProcessOutput,
-        error: String,
-    }
-    struct MutatingAfterFirstProcessRunner {
-        commands: RefCell<Vec<ProcessCommand>>,
-        outputs: RefCell<Vec<ProcessOutput>>,
-        after_first: RefCell<Option<Box<dyn FnOnce()>>>,
-    }
     fn build_failure_json(mode: Value, message: &str) -> String {
         serde_json::to_string(&json!({
             "ok": false,
@@ -6977,28 +6425,6 @@ analyze_timeout_seconds = 900
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.commands.borrow_mut().push(command.clone());
             Ok(self.outputs.borrow_mut().remove(0))
-        }
-    }
-    impl ProcessRunner for FailingAfterFirstProcessRunner {
-        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-            self.commands.borrow_mut().push(command.clone());
-            if self.commands.borrow().len() == 1 {
-                Ok(self.first.clone())
-            } else {
-                Err(self.error.clone())
-            }
-        }
-    }
-    impl ProcessRunner for MutatingAfterFirstProcessRunner {
-        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-            self.commands.borrow_mut().push(command.clone());
-            let output = self.outputs.borrow_mut().remove(0);
-            if self.commands.borrow().len() == 1 {
-                if let Some(after_first) = self.after_first.borrow_mut().take() {
-                    after_first();
-                }
-            }
-            Ok(output)
         }
     }
     struct RecordingBslMcpRunner {
