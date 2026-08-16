@@ -44,8 +44,10 @@ pub(crate) fn platform_fence(
         FenceCapability::Unsupported
     };
     match capability {
-        FenceCapability::ProvenFast => macos::MacSourceRevisionFence::new(root, &fence_directory)
-            .map(|fence| Arc::new(fence) as Arc<dyn SourceRevisionFence>),
+        FenceCapability::ProvenFast => {
+            macos::MacSourceRevisionFence::new(root, &fence_directory, cache_root)
+                .map(|fence| Arc::new(fence) as Arc<dyn SourceRevisionFence>)
+        }
         FenceCapability::Unsupported => platform_fence_for_capability(root, capability),
     }
 }
@@ -119,6 +121,12 @@ mod macos {
         trust_loss: AtomicU8,
         source_root: Vec<u8>,
         marker_root: Vec<u8>,
+        // Set only when the cache root lies strictly inside the watched
+        // source root. Everything Unica writes there is invisible to the
+        // corpus scan, so reporting it can only destabilize the reconcile;
+        // a cache root at or above the source root would swallow genuine
+        // source events and must not prune anything.
+        cache_root: Option<Vec<u8>>,
         changed_paths: Mutex<BTreeSet<PathBuf>>,
         marker: Mutex<MarkerState>,
         marker_changed: Condvar,
@@ -145,7 +153,11 @@ mod macos {
     unsafe impl Sync for MacSourceRevisionFence {}
 
     impl MacSourceRevisionFence {
-        pub(super) fn new(root: &Path, fence_directory: &Path) -> Result<Self, String> {
+        pub(super) fn new(
+            root: &Path,
+            fence_directory: &Path,
+            cache_root: &Path,
+        ) -> Result<Self, String> {
             let marker_directory = fs::canonicalize(fence_directory).map_err(|error| {
                 format!("failed to resolve source revision fence directory: {error}")
             })?;
@@ -154,6 +166,13 @@ mod macos {
             let source_root = fs::canonicalize(root)
                 .map_err(|error| format!("failed to resolve source revision root: {error}"))?;
             let source_root_bytes = path_bytes(&source_root, "source revision root")?;
+            let cache_root_bytes = fs::canonicalize(cache_root)
+                .ok()
+                .and_then(|cache_root| path_bytes(&cache_root, "source revision cache root").ok())
+                .filter(|cache_root| {
+                    cache_root.as_slice() != source_root_bytes.as_slice()
+                        && path_is_within(cache_root, &source_root_bytes)
+                });
             let root = source_root
                 .to_str()
                 .ok_or_else(|| "source revision root is not UTF-8".to_string())?;
@@ -169,6 +188,7 @@ mod macos {
                 trust_loss: AtomicU8::new(TRUSTED),
                 source_root: source_root_bytes,
                 marker_root: marker_root_bytes,
+                cache_root: cache_root_bytes,
                 changed_paths: Mutex::new(BTreeSet::new()),
                 marker: Mutex::new(MarkerState {
                     expected_path: None,
@@ -375,6 +395,7 @@ mod macos {
                     state.trust_loss.store(WATCHER_GAP, Ordering::Release);
                     continue;
                 }
+                let path = unsafe { CStr::from_ptr(*path) }.to_bytes();
                 let loss = if flags & kFSEventStreamEventFlagRootChanged != 0 {
                     ROOT_CHANGED
                 } else if flags
@@ -390,9 +411,22 @@ mod macos {
                     TRUSTED
                 };
                 if loss != TRUSTED {
-                    state.trust_loss.store(loss, Ordering::Release);
+                    // `MustScanSubDirs` is scoped to `path`, while the
+                    // dropped-event and root flags cover the whole stream. A
+                    // scoped gap whose subtree cannot reach the unpruned
+                    // corpus proves nothing about the sources — under heavy
+                    // self-write load coalesced generated-directory events
+                    // must not poison trust.
+                    let ignorable = loss == WATCHER_GAP
+                        && !scoped_gap_touches_corpus(
+                            path,
+                            &state.source_root,
+                            state.cache_root.as_deref(),
+                        );
+                    if !ignorable {
+                        state.trust_loss.store(loss, Ordering::Release);
+                    }
                 }
-                let path = unsafe { CStr::from_ptr(*path) }.to_bytes();
                 if path_is_within(path, &state.marker_root) {
                     let mut marker = state
                         .marker
@@ -404,7 +438,26 @@ mod macos {
                     }
                     continue;
                 }
+                if state
+                    .cache_root
+                    .as_deref()
+                    .is_some_and(|cache_root| path_is_within(path, cache_root))
+                {
+                    continue;
+                }
                 if !path_is_within(path, &state.source_root) {
+                    continue;
+                }
+                let Some(relative) = relative_path_bytes(path, &state.source_root) else {
+                    state.trust_loss.store(WATCHER_GAP, Ordering::Release);
+                    continue;
+                };
+                // The manifest scanner prunes the generated directory, so the
+                // fence has to prune it as well. Unica writes its own caches
+                // there — index databases, service records, revision records —
+                // and without this the tool's own writes read as source
+                // changes and the reconcile never stabilizes.
+                if is_within_generated_dir(relative) {
                     continue;
                 }
                 if flags & kFSEventStreamEventFlagItemIsDir != 0
@@ -415,10 +468,6 @@ mod macos {
                     state.trust_loss.store(WATCHER_GAP, Ordering::Release);
                     continue;
                 }
-                let Some(relative) = relative_path_bytes(path, &state.source_root) else {
-                    state.trust_loss.store(WATCHER_GAP, Ordering::Release);
-                    continue;
-                };
                 state
                     .changed_paths
                     .lock()
@@ -426,6 +475,33 @@ mod macos {
                     .insert(PathBuf::from(OsString::from_vec(relative.to_vec())));
             }
         });
+    }
+
+    fn is_within_generated_dir(relative: &[u8]) -> bool {
+        relative.split(|byte| *byte == b'/').any(|component| {
+            component == crate::infrastructure::source_roots::GENERATED_DIR_NAME.as_bytes()
+        })
+    }
+
+    /// Whether a path-scoped watcher gap at `path` can hide a change to the
+    /// unpruned source corpus. Gaps confined to a pruned subtree (the
+    /// generated directory, an in-root cache root) or to a subtree disjoint
+    /// from the source root prove nothing about the sources.
+    pub(super) fn scoped_gap_touches_corpus(
+        path: &[u8],
+        source_root: &[u8],
+        cache_root: Option<&[u8]>,
+    ) -> bool {
+        if path_is_within(path, source_root) {
+            if cache_root.is_some_and(|cache_root| path_is_within(path, cache_root)) {
+                return false;
+            }
+            return !relative_path_bytes(path, source_root).is_some_and(is_within_generated_dir);
+        }
+        // Outside the source root the gap matters only when its subtree
+        // contains the source root itself. The filesystem root is its own
+        // separator, so `path_is_within` cannot see it as an ancestor.
+        path == b"/" || path_is_within(source_root, path)
     }
 
     fn relative_path_bytes<'a>(path: &'a [u8], root: &[u8]) -> Option<&'a [u8]> {
@@ -481,6 +557,60 @@ mod tests {
     use std::time::Duration;
     use tempfile::tempdir;
 
+    // The success path never waits for the deadline — `flush` returns as soon
+    // as the marker event arrives — so a generous budget costs nothing and
+    // keeps the suite off the wall clock of a loaded runner (issue #510).
+    const FLUSH_TEST_BUDGET: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn scoped_watcher_gap_counts_only_when_it_can_reach_the_unpruned_corpus() {
+        let source = b"/ws/src".as_slice();
+        let cache = Some(b"/ws/src/unica-cache".as_slice());
+
+        // Gaps that can hide a source change must lose trust.
+        assert!(macos::scoped_gap_touches_corpus(b"/ws/src", source, cache));
+        assert!(macos::scoped_gap_touches_corpus(
+            b"/ws/src/Catalogs",
+            source,
+            cache
+        ));
+        assert!(macos::scoped_gap_touches_corpus(b"/ws", source, cache));
+        assert!(macos::scoped_gap_touches_corpus(b"/", source, cache));
+
+        // Gaps confined to pruned or disjoint subtrees prove nothing.
+        assert!(!macos::scoped_gap_touches_corpus(
+            b"/ws/src/.build",
+            source,
+            cache
+        ));
+        assert!(!macos::scoped_gap_touches_corpus(
+            b"/ws/src/.build/unica/caches",
+            source,
+            cache
+        ));
+        assert!(!macos::scoped_gap_touches_corpus(
+            b"/ws/src/unica-cache/source-revision-fences",
+            source,
+            cache
+        ));
+        assert!(!macos::scoped_gap_touches_corpus(
+            b"/ws/other",
+            source,
+            cache
+        ));
+        assert!(!macos::scoped_gap_touches_corpus(
+            b"/ws/srcX",
+            source,
+            cache
+        ));
+        // Without an in-root cache root the same path is ordinary corpus.
+        assert!(macos::scoped_gap_touches_corpus(
+            b"/ws/src/unica-cache",
+            source,
+            None
+        ));
+    }
+
     #[test]
     fn unsupported_volume_falls_back_without_touching_the_source_root() {
         let sandbox = tempdir().unwrap();
@@ -506,7 +636,7 @@ mod tests {
         }
         fence
             .flush(
-                ProviderDeadline::from_budget(Duration::from_secs(2)),
+                ProviderDeadline::from_budget(FLUSH_TEST_BUDGET),
                 &CancellationToken::new(),
             )
             .unwrap();
@@ -518,7 +648,7 @@ mod tests {
             fs::write(&module, source).unwrap();
             let outcome = fence
                 .flush(
-                    ProviderDeadline::from_budget(Duration::from_secs(2)),
+                    ProviderDeadline::from_budget(FLUSH_TEST_BUDGET),
                     &CancellationToken::new(),
                 )
                 .unwrap();
@@ -530,5 +660,120 @@ mod tests {
                 "a delayed event for an older marker must not satisfy the next fence"
             );
         }
+    }
+
+    #[test]
+    fn macos_fsevents_flush_ignores_writes_inside_the_generated_directory() {
+        let root = tempdir().unwrap();
+        let cache = root.path().join(".build/unica");
+        fs::create_dir_all(&cache).unwrap();
+        let module = root.path().join("Module.bsl");
+        fs::write(&module, "Процедура A()\n").unwrap();
+        let fence = platform_fence(root.path(), &cache).unwrap();
+        if fence.capability() != FenceCapability::ProvenFast {
+            return;
+        }
+        fence
+            .flush(
+                ProviderDeadline::from_budget(FLUSH_TEST_BUDGET),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        // Unica writes its own caches under `<source root>/.build`, and the
+        // manifest scanner prunes that directory. The fence has to prune it
+        // too: otherwise every index or service write reads as a source
+        // change and the reconcile never stabilizes.
+        fs::create_dir_all(cache.join("caches/rlm-bsl/index-v15")).unwrap();
+        fs::write(
+            cache.join("caches/rlm-bsl/index-v15/bsl_index_status.json"),
+            "{\"status\":\"ready\"}",
+        )
+        .unwrap();
+        let outcome = fence
+            .flush(
+                ProviderDeadline::from_budget(FLUSH_TEST_BUDGET),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FenceOutcome::Proven {
+                changed_paths: Vec::new()
+            },
+            "generated-directory writes must not perturb the source revision fence"
+        );
+
+        fs::write(&module, "Процедура B()\n").unwrap();
+        let outcome = fence
+            .flush(
+                ProviderDeadline::from_budget(FLUSH_TEST_BUDGET),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FenceOutcome::Proven {
+                changed_paths: vec![PathBuf::from("Module.bsl")]
+            },
+            "pruning the generated directory must not blind the fence to source writes"
+        );
+    }
+
+    #[test]
+    fn macos_fsevents_flush_ignores_an_in_root_cache_outside_the_generated_directory() {
+        let root = tempdir().unwrap();
+        // `UNICA_CACHE_DIR` may legally point inside the source root at a
+        // path that is not named `.build`; the fence must prune the cache
+        // root itself, not just the well-known generated directory.
+        let cache = root.path().join("unica-cache");
+        fs::create_dir_all(&cache).unwrap();
+        let module = root.path().join("Module.bsl");
+        fs::write(&module, "Процедура A()\n").unwrap();
+        let fence = platform_fence(root.path(), &cache).unwrap();
+        if fence.capability() != FenceCapability::ProvenFast {
+            return;
+        }
+        fence
+            .flush(
+                ProviderDeadline::from_budget(FLUSH_TEST_BUDGET),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        fs::create_dir_all(cache.join("caches/rlm-bsl/index-v15")).unwrap();
+        fs::write(
+            cache.join("caches/rlm-bsl/index-v15/bsl_index_status.json"),
+            "{\"status\":\"ready\"}",
+        )
+        .unwrap();
+        let outcome = fence
+            .flush(
+                ProviderDeadline::from_budget(FLUSH_TEST_BUDGET),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FenceOutcome::Proven {
+                changed_paths: Vec::new()
+            },
+            "cache-root writes must not perturb the source revision fence"
+        );
+
+        fs::write(&module, "Процедура B()\n").unwrap();
+        let outcome = fence
+            .flush(
+                ProviderDeadline::from_budget(FLUSH_TEST_BUDGET),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FenceOutcome::Proven {
+                changed_paths: vec![PathBuf::from("Module.bsl")]
+            },
+            "pruning the cache root must not blind the fence to source writes"
+        );
     }
 }

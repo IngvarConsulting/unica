@@ -2071,10 +2071,14 @@ mod tests {
         cancelled_rx
             .recv_timeout(AGGREGATE_GRACE)
             .expect("cancellation did not reach the tracked call within the aggregate grace");
-        let held = Instant::now();
+        let held_since = Instant::now();
         std::thread::sleep(Duration::from_millis(20));
+        // Sampled *before* the release is published, so `held` is a strict
+        // sub-interval of what the drain observes. Sampling after the send
+        // charges this thread's own scheduling delay to `held` while the drain
+        // never sees it, and a loaded runner then inverts the comparison.
+        let held = held_since.elapsed();
         release_tx.send(()).unwrap();
-        let held = held.elapsed();
 
         let (drained, provider_budget) = drain_thread.join().unwrap();
         assert!(
