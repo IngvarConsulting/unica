@@ -18,7 +18,6 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 UNICA_REFERENCE_MODELS = ROOT / "tests/fixtures/unica_mcp_script_parity/unica_reference_models"
 SUBSYSTEM_EDIT = UNICA_REFERENCE_MODELS / "subsystem-edit/scripts/subsystem-edit.py"
-TEMPLATE_ADD = UNICA_REFERENCE_MODELS / "template-add/scripts/add-template.py"
 MXL_COMPILE = UNICA_REFERENCE_MODELS / "mxl-compile/scripts/mxl-compile.py"
 DCS_COMPILE = UNICA_REFERENCE_MODELS / "dcs-compile/scripts/dcs-compile.py"
 VALIDATOR_SCRIPTS = tuple(
@@ -534,35 +533,6 @@ class ReferenceFormatProfileTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 1)
             self.assertEqual(subsystem.read_bytes(), before)
             self.assertFalse((root / "Sales").exists())
-
-    def test_template_add_uses_object_owner_and_rejects_nonexact_version(self) -> None:
-        for version in (None, "2.19", "2.20.0"):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                reports = root / "src" / "Reports"
-                reports.mkdir(parents=True)
-                owner = reports / "Sales.xml"
-                owner.write_text(
-                    subsystem_xml(version).replace("Subsystem", "Report"),
-                    encoding="utf-8",
-                )
-
-                result = run_script(
-                    TEMPLATE_ADD,
-                    "-ObjectName",
-                    "Sales",
-                    "-TemplateName",
-                    "Main",
-                    "-TemplateType",
-                    "Text",
-                    "-SrcDir",
-                    "src",
-                    cwd=root,
-                )
-
-                self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertIn("expected exact '2.20'", result.stderr)
-                self.assertFalse((reports / "Sales").exists())
 
     def test_reference_validators_reject_malformed_and_numeric_equivalent_versions(self) -> None:
         for script in VALIDATOR_SCRIPTS:

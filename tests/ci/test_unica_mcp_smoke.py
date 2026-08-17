@@ -42,7 +42,6 @@ MUTATION_TOOL_NAMES = frozenset(
         "unica.meta.add",
         "unica.meta.edit",
         "unica.meta.remove",
-        "unica.help.add",
         "unica.form.add",
         "unica.form.compile",
         "unica.form.edit",
@@ -50,8 +49,6 @@ MUTATION_TOOL_NAMES = frozenset(
         "unica.interface.edit",
         "unica.subsystem.compile",
         "unica.subsystem.edit",
-        "unica.template.add",
-        "unica.template.remove",
         "unica.dcs.compile",
         "unica.dcs.edit",
         "unica.mxl.compile",
@@ -338,8 +335,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             tool["name"]: tool for tool in responses[0]["result"]["tools"]
         }
 
-        self.assertEqual(len(tools), 74)
-        self.assertEqual(len(MUTATION_TOOL_NAMES), 36)
+        self.assertEqual(len(tools), 71)
+        self.assertEqual(len(MUTATION_TOOL_NAMES), 33)
         self.assertEqual(len(set(tools) - MUTATION_TOOL_NAMES), 38)
         self.assertEqual(MUTATION_TOOL_NAMES - set(tools), set())
         for name, tool in sorted(tools.items()):
@@ -605,7 +602,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                     self.assertIn("op", branch["required"])
                 self.assertEqual(
                     discriminators,
-                    {"setProperties", "add", "update", "remove", "editRelations"},
+                    {"setProperties", "add", "update", "remove", "editRelations", "addHelp"},
                 )
 
     def test_meta_calls_publish_structured_results(self) -> None:
