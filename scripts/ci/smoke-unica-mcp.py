@@ -344,33 +344,27 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     "additionalProperties": false,
     "properties": {
       "confirm": {
-        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
         "type": "boolean"
       },
       "cursor": {
-        "description": "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "cwd": {
-        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
         "type": "string"
       },
       "limit": {
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
       },
       "metadataPath": {
-        "description": "Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics.",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "sourceSet": {
-        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
@@ -385,32 +379,26 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     "additionalProperties": false,
     "properties": {
       "confirm": {
-        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
         "type": "boolean"
       },
       "cwd": {
-        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
         "type": "string"
       },
       "limit": {
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
         "maximum": 65536,
         "minimum": 1,
         "type": "integer"
       },
       "offset": {
-        "description": "Zero-based byte offset inside the immutable resource snapshot",
         "minimum": 0,
         "type": "integer"
       },
       "resourceId": {
-        "description": "Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "snapshotId": {
-        "description": "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
@@ -426,27 +414,22 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     "additionalProperties": false,
     "properties": {
       "confirm": {
-        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
         "type": "boolean"
       },
       "cursor": {
-        "description": "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "cwd": {
-        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
         "type": "string"
       },
       "limit": {
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
       },
       "mode": {
-        "description": "Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full|incremental|partial for dump, load|merge for load, designer-config|designer-modules|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum.",
         "enum": [
           "exact",
           "prefix"
@@ -454,19 +437,16 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "query": {
-        "description": "Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "sourceSet": {
-        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "targetKind": {
-        "description": "Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath",
         "enum": [
           "metadataObject",
           "module"
@@ -530,33 +510,27 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
     ],
     "properties": {
       "confirm": {
-        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own.",
         "type": "boolean"
       },
       "cursor": {
-        "description": "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "cwd": {
-        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
         "type": "string"
       },
       "limit": {
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048).",
         "maximum": 50,
         "minimum": 1,
         "type": "integer"
       },
       "metadataPath": {
-        "description": "Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics.",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "scope": {
-        "description": "Bounded source.resources manifest scope: self, aggregate, or registrations",
         "enum": [
           "self",
           "aggregate",
@@ -565,13 +539,11 @@ EXPECTED_SOURCE_INPUT_SCHEMAS = json.loads(
         "type": "string"
       },
       "snapshotId": {
-        "description": "Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
       },
       "sourceSet": {
-        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set",
         "minLength": 1,
         "pattern": "\\S",
         "type": "string"
@@ -593,41 +565,34 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
     "additionalProperties": false,
     "properties": {
       "confirm": {
-        "type": "boolean",
-        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own."
+        "type": "boolean"
       },
       "cursor": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^\\S+$",
-        "description": "Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot"
+        "pattern": "^\\S+$"
       },
       "cwd": {
-        "type": "string",
-        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it"
+        "type": "string"
       },
       "limit": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 50,
-        "description": "Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048)."
+        "maximum": 50
       },
       "metadataPath": {
         "type": "string",
-        "pattern": "^(?:XDTOPackage|ПакетXDTO)\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*$",
-        "description": "Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected."
+        "pattern": "^(?:XDTOPackage|ПакетXDTO)\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*$"
       },
       "sourceSet": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^\\S(?:.*\\S)?$",
-        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set"
+        "pattern": "^\\S(?:.*\\S)?$"
       },
       "typeName": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
-        "description": "Name of the XDTO valueType or objectType, or of the target objectType for a property operation."
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
       }
     },
     "required": [
@@ -658,32 +623,26 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
       "base": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
-        "description": "Prefixed lexical QName naming the base type of a new XDTO valueType in `unica.xdto.edit`, for example `xs:string`; an unprefixed name or surrounding whitespace is rejected."
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
       },
       "confirm": {
-        "type": "boolean",
-        "description": "Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own."
+        "type": "boolean"
       },
       "cwd": {
-        "type": "string",
-        "description": "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it"
+        "type": "string"
       },
       "dryRun": {
         "type": "boolean",
-        "default": true,
-        "description": "Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution."
+        "default": true
       },
       "metadataPath": {
         "type": "string",
-        "pattern": "^(?:XDTOPackage|ПакетXDTO)\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*$",
-        "description": "Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected."
+        "pattern": "^(?:XDTOPackage|ПакетXDTO)\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*$"
       },
       "name": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
-        "description": "Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, the required BSL method to locate on `unica.code.definition`, and the XDTO type or property named by the chosen `unica.xdto.edit` operation. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048)."
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
       },
       "operation": {
         "type": "string",
@@ -693,8 +652,7 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
           "add-property",
           "remove-type",
           "remove-property"
-        ],
-        "description": "Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema."
+        ]
       },
       "property": {
         "type": "object",
@@ -719,26 +677,22 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         "required": [
           "name",
           "type"
-        ],
-        "description": "New XDTO property object for `unica.xdto.edit`: `name` must be an XML NCName and `type` a prefixed lexical QName; `minOccurs` is optional and must be 0 or 1."
+        ]
       },
       "propertyPath": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*(?:\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*)*$",
-        "description": "Property path to a nested XDTO `typeDef`: an unescaped dot separates segments and `\\.` denotes a literal dot inside one NCName, for example `A\\.B.Child`."
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*(?:\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*)*$"
       },
       "sourceSet": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^\\S(?:.*\\S)?$",
-        "description": "Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set"
+        "pattern": "^\\S(?:.*\\S)?$"
       },
       "typeName": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$",
-        "description": "Name of the XDTO valueType or objectType, or of the target objectType for a property operation."
+        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
       }
     },
     "required": [

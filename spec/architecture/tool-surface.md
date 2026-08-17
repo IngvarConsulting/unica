@@ -22,26 +22,26 @@
 
 ### `unica.build.dump`
 
-Dump source set through the internal build/runtime adapter.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
-| `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
-| `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
-| `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for path-based unica.code.* tools, the canonical alias of the object/config path argument on native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
-| `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
-| `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
+| `config` | string | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `database` | string | нет | — |
+| `dbPassword` | string | нет | — |
+| `dbUser` | string | нет | — |
+| `dryRun` | boolean | нет | — |
+| `format` | string | нет | — |
+| `infobase` | string | нет | — |
+| `mode` | string | нет | — |
+| `password` | string | нет | — |
+| `path` | string | нет | — |
+| `sourceDir` | string | нет | — |
+| `sourceSet` | string | нет | — |
+| `target` | string | нет | — |
+| `user` | string | нет | — |
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -54,26 +54,26 @@ Dump source set through the internal build/runtime adapter.
 
 ### `unica.build.load`
 
-Load/build XML source set through the internal build/runtime adapter.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
-| `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
-| `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
-| `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for path-based unica.code.* tools, the canonical alias of the object/config path argument on native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
-| `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
-| `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
+| `config` | string | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `database` | string | нет | — |
+| `dbPassword` | string | нет | — |
+| `dbUser` | string | нет | — |
+| `dryRun` | boolean | нет | — |
+| `format` | string | нет | — |
+| `infobase` | string | нет | — |
+| `mode` | string | нет | — |
+| `password` | string | нет | — |
+| `path` | string | нет | — |
+| `sourceDir` | string | нет | — |
+| `sourceSet` | string | нет | — |
+| `target` | string | нет | — |
+| `user` | string | нет | — |
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -86,28 +86,28 @@ Load/build XML source set through the internal build/runtime adapter.
 
 ### `unica.build.make`
 
-Export a CF/CFE artifact out of the current infobase through the internal build/runtime adapter; it does not load source changes into that infobase first.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
-| `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
-| `extension` | string | нет | Name of the 1C extension to act on for operation dump, make, load or syntax; build rejects it, so build an extension by selecting its configured sourceSet instead |
-| `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
-| `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `output` | string | да | Workspace-relative destination: the artifact file for make (a publish directory for external source-sets), the conversion directory for convert, and the platform /Out log for a direct-client launch |
-| `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for path-based unica.code.* tools, the canonical alias of the object/config path argument on native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
-| `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
-| `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
+| `config` | string | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `database` | string | нет | — |
+| `dbPassword` | string | нет | — |
+| `dbUser` | string | нет | — |
+| `dryRun` | boolean | нет | — |
+| `extension` | string | нет | — |
+| `format` | string | нет | — |
+| `infobase` | string | нет | — |
+| `mode` | string | нет | — |
+| `output` | string | да | — |
+| `password` | string | нет | — |
+| `path` | string | нет | — |
+| `sourceDir` | string | нет | — |
+| `sourceSet` | string | нет | — |
+| `target` | string | нет | — |
+| `user` | string | нет | — |
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -120,26 +120,26 @@ Export a CF/CFE artifact out of the current infobase through the internal build/
 
 ### `unica.build.run`
 
-Launch 1C runtime or Designer through the internal build/runtime adapter.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
-| `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
-| `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
-| `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for path-based unica.code.* tools, the canonical alias of the object/config path argument on native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
-| `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
-| `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
+| `config` | string | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `database` | string | нет | — |
+| `dbPassword` | string | нет | — |
+| `dbUser` | string | нет | — |
+| `dryRun` | boolean | нет | — |
+| `format` | string | нет | — |
+| `infobase` | string | нет | — |
+| `mode` | string | нет | — |
+| `password` | string | нет | — |
+| `path` | string | нет | — |
+| `sourceDir` | string | нет | — |
+| `sourceSet` | string | нет | — |
+| `target` | string | нет | — |
+| `user` | string | нет | — |
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -152,26 +152,26 @@ Launch 1C runtime or Designer through the internal build/runtime adapter.
 
 ### `unica.build.update`
 
-Apply built configuration changes through the internal build/runtime adapter.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `config` | string | нет | Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `database` | string | нет | String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute |
-| `dbPassword` | string | нет | String forwarded to unica.build.* as --db-password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `dbUser` | string | нет | String forwarded to unica.build.* as --db-user; the skills document no behaviour for it beyond the flag name |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
-| `format` | string | нет | On unica.runtime.execute this is the source format (designer or edt) recorded by config-init and no other runtime operation accepts it; on unica.code.* and the native XML tools `format` selects the report/output format instead (for example text, json or jsonl), and on unica.build.* it is an undocumented --format passthrough. |
-| `infobase` | string | нет | String forwarded to unica.build.* as --infobase with no behaviour documented in the skills; unica.runtime.execute has no such argument and reaches a database through connection at config-init |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `password` | string | нет | String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments |
-| `path` | string | нет | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for path-based unica.code.* tools, the canonical alias of the object/config path argument on native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
-| `sourceSet` | string | нет | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `target` | string | нет | String forwarded to unica.build.* as --target; the skills document no behaviour for it beyond the flag name |
-| `user` | string | нет | String forwarded to unica.build.* as --user; the skills document no behaviour for it beyond the flag name |
+| `config` | string | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `database` | string | нет | — |
+| `dbPassword` | string | нет | — |
+| `dbUser` | string | нет | — |
+| `dryRun` | boolean | нет | — |
+| `format` | string | нет | — |
+| `infobase` | string | нет | — |
+| `mode` | string | нет | — |
+| `password` | string | нет | — |
+| `path` | string | нет | — |
+| `sourceDir` | string | нет | — |
+| `sourceSet` | string | нет | — |
+| `target` | string | нет | — |
+| `user` | string | нет | — |
 
 **Результат сейчас:** текст в `stdout` (отвечают прозой в `stdout`)
 
@@ -186,7 +186,7 @@ Apply built configuration changes through the internal build/runtime adapter.
 
 ### `unica.cf.edit`
 
-Edit root Configuration.xml properties, ChildObjects, panels, and home page.
+—
 
 Публикует **133** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -201,14 +201,14 @@ Edit root Configuration.xml properties, ChildObjects, panels, and home page.
 
 ### `unica.cf.info`
 
-Inspect root Configuration.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ConfigPath` | string | по ветви | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `ConfigPath` | string | по ветви | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `ConfigPath`. Ни одной или обе сразу отклоняются.
 
@@ -223,7 +223,7 @@ Inspect root Configuration.xml.
 
 ### `unica.cf.init`
 
-Create empty 1C configuration XML scaffold.
+—
 
 Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -237,12 +237,12 @@ Create empty 1C configuration XML scaffold.
 
 ### `unica.cf.validate`
 
-Validate root configuration XML structure.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ConfigPath` | string | по ветви | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `ConfigPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -260,13 +260,13 @@ Validate root configuration XML structure.
 
 ### `unica.cfe.borrow`
 
-Borrow configuration objects/forms into an extension.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
-| `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
-| `Object` | string | да | On unica.runtime.execute this is one metadata object name for operation dump with mode partial, written in colon form such as Catalog:Номенклатура (use objects for several); on the native XML tools Object is instead the dotted metadata reference the tool acts on, such as Catalog.Контрагенты.Form.ФормаЭлемента for unica.cfe.borrow. |
+| `ConfigPath` | string | да | — |
+| `ExtensionPath` | string | да | — |
+| `Object` | string | да | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -281,14 +281,14 @@ Borrow configuration objects/forms into an extension.
 
 ### `unica.cfe.diff`
 
-Inspect extension contents and transferred insertion blocks.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ConfigPath` | string | да | Path to `Configuration.xml` or the dump directory for `unica.cf.edit`, `unica.cf.info` and `unica.cf.validate`, and the path of the base configuration for `unica.cfe.init`/`borrow`/`diff`; relative to `cwd`. `unica.cf.init` ignores it and writes to `outputDir`. |
-| `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `ConfigPath` | string | да | — |
+| `ExtensionPath` | string | да | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
 
 **Результат сейчас:** `data`: состав расширения со статусом каждого объекта, перехватчики и проверка переноса вставок (ADR-0023) (отвечают типизированным `data`)
 
@@ -301,7 +301,7 @@ Inspect extension contents and transferred insertion blocks.
 
 ### `unica.cfe.init`
 
-Create extension XML scaffold.
+—
 
 Публикует **131** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -315,14 +315,14 @@ Create extension XML scaffold.
 
 ### `unica.cfe.patch_method`
 
-Generate a CFE Before/After interceptor for a caller-verified existing parameterless procedure on a registered adopted object.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
-| `InterceptorType` | string | да | `unica.cfe.patch_method` only: `"Before"` to generate a `&Перед` interceptor or `"After"` for `&После` |
-| `MethodName` | string | да | `unica.cfe.patch_method` only: name of the existing parameterless procedure to intercept; must match a 1C identifier (Latin or Cyrillic letter or underscore, then letters, digits, underscores) |
-| `ModulePath` | string | да | `unica.cfe.patch_method` only: dotted module reference such as `Catalog.X.ObjectModule`, `CommonModule.X` or `Document.X.Form.Y` — a metadata path, not a filesystem path |
+| `ExtensionPath` | string | да | — |
+| `InterceptorType` | string | да | — |
+| `MethodName` | string | да | — |
+| `ModulePath` | string | да | — |
 
 Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -336,11 +336,11 @@ Generate a CFE Before/After interceptor for a caller-verified existing parameter
 
 ### `unica.cfe.validate`
 
-Validate extension XML structure.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ExtensionPath` | string | да | Path to the extension — its directory or its `Configuration.xml` — for every `unica.cfe.*` tool, relative to `cwd`; the base configuration goes in `configPath` instead |
+| `ExtensionPath` | string | да | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -356,16 +356,16 @@ Validate extension XML structure.
 
 ### `unica.code.definition`
 
-Find BSL method definitions through the typed Unica code index boundary.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `moduleHint` | string | нет | Substring of a module path or object name that narrows unica.code.definition when the same method name exists in several modules; matched case-insensitively |
-| `name` | string | да | Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, the required BSL method to locate on `unica.code.definition`, and the XDTO type or property named by the chosen `unica.xdto.edit` operation. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048). |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `limit` | integer | нет | — |
+| `moduleHint` | string | нет | — |
+| `name` | string | да | — |
+| `sourceDir` | string | нет | — |
 
 **Результат сейчас:** `data`: определения с обязательными файлом и строкой; вид, параметры и признак экспорта равны `null`, когда индекс их не сообщил (ADR-0023) (отвечают типизированным `data`)
 
@@ -378,18 +378,18 @@ Find BSL method definitions through the typed Unica code index boundary.
 
 ### `unica.code.diagnostics`
 
-Read provider-neutral diagnostics addressed by logical 1C source targets.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `action` | string | да | Closed diagnostics action selecting analyze, findings, status, or catalog behavior. |
-| `cwd` | string | нет | Absolute path selecting the workspace context; it never identifies a diagnostic target and is not echoed in result data. |
-| `filter` | object | только в ветви | Strict diagnostic severity and provider-qualified code filter applied after normalization. |
-| `limit` | integer | только в ветви | Maximum number of diagnostic entities returned after filtering and deterministic ordering. |
-| `metadataPath` | string | по ветви | Exact logical 1C target address inside sourceSet; required only by findings. |
-| `range` | object | только в ветви | Zero-based, end-exclusive source range accepted only by findings for a module target. |
-| `sourceSet` | string | да | Exact source-set name from the workspace project map; no implicit fallback is used. |
-| `timeoutSeconds` | integer | только в ветви | Total action=analyze budget. Overrides operational.code_diagnostics.analyze_timeout_seconds from workspace config. |
+| `action` | string | да | — |
+| `cwd` | string | нет | — |
+| `filter` | object | только в ветви | — |
+| `limit` | integer | только в ветви | — |
+| `metadataPath` | string | по ветви | — |
+| `range` | object | только в ветви | — |
+| `sourceSet` | string | да | — |
+| `timeoutSeconds` | integer | только в ветви | — |
 
 **Результат сейчас:** `data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; физические пути и формат одного анализатора наружу не выходят (отвечают типизированным `data`)
 
@@ -402,23 +402,23 @@ Read provider-neutral diagnostics addressed by logical 1C source targets.
 
 ### `unica.code.graph`
 
-Inspect BSL call graph through the typed Unica code analysis boundary.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `detail` | string | нет | How much detail to return from unica.code.graph: names, signatures or bodies |
-| `dir` | string | нет | Edge direction to follow on unica.code.graph - in, out, or both; applies to the traversal modes such as neighbors, callers, and callees |
-| `edgeKinds` | array | нет | Array of graph edge-kind names, forwarded to the analyzer as edge_kinds; unica.code.graph only, and the Unica contract does not enumerate the accepted values |
-| `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
-| `ids` | array | нет | Array of code-graph node ids for unica.code.graph, forwarded as ids alongside the single-node id argument; use it when one request targets several nodes |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `maxOutputTokens` | integer | нет | Integer output budget for unica.code.graph, forwarded as max_output_tokens; use it to keep a large graph answer within context |
-| `mode` | string | да | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `provenance` | array | нет | Array of provenance filter values forwarded to the analyzer as provenance; unica.code.graph only, and the Unica contract does not enumerate the accepted values |
-| `query` | string | нет | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `detail` | string | нет | — |
+| `dir` | string | нет | — |
+| `edgeKinds` | array | нет | — |
+| `id` | string | нет | — |
+| `ids` | array | нет | — |
+| `limit` | integer | нет | — |
+| `maxOutputTokens` | integer | нет | — |
+| `mode` | string | да | — |
+| `provenance` | array | нет | — |
+| `query` | string | нет | — |
+| `sourceDir` | string | нет | — |
 
 **Результат сейчас:** `data`: ответ анализатора с узлами и рёбрами графа как есть (ADR-0023) (отвечают типизированным `data`)
 
@@ -431,15 +431,15 @@ Inspect BSL call graph through the typed Unica code analysis boundary.
 
 ### `unica.code.outline`
 
-Read compact BSL module outline from the current source file.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `includeMethods` | boolean | нет | Boolean for unica.code.outline controlling whether method entries appear in the outline; defaults to true |
-| `path` | string | да | Workspace-relative file path whose meaning is tool-scoped: the required .cf or .cfe artifact for unica.runtime.execute operation load (.epf and .erf are rejected there), a module-relative file for path-based unica.code.* tools, the canonical alias of the object/config path argument on native XML tools, and a plain --path passthrough on unica.build.*. |
-| `sourceDir` | string | нет | Workspace-relative source root to work in: on path-based unica.code.* tools it selects the configured Configuration source set and is required when the workspace has more than one, and on unica.build.* it is forwarded as --source-dir; unica.code.patch and unica.runtime.execute select sources by configured sourceSet name instead. |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `includeMethods` | boolean | нет | — |
+| `path` | string | да | — |
+| `sourceDir` | string | нет | — |
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -452,19 +452,19 @@ Read compact BSL module outline from the current source file.
 
 ### `unica.code.patch`
 
-Insert or replace BSL in one logically addressed Platform XML Configuration or Extension module.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `content` | string | да | BSL text for unica.code.patch: inserted at the selector for operation insert, appended to the end of the module when insert names no selector, or written over the selected method or anchor for operation replace |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
-| `metadataPath` | string | да | Canonical logical module address inside sourceSet, for example CommonModule.Service.Module or Catalog.Items.ObjectModule. |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
-| `position` | string | нет | Where unica.code.patch places the content relative to the selector: before or after. Accepted only when insert names a selector |
-| `selector` | object | нет | Optional object naming the unica.code.patch edit point: exactly one of {"method": "Name"} for a whole procedure or function, or {"anchor": "text"} for a fragment that occurs once inside one method. Required by replace; when insert omits it the content goes to the end of the module |
-| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `confirm` | boolean | нет | — |
+| `content` | string | да | — |
+| `cwd` | string | нет | — |
+| `dryRun` | boolean | нет | — |
+| `metadataPath` | string | да | — |
+| `operation` | string | да | — |
+| `position` | string | нет | — |
+| `selector` | object | нет | — |
+| `sourceSet` | string | да | — |
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -478,17 +478,17 @@ Insert or replace BSL in one logically addressed Platform XML Configuration or E
 
 ### `unica.code.search`
 
-Search one logical code scope concurrently through semantic, symbol, and lexical roles. Results preserve role-local ranking, explicit completeness and retryability, logical locations, and observable progress; sourceDir remains a mutually exclusive migration selector.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `metadataPath` | string | только в ветви | Optional canonical logical address inside sourceSet; every role is restricted to the resolved module or metadata-object subtree. |
-| `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `sourceDir` | string | по ветви | Legacy workspace-relative migration selector used instead of sourceSet; it searches the entire resolved source root and cannot be combined with metadataPath. Prefer sourceSet for logical addressing. |
-| `sourceSet` | string | по ветви | Canonical configured source-set name that scopes every search role. |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `limit` | integer | нет | — |
+| `metadataPath` | string | только в ветви | — |
+| `query` | string | да | — |
+| `sourceDir` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `sourceDir`. Ни одной или обе сразу отклоняются.
 `metadataPath` принимается только вместе с `sourceSet`.
@@ -506,7 +506,7 @@ Search one logical code scope concurrently through semantic, symbol, and lexical
 
 ### `unica.dcs.compile`
 
-Compile Data Composition Schema XML from JSON DSL.
+—
 
 Публикует **135** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -520,11 +520,11 @@ Compile Data Composition Schema XML from JSON DSL.
 
 ### `unica.dcs.edit`
 
-Edit Data Composition Schema Template.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | да | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
+| `TemplatePath` | string | да | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -538,15 +538,15 @@ Edit Data Composition Schema Template.xml.
 
 ### `unica.dcs.info`
 
-Inspect Data Composition Schema Template.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `TemplatePath` | string | по ветви | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
@@ -561,13 +561,13 @@ Inspect Data Composition Schema Template.xml.
 
 ### `unica.dcs.validate`
 
-Validate Data Composition Schema Template.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `TemplatePath` | string | по ветви | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -585,15 +585,15 @@ Validate Data Composition Schema Template.xml.
 
 ### `unica.documentation.get`
 
-Fetch the full text of a documentation search hit by its documentId locator.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `documentId` | string | да | Stable locator of a unica.documentation.search hit, passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it. |
-| `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
-| `platformVersion` | string | нет | Requested platform installation version for unica.documentation.search and unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it. |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `documentId` | string | да | — |
+| `language` | string | нет | — |
+| `platformVersion` | string | нет | — |
 
 **Результат сейчас:** `data`: документ целиком с происхождением, локалью ответа, версией и полным текстом (ADR-0023) (отвечают типизированным `data`)
 
@@ -606,17 +606,17 @@ Fetch the full text of a documentation search hit by its documentId locator.
 
 ### `unica.documentation.search`
 
-Search the workspace configuration's embedded help, platform help, and development standards across documentation providers.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `platformVersion` | string | нет | Requested platform installation version for unica.documentation.search and unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it. |
-| `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `sourceKinds` | array | нет | Optional filter of unica.documentation.search by source kind, not by provider id: an array of configuration-documentation, platform-help and/or development-standard; providers without a matching corpus are not polled and their sections are not published, an empty or omitted array means every kind, and an unknown value is refused rather than silently ignored. |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `language` | string | нет | — |
+| `limit` | integer | нет | — |
+| `platformVersion` | string | нет | — |
+| `query` | string | да | — |
+| `sourceKinds` | array | нет | — |
 
 **Результат сейчас:** `data`: секции поставщиков документации с происхождением, локалью ответа и версией (ADR-0023) (отвечают типизированным `data`)
 
@@ -634,17 +634,17 @@ Search the workspace configuration's embedded help, platform help, and developme
 
 ### `unica.epf.init`
 
-Create a make-ready external data processor scaffold in a Designer/platform-XML external source-set, optionally with a managed form.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `FormName` | string | нет | Name of the managed form as a 1C identifier: the form to create in `unica.form.add`, `epf.init` and `erf.init`, or the form to delete in `unica.form.remove` |
-| `Name` | string | да | Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, the required BSL method to locate on `unica.code.definition`, and the XDTO type or property named by the chosen `unica.xdto.edit` operation. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048). |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
-| `Synonym` | string | нет | Human-readable synonym written into the generated XML; it defaults to the matching `name`, `formName` or `templateName` when omitted |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
+| `FormName` | string | нет | — |
+| `Name` | string | да | — |
+| `OutputDir` | string | да | — |
+| `Synonym` | string | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `dryRun` | boolean | нет | — |
 
 **Результат сейчас:** `data`: созданные файлы заготовки внешней обработки (ADR-0023) (отвечают типизированным `data`)
 
@@ -658,17 +658,17 @@ Create a make-ready external data processor scaffold in a Designer/platform-XML 
 
 ### `unica.erf.init`
 
-Create a make-ready external report scaffold in a Designer/platform-XML external source-set, optionally with a managed form.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `FormName` | string | нет | Name of the managed form as a 1C identifier: the form to create in `unica.form.add`, `epf.init` and `erf.init`, or the form to delete in `unica.form.remove` |
-| `Name` | string | да | Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, the required BSL method to locate on `unica.code.definition`, and the XDTO type or property named by the chosen `unica.xdto.edit` operation. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048). |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
-| `Synonym` | string | нет | Human-readable synonym written into the generated XML; it defaults to the matching `name`, `formName` or `templateName` when omitted |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
+| `FormName` | string | нет | — |
+| `Name` | string | да | — |
+| `OutputDir` | string | да | — |
+| `Synonym` | string | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `dryRun` | boolean | нет | — |
 
 **Результат сейчас:** `data`: созданные файлы заготовки внешнего отчёта (ADR-0023) (отвечают типизированным `data`)
 
@@ -682,7 +682,7 @@ Create a make-ready external report scaffold in a Designer/platform-XML external
 
 ### `unica.form.add`
 
-Add managed form metadata and files.
+—
 
 Публикует **134** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -696,11 +696,11 @@ Add managed form metadata and files.
 
 ### `unica.form.compile`
 
-Compile managed Form.xml from JSON DSL or metadata.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `OutputPath` | string | да | Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile` |
+| `OutputPath` | string | да | — |
 
 Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -714,11 +714,11 @@ Compile managed Form.xml from JSON DSL or metadata.
 
 ### `unica.form.edit`
 
-Edit managed Form.xml elements, attributes, commands, and validated events.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `FormPath` | string | да | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
+| `FormPath` | string | да | — |
 
 Публикует **134** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -733,15 +733,15 @@ Edit managed Form.xml elements, attributes, commands, and validated events.
 
 ### `unica.form.info`
 
-Inspect managed Form.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `FormPath` | string | по ветви | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `FormPath` | string | по ветви | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `FormPath`. Ни одной или обе сразу отклоняются.
 
@@ -756,7 +756,7 @@ Inspect managed Form.xml.
 
 ### `unica.form.remove`
 
-Remove a managed form and registration.
+—
 
 Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -770,13 +770,13 @@ Remove a managed form and registration.
 
 ### `unica.form.validate`
 
-Validate managed Form.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `FormPath` | string | по ветви | Path to an existing `Form.xml`, or the form directory that resolves to it, for `unica.form.info`, `unica.form.edit` and `unica.form.validate`, relative to `cwd` |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `FormPath` | string | по ветви | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -794,11 +794,11 @@ Validate managed Form.xml.
 
 ### `unica.help.add`
 
-Add built-in help metadata and page to a 1C object.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `ObjectName` | string | да | Name of the owning object for `unica.form.remove` and `unica.template.add`/`remove`; for `unica.help.add` it is instead the object's path under `srcDir`, e.g. `Catalogs/МойСправочник` |
+| `ObjectName` | string | да | — |
 
 Публикует **136** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -814,11 +814,11 @@ Add built-in help metadata and page to a 1C object.
 
 ### `unica.interface.edit`
 
-Edit subsystem CommandInterface.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `CIPath` | string | да | The `CIPath` spelling of the command-interface path: a subsystem's `Ext/CommandInterface.xml` or its directory, relative to `cwd`, for `unica.interface.edit`/`validate` |
+| `CIPath` | string | да | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -832,11 +832,11 @@ Edit subsystem CommandInterface.xml.
 
 ### `unica.interface.validate`
 
-Validate CommandInterface.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `CIPath` | string | да | The `CIPath` spelling of the command-interface path: a subsystem's `Ext/CommandInterface.xml` or its directory, relative to `cwd`, for `unica.interface.edit`/`validate` |
+| `CIPath` | string | да | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -852,15 +852,15 @@ Validate CommandInterface.xml.
 
 ### `unica.meta.add`
 
-Create one metadata object from a typed internal template and optionally configure it atomically with ordered operations.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
-| `kind` | string | да | Supported metadata object kind for the minimal template. |
-| `name` | string | да | Metadata object name using a valid 1C identifier. |
-| `operations` | array | нет | Optional ordered typed operations applied to the private creation image before one atomic publication. |
-| `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
+| `dryRun` | boolean | нет | — |
+| `kind` | string | да | — |
+| `name` | string | да | — |
+| `operations` | array | нет | — |
+| `sourceSet` | string | да | — |
 
 **Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` и план атомарной публикации одного объекта из типизированного шаблона с необязательными ordered operations (отвечают типизированным `data`)
 
@@ -876,14 +876,14 @@ Create one metadata object from a typed internal template and optionally configu
 
 ### `unica.meta.edit`
 
-Apply ordered typed metadata edit operations atomically.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
-| `metadataPath` | string | да | Logical metadata path of the object to edit. |
-| `operations` | array | да | Ordered typed edit operations applied as one atomic change. |
-| `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
+| `dryRun` | boolean | нет | — |
+| `metadataPath` | string | да | — |
+| `operations` | array | да | — |
+| `sourceSet` | string | да | — |
 
 **Результат сейчас:** `structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая проверку единой связки `EventSubscription.Source`/`Event`/`Handler` через `editRelations.source` и `setProperties` и коллекцию `predefinedItems` в `add`, `update`, `remove` (отвечают типизированным `data`)
 
@@ -898,14 +898,14 @@ Apply ordered typed metadata edit operations atomically.
 
 ### `unica.meta.info`
 
-Inspect one metadata object with validation, proven subsystem memberships, and source-tree usage.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `limit` | integer | нет | Maximum `predefinedItems` returned (1 through 50). Usage lists are read from the source tree, so they are exact and complete and the limit does not apply to them. |
-| `metadataPath` | string | да | Logical metadata path of the object to inspect. |
-| `sections` | array | нет | Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone. |
-| `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
+| `limit` | integer | нет | — |
+| `metadataPath` | string | да | — |
+| `sections` | array | нет | — |
+| `sourceSet` | string | да | — |
 
 **Результат сейчас:** `structuredContent.data`: локальная структура и валидация объекта с обязательной связанной парой `kind + details` для 23 видов; `details` возвращает наблюдаемые типы Constant/DefinedType, метод ScheduledJob, schedule CalculationRegister, HTTP templates/methods и WebService packages/operations/parameters с expanded XDTO QName (ADR-0047, INV-MCP-META-INFO-COVERAGE). Формы и макеты наблюдаются по ссылке владельца и отдельному XML-дескриптору, встроенные команды — по дескриптору; HTML-страницы зарегистрированных макетов удерживаются как UTF-8 без XML-разбора. Тип содержит `mutationCapability: editable | readOnly`; UUID представлен вариантом `uuid` и доказанно редактируем, а неизвестный корректный платформенный QName оставляет только свой элемент `incomplete` с warning (ADR-0042, INV-MCP-META-OBSERVATION). `ChartOfCharacteristicTypes.details.type`, `ChartOfCalculationTypes.details.baseCalculationTypes` и `DocumentJournal.details.registeredDocuments` сохраняют kind-specific факты; `standardAttributes`, `characteristics`, `standardTabularSections`, `relations.dataLockFields` и коллекции `recalculations`/`accountingFlags`/`extDimensionAccountingFlags`/`addressingAttributes` имеют typed-владельцев и all-or-none tri-state. Общие read-properties не зависят от writer allowlist; неизвестный составной узел даёт `provider_unavailable`, а не пропускается. `relations.source`, `Event`, `Handler` сохраняют контракт подписки; `functionalSubsystems` и `interfaceSubsystems` содержат только членства текущего объекта в зарегистрированной топологии как плоские `SubsystemAddress`, сопоставляя `Content` по адресу метаданных или UUID корневого дескриптора; доказанное отсутствие членств сериализуется как `[]`, а при недоступном или повреждённом доказательстве поля отсутствуют и диагностика содержит `provider_unavailable` (ADR-0036, INV-SOURCE-SUBSYSTEM-TOPOLOGY). Явно выбранные секции читаются из дерева исходников в `usage` и `predefinedItems`, а `predefinedItems.items` возвращает плоский документный порядок, UUID, `parentId` и typed-поля владельца; обращения к RLM нет ни при каких аргументах (отвечают типизированным `data`)
 
@@ -923,15 +923,15 @@ Inspect one metadata object with validation, proven subsystem memberships, and s
 
 ### `unica.meta.remove`
 
-Remove one metadata object through a logical guarded target.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Explicitly confirm a forced metadata object removal. |
-| `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
-| `force` | boolean | нет | Allow removal despite discovered references when confirmed. |
-| `metadataPath` | string | да | Logical metadata path of the object to remove. |
-| `sourceSet` | string | да | Exact Configuration source-set name from v8project.yaml. |
+| `confirm` | boolean | нет | — |
+| `dryRun` | boolean | нет | — |
+| `force` | boolean | нет | — |
+| `metadataPath` | string | да | — |
+| `sourceSet` | string | да | — |
 
 **Результат сейчас:** `structuredContent.data`: логический адрес, ссылки, валидация, семантический `removeObject` effect и план атомарного удаления (отвечают типизированным `data`)
 
@@ -946,12 +946,12 @@ Remove one metadata object through a logical guarded target.
 
 ### `unica.mxl.compile`
 
-Compile spreadsheet Template.xml from JSON DSL.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.mxl.compile` and `unica.role.compile` |
-| `OutputPath` | string | да | Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile` |
+| `JsonPath` | string | да | — |
+| `OutputPath` | string | да | — |
 
 Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -965,13 +965,13 @@ Compile spreadsheet Template.xml from JSON DSL.
 
 ### `unica.mxl.decompile`
 
-Decompile spreadsheet Template.xml to JSON DSL.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `TemplatePath` | string | по ветви | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 Публикует **130** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -987,17 +987,17 @@ Decompile spreadsheet Template.xml to JSON DSL.
 
 ### `unica.mxl.info`
 
-Inspect spreadsheet Template.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
-| `WithText` | boolean | нет | `unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `withText` | boolean | нет | `unica.mxl.info` only: boolean including static cell text and template strings with `[Parameter]` substitutions in the report |
+| `TemplatePath` | string | по ветви | — |
+| `WithText` | boolean | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
+| `withText` | boolean | нет | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
 
@@ -1013,13 +1013,13 @@ Inspect spreadsheet Template.xml.
 
 ### `unica.mxl.validate`
 
-Validate spreadsheet Template.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `TemplatePath` | string | по ветви | Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument. |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `TemplatePath` | string | по ветви | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 Публикует **132** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1037,12 +1037,12 @@ Validate spreadsheet Template.xml.
 
 ### `unica.project.map`
 
-Inspect configured source sets and effective source format per source set.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
 
 **Результат сейчас:** `data`: карта наборов исходников (ADR-0023) (отвечают типизированным `data`)
 
@@ -1056,12 +1056,12 @@ Inspect configured source sets and effective source format per source set.
 
 ### `unica.project.status`
 
-Inspect typed workspace, source-set, and portable Git readiness without changing the project.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
 
 **Результат сейчас:** `data`: `workspaceRoot`, `cacheRoot`, независимые `ready` и `repositoryReady`, полные общие и адресные по уникально адресуемому набору `checks[]` (группа с повторяющимся именем получает одну диагностику рабочего пространства с полным `count`, без неразличимых строк `sourceSet`), `sourceSets` (`array` после завершённой source discovery, `null` когда discovery не доказала наборы; `sourceSets[].sourceFormat` отражает working-tree discovery, а применимость repository-проверок может дополнительно доказываться staged index без изменения опубликованного формата) и `diagnostics[]` с безопасной remediation (ADR-0060) (отвечают типизированным `data`)
 
@@ -1077,12 +1077,12 @@ Inspect typed workspace, source-set, and portable Git readiness without changing
 
 ### `unica.role.compile`
 
-Compile role metadata and Rights.xml from JSON DSL.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `JsonPath` | string | да | Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.mxl.compile` and `unica.role.compile` |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
+| `JsonPath` | string | да | — |
+| `OutputDir` | string | да | — |
 
 Публикует **135** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1096,14 +1096,14 @@ Compile role metadata and Rights.xml from JSON DSL.
 
 ### `unica.role.edit`
 
-Edit role rights through a closed logical typed contract.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `dryRun` | boolean | нет | Preview the typed role edit without writing workspace files; when omitted it defaults to true. Send false only when the user explicitly requests application. |
-| `metadataPath` | string | да | Canonical logical role address in the form Role.<name>. |
-| `operations` | array | да | Ordered closed setRight operations; each effect is reported by operationIndex. |
-| `sourceSet` | string | да | Exact configured source-set name; physical source paths are not accepted. |
+| `dryRun` | boolean | нет | — |
+| `metadataPath` | string | да | — |
+| `operations` | array | да | — |
+| `sourceSet` | string | да | — |
 
 **Результат сейчас:** `structuredContent.data`: канонический `metadataPath`, `changed`, семантические `effects` по `operationIndex`, `validation` и `diagnostics` без stdout, diff и физических путей (отвечают типизированным `data`)
 
@@ -1116,15 +1116,15 @@ Edit role rights through a closed logical typed contract.
 
 ### `unica.role.info`
 
-Inspect role Rights.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `RightsPath` | string | по ветви | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `RightsPath` | string | по ветви | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `RightsPath`. Ни одной или обе сразу отклоняются.
 
@@ -1139,13 +1139,13 @@ Inspect role Rights.xml.
 
 ### `unica.role.validate`
 
-Validate role Rights.xml.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `RightsPath` | string | по ветви | Path to a role's `Rights.xml`, or the role directory that resolves to it, for `unica.role.info` and `unica.role.validate`, relative to `cwd` |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `RightsPath` | string | по ветви | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1163,11 +1163,11 @@ Validate role Rights.xml.
 
 ### `unica.runtime.execute`
 
-Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
+| `operation` | string | да | — |
 
 Публикует **64** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1182,14 +1182,14 @@ Preview typed v8-runner workflows; current applied operations return a terminal 
 
 ### `unica.runtime.job.cancel`
 
-Request safe cancellation for a durable runtime job.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
-| `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `dryRun` | boolean | нет | — |
+| `jobId` | string | да | — |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
@@ -1201,12 +1201,12 @@ Request safe cancellation for a durable runtime job.
 
 ### `unica.runtime.job.list`
 
-List durable runtime job snapshots in the current workspace.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
@@ -1218,14 +1218,14 @@ List durable runtime job snapshots in the current workspace.
 
 ### `unica.runtime.job.logs`
 
-Read bounded redacted stdout and stderr tails for a durable runtime job.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
-| `tailChars` | integer | нет | Integer 1..32768 bounding how many trailing characters of stdout and stderr unica.runtime.job.logs returns, defaulting to 4096 |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `jobId` | string | да | — |
+| `tailChars` | integer | нет | — |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
@@ -1237,11 +1237,11 @@ Read bounded redacted stdout and stderr tails for a durable runtime job.
 
 ### `unica.runtime.job.start`
 
-Start a durable typed v8-runner runtime job without changing runtime.execute.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
+| `operation` | string | да | — |
 
 Публикует **61** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1255,13 +1255,13 @@ Start a durable typed v8-runner runtime job without changing runtime.execute.
 
 ### `unica.runtime.job.status`
 
-Read a durable runtime job snapshot by jobId.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `jobId` | string | да | — |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
@@ -1273,14 +1273,14 @@ Read a durable runtime job snapshot by jobId.
 
 ### `unica.runtime.job.wait`
 
-Wait for a durable runtime job with a caller-side bounded timeout.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `jobId` | string | да | UUID of a durable runtime job as returned by unica.runtime.job.start; required by the job status, wait, logs and cancel tools |
-| `timeoutSeconds` | integer | нет | Integer seconds bounding a blocking call: 1..60 (default 30) for unica.runtime.job.wait, and 30..3600 for unica.code.diagnostics action=analyze; diagnostics falls back to operational.code_diagnostics.analyze_timeout_seconds from workspace config, then to 120. |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `jobId` | string | да | — |
+| `timeoutSeconds` | integer | нет | — |
 
 **Результат сейчас:** снимок задания в `job` (отвечают снимком задания в `job`)
 
@@ -1294,16 +1294,16 @@ Wait for a durable runtime job with a caller-side bounded timeout.
 
 ### `unica.source.children`
 
-List exactly one level below a logical source-set root or metadata address.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `metadataPath` | string | нет | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `confirm` | boolean | нет | — |
+| `cursor` | string | нет | — |
+| `cwd` | string | нет | — |
+| `limit` | integer | нет | — |
+| `metadataPath` | string | нет | — |
+| `sourceSet` | string | да | — |
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -1316,14 +1316,14 @@ List exactly one level below a logical source-set root or metadata address.
 
 ### `unica.source.locate`
 
-Recover the logical metadata address that owns one source path inside a named source set.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `path` | string | да | Source file to look up, given either workspace-relative or relative to the named source set; the answer names the metadata address that owns it |
-| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `path` | string | да | — |
+| `sourceSet` | string | да | — |
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -1336,16 +1336,16 @@ Recover the logical metadata address that owns one source path inside a named so
 
 ### `unica.source.read`
 
-Read one bounded byte range from a resource in an issued immutable snapshot.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `offset` | integer | нет | Zero-based byte offset inside the immutable resource snapshot |
-| `resourceId` | string | да | Opaque resource identifier returned inside one source.resources snapshot; valid only together with the snapshotId that issued it |
-| `snapshotId` | string | да | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `limit` | integer | нет | — |
+| `offset` | integer | нет | — |
+| `resourceId` | string | да | — |
+| `snapshotId` | string | да | — |
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -1358,18 +1358,18 @@ Read one bounded byte range from a resource in an issued immutable snapshot.
 
 ### `unica.source.resolve`
 
-Resolve an exact or prefix logical metadata query inside one named source set.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `targetKind` | string | нет | Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath |
+| `confirm` | boolean | нет | — |
+| `cursor` | string | нет | — |
+| `cwd` | string | нет | — |
+| `limit` | integer | нет | — |
+| `mode` | string | нет | — |
+| `query` | string | да | — |
+| `sourceSet` | string | да | — |
+| `targetKind` | string | нет | — |
 
 **Результат сейчас:** типизированный `data` (отвечают типизированным `data`)
 
@@ -1383,18 +1383,18 @@ Resolve an exact or prefix logical metadata query inside one named source set.
 
 ### `unica.source.resources`
 
-Open or page an immutable bounded manifest for one logical source target.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cursor` | string | по ветви | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `metadataPath` | string | только в ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `scope` | string | только в ветви | Bounded source.resources manifest scope: self, aggregate, or registrations |
-| `snapshotId` | string | по ветви | Opaque application-instance and workspace-bound identifier returned by source.resources; expires after five minutes |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `confirm` | boolean | нет | — |
+| `cursor` | string | по ветви | — |
+| `cwd` | string | нет | — |
+| `limit` | integer | нет | — |
+| `metadataPath` | string | только в ветви | — |
+| `scope` | string | только в ветви | — |
+| `snapshotId` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `snapshotId` + `cursor`. Ни одной или обе сразу отклоняются.
 `metadataPath` принимается только вместе с `sourceSet`.
@@ -1413,23 +1413,23 @@ Open or page an immutable bounded manifest for one logical source target.
 
 ### `unica.standards.explain`
 
-Explain 1C diagnostics or standards through the internal standards adapter.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `bodyLimit` | string | нет | Max page-body size for `unica.standards.explain` when it fetches a standard by `id`/`idOrAliasOrUrl`; the XML/DSL tools accept the key but never read it |
-| `body_limit` | string | нет | Maximum size of the standard page body returned by unica.standards.explain in page mode (snake_case alias of bodyLimit); honoured only alongside id/idOrAliasOrUrl, and ignored by standards.search. |
-| `codes` | array | нет | Array of diagnostic codes such as "АПК:142" or "LineLength"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, while standards.search ignores it. Diagnostics uses provider-qualified entries inside filter.codes instead. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
-| `idOrAliasOrUrl` | string | нет | Standard number, alias or full URL (e.g. "644") that puts standards.explain in page-fetch mode; prefer it over id, which it overrides when both are passed, and standards.search ignores it. |
-| `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `query` | string | нет | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `snippet` | string | нет | Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it. |
-| `types` | array | нет | Array of strings forwarded unchanged as the types parameter of the standards search; honoured only by standards.search and by standards.explain given query alone, with no allowed values declared. |
+| `bodyLimit` | string | нет | — |
+| `body_limit` | string | нет | — |
+| `codes` | array | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `id` | string | нет | — |
+| `idOrAliasOrUrl` | string | нет | — |
+| `language` | string | нет | — |
+| `limit` | integer | нет | — |
+| `mode` | string | нет | — |
+| `query` | string | нет | — |
+| `snippet` | string | нет | — |
+| `types` | array | нет | — |
 
 **Результат сейчас:** `data`: стандарт или диагностика из удалённого MCP как есть (ADR-0023) (отвечают типизированным `data`)
 
@@ -1442,23 +1442,23 @@ Explain 1C diagnostics or standards through the internal standards adapter.
 
 ### `unica.standards.search`
 
-Search 1C standards through the internal standards adapter.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `bodyLimit` | string | нет | Max page-body size for `unica.standards.explain` when it fetches a standard by `id`/`idOrAliasOrUrl`; the XML/DSL tools accept the key but never read it |
-| `body_limit` | string | нет | Maximum size of the standard page body returned by unica.standards.explain in page mode (snake_case alias of bodyLimit); honoured only alongside id/idOrAliasOrUrl, and ignored by standards.search. |
-| `codes` | array | нет | Array of diagnostic codes such as "АПК:142" or "LineLength"; on standards.explain it selects diagnostics mode and outranks snippet/id/query, while standards.search ignores it. Diagnostics uses provider-qualified entries inside filter.codes instead. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `id` | string | нет | Standard id, alias or URL for standards.explain (lower-precedence alias of idOrAliasOrUrl), but a graph node id such as method:CommonModule.Sales.OnPost for code.graph; standards.search ignores it. |
-| `idOrAliasOrUrl` | string | нет | Standard number, alias or full URL (e.g. "644") that puts standards.explain in page-fetch mode; prefer it over id, which it overrides when both are passed, and standards.search ignores it. |
-| `language` | string | нет | Alias of `lang` for `unica.help.add`; on `unica.standards.explain` the same key instead names the language of the `snippet` being explained; on `unica.documentation.search` and `unica.documentation.get` it picks the locale of the platform help containers to read and of the signature returned with each hit, defaulting to ru, and each corpus falls back on its own to the installed locale (the English `root` container first) when the installation ships no containers in the requested one, so every section and document reports the locale that actually answered |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `mode` | string | нет | Tool-scoped mode selector: on unica.runtime.execute and unica.runtime.job.start it is full\|incremental\|partial for dump, load\|merge for load, designer-config\|designer-modules\|edt for syntax, and the client kind for an mcp or mcp-va launch; every other tool defines its own enum. |
-| `query` | string | да | Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback |
-| `snippet` | string | нет | Literal BSL source text for standards.explain to explain against standards, sent with language and limit; codes outranks it when both are passed, and standards.search ignores it. |
-| `types` | array | нет | Array of strings forwarded unchanged as the types parameter of the standards search; honoured only by standards.search and by standards.explain given query alone, with no allowed values declared. |
+| `bodyLimit` | string | нет | — |
+| `body_limit` | string | нет | — |
+| `codes` | array | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `id` | string | нет | — |
+| `idOrAliasOrUrl` | string | нет | — |
+| `language` | string | нет | — |
+| `limit` | integer | нет | — |
+| `mode` | string | нет | — |
+| `query` | string | да | — |
+| `snippet` | string | нет | — |
+| `types` | array | нет | — |
 
 **Результат сейчас:** `data`: результат удалённого MCP стандартов как есть, без JSON-RPC конверта (ADR-0023) (отвечают типизированным `data`)
 
@@ -1473,11 +1473,11 @@ Search 1C standards through the internal standards adapter.
 
 ### `unica.subsystem.compile`
 
-Compile subsystem XML from JSON DSL.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `OutputDir` | string | да | Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile` |
+| `OutputDir` | string | да | — |
 
 Публикует **134** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1491,11 +1491,11 @@ Compile subsystem XML from JSON DSL.
 
 ### `unica.subsystem.edit`
 
-Edit subsystem XML content and hierarchy.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | да | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
+| `SubsystemPath` | string | да | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1509,15 +1509,15 @@ Edit subsystem XML content and hierarchy.
 
 ### `unica.subsystem.info`
 
-Inspect a registered subsystem tree from a directory, a focused registered tree from XML, or an unregistered XML locally.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | по ветви | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `metadataPath` | string | только в ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `SubsystemPath` | string | по ветви | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `metadataPath` | string | только в ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
 `metadataPath` принимается только вместе с `sourceSet`.
@@ -1536,13 +1536,13 @@ Inspect a registered subsystem tree from a directory, a focused registered tree 
 
 ### `unica.subsystem.validate`
 
-Validate subsystem XML.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `SubsystemPath` | string | по ветви | Path to a subsystem XML or `Subsystems` directory, relative to `cwd`; `unica.subsystem.info` returns the registered tree for a directory, the ancestor chain plus descendants for a registered XML, and local data without `tree` for an unregistered XML |
-| `metadataPath` | string | по ветви | Tool-scoped metadata address; consult the selected tool contract for its accepted shape and semantics. |
-| `sourceSet` | string | по ветви | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
+| `SubsystemPath` | string | по ветви | — |
+| `metadataPath` | string | по ветви | — |
+| `sourceSet` | string | по ветви | — |
 
 Публикует **133** аргументов: обязательные — показаны выше, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1560,7 +1560,7 @@ Validate subsystem XML.
 
 ### `unica.support.edit`
 
-Toggle 1C vendor support editing capability or per-object support rule.
+—
 
 Публикует **134** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1577,7 +1577,7 @@ Toggle 1C vendor support editing capability or per-object support rule.
 
 ### `unica.template.add`
 
-Add a template to an object and register it.
+—
 
 Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1591,7 +1591,7 @@ Add a template to an object and register it.
 
 ### `unica.template.remove`
 
-Remove a template from an object.
+—
 
 Публикует **136** аргументов: обязательные — не объявлено ни одного, остальные приходят из общего списка `NATIVE_XML_DSL_ARGS`, и обработчик читает из них единицы.
 
@@ -1607,21 +1607,21 @@ Remove a template from an object.
 
 ### `unica.xdto.edit`
 
-Preview or apply a safe targeted mutation to one logically addressed 1C XDTO package schema.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `base` | string | нет | Prefixed lexical QName naming the base type of a new XDTO valueType in `unica.xdto.edit`, for example `xs:string`; an unprefixed name or surrounding whitespace is rejected. |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `dryRun` | boolean | нет | Boolean preview switch for mutation tools; when omitted or true the tool only reports the change it would make, and false applies the mutation when the user requested execution. |
-| `metadataPath` | string | да | Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected. |
-| `name` | string | нет | Subject name whose meaning is tool-scoped: the object being created by `cf.init`, `cfe.init`, `epf.init` and `erf.init`, the required BSL method to locate on `unica.code.definition`, and the XDTO type or property named by the chosen `unica.xdto.edit` operation. The eight narrowed native XML readers no longer take it: they answer with every section at once, so there is nothing left for it to drill into (ADR-0048). |
-| `operation` | string | да | Required selector whose accepted values are tool-scoped: config-init, init, build, dump, convert, make, load, syntax, test, launch, extensions or tools-download for unica.runtime.execute and unica.runtime.job.start; `insert` or `replace` for unica.code.patch; `add-value-type`, `add-object-type`, `add-property`, `remove-type` or `remove-property` for `unica.xdto.edit` — read the enum published in the tool's own schema. |
-| `property` | object | нет | New XDTO property object for `unica.xdto.edit`: `name` must be an XML NCName and `type` a prefixed lexical QName; `minOccurs` is optional and must be 0 or 1. |
-| `propertyPath` | string | нет | Property path to a nested XDTO `typeDef`: an unescaped dot separates segments and `\.` denotes a literal dot inside one NCName, for example `A\.B.Child`. |
-| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `typeName` | string | нет | Name of the XDTO valueType or objectType, or of the target objectType for a property operation. |
+| `base` | string | нет | — |
+| `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
+| `dryRun` | boolean | нет | — |
+| `metadataPath` | string | да | — |
+| `name` | string | нет | — |
+| `operation` | string | да | — |
+| `property` | object | нет | — |
+| `propertyPath` | string | нет | — |
+| `sourceSet` | string | да | — |
+| `typeName` | string | нет | — |
 
 **Результат сейчас:** `data`: операция, no-op, byte-local план изменения и стабильные findings (ADR-0024) (отвечают типизированным `data`)
 
@@ -1635,17 +1635,17 @@ Preview or apply a safe targeted mutation to one logically addressed 1C XDTO pac
 
 ### `unica.xdto.info`
 
-Inspect one logically addressed 1C XDTO package schema.
+—
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `confirm` | boolean | нет | Boolean acknowledgement accepted where published and stripped before the runner is called; it does not select or enable an invocation mode on its own. |
-| `cursor` | string | нет | Opaque continuation token returned by the same source navigation request or source.resources snapshot page; do not inspect or reuse it with another request or snapshot |
-| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it |
-| `limit` | integer | нет | Cap on how much one call returns, counted in the entities that tool answers with and never in printed lines: meta.info section items (default 20), xdto.info package types, code.search hits (20 per role), code.definition definitions (50), code.graph nodes, code.diagnostics findings, standards and documentation results. On `unica.source.read` alone the unit is bytes, because that tool returns one bounded byte range. The eight narrowed native XML readers answer with every section at once and publish no `limit` (ADR-0048). |
-| `metadataPath` | string | да | Logical address of an XDTO package in the form `XDTOPackage.<name>`; the physical `Package.bin` path is rejected. |
-| `sourceSet` | string | да | Exact name of one source-set declared in v8project.yaml, such as main or addOn; unica.code.patch requires a Platform XML Configuration or Extension source set |
-| `typeName` | string | нет | Name of the XDTO valueType or objectType, or of the target objectType for a property operation. |
+| `confirm` | boolean | нет | — |
+| `cursor` | string | нет | — |
+| `cwd` | string | нет | — |
+| `limit` | integer | нет | — |
+| `metadataPath` | string | да | — |
+| `sourceSet` | string | да | — |
+| `typeName` | string | нет | — |
 
 **Результат сейчас:** `data`: сводка, импорты, типы, свойства и логические позиции пакета XDTO (ADR-0024) (отвечают типизированным `data`)
 
