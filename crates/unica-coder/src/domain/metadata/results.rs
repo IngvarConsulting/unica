@@ -248,9 +248,20 @@ pub(crate) struct MetaMutationData {
     pub(crate) metadata_path: MetadataAddress,
     pub(crate) changed: bool,
     pub(crate) publication_plan: Vec<MetaPublicationPlanEntry>,
+    /// ADR-0073: затронутые пути рабочего пространства — план в предпросмотре
+    /// и фактическая квитанция в применении; конверт `changes`/`artifacts`
+    /// строится отсюда же.
+    pub(crate) changed_paths: Vec<MetaChangedPath>,
     pub(crate) effects: Vec<MetaMutationEffect>,
     pub(crate) validation: MetaValidationData,
     pub(crate) diagnostics: Vec<MetaDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaChangedPath {
+    pub(crate) action: MetaPublicationAction,
+    pub(crate) path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

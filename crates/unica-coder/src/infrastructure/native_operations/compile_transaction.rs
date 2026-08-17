@@ -254,6 +254,13 @@ pub(crate) struct CompileTransaction {
     planned_path_identities: BTreeMap<PathBuf, PlannedPathKind>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlannedChangeKind {
+    Create,
+    Update,
+    Remove,
+}
+
 impl CompileTransaction {
     pub(crate) fn new() -> Self {
         Self::default()
@@ -809,6 +816,40 @@ impl CompileTransaction {
                 .registrations
                 .values()
                 .all(|registration| !registration.changed())
+    }
+
+    /// Полный план изменений транзакции: созданные, обновлённые и удаляемые
+    /// пути — единственный источник для структурной квитанции мутации
+    /// (ADR-0073). Порядок детерминирован: create, update, remove; внутри —
+    /// по пути.
+    pub(crate) fn planned_changes(&self) -> Vec<(PlannedChangeKind, PathBuf)> {
+        let mut changes = Vec::new();
+        let mut creates = self.planned_created_paths();
+        creates.sort();
+        changes.extend(
+            creates
+                .into_iter()
+                .map(|path| (PlannedChangeKind::Create, path)),
+        );
+        let mut updates = self.planned_updated_paths();
+        updates.sort();
+        changes.extend(
+            updates
+                .into_iter()
+                .map(|path| (PlannedChangeKind::Update, path)),
+        );
+        let mut removals = self
+            .removals
+            .iter()
+            .map(|removal| removal.path.clone())
+            .collect::<Vec<_>>();
+        removals.sort();
+        changes.extend(
+            removals
+                .into_iter()
+                .map(|path| (PlannedChangeKind::Remove, path)),
+        );
+        changes
     }
 
     pub(crate) fn planned_created_paths(&self) -> Vec<PathBuf> {
