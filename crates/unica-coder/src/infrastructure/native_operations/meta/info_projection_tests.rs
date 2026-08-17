@@ -1379,3 +1379,27 @@ fn profile_rejects_a_relation_property_under_the_wrong_kind() {
 
     assert_eq!(error.field, "properties.Owners");
 }
+
+#[test]
+fn http_method_projection_accepts_every_8_3_27_enum_literal() {
+    let base = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service.xml"
+    ));
+    let allowed = super::validation::meta_validate_property_values()
+        .iter()
+        .find(|(name, _)| *name == "HTTPMethod")
+        .map(|(_, allowed)| *allowed)
+        .unwrap();
+    for literal in allowed {
+        let xml = base.replace(
+            "<HTTPMethod>GET</HTTPMethod>",
+            &format!("<HTTPMethod>{literal}</HTTPMethod>"),
+        );
+        let details = project(&xml, MetadataKind::HTTPService, "HTTPService.ExternalAPI");
+        assert_eq!(
+            details["urlTemplates"][0]["methods"][0]["httpMethod"], *literal,
+            "platform enum literal '{literal}' must project"
+        );
+    }
+}

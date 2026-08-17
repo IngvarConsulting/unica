@@ -4195,6 +4195,10 @@ pub(crate) fn validate_cfe(
             return cfe_validation_finish(report, resolved_path);
         }
         cfe_validate_typelinks(&mut report, &borrowed_forms);
+        if report.stopped {
+            return cfe_validation_finish(report, resolved_path);
+        }
+        cfe_validate_service_objects(&mut report, child_obj_node, config_dir);
 
         cfe_validation_finish(report, resolved_path)
     })();
@@ -4547,6 +4551,66 @@ pub(crate) fn cfe_validate_object_dirs(
         for missing_dir in missing {
             report.warn(format!("8. Missing directory: {missing_dir}"));
         }
+    }
+}
+
+// Check 14: semantics of service child objects (HTTPService, WebService) —
+// nested enum literals such as Method HTTPMethod are validated against the
+// 8.3.27 platform enums, whether the service is own or adopted. The platform
+// rejects the whole extension import on an invalid literal, so cfe.validate
+// must reject it too instead of reporting a clean extension.
+pub(crate) fn cfe_validate_service_objects(
+    report: &mut CfeValidationReporter,
+    child_obj_node: Option<roxmltree::Node<'_, '_>>,
+    config_dir: &Path,
+) {
+    let Some(child_obj_node) = child_obj_node else {
+        return;
+    };
+    let mut service_count = 0usize;
+    for child in child_obj_node.children().filter(|child| child.is_element()) {
+        let type_name = child.tag_name().name();
+        if !matches!(type_name, "HTTPService" | "WebService") {
+            continue;
+        }
+        let child_name = child.text().unwrap_or("");
+        let Some(dir_name) = cf_validate_child_type_dir(type_name) else {
+            continue;
+        };
+        let obj_file = config_dir.join(dir_name).join(format!("{child_name}.xml"));
+        let Ok(text) = read_utf8_sig(&obj_file) else {
+            continue;
+        };
+        let Ok(doc) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+            continue;
+        };
+        let Some(obj_el) = doc.root_element().children().find(|node| node.is_element()) else {
+            continue;
+        };
+        let Some(semantics) =
+            service_child_semantics(type_name, meta_info_child(obj_el, "ChildObjects"))
+        else {
+            continue;
+        };
+        service_count += 1;
+        let context_label = format!("{type_name}.{child_name}");
+        for finding in &semantics.findings {
+            let message = format!("14. {context_label} {}", finding.detail);
+            if finding.error {
+                report.error(message);
+            } else {
+                report.warn(message);
+            }
+        }
+        if semantics.clean {
+            report.ok(format!("14. {context_label}: {}", semantics.summary));
+        }
+        if report.stopped {
+            return;
+        }
+    }
+    if service_count == 0 {
+        report.ok("14. Services: none found");
     }
 }
 
@@ -11610,6 +11674,176 @@ mod tests {
         assert!(
             order_xml.contains("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
             "{order_xml}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    // Fixture shape mirrors a real 8.3.27 / format-2.20 Designer dump of an
+    // extension that adds its own HTTPService (the PrintWebDAV applied case).
+    fn write_own_http_service_extension(context: &WorkspaceContext, methods: &[(&str, &str)]) {
+        let ext = context.cwd.join("ext");
+        write_file(
+            &ext.join("Configuration.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Configuration uuid="00000000-0000-0000-0000-000000000014">
+		<InternalInfo>
+			<xr:ContainedObject>
+				<xr:ClassId>9cd510cd-abfc-11d4-9434-004095e12fc7</xr:ClassId>
+				<xr:ObjectId>00000000-0000-0000-0000-000000000017</xr:ObjectId>
+			</xr:ContainedObject>
+			<xr:ContainedObject>
+				<xr:ClassId>9fcd25a0-4822-11d4-9414-008048da11f9</xr:ClassId>
+				<xr:ObjectId>00000000-0000-0000-0000-000000000018</xr:ObjectId>
+			</xr:ContainedObject>
+			<xr:ContainedObject>
+				<xr:ClassId>e3687481-0a87-462c-a166-9f34594f9bba</xr:ClassId>
+				<xr:ObjectId>00000000-0000-0000-0000-000000000019</xr:ObjectId>
+			</xr:ContainedObject>
+			<xr:ContainedObject>
+				<xr:ClassId>9de14907-ec23-4a07-96f0-85521cb6b53b</xr:ClassId>
+				<xr:ObjectId>00000000-0000-0000-0000-00000000001a</xr:ObjectId>
+			</xr:ContainedObject>
+			<xr:ContainedObject>
+				<xr:ClassId>51f2d5d8-ea4d-4064-8892-82951750031e</xr:ClassId>
+				<xr:ObjectId>00000000-0000-0000-0000-00000000001b</xr:ObjectId>
+			</xr:ContainedObject>
+			<xr:ContainedObject>
+				<xr:ClassId>e68182ea-4237-4383-967f-90c1e3370bc7</xr:ClassId>
+				<xr:ObjectId>00000000-0000-0000-0000-00000000001c</xr:ObjectId>
+			</xr:ContainedObject>
+			<xr:ContainedObject>
+				<xr:ClassId>fb282519-d103-4dd3-bc12-cb271d631dfc</xr:ClassId>
+				<xr:ObjectId>00000000-0000-0000-0000-00000000001d</xr:ObjectId>
+			</xr:ContainedObject>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>ПечатьWebDAV</Name>
+			<Comment/>
+			<ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose>
+			<KeepMappingToExtendedConfigurationObjectsByIDs>true</KeepMappingToExtendedConfigurationObjectsByIDs>
+			<NamePrefix>ПВД_</NamePrefix>
+			<DefaultLanguage>Language.Русский</DefaultLanguage>
+		</Properties>
+		<ChildObjects>
+			<Language>Русский</Language>
+			<HTTPService>ПВД_ПечатныеФормы</HTTPService>
+		</ChildObjects>
+	</Configuration>
+</MetaDataObject>
+"#,
+        );
+        write_file(
+            &ext.join("Languages/Русский.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Language uuid="00000000-0000-0000-0000-000000000015">
+		<InternalInfo/>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Русский</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>0663bf5b-bcba-4a40-a862-a0b3baa2d884</ExtendedConfigurationObject>
+			<LanguageCode>ru</LanguageCode>
+		</Properties>
+	</Language>
+</MetaDataObject>
+"#,
+        );
+        let methods_xml = methods
+            .iter()
+            .enumerate()
+            .map(|(index, (name, literal))| {
+                format!(
+                    r#"					<Method uuid="7cdf45cd-1cc4-43e7-bfee-2b3f39140{index:03}">
+						<Properties>
+							<Name>{name}</Name>
+							<Comment/>
+							<HTTPMethod>{literal}</HTTPMethod>
+							<Handler>Корень{name}</Handler>
+						</Properties>
+					</Method>
+"#
+                )
+            })
+            .collect::<String>();
+        write_file(
+            &ext.join("HTTPServices/ПВД_ПечатныеФормы.xml"),
+            &format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<HTTPService uuid="a6eb1e93-3b7f-42f1-9e98-0a2df2487ef1">
+		<Properties>
+			<Name>ПВД_ПечатныеФормы</Name>
+			<Comment/>
+			<RootURL>printforms</RootURL>
+			<ReuseSessions>DontUse</ReuseSessions>
+			<SessionMaxAge>20</SessionMaxAge>
+		</Properties>
+		<ChildObjects>
+			<URLTemplate uuid="866986d4-1d28-447c-bb56-f750510e6bec">
+				<Properties>
+					<Name>Корень</Name>
+					<Comment/>
+					<Template>/*</Template>
+				</Properties>
+				<ChildObjects>
+{methods_xml}				</ChildObjects>
+			</URLTemplate>
+		</ChildObjects>
+	</HTTPService>
+</MetaDataObject>
+"#
+            ),
+        );
+    }
+
+    #[test]
+    fn cfe_validate_reports_invalid_http_method_enum_in_own_http_service() {
+        let context = temp_context("http-method-enum-invalid");
+        write_own_http_service_extension(&context, &[("ANY", "ANY")]);
+
+        let mut args = Map::new();
+        args.insert("ExtensionPath".to_string(), json!("ext"));
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(
+            !outcome.ok,
+            "extension with HTTPMethod 'ANY' must fail validation, stdout: {:?}",
+            outcome.stdout
+        );
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("invalid HTTPMethod 'ANY'")),
+            "{:?}",
+            outcome.errors
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_accepts_the_full_8_3_27_http_method_enum() {
+        let context = temp_context("http-method-enum-valid");
+        write_own_http_service_extension(
+            &context,
+            &[("Любой", "Any"), ("Обход", "PROPFIND"), ("Чтение", "GET")],
+        );
+
+        let mut args = Map::new();
+        args.insert("ExtensionPath".to_string(), json!("ext"));
+        args.insert("Detailed".to_string(), json!(true));
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(outcome.ok, "{:?}", outcome.errors);
+        let stdout = outcome.stdout.unwrap_or_default();
+        assert!(
+            stdout.contains("14. HTTPService.ПВД_ПечатныеФормы: 1 URLTemplate(s), 3 method(s)"),
+            "service check line missing from detailed output: {stdout}"
         );
 
         let _ = fs::remove_dir_all(&context.cwd);

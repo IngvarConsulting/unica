@@ -99,6 +99,13 @@ VALID_ENUM_VALUES = {
     ],
 }
 
+# 8.3.27 platform enum for HTTPService Method HTTPMethod
+VALID_HTTP_METHODS = [
+    'Any', 'CONNECT', 'COPY', 'DELETE', 'GET', 'HEAD', 'LOCK', 'MERGE',
+    'MKCOL', 'MOVE', 'OPTIONS', 'PATCH', 'POST', 'PROPFIND', 'PROPPATCH',
+    'PUT', 'TRACE', 'UNLOCK',
+]
+
 EXPECTED_NS = 'http://v8.1c.ru/8.3/MDClasses'
 
 
@@ -919,6 +926,94 @@ def main():
         r.ok('13. TypeLink: no borrowed forms with tree')
     elif check13_ok:
         r.ok('13. TypeLink: clean')
+
+    if r.stopped:
+        r.finalize(out_file)
+        sys.exit(1)
+
+    # --- Check 14: Service objects (HTTPService, WebService) semantics ---
+    service_count = 0
+    if child_obj_node is not None:
+        for child in child_obj_node:
+            if not isinstance(child.tag, str):
+                continue
+            type_name = etree.QName(child.tag).localname
+            if type_name not in ('HTTPService', 'WebService'):
+                continue
+            child_name = child.text or ''
+            dir_name = CHILD_TYPE_DIR_MAP[type_name]
+            obj_file = os.path.join(config_dir, dir_name, child_name + '.xml')
+            if not os.path.exists(obj_file):
+                continue
+            try:
+                obj_doc = etree.parse(obj_file, etree.XMLParser(remove_blank_text=False))
+            except etree.XMLSyntaxError:
+                continue
+            obj_el = None
+            for c in obj_doc.getroot():
+                if isinstance(c.tag, str):
+                    obj_el = c
+                    break
+            if obj_el is None:
+                continue
+            service_children = obj_el.find(f'{{{MD}}}ChildObjects')
+            service_count += 1
+            ctx = f'{type_name}.{child_name}'
+            clean = True
+            if type_name == 'HTTPService':
+                templates = [] if service_children is None else service_children.findall(f'{{{MD}}}URLTemplate')
+                method_count = 0
+                for template in templates:
+                    t_props = template.find(f'{{{MD}}}Properties')
+                    t_name_node = None if t_props is None else t_props.find(f'{{{MD}}}Name')
+                    t_name = '(unnamed)' if t_name_node is None else (t_name_node.text or '')
+                    t_template_node = None if t_props is None else t_props.find(f'{{{MD}}}Template')
+                    if t_template_node is None or not (t_template_node.text or '').strip():
+                        r.error(f"14. {ctx} URLTemplate '{t_name}': empty Template")
+                        clean = False
+                    t_children = template.find(f'{{{MD}}}ChildObjects')
+                    if t_children is not None:
+                        for method in t_children.findall(f'{{{MD}}}Method'):
+                            method_count += 1
+                            m_props = method.find(f'{{{MD}}}Properties')
+                            m_method_node = None if m_props is None else m_props.find(f'{{{MD}}}HTTPMethod')
+                            m_method = (m_method_node.text or '') if m_method_node is not None else ''
+                            if m_method:
+                                if m_method not in VALID_HTTP_METHODS:
+                                    r.error(f"14. {ctx} URLTemplate '{t_name}': invalid HTTPMethod '{m_method}'")
+                                    clean = False
+                            else:
+                                r.error(f"14. {ctx} URLTemplate '{t_name}': Method missing HTTPMethod")
+                                clean = False
+                if clean:
+                    r.ok(f'14. {ctx}: {len(templates)} URLTemplate(s), {method_count} method(s)')
+            else:
+                operations = [] if service_children is None else service_children.findall(f'{{{MD}}}Operation')
+                param_count = 0
+                for operation in operations:
+                    o_props = operation.find(f'{{{MD}}}Properties')
+                    o_name_node = None if o_props is None else o_props.find(f'{{{MD}}}Name')
+                    o_name = '(unnamed)' if o_name_node is None else (o_name_node.text or '')
+                    o_xdto_node = None if o_props is None else o_props.find(f'{{{MD}}}XDTOReturningValueType')
+                    if o_xdto_node is None or not (o_xdto_node.text or '').strip():
+                        r.warn(f"14. {ctx} Operation '{o_name}': no XDTOReturningValueType")
+                    o_children = operation.find(f'{{{MD}}}ChildObjects')
+                    if o_children is not None:
+                        for param in o_children.findall(f'{{{MD}}}Parameter'):
+                            param_count += 1
+                            p_props = param.find(f'{{{MD}}}Properties')
+                            p_dir_node = None if p_props is None else p_props.find(f'{{{MD}}}TransferDirection')
+                            p_dir = (p_dir_node.text or '') if p_dir_node is not None else ''
+                            if p_dir and p_dir not in ('In', 'Out', 'InOut'):
+                                r.error(f"14. {ctx} Operation '{o_name}': Parameter has invalid TransferDirection '{p_dir}'")
+                                clean = False
+                if clean:
+                    r.ok(f'14. {ctx}: {len(operations)} operation(s), {param_count} parameter(s)')
+            if r.stopped:
+                r.finalize(out_file)
+                sys.exit(1)
+    if service_count == 0:
+        r.ok('14. Services: none found')
 
     # --- Final output ---
     r.finalize(out_file)
