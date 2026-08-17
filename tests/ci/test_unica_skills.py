@@ -3419,11 +3419,16 @@ Use `.claude/commands/xdto.md` as the execution route.
                 )
                 self.assertNotIn("path", arguments)
                 self.assertNotIn("Package.bin", json.dumps(arguments, ensure_ascii=False))
+        self.assertEqual(len(preview["operations"]), 1)
+        self.assertEqual(preview["operations"][0]["op"], "addProperty")
         self.assertEqual(
-            preview["property"]["type"], "tns:Документ_ЗаказКлиента"
+            preview["operations"][0]["property"]["type"],
+            "tns:Документ_ЗаказКлиента",
         )
-        self.assertIn("одну атомарную мутацию", text)
-        self.assertIn("неатомарную последовательность", text)
+        # ADR-0071: a coherent change travels as one ordered transactional
+        # operations array, and effects are reported by operationIndex.
+        self.assertIn("одним вызовом", text)
+        self.assertIn("operationIndex", text)
         for forbidden in (
             "unica.xdto.validate",
             "xdto-compile",

@@ -12741,8 +12741,10 @@ mod tests {
             ),
             ("sourceSet".to_string(), json!("main")),
             ("metadataPath".to_string(), json!(metadata_path)),
-            ("operation".to_string(), json!("add-object-type")),
-            ("name".to_string(), json!("Added")),
+            (
+                "operations".to_string(),
+                json!([{"op": "addObjectType", "name": "Added"}]),
+            ),
         ])
     }
 

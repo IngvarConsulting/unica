@@ -620,11 +620,6 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "base": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-      },
       "confirm": {
         "type": "boolean"
       },
@@ -639,221 +634,172 @@ EXPECTED_XDTO_INPUT_SCHEMAS = json.loads(
         "type": "string",
         "pattern": "^(?:XDTOPackage|ПакетXDTO)\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*$"
       },
-      "name": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-      },
-      "operation": {
-        "type": "string",
-        "enum": [
-          "add-value-type",
-          "add-object-type",
-          "add-property",
-          "remove-type",
-          "remove-property"
-        ]
-      },
-      "property": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
-          },
-          "minOccurs": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1
-          }
-        },
-        "required": [
-          "name",
-          "type"
-        ]
-      },
-      "propertyPath": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*(?:\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*)*$"
+      "operations": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "enum": [
+                    "addValueType"
+                  ]
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                },
+                "base": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                }
+              },
+              "required": [
+                "op",
+                "name",
+                "base"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "enum": [
+                    "addObjectType"
+                  ]
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                }
+              },
+              "required": [
+                "op",
+                "name"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "enum": [
+                    "addProperty"
+                  ]
+                },
+                "typeName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                },
+                "property": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                    },
+                    "type": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*:[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                    },
+                    "minOccurs": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "type"
+                  ]
+                },
+                "propertyPath": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*(?:\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*)*$"
+                }
+              },
+              "required": [
+                "op",
+                "typeName",
+                "property"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "enum": [
+                    "removeType"
+                  ]
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                }
+              },
+              "required": [
+                "op",
+                "name"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "enum": [
+                    "removeProperty"
+                  ]
+                },
+                "typeName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
+                },
+                "propertyPath": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*(?:\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*(?:\\\\\\.[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-0-9·̀-ͯ‿-⁀]*)*)*$"
+                }
+              },
+              "required": [
+                "op",
+                "typeName",
+                "name"
+              ]
+            }
+          ]
+        }
       },
       "sourceSet": {
         "type": "string",
         "minLength": 1,
         "pattern": "^\\S(?:.*\\S)?$"
-      },
-      "typeName": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^[A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�][A-Z_a-zÀ-ÖØ-öø-˿Ͱ-ͽͿ-῿‌-‍⁰-↏Ⰰ-⿯、-퟿豈-﷏ﷰ-�\\-.0-9·̀-ͯ‿-⁀]*$"
       }
     },
     "required": [
       "sourceSet",
       "metadataPath",
-      "operation"
-    ],
-    "oneOf": [
-      {
-        "properties": {
-          "operation": {
-            "const": "add-value-type"
-          }
-        },
-        "required": [
-          "operation",
-          "name",
-          "base"
-        ],
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "typeName"
-              ]
-            },
-            {
-              "required": [
-                "propertyPath"
-              ]
-            },
-            {
-              "required": [
-                "property"
-              ]
-            }
-          ]
-        }
-      },
-      {
-        "properties": {
-          "operation": {
-            "const": "add-object-type"
-          }
-        },
-        "required": [
-          "operation",
-          "name"
-        ],
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "base"
-              ]
-            },
-            {
-              "required": [
-                "typeName"
-              ]
-            },
-            {
-              "required": [
-                "propertyPath"
-              ]
-            },
-            {
-              "required": [
-                "property"
-              ]
-            }
-          ]
-        }
-      },
-      {
-        "properties": {
-          "operation": {
-            "const": "add-property"
-          }
-        },
-        "required": [
-          "operation",
-          "typeName",
-          "property"
-        ],
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "name"
-              ]
-            },
-            {
-              "required": [
-                "base"
-              ]
-            }
-          ]
-        }
-      },
-      {
-        "properties": {
-          "operation": {
-            "const": "remove-type"
-          }
-        },
-        "required": [
-          "operation",
-          "name"
-        ],
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "base"
-              ]
-            },
-            {
-              "required": [
-                "typeName"
-              ]
-            },
-            {
-              "required": [
-                "propertyPath"
-              ]
-            },
-            {
-              "required": [
-                "property"
-              ]
-            }
-          ]
-        }
-      },
-      {
-        "properties": {
-          "operation": {
-            "const": "remove-property"
-          }
-        },
-        "required": [
-          "operation",
-          "typeName",
-          "name"
-        ],
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "base"
-              ]
-            },
-            {
-              "required": [
-                "property"
-              ]
-            }
-          ]
-        }
-      }
+      "operations"
     ]
   }
 }
