@@ -158,7 +158,7 @@ const TOOLS_PAGE_SIZE: usize = 25;
 /// Validate a client-presented cursor against the offsets this server issues:
 /// positive multiples of the page size strictly inside the collection.
 fn parse_issued_cursor(cursor: &str, page_size: usize, len: usize) -> Result<usize, ErrorData> {
-    let issued = |offset: usize| offset != 0 && offset % page_size == 0 && offset < len;
+    let issued = |offset: usize| offset != 0 && offset.is_multiple_of(page_size) && offset < len;
     match cursor.parse::<usize>() {
         Ok(offset) if issued(offset) => Ok(offset),
         _ => Err(ErrorData::invalid_params(
@@ -183,10 +183,10 @@ fn modern_peer(context: &RequestContext<RoleServer>) -> bool {
         .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
 }
 
-/// The served protocol versions are exactly the guaranteed host matrix
-/// (#490): Codex (2025-06-18), Claude Code (2025-11-25) and the modern
-/// direct-first lifecycle (2026-07-28). Older revisions are not offered —
-/// an accepted handshake would promise semantics nobody verifies.
+/// The served protocol versions are exactly the #490 guaranteed matrix: the
+/// two legacy `initialize` revisions real hosts speak today plus the modern
+/// direct-first lifecycle. Older revisions are not offered — an accepted
+/// handshake would promise semantics nobody verifies.
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2025_06_18,
     ProtocolVersion::V_2025_11_25,
