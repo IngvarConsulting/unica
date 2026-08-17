@@ -168,6 +168,13 @@ fn parse_issued_cursor(cursor: &str, page_size: usize, len: usize) -> Result<usi
     }
 }
 
+/// The full registry projection is ~1.3 MB of JSON and is immutable for the
+/// process lifetime; build it once instead of once per page.
+fn all_tool_definitions() -> &'static [Tool] {
+    static ALL: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| tool_definitions(&crate::application::tools()))
+}
+
 /// SEP-2549 cache fields are required on list results from protocol revision
 /// 2026-07-28; older peers must keep the exact legacy wire shape.
 fn modern_peer(context: &RequestContext<RoleServer>) -> bool {
@@ -222,7 +229,7 @@ impl ServerHandler for UnicaServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let all = tool_definitions(&crate::application::tools());
+        let all = all_tool_definitions();
         let cursor = request.and_then(|request| request.cursor);
         if !modern_peer(&context) {
             // #490: the legacy surface is served whole; no cursor is ever
@@ -233,7 +240,7 @@ impl ServerHandler for UnicaServer {
                     None,
                 ));
             }
-            return Ok(ListToolsResult::with_all_items(all));
+            return Ok(ListToolsResult::with_all_items(all.to_vec()));
         }
         // Modern peers page through the registry; only offsets this server
         // issued are valid cursors.
@@ -1259,7 +1266,7 @@ mod tests {
         // included: the first page plus a continuation cursor.
         assert_eq!(
             modern_shaped["result"]["tools"].as_array().unwrap().len(),
-            25
+            TOOLS_PAGE_SIZE
         );
         assert!(modern_shaped["result"]["nextCursor"].is_string());
         assert_eq!(modern_shaped["result"]["resultType"], "complete");
@@ -1346,7 +1353,11 @@ mod tests {
             let response = client.receive().await;
             assert_eq!(response["result"]["resultType"], "complete");
             let tools = response["result"]["tools"].as_array().unwrap();
-            assert!(tools.len() <= 25, "page overflow: {}", tools.len());
+            assert!(
+                tools.len() <= TOOLS_PAGE_SIZE,
+                "page overflow: {}",
+                tools.len()
+            );
             assert!(
                 tools.iter().all(|tool| tool.get("description").is_none()),
                 "the schema-only baseline holds on the modern branch too"
@@ -1362,22 +1373,23 @@ mod tests {
             }
             id += 1;
         }
-        assert_eq!(names.len(), 74);
+        let registry_size = crate::application::tools().len();
+        assert_eq!(names.len(), registry_size);
         let unique: HashSet<&String> = names.iter().collect();
-        assert_eq!(unique.len(), 74, "pages must not overlap");
+        assert_eq!(unique.len(), registry_size, "pages must not overlap");
         client.shutdown().await;
     }
 
     #[tokio::test]
     async fn modern_tools_list_rejects_a_cursor_the_server_never_issued() {
         let (mut client, _) = spawn_server(application_handler());
-        for bad in ["banana", "7", "0", "10000"] {
+        for (id, bad) in ["banana", "7", "0", "10000"].into_iter().enumerate() {
             let mut params = json!({ "_meta": modern_meta() });
             params["cursor"] = json!(bad);
             client
                 .send(json!({
                     "jsonrpc": "2.0",
-                    "id": 0,
+                    "id": id,
                     "method": "tools/list",
                     "params": params
                 }))
