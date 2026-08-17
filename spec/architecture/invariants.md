@@ -401,6 +401,23 @@ Unica. Каждая запись формулирует одно нормати�
   `crates/unica-bootstrap/tests/platform/verification_contract.rs`
 - **Scope:** runtime
 
+### INV-MCP-DEFERRED-READ — Большое типизированное чтение продолжается по ссылке
+
+- **Rule:** Успешный типизированный результат чтения сверх настроенного
+  байтового порога публикуется манифестом отложенной доставки
+  (`state = "deferred"`, `isError: false`) с `suggestedSelections` и
+  `resultRef`, а продолжение — повторный вызов того же инструмента с
+  `resultRef` и селекцией — отдаёт побайтно стабильный срез неизменяемого
+  снимка, не перечитывая источник; ошибки продолжения стабильны:
+  `result_expired`, `result_ref_mismatch`, `result_unavailable`. Хранилище
+  снимков ограничено и не переживает процесс сервера.
+- **Decision:** ADR-0070
+- **Check:** `ci-test` — `crates/unica-coder/src/application/deferred_delivery.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
+- **Check:** `ci-test` —
+  `crates/unica-coder/src/infrastructure/result_store.rs`
+- **Scope:** runtime
+
 ### INV-MCP-BOUNDED-ADMISSION — Приём вызовов ограничен, отмена кооперативна
 
 - **Rule:** Одновременно допускается не более 32 обработчиков `tools/call`,
