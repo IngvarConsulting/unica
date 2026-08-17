@@ -3333,6 +3333,7 @@ fn typed_operation_name(operation: &MetaEditOperation) -> &'static str {
         MetaEditOperation::Update { .. } => "update",
         MetaEditOperation::Remove { .. } => "remove",
         MetaEditOperation::EditRelations { .. } => "editRelations",
+        MetaEditOperation::AddHelp { .. } => "addHelp",
         MetaEditOperation::AddPredefinedItems { .. } => "add",
         MetaEditOperation::UpdatePredefinedItems { .. } => "update",
         MetaEditOperation::RemovePredefinedItems { .. } => "remove",
@@ -3369,6 +3370,7 @@ fn typed_operation_target(xml: &str, operation: &MetaEditOperation) -> Result<St
         MetaEditOperation::EditRelations { relation, .. } => {
             format!("{base}.relations.{}", relation.as_str())
         }
+        MetaEditOperation::AddHelp { .. } => format!("{base}.help"),
         MetaEditOperation::AddPredefinedItems { .. }
         | MetaEditOperation::UpdatePredefinedItems { .. }
         | MetaEditOperation::RemovePredefinedItems { .. } => {
@@ -3428,6 +3430,7 @@ fn typed_operation_effect_value(
     })?;
     let properties = meta_info_child(object, "Properties");
     let value = match operation {
+        MetaEditOperation::AddHelp { lang } => serde_json::json!({"lang": lang}),
         MetaEditOperation::SetProperties { values } => {
             let observed = super::info::typed_properties(properties, kind);
             let mut selected = JsonMap::new();
@@ -3648,6 +3651,16 @@ fn apply_typed_operation(
     })?;
     validate_metadata_operation_capabilities(owner_kind, &owner, operation)?;
     match operation {
+        // WIP #375: the descriptor text does not change for help; the file
+        // materialization channel lands with the parity test. Fail closed
+        // until then so a published build cannot half-apply the operation.
+        MetaEditOperation::AddHelp { .. } => {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "addHelp materialization is not wired yet",
+                None,
+            ));
+        }
         MetaEditOperation::SetProperties { values } => {
             apply_typed_properties(xml_text, values)?;
             counts.modified += values.entries().len();

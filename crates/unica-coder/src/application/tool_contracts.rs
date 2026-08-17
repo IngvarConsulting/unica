@@ -4392,7 +4392,7 @@ mod tests {
         );
         let item = metadata_operation_union(&edit);
         let variants = item["oneOf"].as_array().expect("closed operation union");
-        assert_eq!(variants.len(), 8);
+        assert_eq!(variants.len(), 9);
         for (variant, tag, required, properties) in [
             (
                 &variants[0],
@@ -4436,8 +4436,11 @@ mod tests {
                 json!(["op", "collection", "ids"]),
                 vec!["collection", "ids", "op"],
             ),
+            // ADR-0072: embedded help is an object facet, so its create-only
+            // operation lives in the same union as every other object change.
+            (&variants[7], "addHelp", json!(["op"]), vec!["lang", "op"]),
             (
-                &variants[7],
+                &variants[8],
                 "editRelations",
                 json!(["op", "relation", "mode", "targets"]),
                 vec!["mode", "op", "relation", "targets"],
@@ -4482,7 +4485,7 @@ mod tests {
                 json!(["predefinedItems"])
             );
         }
-        let mut relations = variants[7]["properties"]["relation"]["enum"]
+        let mut relations = variants[8]["properties"]["relation"]["enum"]
             .as_array()
             .expect("the relation branch publishes a closed relation domain")
             .iter()
@@ -4500,16 +4503,16 @@ mod tests {
             ]
         );
         assert_eq!(
-            variants[7]["properties"]["mode"]["enum"],
+            variants[8]["properties"]["mode"]["enum"],
             json!(["add", "remove", "replace"])
         );
-        let targets = &variants[7]["properties"]["targets"];
+        let targets = &variants[8]["properties"]["targets"];
         assert_eq!(targets["uniqueItems"], true);
         assert!(
             targets.get("minItems").is_none(),
             "relation-specific branches own target cardinality"
         );
-        let relation_variants = variants[7]["oneOf"]
+        let relation_variants = variants[8]["oneOf"]
             .as_array()
             .expect("editRelations publishes a relation-correlated oneOf");
         assert_eq!(relation_variants.len(), 5);
@@ -4573,7 +4576,7 @@ mod tests {
             relation("inputByString")["properties"]["targets"]["items"]["required"],
             json!(["fieldPath"])
         );
-        assert!(variants[7]["description"]
+        assert!(variants[8]["description"]
             .as_str()
             .is_some_and(|description| description.contains("replace-only")));
 
@@ -6582,7 +6585,14 @@ mod tests {
         operation_tags.dedup();
         assert_eq!(
             Value::Array(operation_tags),
-            json!(["add", "editRelations", "remove", "setProperties", "update"])
+            json!([
+                "add",
+                "addHelp",
+                "editRelations",
+                "remove",
+                "setProperties",
+                "update"
+            ])
         );
 
         let mut args = Map::from_iter([

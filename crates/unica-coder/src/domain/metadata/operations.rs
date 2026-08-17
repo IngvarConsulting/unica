@@ -1111,6 +1111,7 @@ pub(crate) enum MetaEditOperationTag {
     Update,
     Remove,
     EditRelations,
+    AddHelp,
 }
 
 impl MetaEditOperationTag {
@@ -1120,6 +1121,7 @@ impl MetaEditOperationTag {
         Self::Update,
         Self::Remove,
         Self::EditRelations,
+        Self::AddHelp,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -1129,6 +1131,7 @@ impl MetaEditOperationTag {
             Self::Update => "update",
             Self::Remove => "remove",
             Self::EditRelations => "editRelations",
+            Self::AddHelp => "addHelp",
         }
     }
 
@@ -1179,6 +1182,12 @@ pub(crate) enum MetaEditOperation {
     },
     RemovePredefinedItems {
         ids: Vec<String>,
+    },
+    /// ADR-0072: create the owner's embedded help facet — `Ext/Help.xml`,
+    /// `Ext/Help/<lang>.html` and `IncludeHelpInContents` on the owner's
+    /// forms. Create-only: a repeat is that operation's rejection.
+    AddHelp {
+        lang: String,
     },
 }
 
@@ -1537,6 +1546,10 @@ pub(crate) fn validate_metadata_operation_capabilities(
 ) -> Result<(), MetaDiagnostic> {
     match operation {
         MetaEditOperation::SetProperties { .. } => Ok(()),
+        // ADR-0072: every owner kind carries an object directory with an Ext
+        // facet, so help has no per-kind capability gate; existence checks
+        // belong to the materializing writer.
+        MetaEditOperation::AddHelp { .. } => Ok(()),
         MetaEditOperation::Add {
             collection,
             scope,
@@ -1946,6 +1959,7 @@ impl MetaEditOperation {
             .map(|name| metadata_name_key(name))
             .collect::<HashSet<_>>();
         match self {
+            Self::AddHelp { .. } => {}
             Self::Add { elements, .. } => {
                 for (index, element) in elements.iter().enumerate() {
                     if existing_keys.contains(&metadata_name_key(&element.name)) {
@@ -2324,7 +2338,14 @@ mod tests {
                 .copied()
                 .map(MetaEditOperationTag::as_str)
                 .collect::<Vec<_>>(),
-            ["setProperties", "add", "update", "remove", "editRelations"]
+            [
+                "setProperties",
+                "add",
+                "update",
+                "remove",
+                "editRelations",
+                "addHelp"
+            ]
         );
 
         assert_eq!(
