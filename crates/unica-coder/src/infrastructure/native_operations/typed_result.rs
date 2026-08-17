@@ -102,6 +102,12 @@ impl NativeOperationAdapter {
                 }
                 None => {}
             }
+            // ADR-0073: cf-init previews with the same typed data the apply
+            // returns; the shared planner just skips the commit.
+            if dry_run && operation == "cf-init" {
+                let execution = cf::preview_configuration_scaffold_with_data(args, context);
+                return typed_operation_result(execution.outcome, execution.data, "cf init");
+            }
             if !dry_run {
                 match operation {
                     "epf-init" | "erf-init" => {

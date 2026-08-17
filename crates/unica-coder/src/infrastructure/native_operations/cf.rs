@@ -4395,6 +4395,23 @@ pub(crate) fn create_configuration_scaffold_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> CfInitExecution {
+    cf_init_execute(args, context, false)
+}
+
+/// ADR-0073: предпросмотр строит тот же план, что применение — та же
+/// валидация, те же гварды, те же байты и пути, — но транзакция не коммитится.
+pub(crate) fn preview_configuration_scaffold_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfInitExecution {
+    cf_init_execute(args, context, true)
+}
+
+fn cf_init_execute(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    preview: bool,
+) -> CfInitExecution {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
         return CfInitExecution {
@@ -4609,6 +4626,9 @@ pub(crate) fn create_configuration_scaffold_with_data(
             "ConfigPath".to_string(),
             Value::String(config.display().to_string()),
         )]);
+        if preview {
+            return Ok(Vec::new());
+        }
         let report = transaction.commit_with_post_validation(|| {
             let outcome = validate_cf(&validate_args, context);
             if outcome.ok {
@@ -4630,15 +4650,25 @@ pub(crate) fn create_configuration_scaffold_with_data(
         Ok(warnings) => CfInitExecution {
             outcome: AdapterOutcome {
                 ok: true,
-                summary: format!(
-                    "unica.cf.init created configuration {name} in {}",
-                    out_dir.display()
-                ),
-                changes: vec![
-                    format!("created {}", config.display()),
-                    format!("created {}", language.display()),
-                    format!("created {}", cai.display()),
-                ],
+                summary: if preview {
+                    format!(
+                        "dry run: unica.cf.init would create configuration {name} in {}",
+                        out_dir.display()
+                    )
+                } else {
+                    format!(
+                        "unica.cf.init created configuration {name} in {}",
+                        out_dir.display()
+                    )
+                },
+                changes: {
+                    let verb = if preview { "would create" } else { "created" };
+                    vec![
+                        format!("{verb} {}", config.display()),
+                        format!("{verb} {}", language.display()),
+                        format!("{verb} {}", cai.display()),
+                    ]
+                },
                 warnings,
                 errors: Vec::new(),
                 artifacts: vec![
@@ -4653,7 +4683,7 @@ pub(crate) fn create_configuration_scaffold_with_data(
             data: Some(CfInitData {
                 name: name.to_string(),
                 root: out_dir.display().to_string(),
-                mutation: MutationData::new(true)
+                mutation: MutationData::new(!preview)
                     .created(&config)
                     .created(&language)
                     .created(&cai),
@@ -4720,6 +4750,42 @@ mod cf_init_transaction_tests {
         ] {
             assert!(!root.join(relative).exists(), "unexpected {relative}");
         }
+    }
+
+    /// ADR-0073: предпросмотр строит тот же план и ту же форму данных, что
+    /// применение, и не пишет ни байта.
+    #[test]
+    fn cf_init_preview_shares_the_apply_data_shape_and_writes_nothing() {
+        let (root, context) = init_test_context("preview-parity");
+        let args = Map::from_iter([
+            (
+                "Name".to_string(),
+                Value::String("PreviewParity".to_string()),
+            ),
+            ("OutputDir".to_string(), Value::String("src".to_string())),
+        ]);
+
+        let preview = preview_configuration_scaffold_with_data(&args, &context);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome);
+        let preview_data = preview.data.expect("preview data");
+        assert!(!preview_data.mutation.applied);
+        assert_eq!(preview_data.mutation.created.len(), 3);
+        assert!(!root.join("src/Configuration.xml").exists());
+        assert!(preview
+            .outcome
+            .changes
+            .iter()
+            .all(|line| line.starts_with("would create ")));
+
+        let applied = create_configuration_scaffold_with_data(&args, &context);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome);
+        let applied_data = applied.data.expect("apply data");
+        assert!(applied_data.mutation.applied);
+        assert_eq!(applied_data.name, preview_data.name);
+        assert_eq!(applied_data.root, preview_data.root);
+        assert_eq!(applied_data.mutation.created, preview_data.mutation.created);
+        assert!(root.join("src/Configuration.xml").exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

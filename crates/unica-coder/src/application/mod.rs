@@ -112,6 +112,31 @@ pub enum PreviewStrategy {
     PlannedCommand,
 }
 
+/// ADR-0073 §5: закрытый переходный список — типизированные мутаторы, чей
+/// предпросмотр ещё отвечает общим успехом без предметных данных. Список
+/// только сокращается; новый мутатор обязан родиться с честным предпросмотром.
+/// Судьбы: `dcs-edit` — срез #377, `subsystem-edit` — #380, `interface-edit` —
+/// #382, `template-*` и `help-add` — сняты срезом #375 (уйдут при его мерже),
+/// `cf-edit`/`cfe-*`/`form-*`/`support-edit` и внешние скаффолды
+/// `epf-init`/`erf-init` — последующие срезы волны и вехи.
+pub const PREVIEW_GATED_OPERATIONS: &[&str] = &[
+    "cf-edit",
+    "cfe-borrow",
+    "cfe-init",
+    "cfe-patch-method",
+    "dcs-edit",
+    "epf-init",
+    "erf-init",
+    "form-add",
+    "form-remove",
+    "help-add",
+    "interface-edit",
+    "subsystem-edit",
+    "support-edit",
+    "template-add",
+    "template-remove",
+];
+
 /// The preview class of a mutating tool, or `None` for a reader.
 ///
 /// Totality over the mutating registry is the point: the table-driven contract
