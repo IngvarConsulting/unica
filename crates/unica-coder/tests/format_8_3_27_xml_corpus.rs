@@ -2085,24 +2085,17 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
             Value::String("XDTOPackage.EnterpriseData_1_17_3".to_string()),
         );
         args.insert(
-            "operation".to_string(),
-            Value::String("add-property".to_string()),
-        );
-        args.insert(
-            "typeName".to_string(),
-            Value::String("ЛюбаяСсылка".to_string()),
-        );
-        args.insert(
-            "propertyPath".to_string(),
-            Value::String("СсылкаНаОбъект".to_string()),
-        );
-        args.insert(
-            "property".to_string(),
-            json!({
-                "name": "Документ_Корпус",
-                "type": "tns:Документ_ЗаказКлиента",
-                "minOccurs": 0
-            }),
+            "operations".to_string(),
+            json!([{
+                "op": "addProperty",
+                "typeName": "ЛюбаяСсылка",
+                "propertyPath": "СсылкаНаОбъект",
+                "property": {
+                    "name": "Документ_Корпус",
+                    "type": "tns:Документ_ЗаказКлиента",
+                    "minOccurs": 0
+                }
+            }]),
         );
         return Ok(args);
     }
