@@ -155,3 +155,30 @@
   гварды); рефакторить в функции от каталога объекта.
 - lang в схеме: `{"type":"string","minLength":1,"pattern":"^[A-Za-z0-9_-]+$",
   "default":"ru"}`.
+
+## Статус исполнения (конец сессии 17.08, ветка feature/retire-template-help)
+
+Сделано и запушено:
+- Task 1 целиком: план + ADR-0072 (accepted) + индекс. Коммит 1-й.
+- Task 2 частично (коммит «feat(meta): addHelp joins the shared operation
+  union»): тег `MetaEditOperationTag::AddHelp`, доменная операция
+  `MetaEditOperation::AddHelp{lang}`, девятый вариант схемы (перед
+  editRelations → индексы тестов сдвинуты на [8]), разбор с валидацией lang и
+  запретом lang в других ветках, все снапшот-тесты обновлены; полный lib
+  зелёный (3249), fmt/clippy чисто. Материализация НЕ сделана — в
+  apply_typed_operation (meta/edit.rs, arm AddHelp) стоит fail-closed
+  заглушка «addHelp materialization is not wired yet».
+
+Следующий шаг (продолжение Task 2):
+- Материализация addHelp — канал фасета ВЛАДЕЛЬЦА, не child-payload
+  (`typed_child_*` в edit.rs:1690-1777 обслуживают только детей коллекций;
+  заметь: retained payload форм уже знает Ext/Help — у владельца Ext/Help
+  появится впервые). Искать сборку транзакции провайдера в
+  `infrastructure/metadata_operations.rs`: место, где после применения
+  операций к тексту дескриптора строится CompileTransaction и стейджатся
+  файлы; addHelp добавляет туда create_utf8_bom_text(Ext/Help.xml и
+  Ext/Help/<lang>.html — генераторы help_metadata_xml/help_page_html из
+  help.rs) + replace форм владельца (form_with_include_help) + гварды из
+  help.rs:31-139; заглушку в edit.rs заменить вызовом. Затем красный тест
+  паритета addHelp vs живой help.add (план Task 2), тест покрытия пяти
+  TemplateType, и Task 3/4 по плану выше.
