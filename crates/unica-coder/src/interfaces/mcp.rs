@@ -17,9 +17,10 @@ use crate::domain::code_intelligence::{
     NoopSearchProgressSink, SearchProgressSink, SearchProgressSnapshot,
 };
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ErrorCode, ErrorData, Implementation,
-    InitializeResult, ListToolsResult, Meta, PaginatedRequestParams, ProgressNotificationParam,
-    ProtocolVersion, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode, ErrorData,
+    Implementation, InitializeResult, ListToolsResult, NotificationMetaObject,
+    PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion, RequestMetaObject,
+    ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -151,16 +152,26 @@ fn has_structured_output(spec: &ToolSpec) -> bool {
 
 impl ServerHandler for UnicaServer {
     fn get_info(&self) -> ServerInfo {
+        // #490: the negotiation fallback is pinned, not inherited from the
+        // SDK LATEST constant, so an SDK bump cannot move it silently.
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::LATEST)
+            .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")))
     }
 
     async fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParams>,
+        request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        // #490: the surface is served whole; no cursor is ever issued, so a
+        // presented cursor is a contract violation, not an empty page.
+        if let Some(cursor) = request.and_then(|request| request.cursor) {
+            return Err(ErrorData::invalid_params(
+                format!("cursor is not part of the tools/list contract: {cursor:?}"),
+                None,
+            ));
+        }
         Ok(ListToolsResult::with_all_items(tool_definitions(
             &crate::application::tools(),
         )))
@@ -170,7 +181,7 @@ impl ServerHandler for UnicaServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         let admission = self
             .in_flight
             .admit()
@@ -192,7 +203,7 @@ impl ServerHandler for UnicaServer {
         let progress_token = request
             .meta
             .as_ref()
-            .and_then(Meta::get_progress_token)
+            .and_then(RequestMetaObject::get_progress_token)
             .or_else(|| context.meta.get_progress_token());
         let arguments = request.arguments.unwrap_or_default();
         let progress_forwarding = if let Some(progress_token) = progress_token {
@@ -207,7 +218,7 @@ impl ServerHandler for UnicaServer {
                     let Some(snapshot) = message else {
                         break;
                     };
-                    let mut meta = Meta::default();
+                    let mut meta = NotificationMetaObject::new();
                     meta.0.insert(
                         "io.unica/searchProgress".to_string(),
                         serde_json::to_value(&snapshot).unwrap_or(Value::Null),
@@ -253,7 +264,7 @@ impl ServerHandler for UnicaServer {
         bridge.abort();
         drop(admission);
 
-        match result {
+        let outcome = match result {
             Ok(Ok(result)) => {
                 render_tool_result(self.structured_tools.contains(name.as_str()), result)
             }
@@ -263,7 +274,8 @@ impl ServerHandler for UnicaServer {
                 format!("tool worker failed: {join_error}"),
                 None,
             )),
-        }
+        };
+        outcome.map(CallToolResponse::from)
     }
 }
 
@@ -870,6 +882,244 @@ mod tests {
         assert_eq!(
             schema["properties"]["dryRun"]["description"],
             "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+        );
+    }
+
+    // #490 wire matrix: the guaranteed versions are 2025-06-18, 2025-11-25
+    // (legacy `initialize` sessions) and 2026-07-28 (direct-first + discover).
+    // Version handling itself belongs to the SDK; these tests pin the served
+    // contract, not host behavior.
+
+    fn modern_meta() -> Value {
+        json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {}
+        })
+    }
+
+    #[tokio::test]
+    async fn legacy_offer_2025_11_25_is_echoed() {
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "unica-tests", "version": "1"}
+                }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn legacy_unknown_offer_falls_back_to_pinned_version() {
+        // The fallback is pinned to 2025-11-25 explicitly; an SDK bump that
+        // moves `ProtocolVersion::LATEST` must not move this answer.
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2099-01-01",
+                    "capabilities": {},
+                    "clientInfo": {"name": "unica-tests", "version": "1"}
+                }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn legacy_session_responses_stay_legacy_shaped() {
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
+            .await;
+        let response = client.receive().await;
+        assert!(response["result"]["tools"].is_array());
+        assert!(
+            response["result"].get("resultType").is_none(),
+            "legacy sessions must not receive modern result fields"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn modern_meta_inside_legacy_session_keeps_the_session_model() {
+        // SDK semantics, pinned as observed: a request that declares full
+        // modern `_meta` inside an `initialize` session gets a modern-shaped
+        // response for itself, while the session is not switched — the next
+        // plain request keeps the legacy wire shape.
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": { "_meta": modern_meta() }
+            }))
+            .await;
+        let modern_shaped = client.receive().await;
+        assert_eq!(
+            modern_shaped["result"]["tools"].as_array().unwrap().len(),
+            74
+        );
+        assert_eq!(modern_shaped["result"]["resultType"], "complete");
+        client
+            .send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }))
+            .await;
+        let plain = client.receive().await;
+        assert!(
+            plain["result"].get("resultType").is_none(),
+            "a plain request after a modern-declared one stays legacy-shaped"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tools_list_rejects_any_presented_cursor() {
+        let (mut client, _) = spawn_server(application_handler());
+        client.initialize().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": { "cursor": "anything" }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["error"]["code"], -32602);
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn modern_discover_can_open_the_connection() {
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "server/discover",
+                "params": { "_meta": modern_meta() }
+            }))
+            .await;
+        let response = client.receive().await;
+        let result = &response["result"];
+        assert_eq!(result["resultType"], "complete");
+        let supported: Vec<&str> = result["supportedVersions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for guaranteed in ["2025-06-18", "2025-11-25", "2026-07-28"] {
+            assert!(supported.contains(&guaranteed), "missing {guaranteed}");
+        }
+        assert!(result["ttlMs"].is_number());
+        assert!(result["cacheScope"].is_string());
+        assert_eq!(
+            result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "unica"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn modern_direct_first_tools_list_serves_the_full_registry() {
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "tools/list",
+                "params": { "_meta": modern_meta() }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["result"]["resultType"], "complete");
+        let tools = response["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 74);
+        assert!(
+            tools.iter().all(|tool| tool.get("description").is_none()),
+            "the schema-only baseline holds on the modern branch too"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn modern_unknown_version_direct_first_gets_unsupported_error() {
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "tools/list",
+                "params": { "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2099-01-01",
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                } }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["error"]["code"], -32022);
+        let supported = response["error"]["data"]["supported"].to_string();
+        assert!(supported.contains("2025-11-25"), "got {supported}");
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn modern_partial_meta_opener_is_rejected_before_serving() {
+        // A direct-first request with an incomplete reserved set is not a
+        // silent legacy downgrade: admission refuses the connection.
+        let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
+        let server = UnicaServer::new(application_handler());
+        let handle = tokio::spawn(async move {
+            server
+                .serve(server_io)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        let (read_half, mut writer) = tokio::io::split(client_io);
+        let mut reader = BufReader::new(read_half).lines();
+        let mut line = json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "tools/list",
+            "params": { "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            } }
+        })
+        .to_string();
+        line.push('\n');
+        writer.write_all(line.as_bytes()).await.unwrap();
+        writer.flush().await.unwrap();
+        let next = timeout(TEST_STEP, reader.next_line())
+            .await
+            .expect("timed out waiting for admission verdict")
+            .expect("MCP transport failed");
+        assert!(
+            next.is_none(),
+            "admission must close without serving, got {next:?}"
+        );
+        let outcome = handle.await.unwrap();
+        let error = outcome.expect_err("admission failure surfaces as a serve error");
+        assert!(
+            error.to_lowercase().contains("initialize"),
+            "unexpected admission error: {error}"
         );
     }
 

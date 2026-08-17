@@ -8,10 +8,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use unica_bootstrap::verify_mcp_runtime;
 
 #[test]
-fn verify_requires_initialize_and_the_three_public_tools() {
+fn verify_requires_both_lifecycles_and_the_three_public_tools() {
     let root = temp_root("valid");
     let record = root.join("provider-state.txt");
-    let runtime = write_fake_runtime(&root, &record, true);
+    let runtime = write_fake_runtime(&root, &record, true, true);
     let provider_state = root.join("private-provider-state");
 
     verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap();
@@ -26,7 +26,7 @@ fn verify_requires_initialize_and_the_three_public_tools() {
 fn verify_rejects_incomplete_tools_list() {
     let root = temp_root("missing-tool");
     let record = root.join("provider-state.txt");
-    let runtime = write_fake_runtime(&root, &record, false);
+    let runtime = write_fake_runtime(&root, &record, false, true);
     let provider_state = root.join("private-provider-state");
 
     let error =
@@ -39,26 +39,52 @@ fn verify_rejects_incomplete_tools_list() {
     );
 }
 
-fn write_fake_runtime(root: &Path, provider_state_record: &Path, complete: bool) -> PathBuf {
+#[test]
+fn verify_rejects_discover_without_the_guaranteed_versions() {
+    let root = temp_root("stale-discover");
+    let record = root.join("provider-state.txt");
+    let runtime = write_fake_runtime(&root, &record, true, false);
+    let provider_state = root.join("private-provider-state");
+
+    let error =
+        verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("does not list guaranteed protocol version"));
+}
+
+fn write_fake_runtime(
+    root: &Path,
+    provider_state_record: &Path,
+    complete: bool,
+    modern: bool,
+) -> PathBuf {
     let path = root.join("fake-unica");
     let explain = if complete {
         r#",{"name":"unica.standards.explain"}"#
     } else {
         ""
     };
+    let supported = if modern {
+        r#"["2025-06-18","2025-11-25","2026-07-28"]"#
+    } else {
+        r#"["2025-06-18"]"#
+    };
     fs::write(
         &path,
         format!(
             r#"#!/bin/sh
-printf '%s' "$UNICA_PROVIDER_STATE_DIR" > '{}'
+printf '%s' "$UNICA_PROVIDER_STATE_DIR" > '{record}'
 while IFS= read -r line; do
   case "$line" in
-    *'"id":1'*) printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"unica","version":"0.7.0"}}}}}}' ;;
-    *'"id":2'*) printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"unica.project.status"}},{{"name":"unica.standards.search"}}{explain}]}}}}' ;;
+    *'"method":"initialize"'*) printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"unica","version":"0.7.0"}}}}}}' ;;
+    *'"method":"server/discover"'*) printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","supportedVersions":{supported},"capabilities":{{}},"ttlMs":0,"cacheScope":"private"}}}}' ;;
+    *'"method":"tools/list"'*) printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"unica.project.status"}},{{"name":"unica.standards.search"}}{explain}]}}}}' ;;
   esac
 done
 "#,
-            provider_state_record.display()
+            record = provider_state_record.display()
         ),
     )
     .unwrap();
