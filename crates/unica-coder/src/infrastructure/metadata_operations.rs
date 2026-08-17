@@ -1742,6 +1742,241 @@ mod tests {
         assert_eq!(fs::read(&fixture.descriptor).unwrap(), preview);
     }
 
+    fn help_parity_form_xml() -> Vec<u8> {
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Form uuid="dddddddd-dddd-dddd-dddd-dddddddddddd">
+    <Properties>
+      <Name>ItemForm</Name>
+      <FormType>Managed</FormType>
+    </Properties>
+  </Form>
+</MetaDataObject>"#
+            .to_vec()
+    }
+
+    fn add_help_owner(fixture: &Fixture, name: &str) {
+        let cancellation = CancellationToken::new();
+        MetadataOperations::prepare_mutation(
+            &MetadataRequest::Add(MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::Catalog,
+                name: name.into(),
+                operations: Vec::new(),
+                dry_run: false,
+            }),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap()
+        .publish(&cancellation)
+        .unwrap();
+        let owner_dir = fixture.root.join(format!("src/Catalogs/{name}"));
+        fs::create_dir_all(owner_dir.join("Ext")).unwrap();
+        fs::create_dir_all(owner_dir.join("Forms")).unwrap();
+        fs::write(owner_dir.join("Forms/ItemForm.xml"), help_parity_form_xml()).unwrap();
+    }
+
+    fn fixture_application(fixture: &Fixture) -> UnicaApplication {
+        UnicaApplication::with_ports(Arc::new(FixedWorkspaceApplicationPorts {
+            context: fixture.context.clone(),
+            inner: InfrastructureApplicationPorts::new(),
+        }))
+    }
+
+    /// ADR-0072: the typed operation materializes the exact facet the retired
+    /// route produced — same Help.xml, same form flip; the page body names the
+    /// object by its logical name instead of the retired path dialect.
+    #[test]
+    fn typed_add_help_matches_the_retired_help_add_files() {
+        let fixture = Fixture::new("add-help-parity");
+        add_help_owner(&fixture, "Legacy");
+        add_help_owner(&fixture, "Typed");
+        let application = fixture_application(&fixture);
+
+        let legacy = application
+            .call_tool(
+                "unica.help.add",
+                &Map::from_iter([
+                    ("ObjectName".to_string(), json!("Catalogs/Legacy")),
+                    ("SrcDir".to_string(), json!("src")),
+                    ("Lang".to_string(), json!("ru")),
+                    ("dryRun".to_string(), json!(false)),
+                ]),
+            )
+            .unwrap();
+        assert!(legacy.ok, "{:?}", legacy.errors);
+        let typed = application
+            .call_tool(
+                "unica.meta.edit",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), json!("main")),
+                    ("metadataPath".to_string(), json!("Catalog.Typed")),
+                    ("operations".to_string(), json!([{"op": "addHelp"}])),
+                    ("dryRun".to_string(), json!(false)),
+                ]),
+            )
+            .unwrap();
+        assert!(typed.ok, "{:?}", typed.errors);
+
+        let legacy_dir = fixture.root.join("src/Catalogs/Legacy");
+        let typed_dir = fixture.root.join("src/Catalogs/Typed");
+        assert_eq!(
+            fs::read(legacy_dir.join("Ext/Help.xml")).unwrap(),
+            fs::read(typed_dir.join("Ext/Help.xml")).unwrap(),
+        );
+        assert_eq!(
+            fs::read(legacy_dir.join("Forms/ItemForm.xml")).unwrap(),
+            fs::read(typed_dir.join("Forms/ItemForm.xml")).unwrap(),
+        );
+        let legacy_page = fs::read_to_string(legacy_dir.join("Ext/Help/ru.html")).unwrap();
+        let typed_page = fs::read_to_string(typed_dir.join("Ext/Help/ru.html")).unwrap();
+        assert_eq!(
+            legacy_page.replace("Catalogs/Legacy", "OWNER"),
+            typed_page.replace("Typed", "OWNER"),
+        );
+        assert!(fs::read_to_string(typed_dir.join("Forms/ItemForm.xml"))
+            .unwrap()
+            .contains("<IncludeHelpInContents>false</IncludeHelpInContents>"));
+    }
+
+    /// ADR-0072: addHelp is create-only — a repeat is that operation's
+    /// rejection and no staged byte survives it.
+    #[test]
+    fn typed_add_help_is_create_only() {
+        let fixture = Fixture::new("add-help-create-only");
+        add_help_owner(&fixture, "Once");
+        let application = fixture_application(&fixture);
+        let args = Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!("Catalog.Once")),
+            ("operations".to_string(), json!([{"op": "addHelp"}])),
+            ("dryRun".to_string(), json!(false)),
+        ]);
+        let first = application.call_tool("unica.meta.edit", &args).unwrap();
+        assert!(first.ok, "{:?}", first.errors);
+        let owner_dir = fixture.root.join("src/Catalogs/Once");
+        let help_before = fs::read(owner_dir.join("Ext/Help.xml")).unwrap();
+        let form_before = fs::read(owner_dir.join("Forms/ItemForm.xml")).unwrap();
+
+        let second = application.call_tool("unica.meta.edit", &args).unwrap();
+        assert!(!second.ok, "{:?}", second);
+        assert!(
+            format!("{:?}", second).contains("alreadyExists")
+                || format!("{:?}", second).contains("already exists"),
+            "{:?}",
+            second
+        );
+        assert_eq!(
+            fs::read(owner_dir.join("Ext/Help.xml")).unwrap(),
+            help_before
+        );
+        assert_eq!(
+            fs::read(owner_dir.join("Forms/ItemForm.xml")).unwrap(),
+            form_before
+        );
+    }
+
+    /// ADR-0072: the default preview plans the facet without writing a byte.
+    #[test]
+    fn typed_add_help_preview_writes_nothing() {
+        let fixture = Fixture::new("add-help-preview");
+        add_help_owner(&fixture, "Draft");
+        let application = fixture_application(&fixture);
+        let preview = application
+            .call_tool(
+                "unica.meta.edit",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), json!("main")),
+                    ("metadataPath".to_string(), json!("Catalog.Draft")),
+                    (
+                        "operations".to_string(),
+                        json!([{"op": "addHelp", "lang": "en"}]),
+                    ),
+                ]),
+            )
+            .unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        let data = preview.data.as_ref().expect("typed preview data");
+        assert_eq!(data["changed"], true);
+        assert!(
+            serde_json::to_string(&data["publicationPlan"])
+                .unwrap()
+                .contains("help"),
+            "{:?}",
+            data["publicationPlan"]
+        );
+        let owner_dir = fixture.root.join("src/Catalogs/Draft");
+        assert!(!owner_dir.join("Ext/Help.xml").exists());
+        assert!(!owner_dir.join("Ext/Help/en.html").exists());
+        assert!(!fs::read_to_string(owner_dir.join("Forms/ItemForm.xml"))
+            .unwrap()
+            .contains("IncludeHelpInContents"));
+    }
+
+    /// ADR-0072 / #375: `meta.edit add templates` покрывает все пять видов
+    /// макета, которые принимал снимаемый `template.add`; вид по умолчанию —
+    /// прежний SpreadsheetDocument, неизвестный вид отклоняется до записи.
+    #[test]
+    fn typed_template_add_covers_every_template_kind() {
+        let fixture = Fixture::new("template-kinds");
+        let application = fixture_application(&fixture);
+        let add_template = |element: serde_json::Value| {
+            application.call_tool(
+                "unica.meta.edit",
+                &Map::from_iter([
+                    ("sourceSet".to_string(), json!("main")),
+                    ("metadataPath".to_string(), json!("Catalog.Editable")),
+                    (
+                        "operations".to_string(),
+                        json!([{
+                            "op": "add",
+                            "collection": "templates",
+                            "elements": [element]
+                        }]),
+                    ),
+                    ("dryRun".to_string(), json!(false)),
+                ]),
+            )
+        };
+        let templates_dir = fixture.root.join("src/Catalogs/Editable/Templates");
+        for (kind, primary) in [
+            ("HTMLDocument", "Ext/Template.xml"),
+            ("TextDocument", "Ext/Template.txt"),
+            ("SpreadsheetDocument", "Ext/Template.xml"),
+            ("BinaryData", "Ext/Template.bin"),
+            ("DataCompositionSchema", "Ext/Template.xml"),
+        ] {
+            let name = format!("Template{kind}");
+            let applied = add_template(json!({"name": name, "templateType": kind})).unwrap();
+            assert!(applied.ok, "{kind}: {:?}", applied.errors);
+            let descriptor = fs::read_to_string(templates_dir.join(format!("{name}.xml"))).unwrap();
+            assert!(
+                descriptor.contains(&format!("<TemplateType>{kind}</TemplateType>")),
+                "{kind}: {descriptor}"
+            );
+            assert!(
+                templates_dir.join(&name).join(primary).exists(),
+                "{kind}: primary payload missing"
+            );
+        }
+
+        let defaulted = add_template(json!({"name": "TemplateDefault"})).unwrap();
+        assert!(defaulted.ok, "{:?}", defaulted.errors);
+        assert!(
+            fs::read_to_string(templates_dir.join("TemplateDefault.xml"))
+                .unwrap()
+                .contains("<TemplateType>SpreadsheetDocument</TemplateType>"),
+        );
+
+        let unknown = add_template(json!({"name": "TemplateBad", "templateType": "Picture"}));
+        assert!(
+            unknown.is_err() || !unknown.unwrap().ok,
+            "unsupported template kind must be rejected"
+        );
+        assert!(!templates_dir.join("TemplateBad.xml").exists());
+    }
+
     #[test]
     fn typed_resource_append_and_position_after_preserve_the_source_format() {
         let fixture = Fixture::new("resource-preview-apply-source-format");

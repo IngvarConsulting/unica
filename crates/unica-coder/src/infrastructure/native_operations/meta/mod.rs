@@ -74,6 +74,7 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
 
 mod edit;
 mod format_contract;
+mod help_facet;
 mod info;
 mod info_projection;
 mod integrity_check;

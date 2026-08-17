@@ -290,7 +290,7 @@ fn validate_help_lang(lang: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn help_metadata_xml(lang: &str, format_version: &str) -> String {
+pub(crate) fn help_metadata_xml(lang: &str, format_version: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <Help xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{}\">\n\
@@ -301,7 +301,7 @@ fn help_metadata_xml(lang: &str, format_version: &str) -> String {
     )
 }
 
-fn help_page_html(object_name: &str) -> String {
+pub(crate) fn help_page_html(object_name: &str) -> String {
     format!(
         "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\
 <html><head>\
@@ -312,13 +312,13 @@ fn help_page_html(object_name: &str) -> String {
     )
 }
 
-fn validate_help_xml(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn validate_help_xml(path: &Path, text: &str) -> Result<(), String> {
     Document::parse(text.trim_start_matches('\u{feff}'))
         .map(|_| ())
         .map_err(|error| format!("XML parse error in {}: {error}", path.display()))
 }
 
-fn validate_help_form_owner_8_3_27(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn validate_help_form_owner_8_3_27(path: &Path, text: &str) -> Result<(), String> {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     let document = Document::parse(text.trim_start_matches('\u{feff}'))
@@ -396,7 +396,7 @@ fn validate_help_form_owner_8_3_27(path: &Path, text: &str) -> Result<(), String
     Ok(())
 }
 
-fn form_with_include_help(text: &str) -> Option<String> {
+pub(crate) fn form_with_include_help(text: &str) -> Option<String> {
     if text.contains("<IncludeHelpInContents>") {
         return None;
     }

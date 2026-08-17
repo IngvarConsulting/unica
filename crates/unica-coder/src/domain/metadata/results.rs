@@ -230,6 +230,7 @@ pub(crate) enum MetaPublicationResource {
     Command,
     Dependency,
     PredefinedData,
+    Help,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

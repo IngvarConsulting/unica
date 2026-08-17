@@ -614,7 +614,7 @@ fn html_template_descriptor(format_version: &str) -> String {
     )
 }
 
-fn html_template_page() -> &'static str {
+pub(crate) fn html_template_page() -> &'static str {
     concat!(
         "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">",
         "<html><head>",

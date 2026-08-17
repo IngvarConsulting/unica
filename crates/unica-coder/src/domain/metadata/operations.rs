@@ -505,6 +505,7 @@ pub(crate) struct MetaElementInput {
     pub(crate) fill_value: Option<MetaFillValue>,
     pub(crate) attributes: Option<Vec<MetaElementInput>>,
     pub(crate) position: Option<MetaPosition>,
+    pub(crate) template_type: Option<MetaTemplateKind>,
 }
 
 impl MetaElementInput {
@@ -527,6 +528,7 @@ pub(crate) struct MetaElementDefinition {
     pub(crate) fill_value: Option<MetaFillValue>,
     pub(crate) attributes: Vec<MetaElementDefinition>,
     pub(crate) position: Option<MetaPosition>,
+    pub(crate) template_type: Option<MetaTemplateKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -793,6 +795,7 @@ impl MetaElementDefinition {
             fill_value: input.fill_value,
             attributes,
             position: input.position,
+            template_type: input.template_type,
         })
     }
 }
@@ -1100,6 +1103,51 @@ impl RelationEditMode {
             .find(|candidate| candidate.as_str() == value)
             .ok_or_else(|| {
                 invalid_operation("mode", format!("unsupported relation mode `{value}`"))
+            })
+    }
+}
+
+/// ADR-0072: закрытый вид добавляемого макета. Правописание значений — это
+/// значения дескриптора `TemplateType` формата 8.3.27, поэтому разбор,
+/// эмиссия и обратное чтение дескриптора разделяют один словарь.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetaTemplateKind {
+    HtmlDocument,
+    TextDocument,
+    SpreadsheetDocument,
+    BinaryData,
+    DataCompositionSchema,
+}
+
+impl MetaTemplateKind {
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::HtmlDocument,
+        Self::TextDocument,
+        Self::SpreadsheetDocument,
+        Self::BinaryData,
+        Self::DataCompositionSchema,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::HtmlDocument => "HTMLDocument",
+            Self::TextDocument => "TextDocument",
+            Self::SpreadsheetDocument => "SpreadsheetDocument",
+            Self::BinaryData => "BinaryData",
+            Self::DataCompositionSchema => "DataCompositionSchema",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, MetaDiagnostic> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == value)
+            .ok_or_else(|| {
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::UnsupportedKind,
+                    format!("unsupported template kind `{value}`"),
+                )
             })
     }
 }
@@ -1556,6 +1604,17 @@ pub(crate) fn validate_metadata_operation_capabilities(
             elements,
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
+            if *collection != MetaCollection::Templates {
+                for (index, element) in elements.iter().enumerate() {
+                    if element.template_type.is_some() {
+                        return Err(MetaDiagnostic::error(
+                            MetaDiagnosticCode::InvalidArguments,
+                            "templateType is only valid for the templates collection",
+                        )
+                        .with_field(format!("elements[{index}].templateType")));
+                    }
+                }
+            }
             for (index, element) in elements.iter().enumerate() {
                 validate_element_fill_value_capability(
                     owner_kind,

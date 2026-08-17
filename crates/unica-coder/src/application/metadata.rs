@@ -10,9 +10,9 @@ use crate::domain::metadata::{
     MetaPredefinedAccountType, MetaPredefinedExtDimensionType, MetaPredefinedFields,
     MetaPredefinedItemAdd, MetaPredefinedItemUpdate, MetaPropertyChanges, MetaPropertyInput,
     MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
-    MetaRelationTargetPolicy, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
-    MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
-    StringLengthMode, METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
+    MetaRelationTargetPolicy, MetaScope, MetaTemplateKind, MetaValidationStatus, MetadataFieldPath,
+    MetadataKind, MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
+    RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -1028,6 +1028,7 @@ fn parse_element_input(
             "fillValue",
             "attributes",
             "position",
+            "templateType",
         ][..]
     } else {
         &[
@@ -1078,6 +1079,16 @@ fn parse_element_input(
         position: object
             .get("position")
             .map(|value| parse_position(value, &format!("{field}.position")))
+            .transpose()?,
+        template_type: object
+            .get("templateType")
+            .map(|value| {
+                let field = format!("{field}.templateType");
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&field, "`templateType` must be a string"))?;
+                MetaTemplateKind::parse(value).map_err(|diagnostic| diagnostic.with_field(field))
+            })
             .transpose()?,
     })
 }
@@ -1988,6 +1999,15 @@ fn host_visible_operation_schema() -> Value {
             "required": {"type": "boolean"},
             "type": schema_reference("metadataType"),
             "fillValue": schema_reference("fillValue"),
+            "templateType": {
+                "type": "string",
+                "enum": MetaTemplateKind::ALL
+                    .iter()
+                    .copied()
+                    .map(MetaTemplateKind::as_str)
+                    .collect::<Vec<_>>(),
+                "description": "Template kind for a new templates element; omitted it defaults to SpreadsheetDocument (ADR-0072).",
+            },
             "position": schema_reference("position"),
             "attributes": {
                 "type": "array",

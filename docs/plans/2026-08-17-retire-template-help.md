@@ -169,7 +169,25 @@
   apply_typed_operation (meta/edit.rs, arm AddHelp) стоит fail-closed
   заглушка «addHelp materialization is not wired yet».
 
-Следующий шаг (продолжение Task 2):
+**Продолжение (новая сессия, тот же день): Task 2 ЗАВЕРШЁН.** Материализация
+addHelp — планировщик `meta/help_facet.rs` каналом владельца (по образцу
+predefined companion-writer): create-мутации Help.xml/Help/<lang>.html без
+отдельных absent-гвардов (create сам несёт no-clobber; дубль гварда транзакция
+считает пересечением), флип форм с точными преимиджами, публикационная запись
+`MetaPublicationResource::Help`. Тесты зелёные: паритет с живым help.add
+(`typed_add_help_matches_the_retired_help_add_files` — help.add требует явный
+`dryRun:false`!), create-only, preview-без-записи. Плюс закрыт пробел покрытия
+видов: `templateType` в элементе `add templates` (домен `MetaTemplateKind`,
+схема, разбор, эмиссия, payload по виду; HTMLDocument primary — это
+`<Help>`-дескриптор страниц + Ext/Template/ru.html, сырой HTML старого
+template.add был дефектом и типизированным каналом не воспроизводится) —
+`typed_template_add_covers_every_template_kind` зелёный. Полный lib 3253,
+fmt/clippy чисто.
+
+Дальше — Task 3 (снятие трёх инструментов) и Task 4 (python/скиллы/ведомость)
+по плану выше.
+
+Прежний план следующего шага (исполнен):
 - Материализация addHelp — канал фасета ВЛАДЕЛЬЦА, не child-payload
   (`typed_child_*` в edit.rs:1690-1777 обслуживают только детей коллекций;
   заметь: retained payload форм уже знает Ext/Help — у владельца Ext/Help

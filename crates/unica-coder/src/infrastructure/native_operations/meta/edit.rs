@@ -890,6 +890,29 @@ pub(super) fn build_typed_operation_post_image(
     child_resources
         .expected_post_images
         .extend(predefined_resources.expected_post_images);
+    // ADR-0072: справка — фасет владельца рядом с дескриптором; её файлы
+    // планируются тем же post-image построением, что и остальные ресурсы.
+    let help_resources = super::help_facet::plan_help_resource_after_descriptor_edit(
+        descriptor_path,
+        target,
+        &object_name,
+        operations,
+    )?;
+    child_resources
+        .file_mutations
+        .extend(help_resources.file_mutations);
+    child_resources
+        .absent_path_guards
+        .extend(help_resources.absent_path_guards);
+    child_resources
+        .exact_file_guards
+        .extend(help_resources.exact_file_guards);
+    child_resources
+        .publication_plan
+        .extend(help_resources.publication_plan);
+    child_resources
+        .expected_post_images
+        .extend(help_resources.expected_post_images);
     child_resources.relation_dependencies =
         resolve_typed_relation_dependencies(&dependency_scope, target, operations, context, &xml)?;
     if target.segments().next() == Some("EventSubscription") {
@@ -1211,9 +1234,21 @@ pub(super) fn plan_typed_child_resources(
                     MetaCollection::Templates => {
                         final_payload_directories.push(PathBuf::new());
                         final_payload_directories.push(PathBuf::from("Ext"));
-                        let content =
-                            super::super::mxl::empty_spreadsheet_document_xml().into_bytes();
-                        final_payload.push((PathBuf::from("Ext/Template.xml"), content));
+                        let template_type = template_type
+                            .expect("a planned template child publishes its TemplateType");
+                        final_payload.push((
+                            PathBuf::from(typed_template_primary_path(template_type)),
+                            typed_template_initial_content(template_type),
+                        ));
+                        if template_type == MetadataTemplateType::HtmlDocument {
+                            final_payload_directories.push(PathBuf::from("Ext/Template"));
+                            final_payload.push((
+                                typed_template_page_path("ru"),
+                                super::super::template::html_template_page()
+                                    .as_bytes()
+                                    .to_vec(),
+                            ));
+                        }
                     }
                     MetaCollection::Commands => {}
                     _ => unreachable!(),
@@ -1696,6 +1731,34 @@ pub(super) fn typed_template_primary_path(template_type: MetadataTemplateType) -
         | MetadataTemplateType::DataCompositionSchema => "Ext/Template.xml",
         MetadataTemplateType::TextDocument => "Ext/Template.txt",
         MetadataTemplateType::BinaryData => "Ext/Template.bin",
+    }
+}
+
+/// ADR-0072: начальное содержимое нового макета по виду — то, что порождал
+/// снимаемый `template.add`; байты канала сохраняют прежнее typed-поведение
+/// (без BOM), текстовый и бинарный виды пусты.
+pub(super) fn typed_template_initial_content(template_type: MetadataTemplateType) -> Vec<u8> {
+    match template_type {
+        MetadataTemplateType::SpreadsheetDocument => {
+            super::super::mxl::empty_spreadsheet_document_xml().into_bytes()
+        }
+        // Платформенная форма HTMLDocument: primary — дескриптор страниц
+        // `<Help>` (extrnprops), сами страницы лежат в Ext/Template/*.html.
+        // Снимаемый template.add писал сюда сырой HTML — typed-канал пишет
+        // форму, которую закрепил валидатор по реальным дампам 8.3.27.
+        MetadataTemplateType::HtmlDocument => {
+            crate::infrastructure::native_operations::help::help_metadata_xml(
+                "ru",
+                crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+            )
+            .into_bytes()
+        }
+        MetadataTemplateType::DataCompositionSchema => {
+            super::super::template::template_content_xml("DataCompositionSchema", "")
+                .expect("closed template kind")
+                .into_bytes()
+        }
+        MetadataTemplateType::TextDocument | MetadataTemplateType::BinaryData => Vec::new(),
     }
 }
 
@@ -3651,15 +3714,11 @@ fn apply_typed_operation(
     })?;
     validate_metadata_operation_capabilities(owner_kind, &owner, operation)?;
     match operation {
-        // WIP #375: the descriptor text does not change for help; the file
-        // materialization channel lands with the parity test. Fail closed
-        // until then so a published build cannot half-apply the operation.
+        // ADR-0072: справка живёт рядом с дескриптором, сам текст дескриптора
+        // не меняется; файлы планирует `help_facet` из того же построения
+        // post-image.
         MetaEditOperation::AddHelp { .. } => {
-            return Err(typed_diagnostic(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "addHelp materialization is not wired yet",
-                None,
-            ));
+            counts.added += 1;
         }
         MetaEditOperation::SetProperties { values } => {
             apply_typed_properties(xml_text, values)?;
@@ -4141,6 +4200,14 @@ fn render_typed_element(
         }
     }
     let mut rendered = lines.join("\n");
+    if collection == MetaCollection::Templates {
+        if let Some(kind) = element.template_type {
+            rendered = rendered.replace(
+                "<TemplateType>SpreadsheetDocument</TemplateType>",
+                &format!("<TemplateType>{}</TemplateType>", kind.as_str()),
+            );
+        }
+    }
     if collection == MetaCollection::Forms {
         rendered = rendered
             .replace("<FormType>Ordinary</FormType>", "<FormType>Managed</FormType>")
