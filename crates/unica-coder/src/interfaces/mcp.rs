@@ -17,8 +17,9 @@ use crate::domain::code_intelligence::{
     NoopSearchProgressSink, SearchProgressSink, SearchProgressSnapshot,
 };
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode, ErrorData,
-    Implementation, InitializeResult, ListToolsResult, NotificationMetaObject,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
+    ErrorData, ExtensionCapabilities, Implementation, InitializeResult, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, NotificationMetaObject,
     PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion, RequestMetaObject,
     ServerCapabilities, ServerInfo, Tool,
 };
@@ -150,31 +151,175 @@ fn has_structured_output(spec: &ToolSpec) -> bool {
     structured_output_schema(spec).is_some()
 }
 
+/// Page size for the modern-era `tools/list` (legacy peers get the whole
+/// registry in one page, exactly as before pagination existed).
+const TOOLS_PAGE_SIZE: usize = 25;
+
+/// Validate a client-presented cursor against the offsets this server issues:
+/// positive multiples of the page size strictly inside the collection.
+fn parse_issued_cursor(cursor: &str, page_size: usize, len: usize) -> Result<usize, ErrorData> {
+    let issued = |offset: usize| offset != 0 && offset % page_size == 0 && offset < len;
+    match cursor.parse::<usize>() {
+        Ok(offset) if issued(offset) => Ok(offset),
+        _ => Err(ErrorData::invalid_params(
+            format!("cursor was not issued by this server: {cursor:?}"),
+            None,
+        )),
+    }
+}
+
+/// SEP-2549 cache fields are required on list results from protocol revision
+/// 2026-07-28; older peers must keep the exact legacy wire shape.
+fn modern_peer(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .protocol_version()
+        .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+}
+
+/// The served protocol versions are exactly the guaranteed host matrix
+/// (#490): Codex (2025-06-18), Claude Code (2025-11-25) and the modern
+/// direct-first lifecycle (2026-07-28). Older revisions are not offered —
+/// an accepted handshake would promise semantics nobody verifies.
+const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2025_06_18,
+    ProtocolVersion::V_2025_11_25,
+    ProtocolVersion::V_2026_07_28,
+];
+
 impl ServerHandler for UnicaServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
     fn get_info(&self) -> ServerInfo {
         // #490: the negotiation fallback is pinned, not inherited from the
         // SDK LATEST constant, so an SDK bump cannot move it silently.
-        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+        //
+        // The whole declarable surface is advertised so capability-gated
+        // clients exercise it: tools carry the registry, prompts/resources/
+        // completions are served by SDK defaults (empty lists) until they gain
+        // content, and tasks/ui ride the extensions map (SEP-2663 gates
+        // `tasks/*` admission on this declaration).
+        #[allow(deprecated)] // logging is SEP-2577-deprecated but still wired
+        let mut capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_tool_list_changed()
+            .enable_prompts()
+            .enable_prompts_list_changed()
+            .enable_resources()
+            .enable_resources_list_changed()
+            .enable_resources_subscribe()
+            .enable_completions()
+            .enable_logging()
+            .enable_experimental()
+            .enable_tasks()
+            .build();
+        capabilities
+            .extensions
+            .get_or_insert_with(ExtensionCapabilities::new)
+            .insert(
+                "io.modelcontextprotocol/ui".to_string(),
+                serde_json::json!({"mimeTypes": ["text/html;profile=mcp-app"]})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        InitializeResult::new(capabilities)
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")))
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &rmcp::model::SubscriptionFilter,
+    ) -> Option<rmcp::model::SubscriptionFilter> {
+        // The declared listChanged/subscribe capabilities imply the modern
+        // `subscriptions/listen` channel exists; accept the requested filter
+        // and let the SDK intersect it with the advertised capabilities.
+        // Returning `None` would fail every listen with method_not_found.
+        Some(requested.clone())
+    }
+
+    #[allow(deprecated)] // logging is SEP-2577-deprecated but still wired
+    async fn set_level(
+        &self,
+        _request: rmcp::model::SetLevelRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        // The declared logging capability accepts the level; no notifications
+        // are emitted yet, so the accepted level has no observable effect.
+        Ok(())
     }
 
     async fn list_tools(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        // #490: the surface is served whole; no cursor is ever issued, so a
-        // presented cursor is a contract violation, not an empty page.
-        if let Some(cursor) = request.and_then(|request| request.cursor) {
-            return Err(ErrorData::invalid_params(
-                format!("cursor is not part of the tools/list contract: {cursor:?}"),
-                None,
-            ));
+        let all = tool_definitions(&crate::application::tools());
+        let cursor = request.and_then(|request| request.cursor);
+        if !modern_peer(&context) {
+            // #490: the legacy surface is served whole; no cursor is ever
+            // issued there, so a presented cursor is a contract violation.
+            if let Some(cursor) = cursor {
+                return Err(ErrorData::invalid_params(
+                    format!("cursor is not part of the legacy tools/list contract: {cursor:?}"),
+                    None,
+                ));
+            }
+            return Ok(ListToolsResult::with_all_items(all));
         }
-        Ok(ListToolsResult::with_all_items(tool_definitions(
-            &crate::application::tools(),
-        )))
+        // Modern peers page through the registry; only offsets this server
+        // issued are valid cursors.
+        let offset = match cursor {
+            None => 0,
+            Some(cursor) => parse_issued_cursor(&cursor, TOOLS_PAGE_SIZE, all.len())?,
+        };
+        let end = (offset + TOOLS_PAGE_SIZE).min(all.len());
+        let mut result = ListToolsResult::with_all_items(all[offset..end].to_vec());
+        if end < all.len() {
+            result.next_cursor = Some(end.to_string());
+        }
+        // 2026-07-28 list results require the SEP-2549 cache fields; ttlMs 0
+        // keeps the "tools/list is not cacheable" policy while satisfying the
+        // modern wire schema.
+        Ok(result.with_ttl_ms(0).with_cache_scope(CacheScope::Private))
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        let mut result = ListPromptsResult::with_all_items(Vec::new());
+        if modern_peer(&context) {
+            result = result.with_ttl_ms(0).with_cache_scope(CacheScope::Private);
+        }
+        Ok(result)
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let mut result = ListResourcesResult::with_all_items(Vec::new());
+        if modern_peer(&context) {
+            result = result.with_ttl_ms(0).with_cache_scope(CacheScope::Private);
+        }
+        Ok(result)
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        let mut result = ListResourceTemplatesResult::with_all_items(Vec::new());
+        if modern_peer(&context) {
+            result = result.with_ttl_ms(0).with_cache_scope(CacheScope::Private);
+        }
+        Ok(result)
     }
 
     async fn call_tool(
@@ -890,6 +1035,181 @@ mod tests {
     // Version handling itself belongs to the SDK; these tests pin the served
     // contract, not host behavior.
 
+    #[tokio::test]
+    async fn initialize_declares_the_full_capability_surface() {
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "unica-tests", "version": "1"}
+                }
+            }))
+            .await;
+        let response = client.receive().await;
+        let capabilities = &response["result"]["capabilities"];
+        assert_eq!(capabilities["tools"]["listChanged"], true);
+        assert_eq!(capabilities["prompts"]["listChanged"], true);
+        assert_eq!(capabilities["resources"]["listChanged"], true);
+        assert_eq!(capabilities["resources"]["subscribe"], true);
+        assert!(capabilities["completions"].is_object());
+        assert!(capabilities["logging"].is_object());
+        assert!(capabilities["experimental"].is_object());
+        assert!(capabilities["extensions"]["io.modelcontextprotocol/tasks"].is_object());
+        assert_eq!(
+            capabilities["extensions"]["io.modelcontextprotocol/ui"]["mimeTypes"][0],
+            "text/html;profile=mcp-app"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn modern_list_results_carry_required_cache_fields_and_legacy_stays_clean() {
+        // 2026-07-28 wire schemas (SEP-2549) require ttlMs/cacheScope on list
+        // results; the legacy shape must stay byte-identical to pre-2026.
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "tools/list",
+                "params": { "_meta": modern_meta() }
+            }))
+            .await;
+        let modern = client.receive().await;
+        assert_eq!(modern["result"]["ttlMs"], 0);
+        assert_eq!(modern["result"]["cacheScope"], "private");
+        client.shutdown().await;
+
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "unica-tests", "version": "1"}
+                }
+            }))
+            .await;
+        client.receive().await;
+        client
+            .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .await;
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+            .await;
+        let legacy = client.receive().await;
+        assert!(legacy["result"]["ttlMs"].is_null(), "got {legacy}");
+        assert!(legacy["result"]["cacheScope"].is_null(), "got {legacy}");
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn modern_subscriptions_listen_is_acknowledged_not_rejected() {
+        // The Inspector auto-opens `subscriptions/listen` whenever listChanged
+        // capabilities are advertised; the default SDK filter (None) turned
+        // every attempt into -32601 and an endless client retry loop.
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "tools/list",
+                "params": { "_meta": modern_meta() }
+            }))
+            .await;
+        client.receive().await;
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "subscriptions/listen",
+                "params": {
+                    "_meta": modern_meta(),
+                    "notifications": {
+                        "toolsListChanged": true,
+                        "promptsListChanged": true,
+                        "resourcesListChanged": true
+                    }
+                }
+            }))
+            .await;
+        let reply = client.receive().await;
+        assert_eq!(
+            reply["method"], "notifications/subscriptions/acknowledged",
+            "expected the acknowledgment notification, got {reply}"
+        );
+        assert_eq!(
+            reply["params"]["notifications"],
+            json!({
+                "toolsListChanged": true,
+                "promptsListChanged": true,
+                "resourcesListChanged": true
+            }),
+            "the full requested filter must be accepted"
+        );
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn declared_surfaces_without_content_serve_sdk_defaults() {
+        let (mut client, _) = spawn_server(application_handler());
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "unica-tests", "version": "1"}
+                }
+            }))
+            .await;
+        client.receive().await;
+        client
+            .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .await;
+
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 1, "method": "prompts/list"}))
+            .await;
+        let prompts = client.receive().await;
+        assert_eq!(prompts["result"]["prompts"], json!([]));
+
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}))
+            .await;
+        let resources = client.receive().await;
+        assert_eq!(resources["result"]["resources"], json!([]));
+
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 3, "method": "resources/templates/list"}))
+            .await;
+        let templates = client.receive().await;
+        assert_eq!(templates["result"]["resourceTemplates"], json!([]));
+
+        client
+            .send(json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "logging/setLevel",
+                "params": {"level": "debug"}
+            }))
+            .await;
+        let level = client.receive().await;
+        assert!(level["error"].is_null(), "got {level}");
+
+        client.shutdown().await;
+    }
+
     fn modern_meta() -> Value {
         json!({
             "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -972,10 +1292,13 @@ mod tests {
             }))
             .await;
         let modern_shaped = client.receive().await;
+        // Modern semantics follow the request's effective encoding, pagination
+        // included: the first page plus a continuation cursor.
         assert_eq!(
             modern_shaped["result"]["tools"].as_array().unwrap().len(),
-            74
+            25
         );
+        assert!(modern_shaped["result"]["nextCursor"].is_string());
         assert_eq!(modern_shaped["result"]["resultType"], "complete");
         client
             .send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }))
@@ -1025,9 +1348,8 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        for guaranteed in ["2025-06-18", "2025-11-25", "2026-07-28"] {
-            assert!(supported.contains(&guaranteed), "missing {guaranteed}");
-        }
+        // The served set is exactly the guaranteed host matrix — nothing older.
+        assert_eq!(supported, ["2025-06-18", "2025-11-25", "2026-07-28"]);
         assert!(result["ttlMs"].is_number());
         assert!(result["cacheScope"].is_string());
         assert_eq!(
@@ -1038,24 +1360,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn modern_direct_first_tools_list_serves_the_full_registry() {
+    async fn modern_direct_first_tools_list_pages_through_the_full_registry() {
+        // Modern peers page the registry (25 per page, offset cursors);
+        // walking every page must reproduce the complete surface exactly.
         let (mut client, _) = spawn_server(application_handler());
-        client
-            .send(json!({
-                "jsonrpc": "2.0",
-                "id": 0,
-                "method": "tools/list",
-                "params": { "_meta": modern_meta() }
-            }))
-            .await;
-        let response = client.receive().await;
-        assert_eq!(response["result"]["resultType"], "complete");
-        let tools = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 74);
-        assert!(
-            tools.iter().all(|tool| tool.get("description").is_none()),
-            "the schema-only baseline holds on the modern branch too"
-        );
+        let mut names = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut id = 0;
+        loop {
+            let mut params = json!({ "_meta": modern_meta() });
+            if let Some(cursor) = &cursor {
+                params["cursor"] = json!(cursor);
+            }
+            client
+                .send(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/list",
+                    "params": params
+                }))
+                .await;
+            let response = client.receive().await;
+            assert_eq!(response["result"]["resultType"], "complete");
+            let tools = response["result"]["tools"].as_array().unwrap();
+            assert!(tools.len() <= 25, "page overflow: {}", tools.len());
+            assert!(
+                tools.iter().all(|tool| tool.get("description").is_none()),
+                "the schema-only baseline holds on the modern branch too"
+            );
+            names.extend(
+                tools
+                    .iter()
+                    .map(|tool| tool["name"].as_str().unwrap().to_string()),
+            );
+            match response["result"]["nextCursor"].as_str() {
+                Some(next) => cursor = Some(next.to_string()),
+                None => break,
+            }
+            id += 1;
+        }
+        assert_eq!(names.len(), 74);
+        let unique: HashSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), 74, "pages must not overlap");
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn modern_tools_list_rejects_a_cursor_the_server_never_issued() {
+        let (mut client, _) = spawn_server(application_handler());
+        for bad in ["banana", "7", "0", "10000"] {
+            let mut params = json!({ "_meta": modern_meta() });
+            params["cursor"] = json!(bad);
+            client
+                .send(json!({
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "method": "tools/list",
+                    "params": params
+                }))
+                .await;
+            let response = client.receive().await;
+            assert_eq!(response["error"]["code"], -32602, "cursor {bad}: {response}");
+        }
         client.shutdown().await;
     }
 
