@@ -29,12 +29,23 @@ allowed-tools:
   константа. Получите его через `unica.project.map`; `"main"` в примерах
   ниже — иллюстрация, а не значение по умолчанию.
 
-Поддерживаются пять значений `op`: `setProperties`, `add`, `update`, `remove`
-и `editRelations`. Для коллекционных операций задаются `collection` и
+Поддерживаются шесть значений `op`: `setProperties`, `add`, `update`, `remove`,
+`editRelations` и `addHelp`. Для коллекционных операций задаются `collection` и
 структурные `elements` либо `names`; связи задаются через `relation`, `mode` и
 `targets`. Допустимые свойства, коллекции, виды типов и связей берите из
 опубликованной схемы операции. Общие прикладные правила находятся в
 [соглашениях по метаданным](../../references/platform/metadata-conventions.md).
+
+Регистрация макета — операция `add` по коллекции `templates`: элемент несёт
+`name` и необязательный `templateType` из закрытого набора `HTMLDocument`,
+`TextDocument`, `SpreadsheetDocument` (по умолчанию), `BinaryData`,
+`DataCompositionSchema`; снятие регистрации — `remove` по той же коллекции.
+Наполнение содержимого остаётся у предметных инструментов своего вида.
+Встроенная справка — операция `{"op": "addHelp", "lang"?}` (ADR-0072):
+create-only создаёт `Ext/Help.xml` и `Ext/Help/<lang>.html` владельца и
+включает `IncludeHelpInContents` его формам; повтор — отказ. Прежние
+`unica.template.add`, `unica.template.remove` и `unica.help.add` сняты и
+отвечают `unknown unica tool`.
 
 Коллекция `predefinedItems` доступна только для `Catalog`,
 `ChartOfAccounts`, `ChartOfCharacteristicTypes` и

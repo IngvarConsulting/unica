@@ -208,5 +208,5 @@ allowed-tools:
 
 - Добавить ещё команду: `/epf-bsp-add-command`
 - Добавить форму: `/form-add`
-- Добавить макет: `/template-add`
+- Добавить макет: `/meta-edit` (операция `add` по коллекции `templates`)
 - Предпросмотреть команду сборки EPF: `v8-runner` skill, MCP `unica.runtime.execute`, `operation=make`, `sourceSet=<external-processors>`, `output=build/external`, `dryRun=true`; сам `.epf` этот preview не собирает.

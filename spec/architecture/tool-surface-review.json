@@ -607,39 +607,6 @@
     ],
     "scope": "in"
   },
-  "unica.template.add": {
-    "result": {
-      "contract": "typed",
-      "now": "`data`: созданные и обновлённые файлы макета (ADR-0023)",
-      "target": "достигнут"
-    },
-    "scenarios": [
-      "Добавить объекту пустой макет печатной формы"
-    ],
-    "scope": "in"
-  },
-  "unica.template.remove": {
-    "result": {
-      "contract": "typed",
-      "now": "`data`: удалённые пути и обновлённый дескриптор объекта (ADR-0023)",
-      "target": "достигнут"
-    },
-    "scenarios": [
-      "Удалить неиспользуемый макет"
-    ],
-    "scope": "in"
-  },
-  "unica.help.add": {
-    "result": {
-      "contract": "typed",
-      "now": "`data`: созданные файлы справки и обновлённые дескрипторы (ADR-0023)",
-      "target": "достигнут"
-    },
-    "scenarios": [
-      "Добавить объекту встроенную справку на русском"
-    ],
-    "scope": "in"
-  },
   "unica.epf.init": {
     "result": {
       "contract": "typed",

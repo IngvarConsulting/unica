@@ -2879,17 +2879,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.help.add",
-            description: "Add built-in help metadata and page to a 1C object.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("help-add", Some(DomainEventKind::FormChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "help-add",
-                event: Some(DomainEventKind::FormChanged),
-            },
-        },
-        ToolSpec {
             name: "unica.form.add",
             description: "Add managed form metadata and files.",
             execution: ToolExecution::Mutation,
@@ -3029,31 +3018,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "subsystem-validate",
                 event: None,
-            },
-        },
-        ToolSpec {
-            name: "unica.template.add",
-            description: "Add a template to an object and register it.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("template-add", Some(DomainEventKind::TemplateChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "template-add",
-                event: Some(DomainEventKind::TemplateChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.template.remove",
-            description: "Remove a template from an object.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for(
-                "template-remove",
-                Some(DomainEventKind::TemplateChanged),
-            ),
-            handler: ToolHandler::NativeOperation {
-                operation: "template-remove",
-                event: Some(DomainEventKind::TemplateChanged),
             },
         },
         ToolSpec {
@@ -4622,6 +4586,21 @@ mod tests {
         }
         assert!(names.contains(&"unica.standards.explain"));
         assert!(!names.contains(&"unica-coder"));
+    }
+
+    /// ADR-0072: the three duplicate routes are retired without aliases.
+    #[test]
+    fn retired_template_help_routes_fail_as_unknown_tools() {
+        for retired in [
+            "unica.template.add",
+            "unica.template.remove",
+            "unica.help.add",
+        ] {
+            let error = UnicaApplication::new()
+                .call_tool(retired, &Map::new())
+                .expect_err("retired template/help route must not dispatch");
+            assert_eq!(error, format!("unknown unica tool: {retired}"));
+        }
     }
 
     #[test]
@@ -6732,9 +6711,6 @@ mod tests {
             "unica.cfe.diff",
             "unica.meta.add",
             "unica.meta.edit",
-            "unica.template.add",
-            "unica.template.remove",
-            "unica.help.add",
             "unica.form.remove",
             "unica.interface.edit",
             "unica.meta.remove",
@@ -8898,10 +8874,7 @@ mod tests {
                         }
                         SupportGuardPolicy::ObjectName { requirement } => {
                             assert!(
-                                matches!(
-                                    operation,
-                                    "help-add" | "form-remove" | "template-add" | "template-remove"
-                                ),
+                                matches!(operation, "form-remove"),
                                 "{operation} unexpectedly uses object-name guard resolution"
                             );
                             assert_eq!(requirement, SupportGuardRequirement::Editable);
@@ -8926,15 +8899,12 @@ mod tests {
                 "form-compile",
                 "form-edit",
                 "form-remove",
-                "help-add",
                 "interface-edit",
                 "mxl-compile",
                 "role-compile",
                 "role-edit",
                 "subsystem-compile",
                 "subsystem-edit",
-                "template-add",
-                "template-remove",
                 "xdto-edit",
             ],
             "guarded platform-XML mutations changed without updating the support contract"
@@ -9000,7 +8970,6 @@ mod tests {
                 &["ExtensionPath", "extensionPath"][..],
                 "DeclaredArgs",
             ),
-            ("help-add", &["SrcDir", "srcDir"][..], "DefaultSrcObject"),
             (
                 "form-add",
                 &["ObjectPath", "objectPath", "Path", "path"][..],
@@ -9031,16 +9000,6 @@ mod tests {
                 "subsystem-edit",
                 &["SubsystemPath", "subsystemPath", "Path", "path"][..],
                 "HandlerResolved",
-            ),
-            (
-                "template-add",
-                &["SrcDir", "srcDir"][..],
-                "DefaultSrcObject",
-            ),
-            (
-                "template-remove",
-                &["SrcDir", "srcDir"][..],
-                "DefaultSrcObject",
             ),
             (
                 "dcs-compile",
@@ -11850,112 +11809,6 @@ mod tests {
     }
 
     #[test]
-    fn template_add_preserves_single_object_bom() {
-        let root = temp_meta_compile_workspace("unica-template-add-single-bom");
-        let workspace = root.join("workspace");
-        let result = call_typed_meta_add(&workspace, "Report", "TemplateBomReport");
-        assert!(result.ok, "{:?}", result.errors);
-
-        let report_path = workspace
-            .join("src")
-            .join("Reports")
-            .join("TemplateBomReport.xml");
-        let report_bytes = std::fs::read(&report_path).unwrap();
-        assert_eq!(leading_utf8_bom_count(&report_bytes), 1);
-
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "ObjectName".to_string(),
-            Value::String("TemplateBomReport".to_string()),
-        );
-        args.insert(
-            "TemplateName".to_string(),
-            Value::String("ОсновнаяСхемаКомпоновкиДанных".to_string()),
-        );
-        args.insert(
-            "TemplateType".to_string(),
-            Value::String("DataCompositionSchema".to_string()),
-        );
-        args.insert(
-            "SrcDir".to_string(),
-            Value::String("src/Reports".to_string()),
-        );
-
-        let template_result = UnicaApplication::new()
-            .call_tool("unica.template.add", &args)
-            .unwrap();
-
-        assert!(template_result.ok, "{:?}", template_result.errors);
-        let report_bytes = std::fs::read(&report_path).unwrap();
-        assert_eq!(leading_utf8_bom_count(&report_bytes), 1);
-        assert!(String::from_utf8_lossy(&report_bytes)
-            .contains("<Template>ОсновнаяСхемаКомпоновкиДанных</Template>"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn template_add_repairs_repeated_object_bom() {
-        let root = temp_meta_compile_workspace("unica-template-add-repeated-bom");
-        let workspace = root.join("workspace");
-        let result = call_typed_meta_add(&workspace, "Report", "TemplateRepeatedBomReport");
-        assert!(result.ok, "{:?}", result.errors);
-
-        let report_path = workspace
-            .join("src")
-            .join("Reports")
-            .join("TemplateRepeatedBomReport.xml");
-        let report_bytes = std::fs::read(&report_path).unwrap();
-        assert_eq!(leading_utf8_bom_count(&report_bytes), 1);
-
-        let mut damaged = b"\xef\xbb\xbf".to_vec();
-        damaged.extend_from_slice(&report_bytes);
-        std::fs::write(&report_path, damaged).unwrap();
-        let report_bytes = std::fs::read(&report_path).unwrap();
-        assert_eq!(leading_utf8_bom_count(&report_bytes), 2);
-
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "ObjectName".to_string(),
-            Value::String("TemplateRepeatedBomReport".to_string()),
-        );
-        args.insert(
-            "TemplateName".to_string(),
-            Value::String("ОсновнаяСхемаКомпоновкиДанных".to_string()),
-        );
-        args.insert(
-            "TemplateType".to_string(),
-            Value::String("DataCompositionSchema".to_string()),
-        );
-        args.insert(
-            "SrcDir".to_string(),
-            Value::String("src/Reports".to_string()),
-        );
-
-        let template_result = UnicaApplication::new()
-            .call_tool("unica.template.add", &args)
-            .unwrap();
-
-        assert!(template_result.ok, "{:?}", template_result.errors);
-        let report_bytes = std::fs::read(&report_path).unwrap();
-        assert_eq!(leading_utf8_bom_count(&report_bytes), 1);
-        assert!(String::from_utf8_lossy(&report_bytes)
-            .contains("<Template>ОсновнаяСхемаКомпоновкиДанных</Template>"));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn role_compile_registers_in_canonical_position_and_preserves_crlf() {
         let root =
             temp_scaffolded_configuration_workspace("unica-role-compile-canonical-registration");
@@ -12186,160 +12039,6 @@ mod tests {
         assert_eq!(std::fs::read(&metadata_path).unwrap(), metadata_before);
         assert_eq!(std::fs::read(&rights_path).unwrap(), rights_before);
         assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn help_add_routes_through_unica_and_creates_help_files() {
-        let root = test_workspace_root("unica-help-add");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let object_dir = src.join("Catalogs").join("Items");
-        let ext = object_dir.join("Ext");
-        let forms = object_dir.join("Forms");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let initialized = UnicaApplication::new()
-            .call_tool(
-                "unica.cf.init",
-                &Map::from_iter([
-                    (
-                        "cwd".to_string(),
-                        Value::String(workspace.display().to_string()),
-                    ),
-                    ("Name".to_string(), Value::String("HelpAdd".to_string())),
-                    ("OutputDir".to_string(), Value::String("src".to_string())),
-                    ("dryRun".to_string(), Value::Bool(false)),
-                ]),
-            )
-            .unwrap();
-        assert!(initialized.ok, "{:?}", initialized.errors);
-        let catalog_result = call_typed_meta_add(&workspace, "Catalog", "Items");
-        assert!(catalog_result.ok, "{:?}", catalog_result.errors);
-        std::fs::create_dir_all(&ext).unwrap();
-        std::fs::create_dir_all(&forms).unwrap();
-        let form_path = forms.join("Main.xml");
-        std::fs::write(&form_path, support_test_form_xml()).unwrap();
-
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "ObjectName".to_string(),
-            Value::String("Catalogs/Items".to_string()),
-        );
-        args.insert("SrcDir".to_string(), Value::String("src".to_string()));
-        args.insert("Lang".to_string(), Value::String("ru".to_string()));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.help.add", &args)
-            .unwrap();
-
-        assert!(result.ok, "{} {:?}", result.summary, result.errors);
-        let help_xml = ext.join("Help.xml");
-        let help_page = ext.join("Help").join("ru.html");
-        assert!(help_xml.is_file());
-        assert!(help_page.is_file());
-        let generated_help = std::fs::read_to_string(&help_xml).unwrap();
-        assert!(generated_help.contains("<Page>ru</Page>"));
-        assert!(
-            generated_help.contains(r#"version="2.20""#),
-            "{generated_help}"
-        );
-        assert!(
-            !generated_help.contains(r#"version="2.17""#),
-            "{generated_help}"
-        );
-        assert!(std::fs::read_to_string(&help_page)
-            .unwrap()
-            .contains("<h1>Catalogs/Items</h1>"));
-        assert!(std::fs::read_to_string(&form_path)
-            .unwrap()
-            .contains("<IncludeHelpInContents>false</IncludeHelpInContents>"));
-        assert!(result.cache.events.contains(&"FormChanged".to_string()));
-        assert!(result.cache.invalidated.contains(&"form_graph".to_string()));
-        assert!(result.command.is_none());
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn help_add_blocks_locked_vendor_object_before_writing_files() {
-        let root =
-            std::env::temp_dir().join(format!("unica-help-add-guard-{}", std::process::id()));
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let support_ext = src.join("Ext");
-        let object_dir = src.join("Catalogs").join("Items");
-        let ext = object_dir.join("Ext");
-        std::fs::create_dir_all(&support_ext).unwrap();
-        std::fs::create_dir_all(&ext).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        )
-        .unwrap();
-        std::fs::create_dir_all(src.join("Catalogs")).unwrap();
-        std::fs::write(
-            src.join("Catalogs").join("Items.xml"),
-            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        )
-        .unwrap();
-        std::fs::write(
-            support_ext.join("ParentConfigurations.bin"),
-            support_test_parent_configurations_bin(
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        )
-        .unwrap();
-
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert(
-            "ObjectName".to_string(),
-            Value::String("Catalogs/Items".to_string()),
-        );
-        args.insert("SrcDir".to_string(), Value::String("src".to_string()));
-
-        let mut results = Vec::new();
-        for dry_run in [false, true] {
-            args.insert("dryRun".to_string(), Value::Bool(dry_run));
-            let result = UnicaApplication::new()
-                .call_tool("unica.help.add", &args)
-                .unwrap();
-
-            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
-            assert_eq!(
-                result.summary,
-                if dry_run {
-                    "dry run: unica.help.add blocked by support guard"
-                } else {
-                    "unica.help.add blocked by support guard"
-                }
-            );
-            assert!(!ext.join("Help.xml").exists());
-            assert!(result.cache.events.is_empty(), "{result:?}");
-            results.push(result);
-        }
-        assert_support_guard_block_parity(&results[0], &results[1]);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -13142,28 +12841,6 @@ mod tests {
         bytes
     }
 
-    fn leading_utf8_bom_count(bytes: &[u8]) -> usize {
-        bytes
-            .chunks_exact(3)
-            .take_while(|chunk| *chunk == [0xEF, 0xBB, 0xBF])
-            .count()
-    }
-
-    fn call_typed_meta_add(workspace: &std::path::Path, kind: &str, name: &str) -> OperationResult {
-        let _cwd = crate::test_support::ProcessCwdGuard::enter(workspace).unwrap();
-        UnicaApplication::new()
-            .call_tool(
-                "unica.meta.add",
-                &Map::from_iter([
-                    ("sourceSet".to_string(), Value::String("main".to_string())),
-                    ("kind".to_string(), Value::String(kind.to_string())),
-                    ("name".to_string(), Value::String(name.to_string())),
-                    ("dryRun".to_string(), Value::Bool(false)),
-                ]),
-            )
-            .unwrap()
-    }
-
     fn assert_valid_root_uuid(xml: &str, tag_name: &str) {
         let uuid = metadata_root_uuid(xml, tag_name);
         assert!(
@@ -13249,18 +12926,6 @@ mod tests {
   </Catalog>
 </MetaDataObject>"#
         )
-    }
-
-    fn support_test_form_xml() -> &'static str {
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
-  <Form uuid="dddddddd-dddd-dddd-dddd-dddddddddddd">
-    <Properties>
-      <Name>Main</Name>
-      <FormType>Managed</FormType>
-    </Properties>
-  </Form>
-</MetaDataObject>"#
     }
 
     fn support_test_subsystem_xml(uuid: &str, name: &str) -> String {

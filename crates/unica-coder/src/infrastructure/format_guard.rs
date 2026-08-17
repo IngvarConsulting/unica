@@ -28,7 +28,6 @@ use crate::infrastructure::native_operations::form::{
     form_compile_infer_from_object_target, form_compile_normalize_from_object_output_label,
     form_parent_metadata_owner_candidate, resolve_form_read_path,
 };
-use crate::infrastructure::native_operations::help::resolve_help_object_dir_for_format_guard;
 use crate::infrastructure::native_operations::interface::{
     interface_metadata_owner_path, resolve_interface_validate_path,
 };
@@ -42,7 +41,6 @@ use crate::infrastructure::native_operations::subsystem::{
     subsystem_validation_format_dependency_paths, SubsystemInfoFormatDocument,
 };
 use crate::infrastructure::native_operations::support::support_edit_reads_uuid_dependency;
-use crate::infrastructure::native_operations::template::template_add_object_type_folders;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::platform_xml_owner::{
     resolve_existing_platform_xml_owners_for_new_output, resolve_platform_xml_owners,
@@ -482,7 +480,6 @@ fn add_operation_format_dependencies(
             add_cfe_read_format_dependencies(operation, args, context, paths)
         }
         "cfe-init" => add_cfe_init_format_dependencies(args, context, paths),
-        "help-add" => add_help_format_dependencies(args, context, paths)?,
         "form-add" => add_form_add_format_dependencies(args, paths)?,
         "form-remove" => {
             add_named_child_tree_format_dependencies(args, paths, "Forms", "FormName")?
@@ -502,10 +499,6 @@ fn add_operation_format_dependencies(
         }
         "subsystem-compile" => add_subsystem_compile_format_dependencies(args, context, paths)?,
         "subsystem-edit" => add_subsystem_edit_format_dependencies(args, context, paths)?,
-        "template-add" => add_template_add_format_dependencies(args, context, paths)?,
-        "template-remove" => {
-            add_named_child_tree_format_dependencies(args, paths, "Templates", "TemplateName")?
-        }
         "role-compile" => add_role_compile_format_dependencies(args, context, paths),
         _ => {}
     }
@@ -576,28 +569,6 @@ fn add_cfe_init_format_dependencies(
     if let Some(base_dir) = base_config.parent() {
         paths.push(base_dir.join("Languages").join("Русский.xml"));
     }
-}
-
-fn add_help_format_dependencies(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    paths: &mut Vec<PathBuf>,
-) -> Result<(), String> {
-    let Some(object_name) = ["objectName", "ObjectName", "processorName", "ProcessorName"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-    else {
-        return Ok(());
-    };
-    let src_dir = ["srcDir", "SrcDir"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-        .unwrap_or("src");
-    let object_dir =
-        resolve_help_object_dir_for_format_guard(&absolutize(src_dir, &context.cwd), object_name)?;
-    paths.push(object_dir.with_extension("xml"));
-    paths.push(object_dir.join("Ext").join("Help.xml"));
-    collect_direct_xml_files(&object_dir.join("Forms"), paths)
 }
 
 fn add_form_add_format_dependencies(
@@ -833,58 +804,6 @@ fn subsystem_compile_definition(
     serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
 }
 
-fn add_template_add_format_dependencies(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    paths: &mut Vec<PathBuf>,
-) -> Result<(), String> {
-    let Some(object_name) = ["objectName", "ObjectName", "processorName", "ProcessorName"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-    else {
-        return Ok(());
-    };
-    if !is_safe_single_path_component(object_name) {
-        return Ok(());
-    }
-    let src_dir = ["srcDir", "SrcDir"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-        .unwrap_or("src");
-    let src_dir = absolutize(src_dir, &context.cwd);
-    let direct = src_dir.join(object_name).with_extension("xml");
-    if direct.is_file() {
-        add_template_target_paths(&direct, args, paths);
-        return Ok(());
-    }
-    for folder in template_add_object_type_folders() {
-        let candidate = src_dir.join(folder).join(object_name).with_extension("xml");
-        if candidate.is_file() {
-            paths.push(candidate.clone());
-            add_template_target_paths(&candidate, args, paths);
-        }
-    }
-    Ok(())
-}
-
-fn add_template_target_paths(owner: &Path, args: &Map<String, Value>, paths: &mut Vec<PathBuf>) {
-    let Some(template_name) = ["templateName", "TemplateName"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-    else {
-        return;
-    };
-    if !is_safe_single_path_component(template_name) {
-        return;
-    }
-    let target = owner
-        .with_extension("")
-        .join("Templates")
-        .join(template_name);
-    paths.push(target.with_extension("xml"));
-    paths.push(target.join("Ext").join("Template.xml"));
-}
-
 fn add_role_compile_format_dependencies(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -972,41 +891,6 @@ fn collect_existing_xml_tree(root: &Path, paths: &mut Vec<PathBuf>) -> Result<()
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         collect_existing_xml_tree(&entry.path(), paths)?;
-    }
-    Ok(())
-}
-
-fn collect_direct_xml_files(root: &Path, paths: &mut Vec<PathBuf>) -> Result<(), String> {
-    let metadata = match fs::symlink_metadata(root) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!("failed to inspect {}: {error}", root.display()));
-        }
-    };
-    if metadata.file_type().is_symlink() {
-        paths.push(root.to_path_buf());
-        return Ok(());
-    }
-    if !metadata.is_dir() {
-        return Ok(());
-    }
-    let mut entries = fs::read_dir(root)
-        .map_err(|error| format!("failed to inspect {}: {error}", root.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to inspect entry in {}: {error}", root.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
-        let is_xml = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"));
-        if is_xml && (metadata.file_type().is_symlink() || metadata.is_file()) {
-            paths.push(path);
-        }
     }
     Ok(())
 }
@@ -2708,20 +2592,14 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let context = context(&root);
 
-        for operation in ["help-add", "form-remove", "template-add", "template-remove"] {
-            let mut args = Map::new();
-            args.insert("ObjectName".into(), Value::String("Reports/Sales".into()));
-            let descriptor = native_operation_descriptor(operation).unwrap();
-            let mut expected = vec![root.join("src/Reports/Sales.xml")];
-            if operation == "help-add" {
-                expected.push(root.join("src/Reports/Sales/Ext/Help.xml"));
-            }
-            assert_eq!(
-                effective_format_paths(descriptor, &args, &context).unwrap(),
-                expected,
-                "{operation} must compose its handler default SrcDir=src with ObjectName"
-            );
-        }
+        let mut args = Map::new();
+        args.insert("ObjectName".into(), Value::String("Reports/Sales".into()));
+        let descriptor = native_operation_descriptor("form-remove").unwrap();
+        assert_eq!(
+            effective_format_paths(descriptor, &args, &context).unwrap(),
+            vec![root.join("src/Reports/Sales.xml")],
+            "form-remove must compose its handler default SrcDir=src with ObjectName"
+        );
 
         let mut form_compile_args = Map::new();
         form_compile_args.insert(
@@ -3274,49 +3152,6 @@ mod tests {
 
         assert!(matches!(
             evaluate_format_guard(spec("unica.form.remove"), &args, &context(&root)).unwrap(),
-            FormatGuardCheck::Block { .. }
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn template_remove_default_src_blocks_newer_dump() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-default-template-remove-{}",
-            std::process::id()
-        ));
-        config(&root, Some("2.21"));
-        let mut args = Map::new();
-        args.insert("ObjectName".into(), Value::String("Reports/Sales".into()));
-
-        let check =
-            evaluate_format_guard(spec("unica.template.remove"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block { diagnostic, .. } = check else {
-            panic!("newer default source dump must block template removal");
-        };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn help_add_default_src_blocks_old_external_source_set() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-default-help-external-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        external_source_set(
-            &root,
-            "EXTERNAL_DATA_PROCESSORS",
-            "src",
-            "PriceLoader",
-            "2.19",
-        );
-        let mut args = Map::new();
-        args.insert("ObjectName".into(), Value::String("PriceLoader".into()));
-
-        assert!(matches!(
-            evaluate_format_guard(spec("unica.help.add"), &args, &context(&root)).unwrap(),
             FormatGuardCheck::Block { .. }
         ));
         let _ = std::fs::remove_dir_all(root);

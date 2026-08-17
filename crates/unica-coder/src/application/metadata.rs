@@ -10,9 +10,9 @@ use crate::domain::metadata::{
     MetaPredefinedAccountType, MetaPredefinedExtDimensionType, MetaPredefinedFields,
     MetaPredefinedItemAdd, MetaPredefinedItemUpdate, MetaPropertyChanges, MetaPropertyInput,
     MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
-    MetaRelationTargetPolicy, MetaScope, MetaValidationStatus, MetadataFieldPath, MetadataKind,
-    MetadataReference, MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode,
-    StringLengthMode, METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
+    MetaRelationTargetPolicy, MetaScope, MetaTemplateKind, MetaValidationStatus, MetadataFieldPath,
+    MetadataKind, MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
+    RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -583,6 +583,7 @@ fn parse_edit_operation(
                     "relation",
                     "mode",
                     "targets",
+                    "lang",
                 ],
             )?;
             let values = parse_property_changes(required_object(object, "values")?, kind)?;
@@ -591,7 +592,9 @@ fn parse_edit_operation(
         MetaEditOperationTag::Add => {
             reject_forbidden_fields(
                 object,
-                &["values", "names", "ids", "relation", "mode", "targets"],
+                &[
+                    "values", "names", "ids", "relation", "mode", "targets", "lang",
+                ],
             )?;
             let collection = parse_collection(object, kind)?;
             if collection == MetaCollection::PredefinedItems {
@@ -616,7 +619,9 @@ fn parse_edit_operation(
         MetaEditOperationTag::Update => {
             reject_forbidden_fields(
                 object,
-                &["values", "names", "ids", "relation", "mode", "targets"],
+                &[
+                    "values", "names", "ids", "relation", "mode", "targets", "lang",
+                ],
             )?;
             let collection = parse_collection(object, kind)?;
             if collection == MetaCollection::PredefinedItems {
@@ -641,7 +646,7 @@ fn parse_edit_operation(
         MetaEditOperationTag::Remove => {
             reject_forbidden_fields(
                 object,
-                &["values", "elements", "relation", "mode", "targets"],
+                &["values", "elements", "relation", "mode", "targets", "lang"],
             )?;
             let collection = parse_collection(object, kind)?;
             if collection == MetaCollection::PredefinedItems {
@@ -662,10 +667,54 @@ fn parse_edit_operation(
                 .collect::<Result<Vec<_>, _>>()?;
             MetaEditOperation::remove(collection, scope, names)
         }
+        MetaEditOperationTag::AddHelp => {
+            reject_forbidden_fields(
+                object,
+                &[
+                    "values",
+                    "collection",
+                    "scope",
+                    "elements",
+                    "names",
+                    "ids",
+                    "relation",
+                    "mode",
+                    "targets",
+                ],
+            )?;
+            let lang = match object.get("lang") {
+                None => "ru".to_string(),
+                Some(value) => {
+                    let lang = value
+                        .as_str()
+                        .ok_or_else(|| invalid("lang", "`lang` must be a string"))?;
+                    if lang.is_empty()
+                        || lang
+                            .chars()
+                            .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+                    {
+                        return Err(invalid(
+                            "lang",
+                            "`lang` must be a simple language code, for example ru or en",
+                        ));
+                    }
+                    lang.to_string()
+                }
+            };
+            Ok(MetaEditOperation::AddHelp { lang })
+        }
         MetaEditOperationTag::EditRelations => {
             reject_forbidden_fields(
                 object,
-                &["values", "collection", "scope", "elements", "names", "ids"],
+                &[
+                    "values",
+                    "collection",
+                    "scope",
+                    "elements",
+                    "names",
+                    "ids",
+                    "lang",
+                ],
             )?;
             let relation_name = required_string_diagnostic(object, "relation")?;
             let relation = MetaRelation::parse(&relation_name)?;
@@ -708,6 +757,7 @@ fn operation_property_names() -> &'static [&'static str] {
         "relation",
         "mode",
         "targets",
+        "lang",
     ]
 }
 
@@ -978,6 +1028,7 @@ fn parse_element_input(
             "fillValue",
             "attributes",
             "position",
+            "templateType",
         ][..]
     } else {
         &[
@@ -1028,6 +1079,16 @@ fn parse_element_input(
         position: object
             .get("position")
             .map(|value| parse_position(value, &format!("{field}.position")))
+            .transpose()?,
+        template_type: object
+            .get("templateType")
+            .map(|value| {
+                let field = format!("{field}.templateType");
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&field, "`templateType` must be a string"))?;
+                MetaTemplateKind::parse(value).map_err(|diagnostic| diagnostic.with_field(field))
+            })
             .transpose()?,
     })
 }
@@ -1938,6 +1999,15 @@ fn host_visible_operation_schema() -> Value {
             "required": {"type": "boolean"},
             "type": schema_reference("metadataType"),
             "fillValue": schema_reference("fillValue"),
+            "templateType": {
+                "type": "string",
+                "enum": MetaTemplateKind::ALL
+                    .iter()
+                    .copied()
+                    .map(MetaTemplateKind::as_str)
+                    .collect::<Vec<_>>(),
+                "description": "Template kind for a new templates element; omitted it defaults to SpreadsheetDocument (ADR-0072).",
+            },
             "position": schema_reference("position"),
             "attributes": {
                 "type": "array",
@@ -2070,6 +2140,22 @@ fn host_visible_operation_schema() -> Value {
                         },
                     },
                 },
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["op"],
+                "properties": {
+                    "op": {"type": "string", "enum": [MetaEditOperationTag::AddHelp.as_str()]},
+                    "lang": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_-]+$",
+                        "default": "ru",
+                        "description": "Help language code naming Ext/Help/<lang>.html; defaults to ru.",
+                    },
+                },
+                "description": "Create the owner's embedded help facet: Ext/Help.xml, Ext/Help/<lang>.html and IncludeHelpInContents on the owner's forms. Create-only; a repeat is rejected (ADR-0072).",
             },
             metadata_relation_operation_schema(),
         ],
@@ -3645,6 +3731,7 @@ mod tests {
             ("add", &["op", "collection", "elements"][..]),
             ("update", &["op", "collection", "elements"][..]),
             ("remove", &["op", "collection", "ids"][..]),
+            ("addHelp", &["op"][..]),
             ("editRelations", &["op", "relation", "mode", "targets"][..]),
         ];
 
@@ -3677,7 +3764,14 @@ mod tests {
                     .as_str()
                     .expect("operation tag"))
                 .collect::<HashSet<_>>(),
-            HashSet::from(["setProperties", "add", "update", "remove", "editRelations",]),
+            HashSet::from([
+                "setProperties",
+                "add",
+                "update",
+                "remove",
+                "editRelations",
+                "addHelp",
+            ]),
         );
 
         let relation_operation = operations

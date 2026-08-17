@@ -1,6 +1,5 @@
 use super::{
-    cf, cfe, code, external, form, help, mxl, registry, role, subsystem, template, xdto,
-    NativeOperationAdapter,
+    cf, cfe, code, external, form, mxl, registry, role, subsystem, xdto, NativeOperationAdapter,
 };
 use crate::{
     application::AdapterOutcome,
@@ -105,14 +104,6 @@ impl NativeOperationAdapter {
             }
             if !dry_run {
                 match operation {
-                    "template-add" => {
-                        let execution = template::add_template_with_data(args, context);
-                        return typed_operation_result(
-                            execution.outcome,
-                            execution.data,
-                            "template add",
-                        );
-                    }
                     "epf-init" | "erf-init" => {
                         if let Some((outcome, data)) =
                             external::apply_with_data(operation, tool_name, args, context)
@@ -206,22 +197,6 @@ impl NativeOperationAdapter {
                             execution.outcome,
                             execution.data,
                             "form remove",
-                        );
-                    }
-                    "help-add" => {
-                        let execution = help::add_help_with_data(args, context);
-                        return typed_operation_result(
-                            execution.outcome,
-                            execution.data,
-                            "help add",
-                        );
-                    }
-                    "template-remove" => {
-                        let execution = template::remove_template_with_data(args, context);
-                        return typed_operation_result(
-                            execution.outcome,
-                            execution.data,
-                            "template remove",
                         );
                     }
                     _ => {}

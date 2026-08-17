@@ -637,30 +637,6 @@
           "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
         },
         {
-          "skill": "help-add",
-          "status": "ported-to-unica",
-          "notes": "Reviewed donor help-add support-guard drift through current Shirokov head; Unica adapts it as typed native MCP tool unica.help.add with the shared ParentConfigurations.bin support guard, path-safe arguments, cache invalidation, and no prompt-visible script execution path. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
-          "upstreamPaths": [
-            ".claude/skills/help-add/**",
-            "docs/1c-help-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/help-add",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/help-add"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/help.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/registry.rs"
-          ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
           "skill": "interface-edit",
           "status": "ported-to-unica",
           "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
@@ -1159,48 +1135,6 @@
           "localPaths": [
             "plugins/unica/skills/subsystem-validate",
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/subsystem-validate"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
-          "skill": "template-add",
-          "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
-          "upstreamPaths": [
-            ".claude/skills/template-add/**",
-            "docs/meta-guide.md",
-            "docs/1c-config-objects-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/template-add",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/template-add"
-          ],
-          "contractPaths": [
-            "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
-          ],
-          "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
-        },
-        {
-          "skill": "template-remove",
-          "status": "ported-to-unica",
-          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; donor changes are raw script wrapper/version metadata and do not apply to Unica MCP routing. Unica still applies the shared support guard policy to template removal because it mutates the owning metadata object. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
-          "upstreamPaths": [
-            ".claude/skills/template-remove/**",
-            "docs/meta-guide.md",
-            "docs/1c-config-objects-spec.md"
-          ],
-          "localPaths": [
-            "plugins/unica/skills/template-remove",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/template-remove"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
