@@ -933,6 +933,7 @@ def main():
 
     # --- Check 14: Service objects (HTTPService, WebService) semantics ---
     service_count = 0
+    unreadable_count = 0
     if child_obj_node is not None:
         for child in child_obj_node:
             if not isinstance(child.tag, str):
@@ -944,10 +945,14 @@ def main():
             dir_name = CHILD_TYPE_DIR_MAP[type_name]
             obj_file = os.path.join(config_dir, dir_name, child_name + '.xml')
             if not os.path.exists(obj_file):
+                unreadable_count += 1
+                r.warn(f'14. {type_name}.{child_name}: cannot read {dir_name}/{child_name}.xml')
                 continue
             try:
                 obj_doc = etree.parse(obj_file, etree.XMLParser(remove_blank_text=False))
             except etree.XMLSyntaxError:
+                unreadable_count += 1
+                r.warn(f'14. {type_name}.{child_name}: cannot parse {dir_name}/{child_name}.xml')
                 continue
             obj_el = None
             for c in obj_doc.getroot():
@@ -1012,7 +1017,7 @@ def main():
             if r.stopped:
                 r.finalize(out_file)
                 sys.exit(1)
-    if service_count == 0:
+    if service_count == 0 and unreadable_count == 0:
         r.ok('14. Services: none found')
 
     # --- Final output ---

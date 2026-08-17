@@ -3551,7 +3551,9 @@ pub(crate) fn service_child_semantics(
                         let direction = meta_info_child(param, "Properties")
                             .and_then(|node| meta_info_child_text(node, "TransferDirection"));
                         if let Some(direction) = direction.filter(|value| !value.is_empty()) {
-                            if !["In", "Out", "InOut"].contains(&direction.as_str()) {
+                            if !meta_validate_valid_transfer_directions()
+                                .contains(&direction.as_str())
+                            {
                                 findings.push(ServiceSemanticsFinding {
                                     error: true,
                                     detail: format!(
@@ -4276,11 +4278,19 @@ pub(super) fn meta_validate_reserved_attr_names() -> &'static [&'static str] {
 
 pub(super) fn meta_validate_valid_http_methods() -> &'static [&'static str] {
     // Single authority: the HTTPMethod entry of the 8.3.27 property enum table.
+    meta_validate_property_enum("HTTPMethod")
+}
+
+pub(super) fn meta_validate_valid_transfer_directions() -> &'static [&'static str] {
+    meta_validate_property_enum("TransferDirection")
+}
+
+fn meta_validate_property_enum(property: &str) -> &'static [&'static str] {
     meta_validate_property_values()
         .iter()
-        .find(|(name, _)| *name == "HTTPMethod")
+        .find(|(name, _)| *name == property)
         .map(|(_, allowed)| *allowed)
-        .expect("the 8.3.27 property enum table defines HTTPMethod")
+        .unwrap_or_else(|| panic!("the 8.3.27 property enum table defines {property}"))
 }
 
 pub(super) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'static [&'static str]> {
@@ -6584,12 +6594,20 @@ mod tests {
     }
 
     #[test]
-    fn http_method_enum_authority_is_the_8_3_27_property_table() {
-        let expected = meta_validate_property_values()
-            .iter()
-            .find(|(name, _)| *name == "HTTPMethod")
-            .map(|(_, allowed)| *allowed)
-            .unwrap();
-        assert_eq!(meta_validate_valid_http_methods(), expected);
+    fn service_enum_authority_is_the_8_3_27_property_table() {
+        for (enum_name, actual) in [
+            ("HTTPMethod", meta_validate_valid_http_methods()),
+            (
+                "TransferDirection",
+                meta_validate_valid_transfer_directions(),
+            ),
+        ] {
+            let expected = meta_validate_property_values()
+                .iter()
+                .find(|(name, _)| *name == enum_name)
+                .map(|(_, allowed)| *allowed)
+                .unwrap();
+            assert_eq!(actual, expected, "{enum_name}");
+        }
     }
 }

@@ -4568,6 +4568,7 @@ pub(crate) fn cfe_validate_service_objects(
         return;
     };
     let mut service_count = 0usize;
+    let mut unreadable_count = 0usize;
     for child in child_obj_node.children().filter(|child| child.is_element()) {
         let type_name = child.tag_name().name();
         if !matches!(type_name, "HTTPService" | "WebService") {
@@ -4579,9 +4580,17 @@ pub(crate) fn cfe_validate_service_objects(
         };
         let obj_file = config_dir.join(dir_name).join(format!("{child_name}.xml"));
         let Ok(text) = read_utf8_sig(&obj_file) else {
+            unreadable_count += 1;
+            report.warn(format!(
+                "14. {type_name}.{child_name}: cannot read {dir_name}/{child_name}.xml"
+            ));
             continue;
         };
         let Ok(doc) = Document::parse(text.trim_start_matches('\u{feff}')) else {
+            unreadable_count += 1;
+            report.warn(format!(
+                "14. {type_name}.{child_name}: cannot parse {dir_name}/{child_name}.xml"
+            ));
             continue;
         };
         let Some(obj_el) = doc.root_element().children().find(|node| node.is_element()) else {
@@ -4609,7 +4618,7 @@ pub(crate) fn cfe_validate_service_objects(
             return;
         }
     }
-    if service_count == 0 {
+    if service_count == 0 && unreadable_count == 0 {
         report.ok("14. Services: none found");
     }
 }
@@ -11819,6 +11828,93 @@ mod tests {
                 .errors
                 .iter()
                 .any(|error| error.contains("invalid HTTPMethod 'ANY'")),
+            "{:?}",
+            outcome.errors
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_warns_on_declared_service_without_readable_descriptor() {
+        let context = temp_context("http-service-unreadable");
+        write_own_http_service_extension(&context, &[("Чтение", "GET")]);
+        fs::remove_file(context.cwd.join("ext/HTTPServices/ПВД_ПечатныеФормы.xml")).unwrap();
+
+        let mut args = Map::new();
+        args.insert("ExtensionPath".to_string(), json!("ext"));
+        args.insert("Detailed".to_string(), json!(true));
+        let outcome = validate_cfe(&args, &context);
+
+        let stdout = outcome.stdout.unwrap_or_default();
+        assert!(
+            stdout.contains(
+                "14. HTTPService.ПВД_ПечатныеФормы: cannot read HTTPServices/ПВД_ПечатныеФормы.xml"
+            ),
+            "unreadable service descriptor must be reported: {stdout}"
+        );
+        assert!(
+            !stdout.contains("14. Services: none found"),
+            "a declared but unreadable service is not an absent service: {stdout}"
+        );
+
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn cfe_validate_reports_invalid_transfer_direction_in_own_web_service() {
+        let context = temp_context("web-service-direction");
+        write_own_http_service_extension(&context, &[("Чтение", "GET")]);
+        let ext = context.cwd.join("ext");
+        let config = fs::read_to_string(ext.join("Configuration.xml")).unwrap();
+        fs::write(
+            ext.join("Configuration.xml"),
+            config.replace(
+                "<HTTPService>ПВД_ПечатныеФормы</HTTPService>",
+                "<WebService>ПВД_Обмен</WebService>\n\t\t\t<HTTPService>ПВД_ПечатныеФормы</HTTPService>",
+            ),
+        )
+        .unwrap();
+        write_file(
+            &ext.join("WebServices/ПВД_Обмен.xml"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
+	<WebService uuid="b58f7d3a-40b6-4e58-9a2e-6f60cc1f8a01">
+		<Properties>
+			<Name>ПВД_Обмен</Name>
+			<Comment/>
+		</Properties>
+		<ChildObjects>
+			<Operation uuid="c58f7d3a-40b6-4e58-9a2e-6f60cc1f8a02">
+				<Properties>
+					<Name>Пинг</Name>
+					<XDTOReturningValueType>xs:boolean</XDTOReturningValueType>
+					<ProcedureName>Пинг</ProcedureName>
+				</Properties>
+				<ChildObjects>
+					<Parameter uuid="d58f7d3a-40b6-4e58-9a2e-6f60cc1f8a03">
+						<Properties>
+							<Name>Данные</Name>
+							<TransferDirection>Inward</TransferDirection>
+						</Properties>
+					</Parameter>
+				</ChildObjects>
+			</Operation>
+		</ChildObjects>
+	</WebService>
+</MetaDataObject>
+"#,
+        );
+
+        let mut args = Map::new();
+        args.insert("ExtensionPath".to_string(), json!("ext"));
+        let outcome = validate_cfe(&args, &context);
+
+        assert!(!outcome.ok, "{:?}", outcome.stdout);
+        assert!(
+            outcome.errors.iter().any(|error| error.contains(
+                "14. WebService.ПВД_Обмен Operation 'Пинг': Parameter has invalid TransferDirection 'Inward'"
+            )),
             "{:?}",
             outcome.errors
         );
