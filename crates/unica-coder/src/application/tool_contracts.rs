@@ -678,6 +678,11 @@ pub fn strip_schema_descriptions(value: &mut Value) {
                 } else {
                     map.remove("description");
                     for (key, child) in map.iter_mut() {
+                        // Instance-value keywords carry data, not schemas;
+                        // an object constant keeps its `description` member.
+                        if matches!(key.as_str(), "const" | "enum" | "default" | "examples") {
+                            continue;
+                        }
                         let named = matches!(
                             key.as_str(),
                             "properties" | "patternProperties" | "$defs" | "definitions"
@@ -4085,6 +4090,49 @@ mod tests {
     use super::*;
     use crate::application::metadata::MetadataOperation;
     use crate::application::{tools, ResultContract, ToolExecution};
+
+    #[test]
+    fn strip_schema_descriptions_removes_annotations_only() {
+        let mut schema = json!({
+            "type": "object",
+            "description": "tool prose",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "a property literally named description"
+                },
+                "state": {
+                    "description": "annotation",
+                    "const": { "description": "draft" },
+                    "enum": [{ "description": "kept" }, "plain"],
+                    "default": { "description": "kept" },
+                    "examples": [{ "description": "kept" }]
+                }
+            },
+            "$defs": {
+                "description": { "type": "number", "description": "annotation" }
+            }
+        });
+        strip_schema_descriptions(&mut schema);
+        assert_eq!(
+            schema,
+            json!({
+                "type": "object",
+                "properties": {
+                    "description": { "type": "string" },
+                    "state": {
+                        "const": { "description": "draft" },
+                        "enum": [{ "description": "kept" }, "plain"],
+                        "default": { "description": "kept" },
+                        "examples": [{ "description": "kept" }]
+                    }
+                },
+                "$defs": {
+                    "description": { "type": "number" }
+                }
+            })
+        );
+    }
 
     fn metadata_tool(operation: MetadataOperation) -> ToolSpec {
         ToolSpec {

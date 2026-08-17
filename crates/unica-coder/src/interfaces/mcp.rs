@@ -7,9 +7,10 @@
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
 use crate::application::{
-    code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result, strip_schema_descriptions,
+    code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
     operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
-    CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec, UnicaApplication,
+    strip_schema_descriptions, CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec,
+    UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
