@@ -18,10 +18,10 @@ use crate::domain::code_intelligence::{
 };
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
-    ErrorData, ExtensionCapabilities, Implementation, InitializeResult, ListPromptsResult,
-    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, NotificationMetaObject,
-    PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion, RequestMetaObject,
-    ServerCapabilities, ServerInfo, Tool,
+    ErrorData, Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
+    ProgressNotificationParam, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo,
+    Tool,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -195,36 +195,12 @@ impl ServerHandler for UnicaServer {
         // #490: the negotiation fallback is pinned, not inherited from the
         // SDK LATEST constant, so an SDK bump cannot move it silently.
         //
-        // The whole declarable surface is advertised so capability-gated
-        // clients exercise it: tools carry the registry, prompts/resources/
-        // completions are served by SDK defaults (empty lists) until they gain
-        // content, and tasks/ui ride the extensions map (SEP-2663 gates
-        // `tasks/*` admission on this declaration).
-        #[allow(deprecated)] // logging is SEP-2577-deprecated but still wired
-        let mut capabilities = ServerCapabilities::builder()
-            .enable_tools()
-            .enable_tool_list_changed()
-            .enable_prompts()
-            .enable_prompts_list_changed()
-            .enable_resources()
-            .enable_resources_list_changed()
-            .enable_resources_subscribe()
-            .enable_completions()
-            .enable_logging()
-            .enable_experimental()
-            .enable_tasks()
-            .build();
-        capabilities
-            .extensions
-            .get_or_insert_with(ExtensionCapabilities::new)
-            .insert(
-                "io.modelcontextprotocol/ui".to_string(),
-                serde_json::json!({"mimeTypes": ["text/html;profile=mcp-app"]})
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-        InitializeResult::new(capabilities)
+        // Only the implemented surface is declared: tools. Prompts, resources,
+        // completions, logging, tasks and ui are deliberately withheld until a
+        // feature slice implements them — an advertised-but-empty surface
+        // sends capability-gated clients probing dead ends. Each of those
+        // features re-enters here together with its implementation.
+        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")))
     }
@@ -233,22 +209,12 @@ impl ServerHandler for UnicaServer {
         &self,
         requested: &rmcp::model::SubscriptionFilter,
     ) -> Option<rmcp::model::SubscriptionFilter> {
-        // The declared listChanged/subscribe capabilities imply the modern
-        // `subscriptions/listen` channel exists; accept the requested filter
-        // and let the SDK intersect it with the advertised capabilities.
-        // Returning `None` would fail every listen with method_not_found.
+        // Accept `subscriptions/listen` instead of failing it with -32601:
+        // the SDK intersects the answer with the advertised capabilities, so
+        // with no listChanged declared the accepted set is empty but the
+        // stream is acknowledged — a client that probes anyway gets a clean
+        // no-op subscription rather than an error-retry loop.
         Some(requested.clone())
-    }
-
-    #[allow(deprecated)] // logging is SEP-2577-deprecated but still wired
-    async fn set_level(
-        &self,
-        _request: rmcp::model::SetLevelRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<(), ErrorData> {
-        // The declared logging capability accepts the level; no notifications
-        // are emitted yet, so the accepted level has no observable effect.
-        Ok(())
     }
 
     async fn list_tools(
@@ -1036,7 +1002,11 @@ mod tests {
     // contract, not host behavior.
 
     #[tokio::test]
-    async fn initialize_declares_the_full_capability_surface() {
+    async fn initialize_declares_only_the_implemented_surface() {
+        // Undeclared surfaces are a deliberate choice: each feature
+        // (prompts, resources, logging, completions, tasks, ui) re-enters the
+        // declaration together with its implementation slice, so agents never
+        // see an advertised-but-empty capability.
         let (mut client, _) = spawn_server(application_handler());
         client
             .send(json!({
@@ -1051,18 +1021,10 @@ mod tests {
             }))
             .await;
         let response = client.receive().await;
-        let capabilities = &response["result"]["capabilities"];
-        assert_eq!(capabilities["tools"]["listChanged"], true);
-        assert_eq!(capabilities["prompts"]["listChanged"], true);
-        assert_eq!(capabilities["resources"]["listChanged"], true);
-        assert_eq!(capabilities["resources"]["subscribe"], true);
-        assert!(capabilities["completions"].is_object());
-        assert!(capabilities["logging"].is_object());
-        assert!(capabilities["experimental"].is_object());
-        assert!(capabilities["extensions"]["io.modelcontextprotocol/tasks"].is_object());
         assert_eq!(
-            capabilities["extensions"]["io.modelcontextprotocol/ui"]["mimeTypes"][0],
-            "text/html;profile=mcp-app"
+            response["result"]["capabilities"],
+            json!({"tools": {}}),
+            "capabilities must stay exactly the implemented surface"
         );
         client.shutdown().await;
     }
@@ -1146,20 +1108,21 @@ mod tests {
             reply["method"], "notifications/subscriptions/acknowledged",
             "expected the acknowledgment notification, got {reply}"
         );
+        // With no listChanged capability advertised, the SDK intersects the
+        // accepted set down to nothing — a clean no-op stream, not an error.
         assert_eq!(
             reply["params"]["notifications"],
-            json!({
-                "toolsListChanged": true,
-                "promptsListChanged": true,
-                "resourcesListChanged": true
-            }),
-            "the full requested filter must be accepted"
+            json!({}),
+            "nothing is advertised, so nothing may be accepted"
         );
         client.shutdown().await;
     }
 
     #[tokio::test]
-    async fn declared_surfaces_without_content_serve_sdk_defaults() {
+    async fn undeclared_surfaces_answer_cleanly_when_probed_anyway() {
+        // These surfaces are not advertised; a client probing them anyway
+        // gets valid empty lists (SDK defaults plus our handlers), while
+        // logging stays method_not_found — nothing pretends to exist.
         let (mut client, _) = spawn_server(application_handler());
         client
             .send(json!({
@@ -1205,7 +1168,7 @@ mod tests {
             }))
             .await;
         let level = client.receive().await;
-        assert!(level["error"].is_null(), "got {level}");
+        assert_eq!(level["error"]["code"], -32601, "got {level}");
 
         client.shutdown().await;
     }
@@ -1420,7 +1383,10 @@ mod tests {
                 }))
                 .await;
             let response = client.receive().await;
-            assert_eq!(response["error"]["code"], -32602, "cursor {bad}: {response}");
+            assert_eq!(
+                response["error"]["code"], -32602,
+                "cursor {bad}: {response}"
+            );
         }
         client.shutdown().await;
     }
