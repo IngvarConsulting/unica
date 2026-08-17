@@ -19,6 +19,7 @@ pub(crate) use tool_contracts::{
 };
 
 pub(crate) mod code_intelligence;
+pub(crate) mod deferred_delivery;
 pub(crate) mod diagnostics;
 pub(crate) mod documentation;
 pub(crate) mod metadata;
@@ -27,6 +28,7 @@ pub(crate) mod operational_config;
 mod outcome;
 pub(crate) mod ports;
 pub(crate) mod project_health;
+pub(crate) mod result_store;
 pub(crate) mod runtime_admission;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
@@ -560,11 +562,26 @@ pub fn role_edit_argument_failure_result(
 /// Public application entry point.
 pub struct UnicaApplication {
     ports: Arc<dyn ApplicationPorts + Send + Sync>,
+    deferred: Arc<deferred_delivery::DeferredDelivery>,
 }
 
 impl UnicaApplication {
     pub(crate) fn with_ports(ports: Arc<dyn ApplicationPorts + Send + Sync>) -> Self {
-        Self { ports }
+        Self {
+            ports,
+            deferred: Arc::new(deferred_delivery::DeferredDelivery::default()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_ports_and_deferred(
+        ports: Arc<dyn ApplicationPorts + Send + Sync>,
+        deferred: deferred_delivery::DeferredDelivery,
+    ) -> Self {
+        Self {
+            ports,
+            deferred: Arc::new(deferred),
+        }
     }
 
     pub fn tools(&self) -> Vec<ToolSpec> {
@@ -614,6 +631,7 @@ impl UnicaApplication {
             &cancellation,
             deadline,
             progress.as_ref(),
+            self.deferred.as_ref(),
         )
     }
 
@@ -636,6 +654,7 @@ impl UnicaApplication {
             deadline,
             &NoopSearchProgressSink,
             RuntimeAdmissionPolicy::AlreadyAdmittedForDownstreamContractTest,
+            self.deferred.as_ref(),
         )
     }
 }
@@ -1026,6 +1045,7 @@ fn call_tool(
         cancellation,
         deadline,
         &NoopSearchProgressSink,
+        &deferred_delivery::DeferredDelivery::default(),
     )
 }
 
@@ -1036,6 +1056,7 @@ fn call_tool_observed(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
     progress: &dyn SearchProgressSink,
+    deferred: &deferred_delivery::DeferredDelivery,
 ) -> Result<OperationResult, String> {
     call_tool_with_runtime_admission(
         spec,
@@ -1045,9 +1066,13 @@ fn call_tool_observed(
         deadline,
         progress,
         RuntimeAdmissionPolicy::Enforce,
+        deferred,
     )
 }
 
+// The dispatcher wires every cross-cutting invocation concern; a parameter
+// struct here would only rename the coupling, so the lint is acknowledged.
+#[allow(clippy::too_many_arguments)]
 fn call_tool_with_runtime_admission(
     spec: ToolSpec,
     args: &Map<String, Value>,
@@ -1056,6 +1081,7 @@ fn call_tool_with_runtime_admission(
     deadline: ProviderDeadline,
     progress: &dyn SearchProgressSink,
     runtime_admission: RuntimeAdmissionPolicy,
+    deferred: &deferred_delivery::DeferredDelivery,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
     let args = &normalized_args;
@@ -1063,6 +1089,14 @@ fn call_tool_with_runtime_admission(
     let mode = InvocationMode::from_validated_args(spec, args)?;
     tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
     let dry_run = mode.is_preview();
+    // ADR-0070: a continuation call is served from the immutable snapshot and
+    // must not re-read the source, so it short-circuits before workspace
+    // discovery and the reader dispatch.
+    if mode == InvocationMode::Read && deferred_delivery::supports(&spec) {
+        if let Some(result) = try_deferred_continuation(spec, args, deferred) {
+            return Ok(result);
+        }
+    }
     if runtime_admission == RuntimeAdmissionPolicy::Enforce
         && matches!(spec.handler, ToolHandler::RuntimeAdapter)
         && !dry_run
@@ -1404,6 +1438,8 @@ fn call_tool_with_runtime_admission(
         },
     };
     enforce_result_contract(spec, mode, &handler_outcome)?;
+    let handler_outcome =
+        defer_oversized_typed_read(spec, args, mode, &context, deferred, handler_outcome);
     let mut outcome = handler_outcome.adapter;
     let handler_events = handler_outcome.events;
     let projected_events = handler_outcome.projected_events;
@@ -1591,6 +1627,152 @@ fn enforce_result_contract(
         }
     }
     Ok(())
+}
+
+fn deferred_cache_report(root: String, workspace_epoch: u64) -> CacheReport {
+    CacheReport {
+        mode: "read".to_string(),
+        root,
+        workspace_epoch,
+        events: Vec::new(),
+        invalidated: Vec::new(),
+        refreshed: Vec::new(),
+        lazy_rebuilt: Vec::new(),
+        stale: Vec::new(),
+        fresh: Vec::new(),
+        publication_warnings: Vec::new(),
+    }
+}
+
+fn deferred_failure_result(spec: ToolSpec, code: &str, message: &str) -> OperationResult {
+    OperationResult {
+        ok: false,
+        summary: format!("{} continuation refused", spec.name),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![format!("{code}: {message}")],
+        artifacts: Vec::new(),
+        cache: deferred_cache_report(String::new(), 0),
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        data: None,
+        job: None,
+    }
+}
+
+/// ADR-0070: serves a continuation call from the stored snapshot. `None`
+/// means the call is an ordinary read and proceeds to the reader.
+fn try_deferred_continuation(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    deferred: &deferred_delivery::DeferredDelivery,
+) -> Option<OperationResult> {
+    let selection = deferred_delivery::Selection::from_args(args);
+    let result_ref = args.get("resultRef").and_then(Value::as_str);
+    let Some(result_ref) = result_ref else {
+        if selection.requests_anything() {
+            return Some(deferred_failure_result(
+                spec,
+                "continuation_requires_result_ref",
+                "section, filter, page and delivery are continuation selectors; pass the resultRef issued by a deferred manifest",
+            ));
+        }
+        return None;
+    };
+    let identity = deferred_delivery::args_identity(args);
+    let view = match deferred.store.read(result_ref, spec.name, &identity) {
+        Ok(view) => view,
+        Err(error) => {
+            return Some(deferred_failure_result(
+                spec,
+                error.code(),
+                &format!("continuation reference {result_ref} was not honored"),
+            ));
+        }
+    };
+    match deferred_delivery::slice(&view, result_ref, &selection) {
+        Ok(data) => Some(OperationResult {
+            ok: true,
+            summary: format!(
+                "{}: continuation served from the stored snapshot",
+                spec.name
+            ),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            cache: deferred_cache_report(
+                view.snapshot.cache_root.clone(),
+                view.snapshot.workspace_epoch,
+            ),
+            stdout: None,
+            stderr: None,
+            command: None,
+            diagnostics: None,
+            data: Some(data),
+            job: None,
+        }),
+        Err(error) => Some(deferred_failure_result(spec, error.code, &error.message)),
+    }
+}
+
+/// ADR-0070: an oversized successful typed read is published as a deferred
+/// manifest while the full snapshot goes to the bounded store.
+fn defer_oversized_typed_read(
+    spec: ToolSpec,
+    args: &Map<String, Value>,
+    mode: InvocationMode,
+    context: &WorkspaceContext,
+    deferred: &deferred_delivery::DeferredDelivery,
+    mut handler_outcome: ports::HandlerOutcome,
+) -> ports::HandlerOutcome {
+    if mode != InvocationMode::Read
+        || !deferred_delivery::supports(&spec)
+        || !handler_outcome.adapter.ok
+    {
+        return handler_outcome;
+    }
+    let Some(data) = handler_outcome.data.take() else {
+        return handler_outcome;
+    };
+    let bytes = serde_json::to_vec(&data)
+        .map(|body| body.len())
+        .unwrap_or(usize::MAX);
+    if bytes <= deferred.threshold_bytes {
+        handler_outcome.data = Some(data);
+        return handler_outcome;
+    }
+    let snapshot = result_store::SnapshotIdentity {
+        workspace_epoch: context.workspace_epoch,
+        cache_root: context.cache_root.display().to_string(),
+        as_of_unix_ms: deferred_delivery::now_unix_ms(),
+    };
+    let identity = deferred_delivery::args_identity(args);
+    match deferred
+        .store
+        .insert(spec.name, &identity, snapshot.clone(), data.clone(), bytes)
+    {
+        Some(reference) => {
+            let expires_at = deferred_delivery::now_unix_ms()
+                .saturating_add(deferred.store.ttl().as_millis() as u64);
+            handler_outcome.data = Some(deferred_delivery::manifest(
+                &handler_outcome.adapter.summary,
+                &data,
+                bytes,
+                &reference,
+                &snapshot,
+                expires_at,
+            ));
+        }
+        None => {
+            // The store refused an oversized single result: deliver inline
+            // rather than promise a continuation that cannot be honored.
+            handler_outcome.data = Some(data);
+        }
+    }
+    handler_outcome
 }
 
 fn runtime_receipt_admission_result(
@@ -3066,6 +3248,269 @@ mod tests {
         with_publication_lock_contention_signal, with_publication_lock_pause,
         with_secure_tree_test_hook, CompileTransaction, FileLinkFixtureOutcome, SecureTreePhase,
     };
+
+    mod deferred_delivery_call_path {
+        use super::super::*;
+        use crate::application::result_store::ResultStore;
+        use serde_json::{json, Map, Value};
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        struct BigTypedReadPorts {
+            handler_calls: AtomicUsize,
+            workspace_discoveries: AtomicUsize,
+            payload: Value,
+        }
+
+        impl BigTypedReadPorts {
+            fn new(payload: Value) -> Self {
+                Self {
+                    handler_calls: AtomicUsize::new(0),
+                    workspace_discoveries: AtomicUsize::new(0),
+                    payload,
+                }
+            }
+        }
+
+        impl ports::ApplicationPorts for BigTypedReadPorts {
+            fn discover_workspace(
+                &self,
+                requested_cwd: Option<PathBuf>,
+            ) -> Result<WorkspaceContext, String> {
+                self.workspace_discoveries.fetch_add(1, Ordering::SeqCst);
+                let cwd = requested_cwd.unwrap_or_default();
+                Ok(WorkspaceContext {
+                    cwd: cwd.clone(),
+                    workspace_root: cwd.clone(),
+                    cache_root: cwd.join(".build").join("unica"),
+                    workspace_epoch: 7,
+                })
+            }
+
+            fn validate_tool_context(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _mode: InvocationMode,
+                _context: &WorkspaceContext,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn evaluate_format_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<FormatGuardCheck, FormatGuardError> {
+                Ok(FormatGuardCheck::Allow)
+            }
+
+            fn evaluate_support_guard(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+            ) -> Result<SupportGuardCheck, String> {
+                Ok(SupportGuardCheck::Allow)
+            }
+
+            fn invoke_handler(
+                &self,
+                _spec: ToolSpec,
+                _args: &Map<String, Value>,
+                _context: &WorkspaceContext,
+                _mode: InvocationMode,
+                _cancellation: &CancellationToken,
+            ) -> Result<ports::HandlerOutcome, String> {
+                self.handler_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(ports::HandlerOutcome::with_data(
+                    AdapterOutcome::ok("big role read"),
+                    self.payload.clone(),
+                ))
+            }
+
+            fn cache_report(
+                &self,
+                context: &WorkspaceContext,
+                _events: &[DomainEvent],
+                mode: InvocationMode,
+                _cache_access: CacheAccess,
+            ) -> Result<CacheReport, String> {
+                Ok(CacheReport {
+                    mode: match mode {
+                        InvocationMode::Read => "read",
+                        InvocationMode::Preview => "preview",
+                        InvocationMode::Apply => "apply",
+                    }
+                    .to_string(),
+                    root: context.cache_root.display().to_string(),
+                    workspace_epoch: context.workspace_epoch,
+                    events: Vec::new(),
+                    invalidated: Vec::new(),
+                    refreshed: Vec::new(),
+                    lazy_rebuilt: Vec::new(),
+                    stale: Vec::new(),
+                    fresh: Vec::new(),
+                    publication_warnings: Vec::new(),
+                })
+            }
+
+            fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+        }
+
+        fn big_role_payload() -> Value {
+            let rights: Vec<Value> = (0..200)
+                .map(|index| {
+                    json!({
+                        "name": format!("Catalog.Item{index:03}"),
+                        "read": true,
+                        "insert": index % 2 == 0,
+                    })
+                })
+                .collect();
+            json!({ "role": "Role.Big", "rights": rights })
+        }
+
+        fn read_args() -> Map<String, Value> {
+            let mut args = Map::new();
+            args.insert("cwd".to_string(), json!("/ws"));
+            args.insert("sourceSet".to_string(), json!("main"));
+            args.insert("metadataPath".to_string(), json!("Role.Big"));
+            args
+        }
+
+        fn app_with_threshold(
+            payload: Value,
+            threshold_bytes: usize,
+            store: ResultStore,
+        ) -> (UnicaApplication, Arc<BigTypedReadPorts>) {
+            let fake = Arc::new(BigTypedReadPorts::new(payload));
+            let app = UnicaApplication::with_ports_and_deferred(
+                fake.clone(),
+                deferred_delivery::DeferredDelivery {
+                    store: Arc::new(store),
+                    threshold_bytes,
+                },
+            );
+            (app, fake)
+        }
+
+        #[test]
+        fn oversized_typed_read_returns_a_manifest_within_budget() {
+            let (app, fake) = app_with_threshold(big_role_payload(), 256, ResultStore::default());
+            let result = app.call_tool("unica.role.info", &read_args()).unwrap();
+            assert!(result.ok);
+            let data = result.data.expect("manifest is typed data");
+            assert_eq!(data["state"], "deferred");
+            assert_eq!(data["sections"]["rights"], 200);
+            assert!(data["resultRef"].as_str().is_some());
+            assert_eq!(data["snapshot"]["workspaceEpoch"], 7);
+            assert!(data["bytes"].as_u64().unwrap() > 256);
+            let manifest_bytes = serde_json::to_vec(&data).unwrap().len();
+            assert!(
+                manifest_bytes < 3200,
+                "manifest must stay within the notification budget, got {manifest_bytes}"
+            );
+            assert_eq!(fake.handler_calls.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn continuation_slices_byte_stably_without_rereading_the_source() {
+            let (app, fake) = app_with_threshold(big_role_payload(), 256, ResultStore::default());
+            let manifest = app
+                .call_tool("unica.role.info", &read_args())
+                .unwrap()
+                .data
+                .unwrap();
+            let reference = manifest["resultRef"].as_str().unwrap().to_string();
+
+            let mut continuation = read_args();
+            continuation.insert("resultRef".to_string(), json!(reference));
+            continuation.insert("section".to_string(), json!("rights"));
+            continuation.insert("page".to_string(), json!(2));
+            let first = app.call_tool("unica.role.info", &continuation).unwrap();
+            let second = app.call_tool("unica.role.info", &continuation).unwrap();
+            assert!(first.ok);
+            let first_data = first.data.unwrap();
+            assert_eq!(first_data["state"], "slice");
+            assert_eq!(first_data["totalInSection"], 200);
+            assert_eq!(first_data["page"], 2);
+            assert_eq!(first_data["items"].as_array().unwrap().len(), 50);
+            assert_eq!(
+                serde_json::to_vec(&first_data).unwrap(),
+                serde_json::to_vec(&second.data.unwrap()).unwrap(),
+                "continuation slices are byte-stable"
+            );
+            assert_eq!(
+                fake.handler_calls.load(Ordering::SeqCst),
+                1,
+                "continuations must not re-run the reader"
+            );
+            assert_eq!(
+                fake.workspace_discoveries.load(Ordering::SeqCst),
+                1,
+                "continuations must not touch the workspace"
+            );
+        }
+
+        #[test]
+        fn within_budget_typed_read_is_delivered_inline_unchanged() {
+            let payload = json!({ "role": "Role.Small", "rights": [{"name": "One"}] });
+            let (app, _fake) = app_with_threshold(
+                payload.clone(),
+                deferred_delivery::DEFAULT_THRESHOLD_BYTES,
+                ResultStore::default(),
+            );
+            let result = app.call_tool("unica.role.info", &read_args()).unwrap();
+            assert!(result.ok);
+            assert_eq!(result.data.unwrap(), payload);
+        }
+
+        #[test]
+        fn unknown_reference_is_a_stable_unavailable_error() {
+            let (app, fake) = app_with_threshold(big_role_payload(), 256, ResultStore::default());
+            let mut continuation = read_args();
+            continuation.insert("resultRef".to_string(), json!("res-404-dead"));
+            let result = app.call_tool("unica.role.info", &continuation).unwrap();
+            assert!(!result.ok);
+            assert!(result.errors[0].starts_with("result_unavailable:"));
+            assert_eq!(fake.handler_calls.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn expired_reference_reports_result_expired() {
+            let (app, _fake) = app_with_threshold(
+                big_role_payload(),
+                256,
+                ResultStore::new(Duration::ZERO, 8, 1024 * 1024),
+            );
+            let manifest = app
+                .call_tool("unica.role.info", &read_args())
+                .unwrap()
+                .data
+                .unwrap();
+            let mut continuation = read_args();
+            continuation.insert("resultRef".to_string(), manifest["resultRef"].clone());
+            continuation.insert("section".to_string(), json!("rights"));
+            let result = app.call_tool("unica.role.info", &continuation).unwrap();
+            assert!(!result.ok);
+            assert!(result.errors[0].starts_with("result_expired:"));
+        }
+
+        #[test]
+        fn selectors_without_a_reference_are_refused() {
+            let (app, fake) = app_with_threshold(big_role_payload(), 256, ResultStore::default());
+            let mut args = read_args();
+            args.insert("section".to_string(), json!("rights"));
+            let result = app.call_tool("unica.role.info", &args).unwrap();
+            assert!(!result.ok);
+            assert!(result.errors[0].starts_with("continuation_requires_result_ref:"));
+            assert_eq!(fake.handler_calls.load(Ordering::SeqCst), 0);
+        }
+    }
     use serde_json::Map;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -5338,6 +5783,7 @@ mod tests {
             ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE),
             &NoopSearchProgressSink,
             RuntimeAdmissionPolicy::AlreadyAdmittedForDownstreamContractTest,
+            &deferred_delivery::DeferredDelivery::default(),
         )
         .unwrap();
 

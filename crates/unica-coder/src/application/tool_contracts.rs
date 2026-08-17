@@ -2622,6 +2622,11 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
             if operation == "form-edit" {
                 names.push("definition");
             }
+            // ADR-0070: the deferred-capable readers publish the continuation
+            // vocabulary alongside their own arguments.
+            if super::deferred_delivery::supports_operation(operation) {
+                names.extend(super::deferred_delivery::CONTINUATION_ARGS);
+            }
         }
         ToolHandler::BuildRuntime { command, .. } => {
             names.extend(BUILD_ARGS);
@@ -3400,8 +3405,24 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Bounded source.resources manifest scope: self, aggregate, or registrations",
     ),
     (
+        "delivery",
+        "Deferred continuation only: `\"full\"` asks for the whole stored snapshot; it expresses the caller's intent and proves no human confirmation (ADR-0070)",
+    ),
+    (
+        "filter",
+        "Deferred continuation only: case-insensitive substring over entity names inside the selected section of the stored snapshot",
+    ),
+    (
+        "page",
+        "Deferred continuation only: 1-based page of 50 entities inside the selected section of the stored snapshot",
+    ),
+    (
+        "resultRef",
+        "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source (ADR-0070)",
+    ),
+    (
         "section",
-        "`unica.cf.info` only: drill-down section of `Configuration.xml`, currently just `\"home-page\"`; `name` is accepted as an alias for it",
+        "On `unica.cf.info`: drill-down section of `Configuration.xml`, currently just `\"home-page\"`; `name` is accepted as an alias. On deferred continuations: the top-level section of the stored snapshot to slice",
     ),
     (
         "selector",
@@ -3611,6 +3632,18 @@ fn description_for_arg(name: &str) -> Option<&'static str> {
 }
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
+    if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
+        if super::deferred_delivery::supports_operation(operation) {
+            match name {
+                "resultRef" => return json!({"type": "string", "minLength": 1}),
+                "section" => return json!({"type": "string", "minLength": 1}),
+                "filter" => return json!({"type": "string", "minLength": 1}),
+                "page" => return json!({"type": "integer", "minimum": 1}),
+                "delivery" => return json!({"type": "string", "const": "full"}),
+                _ => {}
+            }
+        }
+    }
     if tool.name == "unica.runtime.execute" && name == "dryRun" {
         return json!({
             "type": "boolean",
@@ -7250,15 +7283,31 @@ mod tests {
             ),
             (
                 "unica.role.info",
-                &["RightsPath", "confirm", "cwd", "metadataPath", "sourceSet"],
+                &[
+                    "RightsPath",
+                    "confirm",
+                    "cwd",
+                    "delivery",
+                    "filter",
+                    "metadataPath",
+                    "page",
+                    "resultRef",
+                    "section",
+                    "sourceSet",
+                ],
                 &[
                     "Path",
                     "RightsPath",
                     "confirm",
                     "cwd",
+                    "delivery",
+                    "filter",
                     "metadataPath",
+                    "page",
                     "path",
+                    "resultRef",
                     "rightsPath",
+                    "section",
                     "sourceSet",
                 ],
             ),
@@ -7268,7 +7317,12 @@ mod tests {
                     "SubsystemPath",
                     "confirm",
                     "cwd",
+                    "delivery",
+                    "filter",
                     "metadataPath",
+                    "page",
+                    "resultRef",
+                    "section",
                     "sourceSet",
                 ],
                 &[
@@ -7276,8 +7330,13 @@ mod tests {
                     "SubsystemPath",
                     "confirm",
                     "cwd",
+                    "delivery",
+                    "filter",
                     "metadataPath",
+                    "page",
                     "path",
+                    "resultRef",
+                    "section",
                     "sourceSet",
                     "subsystemPath",
                 ],
@@ -7288,7 +7347,12 @@ mod tests {
                     "TemplatePath",
                     "confirm",
                     "cwd",
+                    "delivery",
+                    "filter",
                     "metadataPath",
+                    "page",
+                    "resultRef",
+                    "section",
                     "sourceSet",
                 ],
                 &[
@@ -7296,23 +7360,44 @@ mod tests {
                     "TemplatePath",
                     "confirm",
                     "cwd",
+                    "delivery",
+                    "filter",
                     "metadataPath",
+                    "page",
                     "path",
+                    "resultRef",
+                    "section",
                     "sourceSet",
                     "templatePath",
                 ],
             ),
             (
                 "unica.form.info",
-                &["FormPath", "confirm", "cwd", "metadataPath", "sourceSet"],
+                &[
+                    "FormPath",
+                    "confirm",
+                    "cwd",
+                    "delivery",
+                    "filter",
+                    "metadataPath",
+                    "page",
+                    "resultRef",
+                    "section",
+                    "sourceSet",
+                ],
                 &[
                     "FormPath",
                     "Path",
                     "confirm",
                     "cwd",
+                    "delivery",
+                    "filter",
                     "formPath",
                     "metadataPath",
+                    "page",
                     "path",
+                    "resultRef",
+                    "section",
                     "sourceSet",
                 ],
             ),
@@ -7323,7 +7408,12 @@ mod tests {
                     "WithText",
                     "confirm",
                     "cwd",
+                    "delivery",
+                    "filter",
                     "metadataPath",
+                    "page",
+                    "resultRef",
+                    "section",
                     "sourceSet",
                     "withText",
                 ],
@@ -7333,8 +7423,13 @@ mod tests {
                     "WithText",
                     "confirm",
                     "cwd",
+                    "delivery",
+                    "filter",
                     "metadataPath",
+                    "page",
                     "path",
+                    "resultRef",
+                    "section",
                     "sourceSet",
                     "templatePath",
                     "withText",

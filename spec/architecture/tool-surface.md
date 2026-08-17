@@ -545,7 +545,12 @@
 | `TemplatePath` | string | по ветви | — |
 | `confirm` | boolean | нет | — |
 | `cwd` | string | нет | — |
+| `delivery` | string | нет | — |
+| `filter` | string | нет | — |
 | `metadataPath` | string | по ветви | — |
+| `page` | integer | нет | — |
+| `resultRef` | string | нет | — |
+| `section` | string | нет | — |
 | `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `TemplatePath`. Ни одной или обе сразу отклоняются.
@@ -740,7 +745,12 @@
 | `FormPath` | string | по ветви | — |
 | `confirm` | boolean | нет | — |
 | `cwd` | string | нет | — |
+| `delivery` | string | нет | — |
+| `filter` | string | нет | — |
 | `metadataPath` | string | по ветви | — |
+| `page` | integer | нет | — |
+| `resultRef` | string | нет | — |
+| `section` | string | нет | — |
 | `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `FormPath`. Ни одной или обе сразу отклоняются.
@@ -995,7 +1005,12 @@
 | `WithText` | boolean | нет | — |
 | `confirm` | boolean | нет | — |
 | `cwd` | string | нет | — |
+| `delivery` | string | нет | — |
+| `filter` | string | нет | — |
 | `metadataPath` | string | по ветви | — |
+| `page` | integer | нет | — |
+| `resultRef` | string | нет | — |
+| `section` | string | нет | — |
 | `sourceSet` | string | по ветви | — |
 | `withText` | boolean | нет | — |
 
@@ -1123,7 +1138,12 @@
 | `RightsPath` | string | по ветви | — |
 | `confirm` | boolean | нет | — |
 | `cwd` | string | нет | — |
+| `delivery` | string | нет | — |
+| `filter` | string | нет | — |
 | `metadataPath` | string | по ветви | — |
+| `page` | integer | нет | — |
+| `resultRef` | string | нет | — |
+| `section` | string | нет | — |
 | `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` + `metadataPath` **либо** `RightsPath`. Ни одной или обе сразу отклоняются.
@@ -1516,7 +1536,12 @@
 | `SubsystemPath` | string | по ветви | — |
 | `confirm` | boolean | нет | — |
 | `cwd` | string | нет | — |
+| `delivery` | string | нет | — |
+| `filter` | string | нет | — |
 | `metadataPath` | string | только в ветви | — |
+| `page` | integer | нет | — |
+| `resultRef` | string | нет | — |
+| `section` | string | нет | — |
 | `sourceSet` | string | по ветви | — |
 
 **Селектор:** ровно одна ветвь — `sourceSet` **либо** `SubsystemPath`. Ни одной или обе сразу отклоняются.
