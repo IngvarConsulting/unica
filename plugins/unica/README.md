@@ -136,6 +136,27 @@ An addressed object whose requested body is missing — a template whose
 `resource_absent`, not `target_not_found`: the object exists and is
 addressable, that body does not.
 
+## XDTO operations migration
+
+The release containing [issue #374](https://github.com/IngvarConsulting/unica/issues/374)
+replaces the flat single-operation form of `unica.xdto.edit` with a typed
+ordered `operations` array (ADR-0071). There is no compatibility alias: a call
+that still passes any retired top-level field fails with
+`legacy_arguments_removed` and names the replacement.
+
+| Removed top-level form | Canonical `operations` element |
+| --- | --- |
+| `operation: "add-value-type"` + `name`, `base` | `{"op": "addValueType", "name", "base"}` |
+| `operation: "add-object-type"` + `name` | `{"op": "addObjectType", "name"}` |
+| `operation: "add-property"` + `typeName`, `property` [, `propertyPath`] | `{"op": "addProperty", "typeName", "property" [, "propertyPath"]}` |
+| `operation: "remove-type"` + `name` | `{"op": "removeType", "name"}` |
+| `operation: "remove-property"` + `typeName`, `name` [, `propertyPath`] | `{"op": "removeProperty", "typeName", "name" [, "propertyPath"]}` |
+
+Field semantics are unchanged — an element carries exactly the fields the
+package writer has always read. Operations in one call apply in order, see
+each other's results, and publish once; a failed element leaves no partial
+write, and every effect is reported by `operationIndex`.
+
 ## Runtime delivery
 
 The marketplace plugin contains skills, references, assets, `launch.sh`, and

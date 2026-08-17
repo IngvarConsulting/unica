@@ -1669,7 +1669,7 @@ network = "allow"
                     self.assertEqual(arguments.get("metadataPath"), xdto_target)
                     if example.payload["params"]["name"] == "unica.xdto.edit":
                         self.assertEqual(
-                            arguments["property"]["type"],
+                            arguments["operations"][0]["property"]["type"],
                             "tns:Документ_ЗаказКлиента",
                         )
 

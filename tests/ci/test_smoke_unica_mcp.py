@@ -1470,9 +1470,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             if isinstance(entry, dict) and entry.get("name") == "unica.xdto.edit"
         )
         add_value_type = next(
-            branch
-            for branch in xdto_edit["inputSchema"]["oneOf"]
-            if branch["properties"]["operation"]["const"] == "add-value-type"
+            variant
+            for variant in xdto_edit["inputSchema"]["properties"]["operations"][
+                "items"
+            ]["oneOf"]
+            if variant["properties"]["op"]["enum"] == ["addValueType"]
         )
         add_value_type["required"].remove("base")
 
