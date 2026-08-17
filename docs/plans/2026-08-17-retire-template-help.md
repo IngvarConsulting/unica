@@ -134,3 +134,24 @@
   (T3), таблица миграции ✓ (T4).
 - Единый union meta.add/meta.edit сохранён (тест равенства не трогаем).
 - Семантика help не изменена — только адресация и владелец маршрута.
+
+## Разведка (продолжение, точные указатели для исполнителя)
+
+- Разбор операций: `parse_edit_operation` —
+  `crates/unica-coder/src/application/metadata.rs:563-712`;
+  `operation_property_names()` там же :699 (добавить `lang`).
+- Публикуемый union: `host_visible_operation_schema` —
+  `application/metadata.rs:1871-2078`; вариант addHelp вставляется в `oneOf`
+  перед `metadata_relation_operation_schema()` (стал девятым; в тесте
+  `meta_contract_schema_snapshots...` tool_contracts.rs:4390 вариант идёт
+  между variants[6] (remove predefined) и editRelations — согласовать индексы).
+- Доменный enum: `MetaEditOperation` —
+  `domain/metadata/operations.rs:1150`; тег `MetaEditOperationTag` :1108.
+- Исполнители: `infrastructure/metadata_operations.rs` (61 упоминание) и
+  `infrastructure/native_operations/meta/edit.rs` (131) — матчи по вариантам
+  enum; компилятор после добавления варианта покажет все места.
+- `validate_help_lang` (паттерн `^[A-Za-z0-9_-]+$`) — help.rs:282; вход
+  help-функций: `add_help_with_data` help.rs:31 (создание файлов + формы +
+  гварды); рефакторить в функции от каталога объекта.
+- lang в схеме: `{"type":"string","minLength":1,"pattern":"^[A-Za-z0-9_-]+$",
+  "default":"ru"}`.
