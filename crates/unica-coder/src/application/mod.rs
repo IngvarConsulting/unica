@@ -28,6 +28,7 @@ pub(crate) mod operational_config;
 mod outcome;
 pub(crate) mod ports;
 pub(crate) mod project_health;
+pub(crate) mod result_store;
 pub(crate) mod runtime_admission;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
@@ -1069,6 +1070,9 @@ fn call_tool_observed(
     )
 }
 
+// The dispatcher wires every cross-cutting invocation concern; a parameter
+// struct here would only rename the coupling, so the lint is acknowledged.
+#[allow(clippy::too_many_arguments)]
 fn call_tool_with_runtime_admission(
     spec: ToolSpec,
     args: &Map<String, Value>,
@@ -1740,7 +1744,7 @@ fn defer_oversized_typed_read(
         handler_outcome.data = Some(data);
         return handler_outcome;
     }
-    let snapshot = crate::infrastructure::result_store::SnapshotIdentity {
+    let snapshot = result_store::SnapshotIdentity {
         workspace_epoch: context.workspace_epoch,
         cache_root: context.cache_root.display().to_string(),
         as_of_unix_ms: deferred_delivery::now_unix_ms(),
@@ -3247,7 +3251,7 @@ mod tests {
 
     mod deferred_delivery_call_path {
         use super::super::*;
-        use crate::infrastructure::result_store::ResultStore;
+        use crate::application::result_store::ResultStore;
         use serde_json::{json, Map, Value};
         use std::path::PathBuf;
         use std::sync::atomic::{AtomicUsize, Ordering};

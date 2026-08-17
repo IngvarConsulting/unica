@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use crate::infrastructure::result_store::{unix_ms_now, ResultStore, SnapshotIdentity, StoredView};
+use super::result_store::{unix_ms_now, ResultStore, SnapshotIdentity, StoredView};
 
 /// Serialized `OperationResult.data` above this many bytes is delivered as a
 /// deferred manifest (ADR-0070: ~16 KiB ≈ 4 000 o200k_base tokens).

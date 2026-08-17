@@ -415,7 +415,7 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/deferred_delivery.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` —
-  `crates/unica-coder/src/infrastructure/result_store.rs`
+  `crates/unica-coder/src/application/result_store.rs`
 - **Scope:** runtime
 
 ### INV-MCP-BOUNDED-ADMISSION — Приём вызовов ограничен, отмена кооперативна
