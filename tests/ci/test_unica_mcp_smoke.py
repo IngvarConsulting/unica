@@ -346,10 +346,13 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             with self.subTest(tool=name):
                 properties = tool["inputSchema"]["properties"]
                 if confirm := properties.get("confirm"):
-                    self.assertNotIn(
-                        "dryrun",
-                        confirm["description"].casefold(),
-                    )
+                    # Schema-only baseline (#479 §1): descriptions are absent;
+                    # the hygiene rule applies once prose returns.
+                    if confirm_description := confirm.get("description"):
+                        self.assertNotIn(
+                            "dryrun",
+                            confirm_description.casefold(),
+                        )
                 if name in MUTATION_TOOL_NAMES:
                     dry_run = properties.get("dryRun")
                     self.assertIsNotNone(dry_run)

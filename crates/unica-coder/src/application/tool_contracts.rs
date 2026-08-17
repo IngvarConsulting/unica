@@ -659,6 +659,44 @@ const DOCUMENTATION_SEARCH_ARGS: &[&str] = &[
 ];
 const DOCUMENTATION_GET_ARGS: &[&str] = &["documentId", "language", "platformVersion"];
 
+/// Removes JSON Schema `description` annotations from a schema tree without
+/// touching members that are property names (a property literally called
+/// `description` survives; only its own annotation is dropped).
+///
+/// #479 §1 baseline experiment (owner decision, 2026-08-17): the served tool
+/// surface is schema-only while descriptions are reauthored under the
+/// "минимум токенов на решение" objective; the v0.12 history keeps the
+/// previous texts.
+pub fn strip_schema_descriptions(value: &mut Value) {
+    fn walk(value: &mut Value, keys_are_member_names: bool) {
+        match value {
+            Value::Object(map) => {
+                if keys_are_member_names {
+                    for child in map.values_mut() {
+                        walk(child, false);
+                    }
+                } else {
+                    map.remove("description");
+                    for (key, child) in map.iter_mut() {
+                        let named = matches!(
+                            key.as_str(),
+                            "properties" | "patternProperties" | "$defs" | "definitions"
+                        );
+                        walk(child, named);
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, false);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(value, false);
+}
+
 pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
     if matches!(tool.handler, ToolHandler::Diagnostics) {
         return diagnostics_input_schema();

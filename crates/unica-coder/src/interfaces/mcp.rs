@@ -7,7 +7,7 @@
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
 use crate::application::{
-    code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
+    code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result, strip_schema_descriptions,
     operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
     CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec, UnicaApplication,
 };
@@ -307,14 +307,21 @@ pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
     specs
         .iter()
         .map(|spec| {
-            let schema = match input_schema_for_tool(spec) {
+            // #479 §1 schema-only baseline (owner decision, 2026-08-17): the
+            // wire surface carries no prose while descriptions are reauthored;
+            // the v0.12 history keeps the previous texts.
+            let mut input_schema = input_schema_for_tool(spec);
+            strip_schema_descriptions(&mut input_schema);
+            let schema = match input_schema {
                 Value::Object(schema) => schema,
                 other => {
                     unreachable!("tool {} produced a non-object schema: {other}", spec.name)
                 }
             };
-            let tool = Tool::new(spec.name, spec.description, schema);
-            if let Some(schema) = structured_output_schema(spec) {
+            let mut tool = Tool::new(spec.name, spec.description, schema);
+            tool.description = None;
+            if let Some(mut schema) = structured_output_schema(spec) {
+                strip_schema_descriptions(&mut schema);
                 let output_schema = match schema {
                     Value::Object(schema) => schema,
                     other => unreachable!("OperationResult produced a non-object schema: {other}"),
@@ -813,7 +820,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_describes_runtime_execute_dry_run_as_preview_only() {
+    async fn tools_list_serves_schema_only_baseline() {
+        // #479 §1 baseline experiment: the wire carries no prose. Stripping an
+        // already served schema must be an identity, and no tool publishes a
+        // description.
         let (mut client, _) = spawn_server(application_handler());
         client.initialize().await;
         client
@@ -821,19 +831,45 @@ mod tests {
             .await;
         let response = client.receive().await;
         let listed = response["result"]["tools"].as_array().unwrap();
-        let runtime = listed
-            .iter()
-            .find(|tool| tool["name"] == "unica.runtime.execute")
-            .expect("runtime tool is listed");
+        assert!(!listed.is_empty());
+        for tool in listed {
+            assert!(
+                tool.get("description").is_none(),
+                "tool {} still publishes a description",
+                tool["name"]
+            );
+            for key in ["inputSchema", "outputSchema"] {
+                if let Some(schema) = tool.get(key) {
+                    let mut stripped = schema.clone();
+                    crate::application::strip_schema_descriptions(&mut stripped);
+                    assert_eq!(
+                        &stripped, schema,
+                        "tool {} still carries description annotations in {key}",
+                        tool["name"]
+                    );
+                }
+            }
+        }
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn registry_keeps_runtime_execute_preview_guidance() {
+        // The preview-only guidance survives in the descriptor registry while
+        // the wire stays schema-only; reauthoring replaces it deliberately.
+        let spec = crate::application::tools()
+            .into_iter()
+            .find(|spec| spec.name == "unica.runtime.execute")
+            .expect("runtime tool is registered");
         assert_eq!(
-            runtime["description"],
+            spec.description,
             "Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn."
         );
+        let schema = input_schema_for_tool(&spec);
         assert_eq!(
-            runtime["inputSchema"]["properties"]["dryRun"]["description"],
+            schema["properties"]["dryRun"]["description"],
             "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
         );
-        client.shutdown().await;
     }
 
     #[tokio::test]
