@@ -74,6 +74,7 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
 
 mod edit;
 mod format_contract;
+mod help_facet;
 mod info;
 mod info_projection;
 mod integrity_check;
@@ -104,9 +105,9 @@ pub(crate) use publisher::{
 pub(crate) use remove::remove_metadata_child_text_with_flag;
 #[cfg(test)]
 pub(crate) use remove::with_meta_remove_before_reauthorization_hook;
-pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 #[cfg(test)]
-pub(crate) use template_catalog::{emit_meta_internal_info, minimal_metadata_xml_for_tests};
+pub(crate) use template_catalog::emit_meta_internal_info;
+pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 pub(crate) use usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
 pub(crate) use validation::{
     service_child_semantics, validate_metadata_owner_shape_8_3_27, MetadataValidator,

@@ -157,6 +157,26 @@ package writer has always read. Operations in one call apply in order, see
 each other's results, and publish once; a failed element leaves no partial
 write, and every effect is reported by `operationIndex`.
 
+## Template and help migration
+
+The release containing [issue #375](https://github.com/IngvarConsulting/unica/issues/375)
+retires `unica.template.add`, `unica.template.remove` and `unica.help.add`
+(ADR-0072). There is no compatibility alias: every call answers
+`unknown unica tool`. Template registration and embedded help are operations
+of the shared `unica.meta.add`/`unica.meta.edit` union:
+
+| Removed call | Canonical `operations` element |
+| --- | --- |
+| `unica.template.add` + `ObjectName`, `TemplateName`, `TemplateType` | `{"op": "add", "collection": "templates", "elements": [{"name": "Basic", "templateType": "SpreadsheetDocument"}]}` |
+| `unica.template.remove` + `ObjectName`, `TemplateName` | `{"op": "remove", "collection": "templates", "names": ["Basic"]}` |
+| `unica.help.add` + `ObjectName`, `Lang` | `{"op": "addHelp", "lang": "ru"}` |
+
+The owner is addressed by `sourceSet + metadataPath`; the retired
+`ObjectName` path dialect under `SrcDir` is gone. `templateType` defaults to
+`SpreadsheetDocument`; `addHelp` is create-only and flips
+`IncludeHelpInContents` on the owner's forms exactly the way the retired tool
+did.
+
 ## Runtime delivery
 
 The marketplace plugin contains skills, references, assets, `launch.sh`, and

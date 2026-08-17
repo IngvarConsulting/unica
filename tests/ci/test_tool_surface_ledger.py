@@ -371,7 +371,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
                 branches = items["oneOf"]
                 self.assertEqual(
                     {branch["properties"]["op"]["enum"][0] for branch in branches},
-                    {"setProperties", "add", "update", "remove", "editRelations"},
+                    {"setProperties", "add", "update", "remove", "editRelations", "addHelp"},
                 )
                 for branch in branches:
                     self.assertNotIn("$ref", branch)
@@ -400,7 +400,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             self.assertIn("op", variant["required"])
         self.assertEqual(
             {variant["properties"]["op"]["enum"][0] for variant in variants},
-            {"setProperties", "add", "update", "remove", "editRelations"},
+            {"setProperties", "add", "update", "remove", "editRelations", "addHelp"},
         )
         # The union publishes closed domains, not a bare name list: a model that
         # reads only the schema must learn the legal values too.

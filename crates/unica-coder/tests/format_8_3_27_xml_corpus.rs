@@ -171,13 +171,6 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["remove-managed-form"],
     },
     MutatorRegistryEntry {
-        tool: "unica.help.add",
-        operation: "help-add",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["help-add-object"],
-        required_branches: &["object-help"],
-    },
-    MutatorRegistryEntry {
         tool: "unica.interface.edit",
         operation: "interface-edit",
         impact: XmlImpactClass::CreateOrModify,
@@ -249,6 +242,13 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "meta-edit-event-source",
             "meta-edit-resource-append",
             "meta-edit-resource-position-after",
+            "help-add-object",
+            "template-add-spreadsheet-document",
+            "template-add-data-composition-schema",
+            "template-add-text-document",
+            "template-add-html-document",
+            "template-add-binary-data",
+            "template-remove-object-template",
         ],
         required_branches: &[
             "predefined-items",
@@ -256,6 +256,13 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
             "event-source",
             "resource-append",
             "resource-position-after",
+            "object-help",
+            "SpreadsheetDocument",
+            "DataCompositionSchema",
+            "TextDocument",
+            "HTMLDocument",
+            "BinaryData",
+            "remove-object-template",
         ],
     },
     MutatorRegistryEntry {
@@ -306,32 +313,6 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         impact: XmlImpactClass::None,
         case_ids: &["support-edit-bin-only"],
         required_branches: &["parent-configurations-bin-only"],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.template.add",
-        operation: "template-add",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &[
-            "template-add-spreadsheet-document",
-            "template-add-data-composition-schema",
-            "template-add-text-document",
-            "template-add-html-document",
-            "template-add-binary-data",
-        ],
-        required_branches: &[
-            "SpreadsheetDocument",
-            "DataCompositionSchema",
-            "TextDocument",
-            "HTMLDocument",
-            "BinaryData",
-        ],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.template.remove",
-        operation: "template-remove",
-        impact: XmlImpactClass::RemoveOrModify,
-        case_ids: &["template-remove-object-template"],
-        required_branches: &["remove-object-template"],
     },
 ];
 
@@ -468,7 +449,7 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "help-add-object",
-        tool: "unica.help.add",
+        tool: "unica.meta.edit",
         branch: "object-help",
     },
     ExecutableCase {
@@ -653,32 +634,32 @@ static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "template-add-spreadsheet-document",
-        tool: "unica.template.add",
+        tool: "unica.meta.edit",
         branch: "SpreadsheetDocument",
     },
     ExecutableCase {
         id: "template-add-data-composition-schema",
-        tool: "unica.template.add",
+        tool: "unica.meta.edit",
         branch: "DataCompositionSchema",
     },
     ExecutableCase {
         id: "template-add-text-document",
-        tool: "unica.template.add",
+        tool: "unica.meta.edit",
         branch: "TextDocument",
     },
     ExecutableCase {
         id: "template-add-html-document",
-        tool: "unica.template.add",
+        tool: "unica.meta.edit",
         branch: "HTMLDocument",
     },
     ExecutableCase {
         id: "template-add-binary-data",
-        tool: "unica.template.add",
+        tool: "unica.meta.edit",
         branch: "BinaryData",
     },
     ExecutableCase {
         id: "template-remove-object-template",
-        tool: "unica.template.remove",
+        tool: "unica.meta.edit",
         branch: "remove-object-template",
     },
 ];
@@ -1673,28 +1654,25 @@ fn event_handlers_module(include_record_set_handler: bool) -> String {
 
 fn template_args(workspace: &Path, template_name: &str, template_type: &str) -> Map<String, Value> {
     let mut args = common_args(workspace);
+    args.insert("sourceSet".to_string(), Value::String("main".to_string()));
     args.insert(
-        "ObjectName".to_string(),
-        Value::String("CorpusReport".to_string()),
+        "metadataPath".to_string(),
+        Value::String("Report.CorpusReport".to_string()),
     );
     args.insert(
-        "TemplateName".to_string(),
-        Value::String(template_name.to_string()),
-    );
-    args.insert(
-        "TemplateType".to_string(),
-        Value::String(template_type.to_string()),
-    );
-    args.insert(
-        "SrcDir".to_string(),
-        Value::String("src/Reports".to_string()),
+        "operations".to_string(),
+        json!([{
+            "op": "add",
+            "collection": "templates",
+            "elements": [{"name": template_name, "templateType": template_type}]
+        }]),
     );
     args
 }
 
 fn seed_dcs_template(workspace: &Path) -> Result<(), String> {
     call_public_tool(
-        "unica.template.add",
+        "unica.meta.edit",
         &template_args(workspace, "CorpusDcs", "DataCompositionSchema"),
     )?;
     let mut compile = common_args(workspace);
@@ -2015,7 +1993,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
             }),
         )?;
         call_public_tool(
-            "unica.template.add",
+            "unica.meta.edit",
             &template_args(workspace, "CorpusTemplate", "DataCompositionSchema"),
         )?;
         let output = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml";
@@ -2033,7 +2011,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         seed_configuration(workspace)?;
         seed_report(workspace)?;
         call_public_tool(
-            "unica.template.add",
+            "unica.meta.edit",
             &template_args(workspace, "CorpusTemplate", "SpreadsheetDocument"),
         )?;
         let output = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml";
@@ -2550,12 +2528,15 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
     if case.id == "help-add-object" {
         seed_catalog(workspace)?;
         let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
-            "ObjectName".to_string(),
-            Value::String("Catalogs/CorpusCatalog".to_string()),
+            "metadataPath".to_string(),
+            Value::String("Catalog.CorpusCatalog".to_string()),
         );
-        args.insert("SrcDir".to_string(), Value::String("src".to_string()));
-        args.insert("Lang".to_string(), Value::String("ru".to_string()));
+        args.insert(
+            "operations".to_string(),
+            json!([{"op": "addHelp", "lang": "ru"}]),
+        );
         return Ok(args);
     }
 
@@ -2729,11 +2710,11 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
     if case.id.starts_with("template-add-") {
         seed_report(workspace)?;
         let template_type = match case.branch {
-            "SpreadsheetDocument" => "SpreadsheetDocument",
-            "DataCompositionSchema" => "DataCompositionSchema",
-            "TextDocument" => "Text",
-            "HTMLDocument" => "HTML",
-            "BinaryData" => "BinaryData",
+            "SpreadsheetDocument"
+            | "DataCompositionSchema"
+            | "TextDocument"
+            | "HTMLDocument"
+            | "BinaryData" => case.branch,
             other => return Err(format!("unknown template branch: {other}")),
         };
         return Ok(template_args(workspace, "CorpusTemplate", template_type));
@@ -2742,21 +2723,22 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
     if case.id == "template-remove-object-template" {
         seed_report(workspace)?;
         call_public_tool(
-            "unica.template.add",
+            "unica.meta.edit",
             &template_args(workspace, "CorpusTemplate", "SpreadsheetDocument"),
         )?;
         let mut args = common_args(workspace);
+        args.insert("sourceSet".to_string(), Value::String("main".to_string()));
         args.insert(
-            "ObjectName".to_string(),
-            Value::String("CorpusReport".to_string()),
+            "metadataPath".to_string(),
+            Value::String("Report.CorpusReport".to_string()),
         );
         args.insert(
-            "TemplateName".to_string(),
-            Value::String("CorpusTemplate".to_string()),
-        );
-        args.insert(
-            "SrcDir".to_string(),
-            Value::String("src/Reports".to_string()),
+            "operations".to_string(),
+            json!([{
+                "op": "remove",
+                "collection": "templates",
+                "names": ["CorpusTemplate"]
+            }]),
         );
         return Ok(args);
     }

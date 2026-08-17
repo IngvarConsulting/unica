@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use std::path::PathBuf;
 
 use super::{
-    cf, cfe, dcs, external, form, help, interface, mxl, role, subsystem, support, template, xdto,
+    cf, cfe, dcs, external, form, interface, mxl, role, subsystem, support, template, xdto,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,8 +87,8 @@ pub(crate) fn native_mutation_file_input_contract(
             secondary_from_object_platform_xml: false,
         },
         "code-patch" | "xdto-edit" | "cf-init" | "support-edit" | "cfe-borrow" | "cfe-init"
-        | "epf-init" | "erf-init" | "cfe-patch-method" | "help-add" | "form-add"
-        | "form-remove" | "template-add" | "template-remove" | "role-edit" => NO_FILE_INPUT,
+        | "epf-init" | "erf-init" | "cfe-patch-method" | "form-add" | "form-remove"
+        | "role-edit" => NO_FILE_INPUT,
         _ => return None,
     };
     Some(contract)
@@ -227,14 +227,9 @@ pub(crate) fn invoke_mutation(
     cf::invoke_mutation(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| external::apply(operation, tool_name, args, context))
-        .or_else(|| match operation {
-            "help-add" => Some(help::add_help(args, context)),
-            _ => None,
-        })
         .or_else(|| form::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| interface::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| subsystem::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| template::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| dcs::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| mxl::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| role::invoke_mutation(operation, tool_name, args, context))
@@ -359,7 +354,7 @@ mod tests {
         );
         assert_eq!(native_mutation_file_input_contract("unknown-mutator"), None);
         assert_eq!(
-            native_mutation_file_input_contract("template-add"),
+            native_mutation_file_input_contract("form-add"),
             Some(NativeMutationFileInputContract {
                 top_level: TopLevelJsonInput::None,
                 secondary_at_query_files: false,
