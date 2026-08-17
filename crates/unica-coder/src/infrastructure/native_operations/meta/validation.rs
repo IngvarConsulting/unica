@@ -3453,99 +3453,150 @@ pub(super) fn meta_validate_check_register_command_interface(
     }
 }
 
+pub(crate) struct ServiceSemanticsFinding {
+    pub(crate) error: bool,
+    pub(crate) detail: String,
+}
+
+pub(crate) struct ServiceSemantics {
+    pub(crate) findings: Vec<ServiceSemanticsFinding>,
+    pub(crate) summary: String,
+    pub(crate) clean: bool,
+}
+
+// Shared core of the service semantics check: meta validation reports it as
+// check 11 for a standalone object, cfe validation as check 14 across the
+// extension's child objects. Returns None for non-service metadata types.
+pub(crate) fn service_child_semantics(
+    md_type: &str,
+    child_obj_node: Option<roxmltree::Node<'_, '_>>,
+) -> Option<ServiceSemantics> {
+    if md_type == "HTTPService" {
+        let mut findings = Vec::new();
+        let mut template_count = 0usize;
+        let mut method_count = 0usize;
+        if let Some(child_obj_node) = child_obj_node {
+            let templates = meta_info_children(child_obj_node, "URLTemplate");
+            template_count = templates.len();
+            for template in &templates {
+                let props = meta_info_child(*template, "Properties");
+                let name = props
+                    .and_then(|node| meta_info_child_text(node, "Name"))
+                    .unwrap_or_else(|| "(unnamed)".to_string());
+                if props
+                    .and_then(|node| meta_info_child_text(node, "Template"))
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    findings.push(ServiceSemanticsFinding {
+                        error: true,
+                        detail: format!("URLTemplate '{name}': empty Template"),
+                    });
+                }
+                if let Some(child_objects) = meta_info_child(*template, "ChildObjects") {
+                    for method in meta_info_children(child_objects, "Method") {
+                        method_count += 1;
+                        let props = meta_info_child(method, "Properties");
+                        let http_method =
+                            props.and_then(|node| meta_info_child_text(node, "HTTPMethod"));
+                        if let Some(http_method) = http_method.filter(|value| !value.is_empty()) {
+                            if !meta_validate_valid_http_methods().contains(&http_method.as_str()) {
+                                findings.push(ServiceSemanticsFinding {
+                                    error: true,
+                                    detail: format!(
+                                        "URLTemplate '{name}': invalid HTTPMethod '{http_method}'"
+                                    ),
+                                });
+                            }
+                        } else {
+                            findings.push(ServiceSemanticsFinding {
+                                error: true,
+                                detail: format!("URLTemplate '{name}': Method missing HTTPMethod"),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        let clean = findings.iter().all(|finding| !finding.error);
+        return Some(ServiceSemantics {
+            findings,
+            summary: format!("{template_count} URLTemplate(s), {method_count} method(s)"),
+            clean,
+        });
+    }
+    if md_type == "WebService" {
+        let mut findings = Vec::new();
+        let mut operation_count = 0usize;
+        let mut param_count = 0usize;
+        if let Some(child_obj_node) = child_obj_node {
+            let operations = meta_info_children(child_obj_node, "Operation");
+            operation_count = operations.len();
+            for operation in &operations {
+                let props = meta_info_child(*operation, "Properties");
+                let name = props
+                    .and_then(|node| meta_info_child_text(node, "Name"))
+                    .unwrap_or_else(|| "(unnamed)".to_string());
+                if props
+                    .and_then(|node| meta_info_child_text(node, "XDTOReturningValueType"))
+                    .is_none_or(|value| value.trim().is_empty())
+                {
+                    findings.push(ServiceSemanticsFinding {
+                        error: false,
+                        detail: format!("Operation '{name}': no XDTOReturningValueType"),
+                    });
+                }
+                if let Some(child_objects) = meta_info_child(*operation, "ChildObjects") {
+                    for param in meta_info_children(child_objects, "Parameter") {
+                        param_count += 1;
+                        let direction = meta_info_child(param, "Properties")
+                            .and_then(|node| meta_info_child_text(node, "TransferDirection"));
+                        if let Some(direction) = direction.filter(|value| !value.is_empty()) {
+                            if !meta_validate_valid_transfer_directions()
+                                .contains(&direction.as_str())
+                            {
+                                findings.push(ServiceSemanticsFinding {
+                                    error: true,
+                                    detail: format!(
+                                        "Operation '{name}': Parameter has invalid TransferDirection '{direction}'"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let clean = findings.iter().all(|finding| !finding.error);
+        return Some(ServiceSemantics {
+            findings,
+            summary: format!("{operation_count} operation(s), {param_count} parameter(s)"),
+            clean,
+        });
+    }
+    None
+}
+
 pub(super) fn meta_validate_check_services(
     report: &mut MetaValidationReporter,
     md_type: &str,
     child_obj_node: Option<roxmltree::Node<'_, '_>>,
 ) {
-    let Some(child_obj_node) = child_obj_node else {
+    if child_obj_node.is_none() {
+        return;
+    }
+    let Some(semantics) = service_child_semantics(md_type, child_obj_node) else {
         return;
     };
-    if md_type == "HTTPService" {
-        let templates = meta_info_children(child_obj_node, "URLTemplate");
-        let mut check_ok = true;
-        let mut method_count = 0usize;
-        for template in &templates {
-            let props = meta_info_child(*template, "Properties");
-            let name = props
-                .and_then(|node| meta_info_child_text(node, "Name"))
-                .unwrap_or_else(|| "(unnamed)".to_string());
-            if props
-                .and_then(|node| meta_info_child_text(node, "Template"))
-                .is_none_or(|value| value.trim().is_empty())
-            {
-                report.error(format!(
-                    "11. HTTPService URLTemplate '{name}': empty Template"
-                ));
-                check_ok = false;
-            }
-            if let Some(child_objects) = meta_info_child(*template, "ChildObjects") {
-                for method in meta_info_children(child_objects, "Method") {
-                    method_count += 1;
-                    let props = meta_info_child(method, "Properties");
-                    let http_method =
-                        props.and_then(|node| meta_info_child_text(node, "HTTPMethod"));
-                    if let Some(http_method) = http_method.filter(|value| !value.is_empty()) {
-                        if !meta_validate_valid_http_methods().contains(&http_method.as_str()) {
-                            report.error(format!(
-                                "11. HTTPService URLTemplate '{name}': invalid HTTPMethod '{http_method}'"
-                            ));
-                            check_ok = false;
-                        }
-                    } else {
-                        report.error(format!(
-                            "11. HTTPService URLTemplate '{name}': Method missing HTTPMethod"
-                        ));
-                        check_ok = false;
-                    }
-                }
-            }
+    for finding in &semantics.findings {
+        let message = format!("11. {md_type} {}", finding.detail);
+        if finding.error {
+            report.error(message);
+        } else {
+            report.warn(message);
         }
-        if check_ok {
-            report.ok(format!(
-                "11. HTTPService: {} URLTemplate(s), {method_count} method(s)",
-                templates.len()
-            ));
-        }
-    } else if md_type == "WebService" {
-        let operations = meta_info_children(child_obj_node, "Operation");
-        let mut check_ok = true;
-        let mut param_count = 0usize;
-        for operation in &operations {
-            let props = meta_info_child(*operation, "Properties");
-            let name = props
-                .and_then(|node| meta_info_child_text(node, "Name"))
-                .unwrap_or_else(|| "(unnamed)".to_string());
-            if props
-                .and_then(|node| meta_info_child_text(node, "XDTOReturningValueType"))
-                .is_none_or(|value| value.trim().is_empty())
-            {
-                report.warn(format!(
-                    "11. WebService Operation '{name}': no XDTOReturningValueType"
-                ));
-            }
-            if let Some(child_objects) = meta_info_child(*operation, "ChildObjects") {
-                for param in meta_info_children(child_objects, "Parameter") {
-                    param_count += 1;
-                    let direction = meta_info_child(param, "Properties")
-                        .and_then(|node| meta_info_child_text(node, "TransferDirection"));
-                    if let Some(direction) = direction.filter(|value| !value.is_empty()) {
-                        if !["In", "Out", "InOut"].contains(&direction.as_str()) {
-                            report.error(format!(
-                                "11. WebService Operation '{name}': Parameter has invalid TransferDirection '{direction}'"
-                            ));
-                            check_ok = false;
-                        }
-                    }
-                }
-            }
-        }
-        if check_ok {
-            report.ok(format!(
-                "11. WebService: {} operation(s), {param_count} parameter(s)",
-                operations.len()
-            ));
-        }
+    }
+    if semantics.clean {
+        report.ok(format!("11. {md_type}: {}", semantics.summary));
     }
 }
 
@@ -4226,9 +4277,20 @@ pub(super) fn meta_validate_reserved_attr_names() -> &'static [&'static str] {
 }
 
 pub(super) fn meta_validate_valid_http_methods() -> &'static [&'static str] {
-    &[
-        "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "MERGE", "CONNECT",
-    ]
+    // Single authority: the HTTPMethod entry of the 8.3.27 property enum table.
+    meta_validate_property_enum("HTTPMethod")
+}
+
+pub(super) fn meta_validate_valid_transfer_directions() -> &'static [&'static str] {
+    meta_validate_property_enum("TransferDirection")
+}
+
+fn meta_validate_property_enum(property: &str) -> &'static [&'static str] {
+    meta_validate_property_values()
+        .iter()
+        .find(|(name, _)| *name == property)
+        .map(|(_, allowed)| *allowed)
+        .unwrap_or_else(|| panic!("the 8.3.27 property enum table defines {property}"))
 }
 
 pub(super) fn meta_validate_forbidden_properties(md_type: &str) -> Option<&'static [&'static str]> {
@@ -6487,6 +6549,65 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == MetaDiagnosticCode::ProviderUnavailable));
+        }
+    }
+
+    fn check_services_errors(http_methods: &[&str]) -> Vec<String> {
+        let methods = http_methods
+            .iter()
+            .enumerate()
+            .map(|(index, literal)| {
+                format!(
+                    "<Method><Properties><Name>Метод{index}</Name><HTTPMethod>{literal}</HTTPMethod><Handler>Обработчик{index}</Handler></Properties></Method>"
+                )
+            })
+            .collect::<String>();
+        let xml = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><HTTPService><Properties><Name>ПВД_ПечатныеФормы</Name></Properties><ChildObjects><URLTemplate><Properties><Name>Корень</Name><Template>/*</Template></Properties><ChildObjects>{methods}</ChildObjects></URLTemplate></ChildObjects></HTTPService></MetaDataObject>"#
+        );
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let type_node = document.root_element().first_element_child().unwrap();
+        let mut report = MetaValidationReporter::new(30);
+        meta_validate_check_services(
+            &mut report,
+            "HTTPService",
+            meta_info_child(type_node, "ChildObjects"),
+        );
+        report.errors
+    }
+
+    #[test]
+    fn check_services_accepts_the_full_8_3_27_http_method_enum() {
+        let errors = check_services_errors(&["Any", "PROPFIND", "MKCOL", "UNLOCK", "GET"]);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn check_services_rejects_the_uppercase_any_literal() {
+        let errors = check_services_errors(&["ANY"]);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("invalid HTTPMethod 'ANY'")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn service_enum_authority_is_the_8_3_27_property_table() {
+        for (enum_name, actual) in [
+            ("HTTPMethod", meta_validate_valid_http_methods()),
+            (
+                "TransferDirection",
+                meta_validate_valid_transfer_directions(),
+            ),
+        ] {
+            let expected = meta_validate_property_values()
+                .iter()
+                .find(|(name, _)| *name == enum_name)
+                .map(|(_, allowed)| *allowed)
+                .unwrap();
+            assert_eq!(actual, expected, "{enum_name}");
         }
     }
 }
