@@ -6635,7 +6635,7 @@ mod tests {
     }
 
     #[test]
-    fn form_and_template_boolean_flags_are_boolean_in_mcp_contract() {
+    fn form_boolean_flags_are_boolean_in_mcp_contract() {
         let form_add = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.form.add")
@@ -6658,23 +6658,6 @@ mod tests {
         args.insert("SetDefault".to_string(), json!(false));
         args.insert("setDefault".to_string(), json!(true));
         let error = validate_tool_arguments(form_add, &args, false).unwrap_err();
-        assert!(error.contains("conflicting aliases"));
-
-        let template_add = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.template.add")
-            .unwrap();
-        let schema = input_schema_for_tool(&template_add);
-        assert_eq!(schema["properties"]["SetMainSKD"]["type"], "boolean");
-        assert_eq!(schema["properties"]["setMainSKD"]["type"], "boolean");
-
-        let mut args = Map::new();
-        args.insert("ObjectName".to_string(), json!("Report"));
-        args.insert("TemplateName".to_string(), json!("MainSchema"));
-        args.insert("TemplateType".to_string(), json!("DataCompositionSchema"));
-        args.insert("SetMainSKD".to_string(), json!(false));
-        args.insert("setMainSKD".to_string(), json!(true));
-        let error = validate_tool_arguments(template_add, &args, false).unwrap_err();
         assert!(error.contains("conflicting aliases"));
     }
 
@@ -7327,31 +7310,6 @@ mod tests {
             error.contains("requires `name`"),
             "reader validation cannot be weakened by a preview boolean: {error}"
         );
-    }
-
-    #[test]
-    fn help_add_contract_exposes_typed_arguments_without_raw_args() {
-        let help_add = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.help.add")
-            .expect("unica.help.add must be registered");
-
-        let schema = input_schema_for_tool(&help_add);
-        assert_eq!(schema["additionalProperties"], false);
-        assert!(schema["properties"].get("ObjectName").is_some());
-        assert!(schema["properties"].get("Lang").is_some());
-        assert!(schema["properties"].get("SrcDir").is_some());
-        assert!(schema["properties"].get("args").is_none());
-        assert_eq!(schema["required"], json!(["ObjectName"]));
-
-        let mut args = Map::new();
-        args.insert("args".to_string(), json!(["scripts/add-help.py"]));
-        let error = validate_tool_arguments(help_add, &args, false).unwrap_err();
-        assert!(error.contains("does not accept argument `args`"));
-
-        let args = Map::new();
-        let error = validate_tool_arguments(help_add, &args, false).unwrap_err();
-        assert!(error.contains("requires `ObjectName`"));
     }
 
     /// The typed reader answers with every section at once, so the selectors

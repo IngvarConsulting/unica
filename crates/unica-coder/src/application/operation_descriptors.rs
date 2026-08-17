@@ -142,7 +142,6 @@ const CFE_PATCH_METHOD_REQUIRED: &[&str] = &[
     "InterceptorType",
 ];
 const CFE_VALIDATE_REQUIRED: &[&str] = &["ExtensionPath"];
-const OBJECT_NAME_REQUIRED: &[&str] = &["ObjectName"];
 const FORM_COMPILE_REQUIRED: &[&str] = &["OutputPath"];
 const FORM_EDIT_REQUIRED: &[&str] = &["FormPath"];
 const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
@@ -225,7 +224,7 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
         "cfe-patch-method" => CFE_PATCH_METHOD_PATH_GROUPS,
         "cfe-validate" => CFE_VALIDATE_PATH_GROUPS,
         "role-compile" => COMPILE_TO_DIR_PATH_GROUPS,
-        "help-add" | "form-remove" | "template-add" | "template-remove" => SRC_DIR_PATH_GROUPS,
+        "form-remove" => SRC_DIR_PATH_GROUPS,
         "form-add" => OBJECT_PATH_GROUPS,
         "form-compile" => FORM_COMPILE_PATH_GROUPS,
         "form-edit" => FORM_EDIT_PATH_GROUPS,
@@ -371,15 +370,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         None,
     ),
     descriptor_with_paths(
-        "help-add",
-        OBJECT_NAME_REQUIRED,
-        SRC_DIR,
-        SRC_DIR,
-        FormatGuardPolicy::ExistingDump,
-        FormatPathPolicy::DefaultSrcObject,
-        Some(object_name_guard(SupportGuardRequirement::Editable)),
-    ),
-    descriptor_with_paths(
         "form-add",
         EMPTY,
         OBJECT_PATH,
@@ -471,24 +461,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor("subsystem-info", EMPTY, EMPTY, SUBSYSTEM_PATH, None),
     descriptor("subsystem-validate", EMPTY, EMPTY, SUBSYSTEM_PATH, None),
-    descriptor_with_paths(
-        "template-add",
-        EMPTY,
-        SRC_DIR,
-        SRC_DIR,
-        FormatGuardPolicy::ExistingDump,
-        FormatPathPolicy::DefaultSrcObject,
-        Some(object_name_guard(SupportGuardRequirement::Editable)),
-    ),
-    descriptor_with_paths(
-        "template-remove",
-        EMPTY,
-        SRC_DIR,
-        SRC_DIR,
-        FormatGuardPolicy::ExistingDump,
-        FormatPathPolicy::DefaultSrcObject,
-        Some(object_name_guard(SupportGuardRequirement::Editable)),
-    ),
     descriptor(
         "dcs-compile",
         EMPTY,

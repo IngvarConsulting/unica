@@ -974,7 +974,7 @@ mod tests {
         let modern_shaped = client.receive().await;
         assert_eq!(
             modern_shaped["result"]["tools"].as_array().unwrap().len(),
-            74
+            71
         );
         assert_eq!(modern_shaped["result"]["resultType"], "complete");
         client
@@ -1051,7 +1051,7 @@ mod tests {
         let response = client.receive().await;
         assert_eq!(response["result"]["resultType"], "complete");
         let tools = response["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 74);
+        assert_eq!(tools.len(), 71);
         assert!(
             tools.iter().all(|tool| tool.get("description").is_none()),
             "the schema-only baseline holds on the modern branch too"

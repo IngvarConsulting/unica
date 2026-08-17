@@ -1785,27 +1785,14 @@ mod tests {
     }
 
     /// ADR-0072: the typed operation materializes the exact facet the retired
-    /// route produced — same Help.xml, same form flip; the page body names the
-    /// object by its logical name instead of the retired path dialect.
+    /// `help.add` produced — the same generators pin Help.xml and the page,
+    /// and the owner's form gains the IncludeHelpInContents flip.
     #[test]
     fn typed_add_help_matches_the_retired_help_add_files() {
         let fixture = Fixture::new("add-help-parity");
-        add_help_owner(&fixture, "Legacy");
         add_help_owner(&fixture, "Typed");
         let application = fixture_application(&fixture);
 
-        let legacy = application
-            .call_tool(
-                "unica.help.add",
-                &Map::from_iter([
-                    ("ObjectName".to_string(), json!("Catalogs/Legacy")),
-                    ("SrcDir".to_string(), json!("src")),
-                    ("Lang".to_string(), json!("ru")),
-                    ("dryRun".to_string(), json!(false)),
-                ]),
-            )
-            .unwrap();
-        assert!(legacy.ok, "{:?}", legacy.errors);
         let typed = application
             .call_tool(
                 "unica.meta.edit",
@@ -1819,21 +1806,27 @@ mod tests {
             .unwrap();
         assert!(typed.ok, "{:?}", typed.errors);
 
-        let legacy_dir = fixture.root.join("src/Catalogs/Legacy");
         let typed_dir = fixture.root.join("src/Catalogs/Typed");
+        let expected_help = {
+            let mut bytes = b"\xef\xbb\xbf".to_vec();
+            bytes.extend_from_slice(
+                crate::infrastructure::native_operations::help::help_metadata_xml(
+                    "ru",
+                    crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+                )
+                .as_bytes(),
+            );
+            bytes
+        };
         assert_eq!(
-            fs::read(legacy_dir.join("Ext/Help.xml")).unwrap(),
             fs::read(typed_dir.join("Ext/Help.xml")).unwrap(),
+            expected_help
         );
-        assert_eq!(
-            fs::read(legacy_dir.join("Forms/ItemForm.xml")).unwrap(),
-            fs::read(typed_dir.join("Forms/ItemForm.xml")).unwrap(),
-        );
-        let legacy_page = fs::read_to_string(legacy_dir.join("Ext/Help/ru.html")).unwrap();
-        let typed_page = fs::read_to_string(typed_dir.join("Ext/Help/ru.html")).unwrap();
-        assert_eq!(
-            legacy_page.replace("Catalogs/Legacy", "OWNER"),
-            typed_page.replace("Typed", "OWNER"),
+        let page = fs::read_to_string(typed_dir.join("Ext/Help/ru.html")).unwrap();
+        assert!(page.contains("<h1>Typed</h1>"), "{page}");
+        assert!(
+            page.contains("v8help://service_book/service_style"),
+            "{page}"
         );
         assert!(fs::read_to_string(typed_dir.join("Forms/ItemForm.xml"))
             .unwrap()
