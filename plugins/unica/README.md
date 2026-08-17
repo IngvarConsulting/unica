@@ -146,11 +146,11 @@ that still passes any retired top-level field fails with
 
 | Removed top-level form | Canonical `operations` element |
 | --- | --- |
-| `operation: "add-value-type"` + `name`, `base` | `{"op": "addValueType", "name", "base"}` |
-| `operation: "add-object-type"` + `name` | `{"op": "addObjectType", "name"}` |
-| `operation: "add-property"` + `typeName`, `property` [, `propertyPath`] | `{"op": "addProperty", "typeName", "property" [, "propertyPath"]}` |
-| `operation: "remove-type"` + `name` | `{"op": "removeType", "name"}` |
-| `operation: "remove-property"` + `typeName`, `name` [, `propertyPath`] | `{"op": "removeProperty", "typeName", "name" [, "propertyPath"]}` |
+| `operation: "add-value-type"` + `name`, `base` | `{"op": "addValueType", "name": "Amount", "base": "xs:decimal"}` |
+| `operation: "add-object-type"` + `name` | `{"op": "addObjectType", "name": "Order"}` |
+| `operation: "add-property"` + `typeName`, `property` [, `propertyPath`] | `{"op": "addProperty", "typeName": "Order", "property": {"name": "Ref", "type": "tns:Document"}}` — optional `propertyPath` targets a nested `typeDef` |
+| `operation: "remove-type"` + `name` | `{"op": "removeType", "name": "Order"}` |
+| `operation: "remove-property"` + `typeName`, `name` [, `propertyPath`] | `{"op": "removeProperty", "typeName": "Order", "name": "Ref"}` — optional `propertyPath` targets a nested `typeDef` |
 
 Field semantics are unchanged — an element carries exactly the fields the
 package writer has always read. Operations in one call apply in order, see

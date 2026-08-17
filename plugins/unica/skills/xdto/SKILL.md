@@ -1,7 +1,7 @@
 ---
 name: xdto
 description: Просмотреть или точечно изменить схему XDTO-пакета 1С по логическому адресу. Используй для EnterpriseData `valueType`, `objectType` и свойств типов.
-argument-hint: <sourceSet> <XDTOPackage.Name> [operations]
+argument-hint: <sourceSet> <XDTOPackage.Name> <operations>
 allowed-tools:
   - Read
   - Glob
