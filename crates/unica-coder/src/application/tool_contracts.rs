@@ -1304,11 +1304,7 @@ fn validate_xdto_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<
 /// One element of the `unica.xdto.edit` operations union (ADR-0071). Every
 /// message names the failing element as `operations[<index>]` so a rejected
 /// batch points at the exact operation.
-fn validate_xdto_operation_item(
-    tool_name: &str,
-    index: usize,
-    item: &Value,
-) -> Result<(), String> {
+fn validate_xdto_operation_item(tool_name: &str, index: usize, item: &Value) -> Result<(), String> {
     let element = |message: &str| format!("{tool_name} operations[{index}]: {message}");
     let item = item
         .as_object()
@@ -5279,7 +5275,9 @@ mod tests {
             assert_eq!(variant["properties"]["op"]["enum"], json!([op]));
             assert_eq!(variant["additionalProperties"], false);
             assert_eq!(
-                variant["required"].as_array().and_then(|required| required.first()),
+                variant["required"]
+                    .as_array()
+                    .and_then(|required| required.first()),
                 Some(&json!("op")),
                 "variant `{op}` must require its tag first"
             );
@@ -5307,7 +5305,10 @@ mod tests {
             "operation": "add-object-type",
             "name": "Document"
         });
-        assert!(!edit_validator.is_valid(&legacy), "schema accepted {legacy}");
+        assert!(
+            !edit_validator.is_valid(&legacy),
+            "schema accepted {legacy}"
+        );
         for dry_run in [true, false] {
             let error = validate_tool_arguments(edit, legacy.as_object().unwrap(), dry_run)
                 .expect_err("legacy flat form must fail before dispatch");
@@ -5327,9 +5328,8 @@ mod tests {
             ]
         });
         assert!(!edit_validator.is_valid(&second_element_broken));
-        let error =
-            validate_tool_arguments(edit, second_element_broken.as_object().unwrap(), true)
-                .expect_err("missing base must fail");
+        let error = validate_tool_arguments(edit, second_element_broken.as_object().unwrap(), true)
+            .expect_err("missing base must fail");
         assert!(error.contains("operations[1]"), "{error}");
 
         let element_required: &[(&str, &[&str], &str)] = &[

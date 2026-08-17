@@ -759,21 +759,20 @@ fn edit(
         let mut effects: Vec<XdtoOperationEffect> = Vec::new();
         let mut current_text = text;
         let mut step_baseline = validate(&before_model);
-        let partial_data = |effects: &[XdtoOperationEffect], package: &Package, no_op: bool| {
-            XdtoEditData {
+        let partial_data =
+            |effects: &[XdtoOperationEffect], package: &Package, no_op: bool| XdtoEditData {
                 source_set: package.source_set.clone(),
                 metadata_path: package.metadata_path.clone(),
                 location: addressed_location(package),
                 no_op,
                 effects: effects.to_vec(),
-            }
-        };
+            };
         for (index, (operation, operation_args)) in operations.iter().enumerate() {
             let writer_plan = writer::plan(&current_text, operation_args, operation.writer_key())
                 .map_err(|error| PlanningFailure {
-                    error: format!("operations[{index}]: {error}"),
-                    data: Some(Box::new(partial_data(&effects, &package, false))),
-                })?;
+                error: format!("operations[{index}]: {error}"),
+                data: Some(Box::new(partial_data(&effects, &package, false))),
+            })?;
             let after_model =
                 PackageModel::parse(&writer_plan.after).map_err(|error| PlanningFailure {
                     error: format!("operations[{index}]: {}", model_error(error)),
