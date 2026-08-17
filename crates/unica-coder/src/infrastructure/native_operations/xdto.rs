@@ -184,32 +184,30 @@ pub(crate) struct XdtoInfoData {
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum XdtoEditOperation {
-    #[serde(rename = "add-value-type")]
     AddValueType,
-    #[serde(rename = "add-object-type")]
     AddObjectType,
-    #[serde(rename = "add-property")]
     AddProperty,
-    #[serde(rename = "remove-type")]
     RemoveType,
-    #[serde(rename = "remove-property")]
     RemoveProperty,
 }
 
 impl XdtoEditOperation {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
-            "add-value-type" => Ok(Self::AddValueType),
-            "add-object-type" => Ok(Self::AddObjectType),
-            "add-property" => Ok(Self::AddProperty),
-            "remove-type" => Ok(Self::RemoveType),
-            "remove-property" => Ok(Self::RemoveProperty),
-            _ => Err("unsupported_node: supported operations are add-value-type, add-object-type, add-property, remove-type, remove-property".to_string()),
+            "addValueType" => Ok(Self::AddValueType),
+            "addObjectType" => Ok(Self::AddObjectType),
+            "addProperty" => Ok(Self::AddProperty),
+            "removeType" => Ok(Self::RemoveType),
+            "removeProperty" => Ok(Self::RemoveProperty),
+            _ => Err("unsupported_node: supported operations are addValueType, addObjectType, addProperty, removeType, removeProperty".to_string()),
         }
     }
 
-    fn as_str(self) -> &'static str {
+    /// The writer keeps its historical kebab-case dispatch keys: ADR-0071
+    /// changed the published payload shape, not the write semantics.
+    fn writer_key(self) -> &'static str {
         match self {
             Self::AddValueType => "add-value-type",
             Self::AddObjectType => "add-object-type",
@@ -268,16 +266,28 @@ pub(crate) struct XdtoProjectedChange {
     replacement_byte_count: usize,
 }
 
+/// The effect of one element of the `operations` array (ADR-0071). Byte
+/// ranges in `change` are relative to the document state the operation was
+/// applied to — operations are sequential, so element `i` sees the text
+/// produced by element `i - 1`.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoOperationEffect {
+    operation_index: usize,
+    op: XdtoEditOperation,
+    no_op: bool,
+    change: Option<XdtoProjectedChange>,
+    findings: Vec<XdtoFinding>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct XdtoEditData {
     source_set: String,
     metadata_path: String,
     location: XdtoLocation,
-    operation: XdtoEditOperation,
     no_op: bool,
-    change: Option<XdtoProjectedChange>,
-    findings: Vec<XdtoFinding>,
+    effects: Vec<XdtoOperationEffect>,
 }
 
 pub(crate) fn invoke_read(
@@ -690,6 +700,41 @@ fn xdto_cursor_error(error: String) -> String {
     )
 }
 
+/// One parsed element of the `operations` array: the operation kind plus the
+/// element's own fields as that operation's writer argument map.
+type ParsedXdtoOperation = (XdtoEditOperation, Map<String, Value>);
+
+/// Split the typed `operations` array into per-element writer inputs. The
+/// element's own fields are exactly the argument names the writer has always
+/// read, so each element minus its `op` tag is that operation's argument map.
+fn parse_operations(args: &Map<String, Value>) -> Result<Vec<ParsedXdtoOperation>, String> {
+    let operations = args
+        .get("operations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "operations must be a non-empty array".to_string())?;
+    if operations.is_empty() {
+        return Err("operations must be a non-empty array".to_string());
+    }
+    operations
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let item = item
+                .as_object()
+                .ok_or_else(|| format!("operations[{index}]: must be an object"))?;
+            let op = item
+                .get("op")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("operations[{index}]: requires `op`"))?;
+            let operation = XdtoEditOperation::parse(op)
+                .map_err(|error| format!("operations[{index}]: {error}"))?;
+            let mut operation_args = item.clone();
+            operation_args.remove("op");
+            Ok((operation, operation_args))
+        })
+        .collect()
+}
+
 fn edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -707,65 +752,90 @@ fn edit(
                 "namespace_mismatch: descriptor Namespace must equal package targetNamespace",
             ));
         }
-        let baseline_findings = validate(&before_model);
-        let operation = XdtoEditOperation::parse(required(args, "operation")?)?;
-        let writer_plan = writer::plan(&text, args, operation.as_str())?;
-        let after = encode_like(&before, &writer_plan.after);
-        let post = decode(&after)?;
-        let after_model = PackageModel::parse(&post).map_err(model_error)?;
-        let validation = ValidationDiff::between(&baseline_findings, validate(&after_model));
-        let blocked = writer_plan.blocks() || validation.blocks();
-        let no_op = before == after && !blocked;
-        debug_assert!(writer_plan.edits.len() <= 1);
-        let change = writer_plan.edits.first().map(|edit| XdtoProjectedChange {
-            kind: XdtoChangeKind::PackageTextEdit,
-            location: addressed_location(&package),
-            body_byte_range: XdtoByteRange {
-                start: edit.range.start,
-                end: edit.range.end,
-            },
-            removed_byte_count: edit.range.end - edit.range.start,
-            replacement_byte_count: edit.replacement.len(),
-        });
-        let mut findings = validation
-            .findings
-            .iter()
-            .map(|finding| classified_finding(&package, finding))
-            .collect::<Vec<_>>();
-        if let Some(finding) = &writer_plan.finding {
-            findings.push(writer_finding(&package, finding));
-        }
-        let data = XdtoEditData {
-            source_set: package.source_set.clone(),
-            metadata_path: package.metadata_path.clone(),
-            location: addressed_location(&package),
-            operation,
-            no_op,
-            change,
-            findings,
+        let operations = parse_operations(args)?;
+        // ADR-0071: operations apply in order against the accumulated text, so
+        // element `i` sees what element `i - 1` produced; the file is written
+        // once after the whole batch plans cleanly.
+        let mut effects: Vec<XdtoOperationEffect> = Vec::new();
+        let mut current_text = text;
+        let mut step_baseline = validate(&before_model);
+        let partial_data = |effects: &[XdtoOperationEffect], package: &Package, no_op: bool| {
+            XdtoEditData {
+                source_set: package.source_set.clone(),
+                metadata_path: package.metadata_path.clone(),
+                location: addressed_location(package),
+                no_op,
+                effects: effects.to_vec(),
+            }
         };
-        if blocked {
-            let mut codes = validation
+        for (index, (operation, operation_args)) in operations.iter().enumerate() {
+            let writer_plan = writer::plan(&current_text, operation_args, operation.writer_key())
+                .map_err(|error| PlanningFailure {
+                    error: format!("operations[{index}]: {error}"),
+                    data: Some(Box::new(partial_data(&effects, &package, false))),
+                })?;
+            let after_model =
+                PackageModel::parse(&writer_plan.after).map_err(|error| PlanningFailure {
+                    error: format!("operations[{index}]: {}", model_error(error)),
+                    data: Some(Box::new(partial_data(&effects, &package, false))),
+                })?;
+            let validation = ValidationDiff::between(&step_baseline, validate(&after_model));
+            let blocked = writer_plan.blocks() || validation.blocks();
+            let step_no_op = current_text == writer_plan.after && !blocked;
+            debug_assert!(writer_plan.edits.len() <= 1);
+            let change = writer_plan.edits.first().map(|edit| XdtoProjectedChange {
+                kind: XdtoChangeKind::PackageTextEdit,
+                location: addressed_location(&package),
+                body_byte_range: XdtoByteRange {
+                    start: edit.range.start,
+                    end: edit.range.end,
+                },
+                removed_byte_count: edit.range.end - edit.range.start,
+                replacement_byte_count: edit.replacement.len(),
+            });
+            let mut findings = validation
                 .findings
                 .iter()
-                .filter(|finding| finding.state == validation::FindingState::Introduced)
-                .map(|finding| finding.code.as_str())
+                .map(|finding| classified_finding(&package, finding))
                 .collect::<Vec<_>>();
-            if let Some(finding) = writer_plan
-                .finding
-                .as_ref()
-                .filter(|_| writer_plan.blocks())
-            {
-                codes.push(finding.code);
+            if let Some(finding) = &writer_plan.finding {
+                findings.push(writer_finding(&package, finding));
             }
-            return Err(PlanningFailure {
-                error: format!(
-                    "xdto_validation_failed: introduced findings: {}",
-                    codes.join(", ")
-                ),
-                data: Some(Box::new(data)),
+            effects.push(XdtoOperationEffect {
+                operation_index: index,
+                op: *operation,
+                no_op: step_no_op,
+                change,
+                findings,
             });
+            if blocked {
+                let mut codes = validation
+                    .findings
+                    .iter()
+                    .filter(|finding| finding.state == validation::FindingState::Introduced)
+                    .map(|finding| finding.code.as_str())
+                    .collect::<Vec<_>>();
+                if let Some(finding) = writer_plan
+                    .finding
+                    .as_ref()
+                    .filter(|_| writer_plan.blocks())
+                {
+                    codes.push(finding.code);
+                }
+                return Err(PlanningFailure {
+                    error: format!(
+                        "operations[{index}]: xdto_validation_failed: introduced findings: {}",
+                        codes.join(", ")
+                    ),
+                    data: Some(Box::new(partial_data(&effects, &package, false))),
+                });
+            }
+            step_baseline = validate(&after_model);
+            current_text = writer_plan.after;
         }
+        let after = encode_like(&before, &current_text);
+        let no_op = before == after;
+        let data = partial_data(&effects, &package, no_op);
         Ok(MutationPlan {
             package,
             before,
@@ -1511,8 +1581,10 @@ mod tests {
         let args = args(&[
             ("sourceSet", json!("main")),
             ("metadataPath", json!("XDTOPackage.Sample")),
-            ("operation", json!("add-object-type")),
-            ("name", json!("Added")),
+            (
+                "operations",
+                json!([{"op": "addObjectType", "name": "Added"}]),
+            ),
         ]);
         (context, args, package, descriptor)
     }
@@ -1523,9 +1595,11 @@ mod tests {
     ) -> Vec<String> {
         serde_json::to_value(execution.data.as_ref().expect("edit data"))
             .unwrap()
-            .get("findings")
+            .get("effects")
             .and_then(Value::as_array)
             .into_iter()
+            .flatten()
+            .filter_map(|effect| effect.get("findings").and_then(Value::as_array))
             .flatten()
             .filter(|finding| finding.get("state").and_then(Value::as_str) == Some(state))
             .filter_map(|finding| finding.get("code").and_then(Value::as_str))
@@ -1626,16 +1700,18 @@ mod tests {
         let arguments = args(&[
             ("sourceSet", json!("main")),
             ("metadataPath", json!("XDTOPackage.EnterpriseData_1_17_3")),
-            ("operation", json!("add-property")),
-            ("typeName", json!("ЛюбаяСсылка")),
-            ("propertyPath", json!("СсылкаНаОбъект")),
             (
-                "property",
-                json!({
-                    "name":"Документ_НовыйДокумент",
-                    "type":"tns:Документ_ЗаказКлиента",
-                    "minOccurs":0
-                }),
+                "operations",
+                json!([{
+                    "op": "addProperty",
+                    "typeName": "ЛюбаяСсылка",
+                    "propertyPath": "СсылкаНаОбъект",
+                    "property": {
+                        "name":"Документ_НовыйДокумент",
+                        "type":"tns:Документ_ЗаказКлиента",
+                        "minOccurs":0
+                    }
+                }]),
             ),
         ]);
         (context, arguments, package)
@@ -1754,10 +1830,15 @@ mod tests {
                 "unica.xdto.edit",
                 &public_args(&[
                     ("dryRun", json!(false)),
-                    ("operation", json!("add-property")),
-                    ("typeName", json!("Holder")),
-                    ("propertyPath", json!(r"A\.B")),
-                    ("property", json!({"name":"Child", "type":"xs:string"})),
+                    (
+                        "operations",
+                        json!([{
+                            "op": "addProperty",
+                            "typeName": "Holder",
+                            "propertyPath": r"A\.B",
+                            "property": {"name":"Child", "type":"xs:string"}
+                        }]),
+                    ),
                 ]),
             )
             .unwrap();
@@ -1996,7 +2077,7 @@ mod tests {
             .invalidated
             .contains(&"metadata_graph".to_string()));
         assert_eq!(preview.data.as_ref().unwrap()["noOp"], false);
-        assert!(preview.data.as_ref().unwrap()["change"].is_object());
+        assert!(preview.data.as_ref().unwrap()["effects"][0]["change"].is_object());
         assert_eq!(fs::read(&package).unwrap(), before);
 
         let applied = UnicaApplication::new()
@@ -2018,7 +2099,7 @@ mod tests {
                 .unwrap();
             assert!(repeated.ok, "{:?}", repeated.errors);
             assert_eq!(repeated.data.as_ref().unwrap()["noOp"], true);
-            assert!(repeated.data.as_ref().unwrap()["change"].is_null());
+            assert!(repeated.data.as_ref().unwrap()["effects"][0]["change"].is_null());
             assert!(repeated.cache.events.is_empty(), "dryRun={dry_run}");
             assert!(repeated.cache.invalidated.is_empty(), "dryRun={dry_run}");
             assert_eq!(fs::read(&package).unwrap(), after);
@@ -2029,7 +2110,10 @@ mod tests {
     #[test]
     fn xdto_public_edit_rejects_two_or_more_boms_without_bytes_or_cache_events() {
         let (context, mut arguments, package, _) = xdto_guard_fixture("multiple-bom");
-        arguments.insert("name".to_string(), json!("СоставнойЛюбойОбъект"));
+        arguments.insert(
+            "operations".to_string(),
+            json!([{"op": "addObjectType", "name": "СоставнойЛюбойОбъект"}]),
+        );
 
         for bom_count in [2, 3] {
             let mut before = Vec::new();
@@ -2213,15 +2297,16 @@ mod tests {
         let conflicting = args(&[
             ("sourceSet", json!("main")),
             ("metadataPath", json!("XDTOPackage.Sample")),
-            ("operation", json!("add-value-type")),
-            ("name", json!("ЛюбаяСсылка")),
-            ("base", json!("xs:string")),
+            (
+                "operations",
+                json!([{"op": "addValueType", "name": "ЛюбаяСсылка", "base": "xs:string"}]),
+            ),
         ]);
         for dry_run in [true, false] {
             let rejected = call(conflicting.clone(), dry_run);
             assert!(!rejected.ok);
             assert_eq!(rejected.data.as_ref().unwrap()["noOp"], false);
-            assert!(rejected.data.as_ref().unwrap()["change"].is_null());
+            assert!(rejected.data.as_ref().unwrap()["effects"][0]["change"].is_null());
             assert!(rejected.cache.events.is_empty());
             assert_eq!(fs::read(&package).unwrap(), before);
         }
@@ -2229,15 +2314,20 @@ mod tests {
         let semantic = args(&[
             ("sourceSet", json!("main")),
             ("metadataPath", json!("XDTOPackage.Sample")),
-            ("operation", json!("add-property")),
-            ("typeName", json!("ЛюбаяСсылка")),
-            ("property", json!({"name":"Broken", "type":"tns:Missing"})),
+            (
+                "operations",
+                json!([{
+                    "op": "addProperty",
+                    "typeName": "ЛюбаяСсылка",
+                    "property": {"name":"Broken", "type":"tns:Missing"}
+                }]),
+            ),
         ]);
         for dry_run in [true, false] {
             let rejected = call(semantic.clone(), dry_run);
             assert!(!rejected.ok);
             assert_eq!(rejected.data.as_ref().unwrap()["noOp"], false);
-            assert!(rejected.data.as_ref().unwrap()["change"].is_object());
+            assert!(rejected.data.as_ref().unwrap()["effects"][0]["change"].is_object());
             assert!(rejected.cache.events.is_empty());
             assert_eq!(fs::read(&package).unwrap(), before);
         }
@@ -2263,6 +2353,86 @@ mod tests {
     }
 
     #[test]
+    fn xdto_operations_apply_in_order_within_one_transaction() {
+        let (context, _, package, _) = xdto_guard_fixture("batch-transaction");
+        let before = fs::read(&package).unwrap();
+        let arguments = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.Sample")),
+            (
+                "operations",
+                json!([
+                    {"op": "addObjectType", "name": "Order"},
+                    {"op": "addProperty", "typeName": "Order",
+                     "property": {"name": "Ref", "type": "xs:string"}}
+                ]),
+            ),
+        ]);
+
+        let preview = preview_with_data(&arguments, &context);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome);
+        let preview_data = data_json(preview.data);
+        assert_eq!(preview_data["noOp"], json!(false));
+        let effects = preview_data["effects"].as_array().unwrap();
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0]["operationIndex"], json!(0));
+        assert_eq!(effects[0]["op"], json!("addObjectType"));
+        assert_eq!(effects[1]["operationIndex"], json!(1));
+        assert_eq!(effects[1]["op"], json!("addProperty"));
+        // The second operation targets the type the first one creates, so it
+        // plans a real change: element `i` sees the text element `i - 1` made.
+        assert!(effects[1]["change"].is_object());
+        assert_eq!(fs::read(&package).unwrap(), before);
+
+        let applied = apply_with_data(&arguments, &context);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome);
+        let after = fs::read_to_string(&package).unwrap();
+        assert!(after.contains("\"Order\""), "{after}");
+        assert!(
+            after.contains(r#"<property name="Ref" type="xs:string"/>"#),
+            "{after}"
+        );
+        assert_eq!(preview_data["effects"], data_json(applied.data)["effects"]);
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn xdto_failed_batch_element_names_its_index_and_writes_nothing() {
+        let (context, _, package, _) = xdto_guard_fixture("batch-atomic");
+        let before = fs::read(&package).unwrap();
+        let arguments = args(&[
+            ("sourceSet", json!("main")),
+            ("metadataPath", json!("XDTOPackage.Sample")),
+            (
+                "operations",
+                json!([
+                    {"op": "addObjectType", "name": "Order"},
+                    {"op": "removeType", "name": "Missing"}
+                ]),
+            ),
+        ]);
+
+        for execution in [
+            preview_with_data(&arguments, &context),
+            apply_with_data(&arguments, &context),
+        ] {
+            assert!(!execution.outcome.ok, "{:?}", execution.outcome);
+            let errors = execution.outcome.errors.join("\n");
+            assert!(errors.contains("operations[1]"), "{errors}");
+            let data = data_json(execution.data);
+            let effects = data["effects"].as_array().unwrap();
+            assert_eq!(effects.len(), 1, "{effects:?}");
+            assert_eq!(effects[0]["op"], json!("addObjectType"));
+            assert_eq!(
+                fs::read(&package).unwrap(),
+                before,
+                "a failed element must leave no partial write"
+            );
+        }
+        fs::remove_dir_all(context.workspace_root).unwrap();
+    }
+
+    #[test]
     fn xdto_writer_orchestration_reports_exact_and_conflicting_duplicates_without_bytes() {
         let (context, args, package, _) = xdto_guard_fixture("writer-duplicates");
         let applied = apply_with_data(&args, &context);
@@ -2273,7 +2443,7 @@ mod tests {
         assert!(exact.outcome.ok, "{:?}", exact.outcome);
         let exact_data = data_json(exact.data);
         assert_eq!(exact_data["noOp"], json!(true));
-        let exact_finding = exact_data["findings"]
+        let exact_finding = exact_data["effects"][0]["findings"]
             .as_array()
             .unwrap()
             .iter()
@@ -2283,14 +2453,16 @@ mod tests {
         assert_eq!(exact_finding["state"], "pre_existing");
 
         let mut conflicting_args = args.clone();
-        conflicting_args.insert("operation".to_string(), json!("add-value-type"));
-        conflicting_args.insert("base".to_string(), json!("xs:string"));
+        conflicting_args.insert(
+            "operations".to_string(),
+            json!([{"op": "addValueType", "name": "Added", "base": "xs:string"}]),
+        );
         let conflict = preview_with_data(&conflicting_args, &context);
         assert!(!conflict.outcome.ok, "{:?}", conflict.outcome);
         let conflict_data = data_json(conflict.data);
         assert_eq!(conflict_data["noOp"], json!(false));
-        assert!(conflict_data["change"].is_null());
-        let conflict_finding = conflict_data["findings"]
+        assert!(conflict_data["effects"][0]["change"].is_null());
+        let conflict_finding = conflict_data["effects"][0]["findings"]
             .as_array()
             .unwrap()
             .iter()
@@ -2340,11 +2512,13 @@ mod tests {
         assert!(super::validation::validate(&model)
             .iter()
             .any(|finding| finding.code == "duplicate_type"));
-        args.insert("operation".to_string(), json!("add-property"));
-        args.insert("typeName".to_string(), json!("Target"));
         args.insert(
-            "property".to_string(),
-            json!({"name":"Added", "type":"xs:string"}),
+            "operations".to_string(),
+            json!([{
+                "op": "addProperty",
+                "typeName": "Target",
+                "property": {"name":"Added", "type":"xs:string"}
+            }]),
         );
 
         for execution in [
@@ -2381,8 +2555,10 @@ mod tests {
 </package>"#,
         )
         .unwrap();
-        args.insert("operation".to_string(), json!("add-object-type"));
-        args.insert("name".to_string(), json!("Safe"));
+        args.insert(
+            "operations".to_string(),
+            json!([{"op": "addObjectType", "name": "Safe"}]),
+        );
 
         let execution = preview_with_data(&args, &context);
 
@@ -2541,11 +2717,13 @@ mod tests {
     #[test]
     fn xdto_validation_rejects_bare_property_qname_without_rewriting() {
         let (context, mut args, _, _) = xdto_guard_fixture("validation-bare-qname");
-        args.insert("operation".to_string(), json!("add-property"));
-        args.insert("typeName".to_string(), json!("ЛюбаяСсылка"));
         args.insert(
-            "property".to_string(),
-            json!({"name":"BareSelf", "type":"Missing"}),
+            "operations".to_string(),
+            json!([{
+                "op": "addProperty",
+                "typeName": "ЛюбаяСсылка",
+                "property": {"name":"BareSelf", "type":"Missing"}
+            }]),
         );
 
         let execution = preview_with_data(&args, &context);
@@ -2562,11 +2740,13 @@ mod tests {
     fn xdto_validation_blocks_candidate_unknown_type_and_invalid_ncname() {
         let (context, mut args, package, _) = xdto_guard_fixture("validation-candidate");
         let before = fs::read(&package).unwrap();
-        args.insert("operation".to_string(), json!("add-property"));
-        args.insert("typeName".to_string(), json!("ЛюбаяСсылка"));
         args.insert(
-            "property".to_string(),
-            json!({"name":"bad:name", "type":"tns:Missing"}),
+            "operations".to_string(),
+            json!([{
+                "op": "addProperty",
+                "typeName": "ЛюбаяСсылка",
+                "property": {"name":"bad:name", "type":"tns:Missing"}
+            }]),
         );
 
         let execution = preview_with_data(&args, &context);
@@ -2596,8 +2776,10 @@ mod tests {
 </package>"#,
         )
         .unwrap();
-        args.insert("operation".to_string(), json!("remove-type"));
-        args.insert("name".to_string(), json!("Used"));
+        args.insert(
+            "operations".to_string(),
+            json!([{"op": "removeType", "name": "Used"}]),
+        );
 
         let execution = preview_with_data(&args, &context);
 

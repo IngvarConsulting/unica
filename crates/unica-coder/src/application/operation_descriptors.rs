@@ -155,7 +155,7 @@ const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
 // has neither and `validate_code_patch_arguments` enforces each operation.
 const CODE_PATCH_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operation", "content"];
 const XDTO_INFO_REQUIRED: &[&str] = &["sourceSet", "metadataPath"];
-const XDTO_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operation"];
+const XDTO_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operations"];
 
 const JSON_PATH: &[&str] = &["JsonPath", "jsonPath"];
 const DEFINITION_FILE: &[&str] = &["DefinitionFile", "definitionFile"];
