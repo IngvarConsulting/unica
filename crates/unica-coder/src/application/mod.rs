@@ -1056,12 +1056,21 @@ fn call_tool_with_runtime_admission(
     let mode = InvocationMode::from_validated_args(spec, args)?;
     tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
     let dry_run = mode.is_preview();
+    // ADR-0074: a classified applied operation runs and carries its named risk
+    // into the result; only an unclassified one still fails closed.
+    let mut applied_risk = None;
     if runtime_admission == RuntimeAdmissionPolicy::Enforce
         && matches!(spec.handler, ToolHandler::RuntimeAdapter)
         && !dry_run
     {
-        let failure = runtime_admission::runtime_receipt_admission_failure(spec.name, args)?;
-        return Ok(runtime_receipt_admission_result(spec, failure));
+        match runtime_admission::runtime_risk_notice(spec.name, args)? {
+            runtime_admission::RuntimeRiskOutcome::Refused(failure) => {
+                return Ok(runtime_receipt_admission_result(spec, failure));
+            }
+            runtime_admission::RuntimeRiskOutcome::Warned(notice) => {
+                applied_risk = Some(notice);
+            }
+        }
     }
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
@@ -1386,18 +1395,24 @@ fn call_tool_with_runtime_admission(
             ToolHandler::ProjectStatus => {
                 project_health::invoke(ports, &context, cancellation, deadline)
             }
-            _ => ports.invoke_handler_with_operational_config(
+            _ => ports.invoke_handler_with_progress(
                 spec,
                 args,
                 &context,
                 mode,
                 operational_config.as_ref(),
                 cancellation,
+                progress,
             )?,
         },
     };
     enforce_result_contract(spec, mode, &handler_outcome)?;
     let mut outcome = handler_outcome.adapter;
+    if let Some(notice) = applied_risk {
+        outcome
+            .warnings
+            .push(format!("{}: {}", notice.code, notice.message));
+    }
     let handler_events = handler_outcome.events;
     let projected_events = handler_outcome.projected_events;
     let recorded_cache = handler_outcome.recorded_cache;

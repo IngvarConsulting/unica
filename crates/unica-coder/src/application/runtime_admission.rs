@@ -65,10 +65,6 @@ pub(crate) fn runtime_receipt_admission_failure(
 }
 
 /// One named applied-risk reason carried into the warning and the receipt.
-#[allow(
-    dead_code,
-    reason = "the applied execute path consuming this lands in task 3 of docs/plans/2026-08-18-applied-runtime-execute-hybrid.md"
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeRiskNotice {
     pub(crate) code: &'static str,
@@ -77,20 +73,12 @@ pub(crate) struct RuntimeRiskNotice {
 
 /// ADR-0074: a classified applied operation is warned about and executed; an
 /// unclassified one still fails closed.
-#[allow(
-    dead_code,
-    reason = "the applied execute path consuming this lands in task 3 of docs/plans/2026-08-18-applied-runtime-execute-hybrid.md"
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RuntimeRiskOutcome {
     Warned(RuntimeRiskNotice),
     Refused(RuntimeAdmissionFailure),
 }
 
-#[allow(
-    dead_code,
-    reason = "the applied execute path consuming this lands in task 3 of docs/plans/2026-08-18-applied-runtime-execute-hybrid.md"
-)]
 pub(crate) fn runtime_risk_notice(
     tool_name: &str,
     args: &Map<String, Value>,

@@ -249,7 +249,33 @@ pub(crate) enum RuntimeJobPhase {
 }
 
 impl RuntimeJobPhase {
-    fn is_terminal(self) -> bool {
+    /// Phase name as it travels on the wire and in progress messages.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::CancelRequested => "cancelRequested",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timedOut",
+            Self::Lost => "lost",
+        }
+    }
+
+    /// Completed units for `notifications/progress`. Never a percentage: a job
+    /// walks queued, running and one terminal phase.
+    pub(crate) fn progress_units(self) -> f64 {
+        match self {
+            Self::Queued => 0.0,
+            Self::Running | Self::CancelRequested => 1.0,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::TimedOut | Self::Lost => 2.0,
+        }
+    }
+
+    pub(crate) const PROGRESS_TOTAL: f64 = 2.0;
+
+    pub(crate) fn is_terminal(self) -> bool {
         match self {
             Self::Queued | Self::Running | Self::CancelRequested => false,
             Self::Succeeded | Self::Failed | Self::Cancelled | Self::TimedOut | Self::Lost => true,
@@ -2048,6 +2074,56 @@ fn read_worker_commit(
             fail_queued_job(&handoff.cache_root, &handoff.job_id, &error)?;
             Err(error)
         }
+    }
+}
+
+/// Injectable durable-job lifecycle.
+///
+/// ADR-0074 runs the applied `unica.runtime.execute` path on the durable
+/// record, and a test has to script that record without spawning a detached
+/// worker, so the three operations the applied path needs live behind a trait.
+pub(crate) trait RuntimeJobLifecycle: Send + Sync {
+    fn start(
+        &self,
+        cache_root: PathBuf,
+        program: PathBuf,
+        cwd: PathBuf,
+        request: RuntimeJobRequest,
+        cancellation: &CancellationToken,
+    ) -> JobResult<RuntimeJobSnapshot>;
+
+    fn status(&self, cache_root: PathBuf, id: &str) -> JobResult<RuntimeJobSnapshot>;
+
+    fn request_cancel(&self, cache_root: PathBuf, id: &str) -> JobResult<RuntimeJobSnapshot>;
+
+    fn logs(&self, cache_root: PathBuf, id: &str, tail_chars: usize) -> JobResult<RuntimeJobLogs>;
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SystemRuntimeJobLifecycle;
+
+impl RuntimeJobLifecycle for SystemRuntimeJobLifecycle {
+    fn start(
+        &self,
+        cache_root: PathBuf,
+        program: PathBuf,
+        cwd: PathBuf,
+        request: RuntimeJobRequest,
+        cancellation: &CancellationToken,
+    ) -> JobResult<RuntimeJobSnapshot> {
+        start_detached_worker(cache_root, program, cwd, request, cancellation)
+    }
+
+    fn status(&self, cache_root: PathBuf, id: &str) -> JobResult<RuntimeJobSnapshot> {
+        RuntimeJobService::status_at(cache_root, id)
+    }
+
+    fn request_cancel(&self, cache_root: PathBuf, id: &str) -> JobResult<RuntimeJobSnapshot> {
+        RuntimeJobService::request_cancel_at(cache_root, id)
+    }
+
+    fn logs(&self, cache_root: PathBuf, id: &str, tail_chars: usize) -> JobResult<RuntimeJobLogs> {
+        RuntimeJobService::logs_at(cache_root, id, tail_chars)
     }
 }
 
