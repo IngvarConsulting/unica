@@ -1630,7 +1630,7 @@ class RuntimeReceiptContractTests(unittest.TestCase):
     def test_runtime_receipt_rule_covers_packaged_guidance(self) -> None:
         record = self.records.get("INV-MCP-RUNTIME-RECEIPT")
         self.assertIsNotNone(record, "missing INV-MCP-RUNTIME-RECEIPT")
-        self.assertEqual(record.one("Decision"), "ADR-0066")
+        self.assertEqual(record.one("Decision"), "ADR-0074")
         self.assertIn("packaged", record.one("Scope").split(", "))
         self.assertIn(
             "tests/ci/test_unica_skills.py",
