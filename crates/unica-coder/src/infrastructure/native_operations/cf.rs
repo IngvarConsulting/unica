@@ -4719,9 +4719,12 @@ fn cf_init_execute(
         )]);
         if preview {
             // ADR-0073 §1: предпросмотр обязан выполнить ту же предметную
-            // валидацию, что применение. Пост-образ материализуется в
-            // изолированном временном каталоге и проверяется тем же
-            // `validate_cf`; рабочее пространство при этом не трогается.
+            // валидацию, что применение. Create-only конфликты транзакция уже
+            // отвергла при планировании; здесь добавляются те же семантические
+            // проверки плановых байтов и полная проверка пост-образа, который
+            // материализуется в изолированном временном каталоге. Рабочее
+            // пространство при этом не трогается.
+            transaction.semantic_preflight()?;
             validate_cf_init_post_image(
                 &out_dir,
                 &[
@@ -5065,6 +5068,39 @@ mod cf_init_transaction_tests {
             .contains(r#"version="2.21""#));
         assert!(!root.join("src/nested").exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ADR-0073 §1: create-only конфликт виден предпросмотру так же, как
+    /// применению, для каждого планового артефакта по отдельности.
+    #[test]
+    fn cf_init_preview_and_apply_agree_on_each_pre_existing_artifact() {
+        for relative in [
+            "src/Configuration.xml",
+            "src/Languages/Русский.xml",
+            "src/Ext/ClientApplicationInterface.xml",
+        ] {
+            let (root, context) = init_test_context("preview-create-conflict");
+            let occupied = root.join(relative);
+            fs::create_dir_all(occupied.parent().unwrap()).unwrap();
+            fs::write(&occupied, b"occupied").unwrap();
+            let args = init_args("Demo", None);
+
+            let preview = preview_configuration_scaffold_with_data(&args, &context);
+            let applied = create_configuration_scaffold(&args, &context);
+
+            assert_eq!(
+                preview.outcome.ok, applied.ok,
+                "{relative}: preview and apply must agree; preview={:?} apply={applied:?}",
+                preview.outcome
+            );
+            assert!(!preview.outcome.ok, "{relative}: {:?}", preview.outcome);
+            assert_eq!(
+                fs::read(&occupied).unwrap(),
+                b"occupied",
+                "{relative}: neither path may clobber the occupied target"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     /// ADR-0073 §1: предпросмотр выполняет ту же предметную валидацию, что и

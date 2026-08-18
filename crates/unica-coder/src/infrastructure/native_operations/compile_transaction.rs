@@ -1403,7 +1403,9 @@ impl CompileTransaction {
         );
     }
 
-    fn semantic_preflight(&self) -> Result<(), String> {
+    /// ADR-0073: предпросмотр вызывает ту же семантическую проверку плановых
+    /// байтов, что применение выполняет перед публикацией.
+    pub(crate) fn semantic_preflight(&self) -> Result<(), String> {
         for create in &self.creates {
             validate_xml_when_applicable(&create.path, &create.bytes)?;
         }
