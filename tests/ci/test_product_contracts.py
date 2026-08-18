@@ -473,51 +473,6 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
-    def test_task_router_paths_resolve(self) -> None:
-        """Каждый путь таблицы маршрутизации указывает на существующее место.
-
-        Таблица — единственный маршрут от задачи к коду, и её пути записаны в
-        обратных кавычках, а не markdown-ссылками, поэтому резолвер ссылок их
-        не видел. Шесть строк успели усохнуть до хвоста вроде
-        `domain/cache.rs`: от корня такой путь не разрешается, `rg` по нему
-        ничего не находит, и строка перестаёт быть маршрутом.
-        """
-        repo_root = Path(__file__).resolve().parents[2]
-        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
-
-        section = agents.split("## Куда смотреть, где менять", 1)[1].split("\n## ", 1)[0]
-        rows = [
-            line
-            for line in section.splitlines()
-            if line.startswith("|") and not set(line) <= set("| -")
-        ]
-        self.assertGreater(len(rows), 5, "таблица маршрутизации не разобрана")
-
-        # Только два префикса читаются от `spec/`, и оба названы в шапке
-        # таблицы; всё остальное — от корня репозитория.
-        spec_relative = ("architecture/", "acceptance/")
-        extensions = (".md", ".rs", ".py", ".yml", ".yaml", ".json", ".toml")
-        offenders = []
-        checked = 0
-        for row in rows[1:]:
-            for token in re.findall(r"`([^`]+)`", row):
-                if "/" not in token and not token.endswith(extensions):
-                    continue
-                # `<группа>` и `<имя>` подставляются вызывающим; проверяется
-                # каталог, в котором такой файл обязан лежать.
-                probe = token
-                if "<" in probe:
-                    probe = probe.rsplit("/", 1)[0] if "/" in probe else probe
-                    if "<" in probe:
-                        continue
-                base = repo_root / "spec" if probe.startswith(spec_relative) else repo_root
-                checked += 1
-                if not (base / probe).exists():
-                    offenders.append(token)
-
-        self.assertGreater(checked, 15, "пути таблицы не разобраны")
-        self.assertEqual(offenders, [], "путь из таблицы маршрутизации не разрешается")
-
     def test_downloader_and_local_corpus_contract_are_retired(self) -> None:
         """Справка платформы приходит из установки, а не из скачанного корпуса.
 

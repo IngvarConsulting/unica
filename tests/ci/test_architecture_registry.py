@@ -363,11 +363,10 @@ CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 # (`INV-CACHE-07`), and a resolver that cannot see them cannot report them.
 RECORD_CITATION = re.compile(r"\b((?:INV|REQ)-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b")
 # Names shaped like a record but written to be read as an example, never as a
-# citation. `AGENTS.md` teaches the naming rule by contrasting a good code with
-# a bad one, and the bad one has to look real to make the point. The resolver
-# below requires every entry here to be used and to stay unclaimed, so the
-# exemption cannot outlive the sentence it was written for.
-ILLUSTRATIVE_IDENTIFIERS = {"INV-MCP-TOOL-CONTRACTS-RS"}
+# citation. The resolver below requires every entry here to be used, so an
+# exemption cannot outlive the sentence it was written for -- which is why this
+# set emptied when the v1 naming-rules section left `AGENTS.md`.
+ILLUSTRATIVE_IDENTIFIERS: set[str] = set()
 BACKTICKED_SPAN = re.compile(r"`[^`]*`")
 NORMATIVE_FIELDS = ("Rule",)
 LATIN_TOKEN = re.compile(

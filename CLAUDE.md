@@ -1,5 +1,6 @@
-See [AGENTS.md](AGENTS.md) for entry points, source-of-truth ordering, search
-hygiene, and development rules. That file applies to Claude Code unchanged.
+See [AGENTS.md](AGENTS.md) for the current state of the architecture layer,
+search hygiene, and development rules. That file applies to Claude Code
+unchanged.
 
 ## Claude-specific notes
 
