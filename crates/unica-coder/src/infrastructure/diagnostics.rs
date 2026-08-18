@@ -319,11 +319,14 @@ impl DiagnosticProvider for BslAnalyzerDiagnosticProvider<'_> {
                 "bsl-analyzer diagnostics request was cancelled",
                 false,
             ),
-            Err(_) => provider_failed(
+            Err(error) => provider_failed(
                 None,
                 "provider_unavailable",
                 "bsl-analyzer diagnostics provider is unavailable",
-                true,
+                // A structurally missing bundled tool (no materialized third-party
+                // binary/manifest entry — see #531) cannot be fixed by retrying the
+                // same call; only some other, genuinely transient backend failure can.
+                !crate::infrastructure::code_intelligence::is_provider_unavailable_error(&error),
             ),
         }
     }
@@ -801,6 +804,13 @@ mod bsl_diagnostics_provider_tests {
             }
         }
 
+        fn failing(error: impl Into<String>) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                replies: Mutex::new(VecDeque::from([Err(error.into())])),
+            }
+        }
+
         fn resident(text: Value) -> BslDiagnosticBackendReply {
             BslDiagnosticBackendReply::Resident(BslDiagnosticResidentReply {
                 result_text: text.to_string(),
@@ -951,6 +961,44 @@ mod bsl_diagnostics_provider_tests {
         assert_eq!(outcome.status, DiagnosticProviderStatus::Completed);
         assert!(!outcome.complete);
         assert!(outcome.observations.is_empty());
+    }
+
+    #[test]
+    fn missing_bundled_tool_error_is_reported_as_not_retryable() {
+        let fixture = ProviderFixture::new();
+        let backend = FakeBackend::failing("tool not found in manifest: bsl-analyzer");
+        let provider = BslAnalyzerDiagnosticProvider::with_backend(&backend);
+
+        let outcome = execute(&provider, &fixture, DiagnosticAction::Analyze);
+
+        assert_eq!(outcome.status, DiagnosticProviderStatus::Failed);
+        let error = outcome
+            .error
+            .expect("unavailable outcome must carry an error");
+        assert_eq!(error.code, "provider_unavailable");
+        assert!(
+            !error.retryable,
+            "a structurally missing bundled tool cannot be fixed by retrying: {error:?}"
+        );
+    }
+
+    #[test]
+    fn generic_backend_failure_stays_retryable() {
+        let fixture = ProviderFixture::new();
+        let backend = FakeBackend::failing("resident session crashed unexpectedly");
+        let provider = BslAnalyzerDiagnosticProvider::with_backend(&backend);
+
+        let outcome = execute(&provider, &fixture, DiagnosticAction::Analyze);
+
+        assert_eq!(outcome.status, DiagnosticProviderStatus::Failed);
+        let error = outcome
+            .error
+            .expect("unavailable outcome must carry an error");
+        assert_eq!(error.code, "provider_unavailable");
+        assert!(
+            error.retryable,
+            "a transient backend failure should still be retryable: {error:?}"
+        );
     }
 
     #[test]
