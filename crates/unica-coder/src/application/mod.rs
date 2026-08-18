@@ -116,9 +116,9 @@ pub enum PreviewStrategy {
 /// предпросмотр ещё отвечает общим успехом без предметных данных. Список
 /// только сокращается; новый мутатор обязан родиться с честным предпросмотром.
 /// Судьбы: `dcs-edit` — срез #377, `subsystem-edit` — #380, `interface-edit` —
-/// #382, `template-*` и `help-add` — сняты срезом #375 (уйдут при его мерже),
-/// `cf-edit`/`cfe-*`/`form-*`/`support-edit` и внешние скаффолды
-/// `epf-init`/`erf-init` — последующие срезы волны и вехи.
+/// #382, `cf-edit`/`cfe-*`/`form-*`/`support-edit` и внешние скаффолды
+/// `epf-init`/`erf-init` — последующие срезы волны и вехи. Снятые срезом #375
+/// `template-*` и `help-add` список уже покинули.
 pub const PREVIEW_GATED_OPERATIONS: &[&str] = &[
     "cf-edit",
     "cfe-borrow",
@@ -129,12 +129,9 @@ pub const PREVIEW_GATED_OPERATIONS: &[&str] = &[
     "erf-init",
     "form-add",
     "form-remove",
-    "help-add",
     "interface-edit",
     "subsystem-edit",
     "support-edit",
-    "template-add",
-    "template-remove",
 ];
 
 /// The preview class of a mutating tool, or `None` for a reader.

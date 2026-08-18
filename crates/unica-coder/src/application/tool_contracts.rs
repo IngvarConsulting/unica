@@ -4944,12 +4944,9 @@ mod tests {
                 "erf-init",
                 "form-add",
                 "form-remove",
-                "help-add",
                 "interface-edit",
                 "subsystem-edit",
                 "support-edit",
-                "template-add",
-                "template-remove",
             ],
             "ADR-0073 §5: the transitional list is approved item by item"
         );
