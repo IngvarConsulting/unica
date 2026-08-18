@@ -2,6 +2,7 @@
 
 - Статус: `accepted`
 - Дата: `2026-08-18`
+- Обновлено: `2026-08-19`
 - Задача: [#554](https://github.com/IngvarConsulting/unica/issues/554)
 
 ## Контекст
