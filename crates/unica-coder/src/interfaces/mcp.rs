@@ -13,15 +13,13 @@ use crate::application::{
     UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::{
-    NoopSearchProgressSink, SearchProgressSink, SearchProgressSnapshot,
-};
+use crate::domain::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
     ErrorData, Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
-    ProgressNotificationParam, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo,
-    Tool,
+    ProgressNotificationParam, ProgressToken, ProtocolVersion, RequestMetaObject,
+    ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -41,7 +39,7 @@ type ToolCallHandler = dyn Fn(
         &str,
         &Map<String, Value>,
         CancellationToken,
-        Arc<dyn SearchProgressSink>,
+        Arc<dyn ProgressSink>,
     ) -> Result<OperationResult, (i32, String)>
     + Send
     + Sync;
@@ -326,29 +324,17 @@ impl ServerHandler for UnicaServer {
         let arguments = request.arguments.unwrap_or_default();
         let progress_forwarding = if let Some(progress_token) = progress_token {
             let (sender, mut receiver) =
-                tokio::sync::mpsc::unbounded_channel::<Option<SearchProgressSnapshot>>();
-            let sink: Arc<dyn SearchProgressSink> = Arc::new(McpSearchProgressSink {
+                tokio::sync::mpsc::unbounded_channel::<Option<ProgressEvent>>();
+            let sink: Arc<dyn ProgressSink> = Arc::new(McpProgressSink {
                 sender: sender.clone(),
             });
             let peer = context.peer.clone();
             let forwarder = tokio::spawn(async move {
                 while let Some(message) = receiver.recv().await {
-                    let Some(snapshot) = message else {
+                    let Some(event) = message else {
                         break;
                     };
-                    let mut meta = NotificationMetaObject::new();
-                    meta.0.insert(
-                        "io.unica/searchProgress".to_string(),
-                        serde_json::to_value(&snapshot).unwrap_or(Value::Null),
-                    );
-                    let notification = ProgressNotificationParam::new(
-                        progress_token.clone(),
-                        snapshot.terminal_roles() as f64,
-                    )
-                    .with_total(snapshot.providers.len() as f64)
-                    .with_message(progress_message(&snapshot));
-                    let mut notification = notification;
-                    notification.meta = Some(meta);
+                    let notification = progress_notification(progress_token.clone(), &event);
                     let _ = peer.notify_progress(notification).await;
                 }
             });
@@ -359,7 +345,7 @@ impl ServerHandler for UnicaServer {
             }
         } else {
             McpProgressForwarding {
-                sink: Arc::new(NoopSearchProgressSink),
+                sink: Arc::new(NoopProgressSink),
                 forwarder: None,
                 stop: None,
             }
@@ -398,39 +384,35 @@ impl ServerHandler for UnicaServer {
 }
 
 struct McpProgressForwarding {
-    sink: Arc<dyn SearchProgressSink>,
+    sink: Arc<dyn ProgressSink>,
     forwarder: Option<tokio::task::JoinHandle<()>>,
-    stop: Option<tokio::sync::mpsc::UnboundedSender<Option<SearchProgressSnapshot>>>,
+    stop: Option<tokio::sync::mpsc::UnboundedSender<Option<ProgressEvent>>>,
 }
 
-struct McpSearchProgressSink {
-    sender: tokio::sync::mpsc::UnboundedSender<Option<SearchProgressSnapshot>>,
+struct McpProgressSink {
+    sender: tokio::sync::mpsc::UnboundedSender<Option<ProgressEvent>>,
 }
 
-impl SearchProgressSink for McpSearchProgressSink {
-    fn publish(&self, snapshot: SearchProgressSnapshot) {
-        let _ = self.sender.send(Some(snapshot));
+impl ProgressSink for McpProgressSink {
+    fn publish(&self, event: ProgressEvent) {
+        let _ = self.sender.send(Some(event));
     }
 }
 
-fn progress_message(snapshot: &SearchProgressSnapshot) -> String {
-    snapshot
-        .providers
-        .iter()
-        .map(|provider| {
-            let detail = provider
-                .detail_code
-                .as_deref()
-                .unwrap_or_else(|| provider.phase.as_str());
-            format!(
-                "{}: {} {detail} ({} results)",
-                provider.identity.role.as_str(),
-                provider.state.as_str(),
-                provider.results_found
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
+/// Builds one `notifications/progress` payload. The meta key belongs to the
+/// producing domain, so the transport copies it instead of naming one.
+fn progress_notification(
+    progress_token: ProgressToken,
+    event: &ProgressEvent,
+) -> ProgressNotificationParam {
+    let mut meta = NotificationMetaObject::new();
+    meta.0
+        .insert(event.meta_key.to_string(), event.payload.clone());
+    let mut notification = ProgressNotificationParam::new(progress_token, event.progress)
+        .with_total(event.total)
+        .with_message(event.message.clone());
+    notification.meta = Some(meta);
+    notification
 }
 
 /// Data-driven MCP tool definitions from the application descriptor registry.
@@ -502,13 +484,7 @@ fn call_tool_result(
     args: &Map<String, Value>,
     cancellation: CancellationToken,
 ) -> Result<OperationResult, (i32, String)> {
-    call_tool_result_observed(
-        app,
-        name,
-        args,
-        cancellation,
-        Arc::new(NoopSearchProgressSink),
-    )
+    call_tool_result_observed(app, name, args, cancellation, Arc::new(NoopProgressSink))
 }
 
 fn call_tool_result_observed(
@@ -516,7 +492,7 @@ fn call_tool_result_observed(
     name: &str,
     args: &Map<String, Value>,
     cancellation: CancellationToken,
-    progress: Arc<dyn SearchProgressSink>,
+    progress: Arc<dyn ProgressSink>,
 ) -> Result<OperationResult, (i32, String)> {
     if let Some(result) = role_edit_argument_failure_result(name, args) {
         return Ok(result);
@@ -873,7 +849,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn applied_runtime_refusal_is_one_terminal_result_without_input_disclosure() {
+    async fn applied_runtime_answers_once_without_input_disclosure() {
         const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-workspace";
         const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
         let (mut client, _) = spawn_server(application_handler());
@@ -898,19 +874,14 @@ mod tests {
 
         let response = client.receive().await;
         assert_eq!(response["id"], "runtime-refusal", "{response}");
-        assert!(response.get("error").is_none(), "{response}");
-        assert_eq!(response["result"]["isError"], true, "{response}");
-        let receipt: Value = serde_json::from_str(
-            response["result"]["content"][0]["text"]
-                .as_str()
-                .expect("terminal refusal text"),
-        )
-        .unwrap();
-        assert_eq!(receipt["ok"], false, "{receipt}");
-        assert!(receipt["errors"][0]
-            .as_str()
-            .is_some_and(|error| error.starts_with("runtime_operation_unbounded:")));
+        // ADR-0074: the applied call is no longer refused before discovery, so
+        // this fixture answers with the missing bundled runner instead. What the
+        // test still pins is the shape: one terminal answer, no input echoed.
         let serialized = response.to_string();
+        assert!(
+            !serialized.contains("runtime_operation_unbounded"),
+            "the applied refusal is retired: {response}"
+        );
         assert!(!serialized.contains(CWD_SENTINEL), "{response}");
         assert!(!serialized.contains(CONNECTION_SENTINEL), "{response}");
         assert!(
@@ -994,12 +965,12 @@ mod tests {
             .expect("runtime tool is registered");
         assert_eq!(
             spec.description,
-            "Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn."
+            "Preview typed v8-runner workflows, or run a classified applied operation and answer with its terminal result plus a named risk warning; an unclassified operation still fails closed before workspace discovery or process spawn."
         );
         let schema = input_schema_for_tool(&spec);
         assert_eq!(
             schema["properties"]["dryRun"]["description"],
-            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs a classified operation and returns its terminal result in this call with a named risk warning; an unclassified operation stays refused."
         );
     }
 
@@ -1034,6 +1005,27 @@ mod tests {
             "capabilities must stay exactly the implemented surface"
         );
         client.shutdown().await;
+    }
+
+    #[test]
+    fn progress_notification_carries_the_producing_domain_meta_key() {
+        let event = ProgressEvent {
+            meta_key: "io.unica/runtimeProgress",
+            payload: serde_json::json!({"phase": "running"}),
+            progress: 1.0,
+            total: 3.0,
+            message: "running".to_string(),
+        };
+
+        let notification = progress_notification(
+            ProgressToken(rmcp::model::NumberOrString::String("t".into())),
+            &event,
+        );
+
+        let meta = notification
+            .meta
+            .expect("a progress notification carries its payload in meta");
+        assert_eq!(meta.0["io.unica/runtimeProgress"]["phase"], "running");
     }
 
     #[tokio::test]
@@ -1470,7 +1462,7 @@ mod tests {
     #[tokio::test]
     async fn progress_token_receives_typed_search_snapshot_before_result() {
         let handler: Arc<ToolCallHandler> = Arc::new(|_, _, _, progress| {
-            progress.publish(crate::domain::code_intelligence::SearchProgressSnapshot {
+            let snapshot = crate::domain::code_intelligence::SearchProgressSnapshot {
                 schema_version: 1,
                 elapsed_ms: 5,
                 deadline_ms: 300_000,
@@ -1482,7 +1474,8 @@ mod tests {
                     detail_code: None,
                     results_found: 2,
                 }],
-            });
+            };
+            progress.publish(snapshot.to_progress_event());
             Ok(code_search_test_result())
         });
         let (mut client, _) = spawn_server(handler);
@@ -1520,7 +1513,7 @@ mod tests {
 
     #[tokio::test]
     async fn retained_progress_sink_does_not_hold_the_tool_response_open() {
-        let retained = Arc::new(Mutex::new(None::<Arc<dyn SearchProgressSink>>));
+        let retained = Arc::new(Mutex::new(None::<Arc<dyn ProgressSink>>));
         let retained_by_handler = Arc::clone(&retained);
         let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, progress| {
             *retained_by_handler.lock().unwrap() = Some(progress);
@@ -1555,7 +1548,7 @@ mod tests {
 
     #[tokio::test]
     async fn progress_forwarder_preserves_rapid_phase_transitions() {
-        let retained = Arc::new(Mutex::new(None::<Arc<dyn SearchProgressSink>>));
+        let retained = Arc::new(Mutex::new(None::<Arc<dyn ProgressSink>>));
         let retained_by_handler = Arc::clone(&retained);
         let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, progress| {
             for (elapsed_ms, phase, detail_code) in [
@@ -1570,7 +1563,7 @@ mod tests {
                     "executingQuery",
                 ),
             ] {
-                progress.publish(crate::domain::code_intelligence::SearchProgressSnapshot {
+                let snapshot = crate::domain::code_intelligence::SearchProgressSnapshot {
                     schema_version: 1,
                     elapsed_ms,
                     deadline_ms: 300_000,
@@ -1582,7 +1575,8 @@ mod tests {
                         detail_code: Some(detail_code.to_string()),
                         results_found: 0,
                     }],
-                });
+                };
+                progress.publish(snapshot.to_progress_event());
             }
             *retained_by_handler.lock().unwrap() = Some(progress);
             Ok(code_search_test_result())

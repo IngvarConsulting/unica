@@ -2,10 +2,18 @@
 
 Use MCP `unica.runtime.execute` and choose `operation` by intent:
 
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет классифицированную операцию и отвечает её терминальным результатом в
+том же вызове, приложив названную причину риска (`runtime_risk_*`)
+предупреждением; неклассифицированная операция по-прежнему отказывает
+`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
-All current operations are preview-only even when the user requested
-execution. Applied `config-init`, `init`, `build`, `dump`, `load`, `test`,
+Every classified operation runs when the user asks for it; the result names
+the risk it carries. Applied `config-init`, `init`, `build`, `dump`, `load`, `test`,
 `extensions`, `convert`, `make`, every `syntax`, `tools-download`, and every
 `launch` capability fails closed before spawn.
 
@@ -41,8 +49,8 @@ Operation-specific guardrails:
 - `build` does not accept `extension`; build an extension by selecting its configured `sourceSet`.
 - `convert` does not accept ad hoc `path`, `format`, or `extension`; use configured source-sets.
 - Applied `convert` remains blocked because it can publish Designer XML outside the verified dump boundary.
-- Applied `config-init`, `make`, and `tools-download` remain blocked because their persistent writes are not covered by a bounded rollback contract.
-- Every `syntax` mode remains preview-only: EDT may use an interactive session, while Designer may create a separately grouped 1C process whose cleanup is not proved for every runner failure path.
+- Applied `config-init`, `make`, and `tools-download` write persistent state without a bounded rollback contract; the result says so, and an interrupted run may leave partial output.
+- Every `syntax` mode carries unproved process ownership: EDT may use an interactive session, while Designer may create a separately grouped 1C process whose cleanup is not proved for every runner failure path.
 - Do not pass `DumpConfigToFiles` or `LoadConfigFromFiles` through Designer `rawKeys`; Unica rejects those bypasses.
 - `load` does not support `mode=update`; use `mode=load` or `mode=merge` with `settings`.
 - `test` uses `fullOutput=true` for v8-runner `--full`; it is not a build full rebuild.

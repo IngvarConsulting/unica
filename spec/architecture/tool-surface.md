@@ -846,6 +846,7 @@
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `cwd` | string | нет | — |
 | `dryRun` | boolean | нет | — |
 | `kind` | string | да | — |
 | `name` | string | да | — |
@@ -870,6 +871,7 @@
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `cwd` | string | нет | — |
 | `dryRun` | boolean | нет | — |
 | `metadataPath` | string | да | — |
 | `operations` | array | да | — |
@@ -892,6 +894,7 @@
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `cwd` | string | нет | — |
 | `limit` | integer | нет | — |
 | `metadataPath` | string | да | — |
 | `sections` | array | нет | — |
@@ -918,6 +921,7 @@
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | — |
+| `cwd` | string | нет | — |
 | `dryRun` | boolean | нет | — |
 | `force` | boolean | нет | — |
 | `metadataPath` | string | да | — |

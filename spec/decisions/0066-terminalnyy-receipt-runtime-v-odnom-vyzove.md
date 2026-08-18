@@ -1,6 +1,6 @@
 # ADR-0066: Терминальный результат runtime возвращается в том же вызове
 
-- Статус: `accepted`
+- Статус: `superseded` — заменено ADR-0074
 - Дата: `2026-08-14`
 - Задача: [#406](https://github.com/IngvarConsulting/unica/issues/406)
 
