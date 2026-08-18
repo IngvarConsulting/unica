@@ -1620,7 +1620,10 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_prompt_visible_meta_routes_have_no_retired_contract_grammar(self) -> None:
         prompt_documents = list(self.skill_root().glob("meta-*/**/*.md")) + [
             self.repo_root() / "README.md",
+            # CLAUDE.md carries a pointer and an import; the text both hosts
+            # actually read lives in AGENTS.md, so the rule follows it there.
             self.repo_root() / "CLAUDE.md",
+            self.repo_root() / "AGENTS.md",
             self.reference_root() / "platform" / "metadata-conventions.md",
             self.skill_root() / "cf-edit" / "SKILL.md",
             self.skill_root() / "cf-edit" / "reference.md",
