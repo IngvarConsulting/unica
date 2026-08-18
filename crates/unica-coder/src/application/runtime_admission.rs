@@ -64,6 +64,81 @@ pub(crate) fn runtime_receipt_admission_failure(
     Ok(RuntimeAdmissionFailure { code, message })
 }
 
+/// One named applied-risk reason carried into the warning and the receipt.
+#[allow(
+    dead_code,
+    reason = "the applied execute path consuming this lands in task 3 of docs/plans/2026-08-18-applied-runtime-execute-hybrid.md"
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeRiskNotice {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+}
+
+/// ADR-0074: a classified applied operation is warned about and executed; an
+/// unclassified one still fails closed.
+#[allow(
+    dead_code,
+    reason = "the applied execute path consuming this lands in task 3 of docs/plans/2026-08-18-applied-runtime-execute-hybrid.md"
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RuntimeRiskOutcome {
+    Warned(RuntimeRiskNotice),
+    Refused(RuntimeAdmissionFailure),
+}
+
+#[allow(
+    dead_code,
+    reason = "the applied execute path consuming this lands in task 3 of docs/plans/2026-08-18-applied-runtime-execute-hybrid.md"
+)]
+pub(crate) fn runtime_risk_notice(
+    tool_name: &str,
+    args: &Map<String, Value>,
+) -> Result<RuntimeRiskOutcome, String> {
+    let operation = args
+        .get("operation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{tool_name} requires string `operation` argument"))?;
+    let capability = runtime_completion_capability(operation, args);
+
+    let (code, message) = match capability {
+        RuntimeCompletionCapability::CriticalNonAbortable => (
+            "runtime_risk_critical_non_abortable",
+            format!(
+                "operation `{operation}` contains a CriticalNonAbortable runner phase, so cancellation is deferred until that phase ends"
+            ),
+        ),
+        RuntimeCompletionCapability::PublicationWithoutBoundedRecovery => (
+            "runtime_risk_publication_without_bounded_recovery",
+            format!(
+                "operation `{operation}` writes or publishes persistent state without a bounded recovery contract"
+            ),
+        ),
+        RuntimeCompletionCapability::UnprovenExternalProcessOwnership => (
+            "runtime_risk_unproven_process_ownership",
+            format!(
+                "operation `{operation}` may create a separately grouped platform process whose ownership and cleanup are not proved for every runner failure path"
+            ),
+        ),
+        RuntimeCompletionCapability::Detached => (
+            "runtime_risk_detached_child",
+            format!(
+                "operation `{operation}` would detach a child process, so the durable record cannot observe its exit"
+            ),
+        ),
+        RuntimeCompletionCapability::Unclassified => {
+            return Ok(RuntimeRiskOutcome::Refused(
+                runtime_receipt_admission_failure(tool_name, args)?,
+            ));
+        }
+    };
+
+    Ok(RuntimeRiskOutcome::Warned(RuntimeRiskNotice {
+        code,
+        message,
+    }))
+}
+
 fn runtime_completion_capability(
     operation: &str,
     args: &Map<String, Value>,
@@ -98,55 +173,117 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn every_current_applied_runtime_operation_fails_closed_without_a_host_budget() {
-        for (args, reason) in [
-            (json!({"operation": "config-init"}), "persistent state"),
-            (json!({"operation": "init"}), "CriticalNonAbortable"),
-            (json!({"operation": "build"}), "CriticalNonAbortable"),
+    fn every_classified_applied_runtime_operation_is_warned_with_its_reason() {
+        for (args, code, reason) in [
             (
-                json!({"operation": "dump", "mode": "full"}),
+                json!({"operation": "config-init"}),
+                "runtime_risk_publication_without_bounded_recovery",
                 "persistent state",
             ),
-            (json!({"operation": "convert"}), "persistent state"),
-            (json!({"operation": "make"}), "persistent state"),
-            (json!({"operation": "load"}), "CriticalNonAbortable"),
             (
-                json!({"operation": "syntax", "mode": "designer-config"}),
-                "separately grouped platform process",
+                json!({"operation": "init"}),
+                "runtime_risk_critical_non_abortable",
+                "CriticalNonAbortable",
             ),
             (
-                json!({"operation": "syntax", "mode": "designer-modules"}),
+                json!({"operation": "build"}),
+                "runtime_risk_critical_non_abortable",
+                "CriticalNonAbortable",
+            ),
+            (
+                json!({"operation": "dump", "mode": "full"}),
+                "runtime_risk_publication_without_bounded_recovery",
+                "persistent state",
+            ),
+            (
+                json!({"operation": "convert"}),
+                "runtime_risk_publication_without_bounded_recovery",
+                "persistent state",
+            ),
+            (
+                json!({"operation": "make"}),
+                "runtime_risk_publication_without_bounded_recovery",
+                "persistent state",
+            ),
+            (
+                json!({"operation": "load"}),
+                "runtime_risk_critical_non_abortable",
+                "CriticalNonAbortable",
+            ),
+            (
+                json!({"operation": "syntax", "mode": "designer-config"}),
+                "runtime_risk_unproven_process_ownership",
                 "separately grouped platform process",
             ),
             (
                 json!({"operation": "syntax", "mode": "edt"}),
+                "runtime_risk_unproven_process_ownership",
                 "separately grouped platform process",
             ),
-            (json!({"operation": "test"}), "CriticalNonAbortable"),
-            (json!({"operation": "extensions"}), "CriticalNonAbortable"),
-            (json!({"operation": "tools-download"}), "persistent state"),
+            (
+                json!({"operation": "test"}),
+                "runtime_risk_critical_non_abortable",
+                "CriticalNonAbortable",
+            ),
+            (
+                json!({"operation": "extensions"}),
+                "runtime_risk_critical_non_abortable",
+                "CriticalNonAbortable",
+            ),
+            (
+                json!({"operation": "tools-download"}),
+                "runtime_risk_publication_without_bounded_recovery",
+                "persistent state",
+            ),
             (
                 json!({"operation": "launch", "waitForExit": true}),
+                "runtime_risk_unproven_process_ownership",
                 "separately grouped platform process",
             ),
             (
                 json!({"operation": "launch", "waitForExit": false}),
+                "runtime_risk_detached_child",
                 "detach a child process",
             ),
         ] {
-            let failure = runtime_receipt_admission_failure(
-                "unica.runtime.execute",
-                args.as_object().unwrap(),
-            )
-            .unwrap();
+            let outcome =
+                runtime_risk_notice("unica.runtime.execute", args.as_object().unwrap()).unwrap();
 
-            assert_eq!(failure.code, "runtime_operation_unbounded");
-            assert!(failure.message.contains(reason), "{failure:?}");
+            match outcome {
+                RuntimeRiskOutcome::Warned(notice) => {
+                    assert_eq!(notice.code, code, "{args}");
+                    assert!(notice.message.contains(reason), "{notice:?}");
+                }
+                RuntimeRiskOutcome::Refused(failure) => {
+                    panic!("{args} must be warned, not refused: {failure:?}")
+                }
+            }
         }
     }
 
     #[test]
-    fn canonical_runtime_surface_has_an_explicit_refusal_reason() {
+    fn unclassified_applied_operation_still_fails_closed() {
+        let args = json!({"operation": "syntax"});
+
+        let outcome =
+            runtime_risk_notice("unica.runtime.execute", args.as_object().unwrap()).unwrap();
+
+        match outcome {
+            RuntimeRiskOutcome::Refused(failure) => {
+                assert_eq!(failure.code, "runtime_operation_unbounded");
+                assert!(
+                    failure.message.contains("no reviewed terminal-receipt"),
+                    "{failure:?}"
+                );
+            }
+            RuntimeRiskOutcome::Warned(notice) => {
+                panic!("an unclassified operation must fail closed: {notice:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_runtime_surface_has_an_explicit_risk_classification() {
         for operation in super::super::tool_contracts::RUNTIME_OPERATIONS {
             let mut modes: Vec<Option<&str>> = vec![None];
             if *operation == "syntax" {
@@ -169,7 +306,7 @@ mod tests {
                 assert_ne!(
                     capability,
                     RuntimeCompletionCapability::Unclassified,
-                    "{operation} {mode:?} needs a reviewed refusal reason"
+                    "{operation} {mode:?} needs a reviewed risk classification"
                 );
             }
         }
