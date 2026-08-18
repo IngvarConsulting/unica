@@ -10,12 +10,16 @@
 | `DEC.2026-08-18.ADDRESS-GRAMMAR` | решение | active | Адрес — чередование `Вид.Имя` до любой глубины | [decisions/2026-08-18-address-grammar.md](decisions/2026-08-18-address-grammar.md) |
 | `DEC.2026-08-18.ARCHITECTURE-RESET` | решение | active | Архитектура описывается заново | [decisions/2026-08-18-architecture-reset.md](decisions/2026-08-18-architecture-reset.md) |
 | `DEC.2026-08-18.CARRIED-RULES` | решение | active | Правило переносится, если его проверка жива и предмет не про имена инструментов | [decisions/2026-08-18-carried-rules.md](decisions/2026-08-18-carried-rules.md) |
+| `DEC.2026-08-18.CURSOR-CARRIES-REVISION` | решение | active | Продолжение чтения несёт ревизию и отказывает при расхождении | [decisions/2026-08-18-cursor-carries-revision.md](decisions/2026-08-18-cursor-carries-revision.md) |
 | `DEC.2026-08-18.EIGHT-ENTRIES` | решение | active | Публичная поверхность — восемь входов | [decisions/2026-08-18-eight-entries.md](decisions/2026-08-18-eight-entries.md) |
+| `DEC.2026-08-18.FILE-NODE-CONTENT` | решение | active | Узел файловой природы отдаёт содержимое, а не свойства | [decisions/2026-08-18-file-node-content.md](decisions/2026-08-18-file-node-content.md) |
 | `DEC.2026-08-18.MODULE-PROJECTIONS` | решение | active | Модуль читается проекцией по глубине и отбору, а не окном по байтам | [decisions/2026-08-18-module-projections.md](decisions/2026-08-18-module-projections.md) |
 | `DEC.2026-08-18.NO-FILE-DSL` | решение | active | Файловый DSL не входит в публичный контракт | [decisions/2026-08-18-no-file-dsl.md](decisions/2026-08-18-no-file-dsl.md) |
 | `DEC.2026-08-18.NO-JOB-REGISTRY` | решение | active | Долгая работа — один вызов с прогрессом, а не реестр заданий | [decisions/2026-08-18-no-job-registry.md](decisions/2026-08-18-no-job-registry.md) |
 | `DEC.2026-08-18.NODE-OR-DATA` | решение | active | Адрес достаёт до именуемых узлов, множества передаются данными | [decisions/2026-08-18-node-or-data.md](decisions/2026-08-18-node-or-data.md) |
+| `DEC.2026-08-18.OPAQUE-IS-VISIBLE` | решение | active | Непонятое содержимое видно и названо, а не отсутствует | [decisions/2026-08-18-opaque-is-visible.md](decisions/2026-08-18-opaque-is-visible.md) |
 | `DEC.2026-08-18.REGISTRY-SHAPE` | решение | active | Три символических реестра, одна запись — один файл | [decisions/2026-08-18-registry-shape.md](decisions/2026-08-18-registry-shape.md) |
+| `DEC.2026-08-18.RESOURCE-FOR-DEFERRED-BYTES` | решение | active | Ресурс предлагается для байтов, которых, скорее всего, не попросят | [decisions/2026-08-18-resource-for-deferred-bytes.md](decisions/2026-08-18-resource-for-deferred-bytes.md) |
 | `DEC.2026-08-18.RESULT-FORM` | решение | active | Результат — компактный JSON со слотовой дисциплиной | [decisions/2026-08-18-result-form.md](decisions/2026-08-18-result-form.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант | active | Конфигурация вызова разрешается снимком | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEPENDENCY-DIRECTION` | инвариант | active | Направление зависимостей между слоями закреплено проверкой | [invariants/INV.APP.DEPENDENCY-DIRECTION.md](invariants/INV.APP.DEPENDENCY-DIRECTION.md) |
