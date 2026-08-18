@@ -2176,7 +2176,11 @@ mod tests {
         assert!(schema.get("allOf").is_none());
         assert!(schema["properties"].get("RightsPath").is_some());
         assert!(schema["properties"].get("Detailed").is_some());
-        assert!(schema["properties"].get("MaxErrors").is_some());
+        // #479 §1: `validate_role` reads `Detailed` and nothing else — there is
+        // no shared error cap behind it — so publishing `MaxErrors` advertised
+        // a lever that could not select anything, the same reason `Mode` and
+        // `Offset` left `cf.info` and `SrcDir` left `mxl.info`.
+        assert!(schema["properties"].get("MaxErrors").is_none());
         for alias in ["rightsPath", "Path", "path"] {
             assert!(
                 schema["properties"].get(alias).is_none(),

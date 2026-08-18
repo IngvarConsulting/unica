@@ -1,7 +1,7 @@
 ---
 name: role-validate
 description: Валидация роли 1С. Используй после создания или модификации роли для проверки корректности
-argument-hint: <RightsPath> [-Detailed] [-MaxErrors 30]
+argument-hint: <RightsPath> [-Detailed]
 allowed-tools:
   - Bash
   - Read
@@ -26,7 +26,6 @@ allowed-tools:
 | sourceSet    | один из двух | —       | Имя набора исходников из `v8project.yaml`        |
 | metadataPath | один из двух | —       | Логический адрес, например `Role.<ИмяРоли>`      |
 | Detailed     | нет   | —       | Подробный вывод (все проверки, включая успешные)  |
-| MaxErrors    | нет   | 30      | Макс. ошибок до остановки (по умолчанию 30)      |
 
 Селектор цели ровно один: либо `sourceSet` + `metadataPath`, либо `RightsPath`.
 Оба сразу отклоняются кодом `selector_conflict` (ADR-0049).
@@ -42,8 +41,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "RightsPath": "src/Roles/ЧтениеНоменклатуры",
-      "Detailed": true,
-      "MaxErrors": 30
+      "Detailed": true
     }
   }
 }

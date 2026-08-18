@@ -232,8 +232,10 @@ const CF_INIT_PUBLISHED: &[&str] = &[
     "Version",
 ];
 
-/// `unica.cfe.borrow` (`prepare_cfe_borrow_with_trace`): the object to adopt.
-const CFE_BORROW_PUBLISHED: &[&str] = &["Object"];
+/// `unica.cfe.borrow` (`prepare_cfe_borrow_with_trace`,
+/// `cfe_borrow_main_attribute_mode`): the object to adopt and whether its
+/// main attribute comes with it.
+const CFE_BORROW_PUBLISHED: &[&str] = &["Object", "BorrowMainAttribute"];
 
 /// `unica.cfe.validate` (`validate_cfe`).
 const CFE_VALIDATE_PUBLISHED: &[&str] = &["Detailed", "MaxErrors"];
@@ -255,6 +257,32 @@ const CFE_INIT_PUBLISHED: &[&str] = &[
 /// is intercepted and how.
 const CFE_PATCH_METHOD_PUBLISHED: &[&str] =
     &["Context", "InterceptorType", "IsFunction", "MethodName"];
+
+/// `unica.subsystem.edit` (`native_operations::subsystem::edit_subsystem_with_data`,
+/// `subsystem_edit_operations`).
+const SUBSYSTEM_EDIT_PUBLISHED: &[&str] = &["Operation", "Value"];
+
+/// `unica.subsystem.validate` (`validate_subsystem`): this validator reads only
+/// `Detailed`; unlike its neighbours it has no `MaxErrors` cap.
+const SUBSYSTEM_VALIDATE_PUBLISHED: &[&str] = &["Detailed"];
+
+/// `unica.subsystem.compile` (`compile_subsystem_internal`).
+const SUBSYSTEM_COMPILE_PUBLISHED: &[&str] = &["Value"];
+
+/// `unica.interface.edit` (`edit_interface_with_data`, `interface_edit_operations`).
+const INTERFACE_EDIT_PUBLISHED: &[&str] =
+    &["CreateIfMissing", "NoValidate", "Operation", "Value"];
+
+/// `unica.interface.validate` (`validate_interface`).
+const INTERFACE_VALIDATE_PUBLISHED: &[&str] = &["Detailed", "MaxErrors"];
+
+/// `unica.role.validate` (`validate_role`): like the subsystem validator, it
+/// reads `Detailed` and has no error cap.
+const ROLE_VALIDATE_PUBLISHED: &[&str] = &["Detailed"];
+
+/// `unica.role.compile` (`compile_role_internal`): both paths are declared by
+/// the descriptor, and the handler reads no lever of its own.
+const ROLE_COMPILE_PUBLISHED: &[&str] = &[];
 
 /// The arguments an operation publishes in `tools/list`, when it has been
 /// narrowed off the legacy union.
@@ -286,6 +314,13 @@ fn published_args_for(operation: &str) -> Option<&'static [&'static str]> {
         "cfe-validate" => CFE_VALIDATE_PUBLISHED,
         "cfe-init" => CFE_INIT_PUBLISHED,
         "cfe-patch-method" => CFE_PATCH_METHOD_PUBLISHED,
+        "subsystem-edit" => SUBSYSTEM_EDIT_PUBLISHED,
+        "subsystem-validate" => SUBSYSTEM_VALIDATE_PUBLISHED,
+        "subsystem-compile" => SUBSYSTEM_COMPILE_PUBLISHED,
+        "interface-edit" => INTERFACE_EDIT_PUBLISHED,
+        "interface-validate" => INTERFACE_VALIDATE_PUBLISHED,
+        "role-validate" => ROLE_VALIDATE_PUBLISHED,
+        "role-compile" => ROLE_COMPILE_PUBLISHED,
         _ => return None,
     })
 }
@@ -3242,10 +3277,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Name of the XDTO valueType or objectType whose full detail `unica.xdto.info` returns instead of the paged type list.",
     ),
     (
-        "borrowMainAttribute",
-        "`unica.cfe.borrow` only: `\"Form\"` (or `true`) borrows just the attributes already shown on the form, `\"All\"` borrows every object attribute; omit it to borrow the form without data bindings",
-    ),
-    (
         "builder",
         "Build backend recorded by operation config-init, DESIGNER or IBCMD; DESIGNER covers the full workflow set while IBCMD needs infobase.dbms settings for server bases",
     ),
@@ -3258,6 +3289,10 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "The `CIPath` spelling of the command-interface path: a subsystem's `Ext/CommandInterface.xml` or its directory, relative to `cwd`, for `unica.interface.edit`/`validate`",
     ),
     (
+        "borrowMainAttribute",
+        "`unica.cfe.borrow` only: `\"Form\"` (or `true`) borrows just the attributes already shown on the form, `\"All\"` borrows every object attribute; omit it to borrow the form without data bindings",
+    ),
+    (
         "capability",
         "`unica.support.edit` only: `\"on\"` or `\"off\"`, toggling whether the vendor-supported configuration may be edited at all; pass exactly one of `capability` or `set`",
     ),
@@ -3268,10 +3303,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "checkUseSynchronousCalls",
         "Boolean Designer syntax-check option (--check-use-synchronous-calls) accepted only by operation syntax with a designer-* mode",
-    ),
-    (
-        "ciPath",
-        "Path to a subsystem's `Ext/CommandInterface.xml` (the subsystem directory also resolves) for `unica.interface.edit` and `unica.interface.validate`, relative to `cwd`",
     ),
     (
         "clientMode",
@@ -3288,10 +3319,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "config",
         "Workspace-relative path to v8project.yaml on unica.runtime.execute, unica.runtime.job.start and unica.build.* — the file to create for operation config-init and the existing project config for every other operation, never v8project.local.yaml.",
-    ),
-    (
-        "configDir",
-        "Root of a configuration dump (the directory holding `Configuration.xml`), relative to `cwd`",
     ),
     (
         "configLogIntegrity",
@@ -3381,7 +3408,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "edgeKinds",
         "Array of graph edge-kind names, forwarded to the analyzer as edge_kinds; unica.code.graph only, and the Unica contract does not enumerate the accepted values",
     ),
-    ("emitDsl", "Declared string argument that no tool handler reads"),
     (
         "emptyHandlers",
         "Boolean Designer syntax-check option (--empty-handlers) accepted only by operation syntax with a designer-* mode",
@@ -3389,10 +3415,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "execute",
         "Workspace-relative .epf to run via the platform /Execute key on a direct-client operation launch; required and must end in .epf when waitForExit is true",
-    ),
-    (
-        "expand",
-        "`unica.form.info` only: name or title of a collapsed section to expand, or `\"*\"` to expand all of them",
     ),
     (
         "extension",
@@ -3661,10 +3683,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Search text: provider-neutral query for unica.code.search, node-lookup text for unica.code.graph mode=resolve, the required unica.standards.search string, and explain's last-resort fallback",
     ),
     (
-        "raw",
-        "`unica.dcs.info` only: supported only with `Mode=query`; true returns the full query text without headers or pagination and ignores `limit`/`offset`.",
-    ),
-    (
         "rawKeys",
         "Array of extra non-reserved platform launch keys such as /TESTMANAGER for a direct-client operation launch; never repeat /C, /Execute or /Out here",
     ),
@@ -3721,16 +3739,8 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "`unica.form.add` only: `true` assigns the new form to the object's `Default*Form` slot, `false` leaves that slot untouched, and omitting it fills only an empty slot",
     ),
     (
-        "setMainSKD",
-        "`unica.template.add` only: boolean overwriting an already-filled `MainDataCompositionSchema` with the new DCS template; an empty slot is filled automatically anyway",
-    ),
-    (
         "settings",
         "Workspace-relative path to the merge settings XML; required by operation load with mode merge and rejected with any other load mode",
-    ),
-    (
-        "showDenied",
-        "`unica.role.info` only: also list denied rights, which are hidden by default; pass a real JSON boolean, a string is ignored",
     ),
     (
         "snippet",
@@ -3787,10 +3797,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "targetKind",
         "Optional `unica.source.resolve` filter: `metadataObject` or `module`; it narrows exact or prefix matches without changing their canonical metadataPath",
-    ),
-    (
-        "targetPath",
-        "Alias of `path` for `unica.support.edit`: the dump directory, object XML or form XML whose support state is being changed",
     ),
     (
         "templateName",
@@ -8199,13 +8205,6 @@ mod tests {
     /// only shrink — an entry added here declares new debt and shows up in the
     /// diff of this test.
     const WIDE_SURFACE_LEGACY: &[&str] = &[
-        "unica.interface.edit",
-        "unica.interface.validate",
-        "unica.role.compile",
-        "unica.role.validate",
-        "unica.subsystem.compile",
-        "unica.subsystem.edit",
-        "unica.subsystem.validate",
     ];
 
     /// The published surface of a narrowed operation is the arguments it reads.
