@@ -3,11 +3,11 @@ use crate::domain::code_intelligence::{
     CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
     CodeIntelligenceRegistry, CodeSearchResult, ProviderDeadline, ProviderIdentity,
     ProviderProgressSink, ProviderProgressUpdate, ProviderReadOutcome, ProviderRole,
-    ProviderSearchSection, ProviderSectionStatus, SearchCoverage, SearchProgressSink,
-    SearchProgressSnapshot, SearchProviderPhase, SearchProviderProgress, SearchProviderState,
-    SearchRequest,
+    ProviderSearchSection, ProviderSectionStatus, SearchCoverage, SearchProgressSnapshot,
+    SearchProviderPhase, SearchProviderProgress, SearchProviderState, SearchRequest,
 };
 use crate::domain::operational_config::CodeIntelligenceDeadlines;
+use crate::domain::progress::ProgressSink;
 use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -106,7 +106,7 @@ impl CodeSearchCoordinator {
             request,
             context,
             cancellation,
-            &crate::domain::code_intelligence::NoopSearchProgressSink,
+            &crate::domain::progress::NoopProgressSink,
         )
     }
 
@@ -115,7 +115,7 @@ impl CodeSearchCoordinator {
         request: &SearchRequest,
         context: &CodeIntelligenceContext,
         cancellation: &CancellationToken,
-        progress: &dyn SearchProgressSink,
+        progress: &dyn ProgressSink,
     ) -> Result<CodeSearchExecution, String> {
         self.search_with_progress_interval(
             request,
@@ -131,7 +131,7 @@ impl CodeSearchCoordinator {
         request: &SearchRequest,
         context: &CodeIntelligenceContext,
         cancellation: &CancellationToken,
-        progress: &dyn SearchProgressSink,
+        progress: &dyn ProgressSink,
         heartbeat_interval: Duration,
     ) -> Result<CodeSearchExecution, String> {
         if cancellation.is_cancelled() {
@@ -462,7 +462,7 @@ fn progress_state_for_section(section: &ProviderSearchSection) -> SearchProvider
 }
 
 fn publish_search_progress(
-    sink: &dyn SearchProgressSink,
+    sink: &dyn ProgressSink,
     started_at: Instant,
     deadline: Duration,
     heartbeat_interval: Duration,
@@ -475,7 +475,8 @@ fn publish_search_progress(
         next_update_within_ms: duration_millis(heartbeat_interval),
         providers: providers.to_vec(),
     };
-    let _ = catch_unwind(AssertUnwindSafe(|| sink.publish(snapshot)));
+    let event = snapshot.to_progress_event();
+    let _ = catch_unwind(AssertUnwindSafe(|| sink.publish(event)));
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -825,14 +826,15 @@ mod tests {
         ProviderWorkerAdmission, ProviderWorkerLifecycle,
     };
     use crate::domain::cancellation::CancellationToken;
+    use crate::domain::code_intelligence::SEARCH_PROGRESS_META_KEY;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
         CodeIntelligenceRegistry, ProviderCapability, ProviderDeadline, ProviderId,
         ProviderReadOutcome, ProviderSearchHit, ProviderSearchSection, ProviderSectionStatus,
-        SearchOrdering, SearchProgressSink, SearchProgressSnapshot, SearchProviderState,
-        SearchRanking, SearchRequest,
+        SearchOrdering, SearchRanking, SearchRequest,
     };
     use crate::domain::operational_config::CodeIntelligenceDeadlines;
+    use crate::domain::progress::{ProgressEvent, ProgressSink};
     use crate::domain::source_location::SourceLocation;
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
@@ -1018,11 +1020,11 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct RecordingProgressSink(Mutex<Vec<SearchProgressSnapshot>>);
+    struct RecordingProgressSink(Mutex<Vec<ProgressEvent>>);
 
-    impl SearchProgressSink for RecordingProgressSink {
-        fn publish(&self, snapshot: SearchProgressSnapshot) {
-            self.0.lock().unwrap().push(snapshot);
+    impl ProgressSink for RecordingProgressSink {
+        fn publish(&self, event: ProgressEvent) {
+            self.0.lock().unwrap().push(event);
         }
     }
 
@@ -1076,16 +1078,17 @@ mod tests {
             )
             .unwrap();
 
-        let snapshots = sink.0.lock().unwrap();
-        assert!(snapshots.len() >= 4, "snapshots: {snapshots:?}");
-        assert!(snapshots
+        let events = sink.0.lock().unwrap();
+        assert!(events.len() >= 4, "events: {events:?}");
+        assert!(events
             .iter()
-            .any(|snapshot| snapshot.providers[0].state == SearchProviderState::Running));
-        assert_eq!(
-            snapshots.last().unwrap().providers[0].state,
-            SearchProviderState::Completed
-        );
-        assert_eq!(snapshots.last().unwrap().terminal_roles(), 1);
+            .all(|event| event.meta_key == SEARCH_PROGRESS_META_KEY));
+        assert!(events
+            .iter()
+            .any(|event| event.payload["providers"][0]["state"] == "running"));
+        let last = events.last().unwrap();
+        assert_eq!(last.payload["providers"][0]["state"], "completed");
+        assert_eq!(last.progress, 1.0);
     }
 
     impl CodeIntelligenceProvider for StaticProvider {

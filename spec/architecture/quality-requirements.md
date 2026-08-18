@@ -172,9 +172,10 @@
 - **Rule:** Операция, явно запущенная через `unica.runtime.job.start`, отдаёт
   свой статус, свои ограниченные по объёму журналы и факт завершения через
   долговременные записи, поэтому её ход виден без удержания открытого
-  MCP-вызова на всё время прогона; эта поверхность не является запасным путём
-  для `unica.runtime.execute` (INV-MCP-RUNTIME-RECEIPT).
-- **Decision:** ADR-0001, ADR-0006, ADR-0066
+  MCP-вызова на всё время прогона; эта поверхность остаётся отдельным явным
+  выбором и продолжением `unica.runtime.execute` не считается
+  (INV-MCP-RUNTIME-RECEIPT).
+- **Decision:** ADR-0001, ADR-0006, ADR-0074
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/runtime_jobs.rs`
 - **Scope:** runtime
 

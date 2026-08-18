@@ -1,10 +1,10 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
-    CodeIntelligenceReadRequest, NoopSearchProgressSink, ProviderDeadline, SearchProgressSink,
-    SearchRequest,
+    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
 };
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
+use crate::domain::progress::{NoopProgressSink, ProgressSink};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
 pub(crate) use outcome::AdapterOutcome;
@@ -585,7 +585,7 @@ impl UnicaApplication {
         args: &Map<String, Value>,
         cancellation: CancellationToken,
     ) -> Result<OperationResult, String> {
-        self.call_tool_observed(name, args, cancellation, Arc::new(NoopSearchProgressSink))
+        self.call_tool_observed(name, args, cancellation, Arc::new(NoopProgressSink))
     }
 
     pub fn call_tool_observed(
@@ -593,7 +593,7 @@ impl UnicaApplication {
         name: &str,
         args: &Map<String, Value>,
         cancellation: CancellationToken,
-        progress: Arc<dyn SearchProgressSink>,
+        progress: Arc<dyn ProgressSink>,
     ) -> Result<OperationResult, String> {
         let deadline = ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE);
         let spec = tools()
@@ -634,7 +634,7 @@ impl UnicaApplication {
             self.ports.as_ref(),
             &CancellationToken::new(),
             deadline,
-            &NoopSearchProgressSink,
+            &NoopProgressSink,
             RuntimeAdmissionPolicy::AlreadyAdmittedForDownstreamContractTest,
         )
     }
@@ -1019,14 +1019,7 @@ fn call_tool(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<OperationResult, String> {
-    call_tool_observed(
-        spec,
-        args,
-        ports,
-        cancellation,
-        deadline,
-        &NoopSearchProgressSink,
-    )
+    call_tool_observed(spec, args, ports, cancellation, deadline, &NoopProgressSink)
 }
 
 fn call_tool_observed(
@@ -1035,7 +1028,7 @@ fn call_tool_observed(
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-    progress: &dyn SearchProgressSink,
+    progress: &dyn ProgressSink,
 ) -> Result<OperationResult, String> {
     call_tool_with_runtime_admission(
         spec,
@@ -1054,7 +1047,7 @@ fn call_tool_with_runtime_admission(
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-    progress: &dyn SearchProgressSink,
+    progress: &dyn ProgressSink,
     runtime_admission: RuntimeAdmissionPolicy,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
@@ -1063,12 +1056,21 @@ fn call_tool_with_runtime_admission(
     let mode = InvocationMode::from_validated_args(spec, args)?;
     tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
     let dry_run = mode.is_preview();
+    // ADR-0074: a classified applied operation executes and carries its named
+    // risk into the result; only an unclassified one still fails closed.
+    let mut applied_risk = None;
     if runtime_admission == RuntimeAdmissionPolicy::Enforce
         && matches!(spec.handler, ToolHandler::RuntimeAdapter)
         && !dry_run
     {
-        let failure = runtime_admission::runtime_receipt_admission_failure(spec.name, args)?;
-        return Ok(runtime_receipt_admission_result(spec, failure));
+        match runtime_admission::runtime_risk_notice(spec.name, args)? {
+            runtime_admission::RuntimeRiskOutcome::Refused(failure) => {
+                return Ok(runtime_receipt_admission_result(spec, failure));
+            }
+            runtime_admission::RuntimeRiskOutcome::Warned(notice) => {
+                applied_risk = Some(notice);
+            }
+        }
     }
     let cwd = args.get("cwd").and_then(Value::as_str).map(PathBuf::from);
     let context = ports.discover_workspace(cwd)?;
@@ -1405,6 +1407,11 @@ fn call_tool_with_runtime_admission(
     };
     enforce_result_contract(spec, mode, &handler_outcome)?;
     let mut outcome = handler_outcome.adapter;
+    if let Some(notice) = applied_risk {
+        outcome
+            .warnings
+            .push(format!("{}: {}", notice.code, notice.message));
+    }
     let handler_events = handler_outcome.events;
     let projected_events = handler_outcome.projected_events;
     let recorded_cache = handler_outcome.recorded_cache;
@@ -1895,7 +1902,7 @@ fn invoke_code_intelligence_search(
     workspace: &WorkspaceContext,
     operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
-    progress: &dyn SearchProgressSink,
+    progress: &dyn ProgressSink,
 ) -> Result<ports::HandlerOutcome, String> {
     let (context, _scope) = ports.resolve_code_search_context(workspace, args)?;
     let request = SearchRequest {
@@ -3552,45 +3559,28 @@ mod tests {
     }
 
     #[test]
-    fn applied_runtime_fails_closed_before_workspace_discovery() {
-        let ports = Arc::new(RejectDiscoveryPorts::default());
-        let app = UnicaApplication::with_ports(ports.clone());
-        for args in [
-            json!({"operation": "config-init"}),
-            json!({"operation": "init"}),
-            json!({"operation": "build"}),
-            json!({"operation": "dump", "mode": "full"}),
-            json!({"operation": "convert"}),
-            json!({"operation": "make", "output": "build/config.cf"}),
-            json!({"operation": "load", "path": "build/config.cf"}),
-            json!({"operation": "syntax", "mode": "designer-config"}),
-            json!({"operation": "syntax", "mode": "designer-modules"}),
-            json!({"operation": "syntax", "mode": "edt"}),
-            json!({"operation": "test", "testRunner": "va"}),
-            json!({"operation": "launch", "clientMode": "thin"}),
-            json!({"operation": "launch", "clientMode": "thin", "waitForExit": true}),
-            json!({"operation": "extensions"}),
-            json!({"operation": "tools-download", "tool": "yaxunit"}),
-        ] {
-            let mut args = args.as_object().unwrap().clone();
-            args.insert("dryRun".to_string(), Value::Bool(false));
-            let operation = args["operation"].as_str().unwrap();
+    fn applied_runtime_carries_its_named_risk_into_the_result() {
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("dryRun".to_string(), Value::Bool(false)),
+        ]);
 
-            let result = app
-                .call_tool("unica.runtime.execute", &args)
-                .expect("runtime admission is an OperationResult, not a transport error");
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("v8-runner finished the applied build"),
+            data: None,
+        }))
+        .call_tool("unica.runtime.execute", &args)
+        .expect("an applied runtime call answers with an OperationResult");
 
-            assert!(!result.ok, "{operation}: {result:?}");
-            assert!(
-                result
-                    .errors
-                    .iter()
-                    .any(|error| error.starts_with("runtime_operation_unbounded:")),
-                "{operation}: {result:?}"
-            );
-        }
-
-        assert_eq!(ports.discovery_calls.load(Ordering::SeqCst), 0);
+        assert!(result.ok, "{result:?}");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("runtime_risk_critical_non_abortable:")),
+            "{:?}",
+            result.warnings
+        );
     }
 
     #[test]
@@ -5336,7 +5326,7 @@ mod tests {
             app.ports.as_ref(),
             &cancellation,
             ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE),
-            &NoopSearchProgressSink,
+            &NoopProgressSink,
             RuntimeAdmissionPolicy::AlreadyAdmittedForDownstreamContractTest,
         )
         .unwrap();

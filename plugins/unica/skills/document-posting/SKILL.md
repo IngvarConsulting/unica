@@ -8,7 +8,13 @@ description: "Проведение документов 1С. Используй 
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.meta.info`, `unica.meta.edit`, `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 - Use `unica.standards.search` and `unica.standards.explain` for a development-standard about posting: 450, 477, 603, 661, 663, 664, and diagnostics АПК:105, АПК:123, АПК:226, АПК:227. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.role.info` when posting runs in privileged mode or depends on rights or RLS on the target registers.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
@@ -39,7 +45,7 @@ By default the handler writes nothing itself: the platform writes the record set
 5. Decide which balances need control at all. Skip control where it cannot fail: a receipt document only increases balances, and re-posting cannot write off more than the first posting already did.
 6. Fix the write order for the std661 shape: uncontrolled registers early with `БлокироватьДляИзменения = Ложь` in a stable register order, controlled registers last with `БлокироватьДляИзменения = Истина`, negative-balance queries after that write. Keep the same order in every handler that shares those registers.
 7. Change metadata with `unica.meta.edit` and module code with `unica.code.patch`, one verifiable step at a time.
-8. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` only to preview typed syntax/test arguments, and require separate evidence for posting, unposting, and runtime behavior with a realistic tabular section.
+8. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them, and require separate evidence for posting, unposting, and runtime behavior with a realistic tabular section.
 
 ## Design rules
 

@@ -8,7 +8,13 @@ description: "Транзакции, блокировки и ответствен
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, `unica.meta.info`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 - Use `unica.standards.search` and `unica.standards.explain` for a development-standard about transactions and locks: 460, 490, 648, 659, 661, 783, and diagnostics АПК:66, АПК:67, АПК:325-327, АПК:329, АПК:330-332, АПК:478, АПК:521, АПК:1319, АПК:1320, АПК:1327, АПК:1328, BSLLS:PairingBrokenTransaction, v8cs:lock-out-of-try. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -40,7 +46,7 @@ The read-decide-write pair is the shape to recognise: read a value, compute from
 3. Locate the existing transaction boundaries with `unica.code.outline` and `unica.code.graph` — a transaction begun in one method and finished in another is the defect, not a style issue.
 4. Write the shape whole: `НачатьТранзакцию()`, then `Попытка` with the lock, the read, the write and the commit, then `Исключение` with `ОтменитьТранзакцию()` first.
 5. Apply with `unica.code.patch`, one verifiable step at a time.
-6. Verify statically with `unica.code.diagnostics` — the transaction-scheme diagnostics are exactly what this skill's rules encode — and use `unica.runtime.execute` only to preview typed syntax/test arguments; report runtime behavior as unverified.
+6. Verify statically with `unica.code.diagnostics` — the transaction-scheme diagnostics are exactly what this skill's rules encode — and use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them; report runtime behavior as unverified.
 7. For diagnosis, build the timeline from the runtime evidence and identify the contended resource before proposing any change.
 
 ## Design rules

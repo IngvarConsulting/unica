@@ -8,7 +8,13 @@ description: "Размещение кода 1С по модулям. Испол�
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.project.map`, `unica.meta.info`, `unica.meta.add`, `unica.meta.edit`, `unica.subsystem.info`, `unica.code.search`, `unica.code.definition`, `unica.code.graph`, `unica.code.patch`, `unica.code.diagnostics`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 - Use `unica.standards.search` and `unica.standards.explain` for a development-standard about module hosting: 455, 469, 474, 486, 556, 679, 697, 724, 746, and diagnostics АПК:73, АПК:80, АПК:85, АПК:90, АПК:125, АПК:363, АПК:435-439, АПК:444, АПК:1245. These are standards, not evidence of runtime behavior; confirm the wording before citing one.
 - Use `unica.role.info` when the module enters privileged mode or carries the privileged flag.
 - Do not call internal analyzer, runtime, standards, or package adapters directly. They are hidden behind MCP `unica`.
@@ -48,7 +54,7 @@ Then pick exactly one of the four common module contexts (std469) and name it by
 4. When adding a common module, choose the context row first, then `unica.meta.add` with the matching flags and postfix.
 5. Set `Вызов сервера` only for API genuinely called from the client, and state what it exposes.
 6. Apply code with `unica.code.patch`, one verifiable step at a time.
-7. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` only to preview typed syntax/test arguments and report runtime behavior as unverified.
+7. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them and report runtime behavior as unverified.
 
 ## Design rules
 

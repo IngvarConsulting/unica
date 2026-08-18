@@ -11,15 +11,18 @@ integration belongs in the 1C architecture.
 
 ## Primary path
 
-По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
-только с `dryRun: true`; любой applied-режим возвращает fail-closed до
-workspace discovery и process spawn. Preview не является runtime verification.
-Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
 - Use metadata tools to inspect or create HTTP services, common modules,
   constants, catalogs, documents, and registers needed by the integration.
 - Use BSL source edits for modules and handlers.
-- Use `v8-runner` only to preview `unica.runtime.execute`
+- Use `v8-runner` to preview or run `unica.runtime.execute`
   `operation=syntax`/`operation=test` arguments with `dryRun: true`; report
   syntax, tests, and integration runtime behavior as unverified without
   separate execution evidence.

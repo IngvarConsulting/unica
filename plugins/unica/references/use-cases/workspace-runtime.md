@@ -12,13 +12,18 @@ subsystems, interfaces, and templates.
 
 ## Primary path
 
-Use the `v8-runner` skill and MCP `unica.runtime.execute` only to preview typed
-runtime arguments.
+Use the `v8-runner` skill and MCP `unica.runtime.execute` both to preview typed
+runtime arguments and to run them: `dryRun: false` executes the operation and
+returns its terminal result in the same call.
 
-По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
-только с `dryRun: true`; любой applied-режим возвращает fail-closed до
-workspace discovery и process spawn. Preview не является runtime verification.
-Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Долговременное задание запускай через
+`unica.runtime.job.start` для явно выбранной длинной работы; не используй
+`unica.runtime.job.start` как запасной путь. Не обходи контракт прямым
+runner-ом или через `unica.build.*`.
 
 After clone or workspace initialization, and before `build` or `dump`, first
 call `unica.project.status`. It returns `ready`, `repositoryReady`, `checks[]`,
@@ -68,10 +73,11 @@ source-set path itself has no stronger structural evidence.
 | Preview external EPF wait arguments | `operation=launch`, `clientMode=thin`, `execute`, distinct `output`/`stderrOutput`, `waitForExit=true`, bounded `waitTimeoutMs`, `dryRun=true` |
 | Preview extension property sync | `operation=extensions`, `dryRun=true` |
 
-Every current applied operation is fail-closed before discovery or spawn. The
-operation-specific risks include non-interruptible phases, persistent writes
-without bounded recovery, and unproved ownership of separately grouped 1C
-processes. Designer `rawKeys` may not contain `DumpConfigToFiles` or
+Every applied operation carries its own named risk into the result instead of a
+refusal: non-interruptible phases, persistent writes without bounded recovery,
+unproved ownership of separately grouped 1C processes, or a detached child. An
+operation the completion map does not classify still fails closed before
+discovery or spawn. Designer `rawKeys` may not contain `DumpConfigToFiles` or
 `LoadConfigFromFiles`. Keep a
 platform-generated CDFI sidecar out of Git; a legitimate metadata descriptor
 (including an external EPF/ERF descriptor) for an object named

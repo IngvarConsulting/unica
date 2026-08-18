@@ -14,7 +14,13 @@ description: "Справка платформы 1С и объектной мод
 - `language` секции — локаль, которой источник ответил на самом деле, а не запрошенная. Если они расходятся, назовите подстановку локали в ответе: справка поставляется не во всех локалях, и запрос `en` на русскоязычной установке молча отвечал бы русскими страницами.
 - Секция со смыслом источника `development-standard` не закрывает вопрос о сигнатуре или механике платформы, каким бы уместным ни выглядел её текст. Это правило чтения, а не правило вызова. Симметрично: секция `configuration-documentation` описывает прикладную конфигурацию и не доказывает поведение самой платформы.
 - For project context, use `unica.code.search`, `unica.project.map`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 - Use object-specific `unica.*.info` tools when the API question depends on metadata structure.
 - Do not call internal standards, runtime, or package adapters directly.
 
@@ -25,7 +31,7 @@ description: "Справка платформы 1С и объектной мод
 3. Read `applicableVersion` in the hit. Если она расходится с версией проекта, назовите расхождение в ответе.
 4. Подтвердите ответ текстом открытой страницы: передайте `documentId` попадания в `unica.documentation.get` дословно и опирайтесь на поле `text`. Заголовок и фрагмент выдачи доказательством не является — доказательство только текст документа.
 5. Validate against local project context with `unica.project.map` and targeted `unica.code.search` if the answer depends on project conventions.
-6. For code examples, use `unica.runtime.execute` only to preview `operation=syntax`; report actual syntax and runtime behavior as unverified.
+6. For code examples, use `unica.runtime.execute` to preview `operation=syntax` and, with `dryRun: false`, to run it; report actual syntax and runtime behavior as unverified.
 
 ## Platform context
 
