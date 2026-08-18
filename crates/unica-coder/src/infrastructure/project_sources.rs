@@ -38,6 +38,7 @@ const MAX_HEALTH_YAML_DOCUMENT_NODES: usize = 64 * 1024;
 const MAX_HEALTH_YAML_DOCUMENT_DEPTH: usize = 256;
 const MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES: usize = 16 * 1024;
 const MAX_HEALTH_FORMAT_EVIDENCE_BYTES: usize = 4 * 1024 * 1024;
+const EXTENSIONS_SOURCE_DIRECTORY: &str = "src/cfe";
 const EDT_SOURCE_MARKERS: &[&str] = &[
     ".project",
     "DT-INF/PROJECT.PMF",
@@ -1177,6 +1178,7 @@ fn autodetect_source_sets(
     state: &mut SourceMapDiscoveryState,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Vec<ConfigSourceSet>, String> {
+    let mut source_sets = Vec::new();
     for path in [".", "src", "src/cf"] {
         checkpoint()?;
         let root = workspace_root.join(path);
@@ -1215,15 +1217,134 @@ fn autodetect_source_sets(
             found
         };
         if found {
-            return Ok(vec![ConfigSourceSet {
+            source_sets.push(ConfigSourceSet {
                 name: "main".to_string(),
                 kind: SourceSetKind::Configuration,
                 path: path.to_string(),
                 default_format: None,
-            }]);
+            });
+            break;
         }
     }
-    Ok(Vec::new())
+    source_sets.extend(autodetect_extension_source_sets(
+        workspace_root,
+        state,
+        checkpoint,
+    )?);
+    Ok(source_sets)
+}
+
+/// Autodetects configuration-extension source sets the same way `autodetect_source_sets`
+/// autodetects the base configuration: a bare workspace with no `v8project.yaml` still gets
+/// every `src/cfe/<name>/Configuration.xml` (or EDT `Configuration/Configuration.mdo`)
+/// reported as its own `SourceSetKind::Extension` entry, named after `<name>`. Declared
+/// `v8project.yaml` source sets take precedence over autodetection entirely (see
+/// `discover_project_source_map_internal`), so this only runs for workspaces that rely on
+/// autodetection in the first place.
+fn autodetect_extension_source_sets(
+    workspace_root: &Path,
+    state: &mut SourceMapDiscoveryState,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<Vec<ConfigSourceSet>, String> {
+    checkpoint()?;
+    let mut names = if state.require_nofollow_source_probe_route {
+        let Some(extensions_directory) =
+            health_source_directory(workspace_root, EXTENSIONS_SOURCE_DIRECTORY)?
+        else {
+            return Ok(Vec::new());
+        };
+        let limit = state
+            .max_source_sets
+            .unwrap_or(MAX_HEALTH_SOURCE_SETS)
+            .saturating_add(1);
+        let mut checkpoint_failure = None;
+        let names =
+            read_directory_names_bounded(&extensions_directory, limit, || match checkpoint() {
+                Ok(()) => Ok(()),
+                Err(reason) => {
+                    checkpoint_failure = Some(reason);
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "project source discovery checkpoint stopped enumeration",
+                    ))
+                }
+            });
+        if let Some(reason) = checkpoint_failure {
+            return Err(reason);
+        }
+        let names = names.map_err(|error| {
+            format!(
+                "failed to inspect source directory {} securely: {error}",
+                workspace_root.join(EXTENSIONS_SOURCE_DIRECTORY).display()
+            )
+        })?;
+        if state
+            .max_source_sets
+            .is_some_and(|limit| names.len() > limit)
+        {
+            return Err(format!(
+                "workspace declares more than {} autodetected extension source sets; health inspection supports at most {}",
+                names.len(),
+                MAX_HEALTH_SOURCE_SETS
+            ));
+        }
+        names
+            .into_iter()
+            .filter_map(|name| name.into_string().ok())
+            .collect::<Vec<_>>()
+    } else {
+        let extensions_root = workspace_root.join(EXTENSIONS_SOURCE_DIRECTORY);
+        match std::fs::read_dir(&extensions_root) {
+            Ok(entries) => entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        }
+    };
+    names.sort();
+
+    let mut extension_sets = Vec::new();
+    for name in names {
+        checkpoint()?;
+        let relative_path = format!("{EXTENSIONS_SOURCE_DIRECTORY}/{name}");
+        let found = if state.require_nofollow_source_probe_route {
+            match health_source_directory(workspace_root, &relative_path)? {
+                Some(directory) => {
+                    let mut found = false;
+                    for marker in ["Configuration.xml", "Configuration/Configuration.mdo"] {
+                        match secure_regular_file_exists(&directory, Path::new(marker)) {
+                            Ok(exists) => found |= exists,
+                            Err(SecureMarkerProbeError::UnsafeOrWrongKind(_)) => {}
+                            Err(SecureMarkerProbeError::Incomplete(reason)) => return Err(reason),
+                        }
+                    }
+                    found
+                }
+                None => false,
+            }
+        } else {
+            let root = workspace_root.join(&relative_path);
+            let mut found = false;
+            for marker in [
+                root.join("Configuration.xml"),
+                root.join("Configuration/Configuration.mdo"),
+            ] {
+                found |= snapshot_project_map_input(&marker, false, state, checkpoint)?.is_some();
+            }
+            found
+        };
+        if found {
+            extension_sets.push(ConfigSourceSet {
+                name,
+                kind: SourceSetKind::Extension,
+                path: relative_path,
+                default_format: None,
+            });
+        }
+    }
+    Ok(extension_sets)
 }
 
 fn detect_source_set_format(
@@ -2082,6 +2203,84 @@ mod tests {
         assert!(map.source_sets.is_empty(), "{:?}", map.source_sets);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn autodetect_discovers_configuration_extension_source_sets() {
+        let root = temp_workspace("unica-source-map-autodetect-extensions");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        write(
+            &root.join("src/cfe/test_edreg/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        // A stray file that is not itself an extension source root must not be reported.
+        write(&root.join("src/cfe/README.md"), "not an extension");
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 3, "{:?}", map.source_sets);
+        assert_source_set(
+            &map,
+            "main",
+            SourceSetKind::Configuration,
+            SourceFormat::PlatformXml,
+            &["src/cf/Configuration.xml"],
+        );
+        assert_source_set(
+            &map,
+            "test_ed",
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            &["src/cfe/test_ed/Configuration.xml"],
+        );
+        assert_source_set(
+            &map,
+            "test_edreg",
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            &["src/cfe/test_edreg/Configuration.xml"],
+        );
+        assert_eq!(map.effective_source_set.as_deref(), Some("main"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_autodetect_discovers_configuration_extension_source_sets() {
+        let root = temp_workspace("unica-source-map-health-autodetect-extensions");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        let mut checkpoint = || Ok(());
+
+        let map = discover_project_source_map_controlled(&root, &mut checkpoint).unwrap();
+
+        assert_eq!(map.source_sets.len(), 2, "{:?}", map.source_sets);
+        assert_source_set(
+            &map,
+            "test_ed",
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            &["src/cfe/test_ed/Configuration.xml"],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_without_extensions_directory_keeps_reporting_only_main() {
+        let root = temp_workspace("unica-source-map-autodetect-no-extensions");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        assert_eq!(map.source_sets[0].name, "main");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
