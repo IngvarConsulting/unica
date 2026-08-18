@@ -1711,8 +1711,17 @@ mod tests {
 
     /// ADR-0073 / #534: применённая квитанция называет затронутые файлы, а
     /// предпросмотр несёт те же пути как план — сверка без обхода каталога.
+    /// Полнота проверяется по каждому каналу: `changes`, `artifacts` и
+    /// типизированный `changedPaths` обязаны нести весь набор путей и в
+    /// предпросмотре, и в применении.
     #[test]
     fn typed_add_receipt_names_created_files_and_preview_plans_them() {
+        const EXPECTED_PATHS: [&str; 3] = [
+            "CommonModules/ReceiptModule.xml",
+            "CommonModules/ReceiptModule/Ext/Module.bsl",
+            "Configuration.xml",
+        ];
+
         let fixture = Fixture::new("receipt-paths");
         let application = UnicaApplication::with_ports(Arc::new(FixedWorkspaceApplicationPorts {
             context: fixture.context.clone(),
@@ -1726,19 +1735,47 @@ mod tests {
                 ("dryRun".to_string(), json!(dry_run)),
             ])
         };
+        let assert_receipt_channels = |result: &crate::application::OperationResult,
+                                       label: &str| {
+            let changes = result.changes.join("\n");
+            let data = result.data.as_ref().expect("typed data");
+            let changed_paths = serde_json::to_string(&data["changedPaths"]).unwrap();
+            for expected in EXPECTED_PATHS {
+                assert!(
+                    changes.contains(expected),
+                    "{label}: changes must name {expected}: {changes}"
+                );
+                assert!(
+                    result
+                        .artifacts
+                        .iter()
+                        .any(|artifact| artifact.contains(expected)),
+                    "{label}: artifacts must name {expected}: {:?}",
+                    result.artifacts
+                );
+                assert!(
+                    changed_paths.contains(expected),
+                    "{label}: changedPaths must name {expected}: {changed_paths}"
+                );
+            }
+            assert!(
+                !changes.contains(fixture.root.to_str().unwrap()),
+                "{label}: receipt paths must stay workspace-relative: {changes}"
+            );
+        };
 
         let preview = application
             .call_tool("unica.meta.add", &args(true))
             .unwrap();
         assert!(preview.ok, "{:?}", preview.errors);
-        let preview_changes = preview.changes.join("\n");
+        assert_receipt_channels(&preview, "preview");
         assert!(
-            preview_changes.contains("CommonModules/ReceiptModule.xml"),
-            "preview must plan the descriptor: {preview_changes}"
-        );
-        assert!(
-            preview_changes.contains("Configuration.xml"),
-            "preview must plan the registration: {preview_changes}"
+            preview
+                .changes
+                .iter()
+                .all(|line| line.starts_with("would ")),
+            "preview states a plan: {:?}",
+            preview.changes
         );
         assert!(!fixture
             .root
@@ -1749,36 +1786,18 @@ mod tests {
             .call_tool("unica.meta.add", &args(false))
             .unwrap();
         assert!(applied.ok, "{:?}", applied.errors);
-        let applied_changes = applied.changes.join("\n");
-        for expected in [
-            "CommonModules/ReceiptModule.xml",
-            "CommonModules/ReceiptModule/Ext/Module.bsl",
-            "Configuration.xml",
-        ] {
-            assert!(
-                applied_changes.contains(expected),
-                "applied receipt must name {expected}: {applied_changes}"
-            );
-            assert!(
-                applied
-                    .artifacts
-                    .iter()
-                    .any(|artifact| artifact.contains(expected)),
-                "artifacts must name {expected}: {:?}",
-                applied.artifacts
-            );
-        }
+        assert_receipt_channels(&applied, "applied");
         assert!(
-            !applied_changes.contains(fixture.root.to_str().unwrap()),
-            "receipt paths must stay workspace-relative: {applied_changes}"
+            applied
+                .changes
+                .iter()
+                .all(|line| !line.starts_with("would ")),
+            "applied receipt states facts: {:?}",
+            applied.changes
         );
-        let data = applied.data.as_ref().expect("typed data");
-        assert!(
-            serde_json::to_string(&data["changedPaths"])
-                .unwrap()
-                .contains("CommonModules/ReceiptModule.xml"),
-            "{:?}",
-            data["changedPaths"]
+        assert_eq!(
+            preview.artifacts, applied.artifacts,
+            "preview plans exactly the paths apply touches"
         );
     }
 
