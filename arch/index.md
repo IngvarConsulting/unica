@@ -12,6 +12,7 @@
 | `DEC.2026-08-18.CARRIED-RULES` | решение | active | Правило переносится, если его проверка жива и предмет не про имена инструментов | [decisions/2026-08-18-carried-rules.md](decisions/2026-08-18-carried-rules.md) |
 | `DEC.2026-08-18.EIGHT-ENTRIES` | решение | active | Публичная поверхность — восемь входов | [decisions/2026-08-18-eight-entries.md](decisions/2026-08-18-eight-entries.md) |
 | `DEC.2026-08-18.NO-FILE-DSL` | решение | active | Файловый DSL не входит в публичный контракт | [decisions/2026-08-18-no-file-dsl.md](decisions/2026-08-18-no-file-dsl.md) |
+| `DEC.2026-08-18.NO-JOB-REGISTRY` | решение | active | Долгая работа — один вызов с прогрессом, а не реестр заданий | [decisions/2026-08-18-no-job-registry.md](decisions/2026-08-18-no-job-registry.md) |
 | `DEC.2026-08-18.NODE-OR-DATA` | решение | active | Адрес достаёт до именуемых узлов, множества передаются данными | [decisions/2026-08-18-node-or-data.md](decisions/2026-08-18-node-or-data.md) |
 | `DEC.2026-08-18.REGISTRY-SHAPE` | решение | active | Три символических реестра, одна запись — один файл | [decisions/2026-08-18-registry-shape.md](decisions/2026-08-18-registry-shape.md) |
 | `DEC.2026-08-18.RESULT-FORM` | решение | active | Результат — компактный JSON со слотовой дисциплиной | [decisions/2026-08-18-result-form.md](decisions/2026-08-18-result-form.md) |
