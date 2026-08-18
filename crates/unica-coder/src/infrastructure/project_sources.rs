@@ -278,6 +278,14 @@ impl SourceMapDiscoveryState {
         }
     }
 
+    #[cfg(test)]
+    fn health_with_source_set_limit(limit: usize) -> Self {
+        Self {
+            max_source_sets: Some(limit),
+            ..Self::health()
+        }
+    }
+
     fn captures_provenance(&self) -> bool {
         self.provenance.is_some()
     }
@@ -1226,11 +1234,16 @@ fn autodetect_source_sets(
             break;
         }
     }
-    source_sets.extend(autodetect_extension_source_sets(
-        workspace_root,
-        state,
-        checkpoint,
-    )?);
+    let extension_sets = autodetect_extension_source_sets(workspace_root, state, checkpoint)?;
+    if let Some(limit) = state.max_source_sets {
+        let combined = source_sets.len().saturating_add(extension_sets.len());
+        if combined > limit {
+            return Err(format!(
+                "workspace declares more than {limit} autodetected source sets; health inspection supports at most {limit}"
+            ));
+        }
+    }
+    source_sets.extend(extension_sets);
     Ok(source_sets)
 }
 
@@ -1278,16 +1291,9 @@ fn autodetect_extension_source_sets(
                 workspace_root.join(EXTENSIONS_SOURCE_DIRECTORY).display()
             )
         })?;
-        if state
-            .max_source_sets
-            .is_some_and(|limit| names.len() > limit)
-        {
-            return Err(format!(
-                "workspace declares more than {} autodetected extension source sets; health inspection supports at most {}",
-                names.len(),
-                MAX_HEALTH_SOURCE_SETS
-            ));
-        }
+        // The combined total (this count plus the base configuration set, if any) is
+        // enforced by the caller once both are known; `limit` above only bounds this
+        // enumeration's own I/O cost.
         names
             .into_iter()
             .filter_map(|name| name.into_string().ok())
@@ -1295,12 +1301,34 @@ fn autodetect_extension_source_sets(
     } else {
         let extensions_root = workspace_root.join(EXTENSIONS_SOURCE_DIRECTORY);
         match std::fs::read_dir(&extensions_root) {
-            Ok(entries) => entries
-                .flatten()
-                .filter(|entry| entry.path().is_dir())
-                .filter_map(|entry| entry.file_name().into_string().ok())
-                .collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
+            Ok(entries) => {
+                let mut names = Vec::new();
+                for entry in entries {
+                    checkpoint()?;
+                    let entry = entry.map_err(|error| {
+                        format!(
+                            "failed to inspect source directory {}: {error}",
+                            extensions_root.display()
+                        )
+                    })?;
+                    if entry.path().is_dir() {
+                        if let Ok(name) = entry.file_name().into_string() {
+                            names.push(name);
+                        }
+                    }
+                }
+                names
+            }
+            // Only an absent `src/cfe` means "no extensions here"; any other failure
+            // (permissions, a non-directory in the way, ...) must be reported, not
+            // silently treated the same as "there is nothing to autodetect".
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect source directory {}: {error}",
+                    extensions_root.display()
+                ));
+            }
         }
     };
     names.sort();
@@ -1308,6 +1336,15 @@ fn autodetect_extension_source_sets(
     let mut extension_sets = Vec::new();
     for name in names {
         checkpoint()?;
+        // `main` is reserved for the base configuration set: an extension directory that
+        // happens to be named `main` would collide with it (named lookups reject the
+        // resulting duplicate as ambiguous, while default selection would silently pick
+        // whichever came first) — see #559 review discussion. Skip it rather than publish
+        // an ambiguous map; the workspace can still declare it explicitly, under a
+        // different name, via `v8project.yaml`.
+        if name == "main" {
+            continue;
+        }
         let relative_path = format!("{EXTENSIONS_SOURCE_DIRECTORY}/{name}");
         let found = if state.require_nofollow_source_probe_route {
             match health_source_directory(workspace_root, &relative_path)? {
@@ -2280,6 +2317,81 @@ mod tests {
 
         assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
         assert_eq!(map.source_sets[0].name, "main");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_autodetect_enforces_combined_source_set_limit_including_main() {
+        let root = temp_workspace("unica-source-map-health-autodetect-combined-limit");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        let mut checkpoint = || Ok(());
+        let mut state = SourceMapDiscoveryState::health_with_source_set_limit(1);
+
+        let error = discover_project_source_map_internal(&root, &mut checkpoint, &mut state)
+            .expect_err("main (1) + one autodetected extension (1) exceeds a limit of 1");
+
+        assert!(error.contains("limit") || error.contains('1'), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_autodetect_accepts_combined_source_set_count_at_the_limit() {
+        let root = temp_workspace("unica-source-map-health-autodetect-limit-boundary");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        let mut checkpoint = || Ok(());
+        let mut state = SourceMapDiscoveryState::health_with_source_set_limit(2);
+
+        let map = discover_project_source_map_internal(&root, &mut checkpoint, &mut state)
+            .expect("main (1) + one autodetected extension (1) is exactly the limit of 2");
+
+        assert_eq!(map.source_sets.len(), 2, "{:?}", map.source_sets);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_propagates_non_missing_extensions_directory_errors() {
+        let root = temp_workspace("unica-source-map-autodetect-extensions-not-a-directory");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        // `src/cfe` exists but is a regular file, not a directory: this must surface as an
+        // error, not be silently treated the same as "no extensions directory at all".
+        write(&root.join("src/cfe"), "not a directory");
+
+        let error = discover_project_source_map(&root).expect_err(
+            "src/cfe existing as a non-directory must not be silently treated as absent",
+        );
+
+        assert!(
+            error.contains("cfe"),
+            "error should name the offending directory: {error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_skips_extension_directory_named_main() {
+        let root = temp_workspace("unica-source-map-autodetect-extension-named-main");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        // An extension directory literally named `main` would otherwise collide with the
+        // base configuration's reserved name: named lookups (`resolve_named_source_set`)
+        // would reject it as ambiguous while default selection would silently pick whichever
+        // came first. Autodetection must not produce that collision.
+        write(
+            &root.join("src/cfe/main/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        assert_eq!(map.source_sets[0].kind, SourceSetKind::Configuration);
         fs::remove_dir_all(root).unwrap();
     }
 
