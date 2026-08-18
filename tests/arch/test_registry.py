@@ -30,6 +30,7 @@ ARCH_ROOT = REPO_ROOT / "arch"
 ARCHIVE = REPO_ROOT / "docs" / "arch-v1"
 
 DECISION_BODY_LIMIT = 40
+ARRIVALS_HEADING = "## Что приехало после заморозки"
 SUPERPOWERS_MARKERS = ("For agentic workers", "**Goal:**", "**Tech Stack:**", "REQUIRED SUB-SKILL")
 
 # A record must read without the tracker open. `#123` is the shorthand; the
@@ -240,16 +241,20 @@ class LayerBoundaryTests(unittest.TestCase):
                     )
         self.assertEqual(offenders, [])
 
-    def test_archived_records_are_not_edited_after_the_freeze(self) -> None:
-        """The freeze protects records that existed, not the tree as a shape.
+    def test_archive_drift_is_recorded(self) -> None:
+        """Every difference from the freeze is named in `FATE.md`.
 
-        Three things may still touch `docs/arch-v1`. `FATE.md` is metadata about
-        the archive rather than a record inside it. A record written against the
-        v1 format on `main` before the freeze reached it arrives by merge — that
-        is history landing late, not history being rewritten, and it must appear
-        in `FATE.md` so it does not sit there undisposed. Everything that
-        existed at the freeze answers what was decided on its date, and editing
-        that after the fact destroys the only reason to keep the tree.
+        The rule used to be "the archive is not edited", checked by walking
+        commits. It saw nothing: `git log --name-only` skips merges, and `main`
+        still writes into `spec/`, a path the `docs/arch-v1` filter never
+        matches. Seven files had drifted while the guard reported one.
+
+        Edits do arrive legitimately. `main` never saw the freeze, so what it
+        writes is history landing late, not history rewritten here, and
+        dropping it would lose upstream work to a rule not aimed at it. What
+        the freeze can still demand is that no drift be silent: the archive is
+        compared by content, and anything that differs answers for itself in
+        `FATE.md` — by record id for a decision, by path for the rest.
         """
         freeze = subprocess.run(
             ["git", "log", "--format=%H", "--grep", "move spec/ to docs/arch-v1",
@@ -257,29 +262,32 @@ class LayerBoundaryTests(unittest.TestCase):
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
         ).stdout.split()
         self.assertTrue(freeze, "the freeze commit must be findable")
-        frozen = set(subprocess.run(
-            ["git", "ls-tree", "-r", "--name-only", freeze[0], "--", "docs/arch-v1"],
-            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-        ).stdout.split())
-        changed = set(subprocess.run(
-            ["git", "log", "--format=", "--name-only", f"{freeze[0]}..HEAD",
-             "--", "docs/arch-v1"],
-            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-        ).stdout.split())
 
-        # The surface ledger is generated from the built binary and still lives
-        # in the archive until CTR.WIRE.TOOL-SURFACE grows a home here. It is
-        # output, not a record: freezing it would freeze the generator.
+        # Against the working tree, not against HEAD: an edit is a violation
+        # the moment it exists, and a developer running this before committing
+        # is exactly who should hear about it first.
+        drifted = subprocess.run(
+            ["git", "diff", "--name-only", freeze[0], "--", "docs/arch-v1"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        ).stdout.split()
+
+        # `FATE.md` is metadata about the archive rather than a record inside
+        # it, and the surface ledger is generated output: freezing it would
+        # freeze the generator.
         writable = {"docs/arch-v1/FATE.md", "docs/arch-v1/architecture/tool-surface.md"}
-        edited = sorted(p for p in changed & frozen if p not in writable)
-        self.assertEqual(edited, [], "records that existed at the freeze were edited")
-
         fate = (REPO_ROOT / "docs" / "arch-v1" / "FATE.md").read_text(encoding="utf-8")
-        undisposed = sorted(
-            p for p in changed - frozen
-            if p != "docs/arch-v1/FATE.md" and Path(p).stem.split("-")[0] not in fate
-        )
-        self.assertEqual(undisposed, [], "a record arrived in the archive without a disposition")
+
+        # Only the arrivals section counts. `FATE.md` lists the fate of all
+        # seventy-odd decisions by construction, so "the id appears somewhere
+        # in the file" is true for every record and proves nothing about drift.
+        section = fate.split(ARRIVALS_HEADING, 1)[1] if ARRIVALS_HEADING in fate else ""
+
+        undisposed = []
+        for path in sorted(set(drifted) - writable):
+            relative = path[len("docs/arch-v1/"):]
+            if relative not in section:
+                undisposed.append(f"{relative}: differs from the freeze, arrivals section is silent")
+        self.assertEqual(undisposed, [])
 
 
 if __name__ == "__main__":

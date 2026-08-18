@@ -1,13 +1,14 @@
 ---
 id: INV.DOC.ARCHIVE-FROZEN
 status: active
-decision: DEC.2026-08-18.ARCHITECTURE-RESET
-check: tests/arch/test_registry.py::test_archived_records_are_not_edited_after_the_freeze
+decision: DEC.2026-08-19.ARCHIVE-DRIFT-IS-RECORDED
+check: tests/arch/test_registry.py::test_archive_drift_is_recorded
 scope: [docs]
 ---
 
-# Замороженный слой не читается и не правится
+# Расхождение замороженного слоя объяснено
 
-`docs/arch-v1/**` не изменяется и не служит источником действующего правила. Его
-собственный реестр говорит, что из него умерло, а что заменено — этого
-достаточно; заходить внутрь за ответом о текущем поведении не нужно.
+`docs/arch-v1/**` сверяется с моментом заморозки по содержимому: каждый
+отличающийся файл назван в разделе прибытий `FATE.md`. Слой не служит
+источником действующего правила — что из него умерло, а что пересмотрено,
+сказано там же.

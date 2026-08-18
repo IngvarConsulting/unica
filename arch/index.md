@@ -24,6 +24,7 @@
 | `DEC.2026-08-18.REGISTRY-SHAPE` | решение | active | да | Три символических реестра, одна запись — один файл | [decisions/2026-08-18-registry-shape.md](decisions/2026-08-18-registry-shape.md) |
 | `DEC.2026-08-18.RESOURCE-FOR-DEFERRED-BYTES` | решение | active | нет | Ресурс предлагается для байтов, которых, скорее всего, не попросят | [decisions/2026-08-18-resource-for-deferred-bytes.md](decisions/2026-08-18-resource-for-deferred-bytes.md) |
 | `DEC.2026-08-18.RESULT-FORM` | решение | active | нет | Результат — компактный JSON со слотовой дисциплиной | [decisions/2026-08-18-result-form.md](decisions/2026-08-18-result-form.md) |
+| `DEC.2026-08-19.ARCHIVE-DRIFT-IS-RECORDED` | решение | active | да | Заморозка требует не неподвижности, а объяснённого расхождения | [decisions/2026-08-19-archive-drift-is-recorded.md](decisions/2026-08-19-archive-drift-is-recorded.md) |
 | `DEC.2026-08-19.DECISIONS-FORM-INSIDE` | решение | active | да | Решение формируется в реестре, а не в трекере | [decisions/2026-08-19-decisions-form-inside.md](decisions/2026-08-19-decisions-form-inside.md) |
 | `DEC.2026-08-19.ENTRY-APPLY` | решение | active | нет | `apply` — один писатель на всё дерево | [decisions/2026-08-19-entry-apply.md](decisions/2026-08-19-entry-apply.md) |
 | `DEC.2026-08-19.ENTRY-CHECK` | решение | active | нет | `check` — здоровье пространства и годность узла | [decisions/2026-08-19-entry-check.md](decisions/2026-08-19-entry-check.md) |
@@ -44,7 +45,7 @@
 | `INV.CACHE.PREVIEW-WRITES-NOTHING` | инвариант | active |  | Предпросмотр не оставляет следов | [invariants/INV.CACHE.PREVIEW-WRITES-NOTHING.md](invariants/INV.CACHE.PREVIEW-WRITES-NOTHING.md) |
 | `INV.CACHE.STATE-OUTSIDE-SOURCE` | инвариант | active |  | Состояние поставщика лежит вне индексируемого источника | [invariants/INV.CACHE.STATE-OUTSIDE-SOURCE.md](invariants/INV.CACHE.STATE-OUTSIDE-SOURCE.md) |
 | `INV.CI.TAG-ONLY-PUBLISH` | инвариант | active |  | Публикация происходит только по тегу и через один шлюз | [invariants/INV.CI.TAG-ONLY-PUBLISH.md](invariants/INV.CI.TAG-ONLY-PUBLISH.md) |
-| `INV.DOC.ARCHIVE-FROZEN` | инвариант | active |  | Замороженный слой не читается и не правится | [invariants/INV.DOC.ARCHIVE-FROZEN.md](invariants/INV.DOC.ARCHIVE-FROZEN.md) |
+| `INV.DOC.ARCHIVE-FROZEN` | инвариант | active |  | Расхождение замороженного слоя объяснено | [invariants/INV.DOC.ARCHIVE-FROZEN.md](invariants/INV.DOC.ARCHIVE-FROZEN.md) |
 | `INV.DOC.SUPERPOWERS-BOUNDARY` | инвариант | active |  | Формы superpowers не входят в реестр | [invariants/INV.DOC.SUPERPOWERS-BOUNDARY.md](invariants/INV.DOC.SUPERPOWERS-BOUNDARY.md) |
 | `INV.HOST.KNOWLEDGE-BEHIND-FACADE` | инвариант | active |  | Знание о хосте живёт за host-фасадом | [invariants/INV.HOST.KNOWLEDGE-BEHIND-FACADE.md](invariants/INV.HOST.KNOWLEDGE-BEHIND-FACADE.md) |
 | `INV.PKG.ATTRIBUTION` | инвариант | active |  | Атрибуция остаётся полной | [invariants/INV.PKG.ATTRIBUTION.md](invariants/INV.PKG.ATTRIBUTION.md) |
