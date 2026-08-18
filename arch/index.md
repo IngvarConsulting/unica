@@ -12,6 +12,7 @@
 | `DEC.2026-08-18.CARRIED-RULES` | решение | active | Правило переносится, если его проверка жива и предмет не про имена инструментов | [decisions/2026-08-18-carried-rules.md](decisions/2026-08-18-carried-rules.md) |
 | `DEC.2026-08-18.CURSOR-CARRIES-REVISION` | решение | active | Продолжение чтения несёт ревизию и отказывает при расхождении | [decisions/2026-08-18-cursor-carries-revision.md](decisions/2026-08-18-cursor-carries-revision.md) |
 | `DEC.2026-08-18.EIGHT-ENTRIES` | решение | active | Публичная поверхность — восемь входов | [decisions/2026-08-18-eight-entries.md](decisions/2026-08-18-eight-entries.md) |
+| `DEC.2026-08-18.FAILURE-NAMES-THE-FILE` | решение | active | Из Unica всегда есть выход к файлам | [decisions/2026-08-18-failure-names-the-file.md](decisions/2026-08-18-failure-names-the-file.md) |
 | `DEC.2026-08-18.FILE-NODE-CONTENT` | решение | active | Узел файловой природы отдаёт содержимое, а не свойства | [decisions/2026-08-18-file-node-content.md](decisions/2026-08-18-file-node-content.md) |
 | `DEC.2026-08-18.MODULE-PROJECTIONS` | решение | active | Модуль читается проекцией по глубине и отбору, а не окном по байтам | [decisions/2026-08-18-module-projections.md](decisions/2026-08-18-module-projections.md) |
 | `DEC.2026-08-18.NO-FILE-DSL` | решение | active | Файловый DSL не входит в публичный контракт | [decisions/2026-08-18-no-file-dsl.md](decisions/2026-08-18-no-file-dsl.md) |
