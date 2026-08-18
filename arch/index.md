@@ -24,6 +24,7 @@
 | `DEC.2026-08-18.REGISTRY-SHAPE` | решение | active | да | Три символических реестра, одна запись — один файл | [decisions/2026-08-18-registry-shape.md](decisions/2026-08-18-registry-shape.md) |
 | `DEC.2026-08-18.RESOURCE-FOR-DEFERRED-BYTES` | решение | active | нет | Ресурс предлагается для байтов, которых, скорее всего, не попросят | [decisions/2026-08-18-resource-for-deferred-bytes.md](decisions/2026-08-18-resource-for-deferred-bytes.md) |
 | `DEC.2026-08-18.RESULT-FORM` | решение | active | нет | Результат — компактный JSON со слотовой дисциплиной | [decisions/2026-08-18-result-form.md](decisions/2026-08-18-result-form.md) |
+| `DEC.2026-08-19.DECISIONS-FORM-INSIDE` | решение | active | да | Решение формируется в реестре, а не в трекере | [decisions/2026-08-19-decisions-form-inside.md](decisions/2026-08-19-decisions-form-inside.md) |
 | `DEC.2026-08-19.ENTRY-APPLY` | решение | active | нет | `apply` — один писатель на всё дерево | [decisions/2026-08-19-entry-apply.md](decisions/2026-08-19-entry-apply.md) |
 | `DEC.2026-08-19.ENTRY-CHECK` | решение | active | нет | `check` — здоровье пространства и годность узла | [decisions/2026-08-19-entry-check.md](decisions/2026-08-19-entry-check.md) |
 | `DEC.2026-08-19.ENTRY-DIFF` | решение | active | нет | `diff` — сравнение как отдельный вопрос | [decisions/2026-08-19-entry-diff.md](decisions/2026-08-19-entry-diff.md) |
@@ -54,6 +55,7 @@
 | `INV.PLATFORM.OS-BEHIND-FACADE` | инвариант | active |  | Зависящий от ОС код живёт за платформенными фасадами | [invariants/INV.PLATFORM.OS-BEHIND-FACADE.md](invariants/INV.PLATFORM.OS-BEHIND-FACADE.md) |
 | `INV.PRODUCT.NO-FORMAT-MIGRATION` | инвариант | active |  | Unica не мигрирует формат выгрузки | [invariants/INV.PRODUCT.NO-FORMAT-MIGRATION.md](invariants/INV.PRODUCT.NO-FORMAT-MIGRATION.md) |
 | `INV.REGISTRY.CHECK-EXISTS` | инвариант | active |  | Запись, несущая проверку, называет существующую цель | [invariants/INV.REGISTRY.CHECK-EXISTS.md](invariants/INV.REGISTRY.CHECK-EXISTS.md) |
+| `INV.REGISTRY.NO-TRACKER-LINKS` | инвариант | active |  | Реестр не ссылается на трекер | [invariants/INV.REGISTRY.NO-TRACKER-LINKS.md](invariants/INV.REGISTRY.NO-TRACKER-LINKS.md) |
 | `INV.REGISTRY.REALIZATION-NAMED` | инвариант | active |  | Решение объявляет, построено ли оно | [invariants/INV.REGISTRY.REALIZATION-NAMED.md](invariants/INV.REGISTRY.REALIZATION-NAMED.md) |
 | `INV.REGISTRY.SYMBOL-MATCHES-PATH` | инвариант | active |  | Символ записи выводится из её пути | [invariants/INV.REGISTRY.SYMBOL-MATCHES-PATH.md](invariants/INV.REGISTRY.SYMBOL-MATCHES-PATH.md) |
 | `INV.SOURCE.ATOMIC-PUBLISH` | инвариант | active |  | Мутация источника публикуется атомарно или не публикуется | [invariants/INV.SOURCE.ATOMIC-PUBLISH.md](invariants/INV.SOURCE.ATOMIC-PUBLISH.md) |

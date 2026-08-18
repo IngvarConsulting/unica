@@ -32,6 +32,14 @@ ARCHIVE = REPO_ROOT / "docs" / "arch-v1"
 DECISION_BODY_LIMIT = 40
 SUPERPOWERS_MARKERS = ("For agentic workers", "**Goal:**", "**Tech Stack:**", "REQUIRED SUB-SKILL")
 
+# A record must read without the tracker open. `#123` is the shorthand; the
+# full URL is the same reference written longer. The lookbehind keeps HTML
+# entities like `&#160;` and hex colours out of the match.
+TRACKER_REFERENCES = (
+    (re.compile(r"(?<![\w&])#\d+\b"), "issue reference"),
+    (re.compile(r"github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+"), "tracker link"),
+)
+
 
 class RecordShapeTests(unittest.TestCase):
     def test_symbol_matches_its_path(self) -> None:
@@ -211,6 +219,25 @@ class LayerBoundaryTests(unittest.TestCase):
             for marker in SUPERPOWERS_MARKERS:
                 if marker in text:
                     offenders.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {marker!r}")
+        self.assertEqual(offenders, [])
+
+    def test_no_record_points_at_the_tracker(self) -> None:
+        """A record must state its ground without a second system open.
+
+        Issue numbers are closed, renumbered and die with the repository that
+        held them, so a rule whose ground is `see #574` loses its ground when
+        the tracker does. The link works the other way: a symbol derives from
+        its path and does not move, so a task cites one safely, and the work
+        is found by searching the tracker for the symbol.
+        """
+        offenders = []
+        for path in sorted(ARCH_ROOT.rglob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            for pattern, what in TRACKER_REFERENCES:
+                for match in pattern.finditer(text):
+                    offenders.append(
+                        f"{path.relative_to(ARCH_ROOT).as_posix()}: {what} {match.group(0)!r}"
+                    )
         self.assertEqual(offenders, [])
 
     def test_archived_records_are_not_edited_after_the_freeze(self) -> None:
