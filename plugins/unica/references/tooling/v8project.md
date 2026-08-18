@@ -6,8 +6,10 @@ file is not located at `./v8project.yaml`.
 
 По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
 показывает запланированную команду без побочных эффектов, а с `dryRun: false`
-исполняет операцию и отвечает её терминальным результатом в том же вызове,
-приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполняет классифицированную операцию и отвечает её терминальным результатом в
+том же вызове, приложив названную причину риска (`runtime_risk_*`)
+предупреждением; неклассифицированная операция по-прежнему отказывает
+`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
 исполнением не является. Работу, которую вызов ждать не должен, запускай через
 `unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
 `unica.build.*`.
@@ -63,7 +65,7 @@ directory containing the primary config.
 `execution_timeout` is the v8-runner operation budget in milliseconds. The
 default is `300000`; v8-runner validates the value in the `1..=86400000` range.
 For a future admitted long operation, this project config value is the runner
-budget; it is not a reason to attempt the currently blocked applied call or add
+budget; it is not a reason to attempt an unclassified applied call or add
 a Unica wrapper timeout argument.
 
 Server infobase connections use the normal 1C connection string form in
@@ -132,7 +134,7 @@ runtime operation arguments.
 | Preview loading XML sources | `operation=build`, `dryRun=true` |
 | Preview a full source load | `operation=build`, `fullRebuild=true`, `dryRun=true` |
 | Preview configuration/extension XML dump | synchronous `operation=dump`, `mode=full`, `dryRun=true`; applied post-run validation/publication has no proved receipt bound |
-| Preview external source-set dump | `operation=dump`, `mode=full`, `sourceSet=<external>`, `dryRun=true`; applied external dump is fail-closed |
+| Preview external source-set dump | `operation=dump`, `mode=full`, `sourceSet=<external>`, `dryRun=true`; the applied run writes without a bounded recovery contract |
 | Preview incremental/selected dump | `operation=dump`, `mode=incremental` or `mode=partial`, `dryRun=true`; partial also requires `object=TYPE:NAME` or `objects=[...]` |
 | Preview `.cf` / `.cfe` artifact load | `operation=load`, `path=<file>`, `mode=load` or `mode=merge`, `dryRun=true` |
 | Preview `.cf` / `.cfe` artifact export | `operation=make`, `output=<file>`, `dryRun=true` |
@@ -141,8 +143,9 @@ runtime operation arguments.
 | Preview test arguments | `operation=test`, one of `testRunner=yaxunit` or `testRunner=va`, `dryRun=true` |
 | Preview configured tool download | `operation=tools-download`, one of `tool=yaxunit`, `tool=vanessa`, or `tool=client-mcp`, `dryRun=true` |
 
-All current applied modes are fail-closed before workspace discovery and
-process spawn. Operation-specific blockers include non-interruptible phases,
+A classified applied mode runs and answers with its named risk; a mode the
+completion map does not classify still fails closed before workspace discovery
+and process spawn. The named risks are non-interruptible phases,
 persistent writes without bounded recovery, and unproved ownership of
 separately grouped 1C processes. ADR-0016 continues to own the future full-dump
 publication contract; its transaction guarantees do not make the current
@@ -175,10 +178,10 @@ or `v8-runner` would execute; other Unix hosts fail closed as well.
   budget; Unica does not expose `timeoutMs` for `unica.runtime.execute`, and
   changing this value does not admit a current applied operation.
 - Do not use `mode=update` for `operation=load`; v8-runner rejects it. Use `mode=load` or `mode=merge` with `settings`.
-- Every applied operation is currently blocked; `convert` additionally lacks a
+- Every applied operation carries a named risk; `convert` additionally lacks a
   verified private-stage publication boundary.
 - Do not pass `DumpConfigToFiles` or `LoadConfigFromFiles` through Designer `rawKeys`; Unica rejects these unverified source bypasses.
-- When credentials are absent, do not initiate a runtime probe while applied execution is blocked. Ask the user; classify only authentication evidence already supplied by a verified boundary.
+- When credentials are absent, do not initiate a runtime probe to discover them. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
 - If a runtime flag or debug-server step is missing from
   `unica.runtime.execute`, treat it as a Unica MCP contract gap. EPF/ERF
