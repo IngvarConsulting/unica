@@ -26,6 +26,35 @@ allowed-tools:
 - Операция, которую платформа исполняет отдельно сгруппированным процессом (`syntax` в режимах Designer/EDT, `launch`), несёт риск недоказанного владения этим процессом: результат назовёт причину, а очистка на всех путях ошибки не гарантирована.
 - Не используй `unica.runtime.job.*` как fallback, продолжение или повтор `unica.runtime.execute`: долговременное задание — отдельный явно выбранный workflow, а не способ получить потерянный receipt.
 
+## Работа, которую вызов ждать не должен
+
+Если сборка длинная, а терять её результат нельзя, запусти её отдельным
+долговременным заданием: оно живёт в отсоединённом процессе и переживает обрыв
+вызова. После успешного `unica.project.status` предупреди пользователя, что
+работа пойдёт фоном, и вызови:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.runtime.job.start",
+    "arguments": {
+      "cwd": "<workspace>",
+      "operation": "build",
+      "sourceSet": "<source-set>",
+      "dryRun": false
+    }
+  }
+}
+```
+
+Сохрани возвращённый `jobId`. Наблюдай фазу и heartbeat через
+`unica.runtime.job.status`, ограниченно жди через `unica.runtime.job.wait`,
+диагностические хвосты запрашивай через `unica.runtime.job.logs`. У обычной
+сборки логи могут оставаться пустыми до завершения — это не признак зависания,
+различать помогают фаза и heartbeat.
+
 ## Project health preflight
 
 After clone or workspace initialization, and before `build` or `dump`, call
@@ -362,9 +391,9 @@ Platform XML.
 с именем `ConfigDumpInfo.xml` remains source и должен храниться в Git.
 На Windows, macOS и Linux verified transactional publication описывает
 синхронный full dump (`mode=full`) только для DESIGNER source-set типа
-`CONFIGURATION` или `EXTENSION`, но в текущем single-call lifecycle его можно
-только предпросмотреть: проверка и публикация не имеют доказанного верхнего
-срока. Unica независимо проверяет установленную
+`CONFIGURATION` или `EXTENSION`. Он исполняется и несёт названный риск: проверка
+и публикация не имеют доказанного ограниченного восстановления, поэтому
+прерванный прогон верхнего срока не гарантирует. Unica независимо проверяет установленную
 платформу 8.3.27, подменяет выбранный target на private staging, проверяет
 владельца и все XML version-bearing roots на exact raw `2.20`, затем атомарно с
 rollback публикует целое дерево. Контракт публикации принадлежит ADR-0016:
@@ -374,9 +403,9 @@ rollback публикует целое дерево. Контракт публи
 
 Любой applied dump пока отказывает до spawn. Асинхронный full dump и dump для
 external source-set также доступны только как preview. `incremental` и
-`partial` preview-only: до private
-CDFI, точного receipt и divergence-safe merge (alkoleft/v8-runner-rust#30) им
-нельзя писать в Git-visible root.
+`partial` исполняются, но до private
+CDFI, точного receipt и divergence-safe merge (alkoleft/v8-runner-rust#30) их
+результату в Git-visible root доверять нельзя без сверки исходников.
 
 На Windows Unica проверяет локальную системную установку через no-follow
 handles: доверенный владелец и DACL должны защищать install tree от изменения
@@ -585,7 +614,7 @@ handles: доверенный владелец и DACL должны защища
 
 ## Syntax/tests/extensions
 
-Все режимы `syntax`, `test` и `extensions` остаются preview-only. Даже
+Все режимы `syntax`, `test` и `extensions` исполняются с названным риском. Даже
 Designer syntax может породить отдельную группу процесса 1С, владение которой
 закреплённый runner не доказывает на каждом аварийном пути; интерактивная
 EDT-сессия и build/extension-фазы также не имеют ограниченного восстановления.

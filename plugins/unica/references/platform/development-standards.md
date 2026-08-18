@@ -38,7 +38,8 @@ Use these standards during BSL implementation, review, and refactoring.
 `unica.build.*`.
 
 - Run object-specific validation after metadata changes.
-- Use `v8-runner` to preview or run `unica.runtime.execute` syntax/test arguments
-  with `dryRun: true`; retain an explicit residual risk because preview does not
-  validate BSL in the runtime.
+- Use `v8-runner` with `dryRun: true` to preview `unica.runtime.execute`
+  syntax/test arguments and with `dryRun: false` to run them; after a preview
+  alone, retain an explicit residual risk because preview does not validate BSL
+  in the runtime.
 - For risky changes, inspect metadata shape before and after the edit.

@@ -149,9 +149,9 @@ publication contract; its transaction guarantees do not make the current
 applied route executable.
 
 On Windows, macOS, and Linux, synchronous full dump (`mode=full`) for DESIGNER
-`CONFIGURATION` and `EXTENSION` source-sets remains preview-only: verified
-transactional publication still has post-run work without a proved terminal
-receipt bound.
+`CONFIGURATION` and `EXTENSION` source-sets runs applied and answers with a named
+risk: verified transactional publication still has post-run work without a proved
+terminal receipt bound, so a cancelled or timed-out dump has no bounded recovery.
 
 On Windows, Unica attests a local system installation through no-follow handles:
 its trusted owner and DACL must prevent mutation of the install tree by the

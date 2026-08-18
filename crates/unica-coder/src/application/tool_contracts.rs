@@ -3572,7 +3572,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         return json!({
             "type": "boolean",
             "default": true,
-            "description": "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs the operation and returns its terminal result in this call, carrying the named applied risk as a warning."
+            "description": "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs a classified operation and returns its terminal result in this call with a named risk warning; an unclassified operation stays refused."
         });
     }
     if tool.name == "unica.role.edit" {
@@ -6623,7 +6623,7 @@ mod tests {
         assert_eq!(schema["properties"]["projects"]["type"], "array");
         assert_eq!(
             schema["properties"]["dryRun"]["description"],
-            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs the operation and returns its terminal result in this call, carrying the named applied risk as a warning."
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs a classified operation and returns its terminal result in this call with a named risk warning; an unclassified operation stays refused."
         );
     }
 

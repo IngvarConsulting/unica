@@ -111,7 +111,7 @@ pub(crate) fn runtime_risk_notice(
         RuntimeCompletionCapability::Detached => (
             "runtime_risk_detached_child",
             format!(
-                "operation `{operation}` would detach a child process, so the durable record cannot observe its exit"
+                "operation `{operation}` would detach a child process, so this call cannot observe its exit"
             ),
         ),
         RuntimeCompletionCapability::Unclassified => {

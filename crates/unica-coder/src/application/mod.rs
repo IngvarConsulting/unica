@@ -803,7 +803,7 @@ pub fn tools() -> Vec<ToolSpec> {
         ToolSpec {
             name: "unica.runtime.execute",
             description:
-                "Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn.",
+                "Preview typed v8-runner workflows, or run a classified applied operation and answer with its terminal result plus a named risk warning; an unclassified operation still fails closed before workspace discovery or process spawn.",
             execution: ToolExecution::Mutation,
             result_contract: ResultContract::ExternalStream,
             cache_access: CacheAccess {

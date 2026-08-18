@@ -2042,11 +2042,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         operations = set()
         for block in examples:
             payload = json.loads(block)
-            self.assertEqual(payload["params"]["name"], "unica.runtime.execute")
+            tool_name = payload["params"]["name"]
+            self.assertIn(
+                tool_name,
+                {"unica.runtime.execute", "unica.runtime.job.start"},
+            )
             arguments = payload["params"]["arguments"]
             self.assertIn("operation", arguments)
             self.assertNotEqual(set(arguments.keys()), {"cwd"})
             self.assertNotIn("args", arguments)
+            if tool_name == "unica.runtime.job.start":
+                self.assertIs(arguments.get("dryRun"), False)
             operations.add(arguments["operation"])
 
         self.assertTrue(
@@ -2399,6 +2405,45 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn(token, text)
                 for claim in forbidden_applied_claims:
                     self.assertNotRegex(text, claim)
+
+    def test_v8_runner_routes_unwaitable_work_to_a_durable_job(self) -> None:
+        """The durable route is a first-class choice, not a way around a refusal.
+
+        ADR-0074 admits the applied call, so the shipped guidance has to say when
+        a durable job is still the right tool: work whose result the call must
+        not lose. Adapted from PR #555, which proposed the positive route while
+        the applied call was still refused.
+        """
+        skill_text = (self.skill_root() / "v8-runner" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        reference_text = (
+            self.reference_root() / "use-cases" / "workspace-runtime.md"
+        ).read_text(encoding="utf-8")
+
+        durable_calls = [
+            payload["params"]["arguments"]
+            for payload in (
+                json.loads(block)
+                for block in re.findall(
+                    r"```json\n(.*?)\n```", skill_text, flags=re.DOTALL
+                )
+            )
+            if payload.get("method") == "tools/call"
+            and payload.get("params", {}).get("name") == "unica.runtime.job.start"
+        ]
+        self.assertTrue(durable_calls, "the skill shows no durable job call")
+        for arguments in durable_calls:
+            self.assertIs(arguments.get("dryRun"), False)
+            self.assertIn("operation", arguments)
+
+        for text in (skill_text, reference_text):
+            for observation in (
+                "unica.runtime.job.status",
+                "unica.runtime.job.wait",
+                "unica.runtime.job.logs",
+            ):
+                self.assertIn(observation, text)
 
     def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
         self,
@@ -3236,7 +3281,7 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertNotIn("V8_PATH", runtime_build)
         self.assertNotIn("V8_BASE", runtime_build)
 
-    def test_verified_full_dump_documents_preview_only_publication_contract(self) -> None:
+    def test_verified_full_dump_documents_its_publication_risk_contract(self) -> None:
         docs = [
             self.skill_root() / "v8-runner" / "SKILL.md",
             self.skill_root()
@@ -3265,7 +3310,14 @@ Use `.claude/commands/xdto.md` as the execution route.
                 re.IGNORECASE,
             ),
         }
-        preview_only = re.compile(r"(?:preview[- ]only|предпросмотр|fail[- ]closed)", re.I)
+        # Публикация полного дампа исполняется и несёт названный риск записи без
+        # ограниченного восстановления (ADR-0074), поэтому абзац контракта
+        # обязан говорить о риске, а не о былом отказе.
+        publication_risk = re.compile(
+            r"(?:bounded recovery|proved (?:terminal )?receipt|ограниченн\w*\s+восстановлени\w*|"
+            r"названн\w*\s+риск\w*|named risk)",
+            re.I,
+        )
 
         def markdown_paragraphs(text: str) -> list[str]:
             return re.split(r"\n(?:[ \t]*|>[ \t]*)\n", text)
@@ -3275,13 +3327,13 @@ Use `.claude/commands/xdto.md` as the execution route.
                 paragraph
                 for paragraph in markdown_paragraphs(text)
                 if all(pattern.search(paragraph) for pattern in required.values())
-                and preview_only.search(paragraph)
+                and publication_risk.search(paragraph)
             ]
 
         def contract_errors(text: str) -> list[str]:
             errors = []
             if not contract_paragraphs(text):
-                errors.append("missing complete preview-only full dump contract paragraph")
+                errors.append("missing complete full dump publication-risk paragraph")
             return errors
 
         document_texts = {
@@ -3294,8 +3346,8 @@ Use `.claude/commands/xdto.md` as the execution route.
 
         mixed_claims = (
             "On Windows, macOS, and Linux, synchronous full dump mode=full for "
-            "CONFIGURATION and EXTENSION remains preview-only while verified "
-            "transactional publication lacks a bounded terminal receipt."
+            "CONFIGURATION and EXTENSION runs with a named risk while verified "
+            "transactional publication lacks bounded recovery."
         )
         self.assertEqual(
             [],
@@ -3456,12 +3508,13 @@ Use `.claude/commands/xdto.md` as the execution route.
         )
         self.assertIn("legacy_target_removed", text)
 
-    def test_v8_runner_dump_references_keep_incomplete_and_external_routes_preview_only(
+    def test_v8_runner_dump_references_keep_incomplete_and_external_routes_guarded(
         self,
     ) -> None:
         v8_runner_root = self.skill_root() / "v8-runner"
         safety_context = re.compile(
-            r"dryRun.{0,8}(?:true|`true`)|preview|read-only|fail-closed|block",
+            r"dryRun.{0,8}(?:true|`true`)|preview|read-only|fail-closed|block|"
+            r"receipt|сверк\w*|довер\w*|verify",
             re.IGNORECASE | re.DOTALL,
         )
         paths = sorted(

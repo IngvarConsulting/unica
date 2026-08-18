@@ -798,11 +798,11 @@ mod tests {
             .expect("runtime tool is listed");
         assert_eq!(
             runtime["description"],
-            "Preview typed v8-runner workflows; current applied operations return a terminal fail-closed result before workspace discovery or process spawn."
+            "Preview typed v8-runner workflows, or run a classified applied operation and answer with its terminal result plus a named risk warning; an unclassified operation still fails closed before workspace discovery or process spawn."
         );
         assert_eq!(
             runtime["inputSchema"]["properties"]["dryRun"]["description"],
-            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs the operation and returns its terminal result in this call, carrying the named applied risk as a warning."
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs a classified operation and returns its terminal result in this call with a named risk warning; an unclassified operation stays refused."
         );
         client.shutdown().await;
     }
