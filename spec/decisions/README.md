@@ -85,7 +85,7 @@
 - [ADR-0065: Миграция читателя выбирает мост или прямое переключение явно](0065-yavnyy-rezhim-migracii-chitatelya.md)
 - [ADR-0066: Терминальный результат runtime возвращается в том же вызове](0066-terminalnyy-receipt-runtime-v-odnom-vyzove.md)
 - [ADR-0067: Доказанный отказ частичной runtime-сборки один раз повторяется полным путём](0067-failed-partial-runtime-build-fallback.md)
-- [ADR-0074: Применённый runtime исполняется в исходном вызове поверх долговременной записи](0074-primenennyy-runtime-poverh-dolgovremennoy-zapisi.md)
+- [ADR-0074: Применённый runtime исполняется в исходном вызове](0074-primenennyy-runtime-ispolnyaetsya-v-ishodnom-vyzove.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

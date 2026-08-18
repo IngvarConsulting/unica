@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn applied_runtime_refusal_is_one_terminal_result_without_input_disclosure() {
+    async fn applied_runtime_answers_once_without_input_disclosure() {
         const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-workspace";
         const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
         let (mut client, _) = spawn_server(application_handler());
@@ -736,19 +736,14 @@ mod tests {
 
         let response = client.receive().await;
         assert_eq!(response["id"], "runtime-refusal", "{response}");
-        assert!(response.get("error").is_none(), "{response}");
-        assert_eq!(response["result"]["isError"], true, "{response}");
-        let receipt: Value = serde_json::from_str(
-            response["result"]["content"][0]["text"]
-                .as_str()
-                .expect("terminal refusal text"),
-        )
-        .unwrap();
-        assert_eq!(receipt["ok"], false, "{receipt}");
-        assert!(receipt["errors"][0]
-            .as_str()
-            .is_some_and(|error| error.starts_with("runtime_operation_unbounded:")));
+        // ADR-0074: the applied call is no longer refused before discovery, so
+        // this fixture answers with the missing bundled runner instead. What the
+        // test still pins is the shape: one terminal answer, no input echoed.
         let serialized = response.to_string();
+        assert!(
+            !serialized.contains("runtime_operation_unbounded"),
+            "the applied refusal is retired: {response}"
+        );
         assert!(!serialized.contains(CWD_SENTINEL), "{response}");
         assert!(!serialized.contains(CONNECTION_SENTINEL), "{response}");
         assert!(
@@ -807,7 +802,7 @@ mod tests {
         );
         assert_eq!(
             runtime["inputSchema"]["properties"]["dryRun"]["description"],
-            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs the operation and returns its terminal result in this call, carrying the named applied risk as a warning."
         );
         client.shutdown().await;
     }

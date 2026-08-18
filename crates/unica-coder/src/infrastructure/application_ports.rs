@@ -496,27 +496,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         operational_config: Option<&OperationalConfig>,
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String> {
-        self.invoke_handler_with_progress(
-            spec,
-            args,
-            context,
-            mode,
-            operational_config,
-            cancellation,
-            &crate::domain::progress::NoopProgressSink,
-        )
-    }
-
-    fn invoke_handler_with_progress(
-        &self,
-        spec: ToolSpec,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        mode: InvocationMode,
-        operational_config: Option<&OperationalConfig>,
-        cancellation: &CancellationToken,
-        progress: &dyn crate::domain::progress::ProgressSink,
-    ) -> Result<HandlerOutcome, String> {
         let dry_run = adapter_dry_run(spec, mode)?;
         if cancellation.is_cancelled() {
             return Ok(HandlerOutcome::plain(AdapterOutcome::cancelled(format!(
@@ -601,18 +580,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                         context,
                         dry_run,
                         mutating: spec.execution.is_mutating(),
-                        progress,
                     },
                     cancellation,
                 )
-                .map(|outcome| {
-                    let mut handler = match outcome.data {
-                        Some(data) => HandlerOutcome::with_data(outcome.outcome, data),
-                        None => HandlerOutcome::plain(outcome.outcome),
-                    };
-                    // ADR-0074: the durable record receipt travels in `job`.
-                    handler.job = outcome.job;
-                    handler
+                .map(|outcome| match outcome.data {
+                    Some(data) => HandlerOutcome::with_data(outcome.outcome, data),
+                    None => HandlerOutcome::plain(outcome.outcome),
                 }),
             ToolHandler::RuntimeJob { action } => RuntimeJobAdapter::invoke_cancellable(
                 action,

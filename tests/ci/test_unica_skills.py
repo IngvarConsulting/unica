@@ -2315,7 +2315,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertEqual([doc for doc, _arguments in runtime_examples], [good])
         self.assertEqual([doc for doc, _error in parse_failures], [bad])
 
-    def test_all_runtime_execute_skill_guidance_is_preview_only(self) -> None:
+    def test_all_runtime_execute_skill_guidance_states_the_applied_contract(self) -> None:
         shipped_docs = list(self.skill_root().glob("**/*.md")) + list(
             self.reference_root().glob("**/*.md")
         )
@@ -2373,28 +2373,17 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             ):
                 self.assertIs(arguments.get("dryRun"), True)
 
+        # ADR-0074: applied execution is admitted, so the shipped guidance has to
+        # name the applied mode, its risk vocabulary and the durable alternative.
         contract_tokens = (
             "INV-MCP-RUNTIME-RECEIPT",
-            "preview-only",
-            "`dryRun: true`",
-            "fail-closed",
-            "workspace discovery",
-            "process spawn",
-            "Preview не является runtime verification",
-            "прямым runner-ом",
+            "ADR-0074",
+            "`dryRun: false`",
+            "runtime_risk_",
             "`unica.build.*`",
-            "`unica.runtime.job.*`",
+            "`unica.runtime.job.start`",
         )
         forbidden_applied_claims = (
-            r"Verify with `unica\.runtime\.execute`",
-            r"Verify syntax/tests with `unica\.runtime\.execute`",
-            r"syntax/tests through `unica\.runtime\.execute`",
-            r"Run `unica\.runtime\.execute`",
-            r"use `unica\.runtime\.execute` for (?:related )?syntax/tests",
-            r"through `unica\.runtime\.execute` operations in order",
-            r"Launch .* with `unica\.runtime\.execute`",
-            r"[Сс]обрать .*`unica\.runtime\.execute`",
-            r"для публикации .*`unica\.runtime\.execute`",
             r"запускай следующую необходимую операцию",
             r"`operation=init` допустима",
             r"подготовить external source-set .* через `v8-runner`",
@@ -2592,17 +2581,16 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 self.assertIs(example.get("dryRun"), True)
 
         for required in (
-            r"исходн\w* `tools/call`",
-            r"`notifications/progress`",
+            r"одному `tools/call`",
             r"не увеличивает крайний срок",
-            r"терминальн\w* fail-closed результат",
-            r"`unica\.runtime\.job\.\*`",
+            r"терминальн\w* результат",
+            r"runtime_risk_",
+            r"`unica\.runtime\.job\.start`",
         ):
             with self.subTest(required=required):
                 self.assertRegex(text, required)
 
         self.assertNotIn("Для долгих операций меняй `execution_timeout`", text)
-        self.assertIn("Для будущей допущенной операции", text)
 
     def test_v8_runner_documents_bounded_vanessa_launch_contract(self) -> None:
         skill_dir = self.skill_root() / "v8-runner"

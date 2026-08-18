@@ -20,10 +20,8 @@ use crate::infrastructure::redaction::{is_secret_key, redactor};
 use crate::infrastructure::runtime_build_preflight::{
     RuntimeBuildPreflight, RuntimeInvocationPlan,
 };
-use crate::domain::progress::{ProgressEvent, ProgressSink};
 use crate::infrastructure::runtime_jobs::{
-    self, RuntimeJobLifecycle, RuntimeJobOperation, RuntimeJobPhase, RuntimeJobRequest,
-    RuntimeJobService, RuntimeJobSnapshot, SystemRuntimeJobLifecycle,
+    self, RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::source_roots::resolve_source_root;
@@ -161,11 +159,6 @@ struct SystemProcessRunner;
 struct SystemBslMcpRunner;
 
 static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
-static SYSTEM_RUNTIME_JOBS: SystemRuntimeJobLifecycle = SystemRuntimeJobLifecycle;
-/// How often the applied call re-reads the durable record while it waits.
-const RUNTIME_RECORD_POLL_INTERVAL: Duration = Duration::from_millis(200);
-/// Meta key carrying the durable record snapshot in `notifications/progress`.
-const RUNTIME_PROGRESS_META_KEY: &str = "io.unica/runtimeProgress";
 static SYSTEM_BSL_MCP_RUNNER: SystemBslMcpRunner = SystemBslMcpRunner;
 
 pub(crate) fn system_process_runner() -> &'static (dyn ProcessRunner + Send + Sync) {
@@ -182,16 +175,11 @@ pub struct CliAdapter<'a> {
 
 pub struct RuntimeAdapter<'a> {
     runner: &'a dyn ProcessRunner,
-    jobs: &'a dyn RuntimeJobLifecycle,
-    record_poll_interval: Duration,
 }
 
 pub struct RuntimeAdapterOutcome {
     pub outcome: AdapterOutcome,
     pub data: Option<Value>,
-    /// Durable record receipt for an applied call, so the caller can return to
-    /// the work by `jobId` when the call itself did not survive.
-    pub job: Option<Value>,
 }
 
 impl RuntimeAdapterOutcome {
@@ -199,7 +187,6 @@ impl RuntimeAdapterOutcome {
         Self {
             outcome,
             data: None,
-            job: None,
         }
     }
 }
@@ -217,7 +204,6 @@ pub(crate) struct RuntimeInvocation<'a> {
     pub(crate) context: &'a WorkspaceContext,
     pub(crate) dry_run: bool,
     pub(crate) mutating: bool,
-    pub(crate) progress: &'a dyn ProgressSink,
 }
 pub struct BslAnalyzerMcpAdapter<'a> {
     runner: &'a dyn BslMcpRunner,
@@ -402,29 +388,12 @@ impl<'a> RuntimeAdapter<'a> {
     pub fn new() -> Self {
         Self {
             runner: &SYSTEM_PROCESS_RUNNER,
-            jobs: &SYSTEM_RUNTIME_JOBS,
-            record_poll_interval: RUNTIME_RECORD_POLL_INTERVAL,
         }
     }
 
     #[cfg(test)]
     pub fn with_runner(runner: &'a dyn ProcessRunner) -> Self {
-        Self {
-            runner,
-            jobs: &SYSTEM_RUNTIME_JOBS,
-            record_poll_interval: RUNTIME_RECORD_POLL_INTERVAL,
-        }
-    }
-
-    /// ADR-0074: the applied path runs on the durable record, so a test scripts
-    /// that record instead of spawning a detached worker.
-    #[cfg(test)]
-    pub fn with_jobs(jobs: &'a dyn RuntimeJobLifecycle) -> Self {
-        Self {
-            runner: &SYSTEM_PROCESS_RUNNER,
-            jobs,
-            record_poll_interval: Duration::from_millis(1),
-        }
+        Self { runner }
     }
 
     #[allow(dead_code)]
@@ -474,152 +443,9 @@ impl<'a> RuntimeAdapter<'a> {
                 context,
                 dry_run,
                 mutating,
-                progress: &crate::domain::progress::NoopProgressSink,
             },
             cancellation,
         )
-    }
-
-    /// ADR-0074: opens the durable record, publishes phase progress while it
-    /// waits and answers with the record's terminal result.
-    fn run_on_durable_record(
-        &self,
-        run: RuntimeRecordRun<'_>,
-    ) -> Result<RuntimeAdapterOutcome, String> {
-        let RuntimeRecordRun {
-            tool_name,
-            args,
-            context,
-            execution_args,
-            build_preflight,
-            program,
-            command,
-            warnings,
-            cancellation,
-            progress,
-        } = run;
-
-        let request =
-            runtime_job_start_request(tool_name, args, context, execution_args, build_preflight)?;
-        let mut snapshot = match self.jobs.start(
-            context.cache_root.clone(),
-            program,
-            context.cwd.clone(),
-            request,
-            cancellation,
-        ) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                if cancellation.is_cancelled() || error.starts_with(CANCELLED_PREFIX) {
-                    return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
-                        format!("{tool_name} cancelled before the durable record was opened"),
-                    )));
-                }
-                return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
-                    ok: false,
-                    summary: format!("{tool_name} could not open a durable runtime record"),
-                    changes: Vec::new(),
-                    warnings,
-                    errors: vec![redactor(&error)],
-                    artifacts: Vec::new(),
-                    stdout: None,
-                    stderr: None,
-                    command: Some(command),
-                }));
-            }
-        };
-        progress.publish(runtime_progress_event(&snapshot));
-
-        while !snapshot.phase.is_terminal() {
-            if cancellation.is_cancelled() {
-                if let Some(unsafe_phase) = snapshot.unsafe_phase.clone() {
-                    let mut warnings = warnings;
-                    warnings.push(format!(
-                        "cancellation deferred: the runner is inside unsafe phase `{unsafe_phase}`, so the durable record keeps running"
-                    ));
-                    return Ok(RuntimeAdapterOutcome {
-                        outcome: AdapterOutcome {
-                            ok: true,
-                            summary: format!(
-                                "{tool_name} stopped waiting for durable runtime job {}; the job continues in unsafe phase `{unsafe_phase}`",
-                                snapshot.id
-                            ),
-                            changes: Vec::new(),
-                            warnings,
-                            errors: Vec::new(),
-                            artifacts: Vec::new(),
-                            stdout: None,
-                            stderr: None,
-                            command: Some(command),
-                        },
-                        data: None,
-                        job: Some(runtime_job_snapshot_value(&snapshot)),
-                    });
-                }
-                let cancelled = self
-                    .jobs
-                    .request_cancel(context.cache_root.clone(), &snapshot.id)?;
-                return Ok(RuntimeAdapterOutcome {
-                    outcome: AdapterOutcome::cancelled(format!(
-                        "{tool_name} cancelled durable runtime job {}",
-                        cancelled.id
-                    )),
-                    data: None,
-                    job: Some(runtime_job_snapshot_value(&cancelled)),
-                });
-            }
-
-            std::thread::sleep(self.record_poll_interval);
-            let next = self.jobs.status(context.cache_root.clone(), &snapshot.id)?;
-            if next.phase != snapshot.phase || next.heartbeat_at_ms != snapshot.heartbeat_at_ms {
-                progress.publish(runtime_progress_event(&next));
-            }
-            snapshot = next;
-        }
-
-        let logs = self
-            .jobs
-            .logs(context.cache_root.clone(), &snapshot.id, 4_096)
-            .ok();
-        let ok = snapshot.exit_code == Some(0) && !snapshot.cancelled;
-        let mut errors = Vec::new();
-        if !ok {
-            errors.push(format!(
-                "durable runtime job {} ended in phase {} with exit code {}",
-                snapshot.id,
-                snapshot.phase.as_str(),
-                snapshot
-                    .exit_code
-                    .map(|code| code.to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            ));
-            if let Some(reason) = snapshot.timeout_reason.clone() {
-                errors.push(redactor(&reason));
-            }
-        }
-        Ok(RuntimeAdapterOutcome {
-            outcome: AdapterOutcome {
-                ok,
-                summary: format!(
-                    "{tool_name} finished durable runtime job {} in phase {}",
-                    snapshot.id,
-                    snapshot.phase.as_str()
-                ),
-                changes: Vec::new(),
-                warnings: merge_warnings(warnings, snapshot.warnings.clone()),
-                errors,
-                artifacts: snapshot
-                    .artifact_path
-                    .clone()
-                    .map(|path| vec![path])
-                    .unwrap_or_default(),
-                stdout: logs.as_ref().map(|logs| redactor(&logs.stdout)),
-                stderr: logs.as_ref().map(|logs| redactor(&logs.stderr)),
-                command: Some(command),
-            },
-            data: None,
-            job: Some(runtime_job_snapshot_value(&snapshot)),
-        })
     }
 
     pub(crate) fn invoke_cancellable(
@@ -633,7 +459,6 @@ impl<'a> RuntimeAdapter<'a> {
             context,
             dry_run,
             mutating,
-            progress,
         } = invocation;
         if cancellation.is_cancelled() {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
@@ -684,28 +509,6 @@ impl<'a> RuntimeAdapter<'a> {
             return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome::cancelled(
                 format!("{tool_name} cancelled before v8-runner launch"),
             )));
-        }
-
-        // ADR-0074: every applied operation except the bounded external EPF launch
-        // runs on the durable record, because the record is what survives a call
-        // the host drops. The bounded launch is limited by its own waitTimeoutMs
-        // and keeps the synchronous wait-envelope contract.
-        if args.get("waitForExit").and_then(Value::as_bool) != Some(true) {
-            return self.run_on_durable_record(RuntimeRecordRun {
-                tool_name,
-                args,
-                context,
-                execution_args,
-                build_preflight: invocation.build_preflight.clone(),
-                program: bundled_tool.program.clone(),
-                command,
-                warnings: merge_warnings(
-                    invocation.warnings.clone(),
-                    bundled_tool.warnings.clone(),
-                ),
-                cancellation,
-                progress,
-            });
         }
 
         let process_timeout = None;
@@ -879,35 +682,7 @@ impl<'a> RuntimeAdapter<'a> {
                 command: Some(command),
             },
             data,
-            job: None,
         })
-    }
-}
-
-/// Everything the applied record run needs. A parameter struct keeps the call
-/// readable instead of a ten-argument signature.
-pub(crate) struct RuntimeRecordRun<'a> {
-    tool_name: &'a str,
-    args: &'a Map<String, Value>,
-    context: &'a WorkspaceContext,
-    execution_args: Vec<String>,
-    build_preflight: Option<crate::infrastructure::runtime_build_preflight::RuntimeBuildPreflight>,
-    program: PathBuf,
-    command: Vec<String>,
-    warnings: Vec<String>,
-    cancellation: &'a CancellationToken,
-    progress: &'a dyn ProgressSink,
-}
-
-/// Projects a durable record snapshot onto the neutral progress seam. `total`
-/// counts phases, never a percentage.
-fn runtime_progress_event(snapshot: &RuntimeJobSnapshot) -> ProgressEvent {
-    ProgressEvent {
-        meta_key: RUNTIME_PROGRESS_META_KEY,
-        payload: runtime_job_snapshot_value(snapshot),
-        progress: snapshot.phase.progress_units(),
-        total: RuntimeJobPhase::PROGRESS_TOTAL,
-        message: format!("{}: {}", snapshot.operation, snapshot.phase.as_str()),
     }
 }
 
@@ -3327,7 +3102,6 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
     use std::path::PathBuf;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -6663,249 +6437,6 @@ analyze_timeout_seconds = 900
             self.commands.borrow_mut().push(command.clone());
             Ok(self.output.clone())
         }
-    }
-
-    fn record_snapshot(id: &str, phase: RuntimeJobPhase) -> RuntimeJobSnapshot {
-        RuntimeJobSnapshot {
-            id: id.to_string(),
-            phase,
-            operation: "build".to_string(),
-            safe_target: "main".to_string(),
-            redacted_argv: vec!["build".to_string()],
-            created_at_ms: 1,
-            started_at_ms: Some(2),
-            heartbeat_at_ms: Some(3),
-            finished_at_ms: None,
-            pid: Some(4321),
-            pid_identity: None,
-            exit_code: None,
-            cancelled: false,
-            cancel_deferred: false,
-            unsafe_phase: None,
-            timeout_reason: None,
-            artifact_path: None,
-            stdout_path: "stdout.log".to_string(),
-            stderr_path: "stderr.log".to_string(),
-            warnings: Vec::new(),
-            wait_timed_out: false,
-        }
-    }
-
-    /// Scripts the durable record so the applied path can be tested without a
-    /// detached worker (ADR-0074).
-    struct ScriptedJobs {
-        start: RuntimeJobSnapshot,
-        statuses: Mutex<std::collections::VecDeque<RuntimeJobSnapshot>>,
-        cancelled: Mutex<Vec<String>>,
-        logs: crate::infrastructure::runtime_jobs::RuntimeJobLogs,
-        /// Cancels the call the moment the record opens, which is how a host
-        /// cancellation actually arrives: mid-flight, not before the call.
-        cancel_on_start: Option<CancellationToken>,
-    }
-
-    impl RuntimeJobLifecycle for ScriptedJobs {
-        fn start(
-            &self,
-            _cache_root: PathBuf,
-            _program: PathBuf,
-            _cwd: PathBuf,
-            _request: RuntimeJobRequest,
-            _cancellation: &CancellationToken,
-        ) -> Result<RuntimeJobSnapshot, String> {
-            if let Some(token) = &self.cancel_on_start {
-                token.cancel();
-            }
-            Ok(self.start.clone())
-        }
-
-        fn status(&self, _cache_root: PathBuf, _id: &str) -> Result<RuntimeJobSnapshot, String> {
-            Ok(self
-                .statuses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("the script provides one status per poll"))
-        }
-
-        fn request_cancel(
-            &self,
-            _cache_root: PathBuf,
-            id: &str,
-        ) -> Result<RuntimeJobSnapshot, String> {
-            self.cancelled.lock().unwrap().push(id.to_string());
-            let mut snapshot = record_snapshot(id, RuntimeJobPhase::Cancelled);
-            snapshot.cancelled = true;
-            Ok(snapshot)
-        }
-
-        fn logs(
-            &self,
-            _cache_root: PathBuf,
-            _id: &str,
-            _tail_chars: usize,
-        ) -> Result<crate::infrastructure::runtime_jobs::RuntimeJobLogs, String> {
-            Ok(self.logs.clone())
-        }
-    }
-
-    #[derive(Default)]
-    struct RecordingRuntimeSink(Mutex<Vec<ProgressEvent>>);
-
-    impl ProgressSink for RecordingRuntimeSink {
-        fn publish(&self, event: ProgressEvent) {
-            self.0.lock().unwrap().push(event);
-        }
-    }
-
-    fn applied_build_args() -> Map<String, Value> {
-        let mut args = Map::new();
-        args.insert("operation".to_string(), json!("build"));
-        args.insert("sourceSet".to_string(), json!("main"));
-        args
-    }
-
-    fn empty_logs() -> crate::infrastructure::runtime_jobs::RuntimeJobLogs {
-        crate::infrastructure::runtime_jobs::RuntimeJobLogs {
-            stdout: "built\n".to_string(),
-            stderr: String::new(),
-            stdout_path: "stdout.log".to_string(),
-            stderr_path: "stderr.log".to_string(),
-        }
-    }
-
-    #[test]
-    fn applied_runtime_execute_answers_with_the_terminal_record_result() {
-        let mut context = temp_context("runtime-record-terminal");
-        configure_designer_source(&mut context);
-        let mut finished = record_snapshot("job-1", RuntimeJobPhase::Succeeded);
-        finished.exit_code = Some(0);
-        finished.finished_at_ms = Some(9);
-        let jobs = ScriptedJobs {
-            start: record_snapshot("job-1", RuntimeJobPhase::Queued),
-            statuses: Mutex::new(std::collections::VecDeque::from(vec![
-                record_snapshot("job-1", RuntimeJobPhase::Running),
-                finished,
-            ])),
-            cancelled: Mutex::new(Vec::new()),
-            logs: empty_logs(),
-            cancel_on_start: None,
-        };
-        let sink = RecordingRuntimeSink::default();
-        let args = applied_build_args();
-
-        let outcome = RuntimeAdapter::with_jobs(&jobs)
-            .invoke_cancellable(
-                RuntimeInvocation {
-                    tool_name: "unica.runtime.execute",
-                    args: &args,
-                    context: &context,
-                    dry_run: false,
-                    mutating: true,
-                    progress: &sink,
-                },
-                &CancellationToken::new(),
-            )
-            .unwrap();
-
-        assert!(outcome.outcome.ok, "{:?}", outcome.outcome);
-        assert!(outcome.outcome.summary.contains("job-1"), "{:?}", outcome.outcome);
-        assert_eq!(outcome.job.as_ref().unwrap()["jobId"], "job-1");
-        assert_eq!(outcome.outcome.stdout.as_deref(), Some("built\n"));
-        let events = sink.0.lock().unwrap();
-        assert_eq!(events.len(), 3, "{events:?}");
-        assert!(events
-            .iter()
-            .all(|event| event.meta_key == "io.unica/runtimeProgress"));
-        assert_eq!(events.last().unwrap().progress, 2.0);
-        assert_eq!(events.last().unwrap().total, 2.0);
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn applied_runtime_execute_defers_cancellation_inside_an_unsafe_phase() {
-        let mut context = temp_context("runtime-record-unsafe");
-        configure_designer_source(&mut context);
-        let mut running = record_snapshot("job-2", RuntimeJobPhase::Running);
-        running.unsafe_phase = Some("publishing".to_string());
-        let cancellation = CancellationToken::new();
-        let jobs = ScriptedJobs {
-            start: running,
-            statuses: Mutex::new(std::collections::VecDeque::new()),
-            cancelled: Mutex::new(Vec::new()),
-            logs: empty_logs(),
-            cancel_on_start: Some(cancellation.clone()),
-        };
-        let sink = RecordingRuntimeSink::default();
-        let args = applied_build_args();
-
-        let outcome = RuntimeAdapter::with_jobs(&jobs)
-            .invoke_cancellable(
-                RuntimeInvocation {
-                    tool_name: "unica.runtime.execute",
-                    args: &args,
-                    context: &context,
-                    dry_run: false,
-                    mutating: true,
-                    progress: &sink,
-                },
-                &cancellation,
-            )
-            .unwrap();
-
-        assert!(outcome.outcome.ok, "{:?}", outcome.outcome);
-        assert_eq!(outcome.job.as_ref().unwrap()["jobId"], "job-2");
-        assert!(
-            outcome
-                .outcome
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("publishing")),
-            "{:?}",
-            outcome.outcome.warnings
-        );
-        assert!(
-            jobs.cancelled.lock().unwrap().is_empty(),
-            "an unsafe phase must not be interrupted"
-        );
-        cleanup_context(&context);
-    }
-
-    #[test]
-    fn applied_runtime_execute_cancels_the_record_outside_an_unsafe_phase() {
-        let mut context = temp_context("runtime-record-cancel");
-        configure_designer_source(&mut context);
-        let cancellation = CancellationToken::new();
-        let jobs = ScriptedJobs {
-            start: record_snapshot("job-3", RuntimeJobPhase::Running),
-            statuses: Mutex::new(std::collections::VecDeque::new()),
-            cancelled: Mutex::new(Vec::new()),
-            logs: empty_logs(),
-            cancel_on_start: Some(cancellation.clone()),
-        };
-        let sink = RecordingRuntimeSink::default();
-        let args = applied_build_args();
-
-        let outcome = RuntimeAdapter::with_jobs(&jobs)
-            .invoke_cancellable(
-                RuntimeInvocation {
-                    tool_name: "unica.runtime.execute",
-                    args: &args,
-                    context: &context,
-                    dry_run: false,
-                    mutating: true,
-                    progress: &sink,
-                },
-                &cancellation,
-            )
-            .unwrap();
-
-        assert!(!outcome.outcome.ok, "{:?}", outcome.outcome);
-        assert_eq!(
-            jobs.cancelled.lock().unwrap().as_slice(),
-            ["job-3".to_string()]
-        );
-        assert_eq!(outcome.job.as_ref().unwrap()["cancelled"], true);
-        cleanup_context(&context);
     }
 
     fn temp_context(name: &str) -> WorkspaceContext {

@@ -13,15 +13,17 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.runtime.execute` to preview typed v8-runner arguments; no current applied operation is admitted.
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- Preferred path: use MCP `unica` tool `unica.runtime.execute` both to preview typed v8-runner arguments and to run them.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `dryRun: true` показывает запланированную команду без побочных эффектов, а `dryRun: false` действительно исполняет операцию и возвращает её терминальный результат в этом же вызове. Preview исполнением не является — не выдавай его за проверку runtime. Перед применённым вызовом скажи пользователю, чем операция рискует: результат несёт названную причину (`runtime_risk_critical_non_abortable`, `runtime_risk_publication_without_bounded_recovery`, `runtime_risk_unproven_process_ownership`, `runtime_risk_detached_child`) предупреждением.
+- Длинную работу, которую вызов ждать не должен, запускай через `unica.runtime.job.start` как явно выбранный workflow с наблюдением через `status`/`wait`/`logs`. Не используй `unica.runtime.job.start` как запасной путь. Не обходи контракт прямым runner-ом или через `unica.build.*`.
 - Do not start internal runner MCP servers, package launchers, or shell runners directly, including for maintainer/debug workflows. Report the public contract gap instead.
 
 ## Lifecycle одного вызова
 
-- Каждый текущий применённый `unica.runtime.execute` возвращает терминальный fail-closed результат в исходном `tools/call` до запуска процесса. Для будущей доказанно ограниченной операции этот же вызов сможет передавать смысловые фазы через `notifications/progress`; не интерпретируй прогресс как процент или отдельный результат.
-- Общая конфигурация пакета сейчас не увеличивает крайний срок хоста и не передаёт серверу неподтверждённую метку бюджета: допущенных applied-операций нет. Будущий допуск потребует отдельно доказать сохранение исходного вызова хостом, достаточный бюджет ответа и полное владение деревом процессов.
-- Все текущие операции, включая Designer/EDT `syntax` и `launch` с `waitForExit=true`, пока preview-only. У закреплённого runner-а запись/публикация, непрерываемые фазы либо владение отдельно сгруппированным процессом 1С не имеют доказанного ограниченного восстановления на каждом error/cancel/timeout пути, поэтому применённый вызов завершится fail-closed до запуска дочернего процесса.
+- Применённый `unica.runtime.execute` принадлежит одному `tools/call`: он исполняет операцию синхронно и возвращает её терминальный результат. Прогресс по фазам этот путь не отдаёт — наблюдаемость длинной работы принадлежит долговременному заданию.
+- Общая конфигурация пакета не увеличивает крайний срок хоста. Поэтому долгий применённый вызов может быть обрублен хостом по его сроку, и тогда терминальный результат теряется: работу, которую нельзя терять, запускай долговременным заданием.
+- Целостность информационной базы после принудительного завершения раннера не обещана: отмена доводится до дочернего процесса, но непрерываемую критическую фазу свернуть безопасно нельзя. Предупреди об этом до применённого `build`, `load`, `init`, `test` и `extensions`.
+- Операция, которую платформа исполняет отдельно сгруппированным процессом (`syntax` в режимах Designer/EDT, `launch`), несёт риск недоказанного владения этим процессом: результат назовёт причину, а очистка на всех путях ошибки не гарантирована.
 - Не используй `unica.runtime.job.*` как fallback, продолжение или повтор `unica.runtime.execute`: долговременное задание — отдельный явно выбранный workflow, а не способ получить потерянный receipt.
 
 ## Project health preflight
@@ -44,21 +46,24 @@ then call `unica.project.status` again after the approved fix.
 
 ## Быстрый выбор операции
 
-| Намерение | MCP `operation` | Результат текущего preview |
+| Намерение | MCP `operation` | `dryRun: false` |
 |---|---|---|
-| Предпросмотреть создание `v8project.yaml` | `config-init` (preview-only) | — |
-| Предпросмотреть инициализацию базы/workspace | `init` (preview-only) | — |
-| Предпросмотреть загрузку XML/EDT исходников в базу | `build` (preview-only) | — |
-| Предпросмотреть выгрузку базы в исходники | `dump` (preview-only) | — |
-| Предпросмотреть конвертацию Designer/EDT sources | `convert` (preview-only) | — |
-| Предпросмотреть сборку CF/CFE/EPF/ERF артефакта | `make` (preview-only) | — |
-| Предпросмотреть загрузку CF/CFE артефакта | `load` (preview-only) | — |
-| Предпросмотреть Designer-синтаксис | `syntax`, `mode=designer-*` (preview-only) | — |
-| Предпросмотреть EDT-синтаксис | `syntax`, `mode=edt` (preview-only) | — |
-| Предпросмотреть тесты | `test` (preview-only) | — |
-| Предпросмотреть клиент с ожиданием завершения | `launch`, `waitForExit=true` (preview-only) | — |
-| Предпросмотреть extension properties | `extensions` (preview-only) | — |
-| Предпросмотреть загрузку runner tools | `tools-download` (preview-only) | — |
+| Создать `v8project.yaml` | `config-init` | пишет файл конфигурации |
+| Инициализировать базу или workspace | `init` | создаёт runtime-состояние |
+| Загрузить XML/EDT исходники в базу | `build` | применяет исходники; непрерываемая фаза |
+| Выгрузить базу в исходники | `dump` | пишет исходники; без ограниченного восстановления |
+| Конвертировать Designer/EDT sources | `convert` | пишет результат конвертации |
+| Собрать CF/CFE/EPF/ERF артефакт | `make` | публикует артефакт |
+| Загрузить CF/CFE артефакт | `load` | применяет артефакт; непрерываемая фаза |
+| Проверить Designer-синтаксис | `syntax`, `mode=designer-*` | запускает конфигуратор; владение процессом не доказано |
+| Проверить EDT-синтаксис | `syntax`, `mode=edt` | запускает EDT; владение процессом не доказано |
+| Прогнать тесты | `test` | запускает раннер тестов; непрерываемая фаза |
+| Запустить клиент с ожиданием завершения | `launch`, `waitForExit=true` | ждёт клиент в границах `waitTimeoutMs` |
+| Синхронизировать extension properties | `extensions` | пишет свойства расширений |
+| Скачать runner tools | `tools-download` | публикует инструменты в кеш |
+
+Долгую работу, которую вызов ждать не должен, запускай тем же `operation` через
+`unica.runtime.job.start` и наблюдай через `status`/`wait`/`logs`.
 
 ## Auth/license stop rules
 

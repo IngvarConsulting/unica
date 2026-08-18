@@ -706,30 +706,6 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         cancellation: &CancellationToken,
     ) -> Result<HandlerOutcome, String>;
 
-    /// ADR-0074: the applied runtime path publishes phase progress while it
-    /// waits on the durable record, so it needs the call's sink. A handler that
-    /// publishes nothing inherits this delegating default.
-    fn invoke_handler_with_progress(
-        &self,
-        spec: ToolSpec,
-        args: &Map<String, Value>,
-        context: &WorkspaceContext,
-        mode: InvocationMode,
-        operational_config: Option<&OperationalConfig>,
-        cancellation: &CancellationToken,
-        progress: &dyn crate::domain::progress::ProgressSink,
-    ) -> Result<HandlerOutcome, String> {
-        let _ = progress;
-        self.invoke_handler_with_operational_config(
-            spec,
-            args,
-            context,
-            mode,
-            operational_config,
-            cancellation,
-        )
-    }
-
     /// Config-aware adapters override this entry point; `invoke_handler`
     /// remains the compatibility path for handlers that consume no snapshot.
     fn invoke_handler_with_operational_config(

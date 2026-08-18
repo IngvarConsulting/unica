@@ -1056,8 +1056,8 @@ fn call_tool_with_runtime_admission(
     let mode = InvocationMode::from_validated_args(spec, args)?;
     tool_contracts::validate_tool_argument_semantics(spec, args, mode)?;
     let dry_run = mode.is_preview();
-    // ADR-0074: a classified applied operation runs and carries its named risk
-    // into the result; only an unclassified one still fails closed.
+    // ADR-0074: a classified applied operation executes and carries its named
+    // risk into the result; only an unclassified one still fails closed.
     let mut applied_risk = None;
     if runtime_admission == RuntimeAdmissionPolicy::Enforce
         && matches!(spec.handler, ToolHandler::RuntimeAdapter)
@@ -1395,14 +1395,13 @@ fn call_tool_with_runtime_admission(
             ToolHandler::ProjectStatus => {
                 project_health::invoke(ports, &context, cancellation, deadline)
             }
-            _ => ports.invoke_handler_with_progress(
+            _ => ports.invoke_handler_with_operational_config(
                 spec,
                 args,
                 &context,
                 mode,
                 operational_config.as_ref(),
                 cancellation,
-                progress,
             )?,
         },
     };
@@ -3560,45 +3559,28 @@ mod tests {
     }
 
     #[test]
-    fn applied_runtime_fails_closed_before_workspace_discovery() {
-        let ports = Arc::new(RejectDiscoveryPorts::default());
-        let app = UnicaApplication::with_ports(ports.clone());
-        for args in [
-            json!({"operation": "config-init"}),
-            json!({"operation": "init"}),
-            json!({"operation": "build"}),
-            json!({"operation": "dump", "mode": "full"}),
-            json!({"operation": "convert"}),
-            json!({"operation": "make", "output": "build/config.cf"}),
-            json!({"operation": "load", "path": "build/config.cf"}),
-            json!({"operation": "syntax", "mode": "designer-config"}),
-            json!({"operation": "syntax", "mode": "designer-modules"}),
-            json!({"operation": "syntax", "mode": "edt"}),
-            json!({"operation": "test", "testRunner": "va"}),
-            json!({"operation": "launch", "clientMode": "thin"}),
-            json!({"operation": "launch", "clientMode": "thin", "waitForExit": true}),
-            json!({"operation": "extensions"}),
-            json!({"operation": "tools-download", "tool": "yaxunit"}),
-        ] {
-            let mut args = args.as_object().unwrap().clone();
-            args.insert("dryRun".to_string(), Value::Bool(false));
-            let operation = args["operation"].as_str().unwrap();
+    fn applied_runtime_carries_its_named_risk_into_the_result() {
+        let args = Map::from_iter([
+            ("operation".to_string(), json!("build")),
+            ("dryRun".to_string(), Value::Bool(false)),
+        ]);
 
-            let result = app
-                .call_tool("unica.runtime.execute", &args)
-                .expect("runtime admission is an OperationResult, not a transport error");
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("v8-runner finished the applied build"),
+            data: None,
+        }))
+        .call_tool("unica.runtime.execute", &args)
+        .expect("an applied runtime call answers with an OperationResult");
 
-            assert!(!result.ok, "{operation}: {result:?}");
-            assert!(
-                result
-                    .errors
-                    .iter()
-                    .any(|error| error.starts_with("runtime_operation_unbounded:")),
-                "{operation}: {result:?}"
-            );
-        }
-
-        assert_eq!(ports.discovery_calls.load(Ordering::SeqCst), 0);
+        assert!(result.ok, "{result:?}");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("runtime_risk_critical_non_abortable:")),
+            "{:?}",
+            result.warnings
+        );
     }
 
     #[test]
