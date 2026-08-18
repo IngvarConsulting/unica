@@ -4929,6 +4929,30 @@ mod tests {
     fn preview_gated_operations_stay_a_closed_shrinking_list() {
         use crate::application::PREVIEW_GATED_OPERATIONS;
 
+        // Точный утверждённый состав: список только сокращается, поэтому
+        // добавление операции обязано провалить ревью, а не пройти проверку
+        // «список отсортирован и все имена настоящие».
+        assert_eq!(
+            PREVIEW_GATED_OPERATIONS,
+            [
+                "cf-edit",
+                "cfe-borrow",
+                "cfe-init",
+                "cfe-patch-method",
+                "dcs-edit",
+                "epf-init",
+                "erf-init",
+                "form-add",
+                "form-remove",
+                "help-add",
+                "interface-edit",
+                "subsystem-edit",
+                "support-edit",
+                "template-add",
+                "template-remove",
+            ],
+            "ADR-0073 §5: the transitional list is approved item by item"
+        );
         let mut sorted = PREVIEW_GATED_OPERATIONS.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
