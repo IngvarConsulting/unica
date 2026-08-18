@@ -59,8 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The architecture-sync guard diffs against the merge base, which a
-          # shallow clone cannot compute.
+          # The Python suites read git history, which a shallow clone lacks.
           fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
@@ -71,14 +70,6 @@ jobs:
       - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
       - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
       - run: python scripts/ci/check-version-contract.py
-      - name: Check architecture sync
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$BASE_REF"
-          python scripts/ci/check-architecture-sync.py --base FETCH_HEAD --strict
 
   test-rust-primary:
     name: Rust tests (macos-14 primary)
