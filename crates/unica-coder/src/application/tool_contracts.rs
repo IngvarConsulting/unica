@@ -133,9 +133,79 @@ const SUPPORT_EDIT_PUBLISHED: &[&str] = &[
 ///
 /// `None` means the operation has not been narrowed yet and is listed in the
 /// guard's shrinking `WIDE_SURFACE_LEGACY`.
+/// `unica.form.add` (`native_operations::form::add_form_with_data`): the owner
+/// path group plus the four properties of the created form.
+///
+/// `setDefault` keeps its lowercase spelling published because
+/// `form_boolean_flags_are_boolean_in_mcp_contract` asserts both spellings are
+/// advertised as booleans — a client may already be reading either one.
+const FORM_ADD_PUBLISHED: &[&str] = &[
+    "ObjectPath",
+    "objectPath",
+    "Path",
+    "path",
+    "FormName",
+    "Purpose",
+    "SetDefault",
+    "setDefault",
+    "Synonym",
+];
+
+/// `unica.form.remove` (`remove_form_with_data`): the source-set root plus the
+/// three names that address the form to drop.
+const FORM_REMOVE_PUBLISHED: &[&str] =
+    &["SrcDir", "srcDir", "FormName", "ObjectName", "ProcessorName"];
+
+/// `unica.form.compile` (`plan_form_compile`,
+/// `form_compile_definition_from_object`): the three path groups plus the two
+/// levers that choose where the definition comes from.
+const FORM_COMPILE_PUBLISHED: &[&str] = &[
+    "JsonPath",
+    "jsonPath",
+    "ObjectPath",
+    "objectPath",
+    "OutputPath",
+    "outputPath",
+    "Path",
+    "path",
+    "FromObject",
+    "Purpose",
+];
+
+/// `unica.form.edit` (`form_edit_resolve_definition_guarded`): the form to edit
+/// and the definition, given inline or by file.
+const FORM_EDIT_PUBLISHED: &[&str] = &[
+    "FormPath",
+    "formPath",
+    "JsonPath",
+    "jsonPath",
+    "Path",
+    "path",
+    "definition",
+];
+
+/// `unica.form.validate` (`validate_form`): the form and the two report levers
+/// every validator reads.
+const FORM_VALIDATE_PUBLISHED: &[&str] =
+    &["FormPath", "formPath", "Path", "path", "Detailed", "MaxErrors"];
+
+/// The arguments an operation publishes in `tools/list`, when it has been
+/// narrowed off the legacy union.
+///
+/// A list carries every spelling of a path group, because the alias filter
+/// downstream trims it to the canonical one; for non-path levers it carries
+/// the canonical spelling only, since advertising a name twice teaches nothing.
+///
+/// `None` means the operation has not been narrowed yet and is listed in the
+/// guard's shrinking `WIDE_SURFACE_LEGACY`.
 fn published_args_for(operation: &str) -> Option<&'static [&'static str]> {
     Some(match operation {
         "support-edit" => SUPPORT_EDIT_PUBLISHED,
+        "form-add" => FORM_ADD_PUBLISHED,
+        "form-remove" => FORM_REMOVE_PUBLISHED,
+        "form-compile" => FORM_COMPILE_PUBLISHED,
+        "form-edit" => FORM_EDIT_PUBLISHED,
+        "form-validate" => FORM_VALIDATE_PUBLISHED,
         _ => return None,
     })
 }
@@ -758,10 +828,19 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         // owned by the contract layer, not by the domain, and a mutation that
         // stopped publishing `dryRun` would lose its preview.
         if let Some(published) = published_args_for(operation) {
+            // The bridged logical selector is contract-level too (ADR-0049):
+            // it reaches every bridged reader from one place, so a domain list
+            // must not be able to drop half of an alternative.
+            let selector: &[&str] = match bridged_selector(tool.name) {
+                Some((_, address)) if address.publishes_address() => &["sourceSet", "metadataPath"],
+                Some(_) => &["sourceSet"],
+                None => &[],
+            };
             property_names.retain(|name| {
                 published.contains(name)
                     || COMMON_ARGS.contains(name)
                     || MUTATION_ARGS.contains(name)
+                    || selector.contains(name)
             });
         }
         // ADR-0019: aliases remain accepted by normalize_native_path_aliases,
@@ -8039,11 +8118,6 @@ mod tests {
         "unica.dcs.compile",
         "unica.dcs.edit",
         "unica.dcs.validate",
-        "unica.form.add",
-        "unica.form.compile",
-        "unica.form.edit",
-        "unica.form.remove",
-        "unica.form.validate",
         "unica.interface.edit",
         "unica.interface.validate",
         "unica.mxl.compile",
