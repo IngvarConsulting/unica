@@ -913,11 +913,14 @@ pub(crate) fn plan_typed_remove(
     if remove_collection {
         expected_absent.push(type_dir);
     }
+    let changed_paths =
+        super::publisher::transaction_changed_paths(&transaction, &context.workspace_root);
     Ok(TypedMetaRemovePlan {
         preview: MetaMutationData {
             metadata_path: resolved_target.clone(),
             changed: true,
             publication_plan,
+            changed_paths,
             effects: vec![MetaMutationEffect {
                 operation_index: None,
                 operation: "removeObject".to_string(),

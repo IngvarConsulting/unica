@@ -1949,6 +1949,20 @@ network = "allow"
                         {"provider_unavailable"},
                         json.dumps(result, ensure_ascii=False, indent=2),
                     )
+                elif tool_name == "unica.cf.init" and not result["ok"]:
+                    # The shared parity workspace pre-seeds reader fixtures at
+                    # the example targets; the honest preview (ADR-0073) now
+                    # refuses to clobber them, exactly as apply would. Exact
+                    # scaffold success is exercised by the crate tests.
+                    self.assertTrue(
+                        result["errors"]
+                        and all(
+                            "create-only compile target" in error
+                            for error in result["errors"]
+                        ),
+                        json.dumps(result, ensure_ascii=False, indent=2),
+                    )
+                    continue
                 elif tool_name == "unica.code.definition" and sys.platform != "darwin":
                     # The example is still a valid MCP call, but the RLM reader
                     # must fail closed on platforms where the runtime cannot
