@@ -1,5 +1,5 @@
 ---
-id: CON.WIRE.TOOL-SURFACE
+id: CTR.WIRE.TOOL-SURFACE
 status: active
 version: 1
 decision: DEC.2026-08-18.EIGHT-ENTRIES

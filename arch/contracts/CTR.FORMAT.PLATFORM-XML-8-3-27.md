@@ -1,5 +1,5 @@
 ---
-id: CON.FORMAT.PLATFORM-XML-8-3-27
+id: CTR.FORMAT.PLATFORM-XML-8-3-27
 status: active
 version: 1
 decision: null

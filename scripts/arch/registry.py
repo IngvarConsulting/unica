@@ -29,7 +29,7 @@ ARCH_ROOT = REPO_ROOT / "arch"
 INDEX_PATH = ARCH_ROOT / "index.md"
 
 KIND_BY_DIR = {"decisions": "decision", "invariants": "invariant", "contracts": "contract"}
-SYMBOL_PREFIX = {"decision": "DEC", "invariant": "INV", "contract": "CON"}
+SYMBOL_PREFIX = {"decision": "DEC", "invariant": "INV", "contract": "CTR"}
 
 REQUIRED_PROPS = {
     "decision": ("id", "status"),
@@ -40,7 +40,16 @@ REQUIRED_PROPS = {
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.S)
 DECISION_FILENAME = re.compile(r"\A(\d{4}-\d{2}-\d{2})-([a-z0-9-]+)\.md\Z")
 DECISION_SYMBOL = re.compile(r"\ADEC\.(\d{4}-\d{2}-\d{2})\.([A-Z0-9-]+)\Z")
-SYMBOL_ANYWHERE = re.compile(r"\b(?:DEC\.\d{4}-\d{2}-\d{2}|INV|CON)\.[A-Z0-9.-]+\b")
+SYMBOL_ANYWHERE = re.compile(r"\b(?:DEC\.\d{4}-\d{2}-\d{2}|INV|CTR)\.[A-Z0-9.-]+\b")
+
+# A symbol becomes a filename, and Windows still refuses these as base names
+# whatever the extension follows. `CON` was the first contract prefix and made
+# the whole tree impossible to check out on Windows.
+DOS_DEVICE_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{digit}" for digit in range(10)]
+    + [f"LPT{digit}" for digit in range(10)]
+)
 
 
 @dataclass

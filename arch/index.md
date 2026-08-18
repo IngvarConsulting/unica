@@ -4,9 +4,9 @@
 
 | Символ | Вид | Статус | Суть | Файл |
 | --- | --- | --- | --- | --- |
-| `CON.FORMAT.PLATFORM-XML-8-3-27` | контракт | active | Профиль Platform XML 8.3.27 и сохранение байтов | [contracts/CON.FORMAT.PLATFORM-XML-8-3-27.md](contracts/CON.FORMAT.PLATFORM-XML-8-3-27.md) |
-| `CON.WIRE.PROTOCOL` | контракт | active | Три ревизии протокола и только реализованные возможности | [contracts/CON.WIRE.PROTOCOL.md](contracts/CON.WIRE.PROTOCOL.md) |
-| `CON.WIRE.TOOL-SURFACE` | контракт | active | Ведомость поверхности порождается из бинаря | [contracts/CON.WIRE.TOOL-SURFACE.md](contracts/CON.WIRE.TOOL-SURFACE.md) |
+| `CTR.FORMAT.PLATFORM-XML-8-3-27` | контракт | active | Профиль Platform XML 8.3.27 и сохранение байтов | [contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md](contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md) |
+| `CTR.WIRE.PROTOCOL` | контракт | active | Три ревизии протокола и только реализованные возможности | [contracts/CTR.WIRE.PROTOCOL.md](contracts/CTR.WIRE.PROTOCOL.md) |
+| `CTR.WIRE.TOOL-SURFACE` | контракт | active | Ведомость поверхности порождается из бинаря | [contracts/CTR.WIRE.TOOL-SURFACE.md](contracts/CTR.WIRE.TOOL-SURFACE.md) |
 | `DEC.2026-08-18.ADDRESS-GRAMMAR` | решение | active | Адрес — чередование `Вид.Имя` до любой глубины | [decisions/2026-08-18-address-grammar.md](decisions/2026-08-18-address-grammar.md) |
 | `DEC.2026-08-18.ARCHITECTURE-RESET` | решение | active | Архитектура описывается заново | [decisions/2026-08-18-architecture-reset.md](decisions/2026-08-18-architecture-reset.md) |
 | `DEC.2026-08-18.CARRIED-RULES` | решение | active | Правило переносится, если его проверка жива и предмет не про имена инструментов | [decisions/2026-08-18-carried-rules.md](decisions/2026-08-18-carried-rules.md) |

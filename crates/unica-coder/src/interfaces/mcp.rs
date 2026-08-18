@@ -9,8 +9,8 @@
 use crate::application::{
     code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
     operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
-    strip_schema_descriptions, tool_behaviour, CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec,
-    UnicaApplication,
+    strip_schema_descriptions, tool_behaviour, CodeIntelligenceOperation, OperationResult,
+    ToolHandler, ToolSpec, UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -1853,7 +1853,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// The hints reach the wire, and the two that are unknown stay unset.
     #[test]
     fn tool_definitions_publish_derived_behavioural_annotations() {

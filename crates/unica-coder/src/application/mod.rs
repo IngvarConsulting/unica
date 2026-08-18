@@ -732,7 +732,9 @@ pub fn tool_behaviour(spec: &ToolSpec) -> ToolBehaviour {
     let read_only = !spec.execution.is_mutating();
     let open_world = matches!(
         spec.handler,
-        ToolHandler::BuildRuntime { .. } | ToolHandler::RuntimeAdapter | ToolHandler::RuntimeJob { .. }
+        ToolHandler::BuildRuntime { .. }
+            | ToolHandler::RuntimeAdapter
+            | ToolHandler::RuntimeJob { .. }
     );
     ToolBehaviour {
         read_only,

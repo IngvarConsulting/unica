@@ -60,6 +60,20 @@ class RecordShapeTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
+    def test_no_symbol_collides_with_a_dos_device_name(self) -> None:
+        """A symbol becomes a filename, and Windows refuses these outright.
+
+        `CON` shipped as the contract prefix and broke checkout on Windows for
+        the whole repository — not the file, the checkout. The rule is cheap to
+        keep and impossible to notice by reading.
+        """
+        offenders = [
+            f"{record.relative}: `{record.id.split('.')[0]}` is a DOS device name"
+            for record in REGISTRY.records()
+            if record.path.name.split(".")[0].upper() in REGISTRY.DOS_DEVICE_NAMES
+        ]
+        self.assertEqual(offenders, [])
+
     def test_status_is_known(self) -> None:
         offenders = [
             f"{record.relative}: status {record.props.get('status')!r}"
@@ -181,7 +195,7 @@ class LayerBoundaryTests(unittest.TestCase):
         ).stdout.split())
 
         # The surface ledger is generated from the built binary and still lives
-        # in the archive until CON.WIRE.TOOL-SURFACE grows a home here. It is
+        # in the archive until CTR.WIRE.TOOL-SURFACE grows a home here. It is
         # output, not a record: freezing it would freeze the generator.
         writable = {"docs/arch-v1/FATE.md", "docs/arch-v1/architecture/tool-surface.md"}
         edited = sorted(p for p in changed & frozen if p not in writable)

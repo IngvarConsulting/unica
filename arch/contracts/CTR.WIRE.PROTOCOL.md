@@ -1,5 +1,5 @@
 ---
-id: CON.WIRE.PROTOCOL
+id: CTR.WIRE.PROTOCOL
 status: active
 version: 1
 decision: null

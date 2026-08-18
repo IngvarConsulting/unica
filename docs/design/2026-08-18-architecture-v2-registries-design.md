@@ -82,7 +82,7 @@ docs/design/, docs/plans/              ← планирование и разб�
 | --- | --- | --- |
 | Решение | `DEC.<ГГГГ-ММ-ДД>.<ИМЯ>` | `DEC.2026-08-18.ADDRESS-GRAMMAR` |
 | Инвариант | `INV.<ОБЛАСТЬ>.<ИМЯ>` | `INV.SURFACE.ONE-ADDRESS` |
-| Контракт | `CON.<ОБЛАСТЬ>.<ИМЯ>` | `CON.WIRE.VIEW-RESULT` |
+| Контракт | `CTR.<ОБЛАСТЬ>.<ИМЯ>` | `CTR.WIRE.VIEW-RESULT` |
 
 Дата в символе решения делает требование «имя файла начинается с даты»
 истинным и для символа: `DEC.2026-08-18.ADDRESS-GRAMMAR` лежит в
@@ -106,7 +106,7 @@ id: DEC.2026-08-18.ADDRESS-GRAMMAR
 status: active
 supersedes: []
 superseded-by: null
-establishes: [INV.SURFACE.ONE-ADDRESS, CON.ADDRESS.GRAMMAR]
+establishes: [INV.SURFACE.ONE-ADDRESS, CTR.ADDRESS.GRAMMAR]
 issue: 548
 ---
 
@@ -138,11 +138,11 @@ scope: [wire, source]
 операция не требует второго способа адресации.
 ```
 
-**Контракт** — `arch/contracts/CON.WIRE.VIEW-RESULT.md`:
+**Контракт** — `arch/contracts/CTR.WIRE.VIEW-RESULT.md`:
 
 ```markdown
 ---
-id: CON.WIRE.VIEW-RESULT
+id: CTR.WIRE.VIEW-RESULT
 status: active
 version: 1
 producer: unica.view
@@ -189,7 +189,7 @@ check: tests/arch/test_view_contract.py
 | --- | --- | --- | --- | --- |
 | DEC.2026-08-18.ADDRESS-GRAMMAR | решение | active | адрес — чередование Вид.Имя | decisions/2026-08-18-address-grammar.md |
 | INV.SURFACE.ONE-ADDRESS | инвариант | active | один адрес до любого узла | invariants/INV.SURFACE.ONE-ADDRESS.md |
-| CON.WIRE.VIEW-RESULT | контракт | active | слоты ответа view | contracts/CON.WIRE.VIEW-RESULT.md |
+| CTR.WIRE.VIEW-RESULT | контракт | active | слоты ответа view | contracts/CTR.WIRE.VIEW-RESULT.md |
 ```
 
 Это и есть ответ на «быстрое чтение»: один файл, который целиком помещается в

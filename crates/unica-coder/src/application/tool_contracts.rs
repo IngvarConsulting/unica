@@ -111,10 +111,7 @@ const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
 /// nothing and costs the reader a line, which is the same call ADR-0019 makes
 /// for path aliases. The path names are listed in full because the alias group
 /// trims them to the canonical `Path` afterwards.
-const SUPPORT_EDIT_PUBLISHED: &[&str] = &[
-    "Capability",
-    "Set",
-];
+const SUPPORT_EDIT_PUBLISHED: &[&str] = &["Capability", "Set"];
 
 /// The arguments an operation publishes in `tools/list`, when it has been
 /// narrowed off the legacy union.
@@ -135,51 +132,28 @@ const SUPPORT_EDIT_PUBLISHED: &[&str] = &[
 /// `setDefault` keeps its lowercase spelling published because
 /// `form_boolean_flags_are_boolean_in_mcp_contract` asserts both spellings are
 /// advertised as booleans — a client may already be reading either one.
-const FORM_ADD_PUBLISHED: &[&str] = &[
-    "FormName",
-    "Purpose",
-    "SetDefault",
-    "setDefault",
-    "Synonym",
-];
+const FORM_ADD_PUBLISHED: &[&str] = &["FormName", "Purpose", "SetDefault", "setDefault", "Synonym"];
 
 /// `unica.form.remove` (`remove_form_with_data`): the source-set root plus the
 /// three names that address the form to drop.
-const FORM_REMOVE_PUBLISHED: &[&str] =
-    &[
-    "FormName",
-    "ObjectName",
-    "ProcessorName",
-];
+const FORM_REMOVE_PUBLISHED: &[&str] = &["FormName", "ObjectName", "ProcessorName"];
 
 /// `unica.form.compile` (`plan_form_compile`,
 /// `form_compile_definition_from_object`): the three path groups plus the two
 /// levers that choose where the definition comes from.
-const FORM_COMPILE_PUBLISHED: &[&str] = &[
-    "FromObject",
-    "Purpose",
-];
+const FORM_COMPILE_PUBLISHED: &[&str] = &["FromObject", "Purpose"];
 
 /// `unica.form.edit` (`form_edit_resolve_definition_guarded`): the form to edit
 /// and the definition, given inline or by file.
-const FORM_EDIT_PUBLISHED: &[&str] = &[
-    "definition",
-];
+const FORM_EDIT_PUBLISHED: &[&str] = &["definition"];
 
 /// `unica.form.validate` (`validate_form`): the form and the two report levers
 /// every validator reads.
-const FORM_VALIDATE_PUBLISHED: &[&str] =
-    &[
-    "Detailed",
-    "MaxErrors",
-];
+const FORM_VALIDATE_PUBLISHED: &[&str] = &["Detailed", "MaxErrors"];
 
 /// `unica.dcs.compile` (`native_operations::dcs::compile_dcs`): where to write,
 /// where the definition comes from, and the two levers of the compile.
-const DCS_COMPILE_PUBLISHED: &[&str] = &[
-    "NoValidate",
-    "Value",
-];
+const DCS_COMPILE_PUBLISHED: &[&str] = &["NoValidate", "Value"];
 
 /// `unica.dcs.edit` (`edit_dcs_with_data`): the schema to edit, the definition
 /// source, and the operation vocabulary of the edit.
@@ -193,10 +167,7 @@ const DCS_EDIT_PUBLISHED: &[&str] = &[
 ];
 
 /// `unica.dcs.validate` (`validate_dcs`): the schema plus the two report levers.
-const DCS_VALIDATE_PUBLISHED: &[&str] = &[
-    "Detailed",
-    "MaxErrors",
-];
+const DCS_VALIDATE_PUBLISHED: &[&str] = &["Detailed", "MaxErrors"];
 
 /// `unica.mxl.compile` (`compile_mxl`): both paths are required and nothing
 /// else is read — the rest of the spreadsheet comes from the JSON definition.
@@ -209,12 +180,7 @@ const MXL_DECOMPILE_PUBLISHED: &[&str] = &[];
 /// `unica.mxl.validate` (`validate_mxl` via `resolve_mxl_validate_path`): the
 /// direct template address, the composite one the resolver still accepts, and
 /// the two report levers.
-const MXL_VALIDATE_PUBLISHED: &[&str] = &[
-    "ProcessorName",
-    "TemplateName",
-    "Detailed",
-    "MaxErrors",
-];
+const MXL_VALIDATE_PUBLISHED: &[&str] = &["ProcessorName", "TemplateName", "Detailed", "MaxErrors"];
 
 /// `unica.cf.validate` (`native_operations::cf::validate_cf_with_scope`).
 const CF_VALIDATE_PUBLISHED: &[&str] = &["Detailed", "MaxErrors"];
@@ -224,13 +190,7 @@ const CF_EDIT_PUBLISHED: &[&str] = &["NoValidate", "Operation", "Value"];
 
 /// `unica.cf.init` (`create_configuration_scaffold_with_data`): the properties
 /// written into the new configuration root.
-const CF_INIT_PUBLISHED: &[&str] = &[
-    "CompatibilityMode",
-    "Name",
-    "Synonym",
-    "Vendor",
-    "Version",
-];
+const CF_INIT_PUBLISHED: &[&str] = &["CompatibilityMode", "Name", "Synonym", "Vendor", "Version"];
 
 /// `unica.cfe.borrow` (`prepare_cfe_borrow_with_trace`,
 /// `cfe_borrow_main_attribute_mode`): the object to adopt and whether its
@@ -270,8 +230,7 @@ const SUBSYSTEM_VALIDATE_PUBLISHED: &[&str] = &["Detailed"];
 const SUBSYSTEM_COMPILE_PUBLISHED: &[&str] = &["Value"];
 
 /// `unica.interface.edit` (`edit_interface_with_data`, `interface_edit_operations`).
-const INTERFACE_EDIT_PUBLISHED: &[&str] =
-    &["CreateIfMissing", "NoValidate", "Operation", "Value"];
+const INTERFACE_EDIT_PUBLISHED: &[&str] = &["CreateIfMissing", "NoValidate", "Operation", "Value"];
 
 /// `unica.interface.validate` (`validate_interface`).
 const INTERFACE_VALIDATE_PUBLISHED: &[&str] = &["Detailed", "MaxErrors"];
@@ -957,9 +916,9 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
             // what a handler happens to read. A domain list therefore carries
             // only the levers, never the paths.
             let addressed = |name: &str| {
-                native_path_alias_groups(operation).iter().any(|group| {
-                    group.canonical == name || group.aliases.iter().any(|alias| *alias == name)
-                })
+                native_path_alias_groups(operation)
+                    .iter()
+                    .any(|group| group.canonical == name || group.aliases.contains(&name))
             };
             property_names.retain(|name| {
                 published.contains(name)
@@ -8262,8 +8221,7 @@ mod tests {
     /// fixture suite, and this union is the larger half of it. The list may
     /// only shrink — an entry added here declares new debt and shows up in the
     /// diff of this test.
-    const WIDE_SURFACE_LEGACY: &[&str] = &[
-    ];
+    const WIDE_SURFACE_LEGACY: &[&str] = &[];
 
     /// The published surface of a narrowed operation is the arguments it reads.
     ///
