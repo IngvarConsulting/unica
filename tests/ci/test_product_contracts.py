@@ -530,13 +530,11 @@ class ProductContractTests(unittest.TestCase):
     def test_release_runbook_is_discoverable_and_names_the_tag_target(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         runbook = repo_root / "docs/release-runbook.md"
-        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
         skill = (repo_root / ".claude/skills/release/SKILL.md").read_text(encoding="utf-8")
 
         self.assertTrue(runbook.is_file())
-        # An agent asked to release has to reach the runbook from the entry point
-        # rather than reconstruct the order from the workflows.
-        self.assertIn("docs/release-runbook.md", agents)
+        # The entry-point files were cleared with the v1 architecture layer, so
+        # the release skill is the remaining route to the runbook.
         self.assertIn("docs/release-runbook.md", skill)
 
         text = runbook.read_text(encoding="utf-8")
@@ -740,12 +738,13 @@ class ProductContractTests(unittest.TestCase):
 
     def test_claude_host_contract_is_recorded_for_agents(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
-        claude_md = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
         decisions = (repo_root / "spec/decisions/README.md").read_text(encoding="utf-8")
 
-        self.assertIn("plugins/unica/.claude-plugin/plugin.json", agents)
-        self.assertIn("AGENTS.md", claude_md)
+        # AGENTS.md and CLAUDE.md were cleared with the v1 architecture layer;
+        # the host contract is asserted against the manifests themselves.
+        self.assertTrue(
+            (repo_root / "plugins/unica/.claude-plugin/plugin.json").is_file()
+        )
         self.assertIn("0012-one-plugin-directory-for-two-hosts.md", decisions)
         self.assertTrue(
             (repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md").is_file()
