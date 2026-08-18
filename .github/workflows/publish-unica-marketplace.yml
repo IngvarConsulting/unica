@@ -306,7 +306,13 @@ jobs:
           }
           if (Get-Command node -ErrorAction SilentlyContinue) { throw 'Node.js leaked into the consumer PATH' }
           $expected = $env:RELEASE_TAG.TrimStart('v')
-          & $env:CODEX_BIN plugin marketplace upgrade unica --json
+          # The seed above registered the candidate as a directory marketplace,
+          # which `plugin marketplace upgrade` refuses: it fetches a Git remote.
+          # A directory marketplace re-reads the catalog from disk, so the
+          # reinstall below is what carries the consumer from the previous
+          # stable to the candidate.
+          & $env:CODEX_BIN plugin remove unica@unica --json
+          & $env:CODEX_BIN plugin add unica@unica --json
           $state = (& $env:CODEX_BIN plugin list --available --json) | ConvertFrom-Json
           $found = @($state.installed | Where-Object {
             $_.pluginId -eq 'unica@unica' -and $_.version -eq $expected
