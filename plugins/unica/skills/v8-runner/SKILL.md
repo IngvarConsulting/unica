@@ -13,16 +13,48 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.runtime.execute` to preview typed v8-runner arguments; no current applied operation is admitted.
+- Preferred preview path: use MCP `unica` tool `unica.runtime.execute` to inspect typed v8-runner arguments; no current applied operation is admitted on that tool.
 - По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
 - Do not start internal runner MCP servers, package launchers, or shell runners directly, including for maintainer/debug workflows. Report the public contract gap instead.
 
 ## Lifecycle одного вызова
 
 - Каждый текущий применённый `unica.runtime.execute` возвращает терминальный fail-closed результат в исходном `tools/call` до запуска процесса. Для будущей доказанно ограниченной операции этот же вызов сможет передавать смысловые фазы через `notifications/progress`; не интерпретируй прогресс как процент или отдельный результат.
-- Общая конфигурация пакета сейчас не увеличивает крайний срок хоста и не передаёт серверу неподтверждённую метку бюджета: допущенных applied-операций нет. Будущий допуск потребует отдельно доказать сохранение исходного вызова хостом, достаточный бюджет ответа и полное владение деревом процессов.
-- Все текущие операции, включая Designer/EDT `syntax` и `launch` с `waitForExit=true`, пока preview-only. У закреплённого runner-а запись/публикация, непрерываемые фазы либо владение отдельно сгруппированным процессом 1С не имеют доказанного ограниченного восстановления на каждом error/cancel/timeout пути, поэтому применённый вызов завершится fail-closed до запуска дочернего процесса.
+- Общая конфигурация пакета сейчас не увеличивает крайний срок хоста и не передаёт серверу неподтверждённую метку бюджета: допущенных applied-операций `unica.runtime.execute` нет. Будущий допуск потребует отдельно доказать сохранение исходного вызова хостом, достаточный бюджет ответа и полное владение деревом процессов.
+- Все текущие операции `unica.runtime.execute`, включая Designer/EDT `syntax` и `launch` с `waitForExit=true`, пока preview-only. У закреплённого runner-а запись/публикация, непрерываемые фазы либо владение отдельно сгруппированным процессом 1С не имеют доказанного ограниченного восстановления на каждом error/cancel/timeout пути, поэтому применённый вызов завершится fail-closed до запуска дочернего процесса.
 - Не используй `unica.runtime.job.*` как fallback, продолжение или повтор `unica.runtime.execute`: долговременное задание — отдельный явно выбранный workflow, а не способ получить потерянный receipt.
+
+## Явно выбранный applied build
+
+Если пользователь прямо просит собрать, загрузить или обновить информационную
+базу из исходников, а не только показать команду, выбери отдельный
+долговременный workflow до вызова `unica.runtime.execute`. После успешного
+`unica.project.status` с `ready: true` предупреди, что сборка продолжится как
+фоновое задание, и вызови `unica.runtime.job.start` с `operation=build` и
+`dryRun: false`. Это прямой выбор applied workflow, не fallback после отказа
+одиночного вызова.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "unica.runtime.job.start",
+    "arguments": {
+      "cwd": "<workspace>",
+      "operation": "build",
+      "sourceSet": "<source-set>",
+      "dryRun": false
+    }
+  }
+}
+```
+
+Сохрани возвращённый `jobId`. Наблюдай фазу и heartbeat через
+`unica.runtime.job.status` или ограниченно жди через
+`unica.runtime.job.wait`; диагностические хвосты запрашивай через
+`unica.runtime.job.logs`. У обычного build логи могут оставаться пустыми до
+завершения — это не признак зависания.
 
 ## Project health preflight
 
@@ -49,6 +81,7 @@ then call `unica.project.status` again after the approved fix.
 | Предпросмотреть создание `v8project.yaml` | `config-init` (preview-only) | — |
 | Предпросмотреть инициализацию базы/workspace | `init` (preview-only) | — |
 | Предпросмотреть загрузку XML/EDT исходников в базу | `build` (preview-only) | — |
+| Реально загрузить XML/EDT исходники в базу | явно выбранный `unica.runtime.job.start`, `operation=build`, `dryRun: false` | `jobId` |
 | Предпросмотреть выгрузку базы в исходники | `dump` (preview-only) | — |
 | Предпросмотреть конвертацию Designer/EDT sources | `convert` (preview-only) | — |
 | Предпросмотреть сборку CF/CFE/EPF/ERF артефакта | `make` (preview-only) | — |

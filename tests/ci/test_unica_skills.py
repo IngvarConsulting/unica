@@ -2029,11 +2029,18 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         operations = set()
         for block in examples:
             payload = json.loads(block)
-            self.assertEqual(payload["params"]["name"], "unica.runtime.execute")
+            tool_name = payload["params"]["name"]
+            self.assertIn(
+                tool_name,
+                {"unica.runtime.execute", "unica.runtime.job.start"},
+            )
             arguments = payload["params"]["arguments"]
             self.assertIn("operation", arguments)
             self.assertNotEqual(set(arguments.keys()), {"cwd"})
             self.assertNotIn("args", arguments)
+            if tool_name == "unica.runtime.job.start":
+                self.assertEqual(arguments["operation"], "build")
+                self.assertIs(arguments.get("dryRun"), False)
             operations.add(arguments["operation"])
 
         self.assertTrue(
@@ -2397,6 +2404,43 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertIn(token, text)
                 for claim in forbidden_applied_claims:
                     self.assertNotRegex(text, claim)
+
+    def test_v8_runner_routes_explicit_applied_build_to_durable_job(self) -> None:
+        skill = self.skill_root() / "v8-runner" / "SKILL.md"
+        workspace_runtime = (
+            self.reference_root() / "use-cases" / "workspace-runtime.md"
+        )
+        skill_text = skill.read_text(encoding="utf-8")
+        workspace_runtime_text = workspace_runtime.read_text(encoding="utf-8")
+
+        calls = [
+            payload
+            for payload in (
+                json.loads(block)
+                for block in re.findall(
+                    r"```json\n(.*?)\n```", skill_text, flags=re.DOTALL
+                )
+            )
+            if payload.get("method") == "tools/call"
+        ]
+        durable_builds = [
+            call["params"]["arguments"]
+            for call in calls
+            if call.get("params", {}).get("name")
+            == "unica.runtime.job.start"
+            and call["params"]["arguments"].get("operation") == "build"
+        ]
+
+        self.assertEqual(len(durable_builds), 1)
+        self.assertIs(durable_builds[0].get("dryRun"), False)
+        self.assertIn("явно выбран", skill_text)
+        self.assertIn("explicitly selected", workspace_runtime_text)
+        for text in (skill_text, workspace_runtime_text):
+            self.assertIn("`unica.runtime.job.start`", text)
+            self.assertIn("`dryRun: false`", text)
+            self.assertIn("`unica.runtime.job.status`", text)
+            self.assertIn("`unica.runtime.job.wait`", text)
+            self.assertIn("`unica.runtime.job.logs`", text)
 
     def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
         self,
