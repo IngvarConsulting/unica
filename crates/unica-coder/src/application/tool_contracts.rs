@@ -216,6 +216,46 @@ const MXL_VALIDATE_PUBLISHED: &[&str] = &[
     "MaxErrors",
 ];
 
+/// `unica.cf.validate` (`native_operations::cf::validate_cf_with_scope`).
+const CF_VALIDATE_PUBLISHED: &[&str] = &["Detailed", "MaxErrors"];
+
+/// `unica.cf.edit` (`edit_cf_with_data`, `cf_edit_operations`).
+const CF_EDIT_PUBLISHED: &[&str] = &["NoValidate", "Operation", "Value"];
+
+/// `unica.cf.init` (`create_configuration_scaffold_with_data`): the properties
+/// written into the new configuration root.
+const CF_INIT_PUBLISHED: &[&str] = &[
+    "CompatibilityMode",
+    "Name",
+    "Synonym",
+    "Vendor",
+    "Version",
+];
+
+/// `unica.cfe.borrow` (`prepare_cfe_borrow_with_trace`): the object to adopt.
+const CFE_BORROW_PUBLISHED: &[&str] = &["Object"];
+
+/// `unica.cfe.validate` (`validate_cfe`).
+const CFE_VALIDATE_PUBLISHED: &[&str] = &["Detailed", "MaxErrors"];
+
+/// `unica.cfe.init` (`cfe_init_name_prefix`, `cfe_init_planned_xml`,
+/// `create_extension_scaffold_with_data`): the extension's own properties.
+const CFE_INIT_PUBLISHED: &[&str] = &[
+    "CompatibilityMode",
+    "Name",
+    "NamePrefix",
+    "NoRole",
+    "Purpose",
+    "Synonym",
+    "Vendor",
+    "Version",
+];
+
+/// `unica.cfe.patch_method` (`patch_extension_method_with_data`): which method
+/// is intercepted and how.
+const CFE_PATCH_METHOD_PUBLISHED: &[&str] =
+    &["Context", "InterceptorType", "IsFunction", "MethodName"];
+
 /// The arguments an operation publishes in `tools/list`, when it has been
 /// narrowed off the legacy union.
 ///
@@ -239,6 +279,13 @@ fn published_args_for(operation: &str) -> Option<&'static [&'static str]> {
         "mxl-compile" => MXL_COMPILE_PUBLISHED,
         "mxl-decompile" => MXL_DECOMPILE_PUBLISHED,
         "mxl-validate" => MXL_VALIDATE_PUBLISHED,
+        "cf-validate" => CF_VALIDATE_PUBLISHED,
+        "cf-edit" => CF_EDIT_PUBLISHED,
+        "cf-init" => CF_INIT_PUBLISHED,
+        "cfe-borrow" => CFE_BORROW_PUBLISHED,
+        "cfe-validate" => CFE_VALIDATE_PUBLISHED,
+        "cfe-init" => CFE_INIT_PUBLISHED,
+        "cfe-patch-method" => CFE_PATCH_METHOD_PUBLISHED,
         _ => return None,
     })
 }
@@ -8152,13 +8199,6 @@ mod tests {
     /// only shrink — an entry added here declares new debt and shows up in the
     /// diff of this test.
     const WIDE_SURFACE_LEGACY: &[&str] = &[
-        "unica.cf.edit",
-        "unica.cf.init",
-        "unica.cf.validate",
-        "unica.cfe.borrow",
-        "unica.cfe.init",
-        "unica.cfe.patch_method",
-        "unica.cfe.validate",
         "unica.interface.edit",
         "unica.interface.validate",
         "unica.role.compile",
