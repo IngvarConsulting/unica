@@ -1,0 +1,10 @@
+{
+  "catalog_task": 8,
+  "goal": "Найди, где определён метод",
+  "workspace": "corpus",
+  "requires": "UNICA_TOKEN_COST_CORPUS",
+  "readonly": true,
+  "steps": [
+    {"tool": "unica.code.search", "arguments": {"query": "Процедура ПриСозданииНаСервере", "limit": 20}}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "catalog_task": 11,
+  "goal": "Какие типы объявлены в XDTO-пакете EnterpriseData?",
+  "workspace": "xdto",
+  "steps": [
+    {"tool": "unica.xdto.info", "arguments": {"sourceSet": "main", "metadataPath": "XDTOPackage.EnterpriseData_1_17_3"}}
+  ]
+}

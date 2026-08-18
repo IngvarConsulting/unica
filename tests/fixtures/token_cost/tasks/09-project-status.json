@@ -1,0 +1,9 @@
+{
+  "catalog_task": 9,
+  "goal": "Готов ли проект к работе?",
+  "note": "Контрольная задача: discovery плюс один дешёвый вызов. Рост этой цифры — деградация поверхности в целом, а не инструмента.",
+  "workspace": "minimal",
+  "steps": [
+    {"tool": "unica.project.status", "arguments": {}}
+  ]
+}

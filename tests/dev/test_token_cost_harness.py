@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -112,6 +113,95 @@ class ReportAccountingTests(unittest.TestCase):
 
     def test_report_names_its_tokenizer(self) -> None:
         self.assertEqual(self.build()["tokenizer"], "bytes")
+
+
+class SuitePlanningTests(unittest.TestCase):
+    """A task that cannot run must be reported as skipped, never omitted.
+
+    Silent truncation is how a suite comes to read as «covered everything»
+    when it covered nine of twelve, so the decision for every task appears in
+    the plan with the reason it was made.
+    """
+
+    def tasks(self) -> list[dict]:
+        return [
+            {"name": "03-read-document", "workspace": "minimal"},
+            {"name": "04-role-rights", "workspace": "corpus",
+             "requires": "UNICA_TOKEN_COST_CORPUS"},
+            {"name": "12-standards", "workspace": "none"},
+        ]
+
+    def test_every_task_appears_in_the_plan_when_the_corpus_is_missing(self) -> None:
+        plan = MODULE.plan_suite(self.tasks(), corpus_available=False)
+        self.assertEqual([entry["task"] for entry in plan],
+                         ["03-read-document", "04-role-rights", "12-standards"])
+        self.assertEqual([entry["action"] for entry in plan], ["run", "skip", "run"])
+        self.assertIn("UNICA_TOKEN_COST_CORPUS", plan[1]["reason"])
+
+    def test_corpus_tasks_run_when_the_corpus_is_available(self) -> None:
+        plan = MODULE.plan_suite(self.tasks(), corpus_available=True)
+        self.assertEqual([entry["action"] for entry in plan], ["run", "run", "run"])
+
+    def test_plan_order_follows_task_names(self) -> None:
+        shuffled = list(reversed(self.tasks()))
+        plan = MODULE.plan_suite(shuffled, corpus_available=False)
+        self.assertEqual([entry["task"] for entry in plan],
+                         ["03-read-document", "04-role-rights", "12-standards"])
+
+
+class WorkspaceTests(unittest.TestCase):
+    """A mutating episode must start from the same state on every run."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def test_seeded_workspace_is_addressable_by_source_set(self) -> None:
+        workspace = MODULE.materialize_workspace("minimal", self.root, corpus=None)
+        self.assertEqual(workspace, self.root)
+        self.assertTrue((workspace / "v8project.yaml").is_file())
+        self.assertTrue((workspace / "src" / "Configuration.xml").is_file())
+
+    def test_seeding_leaves_the_fixture_untouched(self) -> None:
+        seed = MODULE.WORKSPACE_SEEDS["minimal"]
+        before = sorted(p.name for p in seed.rglob("*") if p.is_file())
+        MODULE.materialize_workspace("minimal", self.root, corpus=None)
+        (self.root / "src" / "Configuration.xml").write_text("mutated", encoding="utf-8")
+        after = sorted(p.name for p in seed.rglob("*") if p.is_file())
+        self.assertEqual(before, after)
+        self.assertNotEqual(
+            (seed / "Configuration.xml").read_text(encoding="utf-8"), "mutated")
+
+    def test_corpus_workspace_without_a_corpus_names_the_switch(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            MODULE.materialize_workspace("corpus", self.root, corpus=None)
+        self.assertIn("UNICA_TOKEN_COST_CORPUS", str(raised.exception))
+
+    def test_unknown_workspace_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            MODULE.materialize_workspace("imaginary", self.root, corpus=None)
+
+
+class SuiteAggregateTests(unittest.TestCase):
+    def results(self) -> list[dict]:
+        return [
+            {"task": "03-read-document", "status": "measured", "total_tokens": 1500},
+            {"task": "04-role-rights", "status": "skipped",
+             "reason": "UNICA_TOKEN_COST_CORPUS is not set"},
+            {"task": "12-standards", "status": "measured", "total_tokens": 2500},
+        ]
+
+    def test_totals_cover_measured_tasks_only(self) -> None:
+        summary = MODULE.aggregate_suite(self.results(), tokenizer="bytes")
+        self.assertEqual(summary["measured"], 2)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(summary["total_tokens"], 4000)
+
+    def test_skipped_tasks_stay_in_the_report(self) -> None:
+        summary = MODULE.aggregate_suite(self.results(), tokenizer="bytes")
+        self.assertEqual([task["task"] for task in summary["tasks"]],
+                         ["03-read-document", "04-role-rights", "12-standards"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,10 @@
+{
+  "catalog_task": 5,
+  "goal": "Что входит в подсистему?",
+  "workspace": "corpus",
+  "requires": "UNICA_TOKEN_COST_CORPUS",
+  "readonly": true,
+  "steps": [
+    {"tool": "unica.subsystem.info", "arguments": {"sourceSet": "main", "metadataPath": "Subsystem.СтандартныеПодсистемы"}}
+  ]
+}

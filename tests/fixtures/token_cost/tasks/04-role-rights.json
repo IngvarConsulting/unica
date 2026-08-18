@@ -1,0 +1,10 @@
+{
+  "catalog_task": 4,
+  "goal": "Какие права у роли на справочник Валюты?",
+  "workspace": "corpus",
+  "requires": "UNICA_TOKEN_COST_CORPUS",
+  "readonly": true,
+  "steps": [
+    {"tool": "unica.role.info", "arguments": {"sourceSet": "main", "metadataPath": "Role.ПолныеПрава"}}
+  ]
+}

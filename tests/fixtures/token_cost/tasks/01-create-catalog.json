@@ -1,0 +1,92 @@
+{
+  "catalog_task": 1,
+  "goal": "Создай справочник Номенклатура с реквизитами Артикул (строка 25) и Вес (число 10.3)",
+  "workspace": "minimal",
+  "steps": [
+    {
+      "tool": "unica.meta.add",
+      "arguments": {
+        "sourceSet": "main",
+        "kind": "Catalog",
+        "name": "Номенклатура",
+        "dryRun": true,
+        "operations": [
+          {
+            "op": "add",
+            "collection": "attributes",
+            "elements": [
+              {
+                "name": "Артикул",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": 25,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "Вес",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "number",
+                      "digits": 10,
+                      "fraction": 3,
+                      "sign": "any"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "tool": "unica.meta.add",
+      "arguments": {
+        "sourceSet": "main",
+        "kind": "Catalog",
+        "name": "Номенклатура",
+        "operations": [
+          {
+            "op": "add",
+            "collection": "attributes",
+            "elements": [
+              {
+                "name": "Артикул",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": 25,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "Вес",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "number",
+                      "digits": 10,
+                      "fraction": 3,
+                      "sign": "any"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "dryRun": false
+      }
+    }
+  ],
+  "note": "dryRun у meta.* по умолчанию true: без него вызов готовит предпросмотр и ничего не публикует. Эпизод повторяет эталон каталога — предпросмотр, затем публикация."
+}

@@ -1,0 +1,9 @@
+{
+  "catalog_task": 3,
+  "goal": "Какие реквизиты и коллекции у объекта?",
+  "note": "Каталог формулирует задачу на документе с табличными частями; минимальная фикстура несёт перечисление. Класс операции тот же — лёгкий полный читатель.",
+  "workspace": "minimal",
+  "steps": [
+    {"tool": "unica.meta.info", "arguments": {"sourceSet": "main", "metadataPath": "Enum.LanguageAware"}}
+  ]
+}

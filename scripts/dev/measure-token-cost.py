@@ -100,6 +100,97 @@ def build_report(*, discovery: str, calls: list[dict], tokenizer: str) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Suite planning: which catalog tasks run, and why the others do not.
+# --------------------------------------------------------------------------
+
+
+def plan_suite(tasks: list[dict], *, corpus_available: bool) -> list[dict]:
+    """Decide, for every task, whether it runs — and record why it does not.
+
+    A task the suite cannot run is reported as skipped, never dropped: a
+    silently shortened suite reads as full coverage and is how nine measured
+    tasks come to be reported as twelve.
+    """
+    plan = []
+    for task in sorted(tasks, key=lambda entry: entry["name"]):
+        requirement = task.get("requires")
+        if requirement and not corpus_available:
+            plan.append(
+                {
+                    "task": task["name"],
+                    "action": "skip",
+                    "reason": f"{requirement} is not set; the task needs an external corpus",
+                }
+            )
+            continue
+        plan.append({"task": task["name"], "action": "run", "reason": None})
+    return plan
+
+
+def aggregate_suite(results: list[dict], *, tokenizer: str) -> dict:
+    """Sum what was measured, and keep what was not in plain sight."""
+    measured = [result for result in results if result["status"] == "measured"]
+    skipped = [result for result in results if result["status"] == "skipped"]
+    return {
+        "tokenizer": tokenizer,
+        "measured": len(measured),
+        "skipped": len(skipped),
+        "total_tokens": sum(result["total_tokens"] for result in measured),
+        "tasks": results,
+    }
+
+
+FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures"
+WORKSPACE_SEEDS = {
+    "minimal": FIXTURE_ROOT / "unica_mcp_script_parity" / "meta-validate-language-aware",
+    "xdto": FIXTURE_ROOT / "xdto" / "enterprise-data-minimal",
+}
+V8PROJECT = (
+    "format: DESIGNER\nsource-set:\n"
+    "  - name: main\n    type: CONFIGURATION\n    path: src\n"
+)
+
+
+def materialize_workspace(kind: str, root: Path, *, corpus: Path | None) -> Path:
+    """Prepare the workspace an episode runs in.
+
+    Seeded kinds are copied into a throwaway directory, so a mutating episode
+    measures the same starting state on every run and never touches the
+    repository tree. `corpus` points at an external checkout and is used by
+    read-only episodes only.
+    """
+    if kind == "none":
+        return root
+    if kind == "corpus":
+        if corpus is None:
+            raise SystemExit("workspace 'corpus' requires --corpus or UNICA_TOKEN_COST_CORPUS")
+        return corpus
+    seed = WORKSPACE_SEEDS.get(kind)
+    if seed is None:
+        raise SystemExit(f"unknown workspace {kind!r}; expected none, corpus, or one of "
+                         f"{', '.join(sorted(WORKSPACE_SEEDS))}")
+    source = root / "src"
+    source.mkdir(parents=True, exist_ok=True)
+    for path in sorted(seed.rglob("*")):
+        if path.is_file():
+            target = source / path.relative_to(seed)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(path.read_bytes())
+    (root / "v8project.yaml").write_text(V8PROJECT, encoding="utf-8")
+    return root
+
+
+def load_tasks(directory: Path) -> list[dict]:
+    """Read every task file, naming each after its file stem."""
+    tasks = []
+    for path in sorted(directory.glob("*.json")):
+        task = json.loads(path.read_text(encoding="utf-8"))
+        task["name"] = path.stem
+        tasks.append(task)
+    return tasks
+
+
+# --------------------------------------------------------------------------
 # Transport: one stdio session, borrowed rather than reimplemented.
 # --------------------------------------------------------------------------
 
@@ -181,24 +272,83 @@ def run_episode(
 # --------------------------------------------------------------------------
 
 
+def run_suite(
+    *, binary: Path, directory: Path, tokenizer: str, corpus: Path | None
+) -> dict:
+    """Run every task in `directory`, reporting the skipped ones by name."""
+    import tempfile
+
+    tasks = {task["name"]: task for task in load_tasks(directory)}
+    plan = plan_suite(list(tasks.values()), corpus_available=corpus is not None)
+    results = []
+    for entry in plan:
+        task = tasks[entry["task"]]
+        if entry["action"] == "skip":
+            results.append(
+                {"task": entry["task"], "status": "skipped", "reason": entry["reason"]}
+            )
+            continue
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = materialize_workspace(
+                task.get("workspace", "none"), Path(temporary), corpus=corpus
+            )
+            report = run_episode(
+                binary=binary,
+                episode=task["steps"],
+                tokenizer=tokenizer,
+                cwd=workspace,
+            )
+        results.append(
+            {
+                "task": entry["task"],
+                "status": "measured",
+                "goal": task.get("goal", ""),
+                "catalog_task": task.get("catalog_task"),
+                "total_tokens": report["total_tokens"],
+                "discovery_tokens": report["discovery_tokens"],
+                "calls": report["calls"],
+            }
+        )
+    return aggregate_suite(results, tokenizer=tokenizer)
+
+
 def main(argv: list[str] | None = None) -> int:
+    import os
+
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--binary", required=True, type=Path, help="unica MCP binary")
-    parser.add_argument("--episode", required=True, type=Path, help="episode JSON file")
-    parser.add_argument("--cwd", type=Path, default=None, help="workspace for the episode")
+    parser.add_argument("--episode", type=Path, default=None, help="single episode JSON file")
+    parser.add_argument("--suite", type=Path, default=None, help="directory of task files")
+    parser.add_argument("--cwd", type=Path, default=None, help="workspace for --episode")
+    parser.add_argument("--corpus", type=Path, default=None, help="external corpus checkout")
     parser.add_argument("--tokenizer", choices=TOKENIZERS, default="bytes")
     parser.add_argument("--report", type=Path, default=None, help="write the report here")
     arguments = parser.parse_args(argv)
 
     if not arguments.binary.is_file():
         raise SystemExit(f"binary not found: {arguments.binary}")
-    episode = json.loads(arguments.episode.read_text(encoding="utf-8"))
-    report = run_episode(
-        binary=arguments.binary,
-        episode=episode,
-        tokenizer=arguments.tokenizer,
-        cwd=arguments.cwd or Path.cwd(),
-    )
+    if bool(arguments.episode) == bool(arguments.suite):
+        raise SystemExit("pass exactly one of --episode or --suite")
+
+    if arguments.suite:
+        corpus = arguments.corpus
+        if corpus is None and os.environ.get("UNICA_TOKEN_COST_CORPUS"):
+            corpus = Path(os.environ["UNICA_TOKEN_COST_CORPUS"])
+        report = run_suite(
+            binary=arguments.binary,
+            directory=arguments.suite,
+            tokenizer=arguments.tokenizer,
+            corpus=corpus,
+        )
+    else:
+        episode = json.loads(arguments.episode.read_text(encoding="utf-8"))
+        steps = episode["steps"] if isinstance(episode, dict) else episode
+        report = run_episode(
+            binary=arguments.binary,
+            episode=steps,
+            tokenizer=arguments.tokenizer,
+            cwd=arguments.cwd or Path.cwd(),
+        )
     serialized = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
     if arguments.report:
         arguments.report.write_text(serialized + "\n", encoding="utf-8")

@@ -1,0 +1,73 @@
+{
+  "catalog_task": 2,
+  "goal": "Добавь справочнику Номенклатура реквизит Комментарий",
+  "note": "Эпизод включает создание справочника: в минимальной фикстуре его нет. Абсолютное число выше цели каталога на стоимость setup; между армами setup сокращается.",
+  "workspace": "minimal",
+  "steps": [
+    {
+      "tool": "unica.meta.add",
+      "arguments": {
+        "sourceSet": "main",
+        "kind": "Catalog",
+        "name": "Номенклатура",
+        "dryRun": false
+      }
+    },
+    {
+      "tool": "unica.meta.edit",
+      "arguments": {
+        "sourceSet": "main",
+        "metadataPath": "Catalog.Номенклатура",
+        "dryRun": true,
+        "operations": [
+          {
+            "op": "add",
+            "collection": "attributes",
+            "elements": [
+              {
+                "name": "Комментарий",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": 150,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "tool": "unica.meta.edit",
+      "arguments": {
+        "sourceSet": "main",
+        "metadataPath": "Catalog.Номенклатура",
+        "operations": [
+          {
+            "op": "add",
+            "collection": "attributes",
+            "elements": [
+              {
+                "name": "Комментарий",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": 150,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "dryRun": false
+      }
+    }
+  ]
+}
