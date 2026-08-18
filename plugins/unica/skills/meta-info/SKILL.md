@@ -36,6 +36,7 @@ allowed-tools:
   "params": {
     "name": "unica.meta.info",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Валюты"
     }
@@ -167,6 +168,7 @@ UUID в `id`, поддержанные typed-поля своего владел�
   "params": {
     "name": "unica.meta.info",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Document.АвансовыйОтчет"
     }
@@ -183,6 +185,7 @@ UUID в `id`, поддержанные typed-поля своего владел�
   "params": {
     "name": "unica.meta.info",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Document.АвансовыйОтчет",
       "sections": ["roles", "subscriptions", "functionalOptions"],
@@ -201,6 +204,7 @@ UUID в `id`, поддержанные typed-поля своего владел�
   "params": {
     "name": "unica.meta.info",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Валюты",
       "sections": ["predefinedItems"],
@@ -223,6 +227,7 @@ UUID в `id`, поддержанные typed-поля своего владел�
   "params": {
     "name": "unica.meta.info",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "HTTPService.ExternalAPI"
     }
@@ -239,6 +244,7 @@ UUID в `id`, поддержанные typed-поля своего владел�
   "params": {
     "name": "unica.meta.info",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "WebService.EnterpriseDataUpload_1_0_1_1"
     }
@@ -255,6 +261,7 @@ UUID в `id`, поддержанные typed-поля своего владел�
   "params": {
     "name": "unica.meta.info",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "DefinedType.GLN"
     }
@@ -271,6 +278,7 @@ UUID в `id`, поддержанные typed-поля своего владел�
   "params": {
     "name": "unica.meta.info",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "EventSubscription.ОбработкаИзменений"
     }

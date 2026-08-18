@@ -35,7 +35,7 @@ class VersionContractTests(unittest.TestCase):
         self.assertEqual(len(set(values.values())), 1, values)
         self.assertRegex(next(iter(values.values())), r"^\d+\.\d+\.\d+$")
 
-    def test_meta_surface_delivery_is_versioned_as_0120_everywhere(self) -> None:
+    def test_meta_surface_delivery_is_versioned_across_the_012_line(self) -> None:
         module = load_module()
         values = module.read_version_contract(REPO_ROOT)
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
@@ -46,10 +46,16 @@ class VersionContractTests(unittest.TestCase):
             if name and version and name.group(1) in {"unica-bootstrap", "unica-coder"}:
                 workspace_packages[name.group(1)] = version.group(1)
 
-        self.assertEqual(set(values.values()), {"0.12.0"}, values)
+        # Ветка сопровождения выпускает исправительные версии одну за другой,
+        # поэтому пин держит линию поставки и согласие всех мест, а не один
+        # конкретный патч.
+        delivered = set(values.values())
+        self.assertEqual(len(delivered), 1, values)
+        version = next(iter(delivered))
+        self.assertRegex(version, r"^0\.12\.\d+$")
         self.assertEqual(
             workspace_packages,
-            {"unica-bootstrap": "0.12.0", "unica-coder": "0.12.0"},
+            {"unica-bootstrap": version, "unica-coder": version},
         )
 
     def test_0120_meta_migration_is_complete_and_linked(self) -> None:

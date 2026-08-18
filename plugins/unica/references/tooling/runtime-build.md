@@ -8,10 +8,15 @@
 являются разрешённым пользовательским workflow Unica и не должны запускаться
 напрямую как обход публичной границы.
 
-По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
-только с `dryRun: true`; любой applied-режим возвращает fail-closed до
-workspace discovery и process spawn. Preview не является runtime verification.
-Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет классифицированную операцию и отвечает её терминальным результатом в
+том же вызове, приложив названную причину риска (`runtime_risk_*`)
+предупреждением; неклассифицированная операция по-прежнему отказывает
+`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
 **Два режима запуска:**
 
@@ -136,7 +141,7 @@ workspace discovery и process spawn. Preview не является runtime veri
 > Unica. Не направляй incremental/partial/CDFI-only команды прямо в
 > Git-visible source root: они допустимы только во временный private staging,
 > принадлежащий runtime-слою. Синхронный full dump (`mode=full`) для DESIGNER
-> `CONFIGURATION`/`EXTENSION` пока preview-only: его будущий applied path проходит через внешний private stage Unica,
+> `CONFIGURATION`/`EXTENSION` исполняется с названным риском записи без ограниченного восстановления: его applied path проходит через внешний private stage Unica,
 > платформа независимо фиксируется на exact 8.3.27.x, XML проверяется на raw
 > `version="2.20"` до целой публикации. На Windows, macOS и Linux verified
 > transactional publication определяет этот synchronous full dump, но
@@ -145,7 +150,7 @@ workspace discovery и process spawn. Preview не является runtime veri
 > проверяемую транзакцию, а OS-зависимая реализация остаётся за
 > `INV-PLATFORM-OS-BEHIND-FACADE`.
 >
-> Async full и applied external source-set пока preview-only. Неполные режимы
+> Async full и applied external source-set несут тот же риск публикации. Неполные режимы
 > дополнительно не имеют безопасного merge receipt. На Windows Unica через
 > no-follow handles проверяет локальную системную установку: trusted owner и DACL
 > защищают install tree от изменения запускающим non-elevated пользователем, а
@@ -438,14 +443,16 @@ Legitimate metadata descriptor (включая external EPF/ERF) объекта 
 Платформа предоставляет параметры для использования вспомогательного CDFI при
 сравнении, но управление приватным CDFI для пары `source-set + ИБ` относится к
  runtime-слою. На Windows, macOS и Linux синхронный full dump (`mode=full`) для
-DESIGNER `CONFIGURATION`/`EXTENSION` пока preview-only; его verified transactional
+DESIGNER `CONFIGURATION`/`EXTENSION` исполняется с названным риском; его verified transactional
 publication Unica перенаправляет выбранный source-set во внешний private
 stage, платформа проверяется как exact 8.3.27.x, а version-bearing XML roots —
 как raw `2.20`; только затем целое дерево публикуется с проверкой preimage и
 rollback (ADR-0016, `INV-PLATFORM-OS-BEHIND-FACADE`). До реализации private
 state и shadow publication в `alkoleft/v8-runner-rust#30`
-`mode=incremental|partial` остаётся preview-only: закреплённый runner не
-возвращает точные processed paths/hashes и не выполняет divergence-safe merge.
+`mode=incremental|partial` исполняется, но доверять его результату вслепую
+нельзя: закреплённый runner не возвращает точные processed paths/hashes и не
+выполняет divergence-safe merge, поэтому расхождение обнаруживается только
+сравнением исходников после прогона.
 Будущий applied-маршрут сможет принять только системную установку платформы,
 неизменяемую для вызывающего пользователя; сейчас любой applied-вызов
 останавливается ещё до проверки или исполнения установки.

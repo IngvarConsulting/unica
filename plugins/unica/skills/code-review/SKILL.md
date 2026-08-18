@@ -8,7 +8,15 @@ description: "Код-ревью BSL и изменений 1С. Использу�
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.meta.info`, `unica.standards.explain`, `unica.standards.search`, `unica.project.map`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет классифицированную операцию и отвечает её терминальным результатом в
+том же вызове, приложив названную причину риска (`runtime_risk_*`)
+предупреждением; неклассифицированная операция по-прежнему отказывает
+`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 - Use `unica.*.info` tools before reviewing code that depends on metadata shape, form structure, rights, DCS, MXL, or interfaces.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -25,7 +33,7 @@ Lead with findings. Order them by severity and ground each finding in a file/lin
 5. Inspect metadata with `unica.*.info` when code depends on object structure.
 6. Run `unica.code.diagnostics` when the review includes BSL code. Select the exact `sourceSet`; use `action=findings` with each touched module's logical `metadataPath`, or `action=analyze` for a broad source-set review. Use `unica.source.locate` first when the diff supplies only a file path. Use `unica.standards.explain` for diagnostic codes or standards-sensitive claims.
 7. Check high-risk 1C patterns: transaction boundaries, query-in-loop, server/client context, privileged mode, broad rights, background jobs, external calls, temporary files, and silent exception handling.
-8. Use `unica.runtime.execute` only to preview typed syntax/test arguments; always state the exact unverified runtime risk unless separate execution evidence is supplied.
+8. Use `unica.runtime.execute` to preview typed syntax/test arguments and, with `dryRun: false`, to run them; always state the exact unverified runtime risk unless separate execution evidence is supplied.
 
 ## Output
 

@@ -127,6 +127,41 @@ pub struct SearchProgressSnapshot {
     pub providers: Vec<SearchProviderProgress>,
 }
 
+/// Meta key under which search progress travels.
+pub const SEARCH_PROGRESS_META_KEY: &str = "io.unica/searchProgress";
+
+impl SearchProgressSnapshot {
+    /// Projects the search-shaped snapshot onto the transport-neutral seam.
+    pub fn to_progress_event(&self) -> crate::domain::progress::ProgressEvent {
+        crate::domain::progress::ProgressEvent {
+            meta_key: SEARCH_PROGRESS_META_KEY,
+            payload: serde_json::to_value(self).unwrap_or(serde_json::Value::Null),
+            progress: self.terminal_roles() as f64,
+            total: self.providers.len() as f64,
+            message: self.progress_message(),
+        }
+    }
+
+    fn progress_message(&self) -> String {
+        self.providers
+            .iter()
+            .map(|provider| {
+                let detail = provider
+                    .detail_code
+                    .as_deref()
+                    .unwrap_or_else(|| provider.phase.as_str());
+                format!(
+                    "{}: {} {detail} ({} results)",
+                    provider.identity.role.as_str(),
+                    provider.state.as_str(),
+                    provider.results_found
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
 impl SearchProgressSnapshot {
     pub fn terminal_roles(&self) -> usize {
         self.providers
@@ -134,17 +169,6 @@ impl SearchProgressSnapshot {
             .filter(|provider| provider.state.is_terminal())
             .count()
     }
-}
-
-pub trait SearchProgressSink: Send + Sync {
-    fn publish(&self, snapshot: SearchProgressSnapshot);
-}
-
-#[derive(Debug, Default)]
-pub struct NoopSearchProgressSink;
-
-impl SearchProgressSink for NoopSearchProgressSink {
-    fn publish(&self, _snapshot: SearchProgressSnapshot) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

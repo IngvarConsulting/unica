@@ -560,10 +560,17 @@ fn reject_unknown_top_level(
 
 fn metadata_top_level_fields(operation: MetadataOperation) -> &'static [&'static str] {
     match operation {
-        MetadataOperation::Info => &["sourceSet", "metadataPath", "sections", "limit"],
-        MetadataOperation::Add => &["sourceSet", "kind", "name", "operations", "dryRun"],
-        MetadataOperation::Edit => &["sourceSet", "metadataPath", "operations", "dryRun"],
-        MetadataOperation::Remove => &["sourceSet", "metadataPath", "dryRun", "force", "confirm"],
+        MetadataOperation::Info => &["cwd", "sourceSet", "metadataPath", "sections", "limit"],
+        MetadataOperation::Add => &["cwd", "sourceSet", "kind", "name", "operations", "dryRun"],
+        MetadataOperation::Edit => &["cwd", "sourceSet", "metadataPath", "operations", "dryRun"],
+        MetadataOperation::Remove => &[
+            "cwd",
+            "sourceSet",
+            "metadataPath",
+            "dryRun",
+            "force",
+            "confirm",
+        ],
     }
 }
 
@@ -1742,6 +1749,12 @@ pub(crate) fn metadata_input_schema(operation: MetadataOperation) -> Value {
     properties.insert(
         "sourceSet".into(),
         string("Exact Configuration source-set name from v8project.yaml."),
+    );
+    properties.insert(
+        "cwd".into(),
+        string(
+            "Absolute path to the workspace root holding v8project.yaml; it selects the workspace and never narrows the logical address.",
+        ),
     );
     let required = match operation {
         MetadataOperation::Info => {

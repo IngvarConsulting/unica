@@ -1159,3 +1159,75 @@ fn assert_partial_is_stable(workspace: &TempWorkspace, kind: &str, name: &str) {
     assert_eq!(result.diagnostics.unwrap()[0]["code"], "already_exists");
     assert_eq!(tree_snapshot(&workspace.path().join("src")), before);
 }
+
+/// Упакованный сервер стартует с рабочим каталогом в корне плагина
+/// (`cwd: "."` в `.mcp.json`), поэтому рабочее пространство адресуется только
+/// аргументом вызова: ADR-0006 §4 и ADR-0053 §2.
+#[test]
+fn metadata_operations_address_the_workspace_through_cwd_from_outside() {
+    let workspace = create_configuration_workspace("cwd-argument");
+    let outside = TempWorkspace::new("cwd-argument-host");
+    let _cwd = ProcessCwdGuard::enter(outside.path()).unwrap();
+    let cwd = json!(workspace.path().display().to_string());
+    let target = json!("Catalog.CwdAddressed");
+
+    let added = UnicaApplication::new()
+        .call_tool(
+            "unica.meta.add",
+            &Map::from_iter([
+                ("cwd".to_string(), cwd.clone()),
+                ("sourceSet".to_string(), json!("main")),
+                ("kind".to_string(), json!("Catalog")),
+                ("name".to_string(), json!("CwdAddressed")),
+                ("dryRun".to_string(), json!(false)),
+            ]),
+        )
+        .expect("typed meta.add call");
+    assert!(added.ok, "{:?}", added.errors);
+    assert!(workspace
+        .path()
+        .join("src/Catalogs/CwdAddressed.xml")
+        .is_file());
+
+    let inspected = UnicaApplication::new()
+        .call_tool(
+            "unica.meta.info",
+            &Map::from_iter([
+                ("cwd".to_string(), cwd.clone()),
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), target.clone()),
+            ]),
+        )
+        .expect("typed meta.info call");
+    assert!(inspected.ok, "{:?}", inspected.errors);
+
+    let edited = UnicaApplication::new()
+        .call_tool(
+            "unica.meta.edit",
+            &Map::from_iter([
+                ("cwd".to_string(), cwd.clone()),
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), target.clone()),
+                (
+                    "operations".to_string(),
+                    json!([{"op": "setProperties", "values": {"Comment": "addressed by cwd"}}]),
+                ),
+                ("dryRun".to_string(), json!(false)),
+            ]),
+        )
+        .expect("typed meta.edit call");
+    assert!(edited.ok, "{:?}", edited.errors);
+
+    let removed = UnicaApplication::new()
+        .call_tool(
+            "unica.meta.remove",
+            &Map::from_iter([
+                ("cwd".to_string(), cwd),
+                ("sourceSet".to_string(), json!("main")),
+                ("metadataPath".to_string(), target),
+                ("dryRun".to_string(), json!(true)),
+            ]),
+        )
+        .expect("typed meta.remove call");
+    assert!(removed.ok, "{:?}", removed.errors);
+}

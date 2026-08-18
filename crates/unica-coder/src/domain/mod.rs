@@ -8,6 +8,7 @@ pub mod form_edit;
 pub mod format_profile;
 pub(crate) mod metadata;
 pub mod operational_config;
+pub mod progress;
 #[allow(dead_code)]
 pub(crate) mod project_health;
 pub mod project_sources;
