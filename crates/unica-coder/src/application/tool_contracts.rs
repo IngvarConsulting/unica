@@ -112,10 +112,6 @@ const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
 /// for path aliases. The path names are listed in full because the alias group
 /// trims them to the canonical `Path` afterwards.
 const SUPPORT_EDIT_PUBLISHED: &[&str] = &[
-    "Path",
-    "path",
-    "TargetPath",
-    "targetPath",
     "Capability",
     "Set",
 ];
@@ -140,10 +136,6 @@ const SUPPORT_EDIT_PUBLISHED: &[&str] = &[
 /// `form_boolean_flags_are_boolean_in_mcp_contract` asserts both spellings are
 /// advertised as booleans — a client may already be reading either one.
 const FORM_ADD_PUBLISHED: &[&str] = &[
-    "ObjectPath",
-    "objectPath",
-    "Path",
-    "path",
     "FormName",
     "Purpose",
     "SetDefault",
@@ -154,20 +146,16 @@ const FORM_ADD_PUBLISHED: &[&str] = &[
 /// `unica.form.remove` (`remove_form_with_data`): the source-set root plus the
 /// three names that address the form to drop.
 const FORM_REMOVE_PUBLISHED: &[&str] =
-    &["SrcDir", "srcDir", "FormName", "ObjectName", "ProcessorName"];
+    &[
+    "FormName",
+    "ObjectName",
+    "ProcessorName",
+];
 
 /// `unica.form.compile` (`plan_form_compile`,
 /// `form_compile_definition_from_object`): the three path groups plus the two
 /// levers that choose where the definition comes from.
 const FORM_COMPILE_PUBLISHED: &[&str] = &[
-    "JsonPath",
-    "jsonPath",
-    "ObjectPath",
-    "objectPath",
-    "OutputPath",
-    "outputPath",
-    "Path",
-    "path",
     "FromObject",
     "Purpose",
 ];
@@ -175,19 +163,58 @@ const FORM_COMPILE_PUBLISHED: &[&str] = &[
 /// `unica.form.edit` (`form_edit_resolve_definition_guarded`): the form to edit
 /// and the definition, given inline or by file.
 const FORM_EDIT_PUBLISHED: &[&str] = &[
-    "FormPath",
-    "formPath",
-    "JsonPath",
-    "jsonPath",
-    "Path",
-    "path",
     "definition",
 ];
 
 /// `unica.form.validate` (`validate_form`): the form and the two report levers
 /// every validator reads.
 const FORM_VALIDATE_PUBLISHED: &[&str] =
-    &["FormPath", "formPath", "Path", "path", "Detailed", "MaxErrors"];
+    &[
+    "Detailed",
+    "MaxErrors",
+];
+
+/// `unica.dcs.compile` (`native_operations::dcs::compile_dcs`): where to write,
+/// where the definition comes from, and the two levers of the compile.
+const DCS_COMPILE_PUBLISHED: &[&str] = &[
+    "NoValidate",
+    "Value",
+];
+
+/// `unica.dcs.edit` (`edit_dcs_with_data`): the schema to edit, the definition
+/// source, and the operation vocabulary of the edit.
+const DCS_EDIT_PUBLISHED: &[&str] = &[
+    "DataSet",
+    "NoSelection",
+    "NoValidate",
+    "Operation",
+    "Value",
+    "Variant",
+];
+
+/// `unica.dcs.validate` (`validate_dcs`): the schema plus the two report levers.
+const DCS_VALIDATE_PUBLISHED: &[&str] = &[
+    "Detailed",
+    "MaxErrors",
+];
+
+/// `unica.mxl.compile` (`compile_mxl`): both paths are required and nothing
+/// else is read — the rest of the spreadsheet comes from the JSON definition.
+const MXL_COMPILE_PUBLISHED: &[&str] = &[];
+
+/// `unica.mxl.decompile` (`decompile_mxl`): one template address. `OutputPath`
+/// is dropped downstream by an existing rule and never reaches the schema.
+const MXL_DECOMPILE_PUBLISHED: &[&str] = &[];
+
+/// `unica.mxl.validate` (`validate_mxl` via `resolve_mxl_validate_path`): the
+/// direct template address, the composite one the resolver still accepts, and
+/// the two report levers.
+const MXL_VALIDATE_PUBLISHED: &[&str] = &[
+    "ProcessorName",
+    "TemplateName",
+    "Detailed",
+    "MaxErrors",
+];
 
 /// The arguments an operation publishes in `tools/list`, when it has been
 /// narrowed off the legacy union.
@@ -206,6 +233,12 @@ fn published_args_for(operation: &str) -> Option<&'static [&'static str]> {
         "form-compile" => FORM_COMPILE_PUBLISHED,
         "form-edit" => FORM_EDIT_PUBLISHED,
         "form-validate" => FORM_VALIDATE_PUBLISHED,
+        "dcs-compile" => DCS_COMPILE_PUBLISHED,
+        "dcs-edit" => DCS_EDIT_PUBLISHED,
+        "dcs-validate" => DCS_VALIDATE_PUBLISHED,
+        "mxl-compile" => MXL_COMPILE_PUBLISHED,
+        "mxl-decompile" => MXL_DECOMPILE_PUBLISHED,
+        "mxl-validate" => MXL_VALIDATE_PUBLISHED,
         _ => return None,
     })
 }
@@ -836,11 +869,22 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
                 Some(_) => &["sourceSet"],
                 None => &[],
             };
+            // The descriptor owns the address surface: every path alias group
+            // it declares must survive, canonical name included, because the
+            // schema contract is derived from the descriptor rather than from
+            // what a handler happens to read. A domain list therefore carries
+            // only the levers, never the paths.
+            let addressed = |name: &str| {
+                native_path_alias_groups(operation).iter().any(|group| {
+                    group.canonical == name || group.aliases.iter().any(|alias| *alias == name)
+                })
+            };
             property_names.retain(|name| {
                 published.contains(name)
                     || COMMON_ARGS.contains(name)
                     || MUTATION_ARGS.contains(name)
                     || selector.contains(name)
+                    || addressed(name)
             });
         }
         // ADR-0019: aliases remain accepted by normalize_native_path_aliases,
@@ -8115,14 +8159,8 @@ mod tests {
         "unica.cfe.init",
         "unica.cfe.patch_method",
         "unica.cfe.validate",
-        "unica.dcs.compile",
-        "unica.dcs.edit",
-        "unica.dcs.validate",
         "unica.interface.edit",
         "unica.interface.validate",
-        "unica.mxl.compile",
-        "unica.mxl.decompile",
-        "unica.mxl.validate",
         "unica.role.compile",
         "unica.role.validate",
         "unica.subsystem.compile",
