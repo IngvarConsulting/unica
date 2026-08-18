@@ -103,6 +103,43 @@ const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
 /// tool and no handler has ever read it; once the bridge gave the lowercase
 /// name a meaning, publishing both would put two arguments differing only in
 /// case, with different semantics, in one schema.
+/// The arguments `unica.support.edit` reads: the target path group plus the
+/// two levers of `support_edit_action` (`native_operations::support`).
+///
+/// Only one spelling of each lever is published. The lowercase forms stay
+/// accepted — `string_arg` reads both — but advertising a name twice teaches
+/// nothing and costs the reader a line, which is the same call ADR-0019 makes
+/// for path aliases. The path names are listed in full because the alias group
+/// trims them to the canonical `Path` afterwards.
+const SUPPORT_EDIT_PUBLISHED: &[&str] = &[
+    "Path",
+    "path",
+    "TargetPath",
+    "targetPath",
+    "Capability",
+    "Set",
+];
+
+/// The arguments an operation publishes in `tools/list`, when it has been
+/// narrowed off the legacy union.
+///
+/// #479 §1: the catalogue costs 56 314 tokens per measured episode and this
+/// union is the larger half of it. Narrowing is a *publication* change only —
+/// `allowed_args` still admits every legacy name, exactly as ADR-0019 keeps
+/// path aliases accepted while advertising one canonical spelling and ADR-0049
+/// keeps the bridged `MetadataPath` accepted without advertising it. A client
+/// that still sends a union argument keeps working; a client reading
+/// `tools/list` stops paying for arguments the handler never reads.
+///
+/// `None` means the operation has not been narrowed yet and is listed in the
+/// guard's shrinking `WIDE_SURFACE_LEGACY`.
+fn published_args_for(operation: &str) -> Option<&'static [&'static str]> {
+    Some(match operation {
+        "support-edit" => SUPPORT_EDIT_PUBLISHED,
+        _ => return None,
+    })
+}
+
 fn unpublished_bridge_args(name: &str) -> &'static [&'static str] {
     match bridged_selector(name) {
         Some((_, address)) if !address.publishes_address() => &["metadataPath", "MetadataPath"],
@@ -714,6 +751,19 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
     }
     let mut property_names = allowed_args(tool);
     if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
+        // #479 §1: publish the arguments the handler reads. Two limits keep
+        // this honest. Acceptance is untouched — `allowed_args` above still
+        // admits the legacy union. And the narrowing applies only to the
+        // operation-specific portion: `COMMON_ARGS` and `MUTATION_ARGS` are
+        // owned by the contract layer, not by the domain, and a mutation that
+        // stopped publishing `dryRun` would lose its preview.
+        if let Some(published) = published_args_for(operation) {
+            property_names.retain(|name| {
+                published.contains(name)
+                    || COMMON_ARGS.contains(name)
+                    || MUTATION_ARGS.contains(name)
+            });
+        }
         // ADR-0019: aliases remain accepted by normalize_native_path_aliases,
         // while tools/list publishes one host-portable canonical path contract.
         for group in native_path_alias_groups(operation) {
@@ -7969,6 +8019,116 @@ mod tests {
         assert!(
             validate_tool_arguments(tool, unknown_operation_field.as_object().unwrap(), true)
                 .is_err()
+        );
+    }
+
+    /// Operations whose published surface is still the legacy union.
+    ///
+    /// #479 §1: the catalogue costs 56 314 tokens per episode measured on the
+    /// fixture suite, and this union is the larger half of it. The list may
+    /// only shrink — an entry added here declares new debt and shows up in the
+    /// diff of this test.
+    const WIDE_SURFACE_LEGACY: &[&str] = &[
+        "unica.cf.edit",
+        "unica.cf.init",
+        "unica.cf.validate",
+        "unica.cfe.borrow",
+        "unica.cfe.init",
+        "unica.cfe.patch_method",
+        "unica.cfe.validate",
+        "unica.dcs.compile",
+        "unica.dcs.edit",
+        "unica.dcs.validate",
+        "unica.form.add",
+        "unica.form.compile",
+        "unica.form.edit",
+        "unica.form.remove",
+        "unica.form.validate",
+        "unica.interface.edit",
+        "unica.interface.validate",
+        "unica.mxl.compile",
+        "unica.mxl.decompile",
+        "unica.mxl.validate",
+        "unica.role.compile",
+        "unica.role.validate",
+        "unica.subsystem.compile",
+        "unica.subsystem.edit",
+        "unica.subsystem.validate",
+    ];
+
+    /// The published surface of a narrowed operation is the arguments it reads.
+    ///
+    /// The budget is the largest legitimate published surface plus room for a
+    /// selector branch; `unica.build.make` at 18 is the widest tool that was
+    /// never on the union.
+    #[test]
+    fn narrowed_tools_publish_a_working_surface_not_the_legacy_union() {
+        let mut offenders = Vec::new();
+        for tool in tools() {
+            if !matches!(tool.handler, ToolHandler::NativeOperation { .. }) {
+                continue;
+            }
+            let published = input_schema_for_tool(&tool)["properties"]
+                .as_object()
+                .expect("input schema publishes an object of properties")
+                .len();
+            let excused = WIDE_SURFACE_LEGACY.contains(&tool.name);
+            if published > 24 && !excused {
+                offenders.push(format!("{} publishes {published} arguments", tool.name));
+            }
+            if published <= 24 && excused {
+                offenders.push(format!(
+                    "{} is narrowed and must leave WIDE_SURFACE_LEGACY",
+                    tool.name
+                ));
+            }
+        }
+        assert!(offenders.is_empty(), "{offenders:#?}");
+    }
+
+    /// A required argument that is not published cannot be supplied by a client
+    /// reading `tools/list`, so narrowing must never orphan one.
+    #[test]
+    fn every_required_argument_stays_published() {
+        let mut offenders = Vec::new();
+        for tool in tools() {
+            let schema = input_schema_for_tool(&tool);
+            let Some(properties) = schema["properties"].as_object() else {
+                continue;
+            };
+            for required in schema["required"].as_array().into_iter().flatten() {
+                let name = required.as_str().unwrap_or_default();
+                if !properties.contains_key(name) {
+                    offenders.push(format!("{}: required `{name}` is not published", tool.name));
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "{offenders:#?}");
+    }
+
+    /// Narrowing publication must not narrow acceptance.
+    ///
+    /// ADR-0019 and ADR-0049 already separate the two: path aliases and the
+    /// bridged `MetadataPath` stay accepted while `tools/list` advertises one
+    /// spelling. #479 §1 widens that same split to the whole legacy union, so a
+    /// client still sending a union argument keeps working.
+    #[test]
+    fn narrowing_publication_keeps_the_legacy_union_accepted() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.support.edit")
+            .expect("unica.support.edit must be registered");
+        let published = input_schema_for_tool(&tool);
+        let properties = published["properties"].as_object().unwrap();
+        let accepted = allowed_args(&tool);
+        let dropped = "CompatibilityMode";
+        assert!(
+            !properties.contains_key(dropped),
+            "{dropped} must leave the published surface"
+        );
+        assert!(
+            accepted.contains(&dropped),
+            "{dropped} must stay accepted: publication narrows, acceptance does not"
         );
     }
 }

@@ -327,6 +327,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not arguments.binary.is_file():
         raise SystemExit(f"binary not found: {arguments.binary}")
+    # The session runs with the workspace as its cwd, so a relative binary path
+    # would resolve against the wrong directory once the episode starts.
+    arguments.binary = arguments.binary.resolve()
     if bool(arguments.episode) == bool(arguments.suite):
         raise SystemExit("pass exactly one of --episode or --suite")
 
