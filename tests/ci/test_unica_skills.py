@@ -2435,12 +2435,29 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIs(durable_builds[0].get("dryRun"), False)
         self.assertIn("явно выбран", skill_text)
         self.assertIn("explicitly selected", workspace_runtime_text)
+        self.assertNotIn("до вызова `runtime.execute`", skill_text)
+        self.assertNotIn(
+            "before calling `runtime.execute`", workspace_runtime_text
+        )
         for text in (skill_text, workspace_runtime_text):
             self.assertIn("`unica.runtime.job.start`", text)
             self.assertIn("`dryRun: false`", text)
+            self.assertIn("`jobId`", text)
             self.assertIn("`unica.runtime.job.status`", text)
             self.assertIn("`unica.runtime.job.wait`", text)
             self.assertIn("`unica.runtime.job.logs`", text)
+            self.assertLess(
+                text.index("`unica.runtime.job.start`"),
+                text.index("`unica.runtime.job.status`"),
+            )
+            self.assertLess(
+                text.index("`unica.runtime.job.status`"),
+                text.index("`unica.runtime.job.wait`"),
+            )
+            self.assertLess(
+                text.index("`unica.runtime.job.wait`"),
+                text.index("`unica.runtime.job.logs`"),
+            )
 
     def test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks(
         self,

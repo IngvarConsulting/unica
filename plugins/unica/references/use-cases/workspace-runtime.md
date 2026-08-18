@@ -14,7 +14,7 @@ subsystems, interfaces, and templates.
 
 Use the `v8-runner` skill and MCP `unica.runtime.execute` only to preview typed
 runtime arguments. For an explicitly requested applied build, select the
-separate durable workflow described below before calling `runtime.execute`.
+separate durable workflow described below instead of calling `runtime.execute`.
 
 По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
 только с `dryRun: true`; любой applied-режим возвращает fail-closed до

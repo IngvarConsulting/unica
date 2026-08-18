@@ -28,7 +28,7 @@ allowed-tools:
 
 Если пользователь прямо просит собрать, загрузить или обновить информационную
 базу из исходников, а не только показать команду, выбери отдельный
-долговременный workflow до вызова `unica.runtime.execute`. После успешного
+долговременный workflow без вызова `unica.runtime.execute`. После успешного
 `unica.project.status` с `ready: true` предупреди, что сборка продолжится как
 фоновое задание, и вызови `unica.runtime.job.start` с `operation=build` и
 `dryRun: false`. Это прямой выбор applied workflow, не fallback после отказа
