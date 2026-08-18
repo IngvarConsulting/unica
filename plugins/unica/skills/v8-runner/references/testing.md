@@ -1,8 +1,10 @@
 # Testing
 
-Test operations build first, so their applied capability is currently
-preview-only and fails closed before spawn. Use the argument selections below
-with `dryRun=true`; do not fall back to a runtime job.
+Test operations build first, so an applied run carries the build's
+non-interruptible phase: cancelling mid-run leaves the infobase in an unproved
+state. Preview the argument selections below with `dryRun=true`, run them with
+`dryRun=false`, and choose `unica.runtime.job.start` when the call must not wait
+for the result.
 
 Use `operation=test`, `testRunner=yaxunit`, `testScope=all` for full YaXUnit.
 Add `fullOutput=true` when you need the runner `--full` output verbosity.
@@ -18,7 +20,7 @@ Preview syntax validation with `operation=syntax`, `dryRun=true`, and
 `mode=designer-modules`, `mode=designer-config`, or `mode=edt`. Designer modes
 accept client/server flags such as `server`, `thinClient`, `webClient`,
 `mobileClient`, `extension`, and `allExtensions`; EDT accepts `projects`. Every
-mode remains preview-only because cleanup ownership is not proved for all
-runner failure paths.
+mode carries unproved cleanup ownership on every runner failure path, so a
+crashed run can leave a platform process behind.
 
 Preserve failed test artifacts and report their path when the runner prints one.

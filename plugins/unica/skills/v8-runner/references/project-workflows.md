@@ -18,7 +18,7 @@ Typical empty workspace order:
 4. If the database is the source of truth, preview synchronous `operation=dump` with `mode=full`; applied dump remains fail-closed because its post-run validation/publication has no proved receipt bound.
 5. If Git sources are the source of truth, ask before previewing `operation=build` with `dryRun=true`; applied build is not currently admitted.
 
-All dump modes and applied `convert` remain preview-only. Designer `rawKeys` containing `DumpConfigToFiles` or
+All dump modes and applied `convert` write persistent state without a bounded recovery contract, and the result names that risk. Designer `rawKeys` containing `DumpConfigToFiles` or
 `LoadConfigFromFiles` are fail-closed until they share the verified publication
 boundary.
 

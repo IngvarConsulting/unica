@@ -23,9 +23,10 @@ with object-specific info tools, source search, syntax checks, and focused tests
 - Inspect metadata shape with `unica.*.info` tools before changing code that
   depends on objects, forms, roles, or reports.
 - Use code search/analysis tools through MCP `unica` where available.
-- Use `v8-runner` to preview or run `unica.runtime.execute`
-  `operation=syntax`/`operation=test` arguments with `dryRun: true`; do not
-  claim YaXUnit, Vanessa Automation, or syntax validation from preview.
+- Use `v8-runner` with `dryRun: true` to preview `unica.runtime.execute`
+  `operation=syntax`/`operation=test` arguments and with `dryRun: false` to run
+  them; never claim YaXUnit, Vanessa Automation, or syntax validation from a
+  preview alone.
 - Report findings first for reviews, ordered by severity and grounded in file
   references.
 
