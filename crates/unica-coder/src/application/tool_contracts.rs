@@ -4152,7 +4152,14 @@ mod tests {
             ),
             (
                 MetadataOperation::Remove,
-                vec!["confirm", "cwd", "dryRun", "force", "metadataPath", "sourceSet"],
+                vec![
+                    "confirm",
+                    "cwd",
+                    "dryRun",
+                    "force",
+                    "metadataPath",
+                    "sourceSet",
+                ],
                 json!(["sourceSet", "metadataPath"]),
             ),
         ];
