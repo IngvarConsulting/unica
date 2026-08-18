@@ -12,17 +12,21 @@ with object-specific info tools, source search, syntax checks, and focused tests
 
 ## Primary path
 
-По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается
-только с `dryRun: true`; любой applied-режим возвращает fail-closed до
-workspace discovery и process spawn. Preview не является runtime verification.
-Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
 - Inspect metadata shape with `unica.*.info` tools before changing code that
   depends on objects, forms, roles, or reports.
 - Use code search/analysis tools through MCP `unica` where available.
-- Use `v8-runner` only to preview `unica.runtime.execute`
-  `operation=syntax`/`operation=test` arguments with `dryRun: true`; do not
-  claim YaXUnit, Vanessa Automation, or syntax validation from preview.
+- Use `v8-runner` with `dryRun: true` to preview `unica.runtime.execute`
+  `operation=syntax`/`operation=test` arguments and with `dryRun: false` to run
+  them; never claim YaXUnit, Vanessa Automation, or syntax validation from a
+  preview alone.
 - Report findings first for reviews, ordered by severity and grounded in file
   references.
 

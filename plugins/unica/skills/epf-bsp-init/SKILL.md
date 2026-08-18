@@ -13,7 +13,13 @@ allowed-tools:
 
 Добавляет в модуль объекта обработки функцию `СведенияОВнешнейОбработке()`, необходимую для регистрации в подсистеме «Дополнительные отчёты и обработки» БСП.
 
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
 ## Usage
 
@@ -204,7 +210,13 @@ allowed-tools:
 
 ## Дальнейшие шаги
 
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
 - Добавить ещё команду: `/epf-bsp-add-command`
 - Добавить форму: `/form-add`

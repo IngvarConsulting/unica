@@ -10,7 +10,13 @@ description: "Проектирование и ревью API 1С: публичн
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.code.definition`, `unica.code.outline`, `unica.code.graph`, `unica.code.diagnostics`, `unica.project.map`, `unica.subsystem.info`, `unica.meta.info`, `unica.standards.search`, `unica.standards.explain`, and `unica.runtime.execute`.
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 - Use v8std through public `unica.standards.*` tools for standards 483, 543, 551, 553, and 644 before making compatibility claims.
 - Use `test-authoring` for unit tests that model API consumer scenarios; use `integration-implement` only when the task is about HTTP/REST/SOAP/gRPC transport implementation.
 - Do not call internal analyzer, standards, runtime, or package adapters directly. They are hidden behind MCP `unica`.
@@ -36,7 +42,7 @@ Classify every exported method before changing or calling it:
 5. Check standards through `unica.standards.explain` / `unica.standards.search`: functional subsystems, libraries, overridable modules, version numbering, and backward compatibility.
 6. Classify the change: new method, optional parameter, mandatory parameter, removed/renamed method, changed parameter type, behavior change, deprecated method, or direct data access across a boundary.
 7. Decide the required version impact and migration path.
-8. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` only to preview the typed syntax/test request, then report syntax and runtime behavior as unverified unless separate evidence is supplied. Keep consumer-style tests for APIs with real callers.
+8. Verify statically with `unica.code.diagnostics`; use `unica.runtime.execute` to preview the typed syntax/test request and, with `dryRun: false`, to run it, then report syntax and runtime behavior as unverified unless separate evidence is supplied. Keep consumer-style tests for APIs with real callers.
 
 ## Compatibility rules
 

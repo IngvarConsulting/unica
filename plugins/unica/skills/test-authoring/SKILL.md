@@ -1,6 +1,6 @@
 ---
 name: test-authoring
-description: "Проектирование тестов 1С и preview команд YaXUnit/Vanessa Automation. Используй когда нужно написать тест, подобрать сценарии или подготовить all/module запуск; текущий Unica runtime не выполняет applied-запуск."
+description: "Проектирование тестов 1С и preview команд YaXUnit/Vanessa Automation. Используй когда нужно написать тест, подобрать сценарии или подготовить all/module запуск; applied-запуск идёт через `unica.runtime.execute` с `dryRun: false` или долговременным заданием."
 ---
 
 # Test Authoring
@@ -8,7 +8,13 @@ description: "Проектирование тестов 1С и preview кома�
 ## MCP routing
 
 - Preferred path: use MCP `unica` tools `unica.code.search`, `unica.project.map`, `unica.runtime.execute`, and the relevant `unica.*.info` tools.
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 - Use `unica.standards.search` or `unica.standards.explain` only when test design depends on a `development-standard`. Expected platform API or mechanics require a `platform-help` source; if public MCP `unica` does not expose one, report the contract gap.
 - Do not call internal runtime, analyzer, or package adapters directly. They are hidden behind MCP `unica`.
 
@@ -30,7 +36,7 @@ description: "Проектирование тестов 1С и preview кома�
   plan as complete.
 - Do not call donor-specific check commands. Use `unica.code.diagnostics` and
   focused `unica.*.info` tools for available static checks; use
-  `unica.runtime.execute` only to preview the intended runtime request.
+  `unica.runtime.execute` to preview the intended runtime request and, with `dryRun: false`, to run it.
 
 ## Scenario design
 

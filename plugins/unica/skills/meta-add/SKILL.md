@@ -44,6 +44,7 @@ allowed-tools:
   "params": {
     "name": "unica.meta.add",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "kind": "Catalog",
       "name": "НовыйСправочник",
@@ -83,6 +84,7 @@ allowed-tools:
   "params": {
     "name": "unica.meta.add",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "kind": "EventSubscription",
       "name": "ПередЗаписьюНоменклатуры",

@@ -1,6 +1,12 @@
 # Project Workflows
 
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет операцию и отвечает её терминальным результатом в том же вызове,
+приложив названную причину риска (`runtime_risk_*`) предупреждением. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
 `v8project.yaml` is the project contract. `v8project.local.yaml` is for local secrets and paths and must not redefine shared source topology or `execution_timeout`.
 
@@ -12,7 +18,7 @@ Typical empty workspace order:
 4. If the database is the source of truth, preview synchronous `operation=dump` with `mode=full`; applied dump remains fail-closed because its post-run validation/publication has no proved receipt bound.
 5. If Git sources are the source of truth, ask before previewing `operation=build` with `dryRun=true`; applied build is not currently admitted.
 
-All dump modes and applied `convert` remain preview-only. Designer `rawKeys` containing `DumpConfigToFiles` or
+All dump modes and applied `convert` write persistent state without a bounded recovery contract, and the result names that risk. Designer `rawKeys` containing `DumpConfigToFiles` or
 `LoadConfigFromFiles` are fail-closed until they share the verified publication
 boundary.
 

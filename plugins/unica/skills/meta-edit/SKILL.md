@@ -120,6 +120,7 @@ writer; неизвестный QName также нельзя копироват�
   "params": {
     "name": "unica.meta.edit",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Контрагенты",
       "operations": [
@@ -140,6 +141,7 @@ writer; неизвестный QName также нельзя копироват�
   "params": {
     "name": "unica.meta.edit",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Контрагенты",
       "operations": [
@@ -176,6 +178,7 @@ writer; неизвестный QName также нельзя копироват�
   "params": {
     "name": "unica.meta.edit",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Document.ЗаказПокупателя",
       "operations": [
@@ -213,6 +216,7 @@ writer; неизвестный QName также нельзя копироват�
   "params": {
     "name": "unica.meta.edit",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Document.ЗаказПокупателя",
       "operations": [
@@ -240,6 +244,7 @@ writer; неизвестный QName также нельзя копироват�
   "params": {
     "name": "unica.meta.edit",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "EventSubscription.ОбработкаИзменений",
       "operations": [
@@ -285,6 +290,7 @@ Unica проверяет итоговый post-image, поэтому поряд�
   "params": {
     "name": "unica.meta.edit",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Валюты",
       "operations": [

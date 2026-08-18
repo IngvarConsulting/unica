@@ -38,6 +38,7 @@ allowed-tools:
   "params": {
     "name": "unica.meta.remove",
     "arguments": {
+      "cwd": "<workspace>",
       "sourceSet": "main",
       "metadataPath": "Catalog.Устаревший",
       "dryRun": true
