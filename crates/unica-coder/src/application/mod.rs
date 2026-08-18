@@ -1,10 +1,10 @@
 use crate::domain::cache::{CacheAccess, CacheReport};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
-    CodeIntelligenceReadRequest, NoopSearchProgressSink, ProviderDeadline, SearchProgressSink,
-    SearchRequest,
+    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
 };
 use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
+use crate::domain::progress::{NoopProgressSink, ProgressSink};
 use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
 pub(crate) use outcome::AdapterOutcome;
@@ -585,7 +585,7 @@ impl UnicaApplication {
         args: &Map<String, Value>,
         cancellation: CancellationToken,
     ) -> Result<OperationResult, String> {
-        self.call_tool_observed(name, args, cancellation, Arc::new(NoopSearchProgressSink))
+        self.call_tool_observed(name, args, cancellation, Arc::new(NoopProgressSink))
     }
 
     pub fn call_tool_observed(
@@ -593,7 +593,7 @@ impl UnicaApplication {
         name: &str,
         args: &Map<String, Value>,
         cancellation: CancellationToken,
-        progress: Arc<dyn SearchProgressSink>,
+        progress: Arc<dyn ProgressSink>,
     ) -> Result<OperationResult, String> {
         let deadline = ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE);
         let spec = tools()
@@ -634,7 +634,7 @@ impl UnicaApplication {
             self.ports.as_ref(),
             &CancellationToken::new(),
             deadline,
-            &NoopSearchProgressSink,
+            &NoopProgressSink,
             RuntimeAdmissionPolicy::AlreadyAdmittedForDownstreamContractTest,
         )
     }
@@ -1019,14 +1019,7 @@ fn call_tool(
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
 ) -> Result<OperationResult, String> {
-    call_tool_observed(
-        spec,
-        args,
-        ports,
-        cancellation,
-        deadline,
-        &NoopSearchProgressSink,
-    )
+    call_tool_observed(spec, args, ports, cancellation, deadline, &NoopProgressSink)
 }
 
 fn call_tool_observed(
@@ -1035,7 +1028,7 @@ fn call_tool_observed(
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-    progress: &dyn SearchProgressSink,
+    progress: &dyn ProgressSink,
 ) -> Result<OperationResult, String> {
     call_tool_with_runtime_admission(
         spec,
@@ -1054,7 +1047,7 @@ fn call_tool_with_runtime_admission(
     ports: &dyn ApplicationPorts,
     cancellation: &CancellationToken,
     deadline: ProviderDeadline,
-    progress: &dyn SearchProgressSink,
+    progress: &dyn ProgressSink,
     runtime_admission: RuntimeAdmissionPolicy,
 ) -> Result<OperationResult, String> {
     let normalized_args = tool_contracts::normalize_native_path_aliases(spec, args)?;
@@ -1895,7 +1888,7 @@ fn invoke_code_intelligence_search(
     workspace: &WorkspaceContext,
     operational_config: &crate::domain::operational_config::OperationalConfig,
     cancellation: &CancellationToken,
-    progress: &dyn SearchProgressSink,
+    progress: &dyn ProgressSink,
 ) -> Result<ports::HandlerOutcome, String> {
     let (context, _scope) = ports.resolve_code_search_context(workspace, args)?;
     let request = SearchRequest {
@@ -5336,7 +5329,7 @@ mod tests {
             app.ports.as_ref(),
             &cancellation,
             ProviderDeadline::from_budget(PUBLIC_INVOCATION_DEADLINE),
-            &NoopSearchProgressSink,
+            &NoopProgressSink,
             RuntimeAdmissionPolicy::AlreadyAdmittedForDownstreamContractTest,
         )
         .unwrap();
