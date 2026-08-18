@@ -8237,6 +8237,20 @@ mod tests {
         assert!(offenders.is_empty(), "{offenders:#?}");
     }
 
+    /// The public surface is one server's one namespace.
+    ///
+    /// A tool outside `unica.` would be indistinguishable, to a host that
+    /// merges several servers, from a tool someone else registered.
+    #[test]
+    fn every_public_tool_lives_in_the_unica_namespace() {
+        let offenders: Vec<&str> = tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .filter(|name| !name.starts_with("unica."))
+            .collect();
+        assert!(offenders.is_empty(), "{offenders:#?}");
+    }
+
     /// A required argument that is not published cannot be supplied by a client
     /// reading `tools/list`, so narrowing must never orphan one.
     #[test]
