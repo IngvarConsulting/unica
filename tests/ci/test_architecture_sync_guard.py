@@ -89,7 +89,7 @@ class DiffClassifierTests(unittest.TestCase):
             REGISTRY,
             '@@ -100,0 +101 @@\n+            name: "unica.form.rename",\n',
         ) + created_diff_for(
-            "spec/decisions/0015-form-rename.md",
+            "docs/arch-v1/decisions/0015-form-rename.md",
             "@@ -0,0 +1 @@\n+# ADR-0015\n",
         )
         change = self.guard.analyze_diff(diff)
@@ -110,8 +110,8 @@ class DiffClassifierTests(unittest.TestCase):
 
     def test_acceptance_or_architecture_change_also_counts_as_evidence(self) -> None:
         for evidence in (
-            "spec/acceptance/unica-mcp-validation.md",
-            "spec/architecture/invariants.md",
+            "docs/arch-v1/acceptance/unica-mcp-validation.md",
+            "docs/arch-v1/architecture/invariants.md",
         ):
             with self.subTest(evidence=evidence):
                 diff = diff_for(
@@ -275,7 +275,7 @@ class CommandLineTests(unittest.TestCase):
             REGISTRY,
             '@@ -100,0 +101 @@\n+            name: "unica.form.rename",\n',
         ) + created_diff_for(
-            "spec/decisions/0015-form-rename.md", "@@ -0,0 +1 @@\n+# ADR-0015\n"
+            "docs/arch-v1/decisions/0015-form-rename.md", "@@ -0,0 +1 @@\n+# ADR-0015\n"
         )
         original = sys.stdin
         sys.stdin = io.StringIO(diff)
@@ -289,7 +289,7 @@ class DiffGrammarTests(unittest.TestCase):
     """`---` and `+++` are file headers only where the grammar puts them.
 
     Hunk content can look exactly like a header. Removing a line whose text is
-    `-- spec/architecture/x.md` renders as `--- spec/architecture/x.md`; adding
+    `-- docs/arch-v1/architecture/x.md` renders as `--- docs/arch-v1/architecture/x.md`; adding
     one whose text is `++ b/x.md` renders as `+++ b/x.md`. A parser that reads
     those as headers lets a diff claim files it never touched -- and lets a
     single planted line switch off the check for the file that follows.
@@ -302,7 +302,7 @@ class DiffGrammarTests(unittest.TestCase):
         """Verified against real `git diff` output, not a hand-written string."""
         diff = diff_for(
             "README.md",
-            "@@ -2 +1,0 @@ line one\n--- spec/architecture/invariants.md\n",
+            "@@ -2 +1,0 @@ line one\n--- docs/arch-v1/architecture/invariants.md\n",
         ) + diff_for(
             REGISTRY,
             '@@ -2,0 +3 @@\n+    name: "unica.new.tool",\n',
@@ -315,7 +315,7 @@ class DiffGrammarTests(unittest.TestCase):
 
     def test_an_added_content_line_does_not_open_a_new_file(self) -> None:
         diff = diff_for(
-            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "docs/arch-v1/decisions/0008-public-marketplace-thin-runtime.md",
             "@@ -1,0 +2 @@\n+++ b/elsewhere.md\n"
             "@@ -3 +4 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
         )
@@ -328,7 +328,7 @@ class DiffGrammarTests(unittest.TestCase):
 
     def test_a_planted_dev_null_line_cannot_hide_the_next_file(self) -> None:
         diff = diff_for("README.md", "@@ -2 +1,0 @@\n--- /dev/null\n") + diff_for(
-            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "docs/arch-v1/decisions/0008-public-marketplace-thin-runtime.md",
             "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
         )
         violations = self.guard.analyze_decision_records(diff)
@@ -340,8 +340,8 @@ class DiffGrammarTests(unittest.TestCase):
         diff = (
             "diff --git a/spec/decisions/0008-old.md b/spec/decisions/0008-new.md\n"
             "similarity index 100%\n"
-            "rename from spec/decisions/0008-old.md\n"
-            "rename to spec/decisions/0008-new.md\n"
+            "rename from docs/arch-v1/decisions/0008-old.md\n"
+            "rename to docs/arch-v1/decisions/0008-new.md\n"
         )
 
         self.assertEqual(self.guard.analyze_decision_records(diff), [])
@@ -349,7 +349,7 @@ class DiffGrammarTests(unittest.TestCase):
 
 
 class ArchitectureEvidenceTests(unittest.TestCase):
-    """Evidence has to be contract-relevant, not any file under `spec/`."""
+    """Evidence has to be contract-relevant, not any file under `docs/arch-v1/`."""
 
     def setUp(self) -> None:
         self.guard = load_guard()
@@ -359,7 +359,7 @@ class ArchitectureEvidenceTests(unittest.TestCase):
             REGISTRY,
             '@@ -100,0 +101 @@\n+            name: "unica.new.tool",\n',
         ) + diff_for(
-            "spec/architecture/glossary.md",
+            "docs/arch-v1/architecture/glossary.md",
             "@@ -5 +5 @@\n-Термин — определение.\n+Термин — определение (уточнено).\n",
         )
         change = self.guard.analyze_diff(diff)
@@ -369,10 +369,10 @@ class ArchitectureEvidenceTests(unittest.TestCase):
 
     def test_contract_relevant_documents_are_evidence(self) -> None:
         for evidence in (
-            "spec/decisions/0017-form-rename.md",
-            "spec/architecture/invariants.md",
-            "spec/architecture/quality-requirements.md",
-            "spec/acceptance/unica-mcp-validation.md",
+            "docs/arch-v1/decisions/0017-form-rename.md",
+            "docs/arch-v1/architecture/invariants.md",
+            "docs/arch-v1/architecture/quality-requirements.md",
+            "docs/arch-v1/acceptance/unica-mcp-validation.md",
         ):
             with self.subTest(evidence=evidence):
                 diff = diff_for(
@@ -408,11 +408,11 @@ class ArchitectureEvidenceTests(unittest.TestCase):
             "@@ -100,0 +101,5 @@\n" + registry_hunk,
         )
         diff += created_diff_for(
-            "spec/decisions/0021-logical-source-addressing.md",
+            "docs/arch-v1/decisions/0021-logical-source-addressing.md",
             "@@ -0,0 +1 @@\n+# ADR-0021\n",
         )
         diff += created_diff_for(
-            "spec/acceptance/logical-source-addressing-and-resource-access.md",
+            "docs/arch-v1/acceptance/logical-source-addressing-and-resource-access.md",
             "@@ -0,0 +1 @@\n+# Приёмка\n",
         )
 
@@ -429,7 +429,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
 
     def test_moving_the_acceptance_date_is_a_violation(self) -> None:
         diff = diff_for(
-            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "docs/arch-v1/decisions/0008-public-marketplace-thin-runtime.md",
             "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
         )
         violations = self.guard.analyze_decision_records(diff)
@@ -439,7 +439,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
 
     def test_walking_the_status_backwards_is_a_violation(self) -> None:
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3 @@\n-- Статус: `accepted`\n+- Статус: `proposed`\n",
         )
         violations = self.guard.analyze_decision_records(diff)
@@ -454,7 +454,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         walkable from the record that stopped applying.
         """
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3 @@\n-- Статус: `accepted`\n"
             "+- Статус: `superseded` — заменено ADR-0021\n",
         )
@@ -468,7 +468,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         applies and no way to find the one that does.
         """
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3 @@\n-- Статус: `accepted`\n+- Статус: `superseded`\n",
         )
         violations = self.guard.analyze_decision_records(diff)
@@ -479,7 +479,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_a_link_to_the_replacing_record_also_names_it(self) -> None:
         """A file link resolves for a reader as well as the `ADR-NNNN` form."""
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3,2 @@\n-- Статус: `accepted`\n+- Статус: `superseded`\n"
             "+- Обновлено: `2026-07-30` — заменено "
             "[ADR-0021](0021-dcs-domain-split.md)\n",
@@ -490,7 +490,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_citing_only_its_own_id_does_not_name_a_replacement(self) -> None:
         """A record cannot be the record that replaced it."""
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3 @@\n-- Статус: `accepted`\n"
             "+- Статус: `superseded` — см. ADR-0011\n",
         )
@@ -507,7 +507,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         it is withdrawn, not superseded.
         """
         diff = diff_for(
-            "spec/decisions/0020-proposed-record.md",
+            "docs/arch-v1/decisions/0020-proposed-record.md",
             "@@ -3 +3 @@\n-- Статус: `proposed`\n"
             "+- Статус: `superseded` — заменено ADR-0021\n",
         )
@@ -519,7 +519,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_editing_an_already_superseded_record_needs_no_replacement(self) -> None:
         """The reference is asked of the transition, not of every later edit."""
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3 @@\n-- Статус: `superseded`\n"
             "+- Статус: `superseded`\n",
         )
@@ -535,7 +535,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         answer is to delete, rewrite or merge it.
         """
         diff = created_diff_for(
-            "spec/decisions/0020-replaced-before-merge.md",
+            "docs/arch-v1/decisions/0020-replaced-before-merge.md",
             "@@ -0,0 +1,3 @@\n+# ADR-0020\n+- Статус: `superseded`\n"
             "+- Дата: `2026-07-30`\n",
         )
@@ -547,7 +547,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_editorial_changes_are_allowed(self) -> None:
         """Translations and typo fixes keep the date and the status."""
         diff = diff_for(
-            "spec/decisions/0009-os-specific-code-behind-platform-facade.md",
+            "docs/arch-v1/decisions/0009-os-specific-code-behind-platform-facade.md",
             "@@ -20,2 +20,3 @@\n-OS-specific code lives behind facades.\n"
             "+Зависящий от ОС код живёт за фасадами.\n"
             "+- Обновлено: `2026-07-28`\n",
@@ -566,7 +566,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
 
     def test_edits_outside_the_decisions_directory_are_ignored(self) -> None:
         diff = diff_for(
-            "spec/architecture/invariants.md",
+            "docs/arch-v1/architecture/invariants.md",
             "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
         )
 
@@ -577,7 +577,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         import sys
 
         diff = diff_for(
-            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "docs/arch-v1/decisions/0008-public-marketplace-thin-runtime.md",
             "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
         )
         original = sys.stdin
@@ -596,7 +596,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         flushed under the next file's flag and its violation would vanish.
         """
         diff = diff_for(
-            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "docs/arch-v1/decisions/0008-public-marketplace-thin-runtime.md",
             "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
         ) + (
             "diff --git a/spec/decisions/0016-new.md b/spec/decisions/0016-new.md\n"
@@ -611,10 +611,10 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_a_new_record_after_an_edited_one_is_not_flagged(self) -> None:
         """The reverse direction: a created file must not inherit `existed`."""
         diff = diff_for(
-            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "docs/arch-v1/decisions/0008-public-marketplace-thin-runtime.md",
             "@@ -20 +20,2 @@\n-старый текст\n+новый текст\n+- Обновлено: `2026-07-29`\n",
         ) + created_diff_for(
-            "spec/decisions/0016-new.md",
+            "docs/arch-v1/decisions/0016-new.md",
             "@@ -0,0 +1,2 @@\n+- Статус: `accepted`\n+- Дата: `2026-07-29`\n",
         )
 
@@ -628,7 +628,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         matched it.
         """
         diff = created_diff_for(
-            "spec/decisions/0017-new.md",
+            "docs/arch-v1/decisions/0017-new.md",
             "@@ -0,0 +1,2 @@\n+- Статус: `accepted`\n+- Дата: `2026-07-29`\n",
         )
 
@@ -641,7 +641,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         pass silently, which is the cheapest way to unaccept a record.
         """
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3 @@\n-- Статус: `accepted`\n+- Статус: `draft`\n",
         )
         violations = self.guard.analyze_decision_records(diff)
@@ -652,7 +652,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_deleting_an_accepted_record_is_a_violation(self) -> None:
         """Removal is the most complete rewrite: every reference dangles."""
         diff = deleted_diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -1,4 +0,0 @@\n-# ADR-0011\n-\n-- Статус: `accepted`\n"
             "-- Дата: `2026-07-21`\n",
         )
@@ -664,7 +664,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_deleting_a_proposed_record_is_allowed(self) -> None:
         """A record that was never binding may be withdrawn."""
         diff = deleted_diff_for(
-            "spec/decisions/0018-withdrawn.md",
+            "docs/arch-v1/decisions/0018-withdrawn.md",
             "@@ -1,2 +0,0 @@\n-# ADR-0018\n-- Статус: `proposed`\n",
         )
 
@@ -675,10 +675,10 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
 
         A 100% rename shows no content, so the removed status is invisible and
         the deletion rule never sees a file. The record still leaves
-        `spec/decisions/`, and every citation of ADR-0011 stops resolving.
+        `docs/arch-v1/decisions/`, and every citation of ADR-0011 stops resolving.
         """
         diff = renamed_diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "docs/attic/0011-canonical-dcs-domain.md",
         )
         violations = self.guard.analyze_decision_records(diff)
@@ -689,8 +689,8 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_renumbering_a_record_is_a_violation(self) -> None:
         """The ID is the citation. Moving it is the same defect as deleting it."""
         diff = renamed_diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
-            "spec/decisions/0019-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0019-canonical-dcs-domain.md",
         )
         violations = self.guard.analyze_decision_records(diff)
 
@@ -700,8 +700,8 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
     def test_retitling_a_record_under_the_same_id_is_allowed(self) -> None:
         """Fixing the slug keeps every citation working, so it stays legal."""
         diff = renamed_diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
-            "spec/decisions/0011-canonical-dcs-domain-model.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain-model.md",
         )
 
         self.assertEqual(self.guard.analyze_decision_records(diff), [])
@@ -710,7 +710,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         """Judgement starts from the old side: a non-record states nothing yet."""
         diff = renamed_diff_for(
             "docs/notes/dcs-domain.md",
-            "spec/decisions/0020-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0020-canonical-dcs-domain.md",
         )
 
         self.assertEqual(self.guard.analyze_decision_records(diff), [])
@@ -723,7 +723,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         rollback rules need two sides to compare.
         """
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +2,0 @@\n-- Статус: `accepted`\n",
         )
         violations = self.guard.analyze_decision_records(diff)
@@ -733,7 +733,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
 
     def test_dropping_the_acceptance_date_is_a_violation(self) -> None:
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -4 +3,0 @@\n-- Дата: `2026-07-21`\n",
         )
         violations = self.guard.analyze_decision_records(diff)
@@ -749,7 +749,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         was dropped.
         """
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3,2 +3,2 @@\n-- Status: accepted\n-- Date: 2026-07-21\n"
             "+- Статус: `accepted`\n+- Дата: `2026-07-21`\n",
         )
@@ -764,7 +764,7 @@ class DecisionRecordImmutabilityTests(unittest.TestCase):
         without it is either an unmarked edit or a new decision in disguise.
         """
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -20 +20 @@\n-Мы выбираем PostgreSQL как хранилище.\n"
             "+Мы выбираем MySQL и отказываемся от прежнего выбора.\n",
         )
@@ -799,7 +799,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
         settles it: no ADR-0020 there, so nothing was rewritten.
         """
         diff = diff_for(
-            "spec/decisions/0020-unmerged.md",
+            "docs/arch-v1/decisions/0020-unmerged.md",
             "@@ -3,2 +3,2 @@\n-- Статус: `accepted`\n-- Дата: `2026-07-29`\n"
             "+- Статус: `accepted`\n+- Дата: `2026-07-30`\n",
         )
@@ -809,7 +809,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
     def test_rewriting_the_prose_of_an_unmerged_record_needs_no_stamp(self) -> None:
         """`Обновлено` marks an editorial change to history, and this is not one."""
         diff = diff_for(
-            "spec/decisions/0020-unmerged.md",
+            "docs/arch-v1/decisions/0020-unmerged.md",
             "@@ -20 +20 @@\n-Мы выбираем прежний вариант.\n"
             "+Мы выбираем вариант, о котором договорились на ревью.\n",
         )
@@ -819,7 +819,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
     def test_deleting_an_unmerged_record_is_allowed(self) -> None:
         """Dropping a record the branch never carried breaks no citation."""
         diff = deleted_diff_for(
-            "spec/decisions/0020-unmerged.md",
+            "docs/arch-v1/decisions/0020-unmerged.md",
             "@@ -1,3 +0,0 @@\n-# ADR-0020\n-- Статус: `accepted`\n"
             "-- Дата: `2026-07-30`\n",
         )
@@ -834,8 +834,8 @@ class TargetBranchLifecycleTests(unittest.TestCase):
         colliding.
         """
         diff = renamed_diff_for(
-            "spec/decisions/0020-unmerged.md",
-            "spec/decisions/0021-unmerged.md",
+            "docs/arch-v1/decisions/0020-unmerged.md",
+            "docs/arch-v1/decisions/0021-unmerged.md",
         )
 
         self.assertEqual(self.guard.analyze_decision_records(diff, self.base), [])
@@ -851,13 +851,13 @@ class TargetBranchLifecycleTests(unittest.TestCase):
         base = self.guard.BaseCatalogue(
             {"0040": "accepted"},
             path_statuses={
-                "spec/decisions/0040-workspace-config.md": "accepted",
-                "spec/decisions/0040-meta-info.md": "proposed",
+                "docs/arch-v1/decisions/0040-workspace-config.md": "accepted",
+                "docs/arch-v1/decisions/0040-meta-info.md": "proposed",
             },
         )
         diff = renamed_diff_for(
-            "spec/decisions/0040-meta-info.md",
-            "spec/decisions/0041-meta-info.md",
+            "docs/arch-v1/decisions/0040-meta-info.md",
+            "docs/arch-v1/decisions/0041-meta-info.md",
         )
 
         self.assertEqual(self.guard.analyze_decision_records(diff, base), [])
@@ -867,13 +867,13 @@ class TargetBranchLifecycleTests(unittest.TestCase):
         base = self.guard.BaseCatalogue(
             {"0040": "accepted"},
             path_statuses={
-                "spec/decisions/0040-workspace-config.md": "accepted",
-                "spec/decisions/0040-meta-info.md": "proposed",
+                "docs/arch-v1/decisions/0040-workspace-config.md": "accepted",
+                "docs/arch-v1/decisions/0040-meta-info.md": "proposed",
             },
         )
         diff = renamed_diff_for(
-            "spec/decisions/0040-workspace-config.md",
-            "spec/decisions/0041-workspace-config.md",
+            "docs/arch-v1/decisions/0040-workspace-config.md",
+            "docs/arch-v1/decisions/0041-workspace-config.md",
         )
 
         violations = self.guard.analyze_decision_records(diff, base)
@@ -889,7 +889,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
         records answering to one citation.
         """
         diff = created_diff_for(
-            "spec/decisions/0011-another-decision.md",
+            "docs/arch-v1/decisions/0011-another-decision.md",
             "@@ -0,0 +1,2 @@\n+# ADR-0011\n+- Статус: `accepted`\n",
         )
         violations = self.guard.analyze_decision_records(diff, self.base)
@@ -900,7 +900,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
     def test_a_merged_record_is_still_immutable(self) -> None:
         """The leniency is scoped to what the branch does not carry."""
         diff = diff_for(
-            "spec/decisions/0008-public-marketplace-thin-runtime.md",
+            "docs/arch-v1/decisions/0008-public-marketplace-thin-runtime.md",
             "@@ -3 +3 @@\n-- Дата: `2026-07-19`\n+- Дата: `2026-07-28`\n",
         )
         violations = self.guard.analyze_decision_records(diff, self.base)
@@ -916,7 +916,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
         catalogue as history of a decision this repository never took.
         """
         diff = diff_for(
-            "spec/decisions/0020-unmerged.md",
+            "docs/arch-v1/decisions/0020-unmerged.md",
             "@@ -3 +3 @@\n-- Статус: `accepted`\n"
             "+- Статус: `superseded` — заменено ADR-0021\n",
         )
@@ -927,7 +927,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
 
     def test_superseding_a_merged_record_is_allowed(self) -> None:
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3 +3 @@\n-- Статус: `accepted`\n"
             "+- Статус: `superseded` — заменено ADR-0021\n",
         )
@@ -941,7 +941,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
         replaced states no transition at all. The target branch does.
         """
         diff = diff_for(
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
             "@@ -3,0 +4 @@\n+- Статус: `proposed`\n",
         )
         violations = self.guard.analyze_decision_records(diff, self.base)
@@ -957,7 +957,7 @@ class TargetBranchLifecycleTests(unittest.TestCase):
         `proposed` was never citable.
         """
         diff = renamed_diff_for(
-            "spec/decisions/0018-proposed.md",
+            "docs/arch-v1/decisions/0018-proposed.md",
             "docs/attic/0018-proposed.md",
         )
 
@@ -983,8 +983,8 @@ class BaseCatalogueReadTests(unittest.TestCase):
         """The exact proposed duplicate remains distinguishable from its owner."""
         from unittest.mock import patch
 
-        accepted = "spec/decisions/0040-workspace-config.md"
-        proposed = "spec/decisions/0040-meta-info.md"
+        accepted = "docs/arch-v1/decisions/0040-workspace-config.md"
+        proposed = "docs/arch-v1/decisions/0040-meta-info.md"
         results = [
             subprocess_result(returncode=0, stdout=f"{accepted}\0{proposed}\0"),
             subprocess_result(
@@ -1040,7 +1040,7 @@ class BaseCatalogueReadTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             recorded.append(kwargs)
-            return subprocess_result(returncode=0, stdout="spec/decisions/0011-a.md")
+            return subprocess_result(returncode=0, stdout="docs/arch-v1/decisions/0011-a.md")
 
         with patch.object(self.guard.subprocess, "run", fake_run):
             self.guard.read_base_records("origin/main")
@@ -1066,7 +1066,7 @@ class BaseCatalogueReadTests(unittest.TestCase):
         from unittest.mock import patch
 
         diff = diff_for(
-            "spec/decisions/0020-unmerged.md",
+            "docs/arch-v1/decisions/0020-unmerged.md",
             "@@ -3 +3 @@\n-- Дата: `2026-07-29`\n+- Дата: `2026-07-30`\n",
         )
         requested: list[str] = []
@@ -1093,7 +1093,7 @@ class QuotedPathTests(unittest.TestCase):
 
     With `core.quotePath` at its default -- which is every checkout nobody
     reconfigured -- a record named in Russian arrives as
-    `"spec/decisions/0099-\\321\\200....md"`. Read literally that string matches
+    `"docs/arch-v1/decisions/0099-\\321\\200....md"`. Read literally that string matches
     no record, so the record it names was judged as not a record at all: an
     accepted decision could be walked back in a file whose name simply spelled
     out what this catalogue is written in.
@@ -1103,16 +1103,16 @@ class QuotedPathTests(unittest.TestCase):
         self.guard = load_guard()
 
     def test_an_octal_escaped_name_decodes_to_the_path_it_names(self) -> None:
-        quoted = '"spec/decisions/0099-\\321\\200\\320\\265\\321\\210.md"'
+        quoted = '"docs/arch-v1/decisions/0099-\\321\\200\\320\\265\\321\\210.md"'
 
         self.assertEqual(
-            self.guard.unquote_path(quoted), "spec/decisions/0099-реш.md"
+            self.guard.unquote_path(quoted), "docs/arch-v1/decisions/0099-реш.md"
         )
 
     def test_a_plain_path_is_left_alone(self) -> None:
         self.assertEqual(
-            self.guard.unquote_path("spec/decisions/0011-canonical-dcs-domain.md"),
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            self.guard.unquote_path("docs/arch-v1/decisions/0011-canonical-dcs-domain.md"),
+            "docs/arch-v1/decisions/0011-canonical-dcs-domain.md",
         )
 
     def test_c_escapes_decode(self) -> None:
@@ -1130,7 +1130,7 @@ class QuotedPathTests(unittest.TestCase):
 
     def test_a_quoted_record_is_still_held_to_its_status(self) -> None:
         """The end-to-end shape of the bypass, checked against real git output."""
-        name = "spec/decisions/0099-\\321\\200\\320\\265\\321\\210.md"
+        name = "docs/arch-v1/decisions/0099-\\321\\200\\320\\265\\321\\210.md"
         diff = (
             f'diff --git "a/{name}" "b/{name}"\n'
             f'--- "a/{name}"\n'
@@ -1149,7 +1149,7 @@ class QuotedPathTests(unittest.TestCase):
 class BinarySectionTests(unittest.TestCase):
     """A section git renders as binary states nothing, and nothing reads as clean.
 
-    Marking `spec/decisions/*.md` with `-diff` in `.gitattributes`, or leaving a
+    Marking `docs/arch-v1/decisions/*.md` with `-diff` in `.gitattributes`, or leaving a
     single NUL byte in a record, turned every later edit to that file into an
     empty section. Both analyses walked it and found nothing to report, which is
     the exact failure this guard exists not to have.
@@ -1167,7 +1167,7 @@ class BinarySectionTests(unittest.TestCase):
 
     def test_a_binary_decision_record_is_reported(self) -> None:
         problems = self.guard.unreadable_sections(
-            self._binary_section("spec/decisions/0011-canonical-dcs-domain.md")
+            self._binary_section("docs/arch-v1/decisions/0011-canonical-dcs-domain.md")
         )
 
         self.assertEqual(len(problems), 1, problems)
@@ -1203,7 +1203,7 @@ class BinarySectionTests(unittest.TestCase):
         import io
         import sys
 
-        diff = self._binary_section("spec/decisions/0011-canonical-dcs-domain.md")
+        diff = self._binary_section("docs/arch-v1/decisions/0011-canonical-dcs-domain.md")
         original = sys.stdin
         sys.stdin = io.StringIO(diff)
         try:
@@ -1238,7 +1238,7 @@ class BinarySectionTests(unittest.TestCase):
 
         `text=True` on its own decodes with the runner's preferred encoding. On a
         host with no `LANG` that is ASCII, and the read raises `UnicodeDecodeError`
-        the moment a `spec/decisions/` body appears in the diff -- the guard dies
+        the moment a `docs/arch-v1/decisions/` body appears in the diff -- the guard dies
         instead of judging the change or reporting itself unusable, which is the
         one outcome this module is written to avoid.
         """

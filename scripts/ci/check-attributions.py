@@ -38,7 +38,7 @@ def inventory(repo_root: Path) -> dict[tuple[str, str], dict]:
     tools = load_json(root / "third-party" / "tools.lock.json").get("tools", [])
     adapters = load_json(root / "third-party" / "manifest.json").get("internalAdapters", [])
     upstreams = load_json(
-        repo_root / "spec" / "provenance" / "skill-upstreams.json"
+        repo_root / "docs" / "arch-v1" / "provenance" / "skill-upstreams.json"
     ).get("upstreams", [])
 
     result: dict[tuple[str, str], dict] = {

@@ -843,7 +843,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
     def test_expected_tools_are_the_canonical_review_ledger_exact_set(self) -> None:
         review = json.loads(
-            (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(
+            (REPO_ROOT / "docs/arch-v1/architecture/tool-surface-review.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -862,7 +862,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             manifest = root / "plugins/unica/.codex-plugin/plugin.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_text("{}\n", encoding="utf-8")
-            review_path = root / "spec/architecture/tool-surface-review.json"
+            review_path = root / "docs/arch-v1/architecture/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
                 json.dumps({"unica.xdto.info": {}, "unica.xdto.edit": {}}),
@@ -884,7 +884,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             outer = Path(directory)
-            unrelated = outer / "spec/architecture/tool-surface-review.json"
+            unrelated = outer / "docs/arch-v1/architecture/tool-surface-review.json"
             unrelated.parent.mkdir(parents=True)
             unrelated.write_text(
                 json.dumps({"unica.source.read": {}}),
@@ -1169,7 +1169,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             root = Path(directory)
             server = root / "server.py"
             server.write_text(server_source, encoding="utf-8")
-            review_path = root / "spec/architecture/tool-surface-review.json"
+            review_path = root / "docs/arch-v1/architecture/tool-surface-review.json"
             review_path.parent.mkdir(parents=True)
             review_path.write_text(
                 json.dumps({name: {} for name in sorted(expected_tools)}),

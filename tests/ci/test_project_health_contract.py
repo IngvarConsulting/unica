@@ -16,13 +16,13 @@ class ProjectHealthContractTests(unittest.TestCase):
 
     def test_project_health_contract_is_accepted_and_routed(self) -> None:
         adr = self.read(
-            "spec/decisions/0060-project-status-publikuet-gotovnost-proekta.md"
+            "docs/arch-v1/decisions/0060-project-status-publikuet-gotovnost-proekta.md"
         )
-        invariants = self.read("spec/architecture/invariants.md")
-        decisions = self.read("spec/decisions/README.md")
-        surface = self.read("spec/architecture/tool-surface.md")
+        invariants = self.read("docs/arch-v1/architecture/invariants.md")
+        decisions = self.read("docs/arch-v1/decisions/README.md")
+        surface = self.read("docs/arch-v1/architecture/tool-surface.md")
         review = json.loads(
-            self.read("spec/architecture/tool-surface-review.json")
+            self.read("docs/arch-v1/architecture/tool-surface-review.json")
         )
         workflow = self.read(
             "plugins/unica/references/use-cases/workspace-runtime.md"
@@ -70,7 +70,7 @@ class ProjectHealthContractTests(unittest.TestCase):
         self.assertIn("remediation", workflow)
 
     def test_single_resolved_root_does_not_narrow_project_inspection(self) -> None:
-        invariants = self.read("spec/architecture/invariants.md")
+        invariants = self.read("docs/arch-v1/architecture/invariants.md")
         resolved_root = invariants.split(
             "### INV-SOURCE-SINGLE-RESOLVED-ROOT", maxsplit=1
         )[1].split("\n### ", maxsplit=1)[0]

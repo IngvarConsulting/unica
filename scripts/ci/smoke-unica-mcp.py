@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 
-TOOL_SURFACE_REVIEW_RELATIVE = Path("spec/architecture/tool-surface-review.json")
+TOOL_SURFACE_REVIEW_RELATIVE = Path("docs/arch-v1/architecture/tool-surface-review.json")
 CHECKOUT_MARKERS = (
     Path("Cargo.toml"),
     Path("plugins/unica/.codex-plugin/plugin.json"),

@@ -116,7 +116,7 @@ DOCUMENTED_READER_TOOL_NAMES = {
 TYPED_CONTRACT_TOOL_NAMES = {
     name
     for name, review in json.loads(
-        (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "docs/arch-v1/architecture/tool-surface-review.json").read_text(encoding="utf-8")
     ).items()
     if review["result"]["contract"] == "typed"
 }

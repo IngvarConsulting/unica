@@ -75,19 +75,19 @@ RUST_COMMENT = re.compile(r"^\s*(?://|/\*|\*(?:[\s/]|$))")
 # Files accepted as contract-relevant synchronization evidence.
 #
 # ADR decisions and registry rules can own normative text; acceptance plans are
-# supporting verification evidence, not owners. `spec/architecture/` as a whole
+# supporting verification evidence, not owners. `docs/arch-v1/architecture/` as a whole
 # would also match the glossary, risks and concept notes, where a comma moved is
 # not evidence about a new public tool. The guard proves only that a relevant
 # slice moved; identifying the actual owner stays a review judgement.
 ARCHITECTURE_EVIDENCE = (
-    "spec/acceptance/",
-    "spec/architecture/invariants.md",
-    "spec/architecture/quality-requirements.md",
+    "docs/arch-v1/acceptance/",
+    "docs/arch-v1/architecture/invariants.md",
+    "docs/arch-v1/architecture/quality-requirements.md",
 )
 # Where the catalogue lives. Both readers of the boundary -- the record pattern
 # below and the read of the target branch -- take the prefix from here, so the
 # catalogue cannot move for one of them and stay put for the other.
-DECISIONS_DIR = "spec/decisions/"
+DECISIONS_DIR = "docs/arch-v1/decisions/"
 # The four digits are the record's ID: `ADR-0011` is the file `0011-*.md`. The
 # ID is what every citation elsewhere in the spec points at, so it is the thing
 # the immutability rules below have to keep resolving.
@@ -102,8 +102,8 @@ def is_architecture_evidence(path: str) -> bool:
 
 # `---` and `+++` name files only inside the header block of a file section,
 # between `diff --git` and the first `@@`. Inside a hunk they are content: a
-# removed line whose text is `-- spec/architecture/x.md` renders as
-# `--- spec/architecture/x.md`, and an added line whose text is `++ b/x.md`
+# removed line whose text is `-- docs/arch-v1/architecture/x.md` renders as
+# `--- docs/arch-v1/architecture/x.md`, and an added line whose text is `++ b/x.md`
 # renders as `+++ b/x.md`. Reading either as a file header lets a diff describe
 # files it never touches, so the position is part of the grammar here.
 DIFF_SECTION_START = "diff --git "
@@ -160,7 +160,7 @@ OCTAL_DIGITS = "01234567"
 # Dropping a field and moving the file matter because both unaccept a record
 # without ever writing a smaller status: a record with no `Статус` line is no
 # longer accepted by the catalogue's own reading, and a record that left
-# `spec/decisions/` takes its ID out of every citation that pointed at it.
+# `docs/arch-v1/decisions/` takes its ID out of every citation that pointed at it.
 DATE_FIELD = re.compile(r"^-\s*(?:Дата|Date):\s*`?(?P<value>[0-9]{4}-[0-9]{2}-[0-9]{2})`?")
 STATUS_FIELD = re.compile(r"^-\s*(?:Статус|Status):\s*`?(?P<value>[A-Za-z]+)`?")
 UPDATED_FIELD = re.compile(r"^-\s*(?:Обновлено|Updated):")
@@ -475,7 +475,7 @@ class BaseCatalogue:
 
 
 def read_base_records(base: str) -> BaseCatalogue | None:
-    """Read `spec/decisions/` out of the target branch. None when git refuses.
+    """Read `docs/arch-v1/decisions/` out of the target branch. None when git refuses.
 
     `-z` keeps every path literal: this catalogue is named in Russian, and the
     quoting git applies by default is the same trap the diff grammar already has
@@ -559,7 +559,7 @@ def analyze_decision_records(
 
     A record the target branch carries is held to its ID and to its fields. Its
     ID must still resolve after the change: deleting the file, moving it out of
-    `spec/decisions/`, or renumbering it all leave every citation dangling, and
+    `docs/arch-v1/decisions/`, or renumbering it all leave every citation dangling, and
     a 100% rename is the quietest of the three. Its fields must not be walked
     back: a moved acceptance date, a status that goes backwards or leaves the
     catalogue, a status or date line dropped outright. Its prose must not move
@@ -1005,9 +1005,9 @@ def main(argv: list[str] | None = None) -> int:
         "This guard proves only the weaker half: that contract-relevant sync\n"
         "evidence moved in the same change. Review must still identify and\n"
         "update the ADR/registry owner. Update one of:\n"
-        "spec/decisions/NNNN-*.md,\n"
-        "spec/architecture/invariants.md, spec/architecture/quality-requirements.md,\n"
-        "spec/acceptance/."
+        "docs/arch-v1/decisions/NNNN-*.md,\n"
+        "docs/arch-v1/architecture/invariants.md, docs/arch-v1/architecture/quality-requirements.md,\n"
+        "docs/arch-v1/acceptance/."
     )
     return 1
 

@@ -50,7 +50,7 @@ class RefreshFixture:
         )
         self.fixtures_root = self.snapshot.parent
         self.provenance_path = (
-            self.repo_root / "spec" / "provenance" / "skill-upstreams.json"
+            self.repo_root / "docs" / "arch-v1" / "provenance" / "skill-upstreams.json"
         )
         self.reviews_root = self.repo_root / "docs" / "provenance" / "reviews"
         self.owner = owner

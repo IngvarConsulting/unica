@@ -20,8 +20,8 @@ import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REVIEW_PATH = REPO_ROOT / "spec/architecture/tool-surface-review.json"
-LEDGER_PATH = REPO_ROOT / "spec/architecture/tool-surface.md"
+REVIEW_PATH = REPO_ROOT / "docs/arch-v1/architecture/tool-surface-review.json"
+LEDGER_PATH = REPO_ROOT / "docs/arch-v1/architecture/tool-surface.md"
 DEFAULT_BINARY = REPO_ROOT / "target/debug/unica"
 
 # Above this count a tool is publishing the shared XML/DSL argument list rather

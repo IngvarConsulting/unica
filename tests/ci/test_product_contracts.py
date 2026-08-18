@@ -488,10 +488,10 @@ class ProductContractTests(unittest.TestCase):
         self.assertNotIn("download-1ci-guides.py", agents)
         self.assertNotIn("docs-local/1ci/8.3.27/en/", agents)
         self.assertNotIn("kb.1ci.com/bin/download", agents)
-        # Активный слой spec/ — не только AGENTS.md: указание на локальный
+        # Активный слой docs/arch-v1/ — не только AGENTS.md: указание на локальный
         # корпус в нём отправляет читателя к пути, который больше ничем не
         # создаётся. Исторические docs/design и docs/plans сюда не входят.
-        for spec_path in sorted((REPO_ROOT / "spec").rglob("*")):
+        for spec_path in sorted((REPO_ROOT / "docs" / "arch-v1").rglob("*")):
             if not spec_path.is_file():
                 continue
             with self.subTest(path=spec_path.relative_to(REPO_ROOT).as_posix()):
@@ -730,7 +730,7 @@ class ProductContractTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         plugin_readme = (repo_root / "plugins/unica/README.md").read_text(encoding="utf-8")
         decision = (
-            repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md"
+            repo_root / "docs/arch-v1/decisions/0012-one-plugin-directory-for-two-hosts.md"
         ).read_text(encoding="utf-8")
 
         self.assertIn("2.1.69", plugin_readme)
@@ -738,7 +738,7 @@ class ProductContractTests(unittest.TestCase):
 
     def test_claude_host_contract_is_recorded_for_agents(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        decisions = (repo_root / "spec/decisions/README.md").read_text(encoding="utf-8")
+        decisions = (repo_root / "docs/arch-v1/decisions/README.md").read_text(encoding="utf-8")
 
         # AGENTS.md and CLAUDE.md were cleared with the v1 architecture layer;
         # the host contract is asserted against the manifests themselves.
@@ -747,7 +747,7 @@ class ProductContractTests(unittest.TestCase):
         )
         self.assertIn("0012-one-plugin-directory-for-two-hosts.md", decisions)
         self.assertTrue(
-            (repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md").is_file()
+            (repo_root / "docs/arch-v1/decisions/0012-one-plugin-directory-for-two-hosts.md").is_file()
         )
 
     def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
@@ -802,9 +802,9 @@ class ProductContractTests(unittest.TestCase):
         paths = [
             repo_root / "README.md",
             repo_root / "plugins/unica/README.md",
-            repo_root / "spec/acceptance/unica-mcp-validation.md",
-            repo_root / "spec/architecture/runtime.md",
-            repo_root / "spec/architecture/deployment.md",
+            repo_root / "docs/arch-v1/acceptance/unica-mcp-validation.md",
+            repo_root / "docs/arch-v1/architecture/runtime.md",
+            repo_root / "docs/arch-v1/architecture/deployment.md",
         ]
         forbidden = ("unica-local", "unica-codex-marketplace-")
         matches = [
@@ -817,7 +817,7 @@ class ProductContractTests(unittest.TestCase):
 
     def test_removed_script_backed_skills_do_not_leave_architecture_records(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        decisions = repo_root / "spec" / "decisions"
+        decisions = repo_root / "docs" / "arch-v1" / "decisions"
         index = (decisions / "README.md").read_text(encoding="utf-8")
 
         self.assertFalse((decisions / "0007-script-backed-utility-skill-exceptions.md").exists())
@@ -1210,10 +1210,10 @@ class ProductContractTests(unittest.TestCase):
         """
         repo_root = Path(__file__).resolve().parents[2]
         sources = {
-            "runtime": repo_root / "spec/architecture/runtime.md",
-            "acceptance": repo_root / "spec/acceptance/unica-mcp-validation.md",
+            "runtime": repo_root / "docs/arch-v1/architecture/runtime.md",
+            "acceptance": repo_root / "docs/arch-v1/acceptance/unica-mcp-validation.md",
             "adr-0006": repo_root
-            / "spec/decisions/0006-workspace-scoped-internal-services.md",
+            / "docs/arch-v1/decisions/0006-workspace-scoped-internal-services.md",
         }
 
         # Quantity plus unit, in either language: "120 seconds", "500 мс", "8 MiB".

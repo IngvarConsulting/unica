@@ -6,8 +6,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # Доказательства профиля живут в приёмке, а решение о единственном записываемом
 # профиле — в записи ADR-0016. Тест читает оба адреса, потому что раньше это был
 # один документ, смешивавший решение и доказательства.
-MATRIX = ROOT / "spec/acceptance/format-profile-8-3-27.md"
-PROFILE_DECISIONS = sorted(ROOT.glob("spec/decisions/0016-*.md"))
+MATRIX = ROOT / "docs/arch-v1/acceptance/format-profile-8-3-27.md"
+PROFILE_DECISIONS = sorted(ROOT.glob("docs/arch-v1/decisions/0016-*.md"))
 DESIGN = (
     ROOT
     / "docs/design/2026-07-23-platform-8-3-27-format-2-20-design.md"
@@ -104,7 +104,7 @@ class FormatProfileContractTests(unittest.TestCase):
         self.assertEqual(
             len(PROFILE_DECISIONS),
             1,
-            "ADR-0016 должен быть ровно одной записью в spec/decisions",
+            "ADR-0016 должен быть ровно одной записью в docs/arch-v1/decisions",
         )
         text = PROFILE_DECISIONS[0].read_text(encoding="utf-8")
         self.assertIn("единственный записываемый профиль", text.lower())
@@ -118,7 +118,7 @@ class FormatProfileContractTests(unittest.TestCase):
         # Официальный источник соответствия версий формата — глава публичного
         # руководства разработчика, а не путь локального корпуса: контракт
         # скачанного корпуса снят вместе с загрузчиком (ADR-0029), и активный
-        # слой spec/ на него больше не ссылается
+        # слой docs/arch-v1/ на него больше не ссылается
         # (test_product_contracts.test_downloader_and_local_corpus_contract_are_retired).
         self.assertIn("Export format versions", text)
         self.assertIn("2.17.2", text)

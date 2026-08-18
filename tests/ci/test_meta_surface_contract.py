@@ -26,7 +26,7 @@ META_PROPERTY_REGISTRY = (
 META_OPERATION_REGISTRY = (
     REPO_ROOT / "crates/unica-coder/src/domain/metadata/operations.rs"
 )
-META_CAPABILITY_LEDGER = REPO_ROOT / "spec/architecture/meta-capability-parity.json"
+META_CAPABILITY_LEDGER = REPO_ROOT / "docs/arch-v1/architecture/meta-capability-parity.json"
 META_INFO_FIXTURE_MANIFEST = (
     REPO_ROOT / "tests/fixtures/platform_8_3_27/meta_info/manifest.json"
 )
@@ -149,20 +149,20 @@ class MetaSurfaceContractTests(unittest.TestCase):
     ) -> None:
         adr = (
             REPO_ROOT
-            / "spec/decisions/0042-meta-observation-does-not-depend-on-mutation.md"
+            / "docs/arch-v1/decisions/0042-meta-observation-does-not-depend-on-mutation.md"
         ).read_text(encoding="utf-8")
         superseded = (
-            REPO_ROOT / "spec/decisions/0028-chtenie-meta-info-ne-teryaet-dannye.md"
+            REPO_ROOT / "docs/arch-v1/decisions/0028-chtenie-meta-info-ne-teryaet-dannye.md"
         ).read_text(encoding="utf-8")
         invariants = (
-            REPO_ROOT / "spec/architecture/invariants.md"
+            REPO_ROOT / "docs/arch-v1/architecture/invariants.md"
         ).read_text(encoding="utf-8")
         surface = (
-            REPO_ROOT / "spec/architecture/tool-surface.md"
+            REPO_ROOT / "docs/arch-v1/architecture/tool-surface.md"
         ).read_text(encoding="utf-8")
         surface_review = json.loads(
             (
-                REPO_ROOT / "spec/architecture/tool-surface-review.json"
+                REPO_ROOT / "docs/arch-v1/architecture/tool-surface-review.json"
             ).read_text(encoding="utf-8")
         )
         meta_info = (
@@ -265,11 +265,11 @@ class MetaSurfaceContractTests(unittest.TestCase):
             REPO_ROOT / "plugins/unica/skills/meta-info/SKILL.md"
         ).read_text(encoding="utf-8")
         ledger = (
-            REPO_ROOT / "spec/architecture/tool-surface.md"
+            REPO_ROOT / "docs/arch-v1/architecture/tool-surface.md"
         ).read_text(encoding="utf-8")
         review = json.loads(
             (
-                REPO_ROOT / "spec/architecture/tool-surface-review.json"
+                REPO_ROOT / "docs/arch-v1/architecture/tool-surface-review.json"
             ).read_text(encoding="utf-8")
         )["unica.meta.info"]
         ledger_section = ledger.split("### `unica.meta.info`", 1)[1].split(
@@ -290,23 +290,23 @@ class MetaSurfaceContractTests(unittest.TestCase):
         skill = (REPO_ROOT / "plugins/unica/skills/meta-info/SKILL.md").read_text(
             encoding="utf-8"
         )
-        ledger = (REPO_ROOT / "spec/architecture/tool-surface.md").read_text(
+        ledger = (REPO_ROOT / "docs/arch-v1/architecture/tool-surface.md").read_text(
             encoding="utf-8"
         )
         review = json.loads(
-            (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(
+            (REPO_ROOT / "docs/arch-v1/architecture/tool-surface-review.json").read_text(
                 encoding="utf-8"
             )
         )["unica.meta.info"]
-        invariant = (REPO_ROOT / "spec/architecture/invariants.md").read_text(
+        invariant = (REPO_ROOT / "docs/arch-v1/architecture/invariants.md").read_text(
             encoding="utf-8"
         )
         acceptance = "\n".join(
             (REPO_ROOT / path).read_text(encoding="utf-8")
             for path in (
-                "spec/acceptance/logical-source-addressing-and-resource-access.md",
-                "spec/acceptance/format-profile-8-3-27.md",
-                "spec/acceptance/unica-mcp-validation.md",
+                "docs/arch-v1/acceptance/logical-source-addressing-and-resource-access.md",
+                "docs/arch-v1/acceptance/format-profile-8-3-27.md",
+                "docs/arch-v1/acceptance/unica-mcp-validation.md",
             )
         )
         manifest = json.loads(META_INFO_FIXTURE_MANIFEST.read_text(encoding="utf-8"))
@@ -364,7 +364,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         self.assertTrue(donor, "retired Meta DSL type tables yielded no capabilities")
         self.assertTrue(
             META_CAPABILITY_LEDGER.exists(),
-            "spec/architecture/meta-capability-parity.json is missing",
+            "docs/arch-v1/architecture/meta-capability-parity.json is missing",
         )
         ledger = json.loads(META_CAPABILITY_LEDGER.read_text(encoding="utf-8"))
         self.assertIsInstance(ledger, list, "Meta capability ledger must be a JSON array")
@@ -532,7 +532,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         excluded_prefixes = (
             "docs/design/",
             "docs/plans/",
-            "spec/decisions/",
+            "docs/arch-v1/decisions/",
             "tests/fixtures/unica_mcp_script_parity/cc-1c-skills/",
             # Reviewed donor adaptations are retained only in a non-executable
             # provenance archive; they do not define the current Meta contract.

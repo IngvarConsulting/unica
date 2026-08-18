@@ -152,11 +152,11 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
 
     def test_surface_ledger_names_the_shared_registered_contract(self) -> None:
         ledger = (
-            REPO_ROOT / "spec/architecture/tool-surface.md"
+            REPO_ROOT / "docs/arch-v1/architecture/tool-surface.md"
         ).read_text(encoding="utf-8")
         review = json.loads(
             (
-                REPO_ROOT / "spec/architecture/tool-surface-review.json"
+                REPO_ROOT / "docs/arch-v1/architecture/tool-surface-review.json"
             ).read_text(encoding="utf-8")
         )["unica.subsystem.info"]
         review_text = json.dumps(review, ensure_ascii=False)

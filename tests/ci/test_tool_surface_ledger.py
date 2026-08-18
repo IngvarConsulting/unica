@@ -18,9 +18,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
-LEDGER = REPO_ROOT / "spec/architecture/tool-surface.md"
-REVIEW = REPO_ROOT / "spec/architecture/tool-surface-review.json"
-INVARIANTS = REPO_ROOT / "spec/architecture/invariants.md"
+LEDGER = REPO_ROOT / "docs/arch-v1/architecture/tool-surface.md"
+REVIEW = REPO_ROOT / "docs/arch-v1/architecture/tool-surface-review.json"
+INVARIANTS = REPO_ROOT / "docs/arch-v1/architecture/invariants.md"
 BINARY = REPO_ROOT / "target/debug/unica"
 
 

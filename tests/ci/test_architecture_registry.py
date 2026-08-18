@@ -2,9 +2,9 @@
 
 The registry lives in two documents that share one record format:
 
-* `spec/architecture/invariants.md` holds `INV-*` records: rules that must not
+* `docs/arch-v1/architecture/invariants.md` holds `INV-*` records: rules that must not
   break silently.
-* `spec/architecture/quality-requirements.md` holds `REQ-*` records: measurable
+* `docs/arch-v1/architecture/quality-requirements.md` holds `REQ-*` records: measurable
   quality scenarios.
 
 These tests keep the registry honest. A record that names a check which does not
@@ -22,15 +22,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-ARCHITECTURE_DIR = REPO_ROOT / "spec" / "architecture"
+ARCHITECTURE_DIR = REPO_ROOT / "docs" / "arch-v1" / "architecture"
 INVARIANTS = ARCHITECTURE_DIR / "invariants.md"
 REQUIREMENTS = ARCHITECTURE_DIR / "quality-requirements.md"
-DECISIONS_DIR = REPO_ROOT / "spec" / "decisions"
+DECISIONS_DIR = REPO_ROOT / "docs" / "arch-v1" / "decisions"
 DECISIONS_INDEX = DECISIONS_DIR / "README.md"
-SPEC_INDEX = REPO_ROOT / "spec" / "README.md"
+SPEC_INDEX = REPO_ROOT / "docs" / "arch-v1" / "README.md"
 LOGICAL_SOURCE_ACCEPTANCE = (
     REPO_ROOT
-    / "spec"
+    / "docs" / "arch-v1"
     / "acceptance"
     / "logical-source-addressing-and-resource-access.md"
 )
@@ -343,7 +343,7 @@ RUST_INCLUDE = re.compile(
 # re-reading the code. This constant may be lowered when a manual check is
 # automated. It must never be raised: a new rule without an automated check is
 # a decision to accept documentation drift, and it belongs in a risk record
-# (spec/architecture/risks.md), not here.
+# (docs/arch-v1/architecture/risks.md), not here.
 MAX_MANUAL_CHECKS = 5
 
 # An architecture document may cite a decision record to explain a choice.
@@ -444,7 +444,7 @@ DECISION_SECTION = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 # ADR-0001...ADR-0006 predate the Russian-only policy and remain immutable.
-# `spec/decisions/README.md` records the same closed historical exception.
+# `docs/arch-v1/decisions/README.md` records the same closed historical exception.
 LEGACY_MIXED_LANGUAGE_DECISIONS = {
     "0001",
     "0002",
@@ -478,7 +478,10 @@ SINGLE_HOST_PHRASES = (
 
 # Uniqueness is checked everywhere a heading could collide with a live
 # identifier, the archive included. Resolution is not: see `registry_ids()`.
-DECLARATION_SCAN_ROOTS = (REPO_ROOT / "spec", REPO_ROOT / "docs")
+# `arch-v1` now lives under `docs`, so one root covers both trees; two
+# nested roots would scan every file twice and read each identifier as a
+# duplicate declaration.
+DECLARATION_SCAN_ROOTS = (REPO_ROOT / "docs",)
 
 ARCHIVE_MARKER = "Архивный материал планирования, а не источник истины"
 ARCHIVE_INDEXES = (
@@ -567,7 +570,7 @@ def citation_corpus() -> list[Path]:
         REPO_ROOT / "AGENTS.md",
         REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
     )
-    paths = list((REPO_ROOT / "spec").rglob("*.md"))
+    paths = list((REPO_ROOT / "docs" / "arch-v1").rglob("*.md"))
     paths.extend(path for path in entry_points if path.is_file())
     return sorted(paths)
 
@@ -1178,7 +1181,7 @@ class IdentifierLedgerTests(unittest.TestCase):
         declared record or to the retired-identifier ledger, which is the one
         place a withdrawn identifier keeps its meaning.
 
-        The two entry-point documents outside `spec/` carry citations too, and
+        The two entry-point documents outside `docs/arch-v1/` carry citations too, and
         a dead identifier costs the same there: `AGENTS.md` is what an agent
         reads first, so a rename that misses it sends every reader to a rule
         that is not written down.
@@ -1385,7 +1388,7 @@ class RegistryCheckTests(unittest.TestCase):
                 continue
             for number in referenced:
                 if number not in available:
-                    offenders.append(f"{record.where}: ADR-{number} has no file in spec/decisions")
+                    offenders.append(f"{record.where}: ADR-{number} has no file in docs/arch-v1/decisions")
         self.assertEqual(offenders, [])
 
 
@@ -1543,7 +1546,7 @@ class IndexSynchronizationTests(unittest.TestCase):
         self.assertEqual(
             decision_catalogue_offenders(),
             [],
-            "spec/decisions/README.md must link every decision record and "
+            "docs/arch-v1/decisions/README.md must link every decision record and "
             "nothing else, and one number must name exactly one record",
         )
 
@@ -1566,7 +1569,7 @@ class IndexSynchronizationTests(unittest.TestCase):
             if len(linked) > MAX_DECISION_LINKS_PER_DOCUMENT:
                 offenders.append(
                     f"{path.name}: links {len(linked)} decision records; "
-                    "cite by ID and leave the list to spec/decisions/README.md"
+                    "cite by ID and leave the list to docs/arch-v1/decisions/README.md"
                 )
         self.assertEqual(offenders, [])
 
@@ -1708,7 +1711,7 @@ class RlmGenerationCutoverContractTests(unittest.TestCase):
                 self.assertNotIn(duplicated_policy, rlm_entry)
 
     def test_provenance_keeps_rlm_mcp_internal_and_unica_public(self) -> None:
-        provenance = (REPO_ROOT / "spec/provenance/README.md").read_text(
+        provenance = (REPO_ROOT / "docs/arch-v1/provenance/README.md").read_text(
             encoding="utf-8"
         )
         normalized = " ".join(provenance.split())
@@ -1800,7 +1803,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
 
     def test_change_checklist_cites_preview_rule_without_copying_it(self) -> None:
         checklist = (
-            REPO_ROOT / "spec" / "architecture" / "change-checklist.md"
+            REPO_ROOT / "docs" / "arch-v1" / "architecture" / "change-checklist.md"
         ).read_text(encoding="utf-8")
         record = self.records.get("INV-MCP-PREVIEW-MUTATION-ONLY")
         self.assertIsNotNone(record, "missing INV-MCP-PREVIEW-MUTATION-ONLY")
@@ -1813,7 +1816,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
 
     def test_building_blocks_validate_before_deriving_invocation_mode(self) -> None:
         building_blocks = (
-            REPO_ROOT / "spec" / "architecture" / "building-blocks.md"
+            REPO_ROOT / "docs" / "arch-v1" / "architecture" / "building-blocks.md"
         ).read_text(encoding="utf-8")
 
         self.assertIn(
@@ -1832,7 +1835,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
 
     def test_building_blocks_describe_the_typed_project_health_git_boundary(self) -> None:
         building_blocks = (
-            REPO_ROOT / "spec" / "architecture" / "building-blocks.md"
+            REPO_ROOT / "docs" / "arch-v1" / "architecture" / "building-blocks.md"
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("GitTrackingAdapter", building_blocks)
@@ -1847,7 +1850,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
         the reader a rule is written down somewhere when it is not.
         """
         checklist = (
-            REPO_ROOT / "spec" / "architecture" / "change-checklist.md"
+            REPO_ROOT / "docs" / "arch-v1" / "architecture" / "change-checklist.md"
         ).read_text(encoding="utf-8")
         cited = set(RECORD_CITATION.findall(checklist))
         declared = {record.id for record in all_records()}
@@ -1867,7 +1870,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
         ``providers`` before any network access.
         """
         checklist = (
-            REPO_ROOT / "spec" / "architecture" / "change-checklist.md"
+            REPO_ROOT / "docs" / "arch-v1" / "architecture" / "change-checklist.md"
         ).read_text(encoding="utf-8")
         checklist_words = " ".join(checklist.split())
 
@@ -1893,13 +1896,13 @@ class ReaderInvocationContractTests(unittest.TestCase):
         missing = [
             path.name
             for directory in ("architecture", "acceptance")
-            for path in sorted((REPO_ROOT / "spec" / directory).glob("*.md"))
+            for path in sorted((REPO_ROOT / "docs" / "arch-v1" / directory).glob("*.md"))
             if path.name not in index_text
         ]
         self.assertEqual(
             missing,
             [],
-            "spec/README.md must list every architecture and acceptance document",
+            "docs/arch-v1/README.md must list every architecture and acceptance document",
         )
 
     def test_the_retired_arc42_tree_is_not_recreated(self) -> None:
@@ -1911,7 +1914,7 @@ class ReaderInvocationContractTests(unittest.TestCase):
         """
         self.assertFalse(
             (ARCHITECTURE_DIR / "arc42").exists(),
-            "architecture documents live directly under spec/architecture/",
+            "architecture documents live directly under docs/arch-v1/architecture/",
         )
         numbered = [
             path.name
@@ -2099,7 +2102,7 @@ class RlmStandalonePackagingContractTests(unittest.TestCase):
     def test_accepted_decision_owns_the_multifile_runtime_choice(self) -> None:
         decision = (
             REPO_ROOT
-            / "spec"
+            / "docs" / "arch-v1"
             / "decisions"
             / "0061-rlm-mnogofaylovyy-runtime-iz-proveryaemogo-arhiva.md"
         ).read_text(encoding="utf-8")
@@ -2141,9 +2144,9 @@ class ActiveLayerTests(unittest.TestCase):
             REPO_ROOT / "docs" / "design" / "README.md",
             REPO_ROOT / "docs" / "plans" / "README.md",
         ]
-        for path in sorted((REPO_ROOT / "spec").rglob("*.md")):
+        for path in sorted((REPO_ROOT / "docs" / "arch-v1").rglob("*.md")):
             relative = path.relative_to(REPO_ROOT).as_posix()
-            if re.match(r"^spec/decisions/000[1-6]-", relative):
+            if re.match(r"^docs/arch-v1/decisions/000[1-6]-", relative):
                 continue
             paths.append(path)
         return paths

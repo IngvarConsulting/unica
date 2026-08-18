@@ -21,8 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DESIGN_DIR = REPO_ROOT / "docs" / "design"
 PLANS_DIR = REPO_ROOT / "docs" / "plans"
-DECISIONS_DIR = REPO_ROOT / "spec" / "decisions"
-SPEC_DIR = REPO_ROOT / "spec"
+DECISIONS_DIR = REPO_ROOT / "docs" / "arch-v1" / "decisions"
+SPEC_DIR = REPO_ROOT / "docs" / "arch-v1"
 
 DATE_FIELD = re.compile(r"^- Date: `(?P<date>\d{4}-\d{2}-\d{2})`$", re.MULTILINE)
 STATUS_FIELD = re.compile(
@@ -314,7 +314,7 @@ class NormativeBoundaryTests(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            "registry entries are declared in spec/, never in a design document",
+            "registry entries are declared in docs/arch-v1/, never in a design document",
         )
 
 
