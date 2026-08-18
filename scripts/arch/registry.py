@@ -32,9 +32,9 @@ KIND_BY_DIR = {"decisions": "decision", "invariants": "invariant", "contracts": 
 SYMBOL_PREFIX = {"decision": "DEC", "invariant": "INV", "contract": "CTR"}
 
 REQUIRED_PROPS = {
-    "decision": ("id", "status"),
+    "decision": ("id", "status", "realized"),
     "invariant": ("id", "status", "decision", "check"),
-    "contract": ("id", "status", "version", "decision"),
+    "contract": ("id", "status", "version", "decision", "producer", "check"),
 }
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.S)
@@ -135,13 +135,19 @@ def render_index(found: list[Record]) -> str:
         "",
         "# Индекс реестра",
         "",
-        "| Символ | Вид | Статус | Суть | Файл |",
-        "| --- | --- | --- | --- | --- |",
+        "| Символ | Вид | Статус | Построено | Суть | Файл |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for record in found:
+        # Построено отвечает только за решения: у инварианта и контракта
+        # свидетельство обязательно по схеме, а у решения — необязательно, и
+        # именно там читатель не отличает принятое от сделанного.
+        built = ""
+        if record.kind == "decision":
+            built = "нет" if record.props.get("realized") in (None, "") else "да"
         lines.append(
             f"| `{record.id}` | {kind_ru[record.kind]} | {record.props.get('status', '')} "
-            f"| {record.summary} | [{record.relative}]({record.relative}) |"
+            f"| {built} | {record.summary} | [{record.relative}]({record.relative}) |"
         )
     return "\n".join(lines) + "\n"
 

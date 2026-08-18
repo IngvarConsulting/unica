@@ -5,9 +5,9 @@ the system behaves belongs in a record; a rule about how records are written
 belongs here.
 
 Four properties keep the registry usable as it grows: a symbol and its path
-derive from each other, every reference resolves, every invariant names a check
-that exists, and a decision stays short enough to be replaced rather than
-amended.
+derive from each other, every reference resolves, every rule that carries a
+check names one that exists, and a decision stays short enough to be replaced
+rather than amended.
 """
 
 from __future__ import annotations
@@ -112,19 +112,65 @@ class ReferenceTests(unittest.TestCase):
                     offenders.append(f"{older} is superseded but not marked so")
         self.assertEqual(offenders, [])
 
-    def test_every_invariant_names_a_check_that_exists(self) -> None:
-        """An invariant whose check does not exist is a wish, not an invariant."""
+    def test_every_rule_names_a_check_that_exists(self) -> None:
+        """A rule whose check does not exist is a wish, not a rule.
+
+        Both kinds that carry `check` answer for it. A contract names a consumer
+        and a version: a promise to a named consumer that nothing verifies is an
+        intention, and a version nothing measures drifts away from the form it
+        claims to number. Decisions carry no check and are skipped.
+        """
         offenders = []
         for record in REGISTRY.records():
-            if record.kind != "invariant":
+            if record.kind == "decision":
                 continue
             check = record.props.get("check") or ""
+            if not check:
+                offenders.append(f"{record.relative}: no check named")
+                continue
             path, _, name = check.partition("::")
             target = REPO_ROOT / path
             if not target.is_file():
                 offenders.append(f"{record.relative}: check file {path} is missing")
             elif name and name not in target.read_text(encoding="utf-8"):
                 offenders.append(f"{record.relative}: {path} does not define {name}")
+        self.assertEqual(offenders, [])
+
+    def test_a_realized_decision_names_evidence_that_exists(self) -> None:
+        """`realized` separates what was decided from what was built.
+
+        A decision states a choice; `status: active` says the choice holds, not
+        that the tree matches it. Without a second axis the two are one word,
+        and a reader takes an unbuilt decision for a description of the system.
+        Evidence is named the way a check is named, so it is verified the same
+        way; `null` is the honest value while the work is ahead.
+        """
+        offenders = []
+        for record in REGISTRY.records():
+            if record.kind != "decision":
+                continue
+            evidence = record.props.get("realized")
+            if evidence in (None, ""):
+                continue
+            path, _, name = str(evidence).partition("::")
+            target = REPO_ROOT / path
+            if not target.is_file():
+                offenders.append(f"{record.relative}: evidence file {path} is missing")
+            elif name and name not in target.read_text(encoding="utf-8"):
+                offenders.append(f"{record.relative}: {path} does not define {name}")
+        self.assertEqual(offenders, [])
+
+    def test_every_contract_names_a_producer_that_exists(self) -> None:
+        """A contract whose producer moved is lying about where the form is made."""
+        offenders = []
+        for record in REGISTRY.records():
+            if record.kind != "contract":
+                continue
+            producer = record.props.get("producer") or ""
+            if not producer:
+                offenders.append(f"{record.relative}: no producer named")
+            elif not (REPO_ROOT / producer).exists():
+                offenders.append(f"{record.relative}: producer {producer} is missing")
         self.assertEqual(offenders, [])
 
 

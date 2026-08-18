@@ -2,7 +2,7 @@
 id: CTR.WIRE.TOOL-SURFACE
 status: active
 version: 1
-decision: DEC.2026-08-18.EIGHT-ENTRIES
+decision: DEC.2026-08-19.SURFACE-BY-QUESTION
 producer: scripts/ci/generate-tool-surface.py
 consumers: [review, docs]
 check: tests/ci/test_tool_surface_ledger.py

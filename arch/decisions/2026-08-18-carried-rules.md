@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.CARRIED-RULES
 status: active
+realized: tests/arch/test_registry.py::test_every_rule_names_a_check_that_exists
 supersedes: []
 superseded-by: null
 establishes: []

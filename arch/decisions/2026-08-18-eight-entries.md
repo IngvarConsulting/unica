@@ -1,8 +1,9 @@
 ---
 id: DEC.2026-08-18.EIGHT-ENTRIES
-status: active
+status: superseded
+realized: null
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-08-19.SURFACE-BY-QUESTION
 establishes: [INV.SURFACE.NAMESPACE]
 design: docs/design/2026-08-18-ideal-mcp-surface-design.md
 ---

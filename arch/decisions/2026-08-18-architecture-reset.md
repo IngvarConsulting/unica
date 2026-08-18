@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.ARCHITECTURE-RESET
 status: active
+realized: tests/arch/test_registry.py::test_archived_records_are_not_edited_after_the_freeze
 supersedes: []
 superseded-by: null
 establishes: [INV.DOC.ARCHIVE-FROZEN]

@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.NO-JOB-REGISTRY
 status: active
+realized: null
 supersedes: []
 superseded-by: null
 establishes: []

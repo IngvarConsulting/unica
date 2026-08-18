@@ -1,7 +1,7 @@
 ---
 id: INV.SURFACE.PUBLISHED-ARGS-ARE-READ
 status: active
-decision: DEC.2026-08-18.EIGHT-ENTRIES
+decision: DEC.2026-08-19.SURFACE-BY-QUESTION
 check: crates/unica-coder/src/application/tool_contracts.rs::narrowed_tools_publish_a_working_surface_not_the_legacy_union
 scope: [wire]
 ---

@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.NODE-OR-DATA
 status: active
+realized: null
 supersedes: []
 superseded-by: null
 establishes: []
