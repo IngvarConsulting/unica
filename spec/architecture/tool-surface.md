@@ -856,6 +856,7 @@ Create one metadata object from a typed internal template and optionally configu
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it selects the workspace and never narrows the logical address. |
 | `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
 | `kind` | string | да | Supported metadata object kind for the minimal template. |
 | `name` | string | да | Metadata object name using a valid 1C identifier. |
@@ -880,6 +881,7 @@ Apply ordered typed metadata edit operations atomically.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it selects the workspace and never narrows the logical address. |
 | `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
 | `metadataPath` | string | да | Logical metadata path of the object to edit. |
 | `operations` | array | да | Ordered typed edit operations applied as one atomic change. |
@@ -902,6 +904,7 @@ Inspect one metadata object with validation, proven subsystem memberships, and s
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it selects the workspace and never narrows the logical address. |
 | `limit` | integer | нет | Maximum `predefinedItems` returned (1 through 50). Usage lists are read from the source tree, so they are exact and complete and the limit does not apply to them. |
 | `metadataPath` | string | да | Logical metadata path of the object to inspect. |
 | `sections` | array | нет | Extra sections to compute, all read from the source tree: `roles`, `subscriptions` and `functionalOptions` land in `usage`, `predefinedItems` in its own field. Omit or pass [] to inspect the object alone. |
@@ -928,6 +931,7 @@ Remove one metadata object through a logical guarded target.
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
 | `confirm` | boolean | нет | Explicitly confirm a forced metadata object removal. |
+| `cwd` | string | нет | Absolute path to the workspace root holding v8project.yaml; it selects the workspace and never narrows the logical address. |
 | `dryRun` | boolean | нет | Preview the mutation without writing workspace files. |
 | `force` | boolean | нет | Allow removal despite discovered references when confirmed. |
 | `metadataPath` | string | да | Logical metadata path of the object to remove. |

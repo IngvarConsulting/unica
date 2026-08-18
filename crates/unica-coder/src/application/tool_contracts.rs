@@ -4137,22 +4137,22 @@ mod tests {
         let cases = [
             (
                 MetadataOperation::Info,
-                vec!["limit", "metadataPath", "sections", "sourceSet"],
+                vec!["cwd", "limit", "metadataPath", "sections", "sourceSet"],
                 json!(["sourceSet", "metadataPath"]),
             ),
             (
                 MetadataOperation::Add,
-                vec!["dryRun", "kind", "name", "operations", "sourceSet"],
+                vec!["cwd", "dryRun", "kind", "name", "operations", "sourceSet"],
                 json!(["sourceSet", "kind", "name"]),
             ),
             (
                 MetadataOperation::Edit,
-                vec!["dryRun", "metadataPath", "operations", "sourceSet"],
+                vec!["cwd", "dryRun", "metadataPath", "operations", "sourceSet"],
                 json!(["sourceSet", "metadataPath", "operations"]),
             ),
             (
                 MetadataOperation::Remove,
-                vec!["confirm", "dryRun", "force", "metadataPath", "sourceSet"],
+                vec!["confirm", "cwd", "dryRun", "force", "metadataPath", "sourceSet"],
                 json!(["sourceSet", "metadataPath"]),
             ),
         ];
@@ -7268,7 +7268,7 @@ mod tests {
             ),
             (
                 "unica.meta.info",
-                &["limit", "metadataPath", "sections", "sourceSet"],
+                &["cwd", "limit", "metadataPath", "sections", "sourceSet"],
                 // The metadata surface has no path aliases and validates its
                 // own closed shape, so `allowed_args` stays empty by design.
                 &[],

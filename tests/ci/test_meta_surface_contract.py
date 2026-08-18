@@ -671,11 +671,14 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "Edit": '["sourceSet", "metadataPath", "operations"]',
             "Remove": '["sourceSet", "metadataPath"]',
         }
+        # `cwd` адресует рабочее пространство и обязателен на всей поверхности:
+        # упакованный сервер стартует в каталоге плагина (ADR-0006 §4), а
+        # наследовать рабочий каталог вызова запрещено (ADR-0053 §2).
         expected_properties = {
-            "Info": {"sourceSet", "metadataPath", "sections", "limit"},
-            "Add": {"sourceSet", "kind", "name", "operations", "dryRun"},
-            "Edit": {"sourceSet", "metadataPath", "operations", "dryRun"},
-            "Remove": {"sourceSet", "metadataPath", "dryRun", "force", "confirm"},
+            "Info": {"cwd", "sourceSet", "metadataPath", "sections", "limit"},
+            "Add": {"cwd", "sourceSet", "kind", "name", "operations", "dryRun"},
+            "Edit": {"cwd", "sourceSet", "metadataPath", "operations", "dryRun"},
+            "Remove": {"cwd", "sourceSet", "metadataPath", "dryRun", "force", "confirm"},
         }
 
         for operation, required in expected_required.items():
@@ -687,7 +690,8 @@ class MetaSurfaceContractTests(unittest.TestCase):
             following = [position for position in following if position >= 0]
             end = min(following, default=len(schema))
             arm = schema[start:end]
-            properties = {"sourceSet"}
+            # Общие для всех операций поля вставляются до match-выражения.
+            properties = {"cwd", "sourceSet"}
             properties.update(
                 re.findall(r'properties\.insert\(\s*"([^"]+)"', arm)
             )
