@@ -2,11 +2,12 @@
 id: INV.DOC.ARCHIVE-FROZEN
 status: active
 decision: DEC.2026-08-18.ARCHITECTURE-RESET
-check: tests/arch/test_registry.py::test_the_archive_is_not_edited_by_hand
+check: tests/arch/test_registry.py::test_archived_records_are_not_edited_after_the_freeze
 scope: [docs]
 ---
 
-# Архив v1 не изменяется после заморозки
-`docs/arch-v1/**` не изменяется после заморозки. Запись архива отвечает на
-вопрос, что было решено на её дату, и правка задним числом уничтожает
-единственное, ради чего архив сохранён.
+# Замороженный слой не читается и не правится
+
+`docs/arch-v1/**` не изменяется и не служит источником действующего правила. Его
+собственный реестр говорит, что из него умерло, а что заменено — этого
+достаточно; заходить внутрь за ответом о текущем поведении не нужно.

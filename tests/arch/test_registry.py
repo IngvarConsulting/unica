@@ -153,21 +153,27 @@ class LayerBoundaryTests(unittest.TestCase):
                     offenders.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {marker!r}")
         self.assertEqual(offenders, [])
 
-    def test_the_archive_is_not_edited_by_hand(self) -> None:
-        """`docs/arch-v1` is history: it answers what was decided on its date."""
-        result = subprocess.run(
-            ["git", "log", "--format=%H %s", "--", "docs/arch-v1"],
+    def test_archived_records_are_not_edited_after_the_freeze(self) -> None:
+        """The freeze protects the records, not the note about the freeze.
+
+        `FATE.md` says what died and what was re-decided; it is metadata about
+        the archive rather than a record inside it, so it stays writable. Every
+        other path under the tree answers what was decided on its date, and
+        editing that after the fact destroys the only reason to keep it.
+        """
+        freeze = subprocess.run(
+            ["git", "log", "--format=%H", "--grep", "move spec/ to docs/arch-v1",
+             "--", "docs/arch-v1"],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-        )
-        commits = [line for line in result.stdout.splitlines() if line.strip()]
-        self.assertTrue(commits, "the archive must be tracked")
-        # The move itself is the newest commit that may touch the tree.
-        newest = commits[0]
-        self.assertIn(
-            "move spec/ to docs/arch-v1",
-            newest,
-            f"the archive changed after it was frozen: {newest}",
-        )
+        ).stdout.split()
+        self.assertTrue(freeze, "the freeze commit must be findable")
+        changed = subprocess.run(
+            ["git", "log", "--format=", "--name-only", f"{freeze[0]}..HEAD",
+             "--", "docs/arch-v1"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        ).stdout.split()
+        offenders = sorted({path for path in changed if path != "docs/arch-v1/FATE.md"})
+        self.assertEqual(offenders, [], "archived records changed after the freeze")
 
 
 if __name__ == "__main__":
