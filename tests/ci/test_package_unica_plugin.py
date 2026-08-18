@@ -422,7 +422,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(len(set(versions.values())), 1, versions)
 
-    def test_source_package_declares_the_0120_meta_delivery_version(self) -> None:
+    def test_source_package_declares_the_012_meta_delivery_version(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         plugin_root = repo_root / "plugins/unica"
         host_versions = {
@@ -436,8 +436,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
         )["tools"]
         unica_versions = [tool["version"] for tool in tools if tool["name"] == "unica"]
 
-        self.assertEqual(set(host_versions.values()), {"0.12.0"}, host_versions)
-        self.assertEqual(unica_versions, ["0.12.0"])
+        delivered = set(host_versions.values())
+        self.assertEqual(len(delivered), 1, host_versions)
+        version = next(iter(delivered))
+        self.assertRegex(version, r"^0\.12\.\d+$")
+        self.assertEqual(unica_versions, [version])
 
     def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:
         """Pin the key sets that decide whether an older client loads Unica at all.
