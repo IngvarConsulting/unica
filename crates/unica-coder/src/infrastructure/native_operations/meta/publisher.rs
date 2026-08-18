@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 use super::super::common::guard_resolved_platform_xml_target_dependencies;
 use super::super::compile_transaction::{
     snapshot_directory_membership, CommitFailure, CommitFailureKind, CompileTransaction,
-    DirectoryMembershipSelector, DirectoryMembershipSnapshot, RegistrationStatus,
+    DirectoryMembershipSelector, DirectoryMembershipSnapshot, PlannedChangeKind,
+    RegistrationStatus,
 };
 use super::edit::{
     build_typed_operation_post_image, resolve_typed_metadata_object, ResolvedMetadataObject,
@@ -366,10 +367,12 @@ impl PreparedMetaEdit {
             registrar_evidence: Default::default(),
             subsystem_evidence: Default::default(),
         };
+        let changed_paths = transaction_changed_paths(&transaction, &context.workspace_root);
         Ok(Box::new(Self {
             preview: MetaMutationData {
                 metadata_path: target.clone(),
                 changed: changed || !child_resources.publication_plan.is_empty(),
+                changed_paths,
                 publication_plan: changed
                     .then_some(MetaPublicationPlanEntry {
                         action: MetaPublicationAction::Update,
@@ -962,11 +965,13 @@ pub(crate) fn prepare_meta_add(
         metadata_path: Some(target.clone()),
     });
 
+    let changed_paths = transaction_changed_paths(&transaction, &context.workspace_root);
     Ok(Box::new(PreparedMetaAdd {
         preview: MetaMutationData {
             metadata_path: target.clone(),
             changed: true,
             publication_plan,
+            changed_paths,
             effects: mutation_effects,
             validation: MetaValidationData {
                 status: MetaValidationStatus::Passed,
@@ -1161,6 +1166,35 @@ fn already_exists(target: &crate::domain::source_target::MetadataAddress) -> Met
     )
     .with_metadata_path(target.clone())
     .into()
+}
+
+/// ADR-0073: структурная квитанция мутации — полный план транзакции,
+/// приведённый к путям рабочего пространства (разделитель — `/`).
+pub(super) fn transaction_changed_paths(
+    transaction: &CompileTransaction,
+    workspace_root: &std::path::Path,
+) -> Vec<crate::domain::metadata::MetaChangedPath> {
+    let canonical_root = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    transaction
+        .planned_changes()
+        .into_iter()
+        .map(|(kind, path)| crate::domain::metadata::MetaChangedPath {
+            action: match kind {
+                PlannedChangeKind::Create => MetaPublicationAction::Create,
+                PlannedChangeKind::Update => MetaPublicationAction::Update,
+                PlannedChangeKind::Remove => MetaPublicationAction::Remove,
+            },
+            path: path
+                .strip_prefix(&canonical_root)
+                .or_else(|_| path.strip_prefix(workspace_root))
+                .unwrap_or(&path)
+                .display()
+                .to_string()
+                .replace('\\', "/"),
+        })
+        .collect()
 }
 
 fn provider_failure(

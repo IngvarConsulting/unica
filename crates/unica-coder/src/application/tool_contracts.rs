@@ -4919,6 +4919,64 @@ mod tests {
     /// предпросмотра, и она выводится из реестра, а не из растущего набора
     /// исключений по имени операции. Читатель стратегии не имеет — предпросмотр
     /// ему не адресован (ADR-0044).
+    /// ADR-0073 §5: переходный список замкнут и только сокращается. Паритет
+    /// выживших закреплён их собственными тестами: meta.edit —
+    /// `typed_edit_preview_bytes_equal_the_applied_post_image` и квитанции,
+    /// form.edit — `form_edit_preview_apply_and_no_op_validate_the_projected_form`,
+    /// code.patch — `code_patch_*_preview_apply_*`, cf.init —
+    /// `cf_init_preview_shares_the_apply_data_shape_and_writes_nothing`.
+    #[test]
+    fn preview_gated_operations_stay_a_closed_shrinking_list() {
+        use crate::application::PREVIEW_GATED_OPERATIONS;
+
+        // Точный утверждённый состав: список только сокращается, поэтому
+        // добавление операции обязано провалить ревью, а не пройти проверку
+        // «список отсортирован и все имена настоящие».
+        assert_eq!(
+            PREVIEW_GATED_OPERATIONS,
+            [
+                "cf-edit",
+                "cfe-borrow",
+                "cfe-init",
+                "cfe-patch-method",
+                "dcs-edit",
+                "epf-init",
+                "erf-init",
+                "form-add",
+                "form-remove",
+                "interface-edit",
+                "subsystem-edit",
+                "support-edit",
+            ],
+            "ADR-0073 §5: the transitional list is approved item by item"
+        );
+        let mut sorted = PREVIEW_GATED_OPERATIONS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted, PREVIEW_GATED_OPERATIONS,
+            "the transitional list stays sorted and unique"
+        );
+        assert!(
+            !PREVIEW_GATED_OPERATIONS.contains(&"cf-init"),
+            "cf.init previews honestly (ADR-0073)"
+        );
+        let mutating_operations = tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+            .filter_map(|tool| match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => Some(operation),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        for operation in PREVIEW_GATED_OPERATIONS {
+            assert!(
+                mutating_operations.contains(operation),
+                "{operation}: the transitional list must not hold ghosts"
+            );
+        }
+    }
+
     #[test]
     fn every_mutating_tool_declares_a_preview_strategy() {
         use crate::application::{preview_strategy, PreviewStrategy};

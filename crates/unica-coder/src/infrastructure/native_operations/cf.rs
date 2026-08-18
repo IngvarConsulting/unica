@@ -4353,6 +4353,97 @@ pub(crate) struct CfInitPlannedXml {
     pub(crate) client_application_interface: PathBuf,
 }
 
+/// ADR-0073: проверить спланированный образ `cf.init`, ничего не публикуя.
+///
+/// Полная проверка конфигурации читает соседей — язык, начальную страницу,
+/// формы, — поэтому образ собирается целиком: существующее содержимое цели
+/// копируется в изолированный каталог, поверх ложатся плановые байты, и
+/// проверка видит ровно то дерево, которое увидела бы после публикации.
+fn validate_cf_init_post_image(
+    output_dir: &Path,
+    planned: &[(&PathBuf, &String)],
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    struct StagedImage(PathBuf);
+
+    impl Drop for StagedImage {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let staged = StagedImage(std::env::temp_dir().join(format!(
+        "unica-cf-init-preview-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    )));
+    fs::create_dir_all(&staged.0)
+        .map_err(|error| format!("cannot stage cf.init preview image: {error}"))?;
+    if output_dir.is_dir() {
+        copy_directory_tree(output_dir, &staged.0)?;
+    }
+    let mut staged_config = None;
+    for (path, contents) in planned {
+        let relative = path
+            .strip_prefix(output_dir)
+            .map_err(|_| "cf.init planned file escapes its output directory".to_string())?;
+        let target = staged.0.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot stage cf.init preview image: {error}"))?;
+        }
+        fs::write(&target, utf8_bom_bytes(contents))
+            .map_err(|error| format!("cannot stage cf.init preview image: {error}"))?;
+        if staged_config.is_none() {
+            staged_config = Some(target);
+        }
+    }
+    let staged_config =
+        staged_config.ok_or_else(|| "cf.init preview image has no configuration".to_string())?;
+    let validate_args = Map::from_iter([(
+        "ConfigPath".to_string(),
+        Value::String(staged_config.display().to_string()),
+    )]);
+    let outcome = validate_cf(&validate_args, context);
+    if outcome.ok {
+        return Ok(());
+    }
+    let detail = if outcome.errors.is_empty() {
+        outcome
+            .stdout
+            .unwrap_or_else(|| "validation returned no diagnostics".to_string())
+    } else {
+        outcome.errors.join("; ")
+    };
+    Err(format!("cf validation failed: {detail}"))
+}
+
+fn copy_directory_tree(source: &Path, target: &Path) -> Result<(), String> {
+    let entries = fs::read_dir(source)
+        .map_err(|error| format!("cannot stage cf.init preview image: {error}"))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("cannot stage cf.init preview image: {error}"))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source_path)
+            .map_err(|error| format!("cannot stage cf.init preview image: {error}"))?;
+        if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata)
+        {
+            continue;
+        }
+        if metadata.is_dir() {
+            fs::create_dir_all(&target_path)
+                .map_err(|error| format!("cannot stage cf.init preview image: {error}"))?;
+            copy_directory_tree(&source_path, &target_path)?;
+        } else if metadata.is_file() {
+            fs::copy(&source_path, &target_path)
+                .map_err(|error| format!("cannot stage cf.init preview image: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn cf_init_planned_xml(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -4394,6 +4485,23 @@ pub(crate) fn create_configuration_scaffold(
 pub(crate) fn create_configuration_scaffold_with_data(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
+) -> CfInitExecution {
+    cf_init_execute(args, context, false)
+}
+
+/// ADR-0073: предпросмотр строит тот же план, что применение — та же
+/// валидация, те же гварды, те же байты и пути, — но транзакция не коммитится.
+pub(crate) fn preview_configuration_scaffold_with_data(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> CfInitExecution {
+    cf_init_execute(args, context, true)
+}
+
+fn cf_init_execute(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    preview: bool,
 ) -> CfInitExecution {
     let name = string_arg(args, &["name", "Name"]).unwrap_or("");
     if name.is_empty() {
@@ -4609,6 +4717,25 @@ pub(crate) fn create_configuration_scaffold_with_data(
             "ConfigPath".to_string(),
             Value::String(config.display().to_string()),
         )]);
+        if preview {
+            // ADR-0073 §1: предпросмотр обязан выполнить ту же предметную
+            // валидацию, что применение. Create-only конфликты транзакция уже
+            // отвергла при планировании; здесь добавляются те же семантические
+            // проверки плановых байтов и полная проверка пост-образа, который
+            // материализуется в изолированном временном каталоге. Рабочее
+            // пространство при этом не трогается.
+            transaction.semantic_preflight()?;
+            validate_cf_init_post_image(
+                &out_dir,
+                &[
+                    (&config, &config_xml),
+                    (&language, &language_xml),
+                    (&cai, &cai_xml),
+                ],
+                context,
+            )?;
+            return Ok(Vec::new());
+        }
         let report = transaction.commit_with_post_validation(|| {
             let outcome = validate_cf(&validate_args, context);
             if outcome.ok {
@@ -4630,15 +4757,25 @@ pub(crate) fn create_configuration_scaffold_with_data(
         Ok(warnings) => CfInitExecution {
             outcome: AdapterOutcome {
                 ok: true,
-                summary: format!(
-                    "unica.cf.init created configuration {name} in {}",
-                    out_dir.display()
-                ),
-                changes: vec![
-                    format!("created {}", config.display()),
-                    format!("created {}", language.display()),
-                    format!("created {}", cai.display()),
-                ],
+                summary: if preview {
+                    format!(
+                        "dry run: unica.cf.init would create configuration {name} in {}",
+                        out_dir.display()
+                    )
+                } else {
+                    format!(
+                        "unica.cf.init created configuration {name} in {}",
+                        out_dir.display()
+                    )
+                },
+                changes: {
+                    let verb = if preview { "would create" } else { "created" };
+                    vec![
+                        format!("{verb} {}", config.display()),
+                        format!("{verb} {}", language.display()),
+                        format!("{verb} {}", cai.display()),
+                    ]
+                },
                 warnings,
                 errors: Vec::new(),
                 artifacts: vec![
@@ -4653,7 +4790,7 @@ pub(crate) fn create_configuration_scaffold_with_data(
             data: Some(CfInitData {
                 name: name.to_string(),
                 root: out_dir.display().to_string(),
-                mutation: MutationData::new(true)
+                mutation: MutationData::new(!preview)
                     .created(&config)
                     .created(&language)
                     .created(&cai),
@@ -4720,6 +4857,42 @@ mod cf_init_transaction_tests {
         ] {
             assert!(!root.join(relative).exists(), "unexpected {relative}");
         }
+    }
+
+    /// ADR-0073: предпросмотр строит тот же план и ту же форму данных, что
+    /// применение, и не пишет ни байта.
+    #[test]
+    fn cf_init_preview_shares_the_apply_data_shape_and_writes_nothing() {
+        let (root, context) = init_test_context("preview-parity");
+        let args = Map::from_iter([
+            (
+                "Name".to_string(),
+                Value::String("PreviewParity".to_string()),
+            ),
+            ("OutputDir".to_string(), Value::String("src".to_string())),
+        ]);
+
+        let preview = preview_configuration_scaffold_with_data(&args, &context);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome);
+        let preview_data = preview.data.expect("preview data");
+        assert!(!preview_data.mutation.applied);
+        assert_eq!(preview_data.mutation.created.len(), 3);
+        assert!(!root.join("src/Configuration.xml").exists());
+        assert!(preview
+            .outcome
+            .changes
+            .iter()
+            .all(|line| line.starts_with("would create ")));
+
+        let applied = create_configuration_scaffold_with_data(&args, &context);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome);
+        let applied_data = applied.data.expect("apply data");
+        assert!(applied_data.mutation.applied);
+        assert_eq!(applied_data.name, preview_data.name);
+        assert_eq!(applied_data.root, preview_data.root);
+        assert_eq!(applied_data.mutation.created, preview_data.mutation.created);
+        assert!(root.join("src/Configuration.xml").exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -4894,6 +5067,81 @@ mod cf_init_transaction_tests {
             .unwrap()
             .contains(r#"version="2.21""#));
         assert!(!root.join("src/nested").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// ADR-0073 §1: create-only конфликт виден предпросмотру так же, как
+    /// применению, для каждого планового артефакта по отдельности.
+    #[test]
+    fn cf_init_preview_and_apply_agree_on_each_pre_existing_artifact() {
+        for relative in [
+            "src/Configuration.xml",
+            "src/Languages/Русский.xml",
+            "src/Ext/ClientApplicationInterface.xml",
+        ] {
+            let (root, context) = init_test_context("preview-create-conflict");
+            let occupied = root.join(relative);
+            fs::create_dir_all(occupied.parent().unwrap()).unwrap();
+            fs::write(&occupied, b"occupied").unwrap();
+            let args = init_args("Demo", None);
+
+            let preview = preview_configuration_scaffold_with_data(&args, &context);
+            let applied = create_configuration_scaffold(&args, &context);
+
+            assert_eq!(
+                preview.outcome.ok, applied.ok,
+                "{relative}: preview and apply must agree; preview={:?} apply={applied:?}",
+                preview.outcome
+            );
+            assert!(!preview.outcome.ok, "{relative}: {:?}", preview.outcome);
+            assert_eq!(
+                fs::read(&occupied).unwrap(),
+                b"occupied",
+                "{relative}: neither path may clobber the occupied target"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    /// ADR-0073 §1: предпросмотр выполняет ту же предметную валидацию, что и
+    /// применение. Имя, которое применение отвергает пост-валидацией, обязано
+    /// быть отвергнуто и предпросмотром — иначе безопасный вызов по умолчанию
+    /// обещает то, чего применение не сделает.
+    #[test]
+    fn cf_init_preview_rejects_what_apply_rejects_and_writes_nothing() {
+        let (root, context) = init_test_context("preview-validation-parity");
+        let args = init_args("Invalid Name", None);
+
+        let preview = preview_configuration_scaffold_with_data(&args, &context);
+
+        assert!(!preview.outcome.ok, "{:?}", preview.outcome);
+        assert!(
+            preview
+                .outcome
+                .errors
+                .join("\n")
+                .contains("not a valid 1C identifier"),
+            "{:?}",
+            preview.outcome
+        );
+        assert!(preview.outcome.changes.is_empty(), "{:?}", preview.outcome);
+        assert_scaffold_absent(&root);
+        assert!(!root.join("src").exists(), "{:?}", preview.outcome);
+
+        let applied = create_configuration_scaffold(&args, &context);
+        assert!(!applied.ok, "{applied:?}");
+        assert_eq!(
+            preview
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("not a valid 1C identifier")),
+            applied
+                .errors
+                .iter()
+                .any(|error| error.contains("not a valid 1C identifier")),
+            "preview and apply must agree on the same input"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

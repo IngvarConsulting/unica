@@ -1709,6 +1709,98 @@ mod tests {
         }
     }
 
+    /// ADR-0073 / #534: применённая квитанция называет затронутые файлы, а
+    /// предпросмотр несёт те же пути как план — сверка без обхода каталога.
+    /// Полнота проверяется по каждому каналу: `changes`, `artifacts` и
+    /// типизированный `changedPaths` обязаны нести весь набор путей и в
+    /// предпросмотре, и в применении.
+    #[test]
+    fn typed_add_receipt_names_created_files_and_preview_plans_them() {
+        const EXPECTED_PATHS: [&str; 3] = [
+            "CommonModules/ReceiptModule.xml",
+            "CommonModules/ReceiptModule/Ext/Module.bsl",
+            "Configuration.xml",
+        ];
+
+        let fixture = Fixture::new("receipt-paths");
+        let application = UnicaApplication::with_ports(Arc::new(FixedWorkspaceApplicationPorts {
+            context: fixture.context.clone(),
+            inner: InfrastructureApplicationPorts::new(),
+        }));
+        let args = |dry_run: bool| {
+            Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                ("kind".to_string(), json!("CommonModule")),
+                ("name".to_string(), json!("ReceiptModule")),
+                ("dryRun".to_string(), json!(dry_run)),
+            ])
+        };
+        let assert_receipt_channels = |result: &crate::application::OperationResult,
+                                       label: &str| {
+            let changes = result.changes.join("\n");
+            let data = result.data.as_ref().expect("typed data");
+            let changed_paths = serde_json::to_string(&data["changedPaths"]).unwrap();
+            for expected in EXPECTED_PATHS {
+                assert!(
+                    changes.contains(expected),
+                    "{label}: changes must name {expected}: {changes}"
+                );
+                assert!(
+                    result
+                        .artifacts
+                        .iter()
+                        .any(|artifact| artifact.contains(expected)),
+                    "{label}: artifacts must name {expected}: {:?}",
+                    result.artifacts
+                );
+                assert!(
+                    changed_paths.contains(expected),
+                    "{label}: changedPaths must name {expected}: {changed_paths}"
+                );
+            }
+            assert!(
+                !changes.contains(fixture.root.to_str().unwrap()),
+                "{label}: receipt paths must stay workspace-relative: {changes}"
+            );
+        };
+
+        let preview = application
+            .call_tool("unica.meta.add", &args(true))
+            .unwrap();
+        assert!(preview.ok, "{:?}", preview.errors);
+        assert_receipt_channels(&preview, "preview");
+        assert!(
+            preview
+                .changes
+                .iter()
+                .all(|line| line.starts_with("would ")),
+            "preview states a plan: {:?}",
+            preview.changes
+        );
+        assert!(!fixture
+            .root
+            .join("src/CommonModules/ReceiptModule.xml")
+            .exists());
+
+        let applied = application
+            .call_tool("unica.meta.add", &args(false))
+            .unwrap();
+        assert!(applied.ok, "{:?}", applied.errors);
+        assert_receipt_channels(&applied, "applied");
+        assert!(
+            applied
+                .changes
+                .iter()
+                .all(|line| !line.starts_with("would ")),
+            "applied receipt states facts: {:?}",
+            applied.changes
+        );
+        assert_eq!(
+            preview.artifacts, applied.artifacts,
+            "preview plans exactly the paths apply touches"
+        );
+    }
+
     #[test]
     fn typed_edit_preview_bytes_equal_the_applied_post_image() {
         let fixture = Fixture::new("preview-apply");

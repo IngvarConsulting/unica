@@ -231,14 +231,18 @@ fn invoke_mutation(
         let mut data = prepared.preview().clone();
         data.validation = validation;
         let projected_events = metadata_change_event(&data, true);
+        let (changes, artifacts) = mutation_receipt_lines(&data, false);
         let data = serde_json::to_value(data)
             .map_err(|error| format!("cannot serialize metadata mutation preview: {error}"))?;
-        return Ok(metadata_success(
+        let mut outcome = metadata_success(
             "metadata mutation preview prepared",
             data,
             Vec::new(),
             projected_events,
-        ));
+        );
+        outcome.adapter.changes = changes;
+        outcome.adapter.artifacts = artifacts;
+        return Ok(outcome);
     }
 
     if cancellation.is_cancelled() {
@@ -264,12 +268,40 @@ fn invoke_mutation(
     } else {
         report.events
     };
+    let (changes, artifacts) = mutation_receipt_lines(&data, true);
     let data = serde_json::to_value(data)
         .map_err(|error| format!("cannot serialize metadata mutation result: {error}"))?;
     let mut outcome = metadata_success("metadata mutation published", data, events, Vec::new());
     outcome.recorded_cache = report.recorded_cache;
     outcome.adapter.warnings = report.warnings;
+    outcome.adapter.changes = changes;
+    outcome.adapter.artifacts = artifacts;
     Ok(outcome)
+}
+
+/// ADR-0073: конверт квитанции строится из тех же затронутых путей, что несёт
+/// типизированный результат: применение — фактические строки, предпросмотр —
+/// план.
+fn mutation_receipt_lines(
+    data: &crate::domain::metadata::MetaMutationData,
+    applied: bool,
+) -> (Vec<String>, Vec<String>) {
+    use crate::domain::metadata::MetaPublicationAction;
+    let mut changes = Vec::new();
+    let mut artifacts = Vec::new();
+    for change in &data.changed_paths {
+        let verb = match (applied, change.action) {
+            (true, MetaPublicationAction::Create) => "created",
+            (true, MetaPublicationAction::Update) => "updated",
+            (true, MetaPublicationAction::Remove) => "removed",
+            (false, MetaPublicationAction::Create) => "would create",
+            (false, MetaPublicationAction::Update) => "would update",
+            (false, MetaPublicationAction::Remove) => "would remove",
+        };
+        changes.push(format!("{verb} {}", change.path));
+        artifacts.push(change.path.clone());
+    }
+    (changes, artifacts)
 }
 
 fn mutation_dry_run(request: &MetadataRequest) -> bool {
@@ -3051,6 +3083,7 @@ mod tests {
             .unwrap(),
             changed,
             publication_plan: Vec::new(),
+            changed_paths: Vec::new(),
             effects: Vec::new(),
             validation: passed_validation(),
             diagnostics: Vec::new(),
