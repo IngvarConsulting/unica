@@ -9,7 +9,7 @@
 use crate::application::{
     code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
     operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
-    strip_schema_descriptions, CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec,
+    strip_schema_descriptions, tool_behaviour, CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec,
     UnicaApplication,
 };
 use crate::domain::cancellation::CancellationToken;
@@ -21,7 +21,7 @@ use rmcp::model::{
     ErrorData, Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
     ProgressNotificationParam, ProtocolVersion, RequestMetaObject, ServerCapabilities, ServerInfo,
-    Tool,
+    Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -451,6 +451,19 @@ pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
             };
             let mut tool = Tool::new(spec.name, spec.description, schema);
             tool.description = None;
+            // #479 §1: the hints a client needs to decide whether a call is
+            // safe cost a few tokens each and are derived, not authored — see
+            // `application::tool_behaviour`. Unset hints stay absent rather
+            // than guessed: `idempotentHint` on a mutation is unknown here.
+            let behaviour = tool_behaviour(spec);
+            let mut annotations = ToolAnnotations::new()
+                .read_only(behaviour.read_only)
+                .destructive(behaviour.destructive)
+                .open_world(behaviour.open_world);
+            if behaviour.idempotent {
+                annotations = annotations.idempotent(true);
+            }
+            tool.annotations = Some(annotations);
             if let Some(mut schema) = structured_output_schema(spec) {
                 strip_schema_descriptions(&mut schema);
                 let output_schema = match schema {
@@ -1838,6 +1851,50 @@ mod tests {
             );
             client.shutdown().await;
         }
+    }
+
+    #[test]
+    /// The hints reach the wire, and the two that are unknown stay unset.
+    #[test]
+    fn tool_definitions_publish_derived_behavioural_annotations() {
+        let listed = tool_definitions(&crate::application::tools());
+        let annotations = |name: &str| {
+            listed
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} must be listed"))
+                .annotations
+                .clone()
+                .unwrap_or_else(|| panic!("{name} must carry annotations"))
+        };
+
+        let reader = annotations("unica.meta.info");
+        assert_eq!(reader.read_only_hint, Some(true));
+        assert_eq!(reader.idempotent_hint, Some(true));
+        assert_eq!(reader.destructive_hint, Some(false));
+        assert_eq!(reader.open_world_hint, Some(false));
+
+        let writer = annotations("unica.meta.edit");
+        assert_eq!(writer.read_only_hint, Some(false));
+        assert_eq!(writer.destructive_hint, Some(false));
+        assert_eq!(
+            writer.idempotent_hint, None,
+            "a mutation's idempotence is unknown here, and an unset hint beats a guess"
+        );
+
+        let destructive = annotations("unica.meta.remove");
+        assert_eq!(destructive.read_only_hint, Some(false));
+        assert_eq!(destructive.destructive_hint, Some(true));
+
+        let platform = annotations("unica.build.update");
+        assert_eq!(platform.open_world_hint, Some(true));
+        assert_eq!(platform.destructive_hint, Some(true));
+
+        assert_eq!(
+            annotations("unica.code.search").open_world_hint,
+            Some(false),
+            "reading the source tree does not reach outside the workspace"
+        );
     }
 
     #[test]

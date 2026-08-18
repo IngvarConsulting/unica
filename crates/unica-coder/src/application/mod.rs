@@ -666,6 +666,62 @@ mod meta_info_surface_tests;
 #[cfg(test)]
 mod meta_remove_surface_tests;
 
+/// The behavioural hints a client can reason about before calling a tool.
+///
+/// Transport-neutral by ADR-0002: the interfaces layer maps this onto whatever
+/// the SDK's annotation type happens to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolBehaviour {
+    pub read_only: bool,
+    pub idempotent: bool,
+    pub destructive: bool,
+    pub open_world: bool,
+}
+
+/// Tools that undo or overwrite state a caller already had.
+///
+/// Nothing in the registry carries destructiveness: `ToolExecution` separates
+/// reads from mutations and `DomainEventKind` says what changed, neither says
+/// whether the change takes something away. So this one hint is a named list,
+/// and every entry states what it removes:
+///
+/// - `meta.remove`, `form.remove` — delete the addressed object;
+/// - `runtime.job.cancel` — ends work already running;
+/// - `build.load`, `build.update` — write over an existing infobase.
+///
+/// Deliberately absent: the `*.init` scaffolds and every `*.edit` (additive or
+/// reversible), `code.patch` (a guarded edit), and `build.dump` (an export,
+/// which writes only into its own target).
+const DESTRUCTIVE_TOOLS: &[&str] = &[
+    "unica.meta.remove",
+    "unica.form.remove",
+    "unica.runtime.job.cancel",
+    "unica.build.load",
+    "unica.build.update",
+];
+
+/// Derive the hints from what the registry already knows.
+///
+/// #479 §1: `readOnlyHint` and `idempotentHint` come from `ToolExecution`, and
+/// `openWorldHint` from the handler that launches the 1C platform — both are
+/// structural facts, not spellings, so they cannot drift from behaviour the way
+/// a name-suffix rule would. Only `destructiveHint` needs a list.
+pub fn tool_behaviour(spec: &ToolSpec) -> ToolBehaviour {
+    let read_only = !spec.execution.is_mutating();
+    let open_world = matches!(
+        spec.handler,
+        ToolHandler::BuildRuntime { .. } | ToolHandler::RuntimeAdapter | ToolHandler::RuntimeJob { .. }
+    );
+    ToolBehaviour {
+        read_only,
+        // A read repeated changes nothing. For a mutation the registry does not
+        // know, and an unset hint is honest where a guess would not be.
+        idempotent: read_only,
+        destructive: !read_only && DESTRUCTIVE_TOOLS.contains(&spec.name),
+        open_world,
+    }
+}
+
 pub fn tools() -> Vec<ToolSpec> {
     let mut specs = configuration_tools();
     specs.extend([
