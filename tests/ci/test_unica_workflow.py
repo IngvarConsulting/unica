@@ -574,7 +574,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Consumer verification installs the candidate the way a consumer does,
         # on every supported host, before the catalog moves.
         self.assertEqual(text.count("plugin marketplace add $candidate --json"), 2)
-        self.assertIn("plugin marketplace upgrade unica", text)
+        # The upgrade gate seeds the previous stable and then moves that same
+        # install to the candidate. The candidate is a directory marketplace, so
+        # the move is a reinstall against the rewritten catalog: `plugin
+        # marketplace upgrade` fetches a Git remote and refuses one.
+        self.assertNotIn("plugin marketplace upgrade unica", text)
+        self.assertIn("plugin remove unica@unica --json", text)
+        self.assertEqual(text.count("plugin add unica@unica --json"), 3)
         self.assertIn("verify --plugin-root $pluginRoot", text)
 
 
