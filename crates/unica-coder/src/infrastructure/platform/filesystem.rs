@@ -156,19 +156,19 @@ pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Resu
 
 #[cfg(all(test, windows))]
 thread_local! {
-    static TEST_CASE_SENSITIVITY_QUERY_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_CASE_SENSITIVITY_QUERY_ERROR: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(all(test, windows))]
-fn with_case_sensitivity_query_failure<T>(action: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
+fn with_case_sensitivity_query_error<T>(error: u32, action: impl FnOnce() -> T) -> T {
+    struct Reset(Option<u32>);
     impl Drop for Reset {
         fn drop(&mut self) {
-            TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.set(self.0));
+            TEST_CASE_SENSITIVITY_QUERY_ERROR.with(|slot| slot.set(self.0));
         }
     }
 
-    let previous = TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.replace(true));
+    let previous = TEST_CASE_SENSITIVITY_QUERY_ERROR.with(|slot| slot.replace(Some(error)));
     let _reset = Reset(previous);
     action()
 }
@@ -1586,7 +1586,7 @@ fn nt_create_options_for_std_file(desired_access: u32, create_options: u32) -> i
 }
 
 #[cfg(windows)]
-fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
+fn query_parent_case_sensitive_flags(parent: &fs::File) -> io::Result<u32> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1598,15 +1598,9 @@ fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
         flags: u32,
     }
 
-    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-    const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
-
     #[cfg(test)]
-    if TEST_CASE_SENSITIVITY_QUERY_FAILURE.with(|slot| slot.get()) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "failed to query parent directory case-sensitive state",
-        ));
+    if let Some(error) = TEST_CASE_SENSITIVITY_QUERY_ERROR.with(|slot| slot.get()) {
+        return Err(io::Error::from_raw_os_error(error as i32));
     }
 
     let mut information = FileCaseSensitiveInformation { flags: 0 };
@@ -1621,28 +1615,68 @@ fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
         )
     } == 0
     {
-        let error = io::Error::last_os_error();
-        return Err(io::Error::new(
-            error.kind(),
-            format!("failed to query parent directory case-sensitive state: {error}"),
-        ));
+        return Err(io::Error::last_os_error());
     }
-    if information.flags & !FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
+    Ok(information.flags)
+}
+
+/// Reports whether Windows declined to serve the per-directory case-sensitivity query rather
+/// than answering it. Two distinct layers decline the same way: a file system without the
+/// feature, and the Win32 entry point on a build that does not carry the information class.
+/// Windows Server 2019 (build 17763) is the measured case of the second — `fsutil`, which asks
+/// through `NtQueryInformationFile`, answers for the same directory that
+/// `GetFileInformationByHandleEx` rejects with `ERROR_INVALID_PARAMETER`.
+#[cfg(windows)]
+fn case_sensitivity_query_is_unsupported(error: &io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{
+        ERROR_CALL_NOT_IMPLEMENTED, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
+        ERROR_NOT_SUPPORTED,
+    };
+
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_INVALID_FUNCTION as i32
+                || code == ERROR_INVALID_PARAMETER as i32
+                || code == ERROR_NOT_SUPPORTED as i32
+                || code == ERROR_CALL_NOT_IMPLEMENTED as i32
+    )
+}
+
+#[cfg(windows)]
+fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
+    const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+    const FILE_CS_FLAG_CASE_SENSITIVE_DIR: u32 = 1;
+
+    let flags = match query_parent_case_sensitive_flags(parent) {
+        Ok(flags) => flags,
+        // A declined query is an answer about the platform, not an unproven parent. Where the
+        // file system lacks the feature no directory can be case-sensitive and the insensitive
+        // match is exact; where only the Win32 entry point lacks the class, this open matches
+        // names the way every ordinary Win32 open on that host already does, including std::fs.
+        // Refusing instead would strand the whole surface on a host that is merely older.
+        // Every other failure still leaves the parent unproven and fails closed.
+        Err(error) if case_sensitivity_query_is_unsupported(&error) => {
+            return Ok(OBJ_CASE_INSENSITIVE)
+        }
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("failed to query parent directory case-sensitive state: {error}"),
+            ))
+        }
+    };
+    if flags & !FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "parent directory reported unsupported case-sensitive flags 0x{:08x}",
-                information.flags
-            ),
+            format!("parent directory reported unsupported case-sensitive flags 0x{flags:08x}"),
         ));
     }
-    Ok(
-        if information.flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
-            0
-        } else {
-            OBJ_CASE_INSENSITIVE
-        },
-    )
+    Ok(if flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
+        0
+    } else {
+        OBJ_CASE_INSENSITIVE
+    })
 }
 
 #[cfg(windows)]
@@ -3822,7 +3856,7 @@ mod tests {
             verify_owner_only_security_descriptor, verify_thread_token_fallback_error,
             verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
             verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
-            with_case_sensitivity_query_failure, EffectiveTokenSource, OpenedChildKind,
+            with_case_sensitivity_query_error, EffectiveTokenSource, OpenedChildKind,
             OwnerOnlySecurityAttributes, ProcessToken, WindowsImmutableAclProfile,
         };
         use std::ffi::OsString;
@@ -3830,8 +3864,9 @@ mod tests {
         use std::ptr;
         use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL, GENERIC_WRITE};
         use windows_sys::Win32::Foundation::{
-            ERROR_ACCESS_DENIED, ERROR_CANT_OPEN_ANONYMOUS, ERROR_FILE_NOT_FOUND,
-            ERROR_NO_MORE_FILES, ERROR_NO_TOKEN,
+            ERROR_ACCESS_DENIED, ERROR_CALL_NOT_IMPLEMENTED, ERROR_CANT_OPEN_ANONYMOUS,
+            ERROR_FILE_NOT_FOUND, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
+            ERROR_NOT_SUPPORTED, ERROR_NO_MORE_FILES, ERROR_NO_TOKEN,
         };
         use windows_sys::Win32::Security::Authorization::{
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -4286,7 +4321,7 @@ mod tests {
             fs::write(root.join("entry.txt"), b"entry").unwrap();
             let parent = open_directory_nofollow(&root).unwrap();
 
-            let error = with_case_sensitivity_query_failure(|| {
+            let error = with_case_sensitivity_query_error(ERROR_ACCESS_DENIED, || {
                 open_regular_child_nofollow(&parent, std::ffi::OsStr::new("entry.txt"))
             })
             .expect_err("an ambiguous parent case-sensitivity query must fail closed");
@@ -4294,6 +4329,37 @@ mod tests {
             assert!(error.to_string().contains("case-sensitive"), "{error}");
             drop(parent);
             fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn windows_relative_open_accepts_a_declined_case_sensitivity_query() {
+            use std::io::Read;
+
+            for reported in [
+                ERROR_INVALID_FUNCTION,
+                ERROR_INVALID_PARAMETER,
+                ERROR_NOT_SUPPORTED,
+                ERROR_CALL_NOT_IMPLEMENTED,
+            ] {
+                let root = unique_temp_root("unsupported-parent-case-sensitivity");
+                fs::create_dir_all(&root).unwrap();
+                fs::write(root.join("entry.txt"), b"entry").unwrap();
+                let parent = open_directory_nofollow(&root).unwrap();
+
+                let mut child = with_case_sensitivity_query_error(reported, || {
+                    open_regular_child_nofollow(&parent, std::ffi::OsStr::new("entry.txt"))
+                })
+                .unwrap_or_else(|error| {
+                    panic!("a declined case-sensitivity query must still open the child, but Windows error {reported} was reported as {error}")
+                });
+
+                let mut contents = Vec::new();
+                child.read_to_end(&mut contents).unwrap();
+                assert_eq!(contents, b"entry");
+                drop(child);
+                drop(parent);
+                fs::remove_dir_all(root).unwrap();
+            }
         }
 
         #[test]
