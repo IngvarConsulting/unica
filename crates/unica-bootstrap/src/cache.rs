@@ -60,9 +60,25 @@ impl RuntimeInstaller {
         manifest: &RuntimeManifest,
         host: HostTarget,
     ) -> Result<RuntimeInstallation> {
-        manifest.validate(&self.plugin_version)?;
         let name = crate::manifest::CORE_ARTIFACT;
-        let artifact = manifest.core()?;
+        let root = self.ensure_artifact(manifest, name, host)?;
+        let target = manifest.artifact_target(name, host)?;
+        Ok(installation(root, target))
+    }
+
+    /// Доставить артефакт по имени и вернуть корень установки.
+    ///
+    /// Ядро едет в стартовом бюджете хоста, движок — когда он понадобился, и
+    /// путь у них один: блокировка на артефакт, докачка, сумма, распаковка,
+    /// публикация.
+    pub fn ensure_artifact(
+        &self,
+        manifest: &RuntimeManifest,
+        name: &str,
+        host: HostTarget,
+    ) -> Result<PathBuf> {
+        manifest.validate(&self.plugin_version)?;
+        let artifact = manifest.artifact(name)?;
         let target = manifest.artifact_target(name, host)?;
         // Личность установки — артефакт, его версия и байты архива. Версия
         // плагина сюда не входит: выпуск, не менявший артефакт, не должен
@@ -88,8 +104,16 @@ impl RuntimeInstaller {
         })?;
 
         if ready_installation(&final_root, target, name, &artifact.version, host)? {
-            return Ok(installation(final_root, target));
+            return Ok(final_root);
         }
+
+        // Недокачка живёт по устойчивому пути рядом с блокировкой, а не внутри
+        // транзакции: транзакция умирает вместе с попыткой, а полученные байты
+        // должны её пережить и достаться следующей сессии.
+        let partial_root = self.cache_root.join(".partial").join(name);
+        fs::create_dir_all(&partial_root)?;
+        let partial = partial_root.join(format!("{}-{}.tar.gz", artifact.version, host.as_str()));
+        drop_other_partials(&self.cache_root, name, &partial);
 
         let transaction_root = self.cache_root.join(".transactions").join(format!(
             "{name}-{}-{}-{}",
@@ -97,43 +121,29 @@ impl RuntimeInstaller {
             host.as_str(),
             Uuid::new_v4()
         ));
-        let archive_path = transaction_root.join("runtime.tar.gz");
         let staged_root = transaction_root.join("runtime");
         fs::create_dir_all(&staged_root)?;
 
-        let result = (|| {
-            self.downloader.download(&target.asset.url, &archive_path)?;
-            let actual_archive_sha = sha256_file(&archive_path)?;
-            if actual_archive_sha != target.asset.sha256 {
-                return Err(BootstrapError::new(format!(
-                    "runtime archive sha256 {actual_archive_sha} != expected {}",
-                    target.asset.sha256
-                )));
+        let result = match self.downloader.download(&target.asset.url, &partial) {
+            // Оборванный перенос — единственный случай, когда полученное
+            // остаётся лежать: продолжить его дешевле, чем начать заново.
+            Err(error) => Err(error),
+            Ok(()) => {
+                let published = publish_artifact(
+                    &partial,
+                    &staged_root,
+                    &final_root,
+                    target,
+                    name,
+                    &artifact.version,
+                    host,
+                );
+                // Приехавшее целиком дальше либо установлено, либо негодно.
+                // В обоих случаях докачивать нечего, и место занимать незачем.
+                let _ = fs::remove_file(&partial);
+                published
             }
-            extract_verified_tar_gz(&archive_path, &staged_root, &target.files)?;
-            write_ready_marker(
-                &staged_root,
-                name,
-                &artifact.version,
-                host,
-                &target.asset.sha256,
-            )?;
-
-            if final_root.exists() {
-                let quarantine = final_root.with_file_name(format!(
-                    "{}.invalid-{}",
-                    host.as_str(),
-                    Uuid::new_v4()
-                ));
-                fs::rename(&final_root, &quarantine)?;
-                fs::remove_dir_all(quarantine)?;
-            }
-            if let Some(parent) = final_root.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::rename(&staged_root, &final_root)?;
-            Ok(installation(final_root.clone(), target))
-        })();
+        };
 
         if result.is_ok() {
             // Сборка мусора не вправе отменить состоявшуюся установку: на
@@ -157,7 +167,7 @@ impl RuntimeInstaller {
                 ))
             })?;
         }
-        result
+        result.map(|()| final_root)
     }
 
     /// Оставить у каждого артефакта `keep` свежайших версий, остальные удалить.
@@ -207,6 +217,55 @@ impl RuntimeInstaller {
                 .collect::<Vec<_>>()
                 .join(", ")
         )))
+    }
+}
+
+/// Опубликовать скачанный архив: сумма, распаковка, маркер, подмена каталога.
+fn publish_artifact(
+    archive_path: &Path,
+    staged_root: &Path,
+    final_root: &Path,
+    target: &TargetRuntime,
+    artifact: &str,
+    version: &str,
+    host: HostTarget,
+) -> Result<()> {
+    let actual_archive_sha = sha256_file(archive_path)?;
+    if actual_archive_sha != target.asset.sha256 {
+        return Err(BootstrapError::new(format!(
+            "runtime archive sha256 {actual_archive_sha} != expected {}",
+            target.asset.sha256
+        )));
+    }
+    extract_verified_tar_gz(archive_path, staged_root, &target.files)?;
+    write_ready_marker(staged_root, artifact, version, host, &target.asset.sha256)?;
+
+    if final_root.exists() {
+        let quarantine =
+            final_root.with_file_name(format!("{}.invalid-{}", host.as_str(), Uuid::new_v4()));
+        fs::rename(final_root, &quarantine)?;
+        fs::remove_dir_all(quarantine)?;
+    }
+    if let Some(parent) = final_root.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(staged_root, final_root)?;
+    Ok(())
+}
+
+/// Убрать недокачки того же артефакта, оставшиеся от других версий.
+///
+/// Их никто не ждёт: манифест уехал вперёд, а докачивать версию, которую больше
+/// не ставят, значит держать десятки мегабайт до конца времён. Отказ удаления
+/// не останавливает установку — место подождёт, старт нет.
+fn drop_other_partials(cache_root: &Path, artifact: &str, keep: &Path) {
+    let Ok(entries) = fs::read_dir(cache_root.join(".partial").join(artifact)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.path() != keep {
+            let _ = fs::remove_file(entry.path());
+        }
     }
 }
 

@@ -9,7 +9,9 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use sha2::{Digest, Sha256};
 use tar::{Builder, EntryType, Header};
-use unica_bootstrap::{Downloader, HostTarget, RuntimeFile, RuntimeInstaller, RuntimeManifest};
+use unica_bootstrap::{
+    BootstrapError, Downloader, HostTarget, RuntimeFile, RuntimeInstaller, RuntimeManifest,
+};
 use uuid::Uuid;
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -407,11 +409,369 @@ fn collecting_does_not_touch_the_lock_and_transaction_areas() {
     // пропуск служебных каталогов от их случайного попадания под лимит.
     fs::create_dir_all(cache.join(".transactions").join("in-flight-a")).expect("transactions");
     fs::create_dir_all(cache.join(".transactions").join("in-flight-b")).expect("transactions");
+    fs::create_dir_all(cache.join(".partial").join("unica")).expect("partial");
+    fs::write(
+        cache
+            .join(".partial")
+            .join("unica")
+            .join("0.13.0-linux-x64.tar.gz"),
+        b"half an archive",
+    )
+    .expect("partial download");
 
     RuntimeInstaller::collect(&cache, 1).expect("collect");
 
     assert!(cache.join(".locks").is_dir());
     assert!(cache.join(".transactions").join("in-flight-a").is_dir());
     assert!(cache.join(".transactions").join("in-flight-b").is_dir());
+    assert!(
+        cache
+            .join(".partial")
+            .join("unica")
+            .join("0.13.0-linux-x64.tar.gz")
+            .is_file(),
+        "недокачка переживает сборку мусора: её ждёт следующая сессия"
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// Манифест с ядром и движком: у каждого своя версия и свой архив.
+fn manifest_with_engine(
+    core_archive: &[u8],
+    core_file: &[u8],
+    engine_archive: &[u8],
+    engine_file: &[u8],
+) -> RuntimeManifest {
+    let mut manifest = manifest(core_archive, core_file);
+    let engine_hash = sha256(engine_archive);
+    let file_hash = sha256(engine_file);
+    let target = |name: &str| {
+        serde_json::json!({
+            "asset": {
+                "name": format!("rlm-tools-bsl-runtime-{name}.tar.gz"),
+                "url": format!(
+                    "https://github.com/IngvarConsulting/unica/releases/download/v0.7.0/rlm-tools-bsl-runtime-{name}.tar.gz"
+                ),
+                "mediaType": "application/gzip",
+                "sha256": engine_hash
+            },
+            "files": [{
+                "path": format!("bin/{name}/rlm-bsl-index"),
+                "sha256": file_hash,
+                "executable": true
+            }]
+        })
+    };
+    let engine = serde_json::json!({
+        "version": "1.33.0",
+        "role": "engine",
+        "targets": {
+            "darwin-arm64": target("darwin-arm64"),
+            "linux-x64": target("linux-x64"),
+            "win-x64": target("win-x64")
+        }
+    });
+    manifest.artifacts.insert(
+        "rlm-tools-bsl".to_owned(),
+        serde_json::from_value(engine).expect("engine fixture"),
+    );
+    manifest
+}
+
+/// Загрузчик, отдающий байты по имени ассета: артефактов в манифесте несколько,
+/// и подмена одного другим прошла бы незамеченной.
+struct AssetDownloader {
+    assets: std::collections::BTreeMap<String, Vec<u8>>,
+    calls: AtomicUsize,
+}
+
+impl AssetDownloader {
+    fn new(assets: Vec<(&str, Vec<u8>)>) -> Self {
+        Self {
+            assets: assets
+                .into_iter()
+                .map(|(name, bytes)| (name.to_owned(), bytes))
+                .collect(),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Downloader for AssetDownloader {
+    fn download(&self, url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let name = url.rsplit('/').next().unwrap_or_default();
+        let bytes = self
+            .assets
+            .get(name)
+            .ok_or_else(|| BootstrapError::new(format!("стенд не публикует ассет {name}")))?;
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = fs::File::create(destination)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    }
+}
+
+/// Загрузчик, обрывающийся на середине первой попытки и дописывающий хвост на
+/// второй: так ведёт себя канал, убитый посреди установки.
+struct InterruptedDownloader {
+    bytes: Vec<u8>,
+    cut: usize,
+    starts: std::sync::Mutex<Vec<u64>>,
+}
+
+impl InterruptedDownloader {
+    fn new(bytes: Vec<u8>, cut: usize) -> Self {
+        Self {
+            bytes,
+            cut,
+            starts: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn starts(&self) -> Vec<u64> {
+        self.starts.lock().expect("starts").clone()
+    }
+}
+
+impl Downloader for InterruptedDownloader {
+    fn download(&self, _url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let already = fs::metadata(destination)
+            .map(|meta| meta.len() as usize)
+            .unwrap_or(0);
+        self.starts.lock().expect("starts").push(already as u64);
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(destination)?;
+        if already == 0 {
+            file.write_all(&self.bytes[..self.cut])?;
+            file.sync_all()?;
+            return Err(BootstrapError::new("канал оборвался посреди загрузки"));
+        }
+        file.write_all(&self.bytes[already..])?;
+        file.sync_all()?;
+        Ok(())
+    }
+}
+
+/// Первая попытка приносит байты нужной длины, но не те; вторая — настоящие.
+struct PoisonedThenHonest {
+    poison: Vec<u8>,
+    honest: Vec<u8>,
+    calls: AtomicUsize,
+}
+
+impl Downloader for PoisonedThenHonest {
+    fn download(&self, _url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let already = fs::metadata(destination)
+            .map(|meta| meta.len() as usize)
+            .unwrap_or(0);
+        let bytes = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            &self.poison
+        } else {
+            &self.honest
+        };
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(destination)?;
+        file.write_all(&bytes[already.min(bytes.len())..])?;
+        file.sync_all()?;
+        Ok(())
+    }
+}
+
+/// Что осталось недокачанным у артефакта. Раскладка здесь — не деталь: по ней
+/// следующая сессия находит оборванную загрузку.
+fn partials(cache: &Path, artifact: &str) -> Vec<String> {
+    let mut names = fs::read_dir(cache.join(".partial").join(artifact))
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[test]
+fn an_interrupted_download_resumes_in_the_next_session() {
+    let runtime = b"unica-runtime-that-is-long-enough-to-cut-in-half";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("resume");
+    let cut = archive.len() / 2;
+    let downloader = Arc::new(InterruptedDownloader::new(archive.clone(), cut));
+
+    RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect_err("первая сессия обрывается посреди загрузки");
+
+    let installed = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect("вторая сессия доводит установку");
+
+    assert_eq!(fs::read(&installed.entrypoint).unwrap(), runtime);
+    assert_eq!(
+        downloader.starts(),
+        vec![0, cut as u64],
+        "вторая сессия начинает там, где оборвалась первая"
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn a_partial_that_hashes_wrong_is_dropped_instead_of_resumed_forever() {
+    // Докачивать не те байты значит вечно не сходиться по сумме.
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("poisoned");
+    let downloader = Arc::new(PoisonedThenHonest {
+        poison: vec![0_u8; archive.len() / 2],
+        honest: archive.clone(),
+        calls: AtomicUsize::new(0),
+    });
+
+    RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect_err("сумма архива не сходится");
+
+    let installed = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader)
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect("следующая попытка качает заново, а не дописывает мусор");
+
+    assert_eq!(fs::read(&installed.entrypoint).unwrap(), runtime);
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn an_abandoned_partial_does_not_outlive_the_version_that_replaced_it() {
+    let runtime = b"unica-runtime-that-is-long-enough-to-cut-in-half";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let cache = temp_dir("abandoned");
+    let cut = archive.len() / 2;
+
+    let broken = Arc::new(InterruptedDownloader::new(archive.clone(), cut));
+    RuntimeInstaller::new(cache.clone(), "0.7.0", broken)
+        .ensure(
+            &manifest_with(&archive, runtime, "0.7.0", "0.5.1"),
+            HostTarget::LinuxX64,
+        )
+        .expect_err("обрыв на версии 0.5.1");
+    assert_eq!(
+        partials(&cache, "unica").len(),
+        1,
+        "оборванная загрузка дожидается следующей сессии"
+    );
+
+    RuntimeInstaller::new(
+        cache.clone(),
+        "0.7.0",
+        Arc::new(FakeDownloader::new(archive)),
+    )
+    .ensure(
+        &manifest_with(b"", runtime, "0.7.0", "0.5.2"),
+        HostTarget::LinuxX64,
+    )
+    .ok();
+
+    assert!(
+        partials(&cache, "unica").is_empty(),
+        "недокачка брошенной версии не переживает установку следующей: {:?}",
+        partials(&cache, "unica")
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn an_engine_is_installed_on_demand_under_its_own_version() {
+    let core = b"unica-runtime";
+    let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
+    let engine = b"rlm-bsl-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
+    let cache = temp_dir("engine");
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        ("unica-runtime-linux-x64.tar.gz", core_archive),
+        ("rlm-tools-bsl-runtime-linux-x64.tar.gz", engine_archive),
+    ]));
+
+    let root = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
+        .ensure_artifact(&manifest, "rlm-tools-bsl", HostTarget::LinuxX64)
+        .expect("движок ставится по имени");
+
+    assert_eq!(
+        root.strip_prefix(&cache).expect("установка внутри кеша"),
+        Path::new("rlm-tools-bsl").join("1.33.0").join("linux-x64"),
+        "путь движка содержит его собственную версию"
+    );
+    assert_eq!(
+        fs::read(root.join("bin/linux-x64/rlm-bsl-index")).unwrap(),
+        engine
+    );
+    assert_eq!(
+        downloader.calls(),
+        1,
+        "доставка движка не тянет за собой ядро"
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn two_sessions_acquire_one_engine_once() {
+    let core = b"unica-runtime";
+    let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
+    let engine = b"rlm-bsl-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let manifest = Arc::new(manifest_with_engine(
+        &core_archive,
+        core,
+        &engine_archive,
+        engine,
+    ));
+    let cache = temp_dir("engine-concurrent");
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        ("unica-runtime-linux-x64.tar.gz", core_archive),
+        ("rlm-tools-bsl-runtime-linux-x64.tar.gz", engine_archive),
+    ]));
+    let installer = Arc::new(RuntimeInstaller::new(
+        cache.clone(),
+        "0.7.0",
+        downloader.clone(),
+    ));
+
+    let roots = (0..2)
+        .map(|_| {
+            let installer = installer.clone();
+            let manifest = manifest.clone();
+            thread::spawn(move || {
+                installer.ensure_artifact(&manifest, "rlm-tools-bsl", HostTarget::LinuxX64)
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|handle| handle.join().expect("installer thread"))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("обе сессии получают движок");
+
+    assert_eq!(roots[0], roots[1]);
+    assert_eq!(downloader.calls(), 1, "две сессии качают движок один раз");
     fs::remove_dir_all(&cache).ok();
 }

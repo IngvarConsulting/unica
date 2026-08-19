@@ -105,9 +105,14 @@ impl RuntimeManifest {
 
     /// Артефакт ядра — единственный, который обязан быть в манифесте всегда.
     pub fn core(&self) -> Result<&Artifact> {
-        self.artifacts.get(CORE_ARTIFACT).ok_or_else(|| {
-            BootstrapError::new(format!("runtime manifest has no {CORE_ARTIFACT} artifact"))
-        })
+        self.artifact(CORE_ARTIFACT)
+    }
+
+    /// Артефакт по имени: версия ключует установку, цели несут архивы.
+    pub fn artifact(&self, name: &str) -> Result<&Artifact> {
+        self.artifacts
+            .get(name)
+            .ok_or_else(|| BootstrapError::new(format!("runtime manifest has no artifact {name}")))
     }
 
     pub fn validate(&self, plugin_version: &str) -> Result<()> {
