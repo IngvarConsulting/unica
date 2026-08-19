@@ -36,6 +36,7 @@
 | `DEC.2026-08-19.ENTRY-VIEW` | решение · product | active | нет | `view` — один читатель на всё дерево | [decisions/2026-08-19-entry-view.md](decisions/2026-08-19-entry-view.md) |
 | `DEC.2026-08-19.NO-SELF-GLOSS` | решение · process | active | да | Правило говорит о предмете, а не о себе | [decisions/2026-08-19-no-self-gloss.md](decisions/2026-08-19-no-self-gloss.md) |
 | `DEC.2026-08-19.PRODUCT-OR-PROCESS` | решение · process | active | да | Запись объявляет, кто заметит её нарушение | [decisions/2026-08-19-product-or-process.md](decisions/2026-08-19-product-or-process.md) |
+| `DEC.2026-08-19.PRODUCT-RECORD-IS-HISTORY` | решение · process | active | да | Принятая продуктовая запись правится только заменой | [decisions/2026-08-19-product-record-is-history.md](decisions/2026-08-19-product-record-is-history.md) |
 | `DEC.2026-08-19.REALIZATION-AXIS` | решение · process | active | да | Решённое и построенное — разные оси | [decisions/2026-08-19-realization-axis.md](decisions/2026-08-19-realization-axis.md) |
 | `DEC.2026-08-19.SURFACE-BY-QUESTION` | решение · product | active | нет | Вход отвечает на вопрос, а не обслуживает предмет | [decisions/2026-08-19-surface-by-question.md](decisions/2026-08-19-surface-by-question.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Конфигурация вызова разрешается снимком | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
@@ -61,6 +62,7 @@
 | `INV.REGISTRY.GOVERNS-DECLARED` | инвариант · process | active |  | Сторона записи объявлена и известна | [invariants/INV.REGISTRY.GOVERNS-DECLARED.md](invariants/INV.REGISTRY.GOVERNS-DECLARED.md) |
 | `INV.REGISTRY.NO-SELF-GLOSS` | инвариант · process | active |  | Инвариант и контракт не толкуют свои поля | [invariants/INV.REGISTRY.NO-SELF-GLOSS.md](invariants/INV.REGISTRY.NO-SELF-GLOSS.md) |
 | `INV.REGISTRY.NO-TRACKER-LINKS` | инвариант · process | active |  | Реестр не ссылается на трекер | [invariants/INV.REGISTRY.NO-TRACKER-LINKS.md](invariants/INV.REGISTRY.NO-TRACKER-LINKS.md) |
+| `INV.REGISTRY.PRODUCT-RECORD-IS-HISTORY` | инвариант · process | active |  | Продуктовая запись базы не редактируется | [invariants/INV.REGISTRY.PRODUCT-RECORD-IS-HISTORY.md](invariants/INV.REGISTRY.PRODUCT-RECORD-IS-HISTORY.md) |
 | `INV.REGISTRY.REALIZATION-NAMED` | инвариант · process | active |  | Решение объявляет, построено ли оно | [invariants/INV.REGISTRY.REALIZATION-NAMED.md](invariants/INV.REGISTRY.REALIZATION-NAMED.md) |
 | `INV.REGISTRY.SYMBOL-MATCHES-PATH` | инвариант · process | active |  | Символ записи выводится из её пути | [invariants/INV.REGISTRY.SYMBOL-MATCHES-PATH.md](invariants/INV.REGISTRY.SYMBOL-MATCHES-PATH.md) |
 | `INV.SOURCE.ATOMIC-PUBLISH` | инвариант · product | active |  | Мутация источника публикуется атомарно или не публикуется | [invariants/INV.SOURCE.ATOMIC-PUBLISH.md](invariants/INV.SOURCE.ATOMIC-PUBLISH.md) |
