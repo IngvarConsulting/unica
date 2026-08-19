@@ -156,7 +156,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs"
           ],
@@ -180,7 +180,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs",
             "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
@@ -205,7 +205,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -228,7 +228,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -268,7 +268,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ported",
@@ -289,7 +289,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -310,7 +310,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ported",
@@ -331,7 +331,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -352,7 +352,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -459,7 +459,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/form.rs"
@@ -490,7 +490,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/form.rs"
@@ -519,7 +519,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/form.rs"
@@ -547,7 +547,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs",
@@ -599,7 +599,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/form.rs"
@@ -627,7 +627,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/form.rs"
@@ -651,7 +651,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -672,7 +672,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -696,7 +696,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_skill_provenance.py",
+            "tests/parity/test_skill_provenance.py",
             "tests/ci/test_meta_surface_contract.py",
             "crates/unica-coder/src/application/metadata.rs",
             "crates/unica-coder/src/application/tool_contracts.rs"
@@ -751,8 +751,8 @@
           "contractPaths": [
             "plugins/unica/skills/meta-info/SKILL.md",
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_skill_provenance.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_skill_provenance.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/metadata.rs",
             "crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs",
             "crates/unica-coder/src/application/mod.rs",
@@ -779,7 +779,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -801,7 +801,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -823,7 +823,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -845,7 +845,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs",
             "crates/unica-coder/src/infrastructure/native_operations/mxl.rs"
@@ -870,7 +870,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -892,7 +892,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -914,7 +914,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs",
             "crates/unica-coder/src/infrastructure/native_operations/role.rs"
@@ -939,7 +939,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -964,7 +964,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
@@ -992,7 +992,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
@@ -1019,7 +1019,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs",
@@ -1047,7 +1047,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/dcs.rs"
@@ -1072,7 +1072,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
           "decision": "ported",
@@ -1093,7 +1093,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -1114,7 +1114,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py",
+            "tests/parity/test_unica_mcp_script_parity.py",
             "crates/unica-coder/src/application/mod.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs",
             "crates/unica-coder/src/infrastructure/native_operations/subsystem.rs"
@@ -1138,7 +1138,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_unica_mcp_script_parity.py"
+            "tests/parity/test_unica_mcp_script_parity.py"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -1173,7 +1173,7 @@
             "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
             "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs",
             "tests/ci/test_reference_format_profile.py",
-            "tests/ci/test_skill_provenance.py",
+            "tests/parity/test_skill_provenance.py",
             "tests/ci/test_unica_skills.py"
           ],
           "baselineCommit": "2067778ba3bad527bd1e5850304d1c82acb81fc8",
@@ -1571,7 +1571,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
-            "tests/ci/test_skill_provenance.py"
+            "tests/parity/test_skill_provenance.py"
           ],
           "decision": "ported"
         }

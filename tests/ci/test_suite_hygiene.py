@@ -16,7 +16,11 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SUITE_ROOTS = (REPO_ROOT / "tests" / "ci", REPO_ROOT / "tests" / "dev")
+# Every suite in the tree, run or parked: the rule is about how a file
+# collects when someone runs it directly, which does not depend on CI.
+SUITE_ROOTS = tuple(
+    REPO_ROOT / "tests" / name for name in ("ci", "arch", "parity", "harness")
+)
 
 
 def suite_files() -> list[Path]:

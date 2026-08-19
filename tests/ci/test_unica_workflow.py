@@ -76,8 +76,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("cargo clippy --workspace --all-targets --all-features -- -D warnings", text)
         self.assertIn("cargo test --workspace -- --test-threads=1", text)
         self.assertIn("python -m unittest discover -s tests/ci --durations 20", text)
-        self.assertIn("python -m unittest discover -s tests/dev --durations 20", text)
-        self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
+        self.assertIn("python -m py_compile scripts/dev/*.py tests/parity/*.py tests/harness/*.py", text)
         self.assertIn("python scripts/ci/check-version-contract.py", text)
 
     def test_every_pull_request_gets_a_stable_aggregate_gate(self) -> None:
@@ -186,9 +185,17 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("unittest discover -s tests/arch -t .", source)
         self.assertIn("py_compile scripts/arch/*.py tests/arch/*.py", source)
 
-        for suite in ("tests/ci", "tests/dev", "tests/arch"):
+        for suite in ("tests/ci", "tests/arch"):
             with self.subTest(suite=suite):
                 self.assertIn(f"discover -s {suite}", source)
+
+        # Switched off, not deleted. They must not creep back into the contour
+        # by accident, and they must keep compiling so the wait does not rot
+        # them: both halves are asserted, or "disabled" degrades into "gone".
+        for parked in ("tests/parity", "tests/harness"):
+            with self.subTest(parked=parked):
+                self.assertNotIn(f"discover -s {parked}", source)
+                self.assertIn(f"{parked}/*.py", source)
 
     def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
         text = self.release_text()

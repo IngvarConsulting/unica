@@ -35,6 +35,7 @@
 | `DEC.2026-08-19.ENTRY-SEARCH` | решение · product | active | нет | `search` — по содержимому, а не по имени | [decisions/2026-08-19-entry-search.md](decisions/2026-08-19-entry-search.md) |
 | `DEC.2026-08-19.ENTRY-VIEW` | решение · product | active | нет | `view` — один читатель на всё дерево | [decisions/2026-08-19-entry-view.md](decisions/2026-08-19-entry-view.md) |
 | `DEC.2026-08-19.NO-SELF-GLOSS` | решение · process | active | да | Правило говорит о предмете, а не о себе | [decisions/2026-08-19-no-self-gloss.md](decisions/2026-08-19-no-self-gloss.md) |
+| `DEC.2026-08-19.PARKED-CONTOURS` | решение · process | active | да | Парити и харнесс сняты с прогона на время перестройки поверхности | [decisions/2026-08-19-parked-contours.md](decisions/2026-08-19-parked-contours.md) |
 | `DEC.2026-08-19.PRODUCT-OR-PROCESS` | решение · process | active | да | Запись объявляет, кто заметит её нарушение | [decisions/2026-08-19-product-or-process.md](decisions/2026-08-19-product-or-process.md) |
 | `DEC.2026-08-19.PRODUCT-RECORD-IS-HISTORY` | решение · process | active | да | Принятая продуктовая запись правится только заменой | [decisions/2026-08-19-product-record-is-history.md](decisions/2026-08-19-product-record-is-history.md) |
 | `DEC.2026-08-19.REALIZATION-AXIS` | решение · process | active | да | Решённое и построенное — разные оси | [decisions/2026-08-19-realization-axis.md](decisions/2026-08-19-realization-axis.md) |

@@ -29,6 +29,7 @@
 | `architecture/invariants.md` | `INV-MCP-RUNTIME-RECEIPT` переписан: применённый вызов отвечает, а не отказывает |
 | `architecture/quality-requirements.md` | требование к применённому вызову приведено в соответствие |
 | `decisions/0073-chestnyy-preview-mutatora.md` | запись целиком, приехала предыдущим слиянием |
+| `provenance/skill-upstreams.json` | пути к парити-проверкам переставлены вслед за переездом наборов; данные, а не запись — переезжают по `DEC.2026-08-18.DATA-LEAVES-DOCS` |
 
 ## Решения
 

@@ -1144,7 +1144,7 @@ class VerifierContractTests(unittest.TestCase):
 
     def test_fixed_profile_uses_the_canonical_platform_corpus_schema(self):
         verifier = load_verifier()
-        from tests.dev.test_verify_8_3_27_platform import (
+        from tests.harness.test_verify_8_3_27_platform import (
             load_verifier as load_platform_verifier,
             write_manifest,
             write_platform_case,
