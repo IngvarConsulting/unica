@@ -1346,7 +1346,8 @@ fn autodetect_extension_source_sets(
     let mut extension_sets = Vec::new();
     for layout in EXTENSION_LAYOUTS {
         checkpoint()?;
-        let Some(container) = open_probe_directory(workspace_root, layout.directory, state)? else {
+        let Some(container) = open_extension_container(workspace_root, layout.directory, state)?
+        else {
             state.record_directory_membership(
                 workspace_root.join(layout.directory),
                 DirectoryMembershipSnapshot::Absent,
@@ -1448,6 +1449,47 @@ fn open_probe_directory(
         Ok(health_source_directory(workspace_root, relative)?.map(ProbeDirectory::Retained))
     } else {
         Ok(Some(ProbeDirectory::Path(workspace_root.join(relative))))
+    }
+}
+
+/// Opens one extension-layout container, telling apart the two answers a container path
+/// can give.
+///
+/// A path that definitely holds no container — absent, a regular file, a link — yields
+/// `None`, and that layout simply contributes nothing. A path that *might* hold one but
+/// could not be read — denied permissions, an I/O failure — is still an error, because
+/// answering "no extensions" there would report a map the filesystem never confirmed.
+///
+/// The distinction is the same one entry classification makes one level down, and it has
+/// to be made here too: a linked `src/cfe` otherwise aborts the hardened route while the
+/// ordinary route enumerates straight through the link and publishes source roots outside
+/// the workspace that `resolve_named_source_set` then refuses to open.
+fn open_extension_container(
+    workspace_root: &Path,
+    relative: &str,
+    state: &SourceMapDiscoveryState,
+) -> Result<Option<ProbeDirectory>, String> {
+    if !state.require_nofollow_source_probe_route {
+        let path = workspace_root.join(relative);
+        return match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => Ok(Some(ProbeDirectory::Path(path))),
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "failed to inspect source directory {}: {error}",
+                path.display()
+            )),
+        };
+    }
+    match inspect_declared_source_root_route(workspace_root, relative) {
+        // An unsafe or uncontained route is not a container: the path leaves the
+        // workspace, and nothing reachable through it could be resolved later anyway.
+        Err(_) => Ok(None),
+        Ok(_) => match health_source_directory(workspace_root, relative) {
+            Ok(directory) => Ok(directory.map(ProbeDirectory::Retained)),
+            Err(reason) if reason.contains("Not a directory") => Ok(None),
+            Err(reason) => Err(reason),
+        },
     }
 }
 
@@ -2607,31 +2649,57 @@ mod tests {
     }
 
     #[test]
-    fn autodetect_propagates_non_missing_extensions_directory_errors() {
+    fn autodetect_skips_a_container_that_is_not_a_directory() {
         let root = temp_workspace("unica-source-map-autodetect-extensions-not-a-directory");
         write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
-        // `src/cfe` exists but is a regular file, not a directory: this must surface as an
-        // error, not be silently treated the same as "no extensions directory at all".
+        // `src/cfe` exists as a regular file: a definite answer that no extension
+        // container lives here, exactly like a link or an absent path. The layout
+        // contributes nothing and the base configuration beside it is untouched —
+        // collapsing the whole map instead would report an incomplete layout for a
+        // workspace whose configuration is perfectly readable.
         write(&root.join("src/cfe"), "not a directory");
 
-        let error = discover_project_source_map(&root).expect_err(
-            "src/cfe existing as a non-directory must not be silently treated as absent",
-        );
+        assert_routes_agree(&root, &[("main", SourceSetKind::Configuration, "src/cf")]);
+        fs::remove_dir_all(root).unwrap();
+    }
 
-        assert!(
-            error.contains("cfe"),
-            "error should name the offending directory: {error}"
+    #[test]
+    fn autodetect_propagates_an_unreadable_extensions_container() {
+        use crate::infrastructure::platform::testing::set_unix_mode_for_test;
+
+        let root = temp_workspace("unica-source-map-autodetect-extensions-unreadable");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
         );
-        // The hardened route answers the same way. Route parity is asserted here too
-        // because the defects this module carried were all one route learning something
-        // the other did not.
+        let container = root.join("src/cfe");
+        if !set_unix_mode_for_test(&container, 0o000).unwrap() {
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        if std::fs::read_dir(&container).is_ok() {
+            // Running with a privilege that ignores the mode; the case does not exist.
+            set_unix_mode_for_test(&container, 0o755).unwrap();
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+
+        // A container that might hold extensions but could not be read is *not* a
+        // definite "no extensions here". Reporting a map the filesystem never confirmed
+        // would hide every extension behind one permission bit.
         let mut checkpoint = || Ok(());
-        let hardened_error = discover_project_source_map_controlled(&root, &mut checkpoint)
-            .expect_err("the hardened route must not treat a non-directory container as absent");
+        let ordinary = discover_project_source_map(&root)
+            .expect_err("an unreadable extensions container must not be reported as empty");
+        let hardened = discover_project_source_map_controlled(&root, &mut checkpoint)
+            .expect_err("the hardened route must not report an unreadable container as empty");
+
+        assert!(ordinary.contains("cfe"), "{ordinary}");
         assert!(
-            hardened_error.contains("directory"),
-            "error should report the unusable directory: {hardened_error}"
+            hardened.contains("cfe") || hardened.contains("directory"),
+            "{hardened}"
         );
+        set_unix_mode_for_test(&container, 0o755).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2755,6 +2823,39 @@ mod tests {
                 ("test_ed", SourceSetKind::Extension, "src/cfe/test_ed"),
             ],
         );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn autodetect_skips_a_linked_extensions_container() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let root = temp_workspace("unica-source-map-autodetect-linked-container");
+        let external = temp_workspace("unica-source-map-autodetect-linked-container-external");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &external.join("test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        fs::create_dir_all(root.join("src")).unwrap();
+        match create_directory_link_fixture_for_test(&external, root.join("src/cfe")).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                fs::remove_dir_all(&root).unwrap();
+                fs::remove_dir_all(&external).unwrap();
+                return;
+            }
+        }
+
+        // The container itself is a link, so there is no real container here and no
+        // extension to autodetect. Enumerating through it would publish source roots
+        // outside the workspace that `resolve_named_source_set` then refuses, and
+        // failing would hide the base configuration that is perfectly fine.
+        assert_routes_agree(&root, &[("main", SourceSetKind::Configuration, "src/cf")]);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(external).unwrap();
     }

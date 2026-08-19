@@ -141,7 +141,10 @@ A marker is `Configuration.xml`, `Configuration/Configuration.mdo` or
 
 An autodetected source-set is named after the directory holding it, verbatim. A
 container may hold other things — `.gitkeep`, `README.md`, a symlink — and those
-are skipped, not reported and not treated as an error. `main` stays with the base
+are skipped, not reported and not treated as an error. The same holds for the
+container path itself: absent, a plain file or a symlink all mean "no extensions
+in this layout", while a container that could not be read at all (permissions) is
+reported rather than silently reported as empty. `main` stays with the base
 configuration while it exists; when nothing else claims the name, an extension
 directory named `main` keeps it.
 
