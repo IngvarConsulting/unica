@@ -3,7 +3,7 @@ id: INV.APP.DEPENDENCY-DIRECTION
 status: active
 governs: process
 decision: DEC.2026-08-18.CARRIED-RULES
-check: scripts/ci/check-rust-platform-boundary.py
+check: tests/ci/test_rust_platform_boundary.py::test_repository_currently_complies_with_platform_boundary
 scope: [app]
 ---
 
