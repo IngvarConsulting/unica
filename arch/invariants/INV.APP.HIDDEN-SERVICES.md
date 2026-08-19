@@ -2,12 +2,12 @@
 id: INV.APP.HIDDEN-SERVICES
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/workspace_services.rs
+decision: DEC.2026-08-19.RULE-CLAIMS-ONLY-WHAT-IT-CHECKS
+check: crates/unica-coder/src/infrastructure/workspace_services.rs::service_identity_reuses_same_workspace_source_root_and_separates_other_roots
 scope: [app]
 ---
 
-# Внутренние сервисы скрыты и привязаны к рабочему пространству
+# Внутренние сервисы привязаны к рабочему пространству
 
-Служебные процессы не видны модели, поднимаются лениво и живут в границах своего рабочего
-пространства.
+Служебный процесс живёт в границах своего рабочего пространства: один корень
+исходников переиспользует ту же службу, чужие корни получают отдельные.
