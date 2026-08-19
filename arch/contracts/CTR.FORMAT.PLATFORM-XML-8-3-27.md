@@ -6,7 +6,7 @@ version: 1
 decision: null
 producer: crates/unica-coder/src/infrastructure/native_operations/
 consumers: [platform]
-check: tests/ci/test_format_profile_contract.py
+check: crates/unica-coder/tests/format_8_3_27_xml_corpus.rs::source_resource_reads_preserve_every_corpus_byte
 ---
 
 # Профиль Platform XML 8.3.27 и сохранение байтов

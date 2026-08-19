@@ -79,7 +79,8 @@
 | `INV.SURFACE.ACCEPTANCE-UNCHANGED` | инвариант · product | active |  | Сужение публикации не сужает приём | [invariants/INV.SURFACE.ACCEPTANCE-UNCHANGED.md](invariants/INV.SURFACE.ACCEPTANCE-UNCHANGED.md) |
 | `INV.SURFACE.NAMESPACE` | инвариант · product | active |  | Публичные инструменты живут в пространстве unica | [invariants/INV.SURFACE.NAMESPACE.md](invariants/INV.SURFACE.NAMESPACE.md) |
 | `INV.SURFACE.PUBLISHED-ARGS-ARE-READ` | инвариант · product | active |  | Публикуется то, что обработчик читает | [invariants/INV.SURFACE.PUBLISHED-ARGS-ARE-READ.md](invariants/INV.SURFACE.PUBLISHED-ARGS-ARE-READ.md) |
-| `INV.WIRE.BOUNDED-ADMISSION` | инвариант · product | active |  | Приём вызовов ограничен, отмена кооперативна | [invariants/INV.WIRE.BOUNDED-ADMISSION.md](invariants/INV.WIRE.BOUNDED-ADMISSION.md) |
+| `INV.WIRE.BOUNDED-ADMISSION` | инвариант · product | active |  | Приём вызовов ограничен | [invariants/INV.WIRE.BOUNDED-ADMISSION.md](invariants/INV.WIRE.BOUNDED-ADMISSION.md) |
+| `INV.WIRE.COOPERATIVE-CANCELLATION` | инвариант · product | active |  | Отмена доходит до исполнителя | [invariants/INV.WIRE.COOPERATIVE-CANCELLATION.md](invariants/INV.WIRE.COOPERATIVE-CANCELLATION.md) |
 | `INV.WIRE.DATA-DRIVEN-SCHEMA` | инвариант · product | active |  | Контракты инструментов заданы данными | [invariants/INV.WIRE.DATA-DRIVEN-SCHEMA.md](invariants/INV.WIRE.DATA-DRIVEN-SCHEMA.md) |
 | `INV.WIRE.ONE-SERVER` | инвариант · product | active |  | Модель видит один сервер и ни одного движка | [invariants/INV.WIRE.ONE-SERVER.md](invariants/INV.WIRE.ONE-SERVER.md) |
 | `INV.WIRE.PREVIEW-IS-MUTATION-ONLY` | инвариант · product | active |  | Предпросмотр принадлежит мутации | [invariants/INV.WIRE.PREVIEW-IS-MUTATION-ONLY.md](invariants/INV.WIRE.PREVIEW-IS-MUTATION-ONLY.md) |
