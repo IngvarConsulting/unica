@@ -1481,15 +1481,17 @@ fn open_extension_container(
             )),
         };
     }
-    match inspect_declared_source_root_route(workspace_root, relative) {
-        // An unsafe or uncontained route is not a container: the path leaves the
-        // workspace, and nothing reachable through it could be resolved later anyway.
-        Err(_) => Ok(None),
-        Ok(_) => match health_source_directory(workspace_root, relative) {
-            Ok(directory) => Ok(directory.map(ProbeDirectory::Retained)),
-            Err(reason) if reason.contains("Not a directory") => Ok(None),
-            Err(reason) => Err(reason),
-        },
+    // An unsafe or uncontained route is not a container either: the path leaves the
+    // workspace, and nothing reachable through it could be resolved later anyway.
+    let Ok(opened) = health_source_directory_opened(workspace_root, relative) else {
+        return Ok(None);
+    };
+    match opened {
+        Ok(directory) => Ok(directory.map(ProbeDirectory::Retained)),
+        Err(error) if open_failure_is_wrong_kind(&error) => Ok(None),
+        Err(error) => Err(format!(
+            "source directory could not be opened safely: {error}"
+        )),
     }
 }
 
@@ -1587,10 +1589,11 @@ fn enumerate_source_root_candidates(
                 };
                 let (anchor, kind) = match open_any_child_nofollow(handle, &name) {
                     Ok(opened) => opened,
-                    // The entry raced away or is a link. Neither is a candidate, and
-                    // neither is a reason to stop looking at its siblings.
+                    // The entry raced away, is a link, or is not a directory. None of
+                    // those is a candidate, and none is a reason to stop looking at its
+                    // siblings.
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) if is_link_loop_error(&error) => continue,
+                    Err(error) if open_failure_is_wrong_kind(&error) => continue,
                     Err(error) => {
                         return Err(format!(
                             "failed to inspect source directory entry {} securely: {error}",
@@ -1858,6 +1861,25 @@ fn health_source_directory(
     workspace_root: &Path,
     configured_path: &str,
 ) -> Result<Option<std::fs::File>, String> {
+    health_source_directory_opened(workspace_root, configured_path)?
+        .map_err(|error| format!("source directory could not be opened safely: {error}"))
+}
+
+/// Opens a source directory on the hardened route, keeping the open failure typed.
+///
+/// The outer `Result` carries the route failures that are never an open at all; the
+/// inner one carries the open itself, so a caller that must tell "nothing usable is
+/// here" from "this could not be read" classifies on `ErrorKind` rather than on the
+/// text of an OS message, which differs by platform and by locale. `Ok(None)` is the
+/// absent directory, which every caller treats the same way.
+#[allow(
+    clippy::type_complexity,
+    reason = "route failure and open failure are distinct outcomes"
+)]
+fn health_source_directory_opened(
+    workspace_root: &Path,
+    configured_path: &str,
+) -> Result<Result<Option<std::fs::File>, std::io::Error>, String> {
     let route = inspect_declared_source_root_route(workspace_root, configured_path)
         .map_err(|error| format!("source route could not be proven safe: {error}"))?;
     let physical_workspace = normalize_path_identity(workspace_root)?;
@@ -1865,13 +1887,13 @@ fn health_source_directory(
         .lexical_path
         .strip_prefix(workspace_root)
         .map_err(|error| format!("source route is outside the workspace lexical root: {error}"))?;
-    match open_absolute_directory_path_nofollow(&physical_workspace.join(relative)) {
-        Ok(directory) => Ok(Some(directory)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!(
-            "source directory could not be opened safely: {error}"
-        )),
-    }
+    Ok(
+        match open_absolute_directory_path_nofollow(&physical_workspace.join(relative)) {
+            Ok(directory) => Ok(Some(directory)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        },
+    )
 }
 
 enum SecureMarkerProbeError {
@@ -1925,17 +1947,30 @@ fn secure_regular_file_exists(
 
 fn marker_probe_open_error(context: &str, error: std::io::Error) -> SecureMarkerProbeError {
     let reason = format!("source format marker {context} could not be opened safely: {error}");
-    if matches!(
-        error.kind(),
-        std::io::ErrorKind::InvalidInput
-            | std::io::ErrorKind::InvalidData
-            | std::io::ErrorKind::NotADirectory
-    ) || is_link_loop_error(&error)
-    {
+    if open_failure_is_wrong_kind(&error) {
         SecureMarkerProbeError::UnsafeOrWrongKind(reason)
     } else {
         SecureMarkerProbeError::Incomplete(reason)
     }
+}
+
+/// Whether an open failure answered the question — the path is the wrong kind of thing —
+/// or left it open.
+///
+/// Unix rejects a link at open with a loop error and a non-directory with
+/// `NotADirectory`; Windows opens the reparse point and then classifies it, and a
+/// non-directory, as `InvalidInput`. Everything else — denied permissions, an I/O
+/// failure — means the path might still be what the caller was looking for, so it is
+/// never silently treated as absent. Every hardened probe classifies through this one
+/// predicate: a marker, a container, and a container's entries have to agree on what
+/// counts as "nothing usable here".
+fn open_failure_is_wrong_kind(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidInput
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+    ) || is_link_loop_error(error)
 }
 
 fn push_health_evidence(
