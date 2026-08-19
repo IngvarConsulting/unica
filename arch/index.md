@@ -30,6 +30,7 @@
 | `DEC.2026-08-19.CORE-FIRST-ACQUISITION` | решение · product | active | да | В стартовый бюджет едет только ядро | [decisions/2026-08-19-core-first-acquisition.md](decisions/2026-08-19-core-first-acquisition.md) |
 | `DEC.2026-08-19.DECISIONS-FORM-INSIDE` | решение · process | active | да | Решение формируется в реестре, а не в трекере | [decisions/2026-08-19-decisions-form-inside.md](decisions/2026-08-19-decisions-form-inside.md) |
 | `DEC.2026-08-19.DEFAULTS-PROVED-BY-PAIRS` | решение · product | active | нет | Подавление умолчаний доказывается парой объектов, а не таблицей | [decisions/2026-08-19-defaults-proved-by-pairs.md](decisions/2026-08-19-defaults-proved-by-pairs.md) |
+| `DEC.2026-08-19.DELIVERY-HAS-NO-BUDGET` | решение · product | active | да | У доставки нет срока, срок принадлежит запуску | [decisions/2026-08-19-delivery-has-no-budget.md](decisions/2026-08-19-delivery-has-no-budget.md) |
 | `DEC.2026-08-19.DIFF-FOLLOWS-IDENTITY` | решение · product | active | нет | Сравнение опирается на идентичность, а не на имена | [decisions/2026-08-19-diff-follows-identity.md](decisions/2026-08-19-diff-follows-identity.md) |
 | `DEC.2026-08-19.EMPTY-BRANCH-IS-VISIBLE` | решение · product | active | нет | Пустая ветка присутствует в ответе со счётчиком ноль | [decisions/2026-08-19-empty-branch-is-visible.md](decisions/2026-08-19-empty-branch-is-visible.md) |
 | `DEC.2026-08-19.ENTRY-APPLY` | решение · product | active | нет | `apply` — один писатель на всё дерево | [decisions/2026-08-19-entry-apply.md](decisions/2026-08-19-entry-apply.md) |

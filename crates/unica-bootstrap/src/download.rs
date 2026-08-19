@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::error::{BootstrapError, Failure, Result};
 
@@ -9,45 +9,36 @@ pub trait Downloader: Send + Sync {
     fn download(&self, url: &str, destination: &Path) -> Result<()>;
 }
 
-/// Сколько времени отведено одной загрузке целиком.
-///
-/// `timeout_read` ловит замерший канал, но не ловит сочащийся: сервер, отдающий
-/// байт раз в полминуты, укладывается в каждый отдельный таймаут и не кончается
-/// никогда. Бюджет на всю загрузку закрывает эту дыру.
-///
-/// Полчаса выведены из худшего замеренного у пользователя канала: самый крупный
-/// архив, 69 МБ, при 0,5 МБ/с едет 138 с, и до получаса остаётся запас на канал
-/// в тринадцать раз медленнее. Истёкший бюджет ничего не теряет: полученное
-/// лежит на диске, и следующая попытка продолжает с того же места.
-const DOWNLOAD_BUDGET: Duration = Duration::from_secs(30 * 60);
-
-/// Шаг чтения. Бюджет проверяется между шагами, поэтому шаг задаёт и точность
-/// проверки.
+/// Шаг чтения.
 const CHUNK: usize = 64 * 1024;
 
+/// Загрузчик без общего срока на загрузку.
+///
+/// Бюджет в продукте есть один — стартовый бюджет хоста, и принадлежит он
+/// запуску MCP. У доставки его нет и быть не может: движок качают, чтобы им
+/// пользоваться, и оборванный по таймеру канал не даёт ни движка, ни причины.
+/// Медленный канал — это медленно, а не сломано.
+///
+/// Замерший канал ловится по-прежнему: `timeout_read` отмеряет тишину между
+/// байтами, а не длину всей загрузки. Разница существенна — первое означает,
+/// что байты кончились, второе лишь то, что их много.
 pub struct HttpDownloader {
     agent: ureq::Agent,
-    budget: Duration,
 }
 
 impl Default for HttpDownloader {
     fn default() -> Self {
-        Self::with_budget(DOWNLOAD_BUDGET)
-    }
-}
-
-impl HttpDownloader {
-    pub fn with_budget(budget: Duration) -> Self {
         Self {
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(30))
                 .timeout_read(Duration::from_secs(60))
                 .redirects(5)
                 .build(),
-            budget,
         }
     }
+}
 
+impl HttpDownloader {
     /// Перенести байты, продолжив с того места, где оборвалась прошлая попытка.
     ///
     /// Схему проверяет вызывающий: здесь только перенос.
@@ -97,22 +88,10 @@ impl HttpDownloader {
         };
         let start = if resumed { received } else { 0 };
 
-        let deadline = Instant::now() + self.budget;
         let mut reader = response.into_reader();
         let mut buffer = vec![0_u8; CHUNK];
         let mut moved = 0_u64;
         loop {
-            if Instant::now() >= deadline {
-                output.sync_all()?;
-                return Err(BootstrapError::of(
-                    Failure::Timeout,
-                    format!(
-                        "runtime asset {url} exhausted the {}s download budget after {} bytes",
-                        self.budget.as_secs(),
-                        start + moved
-                    ),
-                ));
-            }
             let read = reader.read(&mut buffer).map_err(|error| {
                 BootstrapError::of(
                     Failure::Network,
@@ -246,7 +225,7 @@ mod tests {
                             if stream.write_all(&[*byte]).is_err() || stream.flush().is_err() {
                                 break;
                             }
-                            thread::sleep(Duration::from_millis(50));
+                            thread::sleep(Duration::from_millis(1));
                         }
                     }
                     _ => {
@@ -305,23 +284,19 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_ends_a_channel_that_never_finishes() {
-        let stand = serve(payload(4096), Ranges::Trickle);
-        let destination = scratch("budget");
+    fn a_slow_channel_is_not_cut_off_for_being_slow() {
+        // Бюджет принадлежит запуску MCP, а не доставке: движок качают, чтобы
+        // им пользоваться. Канал, который ползёт, доезжает; тишину между
+        // байтами по-прежнему отмеряет `timeout_read`.
+        let bytes = payload(256);
+        let stand = serve(bytes.clone(), Ranges::Trickle);
+        let destination = scratch("slow");
 
-        let error = HttpDownloader::with_budget(Duration::from_millis(400))
+        HttpDownloader::default()
             .transfer(&stand.url, &destination)
-            .expect_err("бесконечный канал обязан кончиться отказом");
+            .expect("медленный канал доезжает");
 
-        assert!(
-            error.to_string().contains("budget"),
-            "отказ называет причину: {error}"
-        );
-        let received = fs::metadata(&destination).expect("partial file").len();
-        assert!(
-            received > 0 && received < 4096,
-            "полученное остаётся следующей попытке: {received} байт"
-        );
+        assert_eq!(fs::read(&destination).expect("whole file"), bytes);
     }
 
     #[test]
