@@ -206,8 +206,11 @@ fn write_ready_marker(
 }
 
 fn installation(root: PathBuf, target: &TargetRuntime) -> RuntimeInstallation {
+    // Устанавливает bootstrap только ядро, а у ядра точка входа проверена
+    // манифестом. Пустое значение сюда не доходит.
+    let entrypoint = target.entrypoint.clone().unwrap_or_default();
     RuntimeInstallation {
-        entrypoint: root.join(&target.entrypoint),
+        entrypoint: root.join(entrypoint),
         root,
     }
 }

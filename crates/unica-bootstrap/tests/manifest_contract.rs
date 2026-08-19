@@ -60,8 +60,9 @@ fn valid_manifest_selects_the_requested_target() {
         manifest
             .target(HostTarget::LinuxX64)
             .expect("linux target")
-            .entrypoint,
-        "bin/linux-x64/unica"
+            .entrypoint
+            .as_deref(),
+        Some("bin/linux-x64/unica")
     );
 }
 

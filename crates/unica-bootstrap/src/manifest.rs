@@ -63,7 +63,10 @@ pub struct ReleaseIdentity {
 pub struct TargetRuntime {
     pub asset: RuntimeAsset,
     pub files: Vec<RuntimeFile>,
-    pub entrypoint: String,
+    /// Что запускает bootstrap. Есть только у ядра: движок он не запускает,
+    /// его зовёт рантайм, и точка входа там своя на каждый инструмент.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -269,18 +272,19 @@ fn validate_target(
             )));
         }
     }
-    validate_runtime_path(&target.entrypoint)?;
-    if !paths.contains(target.entrypoint.as_str()) {
+    let Some(entrypoint) = target.entrypoint.as_deref() else {
+        return Ok(());
+    };
+    validate_runtime_path(entrypoint)?;
+    if !paths.contains(entrypoint) {
         return Err(BootstrapError::new(format!(
-            "runtime entrypoint {} is not declared in files",
-            target.entrypoint
+            "runtime entrypoint {entrypoint} is not declared in files"
         )));
     }
     let expected_entrypoint = format!("bin/{name}/{}", host.executable_name());
-    if target.entrypoint != expected_entrypoint {
+    if entrypoint != expected_entrypoint {
         return Err(BootstrapError::new(format!(
-            "runtime entrypoint {} != {expected_entrypoint}",
-            target.entrypoint
+            "runtime entrypoint {entrypoint} != {expected_entrypoint}"
         )));
     }
     Ok(())

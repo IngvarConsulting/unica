@@ -126,17 +126,28 @@ def set_file_mode(path: Path, *, executable: bool) -> None:
     path.chmod(0o755 if executable else 0o644)
 
 
+def artifact_name(tool: dict) -> str:
+    """Имя скачиваемого архива. Несколько инструментов делят один: у RLM это
+    `rlm-tools-bsl` на `rlm-bsl-mcp` и `rlm-bsl-index`. Где архив свой,
+    артефакт зовётся как инструмент."""
+    return tool.get("releaseName", tool["name"])
+
+
 def runtime_file_entry(
     path: Path,
     *,
     relative_path: str,
     executable: bool,
+    artifact: str,
 ) -> dict:
     return {
         "path": relative_path,
         "sha256": sha256(path),
         "size": path.stat().st_size,
         "executable": executable,
+        # Из какого артефакта приехал файл: без этого разрезать поставку
+        # нечем — замыкание плоское и принадлежности не помнит.
+        "artifact": artifact,
     }
 
 
@@ -213,6 +224,7 @@ def materialize_archive_group(
                 destination,
                 relative_path=relative,
                 executable=item.executable,
+                artifact=artifact_name(first),
             )
         )
         by_archive_path[item.path.as_posix()] = destination
@@ -337,10 +349,12 @@ def tool_entry(
     license_id: str,
     binary: Path,
     relative_binary: str,
+    artifact: str,
 ) -> dict:
     return {
         "name": name,
         "version": version,
+        "artifact": artifact,
         "repository": repository,
         "upstreamUrl": f"{repository}/releases/tag/{tag}",
         "sourceTag": tag,
@@ -451,6 +465,7 @@ def build_locked_bundle(
                 dest,
                 relative_path=f"bin/{args.target}/{dest.name}",
                 executable=True,
+                artifact=artifact_name(tool),
             )
         )
 
@@ -486,6 +501,7 @@ def build_locked_bundle(
                 path,
                 relative_path=f"bin/{args.target}/{path.name}",
                 executable=True,
+                artifact=artifact_name(tool),
             )
         )
     tools = [
@@ -500,6 +516,7 @@ def build_locked_bundle(
             license_id=tool["license"],
             binary=built_paths[tool["name"]],
             relative_binary=f"bin/{args.target}/{built_paths[tool['name']].name}",
+            artifact=artifact_name(tool),
         )
         for tool in lock["tools"]
     ]
