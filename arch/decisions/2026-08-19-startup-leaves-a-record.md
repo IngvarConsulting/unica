@@ -2,7 +2,7 @@
 id: DEC.2026-08-19.STARTUP-LEAVES-A-RECORD
 status: active
 governs: product
-realized: null
+realized: crates/unica-bootstrap/src/attempt.rs::a_new_attempt_does_not_erase_the_one_nobody_closed
 supersedes: []
 superseded-by: null
 establishes: []
