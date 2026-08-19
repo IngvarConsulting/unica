@@ -28,6 +28,9 @@
 | `DEC.2026-08-19.ARTIFACT-VERSIONED-CACHE` | решение · product | active | нет | Артефакт кешируется по своей версии, а не по версии плагина | [decisions/2026-08-19-artifact-versioned-cache.md](decisions/2026-08-19-artifact-versioned-cache.md) |
 | `DEC.2026-08-19.CORE-FIRST-ACQUISITION` | решение · product | active | нет | В стартовый бюджет едет только ядро | [decisions/2026-08-19-core-first-acquisition.md](decisions/2026-08-19-core-first-acquisition.md) |
 | `DEC.2026-08-19.DECISIONS-FORM-INSIDE` | решение · process | active | да | Решение формируется в реестре, а не в трекере | [decisions/2026-08-19-decisions-form-inside.md](decisions/2026-08-19-decisions-form-inside.md) |
+| `DEC.2026-08-19.DEFAULTS-PROVED-BY-PAIRS` | решение · product | active | нет | Подавление умолчаний доказывается парой объектов, а не таблицей | [decisions/2026-08-19-defaults-proved-by-pairs.md](decisions/2026-08-19-defaults-proved-by-pairs.md) |
+| `DEC.2026-08-19.DIFF-FOLLOWS-IDENTITY` | решение · product | active | нет | Сравнение опирается на идентичность, а не на имена | [decisions/2026-08-19-diff-follows-identity.md](decisions/2026-08-19-diff-follows-identity.md) |
+| `DEC.2026-08-19.EMPTY-BRANCH-IS-VISIBLE` | решение · product | active | нет | Пустая ветка присутствует в ответе со счётчиком ноль | [decisions/2026-08-19-empty-branch-is-visible.md](decisions/2026-08-19-empty-branch-is-visible.md) |
 | `DEC.2026-08-19.ENTRY-APPLY` | решение · product | active | нет | `apply` — один писатель на всё дерево | [decisions/2026-08-19-entry-apply.md](decisions/2026-08-19-entry-apply.md) |
 | `DEC.2026-08-19.ENTRY-CHECK` | решение · product | active | нет | `check` — здоровье пространства и годность узла | [decisions/2026-08-19-entry-check.md](decisions/2026-08-19-entry-check.md) |
 | `DEC.2026-08-19.ENTRY-DIFF` | решение · product | active | нет | `diff` — сравнение как отдельный вопрос | [decisions/2026-08-19-entry-diff.md](decisions/2026-08-19-entry-diff.md) |
@@ -46,6 +49,7 @@
 | `DEC.2026-08-19.RULE-CLAIMS-ONLY-WHAT-IT-CHECKS` | решение · process | active | да | Правило заявляет ровно то, что проверяет | [decisions/2026-08-19-rule-claims-only-what-it-checks.md](decisions/2026-08-19-rule-claims-only-what-it-checks.md) |
 | `DEC.2026-08-19.STARTUP-LEAVES-A-RECORD` | решение · product | active | нет | Запуск оставляет след, который переживает убийство | [decisions/2026-08-19-startup-leaves-a-record.md](decisions/2026-08-19-startup-leaves-a-record.md) |
 | `DEC.2026-08-19.SURFACE-BY-QUESTION` | решение · product | active | нет | Вход отвечает на вопрос, а не обслуживает предмет | [decisions/2026-08-19-surface-by-question.md](decisions/2026-08-19-surface-by-question.md) |
+| `DEC.2026-08-19.VOCABULARY-BY-PROJECTION` | решение · product | active | нет | Словарь свойств узла читается проекцией, а не целиком | [decisions/2026-08-19-vocabulary-by-projection.md](decisions/2026-08-19-vocabulary-by-projection.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Конфигурация вызова разрешается снимком | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEPENDENCY-DIRECTION` | инвариант · process | active |  | Направление зависимостей между слоями закреплено проверкой | [invariants/INV.APP.DEPENDENCY-DIRECTION.md](invariants/INV.APP.DEPENDENCY-DIRECTION.md) |
 | `INV.APP.HIDDEN-SERVICES` | инвариант · product | active |  | Внутренние сервисы привязаны к рабочему пространству | [invariants/INV.APP.HIDDEN-SERVICES.md](invariants/INV.APP.HIDDEN-SERVICES.md) |
