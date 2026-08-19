@@ -1482,11 +1482,14 @@ fn open_extension_container(
         };
     }
     // An unsafe or uncontained route is not a container either: the path leaves the
-    // workspace, and nothing reachable through it could be resolved later anyway.
-    let Ok(opened) = health_source_directory_opened(workspace_root, relative) else {
+    // workspace, and nothing reachable through it could be resolved later anyway. Only
+    // that verdict is turned into "no container here" — a failure to normalize the
+    // workspace itself is about the workspace, not about this layout, and still
+    // propagates.
+    if inspect_declared_source_root_route(workspace_root, relative).is_err() {
         return Ok(None);
-    };
-    match opened {
+    }
+    match health_source_directory_opened(workspace_root, relative)? {
         Ok(directory) => Ok(directory.map(ProbeDirectory::Retained)),
         Err(error) if open_failure_is_wrong_kind(&error) => Ok(None),
         Err(error) => Err(format!(
