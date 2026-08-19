@@ -156,6 +156,24 @@ class ProductImmutabilityTests(unittest.TestCase):
         self.fixture.product.write_text(stamped, encoding="utf-8")
         self.assertEqual(len(self.fixture.inspect().offenders), 1)
 
+    def test_stamping_a_realization_is_allowed(self) -> None:
+        """Evidence that a decision got built arrives after the decision does."""
+        stamped = PRODUCT.replace(
+            "realized: null",
+            "realized: tests/arch/test_product_immutability.py::test_stamping_a_realization_is_allowed",
+        )
+        self.assertNotEqual(stamped, PRODUCT, "the fixture must carry an unrealized decision")
+        self.fixture.product.write_text(stamped, encoding="utf-8")
+        self.assertEqual(self.fixture.inspect().offenders, ())
+
+    def test_a_realization_stamp_may_not_smuggle_a_body_edit(self) -> None:
+        stamped = PRODUCT.replace(
+            "realized: null",
+            "realized: tests/arch/test_product_immutability.py::test_stamping_a_realization_is_allowed",
+        ).replace("так, а не иначе", "уже совсем иначе")
+        self.fixture.product.write_text(stamped, encoding="utf-8")
+        self.assertEqual(len(self.fixture.inspect().offenders), 1)
+
     def test_editing_a_product_rule_without_a_new_ground_is_caught(self) -> None:
         """Silently rewording a rule is silently moving the promise."""
         self.fixture.rule.write_text(

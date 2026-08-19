@@ -2,7 +2,7 @@
 id: DEC.2026-08-19.ARTIFACT-VERSIONED-CACHE
 status: active
 governs: product
-realized: null
+realized: crates/unica-bootstrap/tests/runtime_install.rs::the_install_path_is_keyed_by_the_artifact_version
 supersedes: []
 superseded-by: null
 establishes: []

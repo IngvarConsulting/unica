@@ -5,7 +5,9 @@
 его молча нельзя. Но виды обещаний живут по-разному, поэтому и дисциплины две.
 
 Решение говорит, что было выбрано на его дату. Его не правят: заводят преемника,
-а старому ставят `superseded` и имя заменившего.
+а старому ставят `superseded` и имя заменившего. Отметка о реализации сюда не
+относится: она говорит не о решении, а о мире вокруг него, и появляется позже
+самого решения по построению.
 
 Инвариант и контракт описывают действующее правило, а правило со временем
 уточняется. Их править можно — но только вместе с решением, которое этой же
@@ -42,9 +44,16 @@ sys.modules[_SPEC.name] = _REGISTRY
 _SPEC.loader.exec_module(_REGISTRY)
 
 ARCH_PREFIX = "arch/"
-# Замена — единственная законная правка принятой записи, и она трогает ровно эти
-# два поля. Всё прочее означает, что запись переписали задним числом.
+# Замена трогает ровно эти два поля.
 SUPERSESSION_FIELDS = ("status", "superseded-by")
+# А это — всё, что можно проставить принятой записи, не переписав её.
+#
+# `realized` держит адрес свидетельства, что решение построено. Свидетельство
+# появляется после решения — иначе решение принималось бы задним числом, — и
+# запретить его записывать значит запретить реестру знать, что построено.
+# Рассуждением оно не является, поэтому под запрет на правку не подпадает; что
+# названный адрес существует, сторожит отдельное правило.
+RECORDABLE_FIELDS = SUPERSESSION_FIELDS + ("realized",)
 
 
 @dataclass(frozen=True)
@@ -84,8 +93,8 @@ def _split(text: str) -> tuple[dict, str]:
         return {}, text
 
 
-def _is_supersession_only(before: str, after: str) -> bool:
-    """Правка сводится к простановке замены и ничему больше."""
+def _is_recordable_only(before: str, after: str) -> bool:
+    """Правка сводится к простановке отметки и ничему больше."""
     old_props, old_body = _split(before)
     new_props, new_body = _split(after)
     if old_body != new_body:
@@ -93,7 +102,7 @@ def _is_supersession_only(before: str, after: str) -> bool:
     if set(old_props) != set(new_props):
         return False
     changed = [key for key in old_props if old_props[key] != new_props[key]]
-    if not changed or any(key not in SUPERSESSION_FIELDS for key in changed):
+    if not changed or any(key not in RECORDABLE_FIELDS for key in changed):
         return False
     if "status" in changed and new_props["status"] != "superseded":
         return False
@@ -143,7 +152,7 @@ def inspect(repo: Path, base_ref: str) -> Verdict:
             continue
 
         if path.startswith("arch/decisions/"):
-            if not _is_supersession_only(before, after):
+            if not _is_recordable_only(before, after):
                 offenders.append(f"{path}: продуктовое решение отредактировано, а не заменено")
             continue
 

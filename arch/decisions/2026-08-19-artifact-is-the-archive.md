@@ -2,7 +2,7 @@
 id: DEC.2026-08-19.ARTIFACT-IS-THE-ARCHIVE
 status: active
 governs: product
-realized: null
+realized: tests/ci/test_package_unica_runtime.py::test_runtime_archive_is_deterministic_and_target_only
 supersedes: []
 superseded-by: null
 establishes: []

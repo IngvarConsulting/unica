@@ -2,7 +2,7 @@
 id: DEC.2026-08-19.CORE-FIRST-ACQUISITION
 status: active
 governs: product
-realized: null
+realized: crates/unica-bootstrap/tests/runtime_install.rs::the_core_installs_without_any_engine_present
 supersedes: []
 superseded-by: null
 establishes: []
