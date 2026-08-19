@@ -1875,10 +1875,6 @@ fn health_source_directory(
 /// here" from "this could not be read" classifies on `ErrorKind` rather than on the
 /// text of an OS message, which differs by platform and by locale. `Ok(None)` is the
 /// absent directory, which every caller treats the same way.
-#[allow(
-    clippy::type_complexity,
-    reason = "route failure and open failure are distinct outcomes"
-)]
 fn health_source_directory_opened(
     workspace_root: &Path,
     configured_path: &str,
