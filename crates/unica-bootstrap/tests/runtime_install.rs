@@ -10,7 +10,8 @@ use flate2::Compression;
 use sha2::{Digest, Sha256};
 use tar::{Builder, EntryType, Header};
 use unica_bootstrap::{
-    BootstrapError, Downloader, HostTarget, RuntimeFile, RuntimeInstaller, RuntimeManifest,
+    AttemptLog, BootstrapError, Downloader, Failure, HostTarget, RuntimeFile, RuntimeInstaller,
+    RuntimeManifest, Stage,
 };
 use uuid::Uuid;
 
@@ -418,6 +419,15 @@ fn collecting_does_not_touch_the_lock_and_transaction_areas() {
         b"half an archive",
     )
     .expect("partial download");
+    fs::create_dir_all(cache.join(".attempts").join("unica")).expect("attempts");
+    fs::write(
+        cache
+            .join(".attempts")
+            .join("unica")
+            .join("0.13.0-linux-x64.jsonl"),
+        b"{}\n",
+    )
+    .expect("attempt record");
 
     RuntimeInstaller::collect(&cache, 1).expect("collect");
 
@@ -431,6 +441,14 @@ fn collecting_does_not_touch_the_lock_and_transaction_areas() {
             .join("0.13.0-linux-x64.tar.gz")
             .is_file(),
         "недокачка переживает сборку мусора: её ждёт следующая сессия"
+    );
+    assert!(
+        cache
+            .join(".attempts")
+            .join("unica")
+            .join("0.13.0-linux-x64.jsonl")
+            .is_file(),
+        "запись о попытке переживает сборку мусора: о ней ещё не сообщили"
     );
     fs::remove_dir_all(&cache).ok();
 }
@@ -773,5 +791,167 @@ fn two_sessions_acquire_one_engine_once() {
 
     assert_eq!(roots[0], roots[1]);
     assert_eq!(downloader.calls(), 1, "две сессии качают движок один раз");
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// Загрузчик, у которого канал не отвечает.
+struct DeadChannel;
+
+impl Downloader for DeadChannel {
+    fn download(&self, url: &str, _destination: &Path) -> unica_bootstrap::Result<()> {
+        Err(BootstrapError::of(
+            Failure::Network,
+            format!("failed to download runtime asset {url}: connection refused"),
+        ))
+    }
+}
+
+#[test]
+fn a_checksum_mismatch_is_told_apart_from_a_broken_channel() {
+    // Убитая посреди старта сессия текста не увидит: различать отказы придётся
+    // по коду выхода.
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+
+    let poisoned = temp_dir("kind-checksum");
+    let checksum = RuntimeInstaller::new(
+        poisoned.clone(),
+        "0.7.0",
+        Arc::new(FakeDownloader::new(b"not a gzip".to_vec())),
+    )
+    .ensure(&manifest, HostTarget::LinuxX64)
+    .expect_err("сумма не сходится");
+
+    let offline = temp_dir("kind-network");
+    let network = RuntimeInstaller::new(offline.clone(), "0.7.0", Arc::new(DeadChannel))
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect_err("канал мёртв");
+
+    assert_eq!(checksum.failure(), Failure::Checksum);
+    assert_eq!(network.failure(), Failure::Network);
+    assert_ne!(checksum.exit_code(), network.exit_code());
+    fs::remove_dir_all(&poisoned).ok();
+    fs::remove_dir_all(&offline).ok();
+}
+
+#[test]
+fn a_host_the_release_does_not_serve_is_a_configuration_failure() {
+    let error = HostTarget::detect("plan9", "risc-v").expect_err("цель не обслуживается");
+
+    assert_eq!(error.failure(), Failure::Configuration);
+    assert_eq!(error.exit_code(), 78, "тот же смысл, что у 78 в launch.sh");
+}
+
+#[test]
+fn a_manifest_that_does_not_validate_is_a_configuration_failure() {
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    // Версия плагина разошлась с манифестом: поставка собрана не для этого
+    // загрузчика, и качать по ней нечего.
+    let manifest = manifest_with(&archive, runtime, "0.7.0", "0.7.0");
+    let cache = temp_dir("kind-configuration");
+
+    let error = RuntimeInstaller::new(
+        cache.clone(),
+        "0.8.0",
+        Arc::new(FakeDownloader::new(archive)),
+    )
+    .ensure(&manifest, HostTarget::LinuxX64)
+    .expect_err("манифест не для этой версии плагина");
+
+    assert_eq!(error.failure(), Failure::Configuration);
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// Загрузчик, заглядывающий в журнал попыток посреди загрузки: ровно в этот
+/// момент хост и убивает дерево процессов.
+struct PeekingDownloader {
+    bytes: Vec<u8>,
+    cache: PathBuf,
+    seen: std::sync::Mutex<Vec<(String, Stage)>>,
+}
+
+impl Downloader for PeekingDownloader {
+    fn download(&self, _url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+        let open = AttemptLog::in_cache(&self.cache)
+            .unfinished()
+            .expect("read the attempt log");
+        *self.seen.lock().expect("seen") = open
+            .into_iter()
+            .map(|attempt| (attempt.artifact, attempt.stage))
+            .collect();
+        let mut file = fs::File::create(destination)?;
+        file.write_all(&self.bytes)?;
+        file.sync_all()?;
+        Ok(())
+    }
+}
+
+#[test]
+fn an_attempt_is_already_open_while_the_download_runs() {
+    // Запись открывается до стадии, а не после неё: у убитого процесса второго
+    // шанса не будет.
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("attempt-open");
+    let downloader = Arc::new(PeekingDownloader {
+        bytes: archive,
+        cache: cache.clone(),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+
+    RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect("install");
+
+    assert_eq!(
+        *downloader.seen.lock().expect("seen"),
+        vec![("unica".to_owned(), Stage::Download)],
+        "посреди загрузки попытка уже записана"
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn a_finished_install_leaves_nothing_unfinished() {
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("attempt-closed");
+
+    RuntimeInstaller::new(
+        cache.clone(),
+        "0.7.0",
+        Arc::new(FakeDownloader::new(archive)),
+    )
+    .ensure(&manifest, HostTarget::LinuxX64)
+    .expect("install");
+
+    assert!(AttemptLog::in_cache(&cache)
+        .unfinished()
+        .expect("read the attempt log")
+        .is_empty());
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn a_failure_the_bootstrap_reported_is_not_repeated_by_the_next_session() {
+    // О замеченном отказе сказано кодом выхода и потоком ошибок. Показывать его
+    // ещё раз следующей сессией значит показывать одно дважды.
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("attempt-reported");
+
+    RuntimeInstaller::new(cache.clone(), "0.7.0", Arc::new(DeadChannel))
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect_err("канал мёртв");
+
+    assert!(AttemptLog::in_cache(&cache)
+        .unfinished()
+        .expect("read the attempt log")
+        .is_empty());
     fs::remove_dir_all(&cache).ok();
 }

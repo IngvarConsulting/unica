@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{BootstrapError, Result};
+use crate::error::{BootstrapError, Failure, Result};
 use crate::platform::HostTarget;
 
 const SOURCE_REPOSITORY: &str = "https://github.com/IngvarConsulting/unica";
@@ -90,16 +90,22 @@ pub struct RuntimeFile {
 impl RuntimeManifest {
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = fs::read(path).map_err(|error| {
-            BootstrapError::new(format!(
-                "failed to read runtime manifest {}: {error}",
-                path.display()
-            ))
+            BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "failed to read runtime manifest {}: {error}",
+                    path.display()
+                ),
+            )
         })?;
         serde_json::from_slice(&bytes).map_err(|error| {
-            BootstrapError::new(format!(
-                "failed to parse runtime manifest {}: {error}",
-                path.display()
-            ))
+            BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "failed to parse runtime manifest {}: {error}",
+                    path.display()
+                ),
+            )
         })
     }
 
@@ -117,33 +123,42 @@ impl RuntimeManifest {
 
     pub fn validate(&self, plugin_version: &str) -> Result<()> {
         if self.schema_version != 2 {
-            return Err(BootstrapError::new(format!(
-                "unsupported runtime manifest schemaVersion {}",
-                self.schema_version
-            )));
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "unsupported runtime manifest schemaVersion {}",
+                    self.schema_version
+                ),
+            ));
         }
         if self.plugin_version != plugin_version {
-            return Err(BootstrapError::new(format!(
-                "runtime manifest plugin version {} != {plugin_version}",
-                self.plugin_version
-            )));
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "runtime manifest plugin version {} != {plugin_version}",
+                    self.plugin_version
+                ),
+            ));
         }
         if self.source.repository != SOURCE_REPOSITORY
             || self.release.repository != SOURCE_REPOSITORY
         {
-            return Err(BootstrapError::new(
+            return Err(BootstrapError::of(
+                Failure::Configuration,
                 "runtime manifest repository identity is not IngvarConsulting/unica",
             ));
         }
 
         if self.development {
             if self.source.commit != "workspace" || self.release.tag != "workspace" {
-                return Err(BootstrapError::new(
+                return Err(BootstrapError::of(
+                    Failure::Configuration,
                     "development runtime manifest must use workspace identities",
                 ));
             }
             if !self.artifacts.is_empty() {
-                return Err(BootstrapError::new(
+                return Err(BootstrapError::of(
+                    Failure::Configuration,
                     "development runtime manifest must not publish target assets",
                 ));
             }
@@ -151,39 +166,47 @@ impl RuntimeManifest {
         }
 
         if !is_lower_hex(&self.source.commit, 40) {
-            return Err(BootstrapError::new(
+            return Err(BootstrapError::of(
+                Failure::Configuration,
                 "runtime manifest source commit must be 40 lowercase hexadecimal characters",
             ));
         }
         let expected_tag = format!("v{}", self.plugin_version);
         if self.release.tag != expected_tag {
-            return Err(BootstrapError::new(format!(
-                "runtime manifest release tag {} != {expected_tag}",
-                self.release.tag
-            )));
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "runtime manifest release tag {} != {expected_tag}",
+                    self.release.tag
+                ),
+            ));
         }
 
         if self.artifacts.is_empty() {
-            return Err(BootstrapError::new(
+            return Err(BootstrapError::of(
+                Failure::Configuration,
                 "runtime manifest publishes no artifacts",
             ));
         }
         let core = self.core()?;
         if core.role != ArtifactRole::Core {
-            return Err(BootstrapError::new(format!(
-                "artifact {CORE_ARTIFACT} must carry role core"
-            )));
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!("artifact {CORE_ARTIFACT} must carry role core"),
+            ));
         }
         for (name, artifact) in &self.artifacts {
             if (name == CORE_ARTIFACT) != (artifact.role == ArtifactRole::Core) {
-                return Err(BootstrapError::new(format!(
-                    "artifact {name} declares a role that does not match its name"
-                )));
+                return Err(BootstrapError::of(
+                    Failure::Configuration,
+                    format!("artifact {name} declares a role that does not match its name"),
+                ));
             }
             if artifact.version.is_empty() {
-                return Err(BootstrapError::new(format!(
-                    "artifact {name} has no version"
-                )));
+                return Err(BootstrapError::of(
+                    Failure::Configuration,
+                    format!("artifact {name} has no version"),
+                ));
             }
             let actual_targets = artifact
                 .targets
@@ -195,10 +218,13 @@ impl RuntimeManifest {
                 .map(|target| target.as_str())
                 .collect::<BTreeSet<_>>();
             if actual_targets != expected_targets {
-                return Err(BootstrapError::new(format!(
-                    "artifact {name} targets {:?} != {:?}",
-                    actual_targets, expected_targets
-                )));
+                return Err(BootstrapError::of(
+                    Failure::Configuration,
+                    format!(
+                        "artifact {name} targets {:?} != {:?}",
+                        actual_targets, expected_targets
+                    ),
+                ));
             }
             for host_target in HostTarget::ALL {
                 validate_target(
@@ -216,13 +242,19 @@ impl RuntimeManifest {
     /// молчаливое обращение к ядру скрыло бы опечатку в имени движка.
     pub fn artifact_target(&self, artifact: &str, target: HostTarget) -> Result<&TargetRuntime> {
         let entry = self.artifacts.get(artifact).ok_or_else(|| {
-            BootstrapError::new(format!("runtime manifest has no artifact {artifact}"))
+            BootstrapError::of(
+                Failure::Configuration,
+                format!("runtime manifest has no artifact {artifact}"),
+            )
         })?;
         entry.targets.get(target.as_str()).ok_or_else(|| {
-            BootstrapError::new(format!(
-                "artifact {artifact} does not contain target {}",
-                target.as_str()
-            ))
+            BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "artifact {artifact} does not contain target {}",
+                    target.as_str()
+                ),
+            )
         })
     }
 
@@ -242,39 +274,45 @@ fn validate_target(
     // с прежним, поэтому выпуск не переименовывает опубликованные файлы.
     let expected_asset = format!("{artifact}-runtime-{name}.tar.gz");
     if target.asset.name != expected_asset {
-        return Err(BootstrapError::new(format!(
-            "runtime asset {} != {expected_asset}",
-            target.asset.name
-        )));
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("runtime asset {} != {expected_asset}", target.asset.name),
+        ));
     }
     let expected_prefix =
         format!("https://github.com/IngvarConsulting/unica/releases/download/{release_tag}/");
     if target.asset.url != format!("{expected_prefix}{expected_asset}") {
-        return Err(BootstrapError::new(format!(
-            "runtime asset URL for {name} is outside the approved release origin"
-        )));
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("runtime asset URL for {name} is outside the approved release origin"),
+        ));
     }
     if target.asset.media_type != "application/gzip" {
-        return Err(BootstrapError::new(format!(
-            "runtime asset mediaType for {name} must be application/gzip"
-        )));
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("runtime asset mediaType for {name} must be application/gzip"),
+        ));
     }
     validate_sha256("runtime archive", &target.asset.sha256)?;
 
     if target.files.is_empty() {
-        return Err(BootstrapError::new(format!(
-            "runtime target {name} has no files"
-        )));
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("runtime target {name} has no files"),
+        ));
     }
     let mut paths = BTreeSet::new();
     for file in &target.files {
         validate_runtime_path(&file.path)?;
         validate_sha256(&file.path, &file.sha256)?;
         if !paths.insert(file.path.as_str()) {
-            return Err(BootstrapError::new(format!(
-                "runtime target {name} contains duplicate file {}",
-                file.path
-            )));
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "runtime target {name} contains duplicate file {}",
+                    file.path
+                ),
+            ));
         }
     }
     let Some(entrypoint) = target.entrypoint.as_deref() else {
@@ -282,15 +320,17 @@ fn validate_target(
     };
     validate_runtime_path(entrypoint)?;
     if !paths.contains(entrypoint) {
-        return Err(BootstrapError::new(format!(
-            "runtime entrypoint {entrypoint} is not declared in files"
-        )));
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("runtime entrypoint {entrypoint} is not declared in files"),
+        ));
     }
     let expected_entrypoint = format!("bin/{name}/{}", host.executable_name());
     if entrypoint != expected_entrypoint {
-        return Err(BootstrapError::new(format!(
-            "runtime entrypoint {entrypoint} != {expected_entrypoint}"
-        )));
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("runtime entrypoint {entrypoint} != {expected_entrypoint}"),
+        ));
     }
     Ok(())
 }
@@ -307,18 +347,20 @@ fn validate_runtime_path(value: &str) -> Result<()> {
             )
         });
     if unsafe_path {
-        return Err(BootstrapError::new(format!(
-            "unsafe runtime file path: {value}"
-        )));
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("unsafe runtime file path: {value}"),
+        ));
     }
     Ok(())
 }
 
 fn validate_sha256(label: &str, value: &str) -> Result<()> {
     if !is_lower_hex(value, 64) {
-        return Err(BootstrapError::new(format!(
-            "{label} sha256 must be 64 lowercase hexadecimal characters"
-        )));
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("{label} sha256 must be 64 lowercase hexadecimal characters"),
+        ));
     }
     Ok(())
 }

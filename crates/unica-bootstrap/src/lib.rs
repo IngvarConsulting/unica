@@ -1,6 +1,7 @@
 //! Native bootstrap for the thin Unica plugin.
 
 mod archive;
+mod attempt;
 mod cache;
 mod download;
 mod error;
@@ -10,9 +11,10 @@ mod platform;
 mod verification;
 
 pub use archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files};
+pub use attempt::{AttemptLog, AttemptSubject, OpenAttempt, Stage, UnfinishedAttempt};
 pub use cache::{RuntimeInstallation, RuntimeInstaller};
 pub use download::{Downloader, HttpDownloader};
-pub use error::{BootstrapError, Result};
+pub use error::{BootstrapError, Failure, Result};
 pub use host::{provider_state_root, runtime_cache_root, verify_installed_plugin_metadata};
 pub use manifest::{
     ReleaseIdentity, RuntimeAsset, RuntimeFile, RuntimeManifest, SourceIdentity, TargetRuntime,
