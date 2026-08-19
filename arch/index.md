@@ -44,6 +44,7 @@
 | `DEC.2026-08-19.REALIZATION-AXIS` | решение · process | active | да | Решённое и построенное — разные оси | [decisions/2026-08-19-realization-axis.md](decisions/2026-08-19-realization-axis.md) |
 | `DEC.2026-08-19.REGISTRY-GUARDS-RUN` | решение · process | active | да | Правила о реестре проверяются там же, где правила о продукте | [decisions/2026-08-19-registry-guards-run.md](decisions/2026-08-19-registry-guards-run.md) |
 | `DEC.2026-08-19.RULE-CLAIMS-ONLY-WHAT-IT-CHECKS` | решение · process | active | да | Правило заявляет ровно то, что проверяет | [decisions/2026-08-19-rule-claims-only-what-it-checks.md](decisions/2026-08-19-rule-claims-only-what-it-checks.md) |
+| `DEC.2026-08-19.STARTUP-LEAVES-A-RECORD` | решение · product | active | нет | Запуск оставляет след, который переживает убийство | [decisions/2026-08-19-startup-leaves-a-record.md](decisions/2026-08-19-startup-leaves-a-record.md) |
 | `DEC.2026-08-19.SURFACE-BY-QUESTION` | решение · product | active | нет | Вход отвечает на вопрос, а не обслуживает предмет | [decisions/2026-08-19-surface-by-question.md](decisions/2026-08-19-surface-by-question.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Конфигурация вызова разрешается снимком | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEPENDENCY-DIRECTION` | инвариант · process | active |  | Направление зависимостей между слоями закреплено проверкой | [invariants/INV.APP.DEPENDENCY-DIRECTION.md](invariants/INV.APP.DEPENDENCY-DIRECTION.md) |
