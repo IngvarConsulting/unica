@@ -1832,7 +1832,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "unica-bootstrap"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "flate2",
  "fs2",
@@ -1847,7 +1847,7 @@ dependencies = [
 
 [[package]]
 name = "unica-coder"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "cap-fs-ext",
  "cap-primitives",
