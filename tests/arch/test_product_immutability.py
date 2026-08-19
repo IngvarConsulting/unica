@@ -55,6 +55,36 @@ establishes: []
 """
 
 
+RULE = """---
+id: INV.WIRE.PROMISE
+status: active
+governs: product
+decision: DEC.2026-01-01.PROMISE
+check: tests/ci/test_x.py::test_y
+scope: [wire]
+---
+
+# Правило
+
+Поверхность отвечает так, а не иначе.
+"""
+
+GROUND = """---
+id: DEC.2026-03-03.WHY-IT-CHANGES
+status: active
+governs: product
+realized: null
+supersedes: []
+superseded-by: null
+establishes: []
+---
+
+# Почему правило меняется
+
+**Решение.** Замер показал, что прежняя формулировка не покрывала случай.
+"""
+
+
 class Fixture:
     """A real git repository with a base commit holding two records."""
 
@@ -68,6 +98,9 @@ class Fixture:
         self.process = self.root / "arch" / "decisions" / "2026-01-01-habit.md"
         self.product.write_text(PRODUCT, encoding="utf-8")
         self.process.write_text(PROCESS, encoding="utf-8")
+        (self.root / "arch" / "invariants").mkdir(parents=True)
+        self.rule = self.root / "arch" / "invariants" / "INV.WIRE.PROMISE.md"
+        self.rule.write_text(RULE, encoding="utf-8")
         self._git("add", "arch")
         self._git("commit", "--quiet", "--no-gpg-sign", "-m", "base")
 
@@ -87,15 +120,18 @@ class ProductImmutabilityTests(unittest.TestCase):
     def test_an_untouched_tree_is_clean_and_says_what_it_compared(self) -> None:
         verdict = self.fixture.inspect()
         self.assertEqual(verdict.offenders, ())
-        self.assertEqual(verdict.compared, 1, "the process record must not be counted")
+        self.assertEqual(
+            verdict.compared, 2,
+            "both product records count, and the process one does not",
+        )
 
-    def test_editing_an_accepted_product_record_is_caught(self) -> None:
+    def test_editing_an_accepted_product_decision_is_caught(self) -> None:
         self.fixture.product.write_text(
             PRODUCT.replace("так, а не иначе", "уже совсем иначе"), encoding="utf-8"
         )
         verdict = self.fixture.inspect()
         self.assertEqual(len(verdict.offenders), 1)
-        self.assertIn("отредактирована", verdict.offenders[0])
+        self.assertIn("отредактировано", verdict.offenders[0])
 
     def test_deleting_an_accepted_product_record_is_caught(self) -> None:
         self.fixture.product.unlink()
@@ -119,6 +155,36 @@ class ProductImmutabilityTests(unittest.TestCase):
         )
         self.fixture.product.write_text(stamped, encoding="utf-8")
         self.assertEqual(len(self.fixture.inspect().offenders), 1)
+
+    def test_editing_a_product_rule_without_a_new_ground_is_caught(self) -> None:
+        """Silently rewording a rule is silently moving the promise."""
+        self.fixture.rule.write_text(
+            RULE.replace("так, а не иначе", "уже совсем иначе"), encoding="utf-8"
+        )
+        verdict = self.fixture.inspect()
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("без нового решения", verdict.offenders[0])
+
+    def test_editing_a_product_rule_with_a_new_ground_is_allowed(self) -> None:
+        """A rule may be sharpened; the reason has to arrive with it."""
+        (self.fixture.root / "arch" / "decisions" / "2026-03-03-why-it-changes.md").write_text(
+            GROUND, encoding="utf-8"
+        )
+        self.fixture.rule.write_text(
+            RULE.replace("так, а не иначе", "уже совсем иначе").replace(
+                "decision: DEC.2026-01-01.PROMISE", "decision: DEC.2026-03-03.WHY-IT-CHANGES"
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.fixture.inspect().offenders, ())
+
+    def test_an_existing_ground_does_not_cover_a_new_change(self) -> None:
+        """A decision written earlier did not foresee today's edit."""
+        self.fixture.rule.write_text(
+            RULE.replace("так, а не иначе", "уже совсем иначе"), encoding="utf-8"
+        )
+        verdict = self.fixture.inspect()
+        self.assertEqual(len(verdict.offenders), 1)
 
     def test_editing_a_process_record_is_allowed(self) -> None:
         """A process rule exists to be rebuilt when development gets awkward."""

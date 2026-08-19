@@ -65,7 +65,8 @@
 | `INV.REGISTRY.GOVERNS-DECLARED` | инвариант · process | active |  | Сторона записи объявлена и известна | [invariants/INV.REGISTRY.GOVERNS-DECLARED.md](invariants/INV.REGISTRY.GOVERNS-DECLARED.md) |
 | `INV.REGISTRY.NO-SELF-GLOSS` | инвариант · process | active |  | Инвариант и контракт не толкуют свои поля | [invariants/INV.REGISTRY.NO-SELF-GLOSS.md](invariants/INV.REGISTRY.NO-SELF-GLOSS.md) |
 | `INV.REGISTRY.NO-TRACKER-LINKS` | инвариант · process | active |  | Реестр не ссылается на трекер | [invariants/INV.REGISTRY.NO-TRACKER-LINKS.md](invariants/INV.REGISTRY.NO-TRACKER-LINKS.md) |
-| `INV.REGISTRY.PRODUCT-RECORD-IS-HISTORY` | инвариант · process | active |  | Продуктовая запись базы не редактируется | [invariants/INV.REGISTRY.PRODUCT-RECORD-IS-HISTORY.md](invariants/INV.REGISTRY.PRODUCT-RECORD-IS-HISTORY.md) |
+| `INV.REGISTRY.PRODUCT-DECISION-IS-HISTORY` | инвариант · process | active |  | Продуктовое решение из базы не правится | [invariants/INV.REGISTRY.PRODUCT-DECISION-IS-HISTORY.md](invariants/INV.REGISTRY.PRODUCT-DECISION-IS-HISTORY.md) |
+| `INV.REGISTRY.PRODUCT-RULE-NEEDS-GROUND` | инвариант · process | active |  | Продуктовое правило меняется вместе с решением о причине | [invariants/INV.REGISTRY.PRODUCT-RULE-NEEDS-GROUND.md](invariants/INV.REGISTRY.PRODUCT-RULE-NEEDS-GROUND.md) |
 | `INV.REGISTRY.REALIZATION-NAMED` | инвариант · process | active |  | Решение объявляет, построено ли оно | [invariants/INV.REGISTRY.REALIZATION-NAMED.md](invariants/INV.REGISTRY.REALIZATION-NAMED.md) |
 | `INV.REGISTRY.SYMBOL-MATCHES-PATH` | инвариант · process | active |  | Символ записи выводится из её пути | [invariants/INV.REGISTRY.SYMBOL-MATCHES-PATH.md](invariants/INV.REGISTRY.SYMBOL-MATCHES-PATH.md) |
 | `INV.SOURCE.ATOMIC-PUBLISH` | инвариант · product | active |  | Мутация источника публикуется атомарно или не публикуется | [invariants/INV.SOURCE.ATOMIC-PUBLISH.md](invariants/INV.SOURCE.ATOMIC-PUBLISH.md) |

@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Кто из продуктовых записей был отредактирован вместо замены.
+"""Что случилось с продуктовыми записями базы: замена, объяснение или подмена.
 
-Продуктовая запись — обещание, на которое кто-то снаружи уже опёрся. Дойдя до
-целевой ветки, она становится историей и с этого дня говорит, что было решено на
-её дату. Меняют не её, а преемника; сама она получает две строки: `superseded` и
-имя заменившего.
+Продуктовая запись — обещание, на которое кто-то снаружи уже опёрся, и менять
+его молча нельзя. Но виды обещаний живут по-разному, поэтому и дисциплины две.
+
+Решение говорит, что было выбрано на его дату. Его не правят: заводят преемника,
+а старому ставят `superseded` и имя заменившего.
+
+Инвариант и контракт описывают действующее правило, а правило со временем
+уточняется. Их править можно — но только вместе с решением, которое этой же
+правкой заводится и объясняет, почему правило меняется. Инвариант, изменившийся
+без нового основания, и есть тихая смена обещания.
 
 Процессная запись под это не подпадает: её и заводят, чтобы перестроить в тот
 день, когда разрабатывать стало неудобно.
@@ -96,9 +102,28 @@ def _is_supersession_only(before: str, after: str) -> bool:
     return True
 
 
+def _ids_introduced(repo: Path, base: dict[str, str]) -> set[str]:
+    """Символы записей, которых в базе не было: основания, заводимые этой правкой."""
+    known = set()
+    for text in base.values():
+        props, _ = _split(text)
+        if props.get("id"):
+            known.add(props["id"])
+    introduced = set()
+    for path in sorted((repo / "arch").rglob("*.md")):
+        if path.name in ("index.md", "README.md"):
+            continue
+        props, _ = _split(path.read_text(encoding="utf-8"))
+        identifier = props.get("id")
+        if identifier and identifier not in known:
+            introduced.add(identifier)
+    return introduced
+
+
 def inspect(repo: Path, base_ref: str) -> Verdict:
     """Сверить принятые продуктовые записи базы с рабочим деревом."""
     base = _records_at(repo, base_ref)
+    introduced = _ids_introduced(repo, base)
     offenders: list[str] = []
     compared = 0
 
@@ -114,9 +139,22 @@ def inspect(repo: Path, base_ref: str) -> Verdict:
             continue
 
         after = current.read_text(encoding="utf-8")
-        if after == before or _is_supersession_only(before, after):
+        if after == before:
             continue
-        offenders.append(f"{path}: продуктовая запись отредактирована, а не заменена")
+
+        if path.startswith("arch/decisions/"):
+            if not _is_supersession_only(before, after):
+                offenders.append(f"{path}: продуктовое решение отредактировано, а не заменено")
+            continue
+
+        # Инвариант и контракт: правка законна, если этой же правкой заведено
+        # решение, на которое запись теперь и ссылается. Существующее основание
+        # не годится — оно писалось раньше и этой перемены не предвидело.
+        ground = _split(after)[0].get("decision")
+        if ground not in introduced:
+            offenders.append(
+                f"{path}: продуктовое правило изменено без нового решения о причине"
+            )
 
     return Verdict(tuple(offenders), compared)
 
