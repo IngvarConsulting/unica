@@ -86,12 +86,23 @@
 
 **Files:**
 - Modify: `scripts/ci/package-unica-runtime.py`, `crates/unica-bootstrap/src/cache.rs`,
-  `crates/unica-bootstrap/src/manifest.rs`
-- Test: `crates/unica-bootstrap/tests/runtime_install.rs`
+  `crates/unica-bootstrap/src/manifest.rs`, `crates/unica-bootstrap/src/main.rs`,
+  `crates/unica-coder/src/infrastructure/bundled_tools.rs`
+- Test: `crates/unica-bootstrap/tests/runtime_install.rs`,
+  `crates/unica-bootstrap/tests/manifest_contract.rs`
+
+**Объём больше, чем виделось при планировании.** Разбор 19.08 показал: рантайм
+ищет движки **рядом с собственным бинарём** — `is_plugin_runtime_root` признаёт
+корнем каталог с `third-party/manifest.json`, а поиск идёт вверх от
+исполняемого файла. Пока движки лежали в одном архиве с ядром, это работало
+само собой. Разрез архива ломает находимость, поэтому в задачу входит и способ
+поиска: движок берётся из кеша артефактов по имени и версии, а обход вверх
+остаётся запасным путём для дерева разработки.
 
 - [ ] **Step 1: Написать падающие тесты** — установка ядра не требует движков;
   ключ пути содержит версию артефакта; повторная установка при смене версии
-  плагина ничего не качает.
+  плагина ничего не качает; рантайм находит движок в кеше артефактов, а не
+  только рядом с собой.
 - [ ] **Step 2: Прогнать, убедиться в падении.**
 - [ ] **Step 3: Реализовать** — манифест перечисляет артефакты по отдельности,
   упаковщик пишет по архиву на артефакт, установщик кеширует по
