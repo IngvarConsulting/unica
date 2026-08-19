@@ -586,15 +586,16 @@ class ProductContractTests(unittest.TestCase):
 
         text = runbook.read_text(encoding="utf-8")
         for value in (
-            "staging merge commit",
             "bump-version.py",
             "check-version-contract.py",
             "publish-unica-marketplace.yml",
+            # One human action starts the pipeline; the runbook must say which.
+            "git tag -s vX.Y.Z",
+            "stage → tag → verify → promote",
             # A release that fails part-way has to have a documented way out.
             "One-way doors",
             "never reuse a version number",
             "Rolling back a live release",
-            "Release Warden",
         ):
             with self.subTest(value=value):
                 self.assertIn(value, text)
