@@ -24,49 +24,60 @@ So publication is split, per
 2. **Promote** — move the catalog to the new tag. This is the moment the release
    goes live.
 
-Between the two sits an immutable tag. The catalog pins `git-subdir` to a semver
-tag, which `scripts/verify_marketplace.py` in the marketplace repo enforces, and
-the promotion checks install exactly as a consumer would. Those checks cannot
-pass until the tag exists, which makes the tag the approval gate.
+Between the two sits an immutable tag the catalog pins `git-subdir` to, which
+`scripts/verify_marketplace.py` in the marketplace repo enforces.
 
-A release signs two tags, and they do different jobs. The **source tag** in
-`unica` (step 1) starts the build and fixes the version the artifacts declare.
-The **marketplace tag** (step 4) is the one the catalog resolves, and it is the
-gate: nothing reaches consumers until it exists.
+## One human action, one linear pipeline
 
-## What you do, and what runs itself
+Per [ADR-0068](../spec/decisions/0068-lineynyy-konveyer-postavki.md) the whole
+publication runs as one pass of **Publish Unica Marketplace**, started
+automatically when the tag-triggered build succeeds:
 
-**Release Warden** (`.github/workflows/release-warden.yml`) advances the release
-whenever it can. It runs every 20 minutes, merges the staging pull request once
-its checks are green, asks for the promotion, and merges the promotion once its
-checks are green. It cannot skip the tag: the promotion checks install through
-the catalog ref, so they stay red until the tag is published, which keeps the tag
-as the approval rather than a formality.
-
-That leaves two actions, both tags:
-
-| You | Warden |
+| You | The pipeline |
 | --- | --- |
 | Step 0 — set the version | |
-| Step 1 — tag the source release | Steps 2–3: build, stage, merge staging |
-| Step 4 — tag the marketplace | Steps 5–6: promote, merge, go live |
+| Step 1 — tag the source release | build → assets → BSP assessment |
+| | stage the payload (catalog untouched) |
+| | create the anchor tag on the staging commit |
+| | consumer install checks: fresh + upgrade, three hosts |
+| | green → move the catalog → **live** |
+| Step 3 — merge the line back into `main` | |
 
-A scheduled run **fails** when a release is stalled with nothing to advance, so
-an unfinished publication surfaces within twenty minutes instead of sitting
-unnoticed. To see what it would do without acting, run it manually with
-`dry_run`.
+Your signed source tag is the human approval and the cryptographic anchor of
+the release. Be honest about what enforces it: the pipeline proves the tag
+exists and that the payload came from its successful push build, but it does
+not verify the signature itself — GitHub reports these signatures as
+unverified today. What keeps the tag trustworthy is write access and the
+repository's tag protection rules; keep those protections on. The marketplace
+tag is created by the pipeline: it is the ref the catalog resolves, and
+nothing verifies its signature — the runbook used to ask for a second signed
+tag, and ADR-0068 retired it.
 
-The steps below are still the source of truth for what happens and why, and they
-are what you follow by hand if the warden is disabled or itself broken.
+There is no scheduler and no waiting window: a failed stage is a red run
+attached to the release tag, and the catalog stays where it was. Rerunning the
+failed workflow resumes the publication — every stage is idempotent.
 
 ## Preconditions
 
-- Write access to both repositories, and `gh` authenticated. The tag steps push
-  over HTTPS, so run `gh auth setup-git` once in a fresh checkout.
-- A GPG key able to sign tags. If signing fails with `Operation cancelled` in a
-  non-interactive shell, run `gpg-connect-agent updatestartuptty /bye` first, then
+- Write access to both repositories, and `gh` authenticated. The tag step
+  pushes over HTTPS, so run `gh auth setup-git` once in a fresh checkout.
+- A GPG key able to sign the source tag. If signing fails with `Operation
+  cancelled` in a non-interactive shell, run
+  `gpg-connect-agent updatestartuptty /bye` first, then
   `echo test | gpg --clearsign > /dev/null` to unlock the agent.
-- `main` is green, and the version bump is ready to verify and merge.
+- The branch the release is cut from is green, and the version bump is ready
+  to verify and merge.
+
+## Where a release is cut from
+
+A minor is cut from `main`. Patches for a minor that already shipped are cut
+from its line branch, `release-vX.Y`, and that branch is where the version bump
+lives: `main` keeps the minor's version and never takes the patch bumps. When
+0.12.3 shipped, `release-v0.12` declared 0.12.3 while `main` still declared
+0.12.0.
+
+Steps 0 and 1 therefore happen on the branch the release is cut from, and the
+tag names a commit on it. Step 3 brings the line back to `main`.
 
 ## Step 0 — prepare the version
 
@@ -94,12 +105,16 @@ python3.12 -m pip install -r tests/ci/requirements.txt
 python3.12 -m unittest discover -s tests/ci
 ```
 
-Then merge through a pull request as usual.
+Then merge through a pull request into the branch the release is cut from.
+Keep the bump its own pull request: step 1 tags its merge commit, so that commit
+has to carry both the bump and everything else the version ships.
 
 ## Step 1 — tag the source release
 
-Tag the merged release commit on `main` in `unica` and push. The tag is what
-triggers the release build.
+Tag the merge commit of the version pull request in `unica` and push. On a
+patch that commit is on `release-vX.Y`, not on `main`. The tag triggers the
+release build, and the successful build starts the publication pipeline on its
+own.
 
 ```bash
 git tag -s vX.Y.Z <release-commit-sha> -m "Unica vX.Y.Z"
@@ -110,122 +125,76 @@ The version must be fixed before artifacts are built: the runtime manifest
 embeds `release.tag` and derives every asset URL from it, and the bootstrap
 rejects a manifest whose URL disagrees with its declared version.
 
-## Step 2 — wait for the release build
+## Step 2 — watch it land
 
-The tag push runs **Build Unica Codex Plugin**. It builds the runtime for the
-three targets, publishes `unica-runtime-<target>.tar.gz` with SHA-256 metadata to
-the GitHub release, and emits the thin marketplace payload as the
-`unica-thin-marketplace` artifact.
-
-On success it automatically opens a staging pull request in the marketplace
-repository. No manual trigger is needed.
+The tag push runs **Build Unica Codex Plugin** (runtime for three targets,
+`unica-runtime-<target>.tar.gz` with SHA-256 metadata on the GitHub release,
+the thin payload as the `unica-thin-marketplace` artifact), and its success
+triggers **Publish Unica Marketplace**: stage → tag → verify → promote.
 
 ```bash
 gh run list --workflow "Build Unica Codex Plugin" --limit 3 \
   --json databaseId,headBranch,conclusion
-gh pr list --repo IngvarConsulting/unica-marketplace --state open
+gh run list --workflow "Publish Unica Marketplace" --limit 3 \
+  --json databaseId,conclusion
 ```
 
-Note the run id — it is also encoded in the staging branch name
-(`codex/stage-vX.Y.Z-<run-id>`), and the promote step needs it.
-
-## Step 3 — merge the staging pull request
-
-**The warden does this** once the staging checks are green. Do it by hand only if
-the warden is disabled or failing. Review that it changes `plugins/unica` only
-and that the catalog is untouched, then merge.
+The release is live when the catalog names the new tag — both host catalogs
+move in the same commit:
 
 ```bash
-gh pr merge <staging-pr> --repo IngvarConsulting/unica-marketplace --merge
-```
-
-Merging publishes nothing: the catalog still names the previous tag. Record the
-merge commit, the next step tags it.
-
-```bash
-gh pr view <staging-pr> --repo IngvarConsulting/unica-marketplace \
-  --json mergeCommit --jq .mergeCommit.oid
-```
-
-## Step 4 — tag the marketplace
-
-Tag the **staging merge commit**, before running the promotion.
-
-```bash
-git clone https://github.com/IngvarConsulting/unica-marketplace.git /tmp/unica-marketplace
-cd /tmp/unica-marketplace
-git tag -s vX.Y.Z <staging-merge-sha> -m "Unica vX.Y.Z"
-git push origin vX.Y.Z
-```
-
-Consumers read the catalog from `main` and fetch only `./plugins/unica` at the
-tag, so the tag only has to carry the plugin bytes — which the staging merge
-already does. Tagging here rather than after the promotion pull request is what
-keeps that pull request green from the start.
-
-Verify the tag resolves to the payload:
-
-```bash
-gh api "repos/IngvarConsulting/unica-marketplace/contents/plugins/unica/.codex-plugin/plugin.json?ref=vX.Y.Z" \
-  --jq '.content' | base64 -d | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])'
-```
-
-## Step 5 — promote
-
-**The warden does this** immediately after it merges staging, deriving the run id
-and the release tag from the staging branch name and the merge commit from the
-merge itself. Run it by hand only if the warden is disabled or failing.
-
-Order differs between the two paths, and both are fine. By hand, tagging first
-means the promotion pull request is green on its first run. The warden opens it
-as soon as staging lands, so it sits red until you publish the tag and then goes
-green on the next run. Either way nothing merges before the tag exists.
-
-```bash
-gh workflow run publish-unica-marketplace.yml --repo IngvarConsulting/unica \
-  -f mode=promote \
-  -f source_run_id=<run-id-from-step-2> \
-  -f release_tag=vX.Y.Z \
-  -f staging_merge_sha=<staging-merge-sha>
-```
-
-This opens a pull request that changes only the catalog `ref`. Its checks
-install the plugin the way a consumer does — fresh install and upgrade from the
-previous stable, on macOS, Linux, and Windows. With the tag already pushed they
-pass on the first run.
-
-## Step 6 — merge and verify
-
-**The warden does this** once the promotion checks are green, which cannot happen
-before step 4. It refuses to merge a promotion that touches anything beyond the
-catalog files. Verify the result either way.
-
-```bash
-gh pr merge <promotion-pr> --repo IngvarConsulting/unica-marketplace --merge
 gh api repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/marketplace.json \
   --jq '.content' | base64 -d | grep '"ref"'
 ```
 
-The release is live once the catalog names the new tag. Claude Code consumers
-read `.claude-plugin/marketplace.json`; check that entry too once it exists.
+The marketplace repository runs its own **Verify marketplace** on every push it
+receives, so `stage`, `tag` and `promote` each leave a run there, after the
+fact. Those runs do not gate anything: the pipeline's `verify-upgrade` and
+`verify-fresh-install` jobs already ran on three hosts before `promote` moved
+the catalog.
+
+## Step 3 — merge the line back into `main`
+
+A patch leaves `main` behind, because the fix and the bump landed on the line
+branch only. Merge the line back through a `merge/release-vX.Y.Z-into-main`
+pull request once the release is live.
+
+The version contract conflicts every time. Keep `main`'s side in all five files:
+the line changed nothing there but the number. `Cargo.lock` conflicts for the
+same reason and also keeps `main`'s side, which carries the real dependency
+state while the line moved only the two workspace crate versions.
+
+## If a stage fails
+
+The pipeline stops before the catalog moves, so consumers are unaffected.
+Rerun the whole workflow after fixing the cause — completed stages detect
+themselves and pass through:
+
+```bash
+gh run rerun <publish-run-id> --failed
+```
+
+To run the pipeline for a build that already succeeded (for example after the
+`workflow_run` trigger was missed), dispatch it with the build's run id:
+
+```bash
+gh workflow run publish-unica-marketplace.yml --repo IngvarConsulting/unica \
+  -f source_run_id=<build-run-id>
+```
 
 ## What consumers see, and when
 
 Only one step changes anything for consumers. Everything before it is invisible
 to them, which is what makes aborting cheap.
 
-| After step | Visible to consumers |
+| After | Visible to consumers |
 | --- | --- |
-| 0 version prepared | nothing |
-| 1 source tag pushed | nothing |
-| 2 assets published | nothing — no catalog names them |
-| 3 staging merged | nothing — the catalog still names the previous tag |
-| 4 marketplace tag pushed | nothing |
-| 5 promotion pull request open | nothing |
-| **6 promotion merged** | **the release is live** |
-
-So this is not a distributed transaction that needs compensating steps. There is
-a single commit point, and before it "abort" means "stop and clean up".
+| source tag pushed | nothing |
+| assets published | nothing — no catalog names them |
+| payload staged | nothing — the catalog still names the previous tag |
+| anchor tag pushed | nothing |
+| install checks green | nothing |
+| **catalog moved** | **the release is live** |
 
 ## One-way doors
 
@@ -240,28 +209,12 @@ anything is wrong after step 1, abandon that version and release the next patch
 instead. Re-cutting `vX.Y.Z` with different bytes breaks every consumer that
 already resolved it.
 
-## Aborting
-
-Rows are named by the last step that completed.
-
-| Abort after | What to do | Cost |
-| --- | --- | --- |
-| Step 0 | Close the version pull request | none |
-| Step 1 or 2 | Close the staging pull request. Leave the tag and assets alone, abandon the version | a burnt version number |
-| Step 3 | Nothing is served. Either continue, or revert the staging commit on the marketplace default branch and abandon the version | none |
-| Step 4 | Leave the tag, abandon the version. An unused tag is harmless | a burnt version number |
-| Step 5 | Close the promotion pull request. The catalog is untouched | none |
-| Step 6 | The release is live; see [rolling back](#rolling-back-a-live-release) | consumers saw it |
-
 Whenever you abandon a version whose assets are already published, mark that
-release so the warden stops treating it as a release waiting to be served:
+release so it stops looking like a release waiting to be served:
 
 ```bash
 gh release edit vX.Y.Z --repo IngvarConsulting/unica --prerelease
 ```
-
-Otherwise the scheduled run keeps reporting a stalled release, correctly but
-uselessly, until the next version ships.
 
 Never delete a tag to "clean up" an abandoned version. An unused tag costs
 nothing; a deleted one that something already resolved costs every consumer.
@@ -274,8 +227,8 @@ so the previous tag still resolves to exactly what it always did.
 ```bash
 git clone https://github.com/IngvarConsulting/unica-marketplace.git /tmp/unica-marketplace
 cd /tmp/unica-marketplace
-git revert --no-edit <promotion-merge-sha>
-git push origin main   # or open a pull request if the branch is protected
+git revert --no-edit <promotion-commit-sha>
+git push origin main
 ```
 
 Confirm the catalog names the previous tag again, then treat the bad version as
@@ -289,29 +242,25 @@ A catalog that names a tag which does not exist. Every install then fails with
 `pathspec 'vX.Y.Z' did not match any file(s)`, including for consumers who had
 been working fine.
 
-It has only two causes, both preventable:
-
-- deleting or moving a published tag;
-- merging a promotion pull request whose checks are red, since the consumer
-  install checks are exactly what proves the ref resolves.
-
-Protecting tags in the marketplace repository removes the first cause outright.
+The pipeline cannot reach it — the promote job requires the tag job — so it has
+one remaining cause, which is preventable outright by protecting tags in the
+marketplace repository: deleting or moving a published tag by hand.
 
 ## Failure modes
 
 | Symptom | Cause | Action |
 | --- | --- | --- |
-| Promotion checks fail with `pathspec 'vX.Y.Z' did not match any file(s)` | The marketplace tag is missing | Do step 4, then `gh run rerun <run-id> --failed` |
-| `regression-policy` reports `consumer-fresh-install is required but concluded failure` | Aggregate gate reflecting the row above | Same as above |
-| Packaging fails with `release tag ... != ...` | Step 0 missed the workflow `RELEASE_TAG` fallback | Bump it and re-run |
-| Scheduled warden run fails with `release is stalled` | A published release nothing is serving, and nothing open to advance | Finish the release, or mark it a prerelease if it was abandoned |
-| Warden reports `promotion pull request changes more than the catalog` | The promotion diff reached past the catalog files | Inspect it by hand; do not merge until it is explained |
-| Consumers still report the old version | Promotion was never merged | Check for an open promotion pull request |
+| Publish run failed at `stage` or `tag` | Transient push failure or a moved branch | `gh run rerun <run-id> --failed`; stages are idempotent |
+| Publish run failed at the install checks | The candidate does not install as a consumer | Fix forward; the version is burnt, the catalog never moved |
+| `tag` fails on an existing tag | The version was already published with different bytes | Never move the tag; release the next patch |
+| Packaging fails with `release tag vX.Y.Z != vA.B.C` | The tagged commit does not declare X.Y.Z: step 0 was not merged, or the wrong commit was tagged | Tag the merge commit of the version pull request. If the bad tag was pushed, that version is burnt — take the next patch |
+| `Verify marketplace` red after the catalog moved, at `previous-stable-upgrade` with `git clone marketplace source timed out after 30s` | Codex re-clones the whole marketplace on `plugin marketplace upgrade`; a clone that misses its own 30s budget leaves the stale local catalog, which then installs the previous version | Transient. `gh run rerun <run-id> --failed`. Consumers are unaffected: the catalog is already correct and the pipeline's own upgrade checks passed before promote |
+| Consumers still report the old version | The publish run did not finish | Check its failed stage and rerun |
 
 ## Never
 
 - Move or delete a published tag, or force-push the marketplace default branch.
   Consumers resolve `git-subdir` against those refs; changed bytes require a new
   version.
-- Merge the promotion pull request before its checks are green. Red here means
-  the consumer install path is broken, not that the checks are wrong.
+- Point the catalog at a tag by hand. The promote job is the only writer of the
+  catalog files, and it runs only behind green install checks.
