@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-19.SURFACE-BY-QUESTION
 status: active
+governs: product
 realized: null
 supersedes: [DEC.2026-08-18.EIGHT-ENTRIES]
 superseded-by: null

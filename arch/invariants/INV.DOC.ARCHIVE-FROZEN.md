@@ -1,6 +1,7 @@
 ---
 id: INV.DOC.ARCHIVE-FROZEN
 status: active
+governs: process
 decision: DEC.2026-08-19.ARCHIVE-DRIFT-IS-RECORDED
 check: tests/arch/test_registry.py::test_archive_drift_is_recorded
 scope: [docs]

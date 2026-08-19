@@ -1,6 +1,7 @@
 ---
 id: INV.APP.THIN-TRANSPORT
 status: active
+governs: process
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-coder/src/interfaces/mcp.rs
 scope: [app]

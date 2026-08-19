@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.OBSERVED-BYTES
 status: active
+governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs
 scope: [source]

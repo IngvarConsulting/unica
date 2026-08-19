@@ -1,6 +1,7 @@
 ---
 id: INV.REGISTRY.REALIZATION-NAMED
 status: active
+governs: process
 decision: DEC.2026-08-19.REALIZATION-AXIS
 check: tests/arch/test_registry.py::test_a_realized_decision_names_evidence_that_exists
 scope: [docs]

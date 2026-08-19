@@ -83,6 +83,24 @@ class RecordShapeTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
+    def test_governs_is_known(self) -> None:
+        """Every record says which side it answers to.
+
+        The two sides are paid for differently. A process rule exists to be
+        rebuilt the day development gets awkward; a product rule is a promise
+        someone outside already leans on, and changing it costs them. Left
+        undeclared the two mix inside one area — `APP.DEPENDENCY-DIRECTION`
+        governs our own layering while `APP.HIDDEN-SERVICES` governs what the
+        model is allowed to see — and a reader cannot tell which discipline
+        applies without deciding it again for himself.
+        """
+        offenders = [
+            f"{record.relative}: governs {record.props.get('governs')!r}"
+            for record in REGISTRY.records()
+            if record.props.get("governs") not in REGISTRY.GOVERNS
+        ]
+        self.assertEqual(offenders, [])
+
     def test_status_is_known(self) -> None:
         offenders = [
             f"{record.relative}: status {record.props.get('status')!r}"

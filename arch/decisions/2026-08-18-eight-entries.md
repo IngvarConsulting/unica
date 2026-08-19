@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.EIGHT-ENTRIES
 status: superseded
+governs: product
 realized: null
 supersedes: []
 superseded-by: DEC.2026-08-19.SURFACE-BY-QUESTION

@@ -1,6 +1,7 @@
 ---
 id: CTR.FORMAT.PLATFORM-XML-8-3-27
 status: active
+governs: product
 version: 1
 decision: null
 producer: crates/unica-coder/src/infrastructure/native_operations/

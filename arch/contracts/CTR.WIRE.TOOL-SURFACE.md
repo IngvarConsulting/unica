@@ -1,6 +1,7 @@
 ---
 id: CTR.WIRE.TOOL-SURFACE
 status: active
+governs: product
 version: 1
 decision: DEC.2026-08-19.SURFACE-BY-QUESTION
 producer: scripts/ci/generate-tool-surface.py

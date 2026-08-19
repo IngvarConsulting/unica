@@ -1,6 +1,7 @@
 ---
 id: INV.REGISTRY.SYMBOL-MATCHES-PATH
 status: active
+governs: process
 decision: DEC.2026-08-18.REGISTRY-SHAPE
 check: tests/arch/test_registry.py::test_symbol_matches_its_path
 scope: [docs]

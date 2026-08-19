@@ -32,10 +32,14 @@ KIND_BY_DIR = {"decisions": "decision", "invariants": "invariant", "contracts": 
 SYMBOL_PREFIX = {"decision": "DEC", "invariant": "INV", "contract": "CTR"}
 
 REQUIRED_PROPS = {
-    "decision": ("id", "status", "realized"),
-    "invariant": ("id", "status", "decision", "check"),
-    "contract": ("id", "status", "version", "decision", "producer", "check"),
+    "decision": ("id", "status", "governs", "realized"),
+    "invariant": ("id", "status", "governs", "decision", "check"),
+    "contract": ("id", "status", "governs", "version", "decision", "producer", "check"),
 }
+
+# Кто заметит нарушение: потребитель или только мы. Ось решает не предмет
+# записи, а адресат обещания, и от неё зависит, чем правка оплачивается.
+GOVERNS = ("product", "process")
 
 FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.S)
 DECISION_FILENAME = re.compile(r"\A(\d{4}-\d{2}-\d{2})-([a-z0-9-]+)\.md\Z")
@@ -146,7 +150,8 @@ def render_index(found: list[Record]) -> str:
         if record.kind == "decision":
             built = "нет" if record.props.get("realized") in (None, "") else "да"
         lines.append(
-            f"| `{record.id}` | {kind_ru[record.kind]} | {record.props.get('status', '')} "
+            f"| `{record.id}` | {kind_ru[record.kind]} · {record.props.get('governs', '')} "
+            f"| {record.props.get('status', '')} "
             f"| {built} | {record.summary} | [{record.relative}]({record.relative}) |"
         )
     return "\n".join(lines) + "\n"

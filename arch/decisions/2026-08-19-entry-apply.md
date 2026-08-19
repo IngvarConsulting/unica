@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-19.ENTRY-APPLY
 status: active
+governs: product
 realized: null
 supersedes: []
 superseded-by: null

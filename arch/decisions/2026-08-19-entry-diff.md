@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-19.ENTRY-DIFF
 status: active
+governs: product
 realized: null
 supersedes: []
 superseded-by: null

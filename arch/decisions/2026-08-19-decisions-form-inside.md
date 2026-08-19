@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-19.DECISIONS-FORM-INSIDE
 status: active
+governs: process
 realized: tests/arch/test_registry.py::test_no_record_points_at_the_tracker
 supersedes: []
 superseded-by: null

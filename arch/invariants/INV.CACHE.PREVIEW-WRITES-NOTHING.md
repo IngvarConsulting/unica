@@ -1,6 +1,7 @@
 ---
 id: INV.CACHE.PREVIEW-WRITES-NOTHING
 status: active
+governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-coder/src/infrastructure/workspace_state.rs
 scope: [cache]

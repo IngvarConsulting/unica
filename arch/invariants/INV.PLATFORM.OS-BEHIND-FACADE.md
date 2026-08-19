@@ -1,6 +1,7 @@
 ---
 id: INV.PLATFORM.OS-BEHIND-FACADE
 status: active
+governs: process
 decision: DEC.2026-08-18.CARRIED-RULES
 check: scripts/ci/check-rust-platform-boundary.py
 scope: [platform]

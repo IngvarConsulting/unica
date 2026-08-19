@@ -1,6 +1,7 @@
 ---
 id: INV.SURFACE.ACCEPTANCE-UNCHANGED
 status: active
+governs: product
 decision: DEC.2026-08-19.SURFACE-BY-QUESTION
 check: crates/unica-coder/src/application/tool_contracts.rs::narrowing_publication_keeps_the_legacy_union_accepted
 scope: [wire]

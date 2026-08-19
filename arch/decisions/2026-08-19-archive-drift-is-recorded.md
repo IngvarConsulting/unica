@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-19.ARCHIVE-DRIFT-IS-RECORDED
 status: active
+governs: process
 realized: tests/arch/test_registry.py::test_archive_drift_is_recorded
 supersedes: []
 superseded-by: null

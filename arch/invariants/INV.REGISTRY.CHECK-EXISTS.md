@@ -1,6 +1,7 @@
 ---
 id: INV.REGISTRY.CHECK-EXISTS
 status: active
+governs: process
 decision: DEC.2026-08-18.REGISTRY-SHAPE
 check: tests/arch/test_registry.py::test_every_rule_names_a_check_that_exists
 scope: [docs]

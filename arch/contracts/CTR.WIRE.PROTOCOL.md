@@ -1,6 +1,7 @@
 ---
 id: CTR.WIRE.PROTOCOL
 status: active
+governs: product
 version: 1
 decision: null
 producer: crates/unica-coder/src/interfaces/mcp.rs

@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.SINGLE-RESOLVED-ROOT
 status: active
+governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-coder/src/domain/source_roots.rs
 scope: [source]

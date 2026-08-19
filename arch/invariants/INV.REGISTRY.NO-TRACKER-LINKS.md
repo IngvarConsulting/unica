@@ -1,6 +1,7 @@
 ---
 id: INV.REGISTRY.NO-TRACKER-LINKS
 status: active
+governs: process
 decision: DEC.2026-08-19.DECISIONS-FORM-INSIDE
 check: tests/arch/test_registry.py::test_no_record_points_at_the_tracker
 scope: [docs]

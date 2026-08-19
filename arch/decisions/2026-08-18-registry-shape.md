@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.REGISTRY-SHAPE
 status: active
+governs: process
 realized: tests/arch/test_registry.py::test_symbol_matches_its_path
 supersedes: []
 superseded-by: null

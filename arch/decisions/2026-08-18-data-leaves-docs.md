@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.DATA-LEAVES-DOCS
 status: active
+governs: process
 realized: null
 supersedes: []
 superseded-by: null

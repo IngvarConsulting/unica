@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-19.REALIZATION-AXIS
 status: active
+governs: process
 realized: tests/arch/test_registry.py::test_a_realized_decision_names_evidence_that_exists
 supersedes: []
 superseded-by: null

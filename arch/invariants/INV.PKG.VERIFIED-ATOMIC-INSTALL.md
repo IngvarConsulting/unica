@@ -1,6 +1,7 @@
 ---
 id: INV.PKG.VERIFIED-ATOMIC-INSTALL
 status: active
+governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-bootstrap/tests/runtime_install.rs
 scope: [pkg]

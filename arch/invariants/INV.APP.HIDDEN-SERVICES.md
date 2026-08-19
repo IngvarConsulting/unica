@@ -1,6 +1,7 @@
 ---
 id: INV.APP.HIDDEN-SERVICES
 status: active
+governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-coder/src/infrastructure/workspace_services.rs
 scope: [app]

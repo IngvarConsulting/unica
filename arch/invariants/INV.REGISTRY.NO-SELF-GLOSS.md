@@ -1,6 +1,7 @@
 ---
 id: INV.REGISTRY.NO-SELF-GLOSS
 status: active
+governs: process
 decision: DEC.2026-08-19.NO-SELF-GLOSS
 check: tests/arch/test_registry.py::test_no_rule_explains_its_own_props
 scope: [docs]

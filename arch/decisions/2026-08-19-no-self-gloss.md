@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-19.NO-SELF-GLOSS
 status: active
+governs: process
 realized: tests/arch/test_registry.py::test_no_rule_explains_its_own_props
 supersedes: []
 superseded-by: null

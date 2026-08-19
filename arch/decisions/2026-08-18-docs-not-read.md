@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.DOCS-NOT-READ
 status: active
+governs: process
 realized: null
 supersedes: []
 superseded-by: null

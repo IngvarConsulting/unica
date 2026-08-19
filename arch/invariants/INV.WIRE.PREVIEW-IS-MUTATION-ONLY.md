@@ -1,6 +1,7 @@
 ---
 id: INV.WIRE.PREVIEW-IS-MUTATION-ONLY
 status: active
+governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-coder/src/application/mod.rs
 scope: [wire]

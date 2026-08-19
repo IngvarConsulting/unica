@@ -1,6 +1,7 @@
 ---
 id: INV.APP.PROVIDER-NEUTRAL
 status: active
+governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-coder/src/domain/code_intelligence.rs
 scope: [app]

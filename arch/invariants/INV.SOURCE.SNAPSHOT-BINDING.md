@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.SNAPSHOT-BINDING
 status: active
+governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
 check: crates/unica-coder/src/domain/source_resources.rs
 scope: [source]

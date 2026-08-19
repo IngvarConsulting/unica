@@ -1,6 +1,7 @@
 ---
 id: DEC.2026-08-18.FAILURE-NAMES-THE-FILE
 status: active
+governs: product
 realized: null
 supersedes: []
 superseded-by: null
