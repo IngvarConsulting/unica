@@ -193,6 +193,12 @@ pub(crate) enum DirectoryMembershipSelector {
     /// Every direct regular file or directory. This binds recursive scanner
     /// topology one directory at a time without following links.
     AllDirectEntries,
+    /// Direct children that are real directories. A container whose *listing*
+    /// decided a result — source-set autodetection derives names from the direct
+    /// child directories of an extension container — binds exactly that: files,
+    /// links and other entry types beside them are not members, so their churn
+    /// is not a conflict and their presence does not make the guard unusable.
+    DirectChildDirectories,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1638,29 +1644,37 @@ fn snapshot_directory_membership_entries(
                 path.display()
             )
         })?;
+        // A selector that binds only the child directories of a container is used
+        // where the container legitimately holds other things too. Those are not
+        // members: skipping them is what the guard means, while failing would make
+        // it unusable on any real container.
+        let skips_non_members = selector == DirectoryMembershipSelector::DirectChildDirectories;
         if metadata_is_link_or_reparse_point(&metadata) {
+            if skips_non_members {
+                continue;
+            }
             return Err(format!(
                 "directory membership entry must not be a symbolic link or reparse point: {}",
                 path.display()
             ));
         }
-        let valid_entry_kind = match selector {
-            DirectoryMembershipSelector::AllDirectEntries => {
-                metadata.is_file() || metadata.is_dir()
-            }
-            DirectoryMembershipSelector::XmlFiles
-            | DirectoryMembershipSelector::CfFilesAsciiCaseInsensitive => metadata.is_file(),
+        let entry_kind = if metadata.is_dir() {
+            Some(DirectoryTopologyEntryKind::Directory)
+        } else if metadata.is_file() {
+            Some(DirectoryTopologyEntryKind::File)
+        } else {
+            None
         };
-        if !valid_entry_kind {
+        let Some(kind) =
+            entry_kind.filter(|kind| directory_membership_accepts_kind(selector, *kind))
+        else {
+            if skips_non_members {
+                continue;
+            }
             return Err(format!(
                 "directory membership entry has an unsupported filesystem type: {}",
                 path.display()
             ));
-        }
-        let kind = if metadata.is_dir() {
-            DirectoryTopologyEntryKind::Directory
-        } else {
-            DirectoryTopologyEntryKind::File
         };
         names.push(DirectoryTopologyEntry { name, kind });
     }
@@ -1740,8 +1754,7 @@ fn normalize_expected_directory_entries(
         if !matches!(components.next(), Some(std::path::Component::Normal(_)))
             || components.next().is_some()
             || !directory_membership_name_matches(selector, &entry.name)
-            || (selector != DirectoryMembershipSelector::AllDirectEntries
-                && entry.kind != DirectoryTopologyEntryKind::File)
+            || !directory_membership_accepts_kind(selector, entry.kind)
         {
             return Err(format!(
                 "invalid directory membership entry name: {}",
@@ -1782,7 +1795,25 @@ fn directory_membership_name_matches(selector: DirectoryMembershipSelector, name
             .extension()
             .and_then(OsStr::to_str)
             .is_some_and(|extension| extension.eq_ignore_ascii_case("cf")),
+        DirectoryMembershipSelector::AllDirectEntries
+        | DirectoryMembershipSelector::DirectChildDirectories => true,
+    }
+}
+
+/// Whether an entry of this filesystem kind is a member under this selector.
+fn directory_membership_accepts_kind(
+    selector: DirectoryMembershipSelector,
+    kind: DirectoryTopologyEntryKind,
+) -> bool {
+    match selector {
         DirectoryMembershipSelector::AllDirectEntries => true,
+        DirectoryMembershipSelector::DirectChildDirectories => {
+            kind == DirectoryTopologyEntryKind::Directory
+        }
+        DirectoryMembershipSelector::XmlFiles
+        | DirectoryMembershipSelector::CfFilesAsciiCaseInsensitive => {
+            kind == DirectoryTopologyEntryKind::File
+        }
     }
 }
 
@@ -1850,9 +1881,13 @@ fn apply_direct_membership_delta(
                 path.display()
             )
         })?;
-        if selector != DirectoryMembershipSelector::AllDirectEntries
-            && kind != DirectoryTopologyEntryKind::File
-        {
+        if !directory_membership_accepts_kind(selector, kind) {
+            // A planned entry the selector does not admit is simply not a member of
+            // this guard; only the file-shaped selectors treat it as a planning
+            // error, because for them a non-file under a matching name is a defect.
+            if selector == DirectoryMembershipSelector::DirectChildDirectories {
+                return Ok(());
+            }
             return Err(format!(
                 "planned directory membership entry is not a regular file: {}",
                 path.display()
@@ -4771,6 +4806,119 @@ mod tests {
         assert!(!marker.exists());
         assert_eq!(fs::read(&output).unwrap(), b"<Generated/>\n");
         fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn direct_child_directory_guard_lists_directories_and_skips_everything_else() {
+        let root = temp_root("membership-child-directories-skips");
+        fs::create_dir_all(root.join("extension")).unwrap();
+        fs::write(root.join(".gitkeep"), b"").unwrap();
+        let external = temp_root("membership-child-directories-external");
+        let has_link = matches!(
+            testing::create_directory_link_fixture_for_test(&external, root.join("linked"))
+                .unwrap(),
+            testing::FileLinkFixtureOutcome::Created
+        );
+
+        // A container guarded for its child directories legitimately holds other
+        // things. They are not members: the snapshot lists the directories and
+        // refuses nothing, because a guard that cannot be taken beside a `.gitkeep`
+        // is a guarantee that is silently absent.
+        let snapshot = snapshot_directory_membership(
+            &root,
+            DirectoryMembershipSelector::DirectChildDirectories,
+        )
+        .expect("a file or link beside the directories must not fail the snapshot");
+
+        assert_eq!(
+            snapshot,
+            DirectoryMembershipSnapshot::Present(vec![DirectoryTopologyEntry {
+                name: OsString::from("extension"),
+                kind: DirectoryTopologyEntryKind::Directory,
+            }]),
+            "link fixture created: {has_link}"
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn direct_child_directory_guard_detects_a_child_directory_that_appeared() {
+        let root = temp_root("membership-child-directories-appeared");
+        fs::create_dir_all(root.join("extension")).unwrap();
+        let expected = snapshot_directory_membership(
+            &root,
+            DirectoryMembershipSelector::DirectChildDirectories,
+        )
+        .unwrap();
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .guard_or_verify_directory_membership(
+                &root,
+                DirectoryMembershipSelector::DirectChildDirectories,
+                expected,
+            )
+            .unwrap();
+        fs::create_dir_all(root.join("late")).unwrap();
+
+        let error = transaction
+            .commit()
+            .expect_err("a child directory that appeared after planning must be caught");
+
+        assert!(error.contains("late"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn direct_child_directory_guard_ignores_a_planned_file_in_the_guarded_directory() {
+        let root = temp_root("membership-child-directories-planned-file");
+        fs::create_dir_all(root.join("extension")).unwrap();
+        let expected = snapshot_directory_membership(
+            &root,
+            DirectoryMembershipSelector::DirectChildDirectories,
+        )
+        .unwrap();
+        let created = root.join("Created.xml");
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .guard_or_verify_directory_membership(
+                &root,
+                DirectoryMembershipSelector::DirectChildDirectories,
+                expected,
+            )
+            .unwrap();
+
+        // Writing a file into the guarded container does not change which of its
+        // children are directories, so it is not a membership delta at all.
+        transaction
+            .create_bytes(&created, b"<Created/>\n".to_vec())
+            .unwrap();
+        let report = transaction
+            .commit()
+            .expect("a planned file is not a member of a child-directory guard");
+
+        assert_eq!(report.created, vec![created]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn direct_child_directory_guard_rejects_a_file_shaped_expected_entry() {
+        let root = temp_root("membership-child-directories-file-entry");
+        let mut transaction = CompileTransaction::new();
+
+        let error = transaction
+            .guard_or_verify_directory_membership(
+                &root,
+                DirectoryMembershipSelector::DirectChildDirectories,
+                DirectoryMembershipSnapshot::Present(vec![DirectoryTopologyEntry {
+                    name: OsString::from("Configuration.xml"),
+                    kind: DirectoryTopologyEntryKind::File,
+                }]),
+            )
+            .expect_err("a file cannot be a member of a child-directory guard");
+
+        assert!(error.contains("Configuration.xml"), "{error}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
