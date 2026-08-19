@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files};
 use crate::attempt::{AttemptLog, AttemptSubject, OpenAttempt, Stage};
-use crate::download::Downloader;
+use crate::download::{DownloadObserver, Downloader, SilentDownload};
 use crate::error::{BootstrapError, Failure, Result};
 use crate::manifest::{RuntimeManifest, TargetRuntime};
 use crate::platform::HostTarget;
@@ -62,7 +62,9 @@ impl RuntimeInstaller {
         host: HostTarget,
     ) -> Result<RuntimeInstallation> {
         let name = crate::manifest::CORE_ARTIFACT;
-        let root = self.ensure_artifact(manifest, name, host)?;
+        // Ядро едет в стартовом бюджете хоста, и слушать его ход некому:
+        // провода, по которому об этом рассказывают, ещё не существует.
+        let root = self.ensure_artifact(manifest, name, host, &SilentDownload)?;
         let target = manifest.artifact_target(name, host)?;
         Ok(installation(root, target))
     }
@@ -77,6 +79,7 @@ impl RuntimeInstaller {
         manifest: &RuntimeManifest,
         name: &str,
         host: HostTarget,
+        observer: &dyn DownloadObserver,
     ) -> Result<PathBuf> {
         manifest.validate(&self.plugin_version)?;
         let artifact = manifest.artifact(name)?;
@@ -135,7 +138,10 @@ impl RuntimeInstaller {
             partial: partial.clone(),
         })?;
 
-        let result = match self.downloader.download(&target.asset.url, &partial) {
+        let result = match self
+            .downloader
+            .download(&target.asset.url, &partial, observer)
+        {
             // Оборванный перенос — единственный случай, когда полученное
             // остаётся лежать: продолжить его дешевле, чем начать заново.
             Err(error) => Err(error),

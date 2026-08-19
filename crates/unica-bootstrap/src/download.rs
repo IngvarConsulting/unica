@@ -6,7 +6,28 @@ use std::time::Duration;
 use crate::error::{BootstrapError, Failure, Result};
 
 pub trait Downloader: Send + Sync {
-    fn download(&self, url: &str, destination: &Path) -> Result<()>;
+    fn download(
+        &self,
+        url: &str,
+        destination: &Path,
+        observer: &dyn DownloadObserver,
+    ) -> Result<()>;
+}
+
+/// Кому сообщать о ходе загрузки.
+///
+/// Вызывающий, дожидающийся движка, видит не проценты, а байты: сколько лежит
+/// на диске и сколько обещал сервер. С этого же места продолжит следующая
+/// попытка, поэтому число одно и то же для отчёта и для докачки.
+pub trait DownloadObserver: Send + Sync {
+    fn transferred(&self, received: u64, total: Option<u64>);
+}
+
+/// Загрузка, о ходе которой некому рассказывать.
+pub struct SilentDownload;
+
+impl DownloadObserver for SilentDownload {
+    fn transferred(&self, _received: u64, _total: Option<u64>) {}
 }
 
 /// Шаг чтения.
@@ -42,7 +63,12 @@ impl HttpDownloader {
     /// Перенести байты, продолжив с того места, где оборвалась прошлая попытка.
     ///
     /// Схему проверяет вызывающий: здесь только перенос.
-    fn transfer(&self, url: &str, destination: &Path) -> Result<()> {
+    fn transfer(
+        &self,
+        url: &str,
+        destination: &Path,
+        observer: &dyn DownloadObserver,
+    ) -> Result<()> {
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -87,6 +113,12 @@ impl HttpDownloader {
             File::create(destination)?
         };
         let start = if resumed { received } else { 0 };
+        // Сервер обещает длину остатка; вызывающему нужен весь файл.
+        let total = response
+            .header("Content-Length")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|remaining| start + remaining);
+        observer.transferred(start, total);
 
         let mut reader = response.into_reader();
         let mut buffer = vec![0_u8; CHUNK];
@@ -114,6 +146,7 @@ impl HttpDownloader {
                 )
             })?;
             moved += read as u64;
+            observer.transferred(start + moved, total);
         }
         output.sync_all()?;
         Ok(())
@@ -121,14 +154,19 @@ impl HttpDownloader {
 }
 
 impl Downloader for HttpDownloader {
-    fn download(&self, url: &str, destination: &Path) -> Result<()> {
+    fn download(
+        &self,
+        url: &str,
+        destination: &Path,
+        observer: &dyn DownloadObserver,
+    ) -> Result<()> {
         if !url.starts_with("https://") {
             return Err(BootstrapError::of(
                 Failure::Configuration,
                 format!("runtime download URL must use HTTPS: {url}"),
             ));
         }
-        self.transfer(url, destination)
+        self.transfer(url, destination, observer)
     }
 }
 
@@ -256,7 +294,7 @@ mod tests {
         fs::write(&destination, &bytes[..1000]).expect("partial file");
 
         HttpDownloader::default()
-            .transfer(&stand.url, &destination)
+            .transfer(&stand.url, &destination, &SilentDownload)
             .expect("resume the download");
 
         assert_eq!(
@@ -277,10 +315,65 @@ mod tests {
         fs::write(&destination, &bytes[..1000]).expect("partial file");
 
         HttpDownloader::default()
-            .transfer(&stand.url, &destination)
+            .transfer(&stand.url, &destination, &SilentDownload)
             .expect("download from a forgetful server");
 
         assert_eq!(fs::read(&destination).expect("restarted file"), bytes);
+    }
+
+    /// Наблюдатель, запоминающий, что ему сообщили.
+    #[derive(Default)]
+    struct Watched {
+        seen: Mutex<Vec<(u64, Option<u64>)>>,
+    }
+
+    impl DownloadObserver for Watched {
+        fn transferred(&self, received: u64, total: Option<u64>) {
+            self.seen.lock().expect("seen").push((received, total));
+        }
+    }
+
+    #[test]
+    fn a_download_reports_the_size_of_what_is_on_disk() {
+        // Вызывающий ждёт доставки и хочет видеть, что она идёт. Считать
+        // приходится то, что лежит на диске: с этого места продолжит следующая
+        // попытка, и это же число он увидит, если посмотрит сам.
+        let bytes = payload(4096);
+        let stand = serve(bytes.clone(), Ranges::Honoured);
+        let destination = scratch("watched");
+        let watched = Watched::default();
+
+        HttpDownloader::default()
+            .transfer(&stand.url, &destination, &watched)
+            .expect("download");
+
+        let seen = watched.seen.lock().expect("seen").clone();
+        assert_eq!(
+            seen.last().copied(),
+            Some((4096, Some(4096))),
+            "последнее сообщение — весь файл: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn a_resumed_download_counts_from_what_already_arrived() {
+        // Сообщать про хвост значит показать откат к нулю на середине.
+        let bytes = payload(4096);
+        let stand = serve(bytes.clone(), Ranges::Honoured);
+        let destination = scratch("watched-resume");
+        fs::write(&destination, &bytes[..1000]).expect("partial file");
+        let watched = Watched::default();
+
+        HttpDownloader::default()
+            .transfer(&stand.url, &destination, &watched)
+            .expect("resume");
+
+        let seen = watched.seen.lock().expect("seen").clone();
+        assert!(
+            seen.iter().all(|(received, _)| *received >= 1000),
+            "счёт идёт от уже полученного: {seen:?}"
+        );
+        assert_eq!(seen.last().copied(), Some((4096, Some(4096))));
     }
 
     #[test]
@@ -293,7 +386,7 @@ mod tests {
         let destination = scratch("slow");
 
         HttpDownloader::default()
-            .transfer(&stand.url, &destination)
+            .transfer(&stand.url, &destination, &SilentDownload)
             .expect("медленный канал доезжает");
 
         assert_eq!(fs::read(&destination).expect("whole file"), bytes);
@@ -304,7 +397,11 @@ mod tests {
         let destination = scratch("plaintext");
 
         let error = HttpDownloader::default()
-            .download("http://example.invalid/artifact.tar.gz", &destination)
+            .download(
+                "http://example.invalid/artifact.tar.gz",
+                &destination,
+                &SilentDownload,
+            )
             .expect_err("HTTPS обязателен");
 
         assert!(error.to_string().contains("HTTPS"), "{error}");

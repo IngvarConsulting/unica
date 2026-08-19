@@ -15,6 +15,10 @@ path = "src/lib.rs"
 
 [dependencies]
 bsl-parser.workspace = true
+# Доставку движка по требованию ведёт тот же установщик, что ставит ядро:
+# формат манифеста, ключ кеша, блокировка и докачка у них общие, и вторая
+# реализация была бы местом, где они разойдутся.
+unica-bootstrap = { path = "../unica-bootstrap" }
 bsl-syntax.workspace = true
 diffy.workspace = true
 fs2.workspace = true

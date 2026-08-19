@@ -1861,6 +1861,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "unica-bootstrap",
  "unsafe-libyaml",
  "ureq",
  "url",

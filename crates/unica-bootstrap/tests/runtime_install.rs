@@ -10,8 +10,8 @@ use flate2::Compression;
 use sha2::{Digest, Sha256};
 use tar::{Builder, EntryType, Header};
 use unica_bootstrap::{
-    AttemptLog, BootstrapError, Downloader, Failure, HostTarget, RuntimeFile, RuntimeInstaller,
-    RuntimeManifest, Stage,
+    AttemptLog, BootstrapError, DownloadObserver, Downloader, Failure, HostTarget, RuntimeFile,
+    RuntimeInstaller, RuntimeManifest, SilentDownload, Stage,
 };
 use uuid::Uuid;
 
@@ -144,7 +144,12 @@ impl FakeDownloader {
 }
 
 impl Downloader for FakeDownloader {
-    fn download(&self, _url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+    fn download(
+        &self,
+        _url: &str,
+        destination: &Path,
+        _observer: &dyn DownloadObserver,
+    ) -> unica_bootstrap::Result<()> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let mut file = fs::File::create(destination)?;
         file.write_all(&self.bytes)?;
@@ -520,7 +525,12 @@ impl AssetDownloader {
 }
 
 impl Downloader for AssetDownloader {
-    fn download(&self, url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+    fn download(
+        &self,
+        url: &str,
+        destination: &Path,
+        _observer: &dyn DownloadObserver,
+    ) -> unica_bootstrap::Result<()> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let name = url.rsplit('/').next().unwrap_or_default();
         let bytes = self
@@ -560,7 +570,12 @@ impl InterruptedDownloader {
 }
 
 impl Downloader for InterruptedDownloader {
-    fn download(&self, _url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+    fn download(
+        &self,
+        _url: &str,
+        destination: &Path,
+        _observer: &dyn DownloadObserver,
+    ) -> unica_bootstrap::Result<()> {
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -591,7 +606,12 @@ struct PoisonedThenHonest {
 }
 
 impl Downloader for PoisonedThenHonest {
-    fn download(&self, _url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+    fn download(
+        &self,
+        _url: &str,
+        destination: &Path,
+        _observer: &dyn DownloadObserver,
+    ) -> unica_bootstrap::Result<()> {
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -732,7 +752,12 @@ fn an_engine_is_installed_on_demand_under_its_own_version() {
     ]));
 
     let root = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
-        .ensure_artifact(&manifest, "rlm-tools-bsl", HostTarget::LinuxX64)
+        .ensure_artifact(
+            &manifest,
+            "rlm-tools-bsl",
+            HostTarget::LinuxX64,
+            &SilentDownload,
+        )
         .expect("движок ставится по имени");
 
     assert_eq!(
@@ -780,7 +805,12 @@ fn two_sessions_acquire_one_engine_once() {
             let installer = installer.clone();
             let manifest = manifest.clone();
             thread::spawn(move || {
-                installer.ensure_artifact(&manifest, "rlm-tools-bsl", HostTarget::LinuxX64)
+                installer.ensure_artifact(
+                    &manifest,
+                    "rlm-tools-bsl",
+                    HostTarget::LinuxX64,
+                    &SilentDownload,
+                )
             })
         })
         .collect::<Vec<_>>()
@@ -798,7 +828,12 @@ fn two_sessions_acquire_one_engine_once() {
 struct DeadChannel;
 
 impl Downloader for DeadChannel {
-    fn download(&self, url: &str, _destination: &Path) -> unica_bootstrap::Result<()> {
+    fn download(
+        &self,
+        url: &str,
+        _destination: &Path,
+        _observer: &dyn DownloadObserver,
+    ) -> unica_bootstrap::Result<()> {
         Err(BootstrapError::of(
             Failure::Network,
             format!("failed to download runtime asset {url}: connection refused"),
@@ -873,7 +908,12 @@ struct PeekingDownloader {
 }
 
 impl Downloader for PeekingDownloader {
-    fn download(&self, _url: &str, destination: &Path) -> unica_bootstrap::Result<()> {
+    fn download(
+        &self,
+        _url: &str,
+        destination: &Path,
+        _observer: &dyn DownloadObserver,
+    ) -> unica_bootstrap::Result<()> {
         let open = AttemptLog::in_cache(&self.cache)
             .unfinished()
             .expect("read the attempt log");
@@ -953,5 +993,69 @@ fn a_failure_the_bootstrap_reported_is_not_repeated_by_the_next_session() {
         .unfinished()
         .expect("read the attempt log")
         .is_empty());
+    fs::remove_dir_all(&cache).ok();
+}
+
+/// Загрузчик, докладывающий один раз: проверяется провод, а не арифметика.
+struct ReportingDownloader {
+    bytes: Vec<u8>,
+}
+
+impl Downloader for ReportingDownloader {
+    fn download(
+        &self,
+        _url: &str,
+        destination: &Path,
+        observer: &dyn DownloadObserver,
+    ) -> unica_bootstrap::Result<()> {
+        let mut file = fs::File::create(destination)?;
+        file.write_all(&self.bytes)?;
+        file.sync_all()?;
+        observer.transferred(self.bytes.len() as u64, Some(self.bytes.len() as u64));
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct WatchedDelivery {
+    seen: std::sync::Mutex<Vec<(u64, Option<u64>)>>,
+}
+
+impl DownloadObserver for WatchedDelivery {
+    fn transferred(&self, received: u64, total: Option<u64>) {
+        self.seen.lock().expect("seen").push((received, total));
+    }
+}
+
+#[test]
+fn an_engine_delivery_reports_its_progress_to_the_caller() {
+    // Вызов, дожидающийся движка, показывает ход доставки. Установщик обязан
+    // донести наблюдателя до загрузчика, а не потерять его по дороге.
+    let core = b"unica-runtime";
+    let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
+    let engine = b"rlm-bsl-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
+    let cache = temp_dir("engine-progress");
+    let watched = WatchedDelivery::default();
+
+    RuntimeInstaller::new(
+        cache.clone(),
+        "0.7.0",
+        Arc::new(ReportingDownloader {
+            bytes: engine_archive.clone(),
+        }),
+    )
+    .ensure_artifact(&manifest, "rlm-tools-bsl", HostTarget::LinuxX64, &watched)
+    .expect("движок ставится");
+
+    assert_eq!(
+        *watched.seen.lock().expect("seen"),
+        vec![(
+            engine_archive.len() as u64,
+            Some(engine_archive.len() as u64)
+        )],
+        "наблюдатель вызывающего дошёл до загрузчика"
+    );
     fs::remove_dir_all(&cache).ok();
 }
