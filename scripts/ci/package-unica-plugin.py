@@ -531,8 +531,11 @@ def write_release_runtime_manifest(
             "files": item["files"],
             "entrypoint": item["entrypoint"],
         }
+    # Схема 2: артефакты по отдельности, у каждого своя версия. Ядро едет в
+    # стартовом бюджете хоста, движки — отдельными артефактами, и ключ кеша
+    # берётся из версии артефакта, а не из версии плагина.
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "pluginVersion": plugin_version,
         "development": False,
         "source": {
@@ -543,7 +546,13 @@ def write_release_runtime_manifest(
             "repository": "https://github.com/IngvarConsulting/unica",
             "tag": release_tag,
         },
-        "targets": targets,
+        "artifacts": {
+            "unica": {
+                "version": plugin_version,
+                "role": "core",
+                "targets": targets,
+            }
+        },
     }
     (plugin_dir / "runtime-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

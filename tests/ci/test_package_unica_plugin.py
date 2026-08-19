@@ -1122,8 +1122,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertFalse(runtime_manifest["development"])
             self.assertEqual(runtime_manifest["source"]["commit"], "a" * 40)
             self.assertEqual(runtime_manifest["release"]["tag"], release_tag)
-            self.assertEqual(sorted(runtime_manifest["targets"]), sorted(target_triples))
-            for target, target_data in runtime_manifest["targets"].items():
+            self.assertEqual(
+            sorted(runtime_manifest["artifacts"]["unica"]["targets"]),
+            sorted(target_triples),
+        )
+            for target, target_data in runtime_manifest["artifacts"]["unica"]["targets"].items():
                 self.assertEqual(
                     target_data["asset"]["url"],
                     "https://github.com/IngvarConsulting/unica/releases/download/"

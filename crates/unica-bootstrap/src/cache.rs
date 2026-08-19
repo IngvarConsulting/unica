@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files};
@@ -29,9 +28,10 @@ pub struct RuntimeInstallation {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReadyMarker {
-    plugin_version: String,
+    artifact: String,
+    version: String,
     target: String,
-    manifest_sha256: String,
+    asset_sha256: String,
 }
 
 impl RuntimeInstaller {
@@ -53,17 +53,22 @@ impl RuntimeInstaller {
         host: HostTarget,
     ) -> Result<RuntimeInstallation> {
         manifest.validate(&self.plugin_version)?;
-        let target = manifest.target(host)?;
-        let manifest_sha256 = manifest_sha256(manifest)?;
+        let name = crate::manifest::CORE_ARTIFACT;
+        let artifact = manifest.core()?;
+        let target = manifest.artifact_target(name, host)?;
+        // Личность установки — артефакт, его версия и байты архива. Версия
+        // плагина сюда не входит: выпуск, не менявший артефакт, не должен
+        // объявлять кеш холодным.
         let final_root = self
             .cache_root
-            .join(&self.plugin_version)
+            .join(name)
+            .join(&artifact.version)
             .join(host.as_str());
 
         fs::create_dir_all(self.cache_root.join(".locks"))?;
         let lock_path = self.cache_root.join(".locks").join(format!(
-            "{}-{}.lock",
-            self.plugin_version,
+            "{name}-{}-{}.lock",
+            artifact.version,
             host.as_str()
         ));
         let lock = open_lock(&lock_path)?;
@@ -74,19 +79,13 @@ impl RuntimeInstaller {
             ))
         })?;
 
-        if ready_installation(
-            &final_root,
-            target,
-            &self.plugin_version,
-            host,
-            &manifest_sha256,
-        )? {
+        if ready_installation(&final_root, target, name, &artifact.version, host)? {
             return Ok(installation(final_root, target));
         }
 
         let transaction_root = self.cache_root.join(".transactions").join(format!(
-            "{}-{}-{}",
-            self.plugin_version,
+            "{name}-{}-{}-{}",
+            artifact.version,
             host.as_str(),
             Uuid::new_v4()
         ));
@@ -104,7 +103,13 @@ impl RuntimeInstaller {
                 )));
             }
             extract_verified_tar_gz(&archive_path, &staged_root, &target.files)?;
-            write_ready_marker(&staged_root, &self.plugin_version, host, &manifest_sha256)?;
+            write_ready_marker(
+                &staged_root,
+                name,
+                &artifact.version,
+                host,
+                &target.asset.sha256,
+            )?;
 
             if final_root.exists() {
                 let quarantine = final_root.with_file_name(format!(
@@ -152,9 +157,9 @@ fn open_lock(path: &Path) -> Result<File> {
 fn ready_installation(
     root: &Path,
     target: &TargetRuntime,
-    plugin_version: &str,
+    artifact: &str,
+    version: &str,
     host: HostTarget,
-    manifest_sha256: &str,
 ) -> Result<bool> {
     let marker_path = root.join(".ready.json");
     if !marker_path.is_file() {
@@ -167,9 +172,10 @@ fn ready_installation(
         Ok(marker) => marker,
         Err(_) => return Ok(false),
     };
-    if marker.plugin_version != plugin_version
+    if marker.artifact != artifact
+        || marker.version != version
         || marker.target != host.as_str()
-        || marker.manifest_sha256 != manifest_sha256
+        || marker.asset_sha256 != target.asset.sha256
     {
         return Ok(false);
     }
@@ -181,25 +187,22 @@ fn ready_installation(
 
 fn write_ready_marker(
     root: &Path,
-    plugin_version: &str,
+    artifact: &str,
+    version: &str,
     host: HostTarget,
-    manifest_sha256: &str,
+    asset_sha256: &str,
 ) -> Result<()> {
     let marker = ReadyMarker {
-        plugin_version: plugin_version.to_string(),
+        artifact: artifact.to_string(),
+        version: version.to_string(),
         target: host.as_str().to_string(),
-        manifest_sha256: manifest_sha256.to_string(),
+        asset_sha256: asset_sha256.to_string(),
     };
     let path = root.join(".ready.json");
     let file = File::create(&path)?;
     serde_json::to_writer_pretty(&file, &marker)?;
     file.sync_all()?;
     Ok(())
-}
-
-fn manifest_sha256(manifest: &RuntimeManifest) -> Result<String> {
-    let bytes = serde_json::to_vec(manifest)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn installation(root: PathBuf, target: &TargetRuntime) -> RuntimeInstallation {
