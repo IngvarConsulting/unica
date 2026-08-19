@@ -1620,8 +1620,12 @@ fn query_parent_case_sensitive_flags(parent: &fs::File) -> io::Result<u32> {
     Ok(information.flags)
 }
 
-/// Reports whether the file system answered that it does not implement per-directory case
-/// sensitivity at all, which is a proven state rather than an unproven one.
+/// Reports whether Windows declined to serve the per-directory case-sensitivity query rather
+/// than answering it. Two distinct layers decline the same way: a file system without the
+/// feature, and the Win32 entry point on a build that does not carry the information class.
+/// Windows Server 2019 (build 17763) is the measured case of the second — `fsutil`, which asks
+/// through `NtQueryInformationFile`, answers for the same directory that
+/// `GetFileInformationByHandleEx` rejects with `ERROR_INVALID_PARAMETER`.
 #[cfg(windows)]
 fn case_sensitivity_query_is_unsupported(error: &io::Error) -> bool {
     use windows_sys::Win32::Foundation::{
@@ -1646,10 +1650,12 @@ fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
 
     let flags = match query_parent_case_sensitive_flags(parent) {
         Ok(flags) => flags,
-        // Only local NTFS volumes carry per-directory case sensitivity. A file system that does
-        // not implement the information class has answered that no directory it hosts can be
-        // case-sensitive, so the insensitive match every ordinary Win32 open already performs is
-        // exact here rather than a guess. Every other failure leaves the parent unproven.
+        // A declined query is an answer about the platform, not an unproven parent. Where the
+        // file system lacks the feature no directory can be case-sensitive and the insensitive
+        // match is exact; where only the Win32 entry point lacks the class, this open matches
+        // names the way every ordinary Win32 open on that host already does, including std::fs.
+        // Refusing instead would strand the whole surface on a host that is merely older.
+        // Every other failure still leaves the parent unproven and fails closed.
         Err(error) if case_sensitivity_query_is_unsupported(&error) => {
             return Ok(OBJ_CASE_INSENSITIVE)
         }
@@ -4326,7 +4332,7 @@ mod tests {
         }
 
         #[test]
-        fn windows_relative_open_accepts_a_volume_without_per_directory_case_sensitivity() {
+        fn windows_relative_open_accepts_a_declined_case_sensitivity_query() {
             use std::io::Read;
 
             for reported in [
@@ -4344,7 +4350,7 @@ mod tests {
                     open_regular_child_nofollow(&parent, std::ffi::OsStr::new("entry.txt"))
                 })
                 .unwrap_or_else(|error| {
-                    panic!("a volume without per-directory case sensitivity must open its child, but Windows error {reported} was reported as {error}")
+                    panic!("a declined case-sensitivity query must still open the child, but Windows error {reported} was reported as {error}")
                 });
 
                 let mut contents = Vec::new();
