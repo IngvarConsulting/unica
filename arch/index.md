@@ -25,6 +25,8 @@
 | `DEC.2026-08-18.RESOURCE-FOR-DEFERRED-BYTES` | решение · product | active | нет | Ресурс предлагается для байтов, которых, скорее всего, не попросят | [decisions/2026-08-18-resource-for-deferred-bytes.md](decisions/2026-08-18-resource-for-deferred-bytes.md) |
 | `DEC.2026-08-18.RESULT-FORM` | решение · product | active | нет | Результат — компактный JSON со слотовой дисциплиной | [decisions/2026-08-18-result-form.md](decisions/2026-08-18-result-form.md) |
 | `DEC.2026-08-19.ARCHIVE-DRIFT-IS-RECORDED` | решение · process | active | да | Заморозка требует не неподвижности, а объяснённого расхождения | [decisions/2026-08-19-archive-drift-is-recorded.md](decisions/2026-08-19-archive-drift-is-recorded.md) |
+| `DEC.2026-08-19.ARTIFACT-VERSIONED-CACHE` | решение · product | active | нет | Артефакт кешируется по своей версии, а не по версии плагина | [decisions/2026-08-19-artifact-versioned-cache.md](decisions/2026-08-19-artifact-versioned-cache.md) |
+| `DEC.2026-08-19.CORE-FIRST-ACQUISITION` | решение · product | active | нет | В стартовый бюджет едет только ядро | [decisions/2026-08-19-core-first-acquisition.md](decisions/2026-08-19-core-first-acquisition.md) |
 | `DEC.2026-08-19.DECISIONS-FORM-INSIDE` | решение · process | active | да | Решение формируется в реестре, а не в трекере | [decisions/2026-08-19-decisions-form-inside.md](decisions/2026-08-19-decisions-form-inside.md) |
 | `DEC.2026-08-19.ENTRY-APPLY` | решение · product | active | нет | `apply` — один писатель на всё дерево | [decisions/2026-08-19-entry-apply.md](decisions/2026-08-19-entry-apply.md) |
 | `DEC.2026-08-19.ENTRY-CHECK` | решение · product | active | нет | `check` — здоровье пространства и годность узла | [decisions/2026-08-19-entry-check.md](decisions/2026-08-19-entry-check.md) |
@@ -34,6 +36,7 @@
 | `DEC.2026-08-19.ENTRY-RUN` | решение · product | active | нет | `run` — работа платформы | [decisions/2026-08-19-entry-run.md](decisions/2026-08-19-entry-run.md) |
 | `DEC.2026-08-19.ENTRY-SEARCH` | решение · product | active | нет | `search` — по содержимому, а не по имени | [decisions/2026-08-19-entry-search.md](decisions/2026-08-19-entry-search.md) |
 | `DEC.2026-08-19.ENTRY-VIEW` | решение · product | active | нет | `view` — один читатель на всё дерево | [decisions/2026-08-19-entry-view.md](decisions/2026-08-19-entry-view.md) |
+| `DEC.2026-08-19.MISSING-ENGINE-WAITS` | решение · product | active | нет | Отсутствующий движок ведёт себя как непостроенный индекс | [decisions/2026-08-19-missing-engine-waits.md](decisions/2026-08-19-missing-engine-waits.md) |
 | `DEC.2026-08-19.NO-SELF-GLOSS` | решение · process | active | да | Правило говорит о предмете, а не о себе | [decisions/2026-08-19-no-self-gloss.md](decisions/2026-08-19-no-self-gloss.md) |
 | `DEC.2026-08-19.PARKED-CONTOURS` | решение · process | active | да | Парити и харнесс сняты с прогона на время перестройки поверхности | [decisions/2026-08-19-parked-contours.md](decisions/2026-08-19-parked-contours.md) |
 | `DEC.2026-08-19.PRODUCT-OR-PROCESS` | решение · process | active | да | Запись объявляет, кто заметит её нарушение | [decisions/2026-08-19-product-or-process.md](decisions/2026-08-19-product-or-process.md) |
