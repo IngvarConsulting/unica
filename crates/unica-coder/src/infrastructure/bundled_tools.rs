@@ -25,6 +25,10 @@ struct BundledManifest {
 struct ManifestTool {
     name: String,
     version: Option<String>,
+    /// Из какого архива приходит инструмент. Несколько инструментов делят
+    /// один: `rlm-tools-bsl` несёт два. Отсутствует — артефакт зовётся как
+    /// инструмент.
+    artifact: Option<String>,
     binaries: Option<BTreeMap<String, ManifestBinary>>,
     binary_path: Option<String>,
     sha256: Option<String>,
@@ -144,8 +148,14 @@ fn resolve_from_artifact_cache(
         return Ok(None);
     };
 
+    let artifact = manifest
+        .tools
+        .iter()
+        .find(|tool| tool.name == tool_name)
+        .and_then(|tool| tool.artifact.clone())
+        .unwrap_or_else(|| tool_name.to_string());
     let program = cache
-        .join(tool_name)
+        .join(&artifact)
         .join(&version)
         .join(target_id)
         .join(&binary.binary_path);
@@ -477,6 +487,55 @@ mod tests {
         assert_eq!(
             tool.program,
             plugin_root.join("bin/darwin-arm64/bsl-analyzer")
+        );
+    }
+
+    #[test]
+    fn tools_sharing_one_archive_resolve_to_one_artifact() {
+        // rlm-tools-bsl несёт два инструмента в одном файле на 69 МБ: кеш по
+        // имени инструмента скачал бы его дважды.
+        let plugin_root = temp_plugin_root("shared-artifact");
+        fs::create_dir_all(plugin_root.join("bin/darwin-arm64")).unwrap();
+        fs::write(plugin_root.join("bin/darwin-arm64/rlm-bsl-index"), "index").unwrap();
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "targetTriple": "aarch64-apple-darwin",
+  "tools": [
+    {
+      "name": "rlm-bsl-index",
+      "version": "1.33.0",
+      "artifact": "rlm-tools-bsl",
+      "binaryPath": "bin/darwin-arm64/rlm-bsl-index",
+      "sha256": "3c9b8f2e6d1a4c7b0e5f8a2d6c9b3e7f1a4d8c2b5e9f3a7d1c4b8e2f6a9d3c7b"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let cache = plugin_root.join("..").join("shared-cache");
+        let installed = cache
+            .join("rlm-tools-bsl")
+            .join("1.33.0")
+            .join("darwin-arm64")
+            .join("bin/darwin-arm64");
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("rlm-bsl-index"), "index").unwrap();
+
+        let tool = resolve_bundled_tool_in(
+            &plugin_root,
+            Some(cache.as_path()),
+            "rlm-bsl-index",
+            "darwin-arm64",
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            tool.program,
+            installed.join("rlm-bsl-index"),
+            "путь строится по артефакту, а не по имени инструмента"
         );
     }
 
