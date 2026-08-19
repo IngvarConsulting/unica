@@ -5,7 +5,7 @@ use crate::application::{
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::operational_config::OperationalConfig;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::resolve_bundled_tool;
+use crate::infrastructure::bundled_tools::{resolve_bundled_tool, BundledTool};
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
 use crate::infrastructure::diagnostics_jsonl::{
     AnalyzerDiagnosticsBatch, DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
@@ -182,6 +182,52 @@ pub struct RuntimeAdapterOutcome {
     pub data: Option<Value>,
 }
 
+/// Что показывает предпросмотр.
+///
+/// Если движка на диске нет, план не выдаёт себя за исполнимый: `ok` ложно, а
+/// отказ назван кодом и следующим шагом. Команда при этом остаётся в ответе —
+/// она объясняет, что было бы запущено, но уже не читается как готовая.
+fn dry_run_outcome(
+    tool_name: &str,
+    label: &str,
+    mutating: bool,
+    bundled_tool: BundledTool,
+    command: Vec<String>,
+) -> AdapterOutcome {
+    let changes = if mutating {
+        vec!["no files changed because dryRun is true".to_string()]
+    } else {
+        Vec::new()
+    };
+    match bundled_tool.missing {
+        Some(missing) => AdapterOutcome {
+            ok: false,
+            summary: format!(
+                "dry run: {tool_name} cannot call internal {label} adapter — {} is not on this machine",
+                missing.tool
+            ),
+            changes,
+            warnings: bundled_tool.warnings,
+            errors: vec![missing.message()],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: Some(command),
+        },
+        None => AdapterOutcome {
+            ok: true,
+            summary: format!("dry run: {tool_name} would call internal {label} adapter"),
+            changes,
+            warnings: bundled_tool.warnings,
+            errors: Vec::new(),
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: None,
+            command: Some(command),
+        },
+    }
+}
+
 impl RuntimeAdapterOutcome {
     fn plain(outcome: AdapterOutcome) -> Self {
         Self {
@@ -285,24 +331,13 @@ impl<'a> CliAdapter<'a> {
         command.extend(reported_args);
 
         if dry_run {
-            return Ok(AdapterOutcome {
-                ok: true,
-                summary: format!(
-                    "dry run: {tool_name} would call internal {} adapter",
-                    self.label
-                ),
-                changes: if mutating {
-                    vec!["no files changed because dryRun is true".to_string()]
-                } else {
-                    Vec::new()
-                },
-                warnings: bundled_tool.warnings,
-                errors: Vec::new(),
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: Some(command),
-            });
+            return Ok(dry_run_outcome(
+                tool_name,
+                self.label,
+                mutating,
+                bundled_tool,
+                command,
+            ));
         }
 
         let mut process_args = self
@@ -6659,4 +6694,71 @@ fn managed_truncation_is_visible_at_process_adapter_boundary() {
     assert!(output.stderr_truncated);
     assert!(output.stdout_had_invalid_utf8);
     assert!(output.stderr_had_invalid_utf8);
+}
+
+#[cfg(test)]
+mod dry_run_honesty_tests {
+    use super::*;
+    use crate::domain::engine::{InstallMode, MissingEngine};
+
+    fn tool(missing: Option<MissingEngine>) -> BundledTool {
+        BundledTool {
+            program: PathBuf::from("/plugins/unica/bin/darwin-arm64/v8-runner"),
+            warnings: Vec::new(),
+            missing,
+        }
+    }
+
+    #[test]
+    fn a_preview_without_the_binary_is_not_a_runnable_plan() {
+        // #549: `ok` и `command` вместе выглядели готовым к запуску планом,
+        // хотя файла по этому пути нет. Худший из возможных ответов.
+        let outcome = dry_run_outcome(
+            "unica.build.load",
+            "build/runtime",
+            true,
+            tool(Some(MissingEngine::new(
+                "v8-runner",
+                "darwin-arm64",
+                "/plugins/unica/bin/darwin-arm64/v8-runner",
+                Some("0.5.1".to_string()),
+                InstallMode::Source,
+            ))),
+            vec!["/plugins/unica/bin/darwin-arm64/v8-runner".to_string()],
+        );
+
+        assert!(!outcome.ok, "план без бинаря не выдаёт себя за исполнимый");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING)),
+            "отказ назван кодом: {:?}",
+            outcome.errors
+        );
+        assert!(
+            outcome.summary.contains("v8-runner"),
+            "чего не хватает, видно в сводке: {}",
+            outcome.summary
+        );
+    }
+
+    #[test]
+    fn a_preview_with_the_binary_in_place_still_describes_the_plan() {
+        let outcome = dry_run_outcome(
+            "unica.build.load",
+            "build/runtime",
+            true,
+            tool(None),
+            vec!["/plugins/unica/bin/darwin-arm64/v8-runner".to_string()],
+        );
+
+        assert!(outcome.ok);
+        assert!(outcome.errors.is_empty());
+        assert!(outcome.command.is_some());
+        assert_eq!(
+            outcome.changes,
+            vec!["no files changed because dryRun is true".to_string()]
+        );
+    }
 }
