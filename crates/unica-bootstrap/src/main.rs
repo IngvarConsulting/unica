@@ -35,7 +35,13 @@ fn run(args: Vec<String>) -> Result<i32> {
     match command {
         Command::Run => {
             let installed = install_runtime(&plugin_root)?;
-            launch_runtime(&installed.entrypoint, &[], &provider_state_root)
+            let artifact_cache = runtime_cache_root()?;
+            launch_runtime(
+                &installed.entrypoint,
+                &[],
+                &provider_state_root,
+                &artifact_cache,
+            )
         }
         Command::Verify => {
             install_and_verify_runtime(&plugin_root, &provider_state_root)?;

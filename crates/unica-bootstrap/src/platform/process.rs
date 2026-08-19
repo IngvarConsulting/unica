@@ -8,10 +8,11 @@ pub fn launch_runtime(
     entrypoint: &Path,
     args: &[String],
     provider_state_root: &Path,
+    artifact_cache: &Path,
 ) -> Result<i32> {
     use std::os::unix::process::CommandExt;
 
-    let error = runtime_command(entrypoint, args, provider_state_root).exec();
+    let error = runtime_command(entrypoint, args, provider_state_root, artifact_cache).exec();
     Err(BootstrapError::new(format!(
         "failed to exec Unica runtime {}: {error}",
         entrypoint.display()
@@ -23,6 +24,7 @@ pub fn launch_runtime(
     entrypoint: &Path,
     args: &[String],
     provider_state_root: &Path,
+    artifact_cache: &Path,
 ) -> Result<i32> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
@@ -34,7 +36,7 @@ pub fn launch_runtime(
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
-    let mut child = runtime_command(entrypoint, args, provider_state_root)
+    let mut child = runtime_command(entrypoint, args, provider_state_root, artifact_cache)
         .spawn()
         .map_err(|error| {
             BootstrapError::new(format!(
@@ -91,11 +93,19 @@ pub fn launch_runtime(
     )))
 }
 
-fn runtime_command(entrypoint: &Path, args: &[String], provider_state_root: &Path) -> Command {
+fn runtime_command(
+    entrypoint: &Path,
+    args: &[String],
+    provider_state_root: &Path,
+    artifact_cache: &Path,
+) -> Command {
     let mut command = Command::new(entrypoint);
     command
         .args(args)
-        .env("UNICA_PROVIDER_STATE_DIR", provider_state_root);
+        .env("UNICA_PROVIDER_STATE_DIR", provider_state_root)
+        // Движки больше не лежат рядом с ядром: рантайм ищет их в кеше
+        // артефактов, и адрес кеша знает только тот, кто туда ставил.
+        .env("UNICA_ARTIFACT_CACHE", artifact_cache);
     command
 }
 
@@ -114,12 +124,33 @@ mod tests {
             Path::new("/bin/sh"),
             &args,
             Path::new("/private/provider-state"),
+            Path::new("/private/artifact-cache"),
         )
         .output()
         .unwrap();
 
         assert!(output.status.success());
         assert_eq!(output.stdout, b"/private/provider-state");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_passes_the_artifact_cache_to_child() {
+        let args = vec![
+            "-c".to_string(),
+            "printf %s \"$UNICA_ARTIFACT_CACHE\"".to_string(),
+        ];
+        let output = runtime_command(
+            Path::new("/bin/sh"),
+            &args,
+            Path::new("/private/provider-state"),
+            Path::new("/private/artifact-cache"),
+        )
+        .output()
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"/private/artifact-cache");
     }
 
     #[cfg(windows)]
@@ -134,6 +165,7 @@ mod tests {
             Path::new("cmd.exe"),
             &args,
             Path::new(r"C:\private\provider-state"),
+            Path::new(r"C:\private\artifact-cache"),
         )
         .output()
         .unwrap();
