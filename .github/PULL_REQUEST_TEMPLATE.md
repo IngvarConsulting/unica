@@ -6,7 +6,7 @@
 
 <!--
 Назовите символы затронутых записей реестра `arch/`:
-DEC.* — решения, INV.* — инварианты, CON.* — контракты.
+DEC.* — решения, INV.* — инварианты, CTR.* — контракты.
 Полный перечень — в arch/index.md (порождается, руками не правится).
 Если изменение ничего из этого не затрагивает, напишите «нет».
 -->
@@ -16,7 +16,7 @@ DEC.* — решения, INV.* — инварианты, CON.* — контра
   или архитектурный контракт:
 
 Инвариант заводится только вместе с работающей проверкой: пока нет кода — есть
-решение, а не инвариант. Форму реестра стерегут `tests/arch/test_registry.py`:
+решение, а не инвариант. Форму реестра стерегут наборы `tests/arch`:
 символ совпадает с путём, каждая ссылка разрешается, замена взаимна, тело
 решения не длиннее сорока строк.
 
@@ -32,7 +32,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace -- --test-threads=1
 python3.12 -m pip install -r tests/ci/requirements.txt
 python3.12 -m unittest discover -s tests/ci
-python3.12 -m unittest tests.arch.test_registry
+python3.12 -m unittest discover -s tests/arch -t .
 git diff --check
 ```
 

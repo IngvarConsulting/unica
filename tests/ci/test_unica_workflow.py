@@ -174,6 +174,22 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # test forever. The workflows have far more shell than this.
         self.assertGreater(scanned, 50)
 
+    def test_registry_guards_run_in_the_source_contour(self) -> None:
+        """The rules about the registry must run where the product's rules run.
+
+        A guard nobody runs is not a guard. This assertion lives here rather
+        than in `tests/arch` on purpose: a check proving that `tests/arch`
+        executes would, inside `tests/arch`, only execute when it already did.
+        """
+        source = job_block(self.release_text(), "verify-source")
+
+        self.assertIn("unittest discover -s tests/arch -t .", source)
+        self.assertIn("py_compile scripts/arch/*.py tests/arch/*.py", source)
+
+        for suite in ("tests/ci", "tests/dev", "tests/arch"):
+            with self.subTest(suite=suite):
+                self.assertIn(f"discover -s {suite}", source)
+
     def test_rust_jobs_route_primary_and_platform_contours(self) -> None:
         text = self.release_text()
         source = job_block(text, "verify-source")

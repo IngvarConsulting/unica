@@ -38,6 +38,7 @@
 | `DEC.2026-08-19.PRODUCT-OR-PROCESS` | решение · process | active | да | Запись объявляет, кто заметит её нарушение | [decisions/2026-08-19-product-or-process.md](decisions/2026-08-19-product-or-process.md) |
 | `DEC.2026-08-19.PRODUCT-RECORD-IS-HISTORY` | решение · process | active | да | Принятая продуктовая запись правится только заменой | [decisions/2026-08-19-product-record-is-history.md](decisions/2026-08-19-product-record-is-history.md) |
 | `DEC.2026-08-19.REALIZATION-AXIS` | решение · process | active | да | Решённое и построенное — разные оси | [decisions/2026-08-19-realization-axis.md](decisions/2026-08-19-realization-axis.md) |
+| `DEC.2026-08-19.REGISTRY-GUARDS-RUN` | решение · process | active | да | Правила о реестре проверяются там же, где правила о продукте | [decisions/2026-08-19-registry-guards-run.md](decisions/2026-08-19-registry-guards-run.md) |
 | `DEC.2026-08-19.SURFACE-BY-QUESTION` | решение · product | active | нет | Вход отвечает на вопрос, а не обслуживает предмет | [decisions/2026-08-19-surface-by-question.md](decisions/2026-08-19-surface-by-question.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Конфигурация вызова разрешается снимком | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEPENDENCY-DIRECTION` | инвариант · process | active |  | Направление зависимостей между слоями закреплено проверкой | [invariants/INV.APP.DEPENDENCY-DIRECTION.md](invariants/INV.APP.DEPENDENCY-DIRECTION.md) |
@@ -47,6 +48,7 @@
 | `INV.CACHE.ORCHESTRATOR-OWNED` | инвариант · process | active |  | Состоянием рабочего пространства владеет оркестратор | [invariants/INV.CACHE.ORCHESTRATOR-OWNED.md](invariants/INV.CACHE.ORCHESTRATOR-OWNED.md) |
 | `INV.CACHE.PREVIEW-WRITES-NOTHING` | инвариант · product | active |  | Предпросмотр не оставляет следов | [invariants/INV.CACHE.PREVIEW-WRITES-NOTHING.md](invariants/INV.CACHE.PREVIEW-WRITES-NOTHING.md) |
 | `INV.CACHE.STATE-OUTSIDE-SOURCE` | инвариант · product | active |  | Состояние поставщика лежит вне индексируемого источника | [invariants/INV.CACHE.STATE-OUTSIDE-SOURCE.md](invariants/INV.CACHE.STATE-OUTSIDE-SOURCE.md) |
+| `INV.CI.REGISTRY-GUARDS-RUN` | инвариант · process | active |  | Стражи реестра входят в контур источника | [invariants/INV.CI.REGISTRY-GUARDS-RUN.md](invariants/INV.CI.REGISTRY-GUARDS-RUN.md) |
 | `INV.CI.TAG-ONLY-PUBLISH` | инвариант · process | active |  | Публикация происходит только по тегу и через один шлюз | [invariants/INV.CI.TAG-ONLY-PUBLISH.md](invariants/INV.CI.TAG-ONLY-PUBLISH.md) |
 | `INV.DOC.ARCHIVE-FROZEN` | инвариант · process | active |  | Расхождение замороженного слоя объяснено | [invariants/INV.DOC.ARCHIVE-FROZEN.md](invariants/INV.DOC.ARCHIVE-FROZEN.md) |
 | `INV.DOC.SUPERPOWERS-BOUNDARY` | инвариант · process | active |  | Формы superpowers не входят в реестр | [invariants/INV.DOC.SUPERPOWERS-BOUNDARY.md](invariants/INV.DOC.SUPERPOWERS-BOUNDARY.md) |
