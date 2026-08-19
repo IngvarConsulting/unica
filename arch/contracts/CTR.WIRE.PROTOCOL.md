@@ -17,6 +17,3 @@ check: crates/unica-coder/src/interfaces/mcp.rs::modern_list_results_carry_requi
 
 Декларируется только реализованное: `tools`. Prompts, resources, completions,
 logging и tasks не рекламируются, пока их не существует.
-
-`decision: null` означает, что форма контракта в этом реестре ещё не
-пересматривалась.

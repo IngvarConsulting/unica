@@ -169,6 +169,33 @@ class ReferenceTests(unittest.TestCase):
                 offenders.append(f"{record.relative}: {path} does not define {name}")
         self.assertEqual(offenders, [])
 
+    def test_no_rule_explains_its_own_props(self) -> None:
+        """A rule speaks about its subject, not about how to read itself.
+
+        The registry's shape is stated once, in `arch/README.md`. Copied into a
+        record it lives in two places and drifts silently: the shape changes in
+        the README and the copy keeps teaching the old one. It also spends the
+        record's budget on an instruction manual instead of the subject.
+
+        Only a record's *own* props are barred, and only for the two kinds that
+        merely carry them. A rule about someone else's prop is doing its job:
+        `INV.REGISTRY.REALIZATION-NAMED` speaks about `realized` on decisions
+        and carries no such prop. A decision that introduces a prop has to name
+        it, so decisions are out of scope. Own-prop scoping also keeps the
+        check off the domain words that collide with prop names — `check`,
+        `scope` and `design` are entries and directories here too.
+        """
+        offenders = []
+        for record in REGISTRY.records():
+            if record.kind not in ("invariant", "contract"):
+                continue
+            for prop in record.props:
+                if prop == "id":
+                    continue
+                if re.search(rf"`{re.escape(prop)}\b[^`]*`", record.body):
+                    offenders.append(f"{record.relative}: body explains its own `{prop}`")
+        self.assertEqual(offenders, [])
+
     def test_every_contract_names_a_producer_that_exists(self) -> None:
         """A contract whose producer moved is lying about where the form is made."""
         offenders = []
