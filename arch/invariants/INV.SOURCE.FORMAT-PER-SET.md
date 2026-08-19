@@ -3,7 +3,7 @@ id: INV.SOURCE.FORMAT-PER-SET
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/tool_context.rs
+check: crates/unica-coder/src/infrastructure/format_guard.rs::code_patch_inside_older_source_set_uses_the_same_format_boundary
 scope: [source]
 ---
 

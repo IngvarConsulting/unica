@@ -3,7 +3,7 @@ id: INV.CACHE.PREVIEW-WRITES-NOTHING
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/workspace_state.rs
+check: crates/unica-coder/src/infrastructure/workspace_index.rs::dry_run_does_not_start_indexing_or_write_state
 scope: [cache]
 ---
 

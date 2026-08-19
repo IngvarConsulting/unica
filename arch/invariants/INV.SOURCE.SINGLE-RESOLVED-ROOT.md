@@ -3,7 +3,7 @@ id: INV.SOURCE.SINGLE-RESOLVED-ROOT
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/domain/source_roots.rs
+check: crates/unica-coder/src/domain/source_roots.rs::main_source_set_wins_without_io
 scope: [source]
 ---
 
