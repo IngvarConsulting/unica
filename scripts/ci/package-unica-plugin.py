@@ -253,6 +253,14 @@ PACKAGED_MCP_ALIAS = (
 # plugin root. Hosts that do not substitute the token pass it through literally,
 # and the bootstrap discards any value that still contains `${`.
 PACKAGED_MCP_CACHE_DIR = "${CLAUDE_PLUGIN_DATA}/runtimes"
+# A cold runtime install runs inside the host's MCP startup budget, and Codex
+# defaults that budget to 30 seconds while killing the whole launcher process
+# tree once it expires — mid-download, which leaves a truncated archive behind.
+# The archive alone needs minutes on a slow link, so the package declares its
+# own budget. Hosts that do not know the key ignore it, and the budget costs no
+# waiting: a server that is still starting is dropped from the turn's tool
+# catalogue after a one-second grace and picked up once it is ready.
+PACKAGED_MCP_STARTUP_TIMEOUT_SEC = 900
 
 
 def write_packaged_mcp_launcher(
@@ -265,6 +273,7 @@ def write_packaged_mcp_launcher(
     server["args"] = ["-c", PACKAGED_MCP_ALIAS, "unica-bootstrap"]
     server["cwd"] = "."
     server["env"] = {"UNICA_RUNTIME_CACHE_DIR": PACKAGED_MCP_CACHE_DIR}
+    server["startup_timeout_sec"] = PACKAGED_MCP_STARTUP_TIMEOUT_SEC
     server["note"] = (
         "Single public Unica stdio MCP orchestrator. The public Git package enters "
         "through a command-scoped Git shell alias, resolves the plugin root from the "
