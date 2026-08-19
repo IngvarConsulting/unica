@@ -3,7 +3,7 @@ id: INV.PRODUCT.NO-FORMAT-MIGRATION
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: tests/ci/test_format_profile_contract.py
+check: tests/ci/test_format_profile_contract.py::test_full_dump_uses_the_shared_active_profile
 scope: [product]
 ---
 
