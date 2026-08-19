@@ -210,6 +210,19 @@ The runtime archive contains the target's `unica`, `bsl-analyzer`, `v8-runner`,
 `rlm-bsl-mcp`, and `rlm-bsl-index` binaries plus the generated
 `third-party/manifest.json`. Internal launches re-check the pinned binary hash.
 
+Because the cache key carries the plugin version, the first session after an
+install or an update pays for that download, and it happens inside the host's
+MCP startup budget. Packaged `.mcp.json` therefore declares
+`startup_timeout_sec`, which Codex honours: a slow link no longer has the
+install killed part-way, and the session is not held up while it runs, because
+the tools appear once the runtime is published. A host that does not know the
+key ignores it. To pay for the download outside a session on any host, run the
+bootstrap directly and open a new task afterwards:
+
+```sh
+<plugin-root>/bootstrap/bin/<target>/unica-bootstrap verify --plugin-root <plugin-root>
+```
+
 ## Skills
 
 The `skills/` tree covers configuration and extension metadata, forms, roles,
