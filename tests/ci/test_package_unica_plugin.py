@@ -1031,10 +1031,15 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 )
                 bootstrap.parent.mkdir(parents=True)
                 bootstrap.write_bytes(f"bootstrap {target}".encode())
+                # Ядро и один движок: манифест обязан нести оба, иначе
+                # разрезанная поставка не доедет до потребителя целиком.
                 (metadata_root / f"unica-runtime-{target}.json").write_text(
                     json.dumps(
                         {
-                            "schemaVersion": 1,
+                            "schemaVersion": 2,
+                            "artifact": "unica",
+                            "version": version,
+                            "role": "core",
                             "target": target,
                             "targetTriple": target_triple,
                             "pluginVersion": version,
@@ -1051,6 +1056,32 @@ class PackageUnicaPluginTests(unittest.TestCase):
                                 }
                             ],
                             "entrypoint": f"bin/{target}/unica{exe}",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (metadata_root / f"bsl-analyzer-runtime-{target}.json").write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 2,
+                            "artifact": "bsl-analyzer",
+                            "version": "0.2.67",
+                            "role": "engine",
+                            "target": target,
+                            "targetTriple": target_triple,
+                            "pluginVersion": version,
+                            "asset": {
+                                "name": f"bsl-analyzer-runtime-{target}.tar.gz",
+                                "mediaType": "application/gzip",
+                                "sha256": "3" * 64,
+                            },
+                            "files": [
+                                {
+                                    "path": f"bin/{target}/bsl-analyzer{exe}",
+                                    "sha256": "4" * 64,
+                                    "executable": True,
+                                }
+                            ],
                         }
                     ),
                     encoding="utf-8",
@@ -1126,6 +1157,16 @@ class PackageUnicaPluginTests(unittest.TestCase):
             sorted(runtime_manifest["artifacts"]["unica"]["targets"]),
             sorted(target_triples),
         )
+            self.assertEqual(
+                sorted(runtime_manifest["artifacts"]),
+                ["bsl-analyzer", "unica"],
+                "манифест несёт и ядро, и движок",
+            )
+            self.assertEqual(runtime_manifest["artifacts"]["bsl-analyzer"]["version"], "0.2.67")
+            self.assertEqual(runtime_manifest["artifacts"]["bsl-analyzer"]["role"], "engine")
+            for target_data in runtime_manifest["artifacts"]["bsl-analyzer"]["targets"].values():
+                # Движок запускает рантайм, а не bootstrap: точки входа нет.
+                self.assertNotIn("entrypoint", target_data)
             for target, target_data in runtime_manifest["artifacts"]["unica"]["targets"].items():
                 self.assertEqual(
                     target_data["asset"]["url"],
