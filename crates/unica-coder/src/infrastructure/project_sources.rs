@@ -3,10 +3,14 @@ use crate::domain::project_sources::{
     SourceFormat, SourceSetKind,
 };
 use crate::domain::source_roots::select_default_source_set;
-use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+use crate::infrastructure::native_operations::compile_transaction::{
+    CompileTransaction, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
+    DirectoryTopologyEntry, DirectoryTopologyEntryKind,
+};
 use crate::infrastructure::platform::filesystem::{
     host_path_text, is_link_loop_error, open_absolute_directory_path_nofollow,
-    open_directory_child_nofollow, open_regular_child_nofollow, read_directory_names_bounded,
+    open_any_child_nofollow, open_child_for_secure_tree_use, open_directory_child_nofollow,
+    open_regular_child_nofollow, read_directory_names_bounded, OpenedChildKind,
 };
 use crate::infrastructure::source_roots::{
     inspect_declared_source_root_route, normalize_contained_source_root, normalize_path_identity,
@@ -38,6 +42,71 @@ const MAX_HEALTH_YAML_DOCUMENT_NODES: usize = 64 * 1024;
 const MAX_HEALTH_YAML_DOCUMENT_DEPTH: usize = 256;
 const MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES: usize = 16 * 1024;
 const MAX_HEALTH_FORMAT_EVIDENCE_BYTES: usize = 4 * 1024 * 1024;
+/// The source-set name the base configuration owns. `INV-SOURCE-SINGLE-RESOLVED-ROOT`
+/// makes it the deterministic winner of default selection, so exactly one entry may
+/// carry it.
+const BASE_CONFIGURATION_SOURCE_SET: &str = "main";
+
+/// Every marker that proves a directory is a source root, in both dump formats Unica
+/// reads. Autodetection probes this one list wherever it looks: a layout that
+/// recognised fewer markers than another would find a configuration in one place and
+/// miss the identical one in the next.
+const SOURCE_ROOT_MARKERS: &[&str] = &[
+    "Configuration.xml",
+    "Configuration/Configuration.mdo",
+    "src/Configuration/Configuration.mdo",
+];
+
+/// Where the base configuration is autodetected, in probe order. The first directory
+/// carrying a marker wins and stops the scan: the rest of the tree below it belongs to
+/// that configuration, not to a second one.
+const BASE_CONFIGURATION_LAYOUTS: &[&str] = &[".", "src", "src/cf"];
+
+/// Where configuration extensions are autodetected.
+///
+/// Autodetection is a closed catalog, not a growing pile of probes: every place Unica
+/// is willing to find a source root without `v8project.yaml` is listed here once, and
+/// both discovery routes read the same list. Both entries are layouts this repository
+/// already documents — `src/cfe` is one extension's dump root in the `cfe-*` skills and
+/// a container of named extensions in a multi-extension workspace, while
+/// `src/extensions` is only ever a container.
+const EXTENSION_LAYOUTS: &[ExtensionLayout] = &[
+    ExtensionLayout {
+        directory: "src/cfe",
+        shape: ExtensionLayoutShape::RootOrContainer,
+    },
+    ExtensionLayout {
+        directory: "src/extensions",
+        shape: ExtensionLayoutShape::Container,
+    },
+];
+
+struct ExtensionLayout {
+    /// Workspace-relative directory this layout inspects.
+    directory: &'static str,
+    shape: ExtensionLayoutShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtensionLayoutShape {
+    /// The directory is either one extension's dump root, or a container holding one
+    /// extension per direct child directory.
+    RootOrContainer,
+    /// The directory only ever holds one extension per direct child directory.
+    Container,
+}
+
+/// A directory autodetection probes, on whichever route discovery is running.
+///
+/// The hardened route must not resolve a path twice or follow a link, so it carries the
+/// directory it already opened; the ordinary route probes by path and records every
+/// probed path in provenance. Keeping both behind one type is what lets the layout
+/// catalog, the marker list and the entry classification be written once instead of
+/// once per route — the three places the two routes had already drifted apart.
+enum ProbeDirectory {
+    Path(PathBuf),
+    Retained(std::fs::File),
+}
 const EDT_SOURCE_MARKERS: &[&str] = &[
     ".project",
     "DT-INF/PROJECT.PMF",
@@ -213,6 +282,12 @@ enum ProjectSourceMapInput {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProjectSourceMapProvenance {
     inputs: BTreeMap<PathBuf, ProjectSourceMapInput>,
+    /// Directories whose *listing* discovery consumed. Autodetection derives source-set
+    /// names from the filesystem, so which direct children of an extension container are
+    /// directories is an input in its own right: a concurrent checkout that adds or
+    /// removes `src/cfe/<name>` changes the computed map while every recorded file input
+    /// still agrees, and the transaction would otherwise commit against a stale map.
+    directories: BTreeMap<PathBuf, DirectoryMembershipSnapshot>,
 }
 
 struct SourceMapDiscoveryState {
@@ -277,6 +352,14 @@ impl SourceMapDiscoveryState {
         }
     }
 
+    #[cfg(test)]
+    fn health_with_source_set_limit(limit: usize) -> Self {
+        Self {
+            max_source_sets: Some(limit),
+            ..Self::health()
+        }
+    }
+
     fn captures_provenance(&self) -> bool {
         self.provenance.is_some()
     }
@@ -291,6 +374,17 @@ impl SourceMapDiscoveryState {
     fn record_absence(&mut self, path: PathBuf) -> Result<(), String> {
         if let Some(provenance) = &mut self.provenance {
             provenance.record_absence(path)?;
+        }
+        Ok(())
+    }
+
+    fn record_directory_membership(
+        &mut self,
+        path: PathBuf,
+        snapshot: DirectoryMembershipSnapshot,
+    ) -> Result<(), String> {
+        if let Some(provenance) = &mut self.provenance {
+            provenance.record_directory_membership(path, snapshot)?;
         }
         Ok(())
     }
@@ -337,7 +431,32 @@ impl ProjectSourceMapProvenance {
                 }
             }
         }
+        for (directory, expected) in &self.directories {
+            transaction.guard_or_verify_directory_membership(
+                directory,
+                DirectoryMembershipSelector::DirectChildDirectories,
+                expected.clone(),
+            )?;
+        }
         Ok(())
+    }
+
+    fn record_directory_membership(
+        &mut self,
+        path: PathBuf,
+        snapshot: DirectoryMembershipSnapshot,
+    ) -> Result<(), String> {
+        match self.directories.get(&path) {
+            Some(existing) if existing == &snapshot => Ok(()),
+            Some(_) => Err(format!(
+                "project source-map input changed while resolving: {}",
+                path.display()
+            )),
+            None => {
+                self.directories.insert(path, snapshot);
+                Ok(())
+            }
+        }
     }
 
     fn record_exact_file(&mut self, path: PathBuf, raw: Vec<u8>) -> Result<(), String> {
@@ -1177,53 +1296,390 @@ fn autodetect_source_sets(
     state: &mut SourceMapDiscoveryState,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Vec<ConfigSourceSet>, String> {
-    for path in [".", "src", "src/cf"] {
+    let mut source_sets = Vec::new();
+    for path in BASE_CONFIGURATION_LAYOUTS {
         checkpoint()?;
-        let root = workspace_root.join(path);
-        let found = if state.require_nofollow_source_probe_route {
-            if let Some(directory) = health_source_directory(workspace_root, path)? {
-                let mut found = false;
-                for marker in [
-                    "Configuration.xml",
-                    "Configuration/Configuration.mdo",
-                    "src/Configuration/Configuration.mdo",
-                ] {
-                    match secure_regular_file_exists(&directory, Path::new(marker)) {
-                        Ok(exists) => found |= exists,
-                        Err(SecureMarkerProbeError::UnsafeOrWrongKind(_)) => {
-                            // An autodetected candidate has no declared source set on which to
-                            // report an incomplete format probe. Unsafe or wrong-kind routes are
-                            // not evidence and must never be followed; declared source sets still
-                            // retain the same error as a per-set NotRun outcome.
-                        }
-                        Err(SecureMarkerProbeError::Incomplete(reason)) => return Err(reason),
-                    }
-                }
-                found
-            } else {
-                false
-            }
-        } else {
-            let mut found = false;
-            for marker in [
-                root.join("Configuration.xml"),
-                root.join("Configuration/Configuration.mdo"),
-                root.join("src/Configuration/Configuration.mdo"),
-            ] {
-                found |= snapshot_project_map_input(&marker, false, state, checkpoint)?.is_some();
-            }
-            found
+        let Some(directory) = open_probe_directory(workspace_root, path, state)? else {
+            continue;
         };
-        if found {
-            return Ok(vec![ConfigSourceSet {
-                name: "main".to_string(),
+        if probe_source_root_markers(&directory, state, checkpoint)? {
+            source_sets.push(ConfigSourceSet {
+                name: BASE_CONFIGURATION_SOURCE_SET.to_string(),
                 kind: SourceSetKind::Configuration,
-                path: path.to_string(),
+                path: (*path).to_string(),
                 default_format: None,
-            }]);
+            });
+            break;
         }
     }
-    Ok(Vec::new())
+    let mut reserved_name_taken = !source_sets.is_empty();
+    let extension_sets = autodetect_extension_source_sets(
+        workspace_root,
+        &mut reserved_name_taken,
+        state,
+        checkpoint,
+    )?;
+    if let Some(limit) = state.max_source_sets {
+        let combined = source_sets.len().saturating_add(extension_sets.len());
+        if combined > limit {
+            return Err(format!(
+                "workspace declares more than {limit} autodetected source sets; health inspection supports at most {limit}"
+            ));
+        }
+    }
+    source_sets.extend(extension_sets);
+    Ok(source_sets)
+}
+
+/// Autodetects configuration-extension source sets from the same catalog, the same
+/// marker list and the same probe the base configuration scan uses, so a bare workspace
+/// with no `v8project.yaml` reports its extensions instead of only its configuration.
+/// Declared `v8project.yaml` source sets take precedence over autodetection entirely
+/// (see `discover_project_source_map_internal`), so this only runs for workspaces that
+/// rely on autodetection in the first place.
+fn autodetect_extension_source_sets(
+    workspace_root: &Path,
+    reserved_name_taken: &mut bool,
+    state: &mut SourceMapDiscoveryState,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<Vec<ConfigSourceSet>, String> {
+    let mut extension_sets = Vec::new();
+    for layout in EXTENSION_LAYOUTS {
+        checkpoint()?;
+        let Some(container) = open_extension_container(workspace_root, layout.directory, state)?
+        else {
+            state.record_directory_membership(
+                workspace_root.join(layout.directory),
+                DirectoryMembershipSnapshot::Absent,
+            )?;
+            continue;
+        };
+        if layout.shape == ExtensionLayoutShape::RootOrContainer
+            && probe_source_root_markers(&container, state, checkpoint)?
+        {
+            // The container is itself one extension's dump root, so its children are
+            // that extension's object directories, not sibling extensions — the same
+            // stop the base configuration scan makes at its first match. Its listing is
+            // not an input either, so no membership is recorded for it.
+            push_autodetected_extension(
+                &mut extension_sets,
+                layout_root_source_set_name(layout.directory),
+                layout.directory.to_string(),
+                reserved_name_taken,
+            );
+            continue;
+        }
+        for (name, directory) in enumerate_source_root_candidates(
+            workspace_root,
+            layout.directory,
+            &container,
+            state,
+            checkpoint,
+        )? {
+            checkpoint()?;
+            if probe_source_root_markers(&directory, state, checkpoint)? {
+                let path = format!("{}/{name}", layout.directory);
+                push_autodetected_extension(&mut extension_sets, name, path, reserved_name_taken);
+            }
+        }
+    }
+    Ok(extension_sets)
+}
+
+/// The source set an autodetected layout directory publishes when it is a source root
+/// itself. An autodetected extension is named after the directory that holds it, so a
+/// root at `src/cfe` is `cfe`, exactly as a root at `src/cfe/test_ed` is `test_ed`.
+fn layout_root_source_set_name(directory: &str) -> String {
+    Path::new(directory)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| directory.to_string())
+}
+
+/// Publishes one autodetected extension under the source-set naming policy.
+///
+/// Names are the directory name verbatim — the same string the filesystem reports, with
+/// no case folding and no other normalization, exactly as a declared `v8project.yaml`
+/// entry would carry it.
+///
+/// `main` is reserved for the base configuration (`INV-SOURCE-SINGLE-RESOLVED-ROOT`),
+/// and exactly one entry may carry it: a second would make `sourceSet: "main"` ambiguous
+/// for named lookup while `select_default_source_set` silently kept resolving it to
+/// whichever entry came first — turning a resolution defined to be deterministic into a
+/// coin flip. The base scan claims it when it found a configuration; otherwise it falls
+/// to the first extension claiming it in catalog order, which is a fixed documented
+/// order rather than a filesystem accident. Reserving the name against an absent owner
+/// instead would empty the map of the workspace's only source root.
+///
+/// Two extensions from *different* layouts can still derive the same non-reserved name,
+/// and both are published. A duplicate-name group is a represented state that
+/// `unica.project.status` diagnoses and named lookup rejects as ambiguous; dropping one
+/// would instead resolve the name silently to an arbitrary one of two real source roots.
+fn push_autodetected_extension(
+    extension_sets: &mut Vec<ConfigSourceSet>,
+    name: String,
+    path: String,
+    reserved_name_taken: &mut bool,
+) {
+    if name == BASE_CONFIGURATION_SOURCE_SET {
+        if *reserved_name_taken {
+            return;
+        }
+        *reserved_name_taken = true;
+    }
+    extension_sets.push(ConfigSourceSet {
+        name,
+        kind: SourceSetKind::Extension,
+        path,
+        default_format: None,
+    });
+}
+
+/// Opens one autodetection directory on the route discovery is running.
+///
+/// `None` means the hardened route proved the directory absent. The ordinary route
+/// probes by path and answers `Some` unconditionally: it learns absence from the probes
+/// themselves, and each probed path — present or absent — is an input it must record.
+fn open_probe_directory(
+    workspace_root: &Path,
+    relative: &str,
+    state: &SourceMapDiscoveryState,
+) -> Result<Option<ProbeDirectory>, String> {
+    if state.require_nofollow_source_probe_route {
+        Ok(health_source_directory(workspace_root, relative)?.map(ProbeDirectory::Retained))
+    } else {
+        Ok(Some(ProbeDirectory::Path(workspace_root.join(relative))))
+    }
+}
+
+/// Opens one extension-layout container, telling apart the two answers a container path
+/// can give.
+///
+/// A path that definitely holds no container — absent, a regular file, a link — yields
+/// `None`, and that layout simply contributes nothing. A path that *might* hold one but
+/// could not be read — denied permissions, an I/O failure — is still an error, because
+/// answering "no extensions" there would report a map the filesystem never confirmed.
+///
+/// The distinction is the same one entry classification makes one level down, and it has
+/// to be made here too: a linked `src/cfe` otherwise aborts the hardened route while the
+/// ordinary route enumerates straight through the link and publishes source roots outside
+/// the workspace that `resolve_named_source_set` then refuses to open.
+fn open_extension_container(
+    workspace_root: &Path,
+    relative: &str,
+    state: &SourceMapDiscoveryState,
+) -> Result<Option<ProbeDirectory>, String> {
+    if !state.require_nofollow_source_probe_route {
+        let path = workspace_root.join(relative);
+        return match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => Ok(Some(ProbeDirectory::Path(path))),
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "failed to inspect source directory {}: {error}",
+                path.display()
+            )),
+        };
+    }
+    // An unsafe or uncontained route is not a container either: the path leaves the
+    // workspace, and nothing reachable through it could be resolved later anyway. Only
+    // that verdict is turned into "no container here" — a failure to normalize the
+    // workspace itself is about the workspace, not about this layout, and still
+    // propagates.
+    if inspect_declared_source_root_route(workspace_root, relative).is_err() {
+        return Ok(None);
+    }
+    match health_source_directory_opened(workspace_root, relative)? {
+        Ok(directory) => Ok(directory.map(ProbeDirectory::Retained)),
+        Err(error) if open_failure_is_wrong_kind(&error) => Ok(None),
+        Err(error) => Err(format!(
+            "source directory could not be opened safely: {error}"
+        )),
+    }
+}
+
+/// Probes one directory for every source-root marker, on either route.
+fn probe_source_root_markers(
+    directory: &ProbeDirectory,
+    state: &mut SourceMapDiscoveryState,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
+    let mut found = false;
+    for marker in SOURCE_ROOT_MARKERS {
+        checkpoint()?;
+        match directory {
+            ProbeDirectory::Retained(handle) => {
+                match secure_regular_file_exists(handle, Path::new(marker)) {
+                    Ok(exists) => found |= exists,
+                    Err(SecureMarkerProbeError::UnsafeOrWrongKind(_)) => {
+                        // An autodetected candidate has no declared source set on which to
+                        // report an incomplete format probe. Unsafe or wrong-kind routes are
+                        // not evidence and must never be followed; declared source sets still
+                        // retain the same error as a per-set NotRun outcome.
+                    }
+                    Err(SecureMarkerProbeError::Incomplete(reason)) => return Err(reason),
+                }
+            }
+            ProbeDirectory::Path(root) => {
+                found |= snapshot_project_map_input(&root.join(marker), false, state, checkpoint)?
+                    .is_some();
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Direct children of an autodetection container that can host a source root: real
+/// directories, reached without following a link, whose name can be a source-set name.
+/// Sorted by name, so both routes and every run agree on the order they are published
+/// in.
+///
+/// Enumeration classifies and skips. A container holds whatever the workspace put there
+/// — `.gitkeep`, `README.md`, `.DS_Store`, a symlink — and none of those is a source
+/// root; a route that aborted on the first of them would report an incomplete layout
+/// for a workspace whose layout is complete. Only a genuine I/O failure stops discovery.
+/// A link is skipped rather than published because `resolve_named_source_set` rejects a
+/// linked source root, so publishing one would advertise a source set every
+/// `unica.code.*` tool then refuses to open.
+///
+/// Enumerating the container is itself a discovery input, so the same listing is
+/// recorded in provenance here rather than re-read later.
+fn enumerate_source_root_candidates(
+    workspace_root: &Path,
+    container_relative: &str,
+    container: &ProbeDirectory,
+    state: &mut SourceMapDiscoveryState,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<Vec<(String, ProbeDirectory)>, String> {
+    let container_path = workspace_root.join(container_relative);
+    match container {
+        ProbeDirectory::Retained(handle) => {
+            // `limit` bounds this enumeration's own I/O cost. The combined source-set
+            // total is enforced by `autodetect_source_sets` once the base scan and every
+            // layout are known.
+            let limit = state
+                .max_source_sets
+                .unwrap_or(MAX_HEALTH_SOURCE_SETS)
+                .saturating_add(1);
+            let mut checkpoint_failure = None;
+            let names = read_directory_names_bounded(handle, limit, || match checkpoint() {
+                Ok(()) => Ok(()),
+                Err(reason) => {
+                    checkpoint_failure = Some(reason);
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "project source discovery checkpoint stopped enumeration",
+                    ))
+                }
+            });
+            if let Some(reason) = checkpoint_failure {
+                return Err(reason);
+            }
+            let names = names.map_err(|error| {
+                format!(
+                    "failed to inspect source directory {} securely: {error}",
+                    container_path.display()
+                )
+            })?;
+            let mut candidates = Vec::new();
+            for name in names {
+                checkpoint()?;
+                let Ok(text) = name.clone().into_string() else {
+                    // A source-set name is a JSON string, so a directory name that is not
+                    // valid UTF-8 cannot become one. Skipping it keeps its siblings
+                    // visible; failing would hide every extension beside it.
+                    continue;
+                };
+                let (anchor, kind) = match open_any_child_nofollow(handle, &name) {
+                    Ok(opened) => opened,
+                    // The entry raced away, is a link, or is not a directory. None of
+                    // those is a candidate, and none is a reason to stop looking at its
+                    // siblings.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) if open_failure_is_wrong_kind(&error) => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "failed to inspect source directory entry {} securely: {error}",
+                            container_path.join(&text).display()
+                        ));
+                    }
+                };
+                if kind != OpenedChildKind::Directory {
+                    continue;
+                }
+                let directory = open_child_for_secure_tree_use(handle, &name, anchor, kind)
+                    .map_err(|error| {
+                        format!(
+                            "failed to open source directory entry {} securely: {error}",
+                            container_path.join(&text).display()
+                        )
+                    })?;
+                candidates.push((text, ProbeDirectory::Retained(directory)));
+            }
+            Ok(candidates)
+        }
+        ProbeDirectory::Path(path) => {
+            let entries = match std::fs::read_dir(path) {
+                Ok(entries) => entries,
+                // Only an absent container means "no extensions here"; any other failure
+                // (permissions, a regular file in the way, ...) must be reported, not
+                // silently treated the same as "there is nothing to autodetect".
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    state.record_directory_membership(
+                        container_path,
+                        DirectoryMembershipSnapshot::Absent,
+                    )?;
+                    return Ok(Vec::new());
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "failed to inspect source directory {}: {error}",
+                        path.display()
+                    ));
+                }
+            };
+            let mut candidates = Vec::new();
+            for entry in entries {
+                checkpoint()?;
+                let entry = entry.map_err(|error| {
+                    format!(
+                        "failed to inspect source directory {}: {error}",
+                        path.display()
+                    )
+                })?;
+                // `DirEntry::file_type` reports the entry itself, so a link pointing at a
+                // directory is not a directory here.
+                let file_type = entry.file_type().map_err(|error| {
+                    format!(
+                        "failed to inspect source directory entry {}: {error}",
+                        entry.path().display()
+                    )
+                })?;
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let Ok(name) = entry.file_name().into_string() else {
+                    continue;
+                };
+                let child = path.join(&name);
+                candidates.push((name, ProbeDirectory::Path(child)));
+            }
+            candidates.sort_by(|left, right| left.0.cmp(&right.0));
+            state.record_directory_membership(
+                container_path,
+                DirectoryMembershipSnapshot::Present(
+                    candidates
+                        .iter()
+                        .map(|(name, _)| DirectoryTopologyEntry {
+                            name: std::ffi::OsString::from(name),
+                            kind: DirectoryTopologyEntryKind::Directory,
+                        })
+                        .collect(),
+                ),
+            )?;
+            Ok(candidates)
+        }
+    }
 }
 
 fn detect_source_set_format(
@@ -1408,6 +1864,21 @@ fn health_source_directory(
     workspace_root: &Path,
     configured_path: &str,
 ) -> Result<Option<std::fs::File>, String> {
+    health_source_directory_opened(workspace_root, configured_path)?
+        .map_err(|error| format!("source directory could not be opened safely: {error}"))
+}
+
+/// Opens a source directory on the hardened route, keeping the open failure typed.
+///
+/// The outer `Result` carries the route failures that are never an open at all; the
+/// inner one carries the open itself, so a caller that must tell "nothing usable is
+/// here" from "this could not be read" classifies on `ErrorKind` rather than on the
+/// text of an OS message, which differs by platform and by locale. `Ok(None)` is the
+/// absent directory, which every caller treats the same way.
+fn health_source_directory_opened(
+    workspace_root: &Path,
+    configured_path: &str,
+) -> Result<Result<Option<std::fs::File>, std::io::Error>, String> {
     let route = inspect_declared_source_root_route(workspace_root, configured_path)
         .map_err(|error| format!("source route could not be proven safe: {error}"))?;
     let physical_workspace = normalize_path_identity(workspace_root)?;
@@ -1415,13 +1886,13 @@ fn health_source_directory(
         .lexical_path
         .strip_prefix(workspace_root)
         .map_err(|error| format!("source route is outside the workspace lexical root: {error}"))?;
-    match open_absolute_directory_path_nofollow(&physical_workspace.join(relative)) {
-        Ok(directory) => Ok(Some(directory)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!(
-            "source directory could not be opened safely: {error}"
-        )),
-    }
+    Ok(
+        match open_absolute_directory_path_nofollow(&physical_workspace.join(relative)) {
+            Ok(directory) => Ok(Some(directory)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        },
+    )
 }
 
 enum SecureMarkerProbeError {
@@ -1475,17 +1946,30 @@ fn secure_regular_file_exists(
 
 fn marker_probe_open_error(context: &str, error: std::io::Error) -> SecureMarkerProbeError {
     let reason = format!("source format marker {context} could not be opened safely: {error}");
-    if matches!(
-        error.kind(),
-        std::io::ErrorKind::InvalidInput
-            | std::io::ErrorKind::InvalidData
-            | std::io::ErrorKind::NotADirectory
-    ) || is_link_loop_error(&error)
-    {
+    if open_failure_is_wrong_kind(&error) {
         SecureMarkerProbeError::UnsafeOrWrongKind(reason)
     } else {
         SecureMarkerProbeError::Incomplete(reason)
     }
+}
+
+/// Whether an open failure answered the question — the path is the wrong kind of thing —
+/// or left it open.
+///
+/// Unix rejects a link at open with a loop error and a non-directory with
+/// `NotADirectory`; Windows opens the reparse point and then classifies it, and a
+/// non-directory, as `InvalidInput`. Everything else — denied permissions, an I/O
+/// failure — means the path might still be what the caller was looking for, so it is
+/// never silently treated as absent. Every hardened probe classifies through this one
+/// predicate: a marker, a container, and a container's entries have to agree on what
+/// counts as "nothing usable here".
+fn open_failure_is_wrong_kind(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::InvalidInput
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotADirectory
+    ) || is_link_loop_error(error)
 }
 
 fn push_health_evidence(
@@ -2082,6 +2566,685 @@ mod tests {
         assert!(map.source_sets.is_empty(), "{:?}", map.source_sets);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn autodetect_discovers_configuration_extension_source_sets() {
+        let root = temp_workspace("unica-source-map-autodetect-extensions");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        write(
+            &root.join("src/cfe/test_edreg/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        // A stray file that is not itself an extension source root must not be reported.
+        write(&root.join("src/cfe/README.md"), "not an extension");
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 3, "{:?}", map.source_sets);
+        assert_source_set(
+            &map,
+            "main",
+            SourceSetKind::Configuration,
+            SourceFormat::PlatformXml,
+            &["src/cf/Configuration.xml"],
+        );
+        assert_source_set(
+            &map,
+            "test_ed",
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            &["src/cfe/test_ed/Configuration.xml"],
+        );
+        assert_source_set(
+            &map,
+            "test_edreg",
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            &["src/cfe/test_edreg/Configuration.xml"],
+        );
+        assert_eq!(map.effective_source_set.as_deref(), Some("main"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_autodetect_discovers_configuration_extension_source_sets() {
+        let root = temp_workspace("unica-source-map-health-autodetect-extensions");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        let mut checkpoint = || Ok(());
+
+        let map = discover_project_source_map_controlled(&root, &mut checkpoint).unwrap();
+
+        assert_eq!(map.source_sets.len(), 2, "{:?}", map.source_sets);
+        assert_source_set(
+            &map,
+            "test_ed",
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            &["src/cfe/test_ed/Configuration.xml"],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_without_extensions_directory_keeps_reporting_only_main() {
+        let root = temp_workspace("unica-source-map-autodetect-no-extensions");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        assert_eq!(map.source_sets[0].name, "main");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_autodetect_enforces_combined_source_set_limit_including_main() {
+        let root = temp_workspace("unica-source-map-health-autodetect-combined-limit");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        let mut checkpoint = || Ok(());
+        let mut state = SourceMapDiscoveryState::health_with_source_set_limit(1);
+
+        let error = discover_project_source_map_internal(&root, &mut checkpoint, &mut state)
+            .expect_err("main (1) + one autodetected extension (1) exceeds a limit of 1");
+
+        assert!(error.contains("limit") || error.contains('1'), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn health_autodetect_accepts_combined_source_set_count_at_the_limit() {
+        let root = temp_workspace("unica-source-map-health-autodetect-limit-boundary");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        let mut checkpoint = || Ok(());
+        let mut state = SourceMapDiscoveryState::health_with_source_set_limit(2);
+
+        let map = discover_project_source_map_internal(&root, &mut checkpoint, &mut state)
+            .expect("main (1) + one autodetected extension (1) is exactly the limit of 2");
+
+        assert_eq!(map.source_sets.len(), 2, "{:?}", map.source_sets);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_skips_a_container_that_is_not_a_directory() {
+        let root = temp_workspace("unica-source-map-autodetect-extensions-not-a-directory");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        // `src/cfe` exists as a regular file: a definite answer that no extension
+        // container lives here, exactly like a link or an absent path. The layout
+        // contributes nothing and the base configuration beside it is untouched —
+        // collapsing the whole map instead would report an incomplete layout for a
+        // workspace whose configuration is perfectly readable.
+        write(&root.join("src/cfe"), "not a directory");
+
+        assert_routes_agree(&root, &[("main", SourceSetKind::Configuration, "src/cf")]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_propagates_an_unreadable_extensions_container() {
+        use crate::infrastructure::platform::testing::set_unix_mode_for_test;
+
+        let root = temp_workspace("unica-source-map-autodetect-extensions-unreadable");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        let container = root.join("src/cfe");
+        if !set_unix_mode_for_test(&container, 0o000).unwrap() {
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        if std::fs::read_dir(&container).is_ok() {
+            // Running with a privilege that ignores the mode; the case does not exist.
+            set_unix_mode_for_test(&container, 0o755).unwrap();
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+
+        // A container that might hold extensions but could not be read is *not* a
+        // definite "no extensions here". Reporting a map the filesystem never confirmed
+        // would hide every extension behind one permission bit.
+        let mut checkpoint = || Ok(());
+        let ordinary = discover_project_source_map(&root)
+            .expect_err("an unreadable extensions container must not be reported as empty");
+        let hardened = discover_project_source_map_controlled(&root, &mut checkpoint)
+            .expect_err("the hardened route must not report an unreadable container as empty");
+
+        assert!(ordinary.contains("cfe"), "{ordinary}");
+        assert!(
+            hardened.contains("cfe") || hardened.contains("directory"),
+            "{hardened}"
+        );
+        set_unix_mode_for_test(&container, 0o755).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_skips_extension_directory_named_main() {
+        let root = temp_workspace("unica-source-map-autodetect-extension-named-main");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        // An extension directory literally named `main` would otherwise collide with the
+        // base configuration's reserved name: named lookups (`resolve_named_source_set`)
+        // would reject it as ambiguous while default selection would silently pick whichever
+        // came first. Autodetection must not produce that collision.
+        write(
+            &root.join("src/cfe/main/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        let map = discover_project_source_map(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        assert_eq!(map.source_sets[0].kind, SourceSetKind::Configuration);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Both discovery routes must report the same source map for the same workspace.
+    /// The ordinary and the hardened route are two implementations of one policy, and
+    /// the defects this matrix pins down were all route drift: a marker list that grew
+    /// on one side only, an entry filter that existed on one side only. Asserting the
+    /// two agree on every supported layout is what keeps them from drifting again.
+    fn assert_routes_agree(root: &Path, expected: &[(&str, SourceSetKind, &str)]) {
+        let mut checkpoint = || Ok(());
+        let ordinary = discover_project_source_map(root).unwrap_or_else(|error| {
+            panic!("ordinary route failed for {}: {error}", root.display())
+        });
+        let hardened = discover_project_source_map_controlled(root, &mut checkpoint)
+            .unwrap_or_else(|error| {
+                panic!("hardened route failed for {}: {error}", root.display())
+            });
+
+        let render = |map: &ProjectSourceMap| {
+            map.source_sets
+                .iter()
+                .map(|source_set| {
+                    (
+                        source_set.name.clone(),
+                        source_set.kind,
+                        source_set.path.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = expected
+            .iter()
+            .map(|(name, kind, path)| ((*name).to_string(), *kind, (*path).to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(render(&ordinary), expected, "ordinary route");
+        assert_eq!(render(&hardened), expected, "hardened route");
+    }
+
+    #[test]
+    fn autodetect_skips_entries_that_are_not_extension_directories() {
+        let root = temp_workspace("unica-source-map-autodetect-extensions-stray-entries");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        // A container holds whatever the workspace put there. `.gitkeep` is how git
+        // carries an otherwise empty directory, `.DS_Store` appears from one Finder
+        // visit, and neither is an extension. Discovery classifies and skips them; a
+        // route that aborts on the first of them reports an incomplete layout for a
+        // workspace whose layout is complete.
+        write(&root.join("src/cfe/.gitkeep"), "");
+        write(&root.join("src/cfe/.DS_Store"), "\0\0");
+        write(&root.join("src/cfe/README.md"), "not an extension");
+
+        assert_routes_agree(
+            &root,
+            &[
+                ("main", SourceSetKind::Configuration, "src/cf"),
+                ("test_ed", SourceSetKind::Extension, "src/cfe/test_ed"),
+            ],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_skips_linked_entries_in_the_extensions_container() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let root = temp_workspace("unica-source-map-autodetect-extensions-link");
+        let external = temp_workspace("unica-source-map-autodetect-extensions-link-external");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        write(&external.join("Configuration.xml"), "<MetaDataObject/>");
+        fs::create_dir_all(root.join("src/cfe")).unwrap();
+        match create_directory_link_fixture_for_test(&external, root.join("src/cfe/escaped"))
+            .unwrap()
+        {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                fs::remove_dir_all(&root).unwrap();
+                fs::remove_dir_all(&external).unwrap();
+                return;
+            }
+        }
+
+        // A linked source root is rejected by `resolve_named_source_set`, so publishing
+        // one would advertise a source set every `unica.code.*` tool then refuses to
+        // open. It is not a candidate on either route, and it does not abort discovery
+        // of the real extension beside it.
+        assert_routes_agree(
+            &root,
+            &[
+                ("main", SourceSetKind::Configuration, "src/cf"),
+                ("test_ed", SourceSetKind::Extension, "src/cfe/test_ed"),
+            ],
+        );
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn autodetect_skips_a_linked_extensions_container() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let root = temp_workspace("unica-source-map-autodetect-linked-container");
+        let external = temp_workspace("unica-source-map-autodetect-linked-container-external");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &external.join("test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        fs::create_dir_all(root.join("src")).unwrap();
+        match create_directory_link_fixture_for_test(&external, root.join("src/cfe")).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                fs::remove_dir_all(&root).unwrap();
+                fs::remove_dir_all(&external).unwrap();
+                return;
+            }
+        }
+
+        // The container itself is a link, so there is no real container here and no
+        // extension to autodetect. Enumerating through it would publish source roots
+        // outside the workspace that `resolve_named_source_set` then refuses, and
+        // failing would hide the base configuration that is perfectly fine.
+        assert_routes_agree(&root, &[("main", SourceSetKind::Configuration, "src/cf")]);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn autodetect_discovers_a_single_extension_at_the_container_root() {
+        let root = temp_workspace("unica-source-map-autodetect-extension-at-container-root");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        // The canonical layout of this repository: `src/cfe` *is* one extension's dump
+        // root (`ExtensionPath: "src/cfe"` in the cfe-* skills, and the `path: src/cfe`
+        // fixture in `tests/ci/test_unica_mcp_script_parity.py`).
+        write(&root.join("src/cfe/Configuration.xml"), "<MetaDataObject/>");
+
+        assert_routes_agree(
+            &root,
+            &[
+                ("main", SourceSetKind::Configuration, "src/cf"),
+                ("cfe", SourceSetKind::Extension, "src/cfe"),
+            ],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_at_the_container_root_does_not_report_object_directories_as_extensions() {
+        let root = temp_workspace("unica-source-map-autodetect-container-root-objects");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(&root.join("src/cfe/Configuration.xml"), "<MetaDataObject/>");
+        // When the container is itself an extension root, its children are that
+        // extension's object directories, not sibling extensions — exactly as the base
+        // configuration scan stops at its first match.
+        write(
+            &root.join("src/cfe/Catalogs/Товары/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        assert_routes_agree(
+            &root,
+            &[
+                ("main", SourceSetKind::Configuration, "src/cf"),
+                ("cfe", SourceSetKind::Extension, "src/cfe"),
+            ],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_discovers_extensions_under_the_named_extensions_container() {
+        let root = temp_workspace("unica-source-map-autodetect-extensions-container");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        // The second documented layout of this repository: `src/extensions/<Name>`
+        // (`cfe-borrow`, `cfe-init` and `cfe-patch-method` all address it that way).
+        write(
+            &root.join("src/extensions/MyExtension/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        assert_routes_agree(
+            &root,
+            &[
+                ("main", SourceSetKind::Configuration, "src/cf"),
+                (
+                    "MyExtension",
+                    SourceSetKind::Extension,
+                    "src/extensions/MyExtension",
+                ),
+            ],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_discovers_edt_extension_source_sets() {
+        let root = temp_workspace("unica-source-map-autodetect-edt-extensions");
+        // The base scan recognises three markers; an extension scan that recognised
+        // fewer would find a configuration in EDT layout and miss the identical
+        // extension beside it.
+        write(
+            &root.join("src/cf/src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        );
+        write(
+            &root.join("src/cfe/test_ed/src/Configuration/Configuration.mdo"),
+            "<mdclass:Configuration/>",
+        );
+
+        assert_routes_agree(
+            &root,
+            &[
+                ("main", SourceSetKind::Configuration, "src/cf"),
+                ("test_ed", SourceSetKind::Extension, "src/cfe/test_ed"),
+            ],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_publishes_an_extension_named_main_when_nothing_else_claims_the_name() {
+        let root = temp_workspace("unica-source-map-autodetect-only-extension-named-main");
+        // `main` is reserved for the base configuration, but reserving it when no base
+        // configuration was found empties the map: the workspace's only source root
+        // disappears and `unica.project.map` reports nothing at all.
+        write(
+            &root.join("src/cfe/main/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        assert_routes_agree(&root, &[("main", SourceSetKind::Extension, "src/cfe/main")]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_gives_the_reserved_name_to_one_claimant_only() {
+        let root = temp_workspace("unica-source-map-autodetect-two-extensions-named-main");
+        // No base configuration, and two layouts both derive `main`. Exactly one entry
+        // may carry the reserved name: two would make `sourceSet: "main"` ambiguous for
+        // named lookup while `select_default_source_set` silently kept resolving it to
+        // whichever came first. The name goes to the first claimant in catalog order —
+        // a fixed, documented order rather than a filesystem accident.
+        write(
+            &root.join("src/cfe/main/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        write(
+            &root.join("src/extensions/main/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        assert_routes_agree(&root, &[("main", SourceSetKind::Extension, "src/cfe/main")]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn autodetect_keeps_a_non_utf8_extension_name_from_hiding_its_siblings() {
+        // The fixture lives behind the platform facade (ADR-0009): only some platforms
+        // and filesystems accept a name that is not valid UTF-8, and none of that
+        // knowledge belongs in a discovery test.
+        let Some(invalid_component) =
+            crate::infrastructure::platform::testing::non_utf8_relative_path_for_test()
+        else {
+            return;
+        };
+
+        let root = temp_workspace("unica-source-map-autodetect-non-utf8-extension");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        // A source-set name is a JSON string, so a directory name that is not valid
+        // UTF-8 cannot become one. It is skipped deliberately — and a sibling that
+        // cannot be named must not hide the ones that can.
+        let invalid = root.join("src/cfe").join(&invalid_component);
+        // APFS and NTFS refuse to store the name at all; the case only exists on a
+        // filesystem that accepts arbitrary bytes, so skip where it cannot be built.
+        if fs::create_dir_all(&invalid).is_err() {
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        write(&invalid.join("Configuration.xml"), "<MetaDataObject/>");
+
+        assert_routes_agree(
+            &root,
+            &[
+                ("main", SourceSetKind::Configuration, "src/cf"),
+                ("test_ed", SourceSetKind::Extension, "src/cfe/test_ed"),
+            ],
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_binds_the_extensions_container_listing() {
+        let root = temp_workspace("unica-source-map-autodetect-container-provenance");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        let (map, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+        assert_eq!(map.source_sets.len(), 2, "{:?}", map.source_sets);
+        // Discovery now depends on the *listing* of the container, not only on files it
+        // read. A concurrent checkout that adds an extension between discovery and
+        // commit changes the computed map while every recorded file input still agrees,
+        // so the listing itself has to be bound to the transaction.
+        write(
+            &root.join("src/cfe/late_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        let error = provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect_err("an extension that appeared after discovery must invalidate the map");
+
+        assert!(error.contains("cfe"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_binds_an_absent_extensions_container() {
+        let root = temp_workspace("unica-source-map-autodetect-absent-container-provenance");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+
+        let (map, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        // The absence of the container is an input too: a checkout that creates it wins
+        // a source set that discovery never saw.
+        write(
+            &root.join("src/cfe/late_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        let error = provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect_err(
+                "an extensions container that appeared after discovery invalidates the map",
+            );
+
+        assert!(error.contains("cfe"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_tolerates_a_link_beside_the_extensions() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let root = temp_workspace("unica-source-map-autodetect-container-provenance-link");
+        let external = temp_workspace("unica-source-map-autodetect-container-provenance-external");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        fs::create_dir_all(external.join("payload")).unwrap();
+        match create_directory_link_fixture_for_test(&external, root.join("src/cfe/linked"))
+            .unwrap()
+        {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                fs::remove_dir_all(&root).unwrap();
+                fs::remove_dir_all(&external).unwrap();
+                return;
+            }
+        }
+
+        let (map, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 2, "{:?}", map.source_sets);
+        // Discovery skipped the link, so the guard must not refuse to represent the
+        // container that holds it: a guard that cannot be taken is a guarantee that is
+        // silently absent.
+        provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect("a link beside the extensions must not make the container unguardable");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_binds_a_container_path_that_is_not_a_directory() {
+        let root = temp_workspace("unica-source-map-autodetect-file-container-provenance");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(&root.join("src/cfe"), "not a directory");
+
+        let (map, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        // Discovery read "no child directories here" from that path, and the guard has
+        // to be able to say exactly that. A guard that cannot be taken turns every
+        // compile transaction in the workspace into a planning failure.
+        provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect("a non-directory container must still be representable as a guard");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_binds_a_linked_container_path() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let root = temp_workspace("unica-source-map-autodetect-linked-container-provenance");
+        let external = temp_workspace("unica-source-map-autodetect-linked-container-prov-external");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        fs::create_dir_all(external.join("test_ed")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        match create_directory_link_fixture_for_test(&external, root.join("src/cfe")).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                fs::remove_dir_all(&root).unwrap();
+                fs::remove_dir_all(&external).unwrap();
+                return;
+            }
+        }
+
+        let (map, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect("a linked container must still be representable as a guard");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_catches_a_container_path_that_became_a_directory() {
+        let root = temp_workspace("unica-source-map-autodetect-file-container-became-dir");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        let container = root.join("src/cfe");
+        write(&container, "not a directory");
+
+        let (_, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+        // Recording "holds no child directories" for a non-directory path is only safe
+        // while the transition that *would* change the map is still caught: replacing
+        // the file with a real container wins source sets discovery never saw.
+        fs::remove_file(&container).unwrap();
+        write(
+            &container.join("late_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        let error = provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect_err("a container that appeared after discovery must invalidate the map");
+
+        assert!(error.contains("cfe"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_tolerates_stray_entries_beside_the_extensions() {
+        let root = temp_workspace("unica-source-map-autodetect-container-provenance-stray");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(
+            &root.join("src/cfe/test_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+        write(&root.join("src/cfe/.gitkeep"), "");
+
+        let (_, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+
+        // The guard binds what discovery consumed — which direct children are
+        // directories — and nothing else. A stray file beside the extensions is not an
+        // input, so it must not turn every compile transaction into a conflict.
+        provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect("a stray file beside the extensions is not a discovery input");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
