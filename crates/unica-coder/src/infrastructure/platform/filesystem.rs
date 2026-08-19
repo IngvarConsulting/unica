@@ -1620,6 +1620,25 @@ fn query_parent_case_sensitive_flags(parent: &fs::File) -> io::Result<u32> {
     Ok(information.flags)
 }
 
+/// Reports whether the file system answered that it does not implement per-directory case
+/// sensitivity at all, which is a proven state rather than an unproven one.
+#[cfg(windows)]
+fn case_sensitivity_query_is_unsupported(error: &io::Error) -> bool {
+    use windows_sys::Win32::Foundation::{
+        ERROR_CALL_NOT_IMPLEMENTED, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
+        ERROR_NOT_SUPPORTED,
+    };
+
+    matches!(
+        error.raw_os_error(),
+        Some(code)
+            if code == ERROR_INVALID_FUNCTION as i32
+                || code == ERROR_INVALID_PARAMETER as i32
+                || code == ERROR_NOT_SUPPORTED as i32
+                || code == ERROR_CALL_NOT_IMPLEMENTED as i32
+    )
+}
+
 #[cfg(windows)]
 fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
     const OBJ_CASE_INSENSITIVE: u32 = 0x40;
@@ -1627,6 +1646,13 @@ fn relative_child_object_attributes(parent: &fs::File) -> io::Result<u32> {
 
     let flags = match query_parent_case_sensitive_flags(parent) {
         Ok(flags) => flags,
+        // Only local NTFS volumes carry per-directory case sensitivity. A file system that does
+        // not implement the information class has answered that no directory it hosts can be
+        // case-sensitive, so the insensitive match every ordinary Win32 open already performs is
+        // exact here rather than a guess. Every other failure leaves the parent unproven.
+        Err(error) if case_sensitivity_query_is_unsupported(&error) => {
+            return Ok(OBJ_CASE_INSENSITIVE)
+        }
         Err(error) => {
             return Err(io::Error::new(
                 error.kind(),
