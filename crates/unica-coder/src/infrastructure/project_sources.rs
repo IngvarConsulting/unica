@@ -3154,6 +3154,80 @@ mod tests {
     }
 
     #[test]
+    fn transactional_autodetect_binds_a_container_path_that_is_not_a_directory() {
+        let root = temp_workspace("unica-source-map-autodetect-file-container-provenance");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        write(&root.join("src/cfe"), "not a directory");
+
+        let (map, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        // Discovery read "no child directories here" from that path, and the guard has
+        // to be able to say exactly that. A guard that cannot be taken turns every
+        // compile transaction in the workspace into a planning failure.
+        provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect("a non-directory container must still be representable as a guard");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_binds_a_linked_container_path() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let root = temp_workspace("unica-source-map-autodetect-linked-container-provenance");
+        let external = temp_workspace("unica-source-map-autodetect-linked-container-prov-external");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        fs::create_dir_all(external.join("test_ed")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        match create_directory_link_fixture_for_test(&external, root.join("src/cfe")).unwrap() {
+            FileLinkFixtureOutcome::Created => {}
+            FileLinkFixtureOutcome::Unsupported
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                fs::remove_dir_all(&root).unwrap();
+                fs::remove_dir_all(&external).unwrap();
+                return;
+            }
+        }
+
+        let (map, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+
+        assert_eq!(map.source_sets.len(), 1, "{:?}", map.source_sets);
+        provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect("a linked container must still be representable as a guard");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(external).unwrap();
+    }
+
+    #[test]
+    fn transactional_autodetect_catches_a_container_path_that_became_a_directory() {
+        let root = temp_workspace("unica-source-map-autodetect-file-container-became-dir");
+        write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");
+        let container = root.join("src/cfe");
+        write(&container, "not a directory");
+
+        let (_, provenance) = discover_project_source_map_with_provenance(&root).unwrap();
+        // Recording "holds no child directories" for a non-directory path is only safe
+        // while the transition that *would* change the map is still caught: replacing
+        // the file with a real container wins source sets discovery never saw.
+        fs::remove_file(&container).unwrap();
+        write(
+            &container.join("late_ed/Configuration.xml"),
+            "<MetaDataObject/>",
+        );
+
+        let error = provenance
+            .bind_to(&mut CompileTransaction::new())
+            .expect_err("a container that appeared after discovery must invalidate the map");
+
+        assert!(error.contains("cfe"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn transactional_autodetect_tolerates_stray_entries_beside_the_extensions() {
         let root = temp_workspace("unica-source-map-autodetect-container-provenance-stray");
         write(&root.join("src/cf/Configuration.xml"), "<MetaDataObject/>");

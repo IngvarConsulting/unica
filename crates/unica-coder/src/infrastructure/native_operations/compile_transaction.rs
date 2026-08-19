@@ -1603,13 +1603,26 @@ fn snapshot_directory_membership_entries(
             ));
         }
     };
+    // A guard over the child directories of a container states which of them exist.
+    // A path that is not a usable directory holds none, which is the same answer as
+    // an absent path — and the only one that keeps the guard takeable. Erroring
+    // instead would make every compile transaction in a workspace whose container
+    // path is a stray file or a link fail at planning.
+    let holds_no_child_directories =
+        selector == DirectoryMembershipSelector::DirectChildDirectories;
     if metadata_is_link_or_reparse_point(&metadata) {
+        if holds_no_child_directories {
+            return Ok(DirectoryMembershipSnapshot::Absent);
+        }
         return Err(format!(
             "directory membership guard must not be a symbolic link or reparse point: {}",
             directory.display()
         ));
     }
     if !metadata.is_dir() {
+        if holds_no_child_directories {
+            return Ok(DirectoryMembershipSnapshot::Absent);
+        }
         return Err(format!(
             "directory membership guard target is not a directory: {}",
             directory.display()
