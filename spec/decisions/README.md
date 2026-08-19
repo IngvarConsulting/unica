@@ -91,7 +91,8 @@
 - [ADR-0071: `unica.xdto.edit` принимает типизированный массив операций одной транзакцией](0071-xdto-edit-typed-operations-array.md)
 - [ADR-0072: Регистрация макетов и встроенная справка принадлежат `meta.edit`; `template.*` и `help.add` снимаются](0072-retire-template-help-into-meta-edit.md)
 - [ADR-0073: Предпросмотр мутатора честен: одна форма данных, кеш в режиме предпросмотра, явный отказ вместо молчаливого успеха](0073-chestnyy-preview-mutatora.md)
-- [ADR-0074: Каталог раскладок автообнаружения и политика имён наборов](0074-katalog-raskladok-avtoobnaruzheniya.md)
+- [ADR-0074: Применённый runtime исполняется в исходном вызове](0074-primenennyy-runtime-ispolnyaetsya-v-ishodnom-vyzove.md)
+- [ADR-0075: Каталог раскладок автообнаружения и политика имён наборов](0075-katalog-raskladok-avtoobnaruzheniya.md)
 
 Заголовки записей ADR-0001…ADR-0006 приведены здесь дословно: индекс называет
 документ так, как он называется сам. Почему они выглядят иначе — в разделе

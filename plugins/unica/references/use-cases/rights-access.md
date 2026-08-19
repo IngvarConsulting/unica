@@ -10,7 +10,15 @@ Do not use this for OS/user administration or infobase authentication recovery.
 Use `db-auth-check` only to classify already supplied credential/license
 evidence; it does not probe the infobase.
 
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет классифицированную операцию и отвечает её терминальным результатом в
+том же вызове, приложив названную причину риска (`runtime_risk_*`)
+предупреждением; неклассифицированная операция по-прежнему отказывает
+`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
 ## Primary path
 

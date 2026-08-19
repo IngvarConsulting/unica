@@ -3708,7 +3708,7 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
         return json!({
             "type": "boolean",
             "default": true,
-            "description": "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+            "description": "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs a classified operation and returns its terminal result in this call with a named risk warning; an unclassified operation stays refused."
         });
     }
     if tool.name == "unica.role.edit" {
@@ -4298,22 +4298,29 @@ mod tests {
         let cases = [
             (
                 MetadataOperation::Info,
-                vec!["limit", "metadataPath", "sections", "sourceSet"],
+                vec!["cwd", "limit", "metadataPath", "sections", "sourceSet"],
                 json!(["sourceSet", "metadataPath"]),
             ),
             (
                 MetadataOperation::Add,
-                vec!["dryRun", "kind", "name", "operations", "sourceSet"],
+                vec!["cwd", "dryRun", "kind", "name", "operations", "sourceSet"],
                 json!(["sourceSet", "kind", "name"]),
             ),
             (
                 MetadataOperation::Edit,
-                vec!["dryRun", "metadataPath", "operations", "sourceSet"],
+                vec!["cwd", "dryRun", "metadataPath", "operations", "sourceSet"],
                 json!(["sourceSet", "metadataPath", "operations"]),
             ),
             (
                 MetadataOperation::Remove,
-                vec!["confirm", "dryRun", "force", "metadataPath", "sourceSet"],
+                vec![
+                    "confirm",
+                    "cwd",
+                    "dryRun",
+                    "force",
+                    "metadataPath",
+                    "sourceSet",
+                ],
                 json!(["sourceSet", "metadataPath"]),
             ),
         ];
@@ -6910,7 +6917,7 @@ mod tests {
         assert_eq!(schema["properties"]["projects"]["type"], "array");
         assert_eq!(
             schema["properties"]["dryRun"]["description"],
-            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false currently returns runtime_operation_unbounded before workspace discovery or process spawn."
+            "Preview typed v8-runner runtime arguments; omitted or true reports the planned command without mutation, while false runs a classified operation and returns its terminal result in this call with a named risk warning; an unclassified operation stays refused."
         );
     }
 
@@ -7599,7 +7606,7 @@ mod tests {
             ),
             (
                 "unica.meta.info",
-                &["limit", "metadataPath", "sections", "sourceSet"],
+                &["cwd", "limit", "metadataPath", "sections", "sourceSet"],
                 // The metadata surface has no path aliases and validates its
                 // own closed shape, so `allowed_args` stays empty by design.
                 &[],

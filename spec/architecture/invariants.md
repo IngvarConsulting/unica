@@ -431,19 +431,15 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/application/code_intelligence.rs`
 - **Scope:** runtime
 
-### INV-MCP-RUNTIME-RECEIPT — Жизненный цикл runtime принадлежит одному вызову
+### INV-MCP-RUNTIME-RECEIPT — Применённый runtime отвечает в исходном вызове
 
-- **Rule:** Любая текущая применённая операция `unica.runtime.execute` до
-  обнаружения рабочего пространства и запуска процесса возвращает в исходном
-  `tools/call` терминальный `OperationResult` с кодом
-  `runtime_operation_unbounded`; предпросмотр сохраняется, а автоматический
-  переход в `unica.runtime.job.*` не выполняется. Поставляемые инструкции не
-  предлагают унаследованные `unica.build.*` как запасной путь вокруг этого
-  отказа. Новая применённая ветвь по умолчанию также отказывает и требует
-  отдельного решения с доказательствами сохранения исходного вызова хостом,
-  крайнего срока ответа, владения всем деревом процессов и безопасного
-  восстановления записи.
-- **Decision:** ADR-0066
+- **Rule:** Применённая операция `unica.runtime.execute` исполняется синхронно и
+  возвращает свой терминальный результат в исходном `tools/call`, неся названную
+  причину риска предупреждением; неклассифицированная операция отказывает кодом
+  `runtime_operation_unbounded` до обнаружения рабочего пространства,
+  предпросмотр остаётся синхронным и без побочных эффектов, а унаследованные
+  `unica.build.*` запасным путём не предлагаются.
+- **Decision:** ADR-0074
 - **Check:** `ci-test` — `crates/unica-coder/src/application/runtime_admission.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/interfaces/mcp.rs`
@@ -1172,7 +1168,7 @@ Unica. Каждая запись формулирует одно нормати�
   держащего его каталога дословно, имя `main` остаётся за базовой
   конфигурацией, пока она его занимает, и сам листинг каталога фиксируется в
   записи о происхождении карты как вход дискавери.
-- **Decision:** ADR-0074
+- **Decision:** ADR-0075
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/project_sources.rs`
 - **Scope:** source, runtime
 

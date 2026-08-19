@@ -1,6 +1,14 @@
 # File And Artifact Workflows
 
-- По INV-MCP-RUNTIME-RECEIPT текущий runtime-контракт: `unica.runtime.execute` — preview-only и вызывается только с `dryRun: true`; любой applied-режим возвращает fail-closed до workspace discovery и process spawn. Preview не является runtime verification. Не обходи этот отказ прямым runner-ом, через `unica.build.*` или fallback через `unica.runtime.job.*`.
+- По INV-MCP-RUNTIME-RECEIPT и ADR-0074: `unica.runtime.execute` с `dryRun: true`
+показывает запланированную команду без побочных эффектов, а с `dryRun: false`
+исполняет классифицированную операцию и отвечает её терминальным результатом в
+том же вызове, приложив названную причину риска (`runtime_risk_*`)
+предупреждением; неклассифицированная операция по-прежнему отказывает
+`runtime_operation_unbounded` до обнаружения рабочего пространства. Preview
+исполнением не является. Работу, которую вызов ждать не должен, запускай через
+`unica.runtime.job.start`. Не обходи контракт прямым runner-ом или через
+`unica.build.*`.
 
 The intended future applied role of `dump` is to bring database changes into
 Git-visible files. Currently preview only its arguments; it does not change the
@@ -11,7 +19,7 @@ For a dump preview, use `dryRun=true`; select an extension with matching
 
 On Windows, macOS, and Linux, verified transactional publication describes the
 synchronous full dump (`mode=full`) for a DESIGNER `CONFIGURATION` or
-`EXTENSION` source-set. It is currently preview-only because post-run
+`EXTENSION` source-set. It runs applied and names its risk: post-run
 validation/publication has no proved receipt bound. Unica independently resolves an exact 8.3.27
 installation, redirects the selected source-set to a private stage, validates
 the required owner and every XML version-bearing root as the raw literal 2.20,
@@ -21,10 +29,11 @@ owns this publication contract;
 verified transaction behavior, while OS-specific mechanics stay behind
 `INV-PLATFORM-OS-BEHIND-FACADE`.
 
-All applied dump modes remain fail-closed. Async full dumps and dumps for
-external source-sets remain preview-only. `mode=incremental` and `mode=partial` are also available only as read-only
-previews with `dryRun=true`; they need shadow/staging publication with exact
-path/hash receipts.
+Every applied dump mode writes persistent state without a bounded recovery
+contract, and the result says so. Async full dumps, dumps for external
+source-sets and `mode=incremental`/`mode=partial` additionally lack shadow or
+staging publication with exact path/hash receipts, so preview them with
+`dryRun=true` first and verify the written sources afterwards.
 Partial preview also requires `object` or `objects`.
 
 The final stage-to-target move is tentative, not a source-identity CAS. Unica
@@ -63,4 +72,4 @@ Preview `load` with `dryRun=true` for `.cf` or `.cfe` artifacts; applied load is
 not currently admitted. Supported argument modes are `load` and `merge`;
 `merge` requires `settings`, and `update` is not supported. v8-runner rejects
 `.epf` and `.erf` for `load`; external processors/reports are handled through
-external source-sets with preview-only `build`, `dump`, and `make`.
+external source-sets through `build`, `dump`, and `make`.

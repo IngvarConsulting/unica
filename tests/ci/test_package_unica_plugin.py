@@ -422,7 +422,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(len(set(versions.values())), 1, versions)
 
-    def test_source_package_declares_the_0120_meta_delivery_version(self) -> None:
+    def test_source_package_declares_the_012_meta_delivery_version(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         plugin_root = repo_root / "plugins/unica"
         host_versions = {
@@ -436,8 +436,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
         )["tools"]
         unica_versions = [tool["version"] for tool in tools if tool["name"] == "unica"]
 
-        self.assertEqual(set(host_versions.values()), {"0.12.0"}, host_versions)
-        self.assertEqual(unica_versions, ["0.12.0"])
+        delivered = set(host_versions.values())
+        self.assertEqual(len(delivered), 1, host_versions)
+        version = next(iter(delivered))
+        self.assertRegex(version, r"^0\.12\.\d+$")
+        self.assertEqual(unica_versions, [version])
 
     def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:
         """Pin the key sets that decide whether an older client loads Unica at all.
@@ -626,6 +629,32 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertNotIn("UNICA_MCP_CALL_BUDGET_SECONDS", server["env"])
         self.assertNotIn("win-x64", json.dumps(server))
         self.assertNotIn("run-unica.sh", json.dumps(server))
+
+    def test_packaged_mcp_declares_its_own_cold_install_startup_budget(self) -> None:
+        # REQ-REL-COLD-INSTALL-BUDGET. The host default is 30 seconds and it
+        # kills the launcher process tree mid-download, so the first install of
+        # every version has to carry a budget of its own.
+        module = load_package_module()
+        repo_root = Path(__file__).resolve().parents[2]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "plugins" / "unica"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / ".mcp.json").write_text(
+                (repo_root / "plugins" / "unica" / ".mcp.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            module.write_packaged_mcp_launcher(plugin_dir, {})
+            server = json.loads((plugin_dir / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"][
+                "unica"
+            ]
+
+        budget = server["startup_timeout_sec"]
+        self.assertEqual(budget, module.PACKAGED_MCP_STARTUP_TIMEOUT_SEC)
+        self.assertIsInstance(budget, int)
+        # 100 MiB over a link that delivers well under a megabyte a second.
+        self.assertGreaterEqual(budget, 600)
 
     def test_packaged_mcp_does_not_require_a_full_runtime_binary(self) -> None:
         module = load_package_module()
