@@ -172,7 +172,7 @@ fn publish(artifact: &str, delivery: &Arc<Delivery>, progress: &dyn ProgressSink
 /// неоткуда.
 pub(crate) struct EngineOrder {
     artifact: String,
-    manifest_path: PathBuf,
+    pub(crate) manifest_path: PathBuf,
     cache_root: PathBuf,
 }
 
@@ -180,12 +180,32 @@ pub(crate) struct EngineOrder {
 /// доставлять некуда.
 const ARTIFACT_CACHE_ENV: &str = "UNICA_ARTIFACT_CACHE";
 
+/// Где лежит манифест поставки.
+///
+/// В установленной поставке своим корнем рантайм считает каталог установки в
+/// кеше: манифест инструментов упакован в архив ядра и лежит там. Релизный
+/// манифест туда не попадает — он остался в каталоге плагина, и путь к нему
+/// передаёт загрузчик. В дереве разработки загрузчика нет, и манифест ищется
+/// рядом с корнем по-прежнему.
+const RUNTIME_MANIFEST_ENV: &str = "UNICA_RUNTIME_MANIFEST";
+
 pub(crate) fn order_for(plugin_root: &Path, tool_name: &str) -> Option<EngineOrder> {
-    let cache_root = std::env::var_os(ARTIFACT_CACHE_ENV).map(PathBuf::from)?;
+    order_for_in(plugin_root, tool_name, &|name| std::env::var_os(name))
+}
+
+/// Разрешение с явно названным окружением: так его видно в тесте.
+fn order_for_in(
+    plugin_root: &Path,
+    tool_name: &str,
+    read_env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<EngineOrder> {
+    let cache_root = read_env(ARTIFACT_CACHE_ENV).map(PathBuf::from)?;
     let artifact = crate::infrastructure::bundled_tools::artifact_for(plugin_root, tool_name)?;
     Some(EngineOrder {
         artifact,
-        manifest_path: plugin_root.join("runtime-manifest.json"),
+        manifest_path: read_env(RUNTIME_MANIFEST_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| plugin_root.join("runtime-manifest.json")),
         cache_root,
     })
 }
@@ -243,6 +263,80 @@ mod tests {
 
     fn desk() -> DeliveryDesk {
         DeliveryDesk::default()
+    }
+
+    fn environment(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<std::ffi::OsString> {
+        let entries = pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), std::ffi::OsString::from(*value)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        move |name: &str| entries.get(name).cloned()
+    }
+
+    fn plugin_root_with_tool(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("unica-order-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("third-party")).expect("plugin root");
+        std::fs::write(
+            root.join("third-party/manifest.json"),
+            r#"{"schemaVersion":2,"tools":[{"name":"rlm-bsl-index","version":"1.33.0","artifact":"rlm-tools-bsl"}]}"#,
+        )
+        .expect("tool manifest");
+        root
+    }
+
+    #[test]
+    fn the_release_manifest_is_taken_from_where_the_bootstrap_put_it() {
+        // В установленной поставке корень рантайма — каталог в кеше, и
+        // релизного манифеста рядом нет. Искать его там значит не доставить
+        // ничего и не сказать почему.
+        let plugin_root = plugin_root_with_tool("handed");
+
+        let order = order_for_in(
+            &plugin_root,
+            "rlm-bsl-index",
+            &environment(&[
+                ("UNICA_ARTIFACT_CACHE", "/cache"),
+                (
+                    "UNICA_RUNTIME_MANIFEST",
+                    "/plugins/unica/runtime-manifest.json",
+                ),
+            ]),
+        )
+        .expect("заказ собран");
+
+        assert_eq!(
+            order.manifest_path,
+            PathBuf::from("/plugins/unica/runtime-manifest.json")
+        );
+        assert_eq!(order.artifact(), "rlm-tools-bsl");
+        std::fs::remove_dir_all(&plugin_root).ok();
+    }
+
+    #[test]
+    fn a_development_tree_still_looks_beside_the_root() {
+        let plugin_root = plugin_root_with_tool("dev-tree");
+
+        let order = order_for_in(
+            &plugin_root,
+            "rlm-bsl-index",
+            &environment(&[("UNICA_ARTIFACT_CACHE", "/cache")]),
+        )
+        .expect("заказ собран");
+
+        assert_eq!(
+            order.manifest_path,
+            plugin_root.join("runtime-manifest.json")
+        );
+        std::fs::remove_dir_all(&plugin_root).ok();
+    }
+
+    #[test]
+    fn without_an_artifact_cache_there_is_nowhere_to_deliver() {
+        let plugin_root = plugin_root_with_tool("no-cache");
+
+        assert!(order_for_in(&plugin_root, "rlm-bsl-index", &environment(&[])).is_none());
+        std::fs::remove_dir_all(&plugin_root).ok();
     }
 
     #[test]

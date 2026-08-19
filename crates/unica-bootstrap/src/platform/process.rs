@@ -12,6 +12,11 @@ pub struct RuntimeHandoff<'a> {
     pub provider_state_root: &'a Path,
     /// Где лежат движки: рядом с ядром их больше нет.
     pub artifact_cache: &'a Path,
+    /// Манифест поставки. Рантайм своим корнем считает каталог установки в
+    /// кеше — там лежит манифест инструментов, упакованный в архив ядра, — а
+    /// релизный манифест остался в каталоге плагина, и знает про него только
+    /// загрузчик.
+    pub runtime_manifest: &'a Path,
     /// О чём рассказать вызывающему: прошлый запуск убили, и своего провода у
     /// него не было. `None` — рассказывать нечего, и переменная не появляется.
     pub startup_notice: Option<&'a str>,
@@ -112,7 +117,8 @@ fn runtime_command(entrypoint: &Path, args: &[String], handoff: &RuntimeHandoff<
         .env("UNICA_PROVIDER_STATE_DIR", handoff.provider_state_root)
         // Движки больше не лежат рядом с ядром: рантайм ищет их в кеше
         // артефактов, и адрес кеша знает только тот, кто туда ставил.
-        .env("UNICA_ARTIFACT_CACHE", handoff.artifact_cache);
+        .env("UNICA_ARTIFACT_CACHE", handoff.artifact_cache)
+        .env("UNICA_RUNTIME_MANIFEST", handoff.runtime_manifest);
     if let Some(notice) = handoff.startup_notice {
         command.env("UNICA_STARTUP_NOTICE", notice);
     }
@@ -128,8 +134,34 @@ mod tests {
         RuntimeHandoff {
             provider_state_root: Path::new("/private/provider-state"),
             artifact_cache: Path::new("/private/artifact-cache"),
+            runtime_manifest: Path::new("/plugins/unica/runtime-manifest.json"),
             startup_notice: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_hands_the_release_manifest_to_the_child() {
+        // Рантайм находит своим корнем каталог установки в кеше: там лежит
+        // манифест инструментов, упакованный в архив ядра. Релизного манифеста
+        // там нет — он остался в каталоге плагина, и знает про него только
+        // загрузчик. Без этого доставка движка молча не начинается.
+        let args = vec![
+            "-c".to_string(),
+            "printf %s \"$UNICA_RUNTIME_MANIFEST\"".to_string(),
+        ];
+        let handoff = RuntimeHandoff {
+            provider_state_root: Path::new("/private/provider-state"),
+            artifact_cache: Path::new("/private/artifact-cache"),
+            runtime_manifest: Path::new("/plugins/unica/runtime-manifest.json"),
+            startup_notice: None,
+        };
+
+        let output = runtime_command(Path::new("/bin/sh"), &args, &handoff)
+            .output()
+            .unwrap();
+
+        assert_eq!(output.stdout, b"/plugins/unica/runtime-manifest.json");
     }
 
     #[cfg(unix)]
@@ -144,6 +176,7 @@ mod tests {
         let handoff = RuntimeHandoff {
             provider_state_root: Path::new("/private/provider-state"),
             artifact_cache: Path::new("/private/artifact-cache"),
+            runtime_manifest: Path::new("/plugins/unica/runtime-manifest.json"),
             startup_notice: Some("a Unica startup was killed while downloading unica 0.13.0"),
         };
 
@@ -170,6 +203,7 @@ mod tests {
         let handoff = RuntimeHandoff {
             provider_state_root: Path::new("/private/provider-state"),
             artifact_cache: Path::new("/private/artifact-cache"),
+            runtime_manifest: Path::new("/plugins/unica/runtime-manifest.json"),
             startup_notice: None,
         };
 
