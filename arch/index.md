@@ -47,6 +47,7 @@
 | `DEC.2026-08-19.PRODUCT-RECORD-IS-HISTORY` | решение · process | active | да | Принятая продуктовая запись правится только заменой | [decisions/2026-08-19-product-record-is-history.md](decisions/2026-08-19-product-record-is-history.md) |
 | `DEC.2026-08-19.REALIZATION-AXIS` | решение · process | active | да | Решённое и построенное — разные оси | [decisions/2026-08-19-realization-axis.md](decisions/2026-08-19-realization-axis.md) |
 | `DEC.2026-08-19.REGISTRY-GUARDS-RUN` | решение · process | active | да | Правила о реестре проверяются там же, где правила о продукте | [decisions/2026-08-19-registry-guards-run.md](decisions/2026-08-19-registry-guards-run.md) |
+| `DEC.2026-08-19.RETENTION-BY-ARTIFACT` | решение · product | active | да | Кеш удерживает свежие версии каждого артефакта, а не считает ссылки | [decisions/2026-08-19-retention-by-artifact.md](decisions/2026-08-19-retention-by-artifact.md) |
 | `DEC.2026-08-19.RULE-CLAIMS-ONLY-WHAT-IT-CHECKS` | решение · process | active | да | Правило заявляет ровно то, что проверяет | [decisions/2026-08-19-rule-claims-only-what-it-checks.md](decisions/2026-08-19-rule-claims-only-what-it-checks.md) |
 | `DEC.2026-08-19.STARTUP-LEAVES-A-RECORD` | решение · product | active | нет | Запуск оставляет след, который переживает убийство | [decisions/2026-08-19-startup-leaves-a-record.md](decisions/2026-08-19-startup-leaves-a-record.md) |
 | `DEC.2026-08-19.SURFACE-BY-QUESTION` | решение · product | active | нет | Вход отвечает на вопрос, а не обслуживает предмет | [decisions/2026-08-19-surface-by-question.md](decisions/2026-08-19-surface-by-question.md) |
@@ -66,6 +67,7 @@
 | `INV.DOC.SUPERPOWERS-BOUNDARY` | инвариант · process | active |  | Формы superpowers не входят в реестр | [invariants/INV.DOC.SUPERPOWERS-BOUNDARY.md](invariants/INV.DOC.SUPERPOWERS-BOUNDARY.md) |
 | `INV.HOST.KNOWLEDGE-BEHIND-FACADE` | инвариант · process | active |  | Знание о хосте живёт за host-фасадом | [invariants/INV.HOST.KNOWLEDGE-BEHIND-FACADE.md](invariants/INV.HOST.KNOWLEDGE-BEHIND-FACADE.md) |
 | `INV.PKG.ATTRIBUTION` | инвариант · product | active |  | Атрибуция остаётся полной | [invariants/INV.PKG.ATTRIBUTION.md](invariants/INV.PKG.ATTRIBUTION.md) |
+| `INV.PKG.RETENTION-BY-ARTIFACT` | инвариант · product | active |  | Сборка мусора считает версии по артефакту | [invariants/INV.PKG.RETENTION-BY-ARTIFACT.md](invariants/INV.PKG.RETENTION-BY-ARTIFACT.md) |
 | `INV.PKG.THIN-PACKAGE` | инвариант · product | active |  | Публичный пакет тонкий | [invariants/INV.PKG.THIN-PACKAGE.md](invariants/INV.PKG.THIN-PACKAGE.md) |
 | `INV.PKG.TWO-HOSTS-ONE-TREE` | инвариант · product | active |  | Один каталог плагина обслуживает двух хостов | [invariants/INV.PKG.TWO-HOSTS-ONE-TREE.md](invariants/INV.PKG.TWO-HOSTS-ONE-TREE.md) |
 | `INV.PKG.VERIFIED-ATOMIC-INSTALL` | инвариант · product | active |  | Runtime проверяется контрольной суммой и ставится атомарно | [invariants/INV.PKG.VERIFIED-ATOMIC-INSTALL.md](invariants/INV.PKG.VERIFIED-ATOMIC-INSTALL.md) |
