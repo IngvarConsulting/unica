@@ -89,6 +89,56 @@ struct SourceValidation {
     status: ValidationStatus,
     validated_post_hash: String,
     diagnostics: Vec<ValidationDiagnostic>,
+    method_naming: MethodNamingValidation,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MethodNamingValidation {
+    standard: &'static str,
+    status: MethodNamingStatus,
+    automated_checks: &'static [MethodNamingAutomatedCheck],
+    semantic_review: MethodNamingSemanticReview,
+    diagnostics: Vec<MethodNamingDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum MethodNamingStatus {
+    Passed,
+    Warning,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MethodNamingAutomatedCheck {
+    code: &'static str,
+    rule: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MethodNamingSemanticReview {
+    required: bool,
+    methods: Vec<MethodNamingCandidate>,
+    checks: &'static [&'static str],
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MethodNamingCandidate {
+    method: String,
+    kind: MethodKind,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MethodNamingDiagnostic {
+    code: &'static str,
+    rule: &'static str,
+    method: String,
+    message: &'static str,
+    suggestion: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -253,6 +303,7 @@ struct CodePatchPlan {
     insertion: Vec<u8>,
     site: PatchSite,
     no_op: bool,
+    methods_before: Vec<Method>,
 }
 
 fn build_patch(
@@ -336,6 +387,7 @@ fn build_patch(
         insertion,
         site,
         no_op,
+        methods_before: indexed.methods,
     })
 }
 
@@ -363,11 +415,23 @@ fn finish_patch(
     } else {
         ValidationStatus::Failed
     };
+    let method_naming = validate_method_naming(&plan.methods_before, &analysis.methods);
+    let naming_warnings = method_naming
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            format!(
+                "{} rule {}: `{}` should be named `{}`",
+                method_naming.standard, diagnostic.rule, diagnostic.method, diagnostic.suggestion
+            )
+        })
+        .collect::<Vec<_>>();
     let validation = SourceValidation {
         kind: ValidationKind::BslAnalyzerParser,
         status: validation_status,
         validated_post_hash: post_hash.clone(),
         diagnostics: analysis.diagnostics,
+        method_naming,
     };
     let data = match patch_data(&plan, postimage, post_hash, validation) {
         Ok(data) => data,
@@ -436,7 +500,7 @@ fn finish_patch(
             })
             .into_iter()
             .collect(),
-        warnings: Vec::new(),
+        warnings: naming_warnings,
         errors: Vec::new(),
         artifacts: vec![format!(
             "{} + {}",
@@ -911,9 +975,17 @@ fn guard_resolved_support(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum MethodKind {
+    Procedure,
+    Function,
+}
+
 #[derive(Debug)]
 struct Method {
     name: String,
+    kind: MethodKind,
     start: usize,
     end: usize,
 }
@@ -942,6 +1014,7 @@ fn analyze_module(text: &str) -> Result<ModuleAnalysis, String> {
                     .name_or_keyword()
                     .map(|token| token.text().to_string()),
                 procedure.syntax().text_range(),
+                MethodKind::Procedure,
             )
         } else if let Some(function) = FunctionDef::cast(node) {
             method_from_ast(
@@ -949,6 +1022,7 @@ fn analyze_module(text: &str) -> Result<ModuleAnalysis, String> {
                     .name_or_keyword()
                     .map(|token| token.text().to_string()),
                 function.syntax().text_range(),
+                MethodKind::Function,
             )
         } else {
             None
@@ -964,12 +1038,92 @@ fn analyze_module(text: &str) -> Result<ModuleAnalysis, String> {
     })
 }
 
-fn method_from_ast(name: Option<String>, range: bsl_syntax::TextRange) -> Option<Method> {
+fn method_from_ast(
+    name: Option<String>,
+    range: bsl_syntax::TextRange,
+    kind: MethodKind,
+) -> Option<Method> {
     name.map(|name| Method {
         name,
+        kind,
         start: text_offset(range.start()),
         end: text_offset(range.end()),
     })
+}
+
+fn validate_method_naming(before: &[Method], after: &[Method]) -> MethodNamingValidation {
+    const AUTOMATED_CHECKS: &[MethodNamingAutomatedCheck] = &[MethodNamingAutomatedCheck {
+        code: "function-name-starts-with-get",
+        rule: "6.1",
+    }];
+    const SEMANTIC_CHECKS: &[&str] = &[
+        "procedureInfinitive",
+        "valueFunctionResult",
+        "constructorName",
+        "predicateName",
+        "actionFunctionException",
+        "resultTypeRedundancy",
+    ];
+
+    let introduced_methods = after
+        .iter()
+        .filter(|method| {
+            !before.iter().any(|existing| {
+                existing.kind == method.kind
+                    && existing.name.to_lowercase() == method.name.to_lowercase()
+            })
+        })
+        .collect::<Vec<_>>();
+    let diagnostics = introduced_methods
+        .iter()
+        .filter_map(|method| method_naming_diagnostic(method))
+        .collect::<Vec<_>>();
+    MethodNamingValidation {
+        standard: "std647",
+        status: if diagnostics.is_empty() {
+            MethodNamingStatus::Passed
+        } else {
+            MethodNamingStatus::Warning
+        },
+        automated_checks: AUTOMATED_CHECKS,
+        semantic_review: MethodNamingSemanticReview {
+            required: !introduced_methods.is_empty(),
+            methods: introduced_methods
+                .iter()
+                .map(|method| MethodNamingCandidate {
+                    method: method.name.clone(),
+                    kind: method.kind,
+                })
+                .collect(),
+            checks: SEMANTIC_CHECKS,
+        },
+        diagnostics,
+    }
+}
+
+fn method_naming_diagnostic(method: &Method) -> Option<MethodNamingDiagnostic> {
+    if method.kind != MethodKind::Function {
+        return None;
+    }
+    let suggestion = strip_case_insensitive_prefix(&method.name, "Получить")
+        .or_else(|| strip_case_insensitive_prefix(&method.name, "Get"))?;
+    if suggestion.is_empty() {
+        return None;
+    }
+    Some(MethodNamingDiagnostic {
+        code: "function-name-starts-with-get",
+        rule: "6.1",
+        method: method.name.clone(),
+        message: "Имя функции должно описывать возвращаемый результат, а не действие получения",
+        suggestion: suggestion.to_string(),
+    })
+}
+
+fn strip_case_insensitive_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|head| head.to_lowercase() == prefix.to_lowercase())?;
+    value.get(prefix.len()..)
 }
 
 fn text_offset(offset: bsl_syntax::TextSize) -> usize {
@@ -1145,7 +1299,8 @@ mod tests {
     use super::{
         analyze_module, hash, insertion_is_present, line_column, local_line_ending_at,
         locate_insertion, module_identity, normalized_content, patch_inner, unified_diff,
-        LeadingSeparator, PatchMode, Position, ValidationStatus,
+        validate_method_naming, LeadingSeparator, Method, MethodKind, PatchMode, Position,
+        ValidationStatus,
     };
     use crate::application::SupportGuardRequirement;
     use crate::domain::workspace::WorkspaceContext;
@@ -1634,7 +1789,31 @@ mod tests {
                     "kind": "bsl-analyzer-parser",
                     "status": "passed",
                     "validatedPostHash": post_hash,
-                    "diagnostics": []
+                    "diagnostics": [],
+                    "methodNaming": {
+                        "standard": "std647",
+                        "status": "passed",
+                        "automatedChecks": [{
+                            "code": "function-name-starts-with-get",
+                            "rule": "6.1"
+                        }],
+                        "semanticReview": {
+                            "required": true,
+                            "methods": [{
+                                "method": "Added",
+                                "kind": "procedure"
+                            }],
+                            "checks": [
+                                "procedureInfinitive",
+                                "valueFunctionResult",
+                                "constructorName",
+                                "predicateName",
+                                "actionFunctionException",
+                                "resultTypeRedundancy"
+                            ]
+                        },
+                        "diagnostics": []
+                    }
                 }
             })
         );
@@ -1642,6 +1821,202 @@ mod tests {
         assert!(!serialized_text.contains("src/CommonModules"));
         assert!(!serialized_text.contains("Module.bsl"));
         fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_preview_reports_std647_for_a_new_get_function() {
+        let context = temp_context("std647-function-name");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = "Процедура Выполнить()\nКонецПроцедуры\n";
+        fs::write(&module, before).unwrap();
+        let args = patch_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "Выполнить",
+            "Функция ПолучитьПолноеИмя()\n    Возврат \"Иван Иванов\";\nКонецФункции",
+        );
+
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read_to_string(&module).unwrap(), before);
+        assert_eq!(preview.outcome.warnings.len(), 1);
+        let serialized = serde_json::to_value(preview.data.unwrap()).unwrap();
+        assert_eq!(
+            serialized["validation"]["methodNaming"],
+            json!({
+                "standard": "std647",
+                "status": "warning",
+                "automatedChecks": [{
+                    "code": "function-name-starts-with-get",
+                    "rule": "6.1"
+                }],
+                "semanticReview": {
+                    "required": true,
+                    "methods": [{
+                        "method": "ПолучитьПолноеИмя",
+                        "kind": "function"
+                    }],
+                    "checks": [
+                        "procedureInfinitive",
+                        "valueFunctionResult",
+                        "constructorName",
+                        "predicateName",
+                        "actionFunctionException",
+                        "resultTypeRedundancy"
+                    ]
+                },
+                "diagnostics": [{
+                    "code": "function-name-starts-with-get",
+                    "rule": "6.1",
+                    "method": "ПолучитьПолноеИмя",
+                    "message": "Имя функции должно описывать возвращаемый результат, а не действие получения",
+                    "suggestion": "ПолноеИмя"
+                }]
+            })
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_does_not_reopen_an_existing_api_name_on_case_only_edit() {
+        let context = temp_context("std647-existing-api");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = "Функция ПолучитьДанные() Экспорт\n    Возврат 1;\nКонецФункции\n";
+        fs::write(&module, before).unwrap();
+        let mut args = patch_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "ПолучитьДанные",
+            "Функция получитьДанные() Экспорт\n    Возврат 2;\nКонецФункции",
+        );
+        args.insert("operation".to_string(), json!("replace"));
+        args.remove("position");
+
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert!(preview.outcome.warnings.is_empty());
+        let serialized = serde_json::to_value(preview.data.unwrap()).unwrap();
+        assert_eq!(serialized["validation"]["methodNaming"]["status"], "passed");
+        assert_eq!(
+            serialized["validation"]["methodNaming"]["semanticReview"]["required"],
+            false
+        );
+        assert_eq!(
+            serialized["validation"]["methodNaming"]["semanticReview"]["methods"],
+            json!([])
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_reports_std647_for_an_explicit_getter_rename() {
+        let context = temp_context("std647-explicit-rename");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = "Функция ПолноеИмя() Экспорт\n    Возврат \"Иван Иванов\";\nКонецФункции\n";
+        fs::write(&module, before).unwrap();
+        let mut args = patch_args(
+            "main",
+            "CommonModule.Sample.Module",
+            "ПолноеИмя",
+            "Функция ПолучитьПолноеИмя() Экспорт\n    Возврат \"Иван Иванов\";\nКонецФункции",
+        );
+        args.insert("operation".to_string(), json!("replace"));
+        args.remove("position");
+
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read_to_string(&module).unwrap(), before);
+        assert_eq!(preview.outcome.warnings.len(), 1);
+        let serialized = serde_json::to_value(preview.data.unwrap()).unwrap();
+        assert_eq!(
+            serialized["validation"]["methodNaming"]["status"],
+            "warning"
+        );
+        assert_eq!(
+            serialized["validation"]["methodNaming"]["diagnostics"][0]["method"],
+            "ПолучитьПолноеИмя"
+        );
+        assert_eq!(
+            serialized["validation"]["methodNaming"]["diagnostics"][0]["suggestion"],
+            "ПолноеИмя"
+        );
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn method_naming_surfaces_every_introduced_method_for_semantic_review() {
+        let before = vec![Method {
+            name: "СуществующийМетод".to_string(),
+            kind: MethodKind::Function,
+            start: 0,
+            end: 0,
+        }];
+        let after = vec![
+            Method {
+                name: "СуществующийМетод".to_string(),
+                kind: MethodKind::Function,
+                start: 0,
+                end: 0,
+            },
+            Method {
+                name: "ЗагрузкаКонтрагента".to_string(),
+                kind: MethodKind::Procedure,
+                start: 0,
+                end: 0,
+            },
+            Method {
+                name: "СоздатьПараметры".to_string(),
+                kind: MethodKind::Function,
+                start: 0,
+                end: 0,
+            },
+            Method {
+                name: "ПроверитьПроведенность".to_string(),
+                kind: MethodKind::Function,
+                start: 0,
+                end: 0,
+            },
+            Method {
+                name: "ВыбратьДанныеПоПравилу".to_string(),
+                kind: MethodKind::Function,
+                start: 0,
+                end: 0,
+            },
+        ];
+
+        let serialized = serde_json::to_value(validate_method_naming(&before, &after)).unwrap();
+
+        assert_eq!(serialized["status"], "passed");
+        assert_eq!(
+            serialized["automatedChecks"],
+            json!([{
+                "code": "function-name-starts-with-get",
+                "rule": "6.1"
+            }])
+        );
+        assert_eq!(serialized["semanticReview"]["required"], true);
+        assert_eq!(
+            serialized["semanticReview"]["methods"],
+            json!([
+                {"method": "ЗагрузкаКонтрагента", "kind": "procedure"},
+                {"method": "СоздатьПараметры", "kind": "function"},
+                {"method": "ПроверитьПроведенность", "kind": "function"},
+                {"method": "ВыбратьДанныеПоПравилу", "kind": "function"}
+            ])
+        );
+        assert!(serialized["diagnostics"].as_array().unwrap().is_empty());
     }
 
     #[test]

@@ -23,6 +23,11 @@ a full existing-module replacement, stop this route and use the
 `unica.source.resources` and `unica.source.read`, then come back with a
 narrower `insert` or `replace`.
 
+Before naming a new or renamed method, read
+`../../references/platform/method-naming.md`, apply standard 647, and preserve
+platform handlers and existing public APIs. The preview reports deterministic
+findings in `data.validation.methodNaming`; inspect them before applying.
+
 ## Parameters
 
 | Parameter | Required | Description |

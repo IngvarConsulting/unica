@@ -22,6 +22,7 @@ description: "Обработчики событий объекта 1С. Испо
 
 ## References
 
+- Read `../../references/platform/method-naming.md` before naming any new or renamed BSL method; preserve platform handlers and existing public APIs.
 - Read `../../references/platform/object-events.md` for the handler map, the conditional fill-check shape, the exchange guard, and the cancel-parameter rule.
 - Read `../../references/platform/document-posting.md` when the handler in question is `ОбработкаПроведения` or `ОбработкаУдаленияПроведения`.
 - Read `../../references/platform/platform-mechanics.md` for transaction boundaries and logging inside write handlers.

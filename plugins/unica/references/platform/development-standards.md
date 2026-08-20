@@ -22,6 +22,9 @@ Use these standards during BSL implementation, review, and refactoring.
 
 - See `metadata-conventions.md` for object naming, synonym, representation, and
   fill-check conventions.
+- See `method-naming.md` before naming a new or renamed BSL procedure or
+  function; it applies standard 647 and preserves platform handlers and
+  existing public APIs.
 - Use project-local naming conventions when present.
 - Add comments for non-obvious platform constraints and integration decisions,
   not for trivial assignments.

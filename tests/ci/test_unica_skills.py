@@ -2761,6 +2761,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             "use-cases/integrations.md",
             "specs/README.md",
             "platform/development-standards.md",
+            "platform/method-naming.md",
             "platform/platform-solutions.md",
             "platform/runtime-diagnostics.md",
             "platform/db-performance.md",
@@ -2777,6 +2778,47 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 if relative_path.startswith("use-cases/"):
                     self.assertIn("## When to use", text)
                     self.assertIn("## Primary path", text)
+
+    def test_bsl_writing_skills_require_the_shared_method_naming_standard(self) -> None:
+        reference = "../../references/platform/method-naming.md"
+        writers = []
+        for skill_doc in self.skill_root().glob("*/SKILL.md"):
+            text = skill_doc.read_text(encoding="utf-8")
+            if "unica.code.patch" in text:
+                writers.append(skill_doc.parent.name)
+                with self.subTest(skill=skill_doc.parent.name):
+                    self.assertIn(reference, text)
+
+        self.assertEqual(
+            set(writers),
+            {
+                "code-patch",
+                "document-posting",
+                "form-events",
+                "module-placement",
+                "object-events",
+                "object-locks",
+                "source-access",
+                "transactions-locks",
+            },
+        )
+
+    def test_reference_bsl_examples_do_not_use_get_prefixed_value_functions(self) -> None:
+        forbidden = re.compile(r"(?im)^\s*(?:Функция|Function)\s+(?:Получить|Get)\w+\s*\(")
+        for declaration in [
+            "Функция ПолучитьДанные()",
+            "Функция GetData()",
+            "Function ПолучитьДанные()",
+            "Function GetData()",
+        ]:
+            with self.subTest(declaration=declaration):
+                self.assertRegex(declaration, forbidden)
+        for declaration in ["Функция Получить()", "Function Get()"]:
+            with self.subTest(declaration=declaration):
+                self.assertNotRegex(declaration, forbidden)
+        for reference in (self.reference_root() / "specs").glob("*.md"):
+            with self.subTest(reference=reference.name):
+                self.assertNotRegex(reference.read_text(encoding="utf-8"), forbidden)
 
     def test_web_publish_skill_surface_is_replaced_by_autonomous_server(self) -> None:
         self.assertTrue((self.skill_root() / "autonomous-server" / "SKILL.md").is_file())

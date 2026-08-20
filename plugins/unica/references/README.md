@@ -25,6 +25,7 @@ XML formats, DSL contracts, and reusable layout patterns live in
 ## Platform And Tooling
 
 - `platform/development-standards.md` — coding, architecture, and form-module standards.
+- `platform/method-naming.md` — standard 647 decision table, compatibility boundaries, and `code.patch` naming validation.
 - `platform/metadata-conventions.md` — object naming, synonym, representation, and fill-check conventions.
 - `platform/platform-solutions.md` — common platform pitfalls and fix templates.
 - `platform/runtime-diagnostics.md` — ЖР/ТЖ, startup, web-client, HTTP, background-job, and process/session diagnostics.

@@ -27,6 +27,7 @@ This skill owns concurrency between **users editing the same object**. Concurren
 
 ## References
 
+- Read `../../references/platform/method-naming.md` before naming any new or renamed BSL method; preserve platform handlers and existing public APIs.
 - Read `../../references/platform/object-locks.md` for both lock kinds, lock lifetime, the form id rule, and how object locks interact with transactions.
 - Read `../../references/platform/transactions-locks.md` when the same code path also reads data that drives a write.
 - Read `../../references/platform/form-events.md` when the editing path runs through a non-standard form module.

@@ -28,6 +28,7 @@ Concurrency between users editing the same object is a different mechanism and b
 
 ## References
 
+- Read `../../references/platform/method-naming.md` before naming any new or renamed BSL method; preserve platform handlers and existing public APIs.
 - Read `../../references/platform/transactions-locks.md` for the responsible-read definition, the transaction shape, managed locks, and lock order.
 - Read `../../references/platform/document-posting.md` when the transaction is a document posting.
 - Read `../../references/platform/db-performance.md` and `../../references/platform/runtime-diagnostics.md` when a lock wait or deadlock has to be diagnosed from evidence.

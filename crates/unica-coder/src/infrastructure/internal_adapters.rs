@@ -2134,7 +2134,10 @@ impl StandardsAdapter {
                     .cloned()
                     .ok_or_else(|| "missing id".to_string())?;
                 let mut params = Map::new();
-                params.insert("id_or_alias_or_url".to_string(), id);
+                params.insert(
+                    "id_or_alias_or_url".to_string(),
+                    normalize_standard_locator(id),
+                );
                 if let Some(limit) = args.get("bodyLimit").or_else(|| args.get("body_limit")) {
                     params.insert("body_limit".to_string(), limit.clone());
                 }
@@ -3158,6 +3161,28 @@ mod tests {
 
         assert_eq!(request.method, "v8std_explain_diagnostics");
         assert_eq!(request.params["codes"][0], "acc:142");
+    }
+
+    #[test]
+    fn standards_explain_normalizes_numeric_standard_identifiers() {
+        for (input, expected) in [
+            ("647", "std647"),
+            ("#647", "std647"),
+            ("#std647", "std647"),
+            ("std647", "std647"),
+            (
+                "https://its.1c.ru/db/content/v8std/src/400/100/i8100647.htm",
+                "https://its.1c.ru/db/content/v8std/src/400/100/i8100647.htm",
+            ),
+        ] {
+            let mut args = Map::new();
+            args.insert("idOrAliasOrUrl".to_string(), json!(input));
+
+            let request = StandardsAdapter::request_for("explain", &args).unwrap();
+
+            assert_eq!(request.method, "v8std_get_page");
+            assert_eq!(request.params["id_or_alias_or_url"], expected, "{input}");
+        }
     }
 
     #[test]
@@ -6637,6 +6662,20 @@ analyze_timeout_seconds = 900
             self.payloads.borrow_mut().push(payload.clone());
             Ok(self.response.clone())
         }
+    }
+}
+
+fn normalize_standard_locator(locator: Value) -> Value {
+    let Some(locator) = locator.as_str() else {
+        return locator;
+    };
+    let candidate = locator.strip_prefix('#').unwrap_or(locator);
+    let lower = candidate.to_ascii_lowercase();
+    let digits = lower.strip_prefix("std").unwrap_or(&lower);
+    if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        Value::String(format!("std{digits}"))
+    } else {
+        Value::String(locator.to_string())
     }
 }
 #[test]

@@ -22,6 +22,7 @@ description: "Модуль управляемой формы 1С. Использ
 
 ## References
 
+- Read `../../references/platform/method-naming.md` before naming any new or renamed BSL method; preserve platform handlers and existing public APIs.
 - Read `../../references/platform/form-events.md` for the client/server split, directives, the server-call budget, form parameters, and attached handlers.
 - Read `../../references/platform/object-events.md` when the logic belongs to the object being written rather than to the form.
 - Read `../../references/specs/form-patterns.md` and use `form-patterns` for layout, archetypes, and UX; this skill owns the module, not the arrangement.
