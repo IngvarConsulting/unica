@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,9 +38,11 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                         "schemaVersion": 2,
                         "target": "linux-x64",
                         "targetTriple": "x86_64-unknown-linux-gnu",
+                        "artifactAssets": {},
                         "runtimeFiles": [
                             {
                                 "path": "bin/linux-x64/unica",
+                                "deliveredPath": "bin/linux-x64/unica",
                                 "sha256": packager.sha256(binary),
                                 "size": binary.stat().st_size,
                                 "executable": True,
@@ -70,11 +73,11 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "archive checksum mismatch"):
                 verifier.verify_runtime_asset_pair(assets, "linux-x64")
 
-    def test_an_engine_archive_is_verified_too(self) -> None:
-        """Разрез поставки положил движки в собственные архивы.
+    def test_the_release_refuses_to_carry_an_engine_archive(self) -> None:
+        """Движки издаёт тулчейн, и выпуск их не перепубликует.
 
-        Проверять один сердечник значит выпустить движки, которых никто не
-        сверял: подмена такого архива дошла бы до пользователя.
+        Лишний архив рядом с ядром означает, что 439 МБ чужих байтов снова
+        поехали в выпуск: проверка обязана остановить это раньше публикации.
         """
         packager = load_module(REPO_ROOT / "scripts/ci/package-unica-runtime.py", "runtime_packager")
         verifier = load_module(REPO_ROOT / "scripts/ci/verify-release-assets.py", "asset_verifier")
@@ -95,9 +98,19 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                         "schemaVersion": 2,
                         "target": "linux-x64",
                         "targetTriple": "x86_64-unknown-linux-gnu",
+                        "artifactAssets": {
+                            "bsl-analyzer": {
+                                "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+                                "tag": "bsl-analyzer-v0.2.67-build.1",
+                                "name": "bsl-analyzer-linux-x64",
+                                "mediaType": "application/octet-stream",
+                                "sha256": "c" * 64,
+                            }
+                        },
                         "runtimeFiles": [
                             {
                                 "path": "bin/linux-x64/unica",
+                                "deliveredPath": "bin/linux-x64/unica",
                                 "sha256": packager.sha256(core),
                                 "size": core.stat().st_size,
                                 "executable": True,
@@ -105,6 +118,7 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                             },
                             {
                                 "path": "bin/linux-x64/bsl-analyzer",
+                                "deliveredPath": "bsl-analyzer",
                                 "sha256": packager.sha256(engine),
                                 "size": engine.stat().st_size,
                                 "executable": True,
@@ -134,19 +148,17 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
             assets = root / "assets"
             packager.package_runtime(bundle, assets)
 
-            self.assertEqual(
-                verifier.published_artifacts(assets, "linux-x64"),
-                ["bsl-analyzer", "unica"],
-            )
-            self.assertEqual(
-                verifier.verify_runtime_asset_pair(assets, "linux-x64", "bsl-analyzer"),
-                "0.7.0",
-            )
+            # Движок описан адресом, а архивом выходит только ядро.
+            self.assertEqual(verifier.published_artifacts(assets, "linux-x64"), ["unica"])
+            self.assertTrue((assets / "bsl-analyzer-runtime-linux-x64.json").is_file())
+            self.assertFalse((assets / "bsl-analyzer-runtime-linux-x64.tar.gz").exists())
 
-            with (assets / "bsl-analyzer-runtime-linux-x64.tar.gz").open("ab") as stream:
-                stream.write(b"tampered")
-            with self.assertRaisesRegex(SystemExit, "archive checksum mismatch"):
-                verifier.verify_runtime_asset_pair(assets, "linux-x64", "bsl-analyzer")
+            shutil.copy2(
+                assets / "unica-runtime-linux-x64.tar.gz",
+                assets / "bsl-analyzer-runtime-linux-x64.tar.gz",
+            )
+            with self.assertRaisesRegex(SystemExit, "must be \\[unica\\]"):
+                verifier.published_artifacts(assets, "linux-x64")
 
     def test_verifies_three_packaged_runtime_pairs_and_detects_tampering(self) -> None:
         packager = load_module(REPO_ROOT / "scripts/ci/package-unica-runtime.py", "runtime_packager")
@@ -173,9 +185,11 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                             "schemaVersion": 2,
                             "target": target,
                             "targetTriple": triple,
+                            "artifactAssets": {},
                             "runtimeFiles": [
                                 {
                                     "path": f"bin/{target}/unica{exe}",
+                                    "deliveredPath": f"bin/{target}/unica{exe}",
                                     "sha256": packager.sha256(binary),
                                     "size": binary.stat().st_size,
                                     "executable": True,

@@ -410,6 +410,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 "sourceCommit": RUNTIME_SOURCE_COMMIT,
                 "license": "MIT",
                 "binaryName": name,
+                # Два инструмента делят один архив — артефакт у них общий.
+                "releaseName": "rlm-tools-bsl",
                 "assetStrategy": "archive-release-asset",
                 "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
                 "assetTag": RUNTIME_RELEASE,
@@ -474,11 +476,23 @@ class BuildUnicaToolsTests(unittest.TestCase):
         tools = json.loads((out_dir / "tools.json").read_text(encoding="utf-8"))
         self.assertEqual(tools["schemaVersion"], 2)
         self.assertEqual(
-            [item["path"] for item in tools["runtimeFiles"]],
+            [item.get("path") for item in tools["runtimeFiles"]],
             [
                 "bin/linux-x64/libpython3.12.so.1.0",
                 "bin/linux-x64/rlm-bsl-index",
                 "bin/linux-x64/rlm-bsl-mcp",
+                None,
+            ],
+        )
+        # Доставка распаковывает чужой архив как есть, поэтому раскладка в кеше
+        # повторяет архив вместе с его конвертом, а не дерево плагина.
+        self.assertEqual(
+            [item["deliveredPath"] for item in tools["runtimeFiles"]],
+            [
+                "payload/libpython3.12.so.1.0",
+                "payload/rlm-bsl-index",
+                "payload/rlm-bsl-mcp",
+                "manifest.json",
             ],
         )
         self.assertEqual(
@@ -486,6 +500,26 @@ class BuildUnicaToolsTests(unittest.TestCase):
             {
                 "rlm-bsl-index": "bin/linux-x64/rlm-bsl-index",
                 "rlm-bsl-mcp": "bin/linux-x64/rlm-bsl-mcp",
+            },
+        )
+        # Адрес поставки берётся у тулчейна: выпуск плагина её не перепубликует.
+        self.assertEqual(
+            tools["artifactAssets"],
+            {
+                "rlm-tools-bsl": {
+                    "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+                    "tag": RUNTIME_RELEASE,
+                    "name": "rlm-tools-bsl-linux-x64.tar.gz",
+                    "mediaType": "application/gzip",
+                    "sha256": asset["sha256"],
+                }
+            },
+        )
+        self.assertEqual(
+            {item["name"]: item["deliveredPath"] for item in tools["tools"]},
+            {
+                "rlm-bsl-index": "payload/rlm-bsl-index",
+                "rlm-bsl-mcp": "payload/rlm-bsl-mcp",
             },
         )
         self.assertEqual(
@@ -553,8 +587,10 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 entrypoints=RUNTIME_ENTRYPOINTS,
             )
 
-        files = load(archive("valid"))
-        by_path = {item.path.as_posix(): item for item in files}
+        verified = load(archive("valid"))
+        by_path = {item.path.as_posix(): item for item in verified.files}
+        self.assertEqual(verified.envelope.path.as_posix(), "manifest.json")
+        self.assertFalse(verified.envelope.executable)
         self.assertEqual(set(by_path), {item[0].removeprefix("payload/") for item in base_payload})
         self.assertEqual(by_path["rlm-bsl-index"].payload, b"multidist")
         self.assertTrue(by_path["rlm-bsl-mcp"].executable)

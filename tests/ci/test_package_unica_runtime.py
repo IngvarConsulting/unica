@@ -55,15 +55,41 @@ def make_bundle(root: Path) -> Path:
         rlm_index: "rlm-tools-bsl",
         shared_library: "rlm-tools-bsl",
     }
+    # Ядро мы пакуем сами и раскладку выбираем сами; чужая поставка ложится
+    # так, как её издал тулчейн.
+    delivered_of = {
+        unica: "bin/linux-x64/unica",
+        analyzer: "bsl-analyzer",
+        rlm_mcp: "payload/rlm-bsl-mcp",
+        rlm_index: "payload/rlm-bsl-index",
+        shared_library: "payload/libpython3.12.so.1.0",
+    }
     (bundle / "tools.json").write_text(
         json.dumps(
             {
                 "schemaVersion": 2,
                 "target": "linux-x64",
                 "targetTriple": "x86_64-unknown-linux-gnu",
+                "artifactAssets": {
+                    "bsl-analyzer": {
+                        "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+                        "tag": "bsl-analyzer-v0.2.55-build.1",
+                        "name": "bsl-analyzer-linux-x64",
+                        "mediaType": "application/octet-stream",
+                        "sha256": "a" * 64,
+                    },
+                    "rlm-tools-bsl": {
+                        "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+                        "tag": "rlm-tools-bsl-v1.33.0-build.3",
+                        "name": "rlm-tools-bsl-linux-x64.tar.gz",
+                        "mediaType": "application/gzip",
+                        "sha256": "b" * 64,
+                    },
+                },
                 "runtimeFiles": [
                     {
                         "path": path.relative_to(bundle).as_posix(),
+                        "deliveredPath": delivered_of[path],
                         "sha256": sha256(path),
                         "size": path.stat().st_size,
                         "executable": path != shared_library,
@@ -115,27 +141,25 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             bundle = make_bundle(root)
             first = root / "first"
             second = root / "second"
-            first = {a.name: (a, m) for a, m in module.package_runtime(bundle, first)}
-            second = {a.name: (a, m) for a, m in module.package_runtime(bundle, second)}
+            first = {path.name: path for path in module.package_runtime(bundle, first)}
+            second = {path.name: path for path in module.package_runtime(bundle, second)}
 
-            # Разрез по артефактам: ядро отдельно, движки отдельно, RLM одним
-            # архивом на два инструмента.
+            # Один архив на выпуск — ядро. Движки описаны адресом тулчейна.
             self.assertEqual(
                 sorted(first),
                 [
-                    "bsl-analyzer-runtime-linux-x64.tar.gz",
-                    "rlm-tools-bsl-runtime-linux-x64.tar.gz",
+                    "bsl-analyzer-runtime-linux-x64.json",
+                    "rlm-tools-bsl-runtime-linux-x64.json",
+                    "unica-runtime-linux-x64.json",
                     "unica-runtime-linux-x64.tar.gz",
                 ],
             )
             self.assertEqual(sorted(first), sorted(second))
-            for name, (archive, metadata) in first.items():
-                with self.subTest(artifact=name):
-                    other_archive, other_metadata = second[name]
-                    self.assertEqual(archive.read_bytes(), other_archive.read_bytes())
-                    self.assertEqual(metadata.read_bytes(), other_metadata.read_bytes())
+            for name, path in first.items():
+                with self.subTest(produced=name):
+                    self.assertEqual(path.read_bytes(), second[name].read_bytes())
 
-            with tarfile.open(first["unica-runtime-linux-x64.tar.gz"][0], "r:gz") as archive:
+            with tarfile.open(first["unica-runtime-linux-x64.tar.gz"], "r:gz") as archive:
                 core_members = [member.name for member in archive.getmembers()]
             # Ядро несёт себя и манифест инструментов — и ничего сверх.
             self.assertEqual(
@@ -143,19 +167,50 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 ["bin/linux-x64/unica", "third-party/manifest.json"],
             )
 
-            with tarfile.open(first["rlm-tools-bsl-runtime-linux-x64.tar.gz"][0], "r:gz") as archive:
-                rlm_members = [member.name for member in archive.getmembers()]
-            self.assertEqual(
-                rlm_members,
-                [
-                    "bin/linux-x64/libpython3.12.so.1.0",
-                    "bin/linux-x64/rlm-bsl-index",
-                    "bin/linux-x64/rlm-bsl-mcp",
-                ],
-                "два инструмента и их общая библиотека едут одним архивом",
-            )
-            with tarfile.open(first["unica-runtime-linux-x64.tar.gz"][0], "r:gz") as archive:
+            with tarfile.open(first["unica-runtime-linux-x64.tar.gz"], "r:gz") as archive:
                 self.assertTrue(all(member.mtime == 0 for member in archive.getmembers()))
+
+    def test_only_the_core_is_packed_here(self) -> None:
+        # Движки издаёт тулчейн, и перепубликация тех же байтов стоила 439 МБ
+        # на выпуск. Сборка их распаковывает — ради сумм и замыкания, — но
+        # архив собирает только для ядра.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bundle = make_bundle(root)
+        out_dir = root / "out"
+
+        produced = load_module().package_runtime(bundle, out_dir)
+
+        self.assertEqual(
+            [path.name for path in produced if path.suffix != ".json"],
+            ["unica-runtime-linux-x64.tar.gz"],
+        )
+        self.assertEqual(
+            sorted(path.name for path in out_dir.glob("*.tar.gz")),
+            ["unica-runtime-linux-x64.tar.gz"],
+        )
+        # Движок описан, но не переиздан: адрес есть, архива нет.
+        engine = json.loads(
+            (out_dir / "rlm-tools-bsl-runtime-linux-x64.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(engine["role"], "engine")
+        self.assertEqual(engine["asset"]["name"], "rlm-tools-bsl-linux-x64.tar.gz")
+        self.assertEqual(engine["asset"]["sha256"], "b" * 64)
+        self.assertEqual(
+            engine["assetOrigin"],
+            {
+                "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+                "tag": "rlm-tools-bsl-v1.33.0-build.3",
+            },
+        )
+        self.assertEqual(
+            [item["path"] for item in engine["files"]],
+            [
+                "payload/libpython3.12.so.1.0",
+                "payload/rlm-bsl-index",
+                "payload/rlm-bsl-mcp",
+            ],
+        )
+        self.assertNotIn("entrypoint", engine)
 
     def test_metadata_hashes_archive_and_each_runtime_file(self) -> None:
         module = load_module()
@@ -163,8 +218,9 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bundle = make_bundle(root)
-            produced = {a.name: (a, m) for a, m in module.package_runtime(bundle, root / "out")}
-            archive, metadata_path = produced["unica-runtime-linux-x64.tar.gz"]
+            produced = {p.name: p for p in module.package_runtime(bundle, root / "out")}
+            archive = produced["unica-runtime-linux-x64.tar.gz"]
+            metadata_path = produced["unica-runtime-linux-x64.json"]
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 
             self.assertEqual(metadata["schemaVersion"], 2)
@@ -181,14 +237,11 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 actual["bin/linux-x64/unica"], hashlib.sha256(b"unica").hexdigest()
             )
             self.assertIn("third-party/manifest.json", actual)
-
-            _, rlm_metadata_path = produced["rlm-tools-bsl-runtime-linux-x64.tar.gz"]
-            rlm = json.loads(rlm_metadata_path.read_text(encoding="utf-8"))
-            self.assertEqual(rlm["role"], "engine")
-            self.assertEqual(rlm["version"], "1.33.0")
-            # Точка входа есть только у ядра: движок запускает рантайм, а не
-            # bootstrap.
-            self.assertNotIn("entrypoint", rlm)
+            # Файлы движков сюда не попадают: их архив собирает тулчейн.
+            self.assertEqual(
+                sorted(actual),
+                ["bin/linux-x64/unica", "third-party/manifest.json"],
+            )
 
     def test_runtime_packager_rejects_symlinked_binary(self) -> None:
         module = load_module()

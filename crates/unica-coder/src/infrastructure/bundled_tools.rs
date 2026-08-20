@@ -39,6 +39,8 @@ struct ManifestTool {
     artifact: Option<String>,
     binaries: Option<BTreeMap<String, ManifestBinary>>,
     binary_path: Option<String>,
+    #[serde(default)]
+    delivered_path: Option<String>,
     sha256: Option<String>,
 }
 
@@ -46,8 +48,23 @@ struct ManifestTool {
 #[serde(rename_all = "camelCase")]
 struct ManifestBinary {
     target_triple: Option<String>,
+    /// Где файл лежит в дереве плагина.
     binary_path: String,
+    /// Где файл лежит внутри доставленного артефакта.
+    ///
+    /// Раскладку задаёт издатель поставки, а не плагин, и совпадать они не
+    /// обязаны. Отсутствует, пока доставки не было: дерево разработки собирает
+    /// инструменты на месте и раскладку выбирает само.
+    #[serde(default)]
+    delivered_path: Option<String>,
     sha256: String,
+}
+
+impl ManifestBinary {
+    /// Путь внутри доставленного артефакта.
+    fn delivered(&self) -> &str {
+        self.delivered_path.as_deref().unwrap_or(&self.binary_path)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,7 +183,7 @@ fn resolve_from_artifact_cache(
         .join(&artifact)
         .join(&version)
         .join(target_id)
-        .join(&binary.binary_path);
+        .join(binary.delivered());
     if !program.is_file() {
         return Ok(None);
     }
@@ -262,7 +279,7 @@ fn expected_engine_path(plugin_root: &Path, tool_name: &str, target_id: &str) ->
                     .join(artifact)
                     .join(version)
                     .join(target_id)
-                    .join(binary.binary_path),
+                    .join(binary.delivered()),
             );
         }
     }
@@ -368,6 +385,7 @@ fn manifest_binary(
         binary_path: tool.binary_path.clone().ok_or_else(|| {
             format!("tool {tool_name} is missing binaryPath in third-party manifest")
         })?,
+        delivered_path: tool.delivered_path.clone(),
         sha256: tool
             .sha256
             .clone()
@@ -725,6 +743,87 @@ mod delivery_tests {
         let plugin_root = tests::temp_plugin_root("installed-in-cache");
         tests::write_manifest_with_bsl_analyzer(&plugin_root);
         let cache = plugin_root.join("..").join("installed-cache");
+        let installed = cache
+            .join("bsl-analyzer")
+            .join("test")
+            .join("darwin-arm64")
+            .join("bin/darwin-arm64");
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("bsl-analyzer"), "darwin-binary").unwrap();
+
+        let found = resolve_from_artifact_cache(
+            &plugin_root,
+            cache.as_path(),
+            "bsl-analyzer",
+            "darwin-arm64",
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            found.map(|tool| tool.program),
+            Some(installed.join("bsl-analyzer"))
+        );
+    }
+
+    #[test]
+    fn a_delivered_engine_lies_where_the_toolchain_packed_it() {
+        // Тулчейн издаёт архив своей раскладкой, и переупаковка ради раскладки
+        // плагина вернула бы ту самую копию, от которой ушли. Кеш повторяет
+        // архив, а не дерево разработки.
+        let plugin_root = tests::temp_plugin_root("delivered-layout");
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "tools": [
+    {
+      "name": "rlm-bsl-mcp",
+      "version": "1.33.0",
+      "artifact": "rlm-tools-bsl",
+      "binaries": {
+        "darwin-arm64": {
+          "targetTriple": "aarch64-apple-darwin",
+          "binaryPath": "bin/darwin-arm64/rlm-bsl-mcp",
+          "deliveredPath": "rlm-bsl-mcp",
+          "sha256": "e4002e1adb76d4e2bb4846ab27463ff6368d18b727eb2bd519e1579f0baf491b"
+        }
+      }
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let cache = plugin_root.join("..").join("delivered-cache");
+        let installed = cache
+            .join("rlm-tools-bsl")
+            .join("1.33.0")
+            .join("darwin-arm64");
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("rlm-bsl-mcp"), "engine").unwrap();
+
+        let found = resolve_from_artifact_cache(
+            &plugin_root,
+            cache.as_path(),
+            "rlm-bsl-mcp",
+            "darwin-arm64",
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            found.map(|tool| tool.program),
+            Some(installed.join("rlm-bsl-mcp"))
+        );
+    }
+
+    #[test]
+    fn a_tree_without_a_delivered_path_keeps_the_path_it_has() {
+        // Дерево разработки собирает инструменты на месте: доставки не было,
+        // и раскладка остаётся его собственной.
+        let plugin_root = tests::temp_plugin_root("no-delivered-path");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let cache = plugin_root.join("..").join("legacy-cache");
         let installed = cache
             .join("bsl-analyzer")
             .join("test")

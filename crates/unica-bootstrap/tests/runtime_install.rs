@@ -1061,3 +1061,96 @@ fn an_engine_delivery_reports_its_progress_to_the_caller() {
     );
     fs::remove_dir_all(&cache).ok();
 }
+
+/// Артефакт из одного файла: так тулчейн издаёт `bsl-analyzer` и `v8-runner`,
+/// и так же лягут расширения поставки и внешние обработки.
+fn manifest_with_file_artifact(
+    core_archive: &[u8],
+    core_file: &[u8],
+    payload: &[u8],
+) -> RuntimeManifest {
+    let mut manifest = manifest(core_archive, core_file);
+    let hash = sha256(payload);
+    let target = |name: &str| {
+        let asset = format!("bsl-analyzer-{name}");
+        serde_json::json!({
+            "asset": {
+                "name": asset,
+                "url": format!(
+                    "https://github.com/IngvarConsulting/unica-toolchain/releases/download/bsl-analyzer-v0.2.67-build.1/{asset}"
+                ),
+                "mediaType": "application/octet-stream",
+                "sha256": hash
+            },
+            "files": [{"path": asset, "sha256": hash, "executable": true}]
+        })
+    };
+    manifest.artifacts.insert(
+        "bsl-analyzer".to_owned(),
+        serde_json::from_value(serde_json::json!({
+            "version": "0.2.67",
+            "role": "engine",
+            "targets": {
+                "darwin-arm64": target("darwin-arm64"),
+                "linux-x64": target("linux-x64"),
+                "win-x64": target("win-x64")
+            }
+        }))
+        .expect("file artifact fixture"),
+    );
+    manifest
+}
+
+#[test]
+fn an_artifact_delivered_as_one_file_is_installed_without_unpacking() {
+    // Переупаковать голый бинарь в архив ради единой формы значит вернуть ту
+    // самую копию, от которой ушли: 177 МБ на выпуск только у этого движка.
+    let core = b"unica-runtime";
+    let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
+    let payload = b"bsl-analyzer-binary";
+    let manifest = manifest_with_file_artifact(&core_archive, core, payload);
+    let cache = temp_dir("file-artifact");
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        ("unica-runtime-linux-x64.tar.gz", core_archive),
+        ("bsl-analyzer-linux-x64", payload.to_vec()),
+    ]));
+
+    let root = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader)
+        .ensure_artifact(
+            &manifest,
+            "bsl-analyzer",
+            HostTarget::LinuxX64,
+            &SilentDownload,
+        )
+        .expect("a bare asset installs");
+
+    assert_eq!(
+        fs::read(root.join("bsl-analyzer-linux-x64")).expect("delivered file"),
+        payload
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn a_file_artifact_whose_bytes_are_wrong_is_refused_like_any_other() {
+    let core = b"unica-runtime";
+    let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
+    let manifest = manifest_with_file_artifact(&core_archive, core, b"bsl-analyzer-binary");
+    let cache = temp_dir("file-artifact-poisoned");
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        ("unica-runtime-linux-x64.tar.gz", core_archive),
+        ("bsl-analyzer-linux-x64", b"not the analyzer".to_vec()),
+    ]));
+
+    let error = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader)
+        .ensure_artifact(
+            &manifest,
+            "bsl-analyzer",
+            HostTarget::LinuxX64,
+            &SilentDownload,
+        )
+        .expect_err("checksum guards every form");
+
+    assert_eq!(error.failure(), Failure::Checksum);
+    fs::remove_dir_all(&cache).ok();
+}

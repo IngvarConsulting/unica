@@ -11,7 +11,7 @@ use crate::archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files}
 use crate::attempt::{AttemptLog, AttemptSubject, OpenAttempt, Stage};
 use crate::download::{DownloadObserver, Downloader, SilentDownload};
 use crate::error::{BootstrapError, Failure, Result};
-use crate::manifest::{RuntimeManifest, TargetRuntime};
+use crate::manifest::{DeliveryForm, RuntimeManifest, TargetRuntime};
 use crate::platform::HostTarget;
 
 #[derive(Clone)]
@@ -273,7 +273,15 @@ fn publish_artifact(
         ));
     }
     attempt.reached(Stage::Extract)?;
-    extract_verified_tar_gz(archive_path, staged_root, &target.files)?;
+    // Форма решает, что делать с байтами: архив разворачивается, одиночный
+    // файл кладётся под своим именем. Переупаковка ради единой формы вернула
+    // бы копию в выпуске плагина, от которой мы ушли.
+    match DeliveryForm::of(&target.asset.media_type) {
+        Some(DeliveryForm::Archive) | None => {
+            extract_verified_tar_gz(archive_path, staged_root, &target.files)?
+        }
+        Some(DeliveryForm::File) => place_single_file(archive_path, staged_root, target)?,
+    }
     write_ready_marker(staged_root, artifact, version, host, &target.asset.sha256)?;
 
     attempt.reached(Stage::Publish)?;
@@ -288,6 +296,26 @@ fn publish_artifact(
     }
     fs::rename(staged_root, final_root)?;
     Ok(())
+}
+
+/// Положить артефакт, приехавший одним файлом.
+///
+/// Распаковывать нечего: сумма уже сверена, остаётся дать файлу имя, под
+/// которым его объявили, и права, которые ему объявлены.
+fn place_single_file(source: &Path, staged_root: &Path, target: &TargetRuntime) -> Result<()> {
+    let file = target.files.first().ok_or_else(|| {
+        BootstrapError::of(
+            Failure::Configuration,
+            "a single-file artifact declares no file".to_string(),
+        )
+    })?;
+    let destination = staged_root.join(&file.path);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(source, &destination)?;
+    crate::platform::set_executable(&destination, file.executable)?;
+    verify_runtime_files(staged_root, &target.files, None)
 }
 
 /// Убрать недокачки того же артефакта, оставшиеся от других версий.

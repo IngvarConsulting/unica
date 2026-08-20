@@ -231,3 +231,72 @@ fn an_engine_asset_name_is_not_forced_into_the_core_shape() {
 
     assert_eq!(asset.name, "rlm-tools-bsl-linux-x64.tar.gz");
 }
+
+/// Артефакт, изданный одним файлом: `bsl-analyzer` и `v8-runner` в тулчейне
+/// лежат голыми бинарями, а расширения и обработки лягут так же.
+fn file_target(target: &str) -> serde_json::Value {
+    let name = if target == "win-x64" {
+        "bsl-analyzer-win-x64.exe".to_string()
+    } else {
+        format!("bsl-analyzer-{target}")
+    };
+    serde_json::json!({
+        "asset": {
+            "name": name,
+            "url": format!(
+                "https://github.com/IngvarConsulting/unica-toolchain/releases/download/bsl-analyzer-v0.2.67-build.1/{name}"
+            ),
+            "mediaType": "application/octet-stream",
+            "sha256": HASH
+        },
+        "files": [{"path": name, "sha256": HASH, "executable": true}]
+    })
+}
+
+fn fixture_with_file_artifact() -> serde_json::Value {
+    let mut manifest = fixture();
+    manifest["artifacts"]["bsl-analyzer"] = serde_json::json!({
+        "version": "0.2.67",
+        "role": "engine",
+        "targets": {
+            "darwin-arm64": file_target("darwin-arm64"),
+            "linux-x64": file_target("linux-x64"),
+            "win-x64": file_target("win-x64")
+        }
+    });
+    manifest
+}
+
+#[test]
+fn an_artifact_delivered_as_one_file_is_accepted() {
+    parse(fixture_with_file_artifact())
+        .validate("0.7.0")
+        .expect("a bare asset is a delivery form, not a defect");
+}
+
+#[test]
+fn a_one_file_artifact_declares_exactly_the_file_it_delivers() {
+    // Форма «один файл» ничего не распаковывает, поэтому перечислять больше
+    // одного файла ей нечем: лишняя строка описывала бы то, чего не приедет.
+    let mut value = fixture_with_file_artifact();
+    value["artifacts"]["bsl-analyzer"]["targets"]["linux-x64"]["files"] = serde_json::json!([
+        {"path": "bsl-analyzer-linux-x64", "sha256": HASH, "executable": true},
+        {"path": "extra", "sha256": HASH, "executable": false}
+    ]);
+
+    let error = parse(value).validate("0.7.0").unwrap_err();
+
+    assert!(error.to_string().contains("single file"), "{error}");
+}
+
+#[test]
+fn the_core_is_still_required_to_arrive_as_an_archive() {
+    // Ядро несёт бинарь и его окружение: одним файлом оно не бывает.
+    let mut value = fixture();
+    value["artifacts"]["unica"]["targets"]["linux-x64"]["asset"]["mediaType"] =
+        serde_json::json!("application/octet-stream");
+
+    let error = parse(value).validate("0.7.0").unwrap_err();
+
+    assert!(error.to_string().contains("mediaType"), "{error}");
+}

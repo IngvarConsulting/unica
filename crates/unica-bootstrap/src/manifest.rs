@@ -12,14 +12,14 @@ const SOURCE_REPOSITORY: &str = "https://github.com/IngvarConsulting/unica";
 /// Откуда приезжает ядро: оно собирается здесь и лежит в выпуске плагина.
 const CORE_RELEASE_ORIGIN: &str = "https://github.com/IngvarConsulting/unica/releases/download/";
 
-/// Откуда приезжают движки. Тулчейн публикует их по архиву на инструмент и
-/// цель, с суммами и происхождением; копия тех же байтов в выпуске плагина
-/// стоила 242 МБ на выпуск и не давала ничего.
+/// Откуда приезжает всё остальное. Тулчейн публикует поставки по цели, с
+/// суммами и происхождением; копия тех же байтов в выпуске плагина стоила
+/// 439 МБ на выпуск и не давала ничего.
 ///
 /// Адресов ровно два, и оба названы. Третий — новая запись реестра, а не
 /// правка этого списка: поартефактная проверка защищает от опечатки ровно
 /// потому, что список закрыт.
-const ENGINE_RELEASE_ORIGIN: &str =
+const TOOLCHAIN_RELEASE_ORIGIN: &str =
     "https://github.com/IngvarConsulting/unica-toolchain/releases/download/";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -38,12 +38,29 @@ pub struct RuntimeManifest {
     pub artifacts: BTreeMap<String, Artifact>,
 }
 
-/// Роль артефакта в запуске. Ядро едет в стартовом бюджете хоста, движок — нет.
+/// Зачем артефакт нужен. Ядро едет в стартовом бюджете хоста, всё прочее —
+/// нет: оно приезжает из тулчейна по требованию.
+///
+/// Перечень закрытый, потому что роль решает, что с байтами делать: движок
+/// запускают, поставку конфигурации отдают платформе. Молча принять незнакомую
+/// роль значит доставить неизвестно что и неизвестно зачем, поэтому новый вид
+/// поставки — новая ветка здесь, а не отсутствие проверки.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ArtifactRole {
     Core,
     Engine,
+}
+
+impl ArtifactRole {
+    /// Происхождение решает роль, а не имя: ядро собирается здесь, всё
+    /// остальное приезжает из тулчейна.
+    fn release_origin(self) -> &'static str {
+        match self {
+            Self::Core => CORE_RELEASE_ORIGIN,
+            Self::Engine => TOOLCHAIN_RELEASE_ORIGIN,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -56,6 +73,30 @@ pub struct Artifact {
 
 /// Имя единственного артефакта роли `core`.
 pub const CORE_ARTIFACT: &str = "unica";
+
+/// Как артефакт приезжает.
+///
+/// Форма — про байты, а не про то, чем артефакт является: движок, расширение
+/// поставки и внешняя обработка могут приехать любой из них. Определяется
+/// типом содержимого, потому что его и объявляет издатель.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeliveryForm {
+    /// Архив: распаковывается, и набор файлов сверяется целиком.
+    Archive,
+    /// Один файл: кладётся под своим именем, сверяется суммой.
+    File,
+}
+
+impl DeliveryForm {
+    /// `None` — тип содержимого не описывает ни одной известной формы.
+    pub fn of(media_type: &str) -> Option<Self> {
+        match media_type {
+            "application/gzip" => Some(Self::Archive),
+            "application/octet-stream" => Some(Self::File),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -242,6 +283,7 @@ impl RuntimeManifest {
             for host_target in HostTarget::ALL {
                 validate_target(
                     name,
+                    artifact.role,
                     &self.release.tag,
                     host_target,
                     &artifact.targets[host_target.as_str()],
@@ -278,12 +320,13 @@ impl RuntimeManifest {
 
 fn validate_target(
     artifact: &str,
+    role: ArtifactRole,
     release_tag: &str,
     host: HostTarget,
     target: &TargetRuntime,
 ) -> Result<()> {
     let name = host.as_str();
-    if artifact == CORE_ARTIFACT {
+    if role == ArtifactRole::Core {
         // Ядро собирается здесь: имя выводится единым правилом, а адрес прибит
         // к выпуску плагина под тегом его версии.
         let expected_asset = format!("{artifact}-runtime-{name}.tar.gz");
@@ -300,20 +343,38 @@ fn validate_target(
             ));
         }
     } else {
-        validate_engine_asset(artifact, name, target)?;
+        validate_toolchain_asset(artifact, role, name, target)?;
     }
-    if target.asset.media_type != "application/gzip" {
-        return Err(BootstrapError::of(
-            Failure::Configuration,
-            format!("runtime asset mediaType for {name} must be application/gzip"),
-        ));
-    }
+    // Ядро несёт бинарь и его окружение: одним файлом оно не бывает.
+    let form = match DeliveryForm::of(&target.asset.media_type) {
+        Some(form) if role != ArtifactRole::Core || form == DeliveryForm::Archive => form,
+        _ => {
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "runtime asset mediaType {} for {artifact} {name} is not a delivery form",
+                    target.asset.media_type
+                ),
+            ))
+        }
+    };
     validate_sha256("runtime archive", &target.asset.sha256)?;
 
     if target.files.is_empty() {
         return Err(BootstrapError::of(
             Failure::Configuration,
             format!("runtime target {name} has no files"),
+        ));
+    }
+    // Форма «один файл» ничего не распаковывает, поэтому перечислять больше
+    // одного файла ей нечем.
+    if form == DeliveryForm::File && target.files.len() != 1 {
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!(
+                "{artifact} {name} arrives as a single file but declares {} files",
+                target.files.len()
+            ),
         ));
     }
     let mut paths = BTreeSet::new();
@@ -350,12 +411,18 @@ fn validate_target(
     Ok(())
 }
 
-/// Движок приезжает из тулчейна под своим тегом и своим именем.
+/// Поставка приезжает из тулчейна под своим тегом и своим именем.
 ///
 /// Тег и имя назвал замок инструментов, и выводить их заново значит завести
 /// второй источник правды. Проверяется то, что здесь и вправду известно:
-/// происхождение адреса и то, что он кончается именно этим ассетом.
-fn validate_engine_asset(artifact: &str, name: &str, target: &TargetRuntime) -> Result<()> {
+/// происхождение адреса и то, что он кончается именно этим ассетом. Правило
+/// одно на все виды поставки: расширению и обработке нового не понадобится.
+fn validate_toolchain_asset(
+    artifact: &str,
+    role: ArtifactRole,
+    name: &str,
+    target: &TargetRuntime,
+) -> Result<()> {
     if target.asset.name.is_empty()
         || target.asset.name.contains('/')
         || target.asset.name.contains("..")
@@ -376,7 +443,7 @@ fn validate_engine_asset(artifact: &str, name: &str, target: &TargetRuntime) -> 
     let tail = target
         .asset
         .url
-        .strip_prefix(ENGINE_RELEASE_ORIGIN)
+        .strip_prefix(role.release_origin())
         .ok_or_else(outside)?;
     let tag = tail
         .strip_suffix(&format!("/{}", target.asset.name))
