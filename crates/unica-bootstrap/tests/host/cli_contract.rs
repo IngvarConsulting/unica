@@ -83,3 +83,65 @@ fn a_broken_installation_names_its_reason_its_place_and_its_cure() {
 
     fs::remove_dir_all(scratch).expect("scratch must be removable");
 }
+
+#[test]
+fn prefetch_names_its_reason_when_there_is_nothing_to_prefetch() {
+    // Образ собирают в конвейере, и разбирать там нечего: код выхода решает,
+    // упала сборка или нет, а текст говорит человеку, что чинить.
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock must be after the Unix epoch")
+        .as_nanos();
+    let scratch = std::env::temp_dir().join(format!(
+        "unica-bootstrap-prefetch-empty-{}-{nonce}",
+        std::process::id()
+    ));
+    let plugin_root = scratch.join("plugin");
+    fs::create_dir_all(&plugin_root).expect("empty plugin root must be created");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_unica-bootstrap"))
+        .arg("prefetch")
+        .arg("--plugin-root")
+        .arg(&plugin_root)
+        .env("UNICA_RUNTIME_CACHE", scratch.join("cache"))
+        .output()
+        .expect("bootstrap process must start");
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be UTF-8");
+    assert!(
+        !output.status.success(),
+        "прогрев без манифеста обязан провалить сборку образа: {stderr}"
+    );
+    assert!(
+        stderr.contains("runtime-manifest.json"),
+        "отказ обязан назвать место: {stderr}"
+    );
+    assert_ne!(
+        output.status.code(),
+        Some(1),
+        "код выхода различает причину, а не сваливает всё в единицу: {stderr}"
+    );
+
+    fs::remove_dir_all(scratch).ok();
+}
+
+#[test]
+fn a_development_checkout_has_nothing_to_prefetch_and_says_so() {
+    // В дереве разработки инструменты собираются на месте, и манифест это
+    // объявляет. Молчаливый успех здесь соврал бы: образ уехал бы пустым.
+    let plugin_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_unica-bootstrap"))
+        .arg("prefetch")
+        .arg("--plugin-root")
+        .arg(&plugin_root)
+        .output()
+        .expect("bootstrap process must start");
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr must be UTF-8");
+    assert!(!output.status.success(), "unexpected success: {stderr}");
+    assert!(
+        stderr.contains("development"),
+        "отказ обязан назвать причину: {stderr}"
+    );
+}

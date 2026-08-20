@@ -21,6 +21,17 @@ pub struct RuntimeInstaller {
     downloader: Arc<dyn Downloader>,
 }
 
+/// Один артефакт, доставленный прогревом.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Prefetched {
+    pub artifact: String,
+    pub version: String,
+    pub root: PathBuf,
+    /// Ложь означает, что артефакт уже лежал: пересборка слоя образа не платит
+    /// за него второй раз.
+    pub downloaded: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeInstallation {
     pub root: PathBuf,
@@ -67,6 +78,41 @@ impl RuntimeInstaller {
         let root = self.ensure_artifact(manifest, name, host, &SilentDownload)?;
         let target = manifest.artifact_target(name, host)?;
         Ok(installation(root, target))
+    }
+
+    /// Довезти всё, что цели понадобится, и назвать доставленное.
+    ///
+    /// Ленивая доставка выигрывает старт, но проигрывает закрытый контур: в
+    /// образе сети уже нет, и движок, оставленный на первый вызов, там не
+    /// приедет никогда. Прогрев — та же доставка, просто вся сразу и заранее.
+    ///
+    /// Порядок обхода — по имени артефакта: он определён, и вывод сборки от
+    /// прогона к прогону не пляшет.
+    pub fn prefetch(
+        &self,
+        manifest: &RuntimeManifest,
+        host: HostTarget,
+        observer: &dyn DownloadObserver,
+    ) -> Result<Vec<Prefetched>> {
+        manifest.validate(&self.plugin_version)?;
+        let mut delivered = Vec::new();
+        for (name, artifact) in &manifest.artifacts {
+            let root = self
+                .cache_root
+                .join(name)
+                .join(&artifact.version)
+                .join(host.as_str());
+            // Что уже лежало, видно только до доставки: она же это и создаёт.
+            let already = root.is_dir();
+            self.ensure_artifact(manifest, name, host, observer)?;
+            delivered.push(Prefetched {
+                artifact: name.clone(),
+                version: artifact.version.clone(),
+                root,
+                downloaded: !already,
+            });
+        }
+        Ok(delivered)
     }
 
     /// Доставить артефакт по имени и вернуть корень установки.
