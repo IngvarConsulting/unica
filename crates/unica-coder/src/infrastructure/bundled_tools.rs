@@ -692,9 +692,29 @@ mod tests {
         plugin_root
     }
 
+    /// Цель, на которой идёт прогон. Резолвер движка смотрит на неё, а не на
+    /// ту, что назвал тест, поэтому фикстура обязана её покрывать: иначе набор
+    /// зелен только на машине автора.
+    pub(super) fn host_target() -> &'static str {
+        crate::infrastructure::platform::current_target_id().expect("цель поддержана")
+    }
+
+    /// Путь бинаря инструмента для цели прогона.
+    pub(super) fn host_binary(tool: &str) -> String {
+        let target = host_target();
+        let exe = if target == "win-x64" { ".exe" } else { "" };
+        format!("bin/{target}/{tool}{exe}")
+    }
+
     pub(super) fn write_manifest_with_bsl_analyzer(plugin_root: &Path) {
         fs::create_dir_all(plugin_root.join("bin/win-x64")).unwrap();
         fs::create_dir_all(plugin_root.join("bin/darwin-arm64")).unwrap();
+        fs::create_dir_all(plugin_root.join("bin/linux-x64")).unwrap();
+        fs::write(
+            plugin_root.join("bin/linux-x64/bsl-analyzer"),
+            "linux-binary",
+        )
+        .unwrap();
         fs::write(
             plugin_root.join("bin/win-x64/bsl-analyzer.exe"),
             "win-binary",
@@ -723,6 +743,11 @@ mod tests {
           "targetTriple": "aarch64-apple-darwin",
           "binaryPath": "bin/darwin-arm64/bsl-analyzer",
           "sha256": "e4002e1adb76d4e2bb4846ab27463ff6368d18b727eb2bd519e1579f0baf491b"
+        },
+        "linux-x64": {
+          "targetTriple": "x86_64-unknown-linux-gnu",
+          "binaryPath": "bin/linux-x64/bsl-analyzer",
+          "sha256": "8e05650e3597d536838387f4fb4f08fbd95624760f1ce44bbff4e35de8a353e8"
         }
       }
     }
@@ -912,9 +937,13 @@ mod missing_engine_tests {
             plugin_root.join("third-party/tools.lock.json"),
             r#"{
   "schemaVersion": 1,
-  "targets": {"darwin-arm64": {"targetTriple": "aarch64-apple-darwin", "exe": ""}},
+  "targets": {"darwin-arm64": {"targetTriple": "aarch64-apple-darwin", "exe": ""},
+              "linux-x64": {"targetTriple": "x86_64-unknown-linux-gnu", "exe": ""},
+              "win-x64": {"targetTriple": "x86_64-pc-windows-msvc", "exe": ".exe"}},
   "tools": [{"name": "v8-runner", "version": "0.5.1", "binaryName": "v8-runner",
-             "assets": {"darwin-arm64": {"assetName": "v8-runner"}}}]
+             "assets": {"darwin-arm64": {"assetName": "v8-runner"},
+                        "linux-x64": {"assetName": "v8-runner"},
+                        "win-x64": {"assetName": "v8-runner.exe"}}}]
 }"#,
         )
         .unwrap();
@@ -928,7 +957,7 @@ mod missing_engine_tests {
         assert!(
             missing
                 .expected_path
-                .ends_with("bin/darwin-arm64/v8-runner"),
+                .ends_with(&tests::host_binary("v8-runner")),
             "путь назван: {}",
             missing.expected_path
         );
@@ -943,7 +972,7 @@ mod missing_engine_tests {
     fn a_published_install_is_told_the_tool_will_be_delivered() {
         let plugin_root = tests::temp_plugin_root("marketplace-mode");
         tests::write_manifest_with_bsl_analyzer(&plugin_root);
-        fs::remove_file(plugin_root.join("bin/darwin-arm64/bsl-analyzer")).unwrap();
+        fs::remove_file(plugin_root.join(tests::host_binary("bsl-analyzer"))).unwrap();
 
         let missing = missing_engine(&plugin_root, "bsl-analyzer").expect("движка нет");
 
@@ -953,6 +982,31 @@ mod missing_engine_tests {
             "следующий шаг назван: {}",
             missing.next_step
         );
+    }
+
+    #[test]
+    fn the_fixture_covers_every_target_the_product_ships() {
+        // Резолвер движка смотрит на цель прогона. Фикстура на две цели из трёх
+        // делала набор зелёным только на машине автора: три теста прошли на
+        // macOS и упали на Linux и Windows в первом же прогоне CI.
+        let plugin_root = tests::temp_plugin_root("fixture-targets");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let manifest: BundledManifest = serde_json::from_slice(
+            &std::fs::read(plugin_root.join("third-party/manifest.json")).unwrap(),
+        )
+        .unwrap();
+
+        let binaries = manifest.tools[0].binaries.as_ref().expect("цели объявлены");
+
+        for target in ["darwin-arm64", "linux-x64", "win-x64"] {
+            let declared = binaries.get(target).expect(target);
+            assert!(
+                plugin_root.join(&declared.binary_path).is_file(),
+                "объявлен, но не создан: {}",
+                declared.binary_path
+            );
+        }
+        assert!(binaries.contains_key(tests::host_target()));
     }
 
     #[test]
@@ -976,18 +1030,18 @@ mod missing_binary_refusal_tests {
         // следующий шаг.
         let plugin_root = tests::temp_plugin_root("missing-code");
         tests::write_manifest_with_bsl_analyzer(&plugin_root);
-        fs::remove_file(plugin_root.join("bin/darwin-arm64/bsl-analyzer")).unwrap();
+        let target = tests::host_target();
+        fs::remove_file(plugin_root.join(tests::host_binary("bsl-analyzer"))).unwrap();
 
-        let error =
-            resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", "darwin-arm64", true)
-                .unwrap_err();
+        let error = resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", target, true)
+            .unwrap_err();
 
         assert!(
             error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING),
             "код назван: {error}"
         );
         assert!(error.contains("bsl-analyzer"), "инструмент назван: {error}");
-        assert!(error.contains("darwin-arm64"), "цель названа: {error}");
+        assert!(error.contains(target), "цель названа: {error}");
         assert!(
             error.contains("delivered") || error.contains("build-unica-tools.py"),
             "следующий шаг назван: {error}"
