@@ -13,6 +13,9 @@ import unittest
 from pathlib import Path
 
 
+TOOLCHAIN_REPOSITORY = "https://github.com/IngvarConsulting/unica-toolchain"
+
+
 def load_package_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "package-unica-plugin.py"
     spec = importlib.util.spec_from_file_location("package_unica_plugin", module_path)
@@ -1071,13 +1074,17 @@ class PackageUnicaPluginTests(unittest.TestCase):
                             "targetTriple": target_triple,
                             "pluginVersion": version,
                             "asset": {
-                                "name": f"bsl-analyzer-runtime-{target}.tar.gz",
-                                "mediaType": "application/gzip",
+                                "name": f"bsl-analyzer-{target}{exe}",
+                                "mediaType": "application/octet-stream",
                                 "sha256": "3" * 64,
+                            },
+                            "assetOrigin": {
+                                "repository": TOOLCHAIN_REPOSITORY,
+                                "tag": "bsl-analyzer-v0.2.67-build.1",
                             },
                             "files": [
                                 {
-                                    "path": f"bin/{target}/bsl-analyzer{exe}",
+                                    "path": f"bsl-analyzer{exe}",
                                     "sha256": "4" * 64,
                                     "executable": True,
                                 }
@@ -1172,6 +1179,20 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     target_data["asset"]["url"],
                     "https://github.com/IngvarConsulting/unica/releases/download/"
                     f"{release_tag}/unica-runtime-{target}.tar.gz",
+                )
+            # Движок едет из тулчейна по своему тегу: выпуск плагина его не
+            # перепубликует, и версия движка от темпа выпусков не зависит.
+            for target, target_data in runtime_manifest["artifacts"]["bsl-analyzer"][
+                "targets"
+            ].items():
+                exe = ".exe" if target == "win-x64" else ""
+                self.assertEqual(
+                    target_data["asset"]["url"],
+                    f"{TOOLCHAIN_REPOSITORY}/releases/download/"
+                    f"bsl-analyzer-v0.2.67-build.1/bsl-analyzer-{target}{exe}",
+                )
+                self.assertEqual(
+                    target_data["asset"]["mediaType"], "application/octet-stream"
                 )
 
             catalog = json.loads(

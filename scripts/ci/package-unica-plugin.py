@@ -13,6 +13,15 @@ from pathlib import Path
 
 
 PLUGIN_ID = "unica"
+
+# Ядро собирается здесь, поставки приезжают из тулчейна. Адресов ровно два, и
+# оба названы: третий — новая запись реестра, а не правка этого списка.
+SOURCE_REPOSITORY = "https://github.com/IngvarConsulting/unica"
+TOOLCHAIN_REPOSITORY = "https://github.com/IngvarConsulting/unica-toolchain"
+
+# Формы доставки: архив распаковывается, одиночный файл ложится под своим
+# именем. Форму объявляет издатель типом содержимого.
+DELIVERY_MEDIA_TYPES = ("application/gzip", "application/octet-stream")
 DISPLAY_NAME = "Unica"
 # One plugin directory serves both hosts. Each host reads its own manifest
 # directory and ignores the other, and the single `.mcp.json` launcher resolves
@@ -466,9 +475,34 @@ def load_runtime_metadata(
             raise SystemExit(f"runtime target triple mismatch for {target}")
 
         asset = data.get("asset", {})
-        expected_asset = f"{artifact}-runtime-{target}.tar.gz"
-        if asset.get("name") != expected_asset or asset.get("mediaType") != "application/gzip":
-            raise SystemExit(f"runtime asset identity mismatch for {artifact} {target}")
+        origin = data.get("assetOrigin")
+        if role == "core":
+            # Ядро собирается здесь, и его имя выводится единым правилом.
+            expected_asset = f"{artifact}-runtime-{target}.tar.gz"
+            if asset.get("name") != expected_asset or asset.get("mediaType") != "application/gzip":
+                raise SystemExit(f"runtime asset identity mismatch for {artifact} {target}")
+            if origin is not None:
+                raise SystemExit(f"core artifact {artifact} must not name a foreign origin")
+        else:
+            # Поставку издал тулчейн: имя и тег назвал он, а не мы.
+            name = asset.get("name", "")
+            if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+                raise SystemExit(f"unsafe runtime asset name for {artifact} {target}: {name}")
+            if asset.get("mediaType") not in DELIVERY_MEDIA_TYPES:
+                raise SystemExit(
+                    f"unsupported delivery mediaType for {artifact} {target}: "
+                    f"{asset.get('mediaType')}"
+                )
+            if not isinstance(origin, dict):
+                raise SystemExit(f"artifact {artifact} {target} does not name its origin")
+            if origin.get("repository") != TOOLCHAIN_REPOSITORY:
+                raise SystemExit(
+                    f"artifact {artifact} {target} comes from an unapproved repository: "
+                    f"{origin.get('repository')}"
+                )
+            tag = origin.get("tag", "")
+            if not isinstance(tag, str) or not tag or "/" in tag or ".." in tag:
+                raise SystemExit(f"unsafe origin tag for {artifact} {target}: {tag}")
         if not _lower_hex(asset.get("sha256", ""), 64):
             raise SystemExit(f"invalid runtime asset checksum for {artifact} {target}")
 
@@ -565,10 +599,18 @@ def write_release_runtime_manifest(
         for target in sorted(by_target):
             item = by_target[target]
             asset = dict(item["asset"])
-            asset["url"] = (
-                "https://github.com/IngvarConsulting/unica/releases/download/"
-                f"{release_tag}/{asset['name']}"
-            )
+            origin = item.get("assetOrigin")
+            # Происхождение решает роль: ядро лежит в выпуске плагина, всё
+            # прочее — в выпуске тулчейна под тегом, который назвал замок.
+            if origin is None:
+                asset["url"] = (
+                    f"{SOURCE_REPOSITORY}/releases/download/{release_tag}/{asset['name']}"
+                )
+            else:
+                asset["url"] = (
+                    f"{origin['repository']}/releases/download/"
+                    f"{origin['tag']}/{asset['name']}"
+                )
             entry = {"asset": asset, "files": item["files"]}
             # Точка входа есть только у ядра: движок запускает рантайм.
             if item.get("entrypoint"):

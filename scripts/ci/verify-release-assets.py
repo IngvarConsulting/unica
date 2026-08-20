@@ -26,10 +26,10 @@ CORE_ARTIFACT = "unica"
 
 
 def published_artifacts(asset_dir: Path, target: str) -> "list[str]":
-    """Какие артефакты опубликованы для цели.
+    """Какие артефакты выпуск публикует архивом.
 
-    Поставка разрезана по артефактам, и проверять один только сердечник значит
-    выпустить движки, которых никто не сверял.
+    Ровно один — ядро. Движки издаёт тулчейн под своими тегами, и лишний архив
+    здесь означает, что выпуск снова начал перепубликовывать чужие байты.
     """
     suffix = f"-runtime-{target}.tar.gz"
     found = sorted(
@@ -37,8 +37,10 @@ def published_artifacts(asset_dir: Path, target: str) -> "list[str]":
         for path in asset_dir.glob(f"*{suffix}")
         if path.name.endswith(suffix)
     )
-    if CORE_ARTIFACT not in found:
-        raise SystemExit(f"published runtime asset pair is missing for {target}")
+    if found != [CORE_ARTIFACT]:
+        raise SystemExit(
+            f"published runtime archives for {target} must be [{CORE_ARTIFACT}], got {found}"
+        )
     return found
 
 
