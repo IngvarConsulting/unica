@@ -155,6 +155,36 @@ def plugin_root_for(run_unica: Path) -> Path:
     return run_unica.parent
 
 
+def overlay_runtime_files(run_unica: Path, overlay_root: Path) -> list[str]:
+    """Add explicitly staged engines to a thin runtime assessment.
+
+    The candidate archive remains the byte-identical thin core. The overlay is
+    test input for scenarios that intentionally exercise an engine; it may add
+    regular files but may not replace anything from the candidate.
+    """
+    if not overlay_root.is_dir():
+        raise SystemExit(f"runtime assessment engine overlay is missing: {overlay_root}")
+    runtime_root = plugin_root_for(run_unica)
+    copied: list[str] = []
+    for source in sorted(overlay_root.rglob("*")):
+        if source.is_symlink():
+            raise SystemExit(f"runtime assessment overlay contains a symlink: {source}")
+        if not source.is_file():
+            continue
+        relative = source.relative_to(overlay_root)
+        destination = runtime_root / relative
+        if destination.exists():
+            raise SystemExit(
+                f"runtime assessment overlay would replace candidate file: {relative.as_posix()}"
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied.append(relative.as_posix())
+    if not copied:
+        raise SystemExit(f"runtime assessment engine overlay is empty: {overlay_root}")
+    return copied
+
+
 def unica_version(run_unica: Path) -> str:
     plugin_json = read_json(plugin_root_for(run_unica) / ".codex-plugin" / "plugin.json")
     return str(plugin_json.get("version", "unknown"))
@@ -1089,12 +1119,15 @@ def build_summary(scenarios: list[dict[str, Any]], diagnostic_codes: list[str], 
     }
 
 
-def environment_metadata(run_unica: Path) -> dict[str, Any]:
+def environment_metadata(
+    run_unica: Path, runtime_overlay: list[str] | None = None
+) -> dict[str, Any]:
     return {
         "os": platform.platform(),
         "python": platform.python_version(),
         "machine": platform.machine(),
         "runUnica": str(run_unica),
+        "runtimeOverlay": runtime_overlay or [],
         "generatedAt": utc_now(),
     }
 
@@ -1111,6 +1144,7 @@ def build_assessment_report(
     bsp_commit: str,
     timeout_seconds: int,
     bsp_ref: str = BSP_REF,
+    runtime_overlay: list[str] | None = None,
 ) -> dict[str, Any]:
     scenarios: list[dict[str, Any]] = []
     diagnostic_codes: list[str] = []
@@ -1231,7 +1265,7 @@ def build_assessment_report(
             "descriptionVersion": description.get("Версия"),
             "descriptionDate": description.get("Дата"),
         },
-        "environment": environment_metadata(run_unica),
+        "environment": environment_metadata(run_unica, runtime_overlay),
         "scenarios": scenarios,
         "summary": build_summary(scenarios, diagnostic_codes, cache_dir),
     }
@@ -1373,11 +1407,17 @@ def main() -> None:
     parser.add_argument("--github-run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
     parser.add_argument("--bsp-ref", default=BSP_REF)
     parser.add_argument("--timeout-seconds", type=int, default=600)
+    parser.add_argument("--engine-overlay", type=Path)
     args = parser.parse_args()
 
     work_dir = args.work_dir.resolve()
     package_archive = args.package_archive.resolve()
     run_unica = extract_marketplace_archive(package_archive, work_dir / "marketplace")
+    runtime_overlay = (
+        overlay_runtime_files(run_unica, args.engine_overlay.resolve())
+        if args.engine_overlay
+        else []
+    )
     bsp_root, bsp_commit = download_bsp(work_dir / "bsp", ref=args.bsp_ref)
     report = build_assessment_report(
         run_unica=run_unica,
@@ -1390,6 +1430,7 @@ def main() -> None:
         bsp_commit=bsp_commit,
         bsp_ref=args.bsp_ref,
         timeout_seconds=args.timeout_seconds,
+        runtime_overlay=runtime_overlay,
     )
     if args.pages_root:
         copy_versioned_pages(args.out_dir, args.pages_root, args.release_tag)

@@ -1540,6 +1540,30 @@ for raw in sys.stdin:
 
             self.assertEqual(extracted.relative_to(module.plugin_root_for(extracted)).as_posix(), "bin/linux-x64/unica")
 
+    def test_runtime_assessment_overlay_adds_only_regular_engine_files(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = root / "runtime"
+            (runtime / "third-party").mkdir(parents=True)
+            (runtime / "third-party/manifest.json").write_text("{}", encoding="utf-8")
+            run_unica = runtime / "bin/linux-x64/unica"
+            run_unica.parent.mkdir(parents=True)
+            run_unica.write_bytes(b"unica")
+            overlay = root / "overlay"
+            engine = overlay / "bin/linux-x64/bsl-analyzer"
+            engine.parent.mkdir(parents=True)
+            engine.write_bytes(b"analyzer")
+
+            copied = module.overlay_runtime_files(run_unica, overlay)
+
+            self.assertEqual(copied, ["bin/linux-x64/bsl-analyzer"])
+            self.assertEqual(
+                (runtime / "bin/linux-x64/bsl-analyzer").read_bytes(),
+                b"analyzer",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

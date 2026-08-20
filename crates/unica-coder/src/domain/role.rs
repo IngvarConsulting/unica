@@ -350,7 +350,11 @@ pub fn nested_right_shape_is_modelled(object_name: &str) -> bool {
     let parts = object_name.split('.').collect::<Vec<_>>();
     if parts.len() >= 4
         && parts[0] == "Subsystem"
-        && parts[2..].chunks_exact(2).all(|p| p[0] == "Subsystem")
+        && parts[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|p| p[0] == "Subsystem")
     {
         return true;
     }
@@ -406,7 +410,9 @@ pub fn validate_nested_right(object_name: &str, right: &str) -> Result<(), Strin
     let nested_subsystem = parts.len() >= 4
         && parts[0] == "Subsystem"
         && parts[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .all(|pair| pair[0] == "Subsystem");
     let valid = if nested_subsystem {
         right == "View"

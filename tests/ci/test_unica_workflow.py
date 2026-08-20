@@ -621,6 +621,24 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         ):
             self.assertIn(glob, self.release, glob)
 
+    def test_bsp_runtime_assessment_receives_the_engine_its_search_requires(self) -> None:
+        build = job_block(self.release, "build-tools")
+        assessment = job_block(self.release, "release-assessment")
+
+        self.assertIn("unica-assessment-engine-linux-x64", build)
+        self.assertIn("bin/linux-x64/bsl-analyzer", build)
+        self.assertIn("name: unica-assessment-engine-linux-x64", assessment)
+        self.assertIn("--engine-overlay .build/assessment-engine", assessment)
+
+    def test_the_direct_mcp_smoke_is_given_the_engines_it_asserts_on(self) -> None:
+        build = job_block(self.release, "build-tools")
+        extract = build[
+            build.index("name: Extract deterministic runtime for MCP smoke") :
+        ].split("- name: Smoke packaged Unica MCP")[0]
+
+        self.assertIn("unica-runtime-${{ matrix.target }}.tar.gz", extract)
+        self.assertIn(".build/tool-bundles/${{ matrix.target }}/bin/", extract)
+
 
 class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
     """Предвыпуск собирается и публикует ассеты, но каталога не касается.

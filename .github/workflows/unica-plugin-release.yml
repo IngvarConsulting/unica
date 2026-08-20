@@ -335,6 +335,11 @@ jobs:
           mkdir -p "$runtime_root"
           tar -xzf ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz" \
             -C "$runtime_root"
+          # Этот смоук проверяет сам runtime и требует настоящий поиск. Тонкое
+          # ядро движков не несёт, поэтому прямому запуску явно даём проверенные
+          # файлы той же target-сборки. Доставку проверяют bootstrap-пробы.
+          cp -R ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}/." \
+            "$runtime_root/bin/${{ matrix.target }}/"
       - name: Smoke packaged Unica MCP
         shell: bash
         timeout-minutes: 3
@@ -379,6 +384,22 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
+      - name: Stage BSP assessment engine
+        if: matrix.target == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination=".build/assessment-engine/bin/linux-x64"
+          mkdir -p "$destination"
+          cp ".build/tool-bundles/linux-x64/bin/linux-x64/bsl-analyzer" "$destination/"
+      - name: Upload BSP assessment engine
+        if: matrix.target == 'linux-x64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unica-assessment-engine-linux-x64
+          path: .build/assessment-engine
+          if-no-files-found: error
+          retention-days: 1
 
   package-thin:
     name: Package thin marketplace payload
@@ -505,6 +526,10 @@ jobs:
         with:
           name: unica-runtime-linux-x64
           path: dist/runtime
+      - uses: actions/download-artifact@v8
+        with:
+          name: unica-assessment-engine-linux-x64
+          path: .build/assessment-engine
       - name: Run release assessment
         # A tag name is a ref, so it obeys the same rules a branch name does and
         # is the same command-injection sink: it reaches the shell as data.
@@ -513,6 +538,7 @@ jobs:
         run: >
           python scripts/ci/release-assessment.py
           --package-archive dist/runtime/unica-runtime-linux-x64.tar.gz
+          --engine-overlay .build/assessment-engine
           --work-dir .build/release-assessment
           --out-dir dist/release-assessment
           --bsp-ref 3.2.1.446
