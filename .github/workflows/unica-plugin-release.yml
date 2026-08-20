@@ -354,7 +354,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: unica-runtime-metadata-${{ matrix.target }}
-          path: .build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.json
+          # Разрез поставки: по архиву на артефакт, и у каждого свои
+          # метаданные. Имя ядра здесь отобрало бы у выпуска движки.
+          path: .build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json
           if-no-files-found: error
           retention-days: 1
       - name: Upload bootstrap payload
@@ -369,7 +371,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: unica-runtime-${{ matrix.target }}
-          path: .build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz
+          path: .build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -544,9 +546,12 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          # Предвыпуск не должен выглядеть последним релизом: его ищут те, кто
+          # ищет свежее, а он существует только для замеров.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            dist/runtime/unica-runtime-*.tar.gz
-            dist/runtime/unica-runtime-*.json
+            dist/runtime/*-runtime-*.tar.gz
+            dist/runtime/*-runtime-*.json
 
   smoke-thin-plugin:
     name: Smoke published thin plugin (${{ matrix.target }})

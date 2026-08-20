@@ -112,5 +112,41 @@ class VersionContractTests(unittest.TestCase):
         self.assertEqual(errors, ["plugin version 0.6.1 != expected 0.7.0"])
 
 
+
+
+class PrereleaseVersionTests(unittest.TestCase):
+    """Предвыпуск обязан быть версией, а не пометкой рядом с ней.
+
+    Манифест поставки требует, чтобы тег совпадал с версией плагина буквально:
+    `tag == "v" + pluginVersion`. Значит выпуск, который не должен доехать до
+    пользователей, отличается именно версией — суффиксом по SemVer, — и контракт
+    версий обязан его принимать.
+    """
+
+    def bumper(self):
+        import importlib.util
+
+        path = REPO_ROOT / "scripts" / "dev" / "bump-version.py"
+        spec = importlib.util.spec_from_file_location("bump_version", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_prerelease_suffix_is_a_valid_version(self) -> None:
+        semver = self.bumper().SEMVER
+        for version in ("0.13.0-rc.1", "1.0.0-probe.2", "0.13.0-delivery.1"):
+            self.assertTrue(semver.fullmatch(version), version)
+
+    def test_a_plain_version_stays_valid(self) -> None:
+        semver = self.bumper().SEMVER
+        for version in ("0.13.0", "1.2.3"):
+            self.assertTrue(semver.fullmatch(version), version)
+
+    def test_what_is_not_a_version_is_still_refused(self) -> None:
+        semver = self.bumper().SEMVER
+        for version in ("0.13", "v0.13.0", "0.13.0-", "0.13.0 rc1", "next"):
+            self.assertIsNone(semver.fullmatch(version), version)
+
+
 if __name__ == "__main__":
     unittest.main()
