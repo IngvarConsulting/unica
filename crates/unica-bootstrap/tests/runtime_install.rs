@@ -468,12 +468,14 @@ fn manifest_with_engine(
     let mut manifest = manifest(core_archive, core_file);
     let engine_hash = sha256(engine_archive);
     let file_hash = sha256(engine_file);
+    // Движок приезжает из тулчейна под своим тегом и своим именем: копия в
+    // выпуске плагина стоила 242 МБ и не давала ничего.
     let target = |name: &str| {
         serde_json::json!({
             "asset": {
-                "name": format!("rlm-tools-bsl-runtime-{name}.tar.gz"),
+                "name": format!("rlm-tools-bsl-{name}.tar.gz"),
                 "url": format!(
-                    "https://github.com/IngvarConsulting/unica/releases/download/v0.7.0/rlm-tools-bsl-runtime-{name}.tar.gz"
+                    "https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/rlm-tools-bsl-{name}.tar.gz"
                 ),
                 "mediaType": "application/gzip",
                 "sha256": engine_hash
@@ -748,7 +750,7 @@ fn an_engine_is_installed_on_demand_under_its_own_version() {
     let cache = temp_dir("engine");
     let downloader = Arc::new(AssetDownloader::new(vec![
         ("unica-runtime-linux-x64.tar.gz", core_archive),
-        ("rlm-tools-bsl-runtime-linux-x64.tar.gz", engine_archive),
+        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
     ]));
 
     let root = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
@@ -792,7 +794,7 @@ fn two_sessions_acquire_one_engine_once() {
     let cache = temp_dir("engine-concurrent");
     let downloader = Arc::new(AssetDownloader::new(vec![
         ("unica-runtime-linux-x64.tar.gz", core_archive),
-        ("rlm-tools-bsl-runtime-linux-x64.tar.gz", engine_archive),
+        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
     ]));
     let installer = Arc::new(RuntimeInstaller::new(
         cache.clone(),

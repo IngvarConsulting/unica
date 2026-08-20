@@ -140,3 +140,94 @@ fn manifest_has_exactly_three_named_targets() {
         BTreeSet::from(["darwin-arm64", "linux-x64", "win-x64"])
     );
 }
+
+/// Движок в манифесте: приезжает из тулчейна по своему тегу и своему имени.
+fn engine_target(target: &str) -> serde_json::Value {
+    serde_json::json!({
+        "asset": {
+            "name": format!("rlm-tools-bsl-{target}.tar.gz"),
+            "url": format!(
+                "https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/rlm-tools-bsl-{target}.tar.gz"
+            ),
+            "mediaType": "application/gzip",
+            "sha256": HASH
+        },
+        "files": [{"path": "rlm-bsl-index", "sha256": HASH, "executable": true}]
+    })
+}
+
+fn fixture_with_engine() -> serde_json::Value {
+    let mut manifest = fixture();
+    manifest["artifacts"]["rlm-tools-bsl"] = serde_json::json!({
+        "version": "1.33.0",
+        "role": "engine",
+        "targets": {
+            "darwin-arm64": engine_target("darwin-arm64"),
+            "linux-x64": engine_target("linux-x64"),
+            "win-x64": engine_target("win-x64")
+        }
+    });
+    manifest
+}
+
+#[test]
+fn an_engine_is_accepted_from_the_toolchain_release() {
+    // Тулчейн уже публикует по архиву на инструмент, с суммами и
+    // происхождением. Копия тех же байтов в выпуске плагина стоила 242 МБ на
+    // выпуск и не давала ничего.
+    let manifest = parse(fixture_with_engine());
+
+    manifest
+        .validate("0.7.0")
+        .expect("toolchain origin is approved");
+}
+
+#[test]
+fn an_engine_from_an_unapproved_origin_is_refused() {
+    let mut value = fixture_with_engine();
+    value["artifacts"]["rlm-tools-bsl"]["targets"]["linux-x64"]["asset"]["url"] =
+        serde_json::json!("https://example.com/rlm-tools-bsl-linux-x64.tar.gz");
+
+    let error = parse(value).validate("0.7.0").unwrap_err();
+
+    assert!(error.to_string().contains("release origin"), "{error}");
+}
+
+#[test]
+fn an_engine_may_not_borrow_the_core_origin() {
+    // Ядро собирается здесь, движок — нет. Смешать источники значит потерять
+    // то, ради чего они названы поимённо.
+    let mut value = fixture_with_engine();
+    value["artifacts"]["rlm-tools-bsl"]["targets"]["linux-x64"]["asset"]["url"] = serde_json::json!(
+        "https://github.com/IngvarConsulting/unica/releases/download/v0.7.0/rlm-tools-bsl-linux-x64.tar.gz"
+    );
+
+    let error = parse(value).validate("0.7.0").unwrap_err();
+
+    assert!(error.to_string().contains("release origin"), "{error}");
+}
+
+#[test]
+fn the_core_may_not_wander_off_to_the_toolchain() {
+    let mut value = fixture();
+    value["artifacts"]["unica"]["targets"]["linux-x64"]["asset"]["url"] = serde_json::json!(
+        "https://github.com/IngvarConsulting/unica-toolchain/releases/download/v0.7.0/unica-runtime-linux-x64.tar.gz"
+    );
+
+    let error = parse(value).validate("0.7.0").unwrap_err();
+
+    assert!(error.to_string().contains("release origin"), "{error}");
+}
+
+#[test]
+fn an_engine_asset_name_is_not_forced_into_the_core_shape() {
+    // Имя ассета у движка — то, под которым он опубликован в тулчейне, а не
+    // выдуманное нами `<артефакт>-runtime-<цель>`.
+    let manifest = parse(fixture_with_engine());
+    let asset = &manifest
+        .artifact_target("rlm-tools-bsl", HostTarget::LinuxX64)
+        .expect("engine target")
+        .asset;
+
+    assert_eq!(asset.name, "rlm-tools-bsl-linux-x64.tar.gz");
+}

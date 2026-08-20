@@ -9,6 +9,19 @@ use crate::platform::HostTarget;
 
 const SOURCE_REPOSITORY: &str = "https://github.com/IngvarConsulting/unica";
 
+/// Откуда приезжает ядро: оно собирается здесь и лежит в выпуске плагина.
+const CORE_RELEASE_ORIGIN: &str = "https://github.com/IngvarConsulting/unica/releases/download/";
+
+/// Откуда приезжают движки. Тулчейн публикует их по архиву на инструмент и
+/// цель, с суммами и происхождением; копия тех же байтов в выпуске плагина
+/// стоила 242 МБ на выпуск и не давала ничего.
+///
+/// Адресов ровно два, и оба названы. Третий — новая запись реестра, а не
+/// правка этого списка: поартефактная проверка защищает от опечатки ровно
+/// потому, что список закрыт.
+const ENGINE_RELEASE_ORIGIN: &str =
+    "https://github.com/IngvarConsulting/unica-toolchain/releases/download/";
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeManifest {
@@ -270,22 +283,24 @@ fn validate_target(
     target: &TargetRuntime,
 ) -> Result<()> {
     let name = host.as_str();
-    // Имя ассета выводится из артефакта единым правилом. У ядра оно совпадает
-    // с прежним, поэтому выпуск не переименовывает опубликованные файлы.
-    let expected_asset = format!("{artifact}-runtime-{name}.tar.gz");
-    if target.asset.name != expected_asset {
-        return Err(BootstrapError::of(
-            Failure::Configuration,
-            format!("runtime asset {} != {expected_asset}", target.asset.name),
-        ));
-    }
-    let expected_prefix =
-        format!("https://github.com/IngvarConsulting/unica/releases/download/{release_tag}/");
-    if target.asset.url != format!("{expected_prefix}{expected_asset}") {
-        return Err(BootstrapError::of(
-            Failure::Configuration,
-            format!("runtime asset URL for {name} is outside the approved release origin"),
-        ));
+    if artifact == CORE_ARTIFACT {
+        // Ядро собирается здесь: имя выводится единым правилом, а адрес прибит
+        // к выпуску плагина под тегом его версии.
+        let expected_asset = format!("{artifact}-runtime-{name}.tar.gz");
+        if target.asset.name != expected_asset {
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!("runtime asset {} != {expected_asset}", target.asset.name),
+            ));
+        }
+        if target.asset.url != format!("{CORE_RELEASE_ORIGIN}{release_tag}/{expected_asset}") {
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!("runtime asset URL for {name} is outside the approved release origin"),
+            ));
+        }
+    } else {
+        validate_engine_asset(artifact, name, target)?;
     }
     if target.asset.media_type != "application/gzip" {
         return Err(BootstrapError::of(
@@ -331,6 +346,43 @@ fn validate_target(
             Failure::Configuration,
             format!("runtime entrypoint {entrypoint} != {expected_entrypoint}"),
         ));
+    }
+    Ok(())
+}
+
+/// Движок приезжает из тулчейна под своим тегом и своим именем.
+///
+/// Тег и имя назвал замок инструментов, и выводить их заново значит завести
+/// второй источник правды. Проверяется то, что здесь и вправду известно:
+/// происхождение адреса и то, что он кончается именно этим ассетом.
+fn validate_engine_asset(artifact: &str, name: &str, target: &TargetRuntime) -> Result<()> {
+    if target.asset.name.is_empty()
+        || target.asset.name.contains('/')
+        || target.asset.name.contains("..")
+    {
+        return Err(BootstrapError::of(
+            Failure::Configuration,
+            format!("runtime asset name for {artifact} {name} is not a file name"),
+        ));
+    }
+    let outside = || {
+        BootstrapError::of(
+            Failure::Configuration,
+            format!(
+                "runtime asset URL for {artifact} {name} is outside the approved release origin"
+            ),
+        )
+    };
+    let tail = target
+        .asset
+        .url
+        .strip_prefix(ENGINE_RELEASE_ORIGIN)
+        .ok_or_else(outside)?;
+    let tag = tail
+        .strip_suffix(&format!("/{}", target.asset.name))
+        .ok_or_else(outside)?;
+    if tag.is_empty() || tag.contains('/') || tag.contains("..") {
+        return Err(outside());
     }
     Ok(())
 }
