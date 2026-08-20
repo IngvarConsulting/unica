@@ -292,6 +292,16 @@
 - **Check:** `ci-test` — `crates/unica-bootstrap/tests/runtime_install.rs`
 - **Scope:** packaged, runtime
 
+### REQ-REL-COLD-INSTALL-BUDGET — Первая установка runtime не зависит от стартового бюджета хоста по умолчанию
+
+- **Rule:** Публичный пакет объявляет в своей записи `.mcp.json` собственный
+  бюджет старта MCP-сервера, которого хватает на холодную загрузку и публикацию
+  runtime по медленному каналу, чтобы первую установку версии не обрывало
+  значение хоста по умолчанию.
+- **Decision:** ADR-0008
+- **Check:** `ci-test` — `tests/ci/test_package_unica_plugin.py`
+- **Scope:** packaged, release
+
 ### REQ-REL-NO-SILENT-STALL — Релиз не умеет застревать молча
 
 - **Rule:** Публикация идёт одним линейным конвейером от подписанного

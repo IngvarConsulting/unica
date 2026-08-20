@@ -41,6 +41,7 @@ automatically when the tag-triggered build succeeds:
 | | create the anchor tag on the staging commit |
 | | consumer install checks: fresh + upgrade, three hosts |
 | | green → move the catalog → **live** |
+| Step 3 — merge the line back into `main` | |
 
 Your signed source tag is the human approval and the cryptographic anchor of
 the release. Be honest about what enforces it: the pipeline proves the tag
@@ -64,7 +65,19 @@ failed workflow resumes the publication — every stage is idempotent.
   cancelled` in a non-interactive shell, run
   `gpg-connect-agent updatestartuptty /bye` first, then
   `echo test | gpg --clearsign > /dev/null` to unlock the agent.
-- `main` is green, and the version bump is ready to verify and merge.
+- The branch the release is cut from is green, and the version bump is ready
+  to verify and merge.
+
+## Where a release is cut from
+
+A minor is cut from `main`. Patches for a minor that already shipped are cut
+from its line branch, `release-vX.Y`, and that branch is where the version bump
+lives: `main` keeps the minor's version and never takes the patch bumps. When
+0.12.3 shipped, `release-v0.12` declared 0.12.3 while `main` still declared
+0.12.0.
+
+Steps 0 and 1 therefore happen on the branch the release is cut from, and the
+tag names a commit on it. Step 3 brings the line back to `main`.
 
 ## Step 0 — prepare the version
 
@@ -92,13 +105,16 @@ python3.12 -m pip install -r tests/ci/requirements.txt
 python3.12 -m unittest discover -s tests/ci
 ```
 
-Then merge through a pull request as usual.
+Then merge through a pull request into the branch the release is cut from.
+Keep the bump its own pull request: step 1 tags its merge commit, so that commit
+has to carry both the bump and everything else the version ships.
 
 ## Step 1 — tag the source release
 
-Tag the merged release commit on `main` in `unica` and push. The tag triggers
-the release build, and the successful build starts the publication pipeline on
-its own.
+Tag the merge commit of the version pull request in `unica` and push. On a
+patch that commit is on `release-vX.Y`, not on `main`. The tag triggers the
+release build, and the successful build starts the publication pipeline on its
+own.
 
 ```bash
 git tag -s vX.Y.Z <release-commit-sha> -m "Unica vX.Y.Z"
@@ -161,6 +177,23 @@ move in the same commit:
 gh api repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/marketplace.json \
   --jq '.content' | base64 -d | grep '"ref"'
 ```
+
+The marketplace repository runs its own **Verify marketplace** on every push it
+receives, so `stage`, `tag` and `promote` each leave a run there, after the
+fact. Those runs do not gate anything: the pipeline's `verify-upgrade` and
+`verify-fresh-install` jobs already ran on three hosts before `promote` moved
+the catalog.
+
+## Step 3 — merge the line back into `main`
+
+A patch leaves `main` behind, because the fix and the bump landed on the line
+branch only. Merge the line back through a `merge/release-vX.Y.Z-into-main`
+pull request once the release is live.
+
+The version contract conflicts every time. Keep `main`'s side in all five files:
+the line changed nothing there but the number. `Cargo.lock` conflicts for the
+same reason and also keeps `main`'s side, which carries the real dependency
+state while the line moved only the two workspace crate versions.
 
 ## If a stage fails
 
@@ -310,7 +343,8 @@ marketplace repository: deleting or moving a published tag by hand.
 | Publish run failed at `stage` or `tag` | Transient push failure or a moved branch | `gh run rerun <run-id> --failed`; stages are idempotent |
 | Publish run failed at the install checks | The candidate does not install as a consumer | Fix forward; the version is burnt, the catalog never moved |
 | `tag` fails on an existing tag | The version was already published with different bytes | Never move the tag; release the next patch |
-| Packaging fails with `release tag ... != ...` | Step 0 missed the workflow `RELEASE_TAG` fallback | Bump it and re-run |
+| Packaging fails with `release tag vX.Y.Z != vA.B.C` | The tagged commit does not declare X.Y.Z: step 0 was not merged, or the wrong commit was tagged | Tag the merge commit of the version pull request. If the bad tag was pushed, that version is burnt — take the next patch |
+| `Verify marketplace` red after the catalog moved, at `previous-stable-upgrade` with `git clone marketplace source timed out after 30s` | Codex re-clones the whole marketplace on `plugin marketplace upgrade`; a clone that misses its own 30s budget leaves the stale local catalog, which then installs the previous version | Transient. `gh run rerun <run-id> --failed`. Consumers are unaffected: the catalog is already correct and the pipeline's own upgrade checks passed before promote |
 | Consumers still report the old version | The publish run did not finish | Check its failed stage and rerun |
 | `verify-delivery-reachable` fails with HTTP 404 | The toolchain asset the lock names is gone or was renamed | Never re-tag a toolchain release; point the lock at a published asset and cut the next patch |
 | The prefetch step fails on a checksum | Toolchain bytes were replaced under a published name | Treat the toolchain release as burnt, publish a new toolchain build, bump the lock |

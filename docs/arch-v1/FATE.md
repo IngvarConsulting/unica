@@ -29,6 +29,9 @@
 | `architecture/invariants.md` | `INV-MCP-RUNTIME-RECEIPT` переписан: применённый вызов отвечает, а не отказывает |
 | `architecture/quality-requirements.md` | требование к применённому вызову приведено в соответствие |
 | `decisions/0073-chestnyy-preview-mutatora.md` | запись целиком, приехала предыдущим слиянием |
+| `decisions/0075-katalog-raskladok-avtoobnaruzheniya.md` | новая запись: автообнаружение идёт по закрытому каталогу раскладок (#552) |
+| `decisions/README.md` | строка `ADR-0075` в указателе |
+| `architecture/change-checklist.md` | пункт про каталог раскладок |
 | `provenance/skill-upstreams.json` | пути к парити-проверкам переставлены вслед за переездом наборов; данные, а не запись — переезжают по `DEC.2026-08-18.DATA-LEAVES-DOCS` |
 
 ## Решения
