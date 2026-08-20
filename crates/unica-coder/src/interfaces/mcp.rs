@@ -702,6 +702,7 @@ mod tests {
             diagnostics: None,
             data: None,
             job: None,
+            work: None,
         }
     }
 

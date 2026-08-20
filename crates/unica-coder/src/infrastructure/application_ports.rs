@@ -24,6 +24,7 @@ use crate::domain::diagnostics::{
     DiagnosticProvider, DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
 };
 use crate::domain::events::DomainEvent;
+use crate::domain::long_work::WorkState;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
 use crate::domain::progress::ProgressSink;
 use crate::domain::source_resources::{
@@ -529,33 +530,50 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
         progress: &dyn ProgressSink,
-    ) -> Result<(), String> {
-        let Some(engine) = engine_for(spec) else {
-            return Ok(());
-        };
-        let Some(plugin_root) = find_plugin_root(&context.cwd) else {
-            return Ok(());
-        };
+    ) -> Option<WorkState> {
+        let engine = engine_for(spec)?;
+        let plugin_root = find_plugin_root(&context.cwd)?;
         if crate::infrastructure::bundled_tools::installed_engine_path(&plugin_root, engine)
             .is_some()
         {
-            return Ok(());
+            return None;
         }
-        let Some(order) = crate::infrastructure::engine_delivery::order_for(&plugin_root, engine)
-        else {
-            // Источник неизвестен: исходный чекаут инструменты не описывает.
-            // Сказать об этом — дело отказа, а не доставки.
-            return Ok(());
-        };
+        // Источник неизвестен: исходный чекаут инструменты не описывает.
+        // Сказать об этом — дело отказа, а не доставки.
+        let order = crate::infrastructure::engine_delivery::order_for(&plugin_root, engine)?;
         let artifact = order.artifact().to_owned();
-        self.deliveries
-            .wait_for(
-                &artifact,
-                move |delivery| order.acquire(delivery),
-                cancellation,
-                progress,
-            )
-            .map(|_| ())
+        // Срок хоста — знание фасада, а не этого места.
+        let window = crate::domain::long_work::sync_window(unica_bootstrap::host_tool_deadline());
+        match self.deliveries.deliver(
+            &artifact,
+            move |delivery| order.acquire(delivery),
+            window,
+            cancellation,
+            progress,
+        ) {
+            // Движок на месте — вызов идёт дальше и делает свою работу.
+            crate::infrastructure::engine_delivery::Delivered::Ready => None,
+            // Отказ доставки называет причину сам: обработчик сказал бы про
+            // отсутствующий бинарь и посоветовал ждать поставку, которая только
+            // что не удалась.
+            crate::infrastructure::engine_delivery::Delivered::Failed(reason) => Some(WorkState {
+                status: crate::domain::long_work::WorkStatus::Failed,
+                status_message: format!("delivery of {artifact} failed: {reason}"),
+                poll_interval_ms: None,
+            }),
+            crate::infrastructure::engine_delivery::Delivered::Working { received, total } => {
+                Some(WorkState {
+                    status: crate::domain::long_work::WorkStatus::Working,
+                    status_message: match total {
+                        Some(total) => {
+                            format!("delivering {artifact}: {received} of {total} bytes on disk")
+                        }
+                        None => format!("delivering {artifact}: {received} bytes on disk"),
+                    },
+                    poll_interval_ms: self.deliveries.poll_hint(&artifact),
+                })
+            }
+        }
     }
 
     fn invoke_handler(
