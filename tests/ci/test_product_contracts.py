@@ -1741,6 +1741,36 @@ class ProductContractTests(unittest.TestCase):
             any("Git HEAD changed during update" in error for error in errors),
             errors,
         )
+    def test_both_sides_of_the_wire_approve_the_same_two_origins(self) -> None:
+        """Адрес пишет упаковщик, а сверяет bootstrap.
+
+        Разойдись эти списки — выпуск соберётся, а установка откажет уже у
+        пользователя: «origin is outside the approved release origin». Ловить
+        это надо здесь, а не в поле.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        packager = (repo_root / "scripts/ci/package-unica-plugin.py").read_text(
+            encoding="utf-8"
+        )
+        validator = (
+            repo_root / "crates/unica-bootstrap/src/manifest.rs"
+        ).read_text(encoding="utf-8")
+
+        approved = {
+            "https://github.com/IngvarConsulting/unica",
+            "https://github.com/IngvarConsulting/unica-toolchain",
+        }
+        for origin in approved:
+            with self.subTest(origin=origin):
+                self.assertIn(f'"{origin}"', packager)
+                self.assertIn(f'"{origin}/releases/download/"', validator)
+
+        # Список закрыт с обеих сторон: третий адрес — новая запись реестра.
+        self.assertEqual(
+            len(re.findall(r'"https://github\.com/IngvarConsulting/[\w-]+/releases/download/"', validator)),
+            len(approved),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
