@@ -22,7 +22,7 @@ fn target(target: &str, entrypoint: &str) -> serde_json::Value {
 
 fn fixture() -> serde_json::Value {
     serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "pluginVersion": "0.7.0",
         "source": {
             "repository": "https://github.com/IngvarConsulting/unica",
@@ -32,10 +32,16 @@ fn fixture() -> serde_json::Value {
             "repository": "https://github.com/IngvarConsulting/unica",
             "tag": "v0.7.0"
         },
-        "targets": {
-            "darwin-arm64": target("darwin-arm64", "bin/darwin-arm64/unica"),
-            "linux-x64": target("linux-x64", "bin/linux-x64/unica"),
-            "win-x64": target("win-x64", "bin/win-x64/unica.exe")
+        "artifacts": {
+            "unica": {
+                "version": "0.7.0",
+                "role": "core",
+                "targets": {
+                    "darwin-arm64": target("darwin-arm64", "bin/darwin-arm64/unica"),
+                    "linux-x64": target("linux-x64", "bin/linux-x64/unica"),
+                    "win-x64": target("win-x64", "bin/win-x64/unica.exe")
+                }
+            }
         }
     })
 }
@@ -71,7 +77,7 @@ fn manifest_rejects_plugin_version_mismatch_before_target_selection() {
 #[test]
 fn manifest_rejects_non_release_origin() {
     let mut value = fixture();
-    value["targets"]["linux-x64"]["asset"]["url"] =
+    value["artifacts"]["unica"]["targets"]["linux-x64"]["asset"]["url"] =
         serde_json::Value::String("https://example.invalid/unica.tar.gz".to_string());
     let manifest = parse(value);
 
@@ -83,7 +89,7 @@ fn manifest_rejects_non_release_origin() {
 #[test]
 fn manifest_rejects_parent_traversal_and_missing_entrypoint() {
     let mut value = fixture();
-    value["targets"]["linux-x64"]["files"][0]["path"] =
+    value["artifacts"]["unica"]["targets"]["linux-x64"]["files"][0]["path"] =
         serde_json::Value::String("../unica".to_string());
     let manifest = parse(value);
 
@@ -121,6 +127,8 @@ fn target_detection_rejects_unsupported_host() {
 fn manifest_has_exactly_three_named_targets() {
     let manifest = parse(fixture());
     let keys = manifest
+        .core()
+        .expect("core artifact")
         .targets
         .keys()
         .map(String::as_str)

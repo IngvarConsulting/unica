@@ -25,6 +25,10 @@ struct BundledManifest {
 struct ManifestTool {
     name: String,
     version: Option<String>,
+    /// Из какого архива приходит инструмент. Несколько инструментов делят
+    /// один: `rlm-tools-bsl` несёт два. Отсутствует — артефакт зовётся как
+    /// инструмент.
+    artifact: Option<String>,
     binaries: Option<BTreeMap<String, ManifestBinary>>,
     binary_path: Option<String>,
     sha256: Option<String>,
@@ -87,13 +91,84 @@ pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Resul
         .ok_or_else(|| format!("tool {tool_name} has no pinned version"))
 }
 
+/// Каталог, куда bootstrap ставит артефакты по имени и версии. В дереве
+/// разработки переменной нет, и поиск идёт прежним путём — рядом с плагином.
+const ARTIFACT_CACHE_ENV: &str = "UNICA_ARTIFACT_CACHE";
+
 pub(crate) fn resolve_bundled_tool(
     plugin_root: &Path,
     tool_name: &str,
     verify: bool,
 ) -> Result<BundledTool, String> {
     let target_id = current_target_id()?;
+    let cache = std::env::var_os(ARTIFACT_CACHE_ENV).map(PathBuf::from);
+    resolve_bundled_tool_in(plugin_root, cache.as_deref(), tool_name, target_id, verify)
+}
+
+/// Разрешение с явно названным кешем артефактов: так его видно в тесте, а
+/// переменная окружения остаётся деталью вызывающего.
+fn resolve_bundled_tool_in(
+    plugin_root: &Path,
+    artifact_cache: Option<&Path>,
+    tool_name: &str,
+    target_id: &str,
+    verify: bool,
+) -> Result<BundledTool, String> {
+    if let Some(cache) = artifact_cache {
+        if let Some(tool) =
+            resolve_from_artifact_cache(plugin_root, cache, tool_name, target_id, verify)?
+        {
+            return Ok(tool);
+        }
+    }
     resolve_bundled_tool_for_target(plugin_root, tool_name, target_id, verify)
+}
+
+/// Движок в кеше артефактов: `<кеш>/<инструмент>/<версия>/<цель>/<путь>`.
+/// Отсутствие установки — не ошибка: её ещё могут доставить, и решает это
+/// вызывающий, а не резолвер.
+fn resolve_from_artifact_cache(
+    plugin_root: &Path,
+    cache: &Path,
+    tool_name: &str,
+    target_id: &str,
+    verify: bool,
+) -> Result<Option<BundledTool>, String> {
+    let Ok(version) = bundled_tool_version(plugin_root, tool_name) else {
+        return Ok(None);
+    };
+    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    let Ok(bytes) = fs::read(&manifest_path) else {
+        return Ok(None);
+    };
+    let Ok(manifest) = serde_json::from_slice::<BundledManifest>(&bytes) else {
+        return Ok(None);
+    };
+    let Ok(binary) = manifest_binary(&manifest, tool_name, target_id) else {
+        return Ok(None);
+    };
+
+    let artifact = manifest
+        .tools
+        .iter()
+        .find(|tool| tool.name == tool_name)
+        .and_then(|tool| tool.artifact.clone())
+        .unwrap_or_else(|| tool_name.to_string());
+    let program = cache
+        .join(&artifact)
+        .join(&version)
+        .join(target_id)
+        .join(&binary.binary_path);
+    if !program.is_file() {
+        return Ok(None);
+    }
+    if verify {
+        verify_binary(tool_name, &program, &binary.sha256)?;
+    }
+    Ok(Some(BundledTool {
+        program,
+        warnings: Vec::new(),
+    }))
 }
 
 fn resolve_bundled_tool_for_target(
@@ -370,6 +445,98 @@ mod tests {
                 .unwrap_err();
 
         assert!(error.contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn an_engine_is_taken_from_the_artifact_cache_when_one_is_named() {
+        // Разрез поставки уносит движки из каталога плагина: они лежат в кеше
+        // артефактов под своей версией, и рантайм обязан находить их там.
+        let plugin_root = temp_plugin_root("artifact-cache");
+        write_manifest_with_bsl_analyzer(&plugin_root);
+        let cache = plugin_root.join("..").join("artifact-cache");
+        let installed = cache
+            .join("bsl-analyzer")
+            .join("test")
+            .join("darwin-arm64")
+            .join("bin/darwin-arm64");
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("bsl-analyzer"), "darwin-binary").unwrap();
+
+        let tool = resolve_bundled_tool_in(
+            &plugin_root,
+            Some(cache.as_path()),
+            "bsl-analyzer",
+            "darwin-arm64",
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(tool.program, installed.join("bsl-analyzer"));
+    }
+
+    #[test]
+    fn without_an_artifact_cache_the_engine_is_still_found_beside_the_plugin() {
+        // Дерево разработки живёт без кеша артефактов, и прежний путь остаётся.
+        let plugin_root = temp_plugin_root("no-artifact-cache");
+        write_manifest_with_bsl_analyzer(&plugin_root);
+
+        let tool =
+            resolve_bundled_tool_in(&plugin_root, None, "bsl-analyzer", "darwin-arm64", true)
+                .unwrap();
+
+        assert_eq!(
+            tool.program,
+            plugin_root.join("bin/darwin-arm64/bsl-analyzer")
+        );
+    }
+
+    #[test]
+    fn tools_sharing_one_archive_resolve_to_one_artifact() {
+        // rlm-tools-bsl несёт два инструмента в одном файле на 69 МБ: кеш по
+        // имени инструмента скачал бы его дважды.
+        let plugin_root = temp_plugin_root("shared-artifact");
+        fs::create_dir_all(plugin_root.join("bin/darwin-arm64")).unwrap();
+        fs::write(plugin_root.join("bin/darwin-arm64/rlm-bsl-index"), "index").unwrap();
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "targetTriple": "aarch64-apple-darwin",
+  "tools": [
+    {
+      "name": "rlm-bsl-index",
+      "version": "1.33.0",
+      "artifact": "rlm-tools-bsl",
+      "binaryPath": "bin/darwin-arm64/rlm-bsl-index",
+      "sha256": "3c9b8f2e6d1a4c7b0e5f8a2d6c9b3e7f1a4d8c2b5e9f3a7d1c4b8e2f6a9d3c7b"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let cache = plugin_root.join("..").join("shared-cache");
+        let installed = cache
+            .join("rlm-tools-bsl")
+            .join("1.33.0")
+            .join("darwin-arm64")
+            .join("bin/darwin-arm64");
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("rlm-bsl-index"), "index").unwrap();
+
+        let tool = resolve_bundled_tool_in(
+            &plugin_root,
+            Some(cache.as_path()),
+            "rlm-bsl-index",
+            "darwin-arm64",
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            tool.program,
+            installed.join("rlm-bsl-index"),
+            "путь строится по артефакту, а не по имени инструмента"
+        );
     }
 
     fn temp_plugin_root(name: &str) -> PathBuf {

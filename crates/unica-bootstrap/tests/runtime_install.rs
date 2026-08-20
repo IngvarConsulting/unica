@@ -66,15 +66,24 @@ fn unsafe_tar_gz() -> Vec<u8> {
         .expect("finish gzip")
 }
 
-fn manifest(archive: &[u8], runtime: &[u8]) -> RuntimeManifest {
+/// Манифест схемы 2: артефакты перечислены по отдельности, у каждого своя
+/// версия. Ключ установки берётся из неё, а не из версии плагина — иначе выпуск
+/// объявляет холодным то, что не менялось.
+fn manifest_with(
+    archive: &[u8],
+    runtime: &[u8],
+    plugin_version: &str,
+    core_version: &str,
+) -> RuntimeManifest {
     let archive_hash = sha256(archive);
     let runtime_hash = sha256(runtime);
+    let tag = format!("v{plugin_version}");
     let target = |name: &str, executable: &str| {
         serde_json::json!({
             "asset": {
                 "name": format!("unica-runtime-{name}.tar.gz"),
                 "url": format!(
-                    "https://github.com/IngvarConsulting/unica/releases/download/v0.7.0/unica-runtime-{name}.tar.gz"
+                    "https://github.com/IngvarConsulting/unica/releases/download/{tag}/unica-runtime-{name}.tar.gz"
                 ),
                 "mediaType": "application/gzip",
                 "sha256": archive_hash
@@ -84,23 +93,33 @@ fn manifest(archive: &[u8], runtime: &[u8]) -> RuntimeManifest {
         })
     };
     serde_json::from_value(serde_json::json!({
-        "schemaVersion": 1,
-        "pluginVersion": "0.7.0",
+        "schemaVersion": 2,
+        "pluginVersion": plugin_version,
         "source": {
             "repository": "https://github.com/IngvarConsulting/unica",
             "commit": COMMIT
         },
         "release": {
             "repository": "https://github.com/IngvarConsulting/unica",
-            "tag": "v0.7.0"
+            "tag": tag
         },
-        "targets": {
-            "darwin-arm64": target("darwin-arm64", "bin/darwin-arm64/unica"),
-            "linux-x64": target("linux-x64", "bin/linux-x64/unica"),
-            "win-x64": target("win-x64", "bin/win-x64/unica.exe")
+        "artifacts": {
+            "unica": {
+                "version": core_version,
+                "role": "core",
+                "targets": {
+                    "darwin-arm64": target("darwin-arm64", "bin/darwin-arm64/unica"),
+                    "linux-x64": target("linux-x64", "bin/linux-x64/unica"),
+                    "win-x64": target("win-x64", "bin/win-x64/unica.exe")
+                }
+            }
         }
     }))
     .expect("manifest fixture")
+}
+
+fn manifest(archive: &[u8], runtime: &[u8]) -> RuntimeManifest {
+    manifest_with(archive, runtime, "0.7.0", "0.7.0")
 }
 
 struct FakeDownloader {
@@ -114,6 +133,10 @@ impl FakeDownloader {
             bytes,
             calls: AtomicUsize::new(0),
         }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 }
 
@@ -153,6 +176,9 @@ fn ready_marker_waits_for_the_complete_runtime_file_closure() {
     let archive = tar_gz(&[("bin/linux-x64/unica", runtime), (library_path, library)]);
     let mut manifest = manifest(&archive, runtime);
     manifest
+        .artifacts
+        .get_mut("unica")
+        .expect("core fixture")
         .targets
         .get_mut("linux-x64")
         .expect("linux fixture")
@@ -201,7 +227,15 @@ fn traversal_archive_is_rejected_before_publication() {
     let runtime = b"unica-runtime";
     let archive = unsafe_tar_gz();
     let mut manifest = manifest(&archive, runtime);
-    manifest.targets.get_mut("linux-x64").unwrap().files[0].sha256 = sha256(runtime);
+    manifest
+        .artifacts
+        .get_mut("unica")
+        .unwrap()
+        .targets
+        .get_mut("linux-x64")
+        .unwrap()
+        .files[0]
+        .sha256 = sha256(runtime);
     let cache = temp_dir("traversal");
     let downloader = Arc::new(FakeDownloader::new(archive));
     let installer = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader);
@@ -244,4 +278,78 @@ fn concurrent_installers_download_and_publish_once() {
     assert_eq!(installations[0].root, installations[1].root);
     assert_eq!(downloader.calls.load(Ordering::SeqCst), 1);
     fs::remove_dir_all(cache).expect("remove temp directory");
+}
+
+#[test]
+fn the_core_installs_without_any_engine_present() {
+    // Ядро обязано подниматься само: движки уходят из стартового пути.
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("core-alone");
+    let downloader = Arc::new(FakeDownloader::new(archive));
+
+    let installed = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader)
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect("core installs alone");
+
+    assert!(installed.entrypoint.is_file(), "ядро должно быть на месте");
+    assert_eq!(
+        fs::read_dir(installed.root.join("bin/linux-x64"))
+            .expect("read runtime root")
+            .count(),
+        1,
+        "в установке ядра нет ничего, кроме него самого"
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn the_install_path_is_keyed_by_the_artifact_version() {
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest_with(&archive, runtime, "0.7.0", "0.5.1");
+    let cache = temp_dir("keyed");
+    let downloader = Arc::new(FakeDownloader::new(archive));
+
+    let installed = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader)
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect("install");
+
+    let relative = installed
+        .root
+        .strip_prefix(&cache)
+        .expect("install lands inside the cache");
+    assert_eq!(
+        relative,
+        Path::new("unica").join("0.5.1").join("linux-x64"),
+        "путь содержит версию артефакта, а не версию плагина"
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn a_plugin_release_does_not_refetch_an_unchanged_artifact() {
+    // Ровно тот случай из #585: обновление плагина объявляло холодным весь кеш.
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let cache = temp_dir("unchanged");
+    let downloader = Arc::new(FakeDownloader::new(archive.clone()));
+
+    let before = manifest_with(&archive, runtime, "0.7.0", "0.5.1");
+    RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
+        .ensure(&before, HostTarget::LinuxX64)
+        .expect("first install");
+    assert_eq!(downloader.calls(), 1);
+
+    let after = manifest_with(&archive, runtime, "0.8.0", "0.5.1");
+    RuntimeInstaller::new(cache.clone(), "0.8.0", downloader.clone())
+        .ensure(&after, HostTarget::LinuxX64)
+        .expect("second install");
+    assert_eq!(
+        downloader.calls(),
+        1,
+        "версия плагина сменилась, версия артефакта нет — качать нечего"
+    );
+    fs::remove_dir_all(&cache).ok();
 }

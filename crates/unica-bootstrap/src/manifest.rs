@@ -18,8 +18,31 @@ pub struct RuntimeManifest {
     pub development: bool,
     pub source: SourceIdentity,
     pub release: ReleaseIdentity,
+    /// Артефакты по отдельности: у каждого своя версия и свой архив на цель.
+    /// Ключ установки берётся из версии артефакта, поэтому выпуск плагина не
+    /// объявляет холодным то, что не менялось.
+    #[serde(default)]
+    pub artifacts: BTreeMap<String, Artifact>,
+}
+
+/// Роль артефакта в запуске. Ядро едет в стартовом бюджете хоста, движок — нет.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtifactRole {
+    Core,
+    Engine,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Artifact {
+    pub version: String,
+    pub role: ArtifactRole,
     pub targets: BTreeMap<String, TargetRuntime>,
 }
+
+/// Имя единственного артефакта роли `core`.
+pub const CORE_ARTIFACT: &str = "unica";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -77,8 +100,15 @@ impl RuntimeManifest {
         })
     }
 
+    /// Артефакт ядра — единственный, который обязан быть в манифесте всегда.
+    pub fn core(&self) -> Result<&Artifact> {
+        self.artifacts.get(CORE_ARTIFACT).ok_or_else(|| {
+            BootstrapError::new(format!("runtime manifest has no {CORE_ARTIFACT} artifact"))
+        })
+    }
+
     pub fn validate(&self, plugin_version: &str) -> Result<()> {
-        if self.schema_version != 1 {
+        if self.schema_version != 2 {
             return Err(BootstrapError::new(format!(
                 "unsupported runtime manifest schemaVersion {}",
                 self.schema_version
@@ -104,7 +134,7 @@ impl RuntimeManifest {
                     "development runtime manifest must use workspace identities",
                 ));
             }
-            if !self.targets.is_empty() {
+            if !self.artifacts.is_empty() {
                 return Err(BootstrapError::new(
                     "development runtime manifest must not publish target assets",
                 ));
@@ -125,43 +155,84 @@ impl RuntimeManifest {
             )));
         }
 
-        let actual_targets = self
-            .targets
-            .keys()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        let expected_targets = HostTarget::ALL
-            .iter()
-            .map(|target| target.as_str())
-            .collect::<BTreeSet<_>>();
-        if actual_targets != expected_targets {
+        if self.artifacts.is_empty() {
+            return Err(BootstrapError::new(
+                "runtime manifest publishes no artifacts",
+            ));
+        }
+        let core = self.core()?;
+        if core.role != ArtifactRole::Core {
             return Err(BootstrapError::new(format!(
-                "runtime manifest targets {:?} != {:?}",
-                actual_targets, expected_targets
+                "artifact {CORE_ARTIFACT} must carry role core"
             )));
         }
-
-        for host_target in HostTarget::ALL {
-            let name = host_target.as_str();
-            let target = &self.targets[name];
-            validate_target(&self.release.tag, host_target, target)?;
+        for (name, artifact) in &self.artifacts {
+            if (name == CORE_ARTIFACT) != (artifact.role == ArtifactRole::Core) {
+                return Err(BootstrapError::new(format!(
+                    "artifact {name} declares a role that does not match its name"
+                )));
+            }
+            if artifact.version.is_empty() {
+                return Err(BootstrapError::new(format!(
+                    "artifact {name} has no version"
+                )));
+            }
+            let actual_targets = artifact
+                .targets
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            let expected_targets = HostTarget::ALL
+                .iter()
+                .map(|target| target.as_str())
+                .collect::<BTreeSet<_>>();
+            if actual_targets != expected_targets {
+                return Err(BootstrapError::new(format!(
+                    "artifact {name} targets {:?} != {:?}",
+                    actual_targets, expected_targets
+                )));
+            }
+            for host_target in HostTarget::ALL {
+                validate_target(
+                    name,
+                    &self.release.tag,
+                    host_target,
+                    &artifact.targets[host_target.as_str()],
+                )?;
+            }
         }
         Ok(())
     }
 
-    pub fn target(&self, target: HostTarget) -> Result<&TargetRuntime> {
-        self.targets.get(target.as_str()).ok_or_else(|| {
+    /// Цель артефакта. Имя артефакта обязательно: в манифесте их несколько, и
+    /// молчаливое обращение к ядру скрыло бы опечатку в имени движка.
+    pub fn artifact_target(&self, artifact: &str, target: HostTarget) -> Result<&TargetRuntime> {
+        let entry = self.artifacts.get(artifact).ok_or_else(|| {
+            BootstrapError::new(format!("runtime manifest has no artifact {artifact}"))
+        })?;
+        entry.targets.get(target.as_str()).ok_or_else(|| {
             BootstrapError::new(format!(
-                "runtime manifest does not contain target {}",
+                "artifact {artifact} does not contain target {}",
                 target.as_str()
             ))
         })
     }
+
+    pub fn target(&self, target: HostTarget) -> Result<&TargetRuntime> {
+        self.artifact_target(CORE_ARTIFACT, target)
+    }
 }
 
-fn validate_target(release_tag: &str, host: HostTarget, target: &TargetRuntime) -> Result<()> {
+fn validate_target(
+    artifact: &str,
+    release_tag: &str,
+    host: HostTarget,
+    target: &TargetRuntime,
+) -> Result<()> {
     let name = host.as_str();
-    let expected_asset = format!("unica-runtime-{name}.tar.gz");
+    // Имя ассета выводится из артефакта единым правилом. У ядра оно совпадает
+    // с прежним, поэтому выпуск не переименовывает опубликованные файлы.
+    let expected_asset = format!("{artifact}-runtime-{name}.tar.gz");
     if target.asset.name != expected_asset {
         return Err(BootstrapError::new(format!(
             "runtime asset {} != {expected_asset}",
