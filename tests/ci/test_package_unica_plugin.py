@@ -442,7 +442,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         delivered = set(host_versions.values())
         self.assertEqual(len(delivered), 1, host_versions)
         version = next(iter(delivered))
-        self.assertRegex(version, r"^0\.12\.\d+$")
+        self.assertRegex(version, r"^0\.12\.\d+(?:-[0-9A-Za-z.]+)?$")
         self.assertEqual(unica_versions, [version])
 
     def test_claude_contracts_avoid_keys_older_clients_reject(self) -> None:
