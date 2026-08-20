@@ -50,7 +50,8 @@
 - [ ] Reader не публикует и не принимает режим предпросмотра, а mutation
   сохраняет preview по умолчанию (`INV-MCP-PREVIEW-MUTATION-ONLY`).
 - [ ] Новый или переименованный BSL-метод проходит `validation.methodNaming`
-  в preview `unica.code.patch`, а правка тела существующего API не вызывает
+  в preview `unica.code.patch`, его автоматические проверки названы отдельно от
+  обязательного `semanticReview`, а правка тела существующего API не вызывает
   неявного переименования (`INV-MCP-METHOD-NAMING`).
 - [ ] `unica.project.status` сохраняет независимые `ready` и
   `repositoryReady`, а `unica.project.map` остаётся только картой источников

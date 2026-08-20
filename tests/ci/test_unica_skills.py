@@ -2804,7 +2804,18 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         )
 
     def test_reference_bsl_examples_do_not_use_get_prefixed_value_functions(self) -> None:
-        forbidden = re.compile(r"(?im)^\s*(?:Функция\s+Получить|Function\s+Get)\w*\s*\(")
+        forbidden = re.compile(r"(?im)^\s*(?:Функция|Function)\s+(?:Получить|Get)\w+\s*\(")
+        for declaration in [
+            "Функция ПолучитьДанные()",
+            "Функция GetData()",
+            "Function ПолучитьДанные()",
+            "Function GetData()",
+        ]:
+            with self.subTest(declaration=declaration):
+                self.assertRegex(declaration, forbidden)
+        for declaration in ["Функция Получить()", "Function Get()"]:
+            with self.subTest(declaration=declaration):
+                self.assertNotRegex(declaration, forbidden)
         for reference in (self.reference_root() / "specs").glob("*.md"):
             with self.subTest(reference=reference.name):
                 self.assertNotRegex(reference.read_text(encoding="utf-8"), forbidden)

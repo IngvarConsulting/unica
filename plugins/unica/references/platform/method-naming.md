@@ -41,9 +41,15 @@ of the public contract.
 3. Call `unica.code.patch` with `dryRun: true` and inspect
    `data.validation.methodNaming` together with the parser validation.
 4. Treat a `warning` as a reason to revise the proposed name before applying.
-   The deterministic preview currently catches a new or renamed function whose
-   name starts with `Получить` or `Get`; the other semantic distinctions remain
-   a required review step because the AST alone does not reveal business intent.
+   `automatedChecks` names each deterministic check and its related standard
+   rule without claiming that the whole rule is automated. When
+   `semanticReview.required` is true, apply every listed `check` to every listed
+   method before applying the patch. The deterministic preview currently
+   catches a new or renamed function whose name starts with `Получить` or
+   `Get`; the other semantic distinctions remain a required review step because
+   the AST alone does not reveal business intent. A `passed` status therefore
+   means that the automated checks passed, not that semantic review can be
+   skipped.
 5. Run `unica.code.diagnostics` for the changed logical module with
    `filter.minSeverity: "hint"` so `FunctionNameStartsWithGet` is not hidden by
    the normal `warning` threshold.
@@ -54,6 +60,8 @@ of the public contract.
 - Every value function is named after its result rather than after obtaining it.
 - Constructors and predicates use their dedicated forms.
 - An infinitive function is justified by clauses 6.4 or 6.5.
+- Every method listed by `semanticReview.methods` was checked against every
+  entry in `semanticReview.checks`.
 - Platform handlers and existing public APIs were not renamed implicitly.
 - The `code.patch` preview and hint-level diagnostics contain no unresolved
   naming warning for the changed method.

@@ -149,7 +149,7 @@
   "unica.code.patch": {
     "result": {
       "contract": "typed",
-      "now": "типизированный `data` с побайтовым diff, проверкой BSL и `validation.methodNaming` по `std647` для нового или переименованного метода",
+      "now": "типизированный `data` с побайтовым diff, проверкой BSL и `validation.methodNaming` по `std647`: точные `automatedChecks` с кодом и связанным пунктом стандарта, диагностики и обязательный `semanticReview` каждого нового или переименованного метода",
       "target": "без изменений"
     },
     "scenarios": [
