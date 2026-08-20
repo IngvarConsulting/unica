@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -39,17 +40,33 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
     }
 
 
+# Что вообще считается версией выпуска.
+#
+# Предвыпуск законен: замерить доставку можно только на настоящем релизе, а
+# адрес ассета прибит к тегу, поэтому нужна версия, которая существует для нас
+# и не существует для пользователей. Суффикс — часть версии, а не метка рядом:
+# манифест требует буквального совпадения тега с `v` + версия плагина.
+RELEASE_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$")
+
+
 def validate_version_contract(
     values: dict[str, str], *, expected: str | None = None
 ) -> list[str]:
     if not values:
         return ["version contract is empty"]
     expected_version = expected or next(iter(values.values()))
-    return [
+    errors = [
         f"{name} version {version} != expected {expected_version}"
         for name, version in values.items()
         if version != expected_version
     ]
+    # Согласие пяти файлов ничего не стоит, если они согласны на мусоре.
+    errors.extend(
+        f"{name} version {version} is not a release version"
+        for name, version in values.items()
+        if not RELEASE_VERSION.fullmatch(version)
+    )
+    return errors
 
 
 def main() -> int:

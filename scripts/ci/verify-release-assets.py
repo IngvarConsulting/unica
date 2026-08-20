@@ -86,11 +86,23 @@ def verify_runtime_asset_pair(asset_dir: Path, target: str, artifact: str = CORE
     return version
 
 
+def verify_release_target(asset_dir: Path, target: str) -> str:
+    """Одна цель целиком: и состав выпуска, и байты каждой пары.
+
+    Состав проверяется здесь, потому что здесь он и создаётся: лишний архив,
+    замеченный после выкладки, — уже опубликованный лишний архив.
+    """
+    versions = {
+        verify_runtime_asset_pair(asset_dir, target, artifact)
+        for artifact in published_artifacts(asset_dir, target)
+    }
+    if len(versions) != 1:
+        raise SystemExit(f"published runtime versions disagree for {target}: {sorted(versions)}")
+    return versions.pop()
+
+
 def verify_release_assets(asset_dir: Path) -> str:
-    versions = set()
-    for target in sorted(TARGETS):
-        for artifact in published_artifacts(asset_dir, target):
-            versions.add(verify_runtime_asset_pair(asset_dir, target, artifact))
+    versions = {verify_release_target(asset_dir, target) for target in sorted(TARGETS)}
     if len(versions) != 1:
         raise SystemExit("published runtime target/version matrix is inconsistent")
     return versions.pop()
@@ -102,7 +114,7 @@ def main() -> None:
     parser.add_argument("--target", choices=sorted(TARGETS))
     args = parser.parse_args()
     version = (
-        verify_runtime_asset_pair(args.asset_dir, args.target)
+        verify_release_target(args.asset_dir, args.target)
         if args.target
         else verify_release_assets(args.asset_dir)
     )

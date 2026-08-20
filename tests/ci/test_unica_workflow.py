@@ -485,8 +485,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("publish-assessment-pages", publish)
         self.assertIn("needs: build-tools", publish)
         self.assertIn("softprops/action-gh-release@v3", publish)
-        self.assertIn("*-runtime-*.tar.gz", publish)
-        self.assertIn("*-runtime-*.json", publish)
+        self.assertIn("unica-runtime-*.tar.gz", publish)
+        self.assertIn("unica-runtime-*.json", publish)
         self.assertNotIn("install-unica", publish)
         self.assertIn("gh release download", verify)
         self.assertIn("verify-release-assets.py", verify)
@@ -587,22 +587,32 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
 
 class ArtifactSplitPublicationTests(unittest.TestCase):
-    """Разрез поставки дошёл до упаковщика, но не до конвейера вокруг него.
+    """Разрез поставки делит сборку и выкладку по-разному.
 
-    Упаковщик делает по архиву на артефакт: ядро отдельно, каждый движок
-    отдельно. Пока конвейер несёт на релиз только `unica-runtime-*`, выпуск
-    объявляет, что движков не существует, — и доставке нечего скачивать.
+    Сборка несёт все артефакты: их метаданные нужны упаковщику, чтобы манифест
+    объявил каждый. Выкладка несёт одно ядро: движки издал тулчейн, и вторая
+    публикация тех же байтов стоила 439 МБ на выпуск.
     """
 
     def setUp(self) -> None:
         self.release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
 
-    def test_the_release_carries_every_artifact_not_only_the_core(self) -> None:
-        self.assertIn("dist/runtime/*-runtime-*.tar.gz", self.release)
-        self.assertIn("dist/runtime/*-runtime-*.json", self.release)
-        self.assertNotIn("dist/runtime/unica-runtime-*.tar.gz", self.release)
-        self.assertNotIn("dist/runtime/unica-runtime-*.json", self.release)
+    def test_the_release_publishes_the_core_and_only_it(self) -> None:
+        # Выкладывается то, у чего есть читатель: пару ядра перекачивает и
+        # перехеширует `verify-release-assets.py`. Описания поставок читает
+        # только упаковщик, и берёт он их из артефакта сборки.
+        self.assertIn("dist/runtime/unica-runtime-*.tar.gz", self.release)
+        self.assertIn("dist/runtime/unica-runtime-*.json", self.release)
+        self.assertNotIn("dist/runtime/*-runtime-*", self.release)
+
+    def test_the_manifest_still_names_the_artifacts_the_release_does_not_carry(
+        self,
+    ) -> None:
+        # Не выложить и не назвать — разные вещи. Движки объявлены адресом, и
+        # каждый адрес выпуск проверяет.
+        self.assertIn("verify-delivery-reachable.py", self.release)
+        self.assertIn("prefetch --plugin-root", self.release)
 
     def test_packaging_uploads_every_artifact_of_the_target(self) -> None:
         for glob in (

@@ -33,7 +33,7 @@ class VersionContractTests(unittest.TestCase):
             ["claude-plugin", "plugin", "tools-lock-unica", "workspace"],
         )
         self.assertEqual(len(set(values.values())), 1, values)
-        self.assertRegex(next(iter(values.values())), r"^\d+\.\d+\.\d+$")
+        self.assertRegex(next(iter(values.values())), load_module().RELEASE_VERSION)
 
     def test_meta_surface_delivery_is_versioned_across_the_012_line(self) -> None:
         module = load_module()
@@ -52,11 +52,41 @@ class VersionContractTests(unittest.TestCase):
         delivered = set(values.values())
         self.assertEqual(len(delivered), 1, values)
         version = next(iter(delivered))
-        self.assertRegex(version, r"^0\.12\.\d+$")
+        # Пин держит линию поставки; суффикс предвыпуска ей не противоречит.
+        self.assertRegex(version, r"^0\.12\.\d+(?:-[0-9A-Za-z.]+)?$")
         self.assertEqual(
             workspace_packages,
             {"unica-bootstrap": version, "unica-coder": version},
         )
+
+    def test_a_prerelease_is_a_legal_release_version(self) -> None:
+        """Ранбук описывает предвыпуск, и контракт обязан его пропускать.
+
+        Замерить доставку можно только на настоящем релизе: адрес ассета прибит
+        к тегу репозитория. Запрет суффикса делал описанную процедуру
+        невыполнимой.
+        """
+        module = load_module()
+
+        for version in ("0.13.0-rc.1", "0.13.0-beta.2", "1.0.0"):
+            with self.subTest(version=version):
+                self.assertRegex(version, module.RELEASE_VERSION)
+
+    def test_a_version_that_is_not_a_release_is_refused(self) -> None:
+        # Разрешить суффикс — не значит разрешить что угодно: контракт остаётся
+        # тем, кто ловит мусор в пяти файлах сразу.
+        module = load_module()
+
+        for version in ("0.13", "banana", "0.13.0-", "v0.13.0", "0.13.0 rc1"):
+            with self.subTest(version=version):
+                self.assertNotRegex(version, module.RELEASE_VERSION)
+
+    def test_the_contract_refuses_a_malformed_version_everywhere(self) -> None:
+        module = load_module()
+
+        errors = module.validate_version_contract({"cargo": "banana", "plugin": "banana"})
+
+        self.assertTrue(any("banana" in error for error in errors), errors)
 
     def test_0120_meta_migration_is_complete_and_linked(self) -> None:
         migration_index = REPO_ROOT / "docs/migrations/README.md"
