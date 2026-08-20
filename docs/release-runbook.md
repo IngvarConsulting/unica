@@ -121,7 +121,14 @@ Only the core is built here, so only the core is published here:
 | On the GitHub release | Count | What it is |
 | --- | --- | --- |
 | `unica-runtime-<target>.tar.gz` | 3 | the core, one archive per target |
-| `<artifact>-runtime-<target>.json` | 12 | what each artifact pins: version, asset, SHA-256, file closure |
+| `unica-runtime-<target>.json` | 3 | what the core pins: version, asset, SHA-256, file closure |
+
+Six assets, and both halves have a reader: `verify-published-assets` re-downloads
+each pair and rehashes every member. Descriptions of the *engine* artifacts stay
+inside the build — the packager reads them from the workflow artifact, and on the
+release they would be a third copy of facts already in `tools.lock.json` at the
+source tag and in the published plugin's `runtime-manifest.json`, naming an asset
+this release does not carry.
 
 Engines are **named, not republished**. Their bytes live in `unica-toolchain`
 releases, and the runtime manifest points at them by address and SHA-256; the

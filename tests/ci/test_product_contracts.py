@@ -1755,6 +1755,12 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertIn("scripts/ci/verify-delivery-reachable.py", release)
         self.assertIn("scripts/ci/verify-release-assets.py", release)
+        # Выкладывается только то, у чего есть читатель. Подстановочный знак
+        # тянул сюда описания поставок: они обещали ассеты, которых на релизе
+        # нет, и не читал их никто.
+        self.assertIn("dist/runtime/unica-runtime-*.tar.gz", release)
+        self.assertIn("dist/runtime/unica-runtime-*.json", release)
+        self.assertNotIn("dist/runtime/*-runtime-*", release)
         # Один сквозной прогрев на выпуск: адрес, сумма и раскладка вместе.
         self.assertIn("prefetch --plugin-root", release)
         self.assertTrue(

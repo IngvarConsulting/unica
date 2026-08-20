@@ -549,9 +549,15 @@ jobs:
           # Предвыпуск не должен выглядеть последним релизом: его ищут те, кто
           # ищет свежее, а он существует только для замеров.
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # Выпуск публикует ядро и его описание — их читает
+          # `verify-release-assets.py`, перекачивая с релиза. Описания поставок
+          # сюда не едут: их читает только упаковщик, и берёт он их из артефакта
+          # сборки. На релизе они были бы третьей копией фактов, уже записанных
+          # в `tools.lock.json` исходного тега и в `runtime-manifest.json`
+          # выложенного плагина, — и обещали бы ассет, которого здесь нет.
           files: |
-            dist/runtime/*-runtime-*.tar.gz
-            dist/runtime/*-runtime-*.json
+            dist/runtime/unica-runtime-*.tar.gz
+            dist/runtime/unica-runtime-*.json
 
   smoke-thin-plugin:
     name: Smoke published thin plugin (${{ matrix.target }})
