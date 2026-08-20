@@ -60,6 +60,68 @@ fn run(args: Vec<String>) -> Result<i32> {
             install_and_verify_runtime(&plugin_root, &provider_state_root)?;
             Ok(0)
         }
+        Command::Prefetch => prefetch_runtime(&plugin_root),
+    }
+}
+
+/// Довезти всё, что цели понадобится, и рассказать об этом сборке образа.
+///
+/// Ленивая доставка выигрывает старт и проигрывает закрытый контур: в образе
+/// сети уже нет. Отсюда и вывод — не украшение, а единственное, что читает
+/// человек, разбирая упавшую сборку.
+fn prefetch_runtime(plugin_root: &Path) -> Result<i32> {
+    let manifest_path = plugin_root.join("runtime-manifest.json");
+    let manifest = RuntimeManifest::load(&manifest_path)?;
+    if manifest.development {
+        // Молчаливый успех соврал бы: образ уехал бы без инструментов, и
+        // выяснилось бы это уже там, где сети нет.
+        return Err(unica_bootstrap::BootstrapError::of(
+            unica_bootstrap::Failure::Configuration,
+            format!(
+                "{} is a development manifest: it publishes no artifacts, \
+                 so there is nothing to prefetch",
+                manifest_path.display()
+            ),
+        ));
+    }
+    let host = HostTarget::current()?;
+    let cache_root = runtime_cache_root()?;
+    let installer = RuntimeInstaller::new(cache_root, VERSION, Arc::new(HttpDownloader::default()));
+    let delivered = installer.prefetch(&manifest, host, &ReportProgress)?;
+    for item in &delivered {
+        eprintln!(
+            "unica-bootstrap: {} {} {} at {}",
+            item.artifact,
+            item.version,
+            if item.downloaded {
+                "delivered"
+            } else {
+                "cached"
+            },
+            item.root.display()
+        );
+    }
+    eprintln!(
+        "unica-bootstrap: prefetched {} artifacts for {}",
+        delivered.len(),
+        host.as_str()
+    );
+    Ok(0)
+}
+
+/// Ход загрузки в журнал сборки: молчащий шаг на сотню мегабайт неотличим от
+/// повисшего.
+struct ReportProgress;
+
+impl unica_bootstrap::DownloadObserver for ReportProgress {
+    fn transferred(&self, received: u64, total: Option<u64>) {
+        match total {
+            Some(total) if total > 0 => eprintln!(
+                "unica-bootstrap: {received} of {total} bytes ({}%)",
+                received.saturating_mul(100) / total
+            ),
+            _ => eprintln!("unica-bootstrap: {received} bytes"),
+        }
     }
 }
 
@@ -163,17 +225,19 @@ fn verify_installed_skill_package(plugin_root: &Path) -> Result<()> {
 enum Command {
     Run,
     Verify,
+    Prefetch,
 }
 
 fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
     if args.len() != 3 || args[1] != "--plugin-root" {
         return Err(unica_bootstrap::BootstrapError::new(
-            "usage: unica-bootstrap <run|verify> --plugin-root <path>",
+            "usage: unica-bootstrap <run|verify|prefetch> --plugin-root <path>",
         ));
     }
     let command = match args[0].as_str() {
         "run" => Command::Run,
         "verify" => Command::Verify,
+        "prefetch" => Command::Prefetch,
         command => {
             return Err(unica_bootstrap::BootstrapError::new(format!(
                 "unknown bootstrap command: {command}"

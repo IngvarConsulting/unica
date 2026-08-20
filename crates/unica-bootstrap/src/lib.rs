@@ -12,7 +12,7 @@ mod verification;
 
 pub use archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files};
 pub use attempt::{diagnose, AttemptLog, AttemptSubject, OpenAttempt, Stage, UnfinishedAttempt};
-pub use cache::{RuntimeInstallation, RuntimeInstaller};
+pub use cache::{Prefetched, RuntimeInstallation, RuntimeInstaller};
 pub use download::{DownloadObserver, Downloader, HttpDownloader, SilentDownload};
 pub use error::{BootstrapError, Failure, Result};
 pub use host::{

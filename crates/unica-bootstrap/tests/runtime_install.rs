@@ -1154,3 +1154,71 @@ fn a_file_artifact_whose_bytes_are_wrong_is_refused_like_any_other() {
     assert_eq!(error.failure(), Failure::Checksum);
     fs::remove_dir_all(&cache).ok();
 }
+
+#[test]
+fn prefetch_delivers_every_artifact_the_target_needs() {
+    // Образ собирают один раз и гоняют без сети. Довезти ядро и оставить движки
+    // на первый вызов значит собрать образ, который в закрытом контуре не
+    // работает: сеть там кончилась ещё на сборке.
+    let core = b"unica-runtime";
+    let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
+    let engine = b"rlm-bsl-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
+    let cache = temp_dir("prefetch");
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        ("unica-runtime-linux-x64.tar.gz", core_archive),
+        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
+    ]));
+    let installer = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone());
+
+    let delivered = installer
+        .prefetch(&manifest, HostTarget::LinuxX64, &SilentDownload)
+        .expect("прогрев доставляет всё");
+
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|item| (item.artifact.as_str(), item.version.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("rlm-tools-bsl", "1.33.0"), ("unica", "0.7.0")],
+        "названы все артефакты цели, а не только ядро"
+    );
+    assert!(cache
+        .join("unica/0.7.0/linux-x64/bin/linux-x64/unica")
+        .is_file());
+    assert!(cache
+        .join("rlm-tools-bsl/1.33.0/linux-x64/bin/linux-x64/rlm-bsl-index")
+        .is_file());
+    assert_eq!(downloader.calls(), 2);
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn a_warm_cache_makes_prefetch_download_nothing() {
+    // Слой образа пересобирают чаще, чем меняются артефакты. Повторная загрузка
+    // тех же байтов стоила бы полного времени сборки на каждой пересборке.
+    let core = b"unica-runtime";
+    let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
+    let engine = b"rlm-bsl-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
+    let cache = temp_dir("prefetch-warm");
+    let downloader = Arc::new(AssetDownloader::new(vec![
+        ("unica-runtime-linux-x64.tar.gz", core_archive),
+        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
+    ]));
+    let installer = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone());
+    installer
+        .prefetch(&manifest, HostTarget::LinuxX64, &SilentDownload)
+        .expect("первый прогрев");
+
+    let again = installer
+        .prefetch(&manifest, HostTarget::LinuxX64, &SilentDownload)
+        .expect("второй прогрев");
+
+    assert_eq!(again.len(), 2, "прогретый кеш всё равно называет состав");
+    assert!(again.iter().all(|item| !item.downloaded));
+    assert_eq!(downloader.calls(), 2, "повторной загрузки не было");
+    fs::remove_dir_all(&cache).ok();
+}
