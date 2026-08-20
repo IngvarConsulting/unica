@@ -331,6 +331,13 @@ jobs:
           mkdir -p "$runtime_root"
           tar -xzf ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz" \
             -C "$runtime_root"
+          # Этот смоук проверяет рантайм, а не доставку: он требует, чтобы
+          # `bsl-analyzer` действительно искал. Ядро движков больше не несёт —
+          # они приезжают из тулчейна по требованию, — поэтому кладём их сюда из
+          # той же сборки, откуда взялись их суммы. Саму доставку сквозняком
+          # проверяет `smoke-thin-plugin` прогревом.
+          cp -R ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}/." \
+            "$runtime_root/bin/${{ matrix.target }}/"
       - name: Smoke packaged Unica MCP
         shell: bash
         timeout-minutes: 3

@@ -629,6 +629,20 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         self.assertIn("dist/runtime/unica-runtime-*.json", self.release)
         self.assertNotIn("dist/runtime/*-runtime-*", self.release)
 
+    def test_the_mcp_smoke_is_given_the_engines_it_asserts_on(self) -> None:
+        """Смоук требует, чтобы `bsl-analyzer` действительно искал.
+
+        Ядро движков больше не несёт, и распаковки одного архива смоуку теперь
+        мало: без этого шага провайдер отвечает `providerUnavailable`, и
+        проверка поиска молча превращается в проверку отказа.
+        """
+        extract = self.release[
+            self.release.index("Extract deterministic runtime for MCP smoke") :
+        ].split("- name: Smoke packaged Unica MCP")[0]
+
+        self.assertIn("unica-runtime-${{ matrix.target }}.tar.gz", extract)
+        self.assertIn(".build/tool-bundles/${{ matrix.target }}/bin/", extract)
+
     def test_the_manifest_still_names_the_artifacts_the_release_does_not_carry(
         self,
     ) -> None:
