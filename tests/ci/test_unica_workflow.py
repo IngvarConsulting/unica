@@ -366,12 +366,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("name: unica-runtime-metadata-${{ matrix.target }}", build)
         self.assertIn("name: unica-bootstrap-${{ matrix.target }}", build)
         self.assertIn("name: unica-runtime-${{ matrix.target }}", text)
+        # Узость здесь — про цель, а не про артефакт: разрез поставки дал по
+        # архиву на артефакт, и выгрузка обязана нести их все.
         self.assertIn(
-            ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.json",
+            ".build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json",
             build,
         )
         self.assertIn(
-            ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz",
+            ".build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz",
             build,
         )
         self.assertIn(
@@ -483,8 +485,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("publish-assessment-pages", publish)
         self.assertIn("needs: build-tools", publish)
         self.assertIn("softprops/action-gh-release@v3", publish)
-        self.assertIn("unica-runtime-*.tar.gz", publish)
-        self.assertIn("unica-runtime-*.json", publish)
+        self.assertIn("*-runtime-*.tar.gz", publish)
+        self.assertIn("*-runtime-*.json", publish)
         self.assertNotIn("install-unica", publish)
         self.assertIn("gh release download", verify)
         self.assertIn("verify-release-assets.py", verify)
@@ -582,6 +584,60 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("plugin remove unica@unica --json", text)
         self.assertEqual(text.count("plugin add unica@unica --json"), 3)
         self.assertIn("verify --plugin-root $pluginRoot", text)
+
+
+class ArtifactSplitPublicationTests(unittest.TestCase):
+    """Разрез поставки дошёл до упаковщика, но не до конвейера вокруг него.
+
+    Упаковщик делает по архиву на артефакт: ядро отдельно, каждый движок
+    отдельно. Пока конвейер несёт на релиз только `unica-runtime-*`, выпуск
+    объявляет, что движков не существует, — и доставке нечего скачивать.
+    """
+
+    def setUp(self) -> None:
+        self.release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_release_carries_every_artifact_not_only_the_core(self) -> None:
+        self.assertIn("dist/runtime/*-runtime-*.tar.gz", self.release)
+        self.assertIn("dist/runtime/*-runtime-*.json", self.release)
+        self.assertNotIn("dist/runtime/unica-runtime-*.tar.gz", self.release)
+        self.assertNotIn("dist/runtime/unica-runtime-*.json", self.release)
+
+    def test_packaging_uploads_every_artifact_of_the_target(self) -> None:
+        for glob in (
+            "runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz",
+            "runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json",
+        ):
+            self.assertIn(glob, self.release, glob)
+
+
+class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
+    """Предвыпуск собирается и публикует ассеты, но каталога не касается.
+
+    Замерить доставку можно только на настоящем релизе: адрес архива прибит к
+    релизам репозитория. Значит нужен выпуск, который существует для нас и не
+    существует для пользователей, — и решать это должен конвейер, а не память
+    того, кто его запускал.
+    """
+
+    def setUp(self) -> None:
+        self.release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_a_prerelease_tag_marks_the_github_release_as_such(self) -> None:
+        # Иначе предвыпуск станет «последним релизом» и его начнут находить
+        # те, кто ищет свежее.
+        self.assertIn("prerelease: ${{ contains(github.ref_name, '-') }}", self.release)
+
+    def test_publication_asks_first_whether_this_release_is_for_consumers(self) -> None:
+        self.assertIn("\n  gate:\n", self.publish)
+        self.assertIn("promote:", self.publish)
+
+    def test_every_publishing_stage_waits_for_that_answer(self) -> None:
+        # Достаточно загейтить первую стадию: остальные ждут её через `needs`.
+        self.assertIn("needs: gate", self.publish)
+        self.assertIn("if: needs.gate.outputs.promote == 'true'", self.publish)
 
 
 if __name__ == "__main__":

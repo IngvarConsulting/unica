@@ -196,6 +196,40 @@ to them, which is what makes aborting cheap.
 | install checks green | nothing |
 | **catalog moved** | **the release is live** |
 
+## A prerelease: built, published, never served
+
+Some things can only be measured against a real release — a runtime manifest
+pins its assets to `github.com/IngvarConsulting/unica/releases/download/<tag>/`,
+so nothing but a published tag will do. A prerelease is the release that exists
+for us and not for consumers.
+
+Give the version a SemVer prerelease suffix and tag it as usual:
+
+```bash
+python3.12 scripts/dev/bump-version.py 0.13.0-rc.1
+cargo update --workspace --offline
+# merge, then tag as in step 1
+```
+
+The suffix is part of the version, not a label beside it, because the runtime
+manifest requires the tag to equal `v` + the plugin version literally.
+
+What the pipeline does with it:
+
+| Stage | Prerelease |
+| --- | --- |
+| build, assets on the GitHub release | runs — and marks the release as a prerelease |
+| stage, anchor tag, install checks, promote | **skipped** |
+
+The publish workflow asks first: its `gate` job reads the source tag and stops
+the whole publication when the tag carries a suffix. Nothing is disabled by
+hand, so a colleague tagging a real release meanwhile is unaffected.
+
+A prerelease burns its own version number, never the stable one: measure
+against `0.13.0-rc.1`, then release `0.13.0` from the same code. Keep it marked
+as a prerelease — it is not a release waiting to be served, and `gh release
+view` without a tag must keep naming the last stable one.
+
 ## One-way doors
 
 Two things can never be taken back once published, because other artifacts
