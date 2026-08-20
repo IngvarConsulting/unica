@@ -7,6 +7,7 @@ use std::thread;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use tar::{Builder, EntryType, Header};
 use unica_bootstrap::{
@@ -446,6 +447,28 @@ fn collecting_keeps_the_newest_versions_of_each_artifact() {
 }
 
 #[test]
+fn collecting_does_not_remove_a_version_owned_by_an_active_delivery_lock() {
+    let cache = temp_dir("collect-active-lock");
+    for version in ["1.0.0", "1.1.0"] {
+        seed_installation(&cache, "rlm-tools-bsl", version, HostTarget::LinuxX64);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let locks = cache.join(".locks");
+    fs::create_dir_all(&locks).expect("locks");
+    let active = fs::File::create(locks.join("rlm-tools-bsl-1.0.0-linux-x64.lock"))
+        .expect("active delivery lock");
+    active.lock_exclusive().expect("hold active delivery lock");
+
+    RuntimeInstaller::collect(&cache, 1).expect("collect around active delivery");
+
+    assert!(
+        cache.join("rlm-tools-bsl/1.0.0/linux-x64").is_dir(),
+        "garbage collection must not delete bytes owned by another lock holder"
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
 fn collecting_leaves_an_artifact_that_is_within_the_limit() {
     let cache = temp_dir("collect-within");
     seed_installation(&cache, "bsl-analyzer", "0.2.67", HostTarget::LinuxX64);
@@ -787,6 +810,37 @@ fn an_abandoned_partial_does_not_outlive_the_version_that_replaced_it() {
         partials(&cache, "unica").is_empty(),
         "недокачка брошенной версии не переживает установку следующей: {:?}",
         partials(&cache, "unica")
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn a_partial_owned_by_another_delivery_lock_is_not_deleted() {
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("partial-active-lock");
+    let partial_root = cache.join(".partial/unica");
+    fs::create_dir_all(&partial_root).expect("partial root");
+    let active_partial = partial_root.join("0.6.0--old-linux-x64.tar.gz");
+    fs::write(&active_partial, b"still downloading").expect("active partial");
+    let locks = cache.join(".locks");
+    fs::create_dir_all(&locks).expect("locks");
+    let active = fs::File::create(locks.join("unica-0.6.0--old-linux-x64.lock"))
+        .expect("active partial lock");
+    active.lock_exclusive().expect("hold active partial lock");
+
+    RuntimeInstaller::new(
+        cache.clone(),
+        "0.7.0",
+        Arc::new(FakeDownloader::new(archive)),
+    )
+    .ensure(&manifest, HostTarget::LinuxX64)
+    .expect("install current delivery");
+
+    assert!(
+        active_partial.is_file(),
+        "another delivery's resumable bytes remain under its live lock"
     );
     fs::remove_dir_all(&cache).ok();
 }
@@ -1323,5 +1377,30 @@ fn a_warm_cache_makes_prefetch_download_nothing() {
     assert_eq!(again.len(), 2, "прогретый кеш всё равно называет состав");
     assert!(again.iter().all(|item| !item.downloaded));
     assert_eq!(downloader.calls(), 2, "повторной загрузки не было");
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn an_invalid_ready_marker_makes_prefetch_report_a_download() {
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("prefetch-invalid-ready");
+    let downloader = Arc::new(FakeDownloader::new(archive));
+    let installer = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone());
+    let first = installer
+        .prefetch(&manifest, HostTarget::LinuxX64, &SilentDownload)
+        .expect("first prefetch");
+    fs::write(first[0].root.join(".ready.json"), b"{}").expect("invalidate readiness marker");
+
+    let repaired = installer
+        .prefetch(&manifest, HostTarget::LinuxX64, &SilentDownload)
+        .expect("repair invalid installation");
+
+    assert!(
+        repaired[0].downloaded,
+        "the report must name the re-download"
+    );
+    assert_eq!(downloader.calls(), 2, "invalid readiness forces a fetch");
     fs::remove_dir_all(&cache).ok();
 }

@@ -187,13 +187,25 @@ def handle(msg):
                 "arguments": arguments,
             },
         )
+        try:
+            seconds = float(arguments.get("seconds", 5))
+            every_ms = int(arguments.get("progressEveryMs", 0))
+        except (TypeError, ValueError) as error:
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "error": {
+                    "code": -32602,
+                    "message": f"invalid probe arguments seconds/progressEveryMs: {error}",
+                },
+            }
         threading.Thread(
             target=long_call,
             args=(
                 msg_id,
                 token,
-                float(arguments.get("seconds", 5)),
-                int(arguments.get("progressEveryMs", 0)),
+                seconds,
+                every_ms,
             ),
             daemon=True,
         ).start()

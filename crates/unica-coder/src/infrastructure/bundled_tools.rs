@@ -193,11 +193,8 @@ fn resolve_from_artifact_cache(
         .and_then(|tool| tool.artifact.clone())
         .unwrap_or_else(|| tool_name.to_string());
     let delivery = artifact_delivery_key(&manifest, &artifact, &version)?;
-    let program = cache
-        .join(&artifact)
-        .join(delivery)
-        .join(target_id)
-        .join(binary.delivered());
+    let target_root = cache.join(&artifact).join(delivery).join(target_id);
+    let program = manifest_relative_path(&target_root, binary.delivered())?;
     if !program.is_file() {
         return Ok(None);
     }
@@ -324,13 +321,8 @@ fn expected_engine_path(plugin_root: &Path, tool_name: &str, target_id: &str) ->
             let delivery = artifact_delivery_key(&manifest, &artifact, &version).ok()?;
             Some((binary, delivery))
         }) {
-            return Some(
-                cache
-                    .join(artifact)
-                    .join(delivery)
-                    .join(target_id)
-                    .join(binary.delivered()),
-            );
+            let target_root = cache.join(artifact).join(delivery).join(target_id);
+            return manifest_relative_path(&target_root, binary.delivered()).ok();
         }
     }
     let lock_path = plugin_root.join("third-party").join("tools.lock.json");
@@ -945,6 +937,45 @@ mod delivery_tests {
             found.map(|tool| tool.program),
             Some(installed.join("rlm-bsl-mcp"))
         );
+    }
+
+    #[test]
+    fn a_delivered_path_cannot_escape_the_verified_cache_root() {
+        let plugin_root = tests::temp_plugin_root("delivered-path-traversal");
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "tools": [{
+    "name": "bsl-analyzer",
+    "version": "0.2.67",
+    "binaries": {
+      "darwin-arm64": {
+        "targetTriple": "aarch64-apple-darwin",
+        "binaryPath": "bin/darwin-arm64/bsl-analyzer",
+        "deliveredPath": "../../outside-engine",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }]
+}"#,
+        )
+        .unwrap();
+        let cache = plugin_root.join("..").join("delivered-path-cache");
+        let target_root = cache.join("bsl-analyzer/0.2.67/darwin-arm64");
+        fs::create_dir_all(&target_root).unwrap();
+        fs::write(cache.join("bsl-analyzer/outside-engine"), b"outside").unwrap();
+
+        let error = resolve_from_artifact_cache(
+            &plugin_root,
+            &cache,
+            "bsl-analyzer",
+            "darwin-arm64",
+            false,
+        )
+        .expect_err("deliveredPath traversal must fail closed");
+
+        assert!(error.contains("stay inside"), "{error}");
     }
 
     #[test]

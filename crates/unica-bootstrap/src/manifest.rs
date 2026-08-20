@@ -171,9 +171,12 @@ impl RuntimeManifest {
 
     /// Артефакт по имени: версия вместе с суммой цели ключует установку.
     pub fn artifact(&self, name: &str) -> Result<&Artifact> {
-        self.artifacts
-            .get(name)
-            .ok_or_else(|| BootstrapError::new(format!("runtime manifest has no artifact {name}")))
+        self.artifacts.get(name).ok_or_else(|| {
+            BootstrapError::of(
+                Failure::Configuration,
+                format!("runtime manifest has no artifact {name}"),
+            )
+        })
     }
 
     pub fn validate(&self, plugin_version: &str) -> Result<()> {
@@ -297,12 +300,7 @@ impl RuntimeManifest {
     /// Цель артефакта. Имя артефакта обязательно: в манифесте их несколько, и
     /// молчаливое обращение к ядру скрыло бы опечатку в имени движка.
     pub fn artifact_target(&self, artifact: &str, target: HostTarget) -> Result<&TargetRuntime> {
-        let entry = self.artifacts.get(artifact).ok_or_else(|| {
-            BootstrapError::of(
-                Failure::Configuration,
-                format!("runtime manifest has no artifact {artifact}"),
-            )
-        })?;
+        let entry = self.artifact(artifact)?;
         entry.targets.get(target.as_str()).ok_or_else(|| {
             BootstrapError::of(
                 Failure::Configuration,
@@ -392,8 +390,21 @@ fn validate_target(
             ));
         }
     }
-    let Some(entrypoint) = target.entrypoint.as_deref() else {
-        return Ok(());
+    let entrypoint = match (role, target.entrypoint.as_deref()) {
+        (ArtifactRole::Core, Some(entrypoint)) => entrypoint,
+        (ArtifactRole::Core, None) => {
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!("core entrypoint is missing for runtime target {name}"),
+            ))
+        }
+        (ArtifactRole::Engine, Some(entrypoint)) => {
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!("engine entrypoint is not allowed for {artifact} {name}: {entrypoint}"),
+            ))
+        }
+        (ArtifactRole::Engine, None) => return Ok(()),
     };
     validate_runtime_path(entrypoint)?;
     if !paths.contains(entrypoint) {

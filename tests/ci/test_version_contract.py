@@ -68,7 +68,7 @@ class VersionContractTests(unittest.TestCase):
         """
         module = load_module()
 
-        for version in ("0.13.0-rc.1", "0.13.0-beta.2", "1.0.0"):
+        for version in ("0.13.0-rc.1", "0.13.0-beta.2", "0.13.0-alpha-1", "1.0.0"):
             with self.subTest(version=version):
                 self.assertRegex(version, module.RELEASE_VERSION)
 
@@ -164,8 +164,29 @@ class PrereleaseVersionTests(unittest.TestCase):
 
     def test_a_prerelease_suffix_is_a_valid_version(self) -> None:
         semver = self.bumper().SEMVER
-        for version in ("0.13.0-rc.1", "1.0.0-probe.2", "0.13.0-delivery.1"):
+        for version in (
+            "0.13.0-rc.1",
+            "1.0.0-probe.2",
+            "0.13.0-delivery.1",
+            "0.13.0-alpha-1",
+        ):
             self.assertTrue(semver.fullmatch(version), version)
+
+    def test_bumper_and_gate_accept_the_same_version_grammar(self) -> None:
+        gate = load_module().RELEASE_VERSION
+        bumper = self.bumper().SEMVER
+        corpus = (
+            "0.13.0",
+            "0.13.0-alpha-1",
+            "0.13.0-rc.1",
+            "0.13.0-",
+            "0.13.0-alpha..1",
+            "0.13.0+build.1",
+        )
+        self.assertEqual(
+            {version: bool(gate.fullmatch(version)) for version in corpus},
+            {version: bool(bumper.fullmatch(version)) for version in corpus},
+        )
 
     def test_a_plain_version_stays_valid(self) -> None:
         semver = self.bumper().SEMVER

@@ -103,8 +103,9 @@ impl RuntimeInstaller {
                 .join(name)
                 .join(delivery_key(&artifact.version, target))
                 .join(host.as_str());
-            // Что уже лежало, видно только до доставки: она же это и создаёт.
-            let already = root.is_dir();
+            // Каталог без годного маркера кешем не является: установщик его
+            // заменит, и отчёт прогрева обязан назвать эту загрузку.
+            let already = ready_installation(&root, target, name, &artifact.version, host)?;
             self.ensure_artifact(manifest, name, host, observer)?;
             delivered.push(Prefetched {
                 artifact: name.clone(),
@@ -143,11 +144,7 @@ impl RuntimeInstaller {
             .join(host.as_str());
 
         fs::create_dir_all(self.cache_root.join(".locks"))?;
-        let lock_path = self.cache_root.join(".locks").join(format!(
-            "{name}-{}-{}.lock",
-            delivery,
-            host.as_str()
-        ));
+        let lock_path = delivery_lock_path(&self.cache_root, name, &delivery, host.as_str());
         let lock = open_lock(&lock_path)?;
         lock.lock_exclusive().map_err(|error| {
             BootstrapError::new(format!(
@@ -286,7 +283,19 @@ impl RuntimeInstaller {
             // Свежайшие вперёд; при равном времени — по имени, чтобы порядок не
             // зависел от разрешения часов файловой системы.
             versions.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+            let artifact_name = artifact
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| BootstrapError::new("runtime artifact directory has no name"))?;
             for (_, path) in versions.into_iter().skip(keep) {
+                let delivery = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| BootstrapError::new("runtime delivery directory has no name"))?;
+                let Some(_locks) = try_lock_delivery_targets(cache_root, artifact_name, delivery)?
+                else {
+                    continue;
+                };
                 if fs::remove_dir_all(&path).is_err() {
                     stuck.push(path);
                 }
@@ -394,10 +403,64 @@ fn drop_other_partials(cache_root: &Path, artifact: &str, keep: &Path) {
         return;
     };
     for entry in entries.flatten() {
-        if entry.path() != keep {
-            let _ = fs::remove_file(entry.path());
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let Some(stem) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_suffix(".tar.gz"))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let Ok(lock) = open_lock(
+            &cache_root
+                .join(".locks")
+                .join(format!("{artifact}-{stem}.lock")),
+        ) else {
+            continue;
+        };
+        if lock.try_lock_exclusive().is_ok() {
+            let _ = fs::remove_file(path);
         }
     }
+}
+
+fn delivery_lock_path(cache_root: &Path, artifact: &str, delivery: &str, target: &str) -> PathBuf {
+    cache_root
+        .join(".locks")
+        .join(format!("{artifact}-{delivery}-{target}.lock"))
+}
+
+/// Захватить все целевые блокировки версии перед удалением её каталога.
+///
+/// Цели известны заранее, поэтому конкурент не может опубликовать четвёртый
+/// каталог между перечислением и удалением. Занята хотя бы одна — версия жива
+/// у другого процесса и сборка мусора её пропускает.
+fn try_lock_delivery_targets(
+    cache_root: &Path,
+    artifact: &str,
+    delivery: &str,
+) -> Result<Option<Vec<File>>> {
+    fs::create_dir_all(cache_root.join(".locks"))?;
+    let mut locked = Vec::new();
+    for target in HostTarget::ALL {
+        let path = delivery_lock_path(cache_root, artifact, delivery, target.as_str());
+        let lock = open_lock(&path)?;
+        match lock.try_lock_exclusive() {
+            Ok(()) => locked.push(lock),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) => {
+                return Err(BootstrapError::new(format!(
+                    "failed to inspect runtime cache lock {}: {error}",
+                    path.display()
+                )))
+            }
+        }
+    }
+    Ok(Some(locked))
 }
 
 fn drop_stale_transactions(

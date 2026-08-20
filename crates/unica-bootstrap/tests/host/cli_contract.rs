@@ -131,10 +131,19 @@ fn a_development_checkout_has_nothing_to_prefetch_and_says_so() {
     // объявляет. Молчаливый успех здесь соврал бы: образ уехал бы пустым.
     let plugin_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica");
 
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let cache = std::env::temp_dir().join(format!(
+        "unica-bootstrap-prefetch-development-{}-{nonce}",
+        std::process::id()
+    ));
     let output = Command::new(env!("CARGO_BIN_EXE_unica-bootstrap"))
         .arg("prefetch")
         .arg("--plugin-root")
         .arg(&plugin_root)
+        .env("UNICA_RUNTIME_CACHE_DIR", &cache)
         .output()
         .expect("bootstrap process must start");
 
@@ -144,4 +153,5 @@ fn a_development_checkout_has_nothing_to_prefetch_and_says_so() {
         stderr.contains("development"),
         "отказ обязан назвать причину: {stderr}"
     );
+    fs::remove_dir_all(cache).ok();
 }

@@ -19,8 +19,8 @@ pub use host::{
     host_tool_deadline, provider_state_root, runtime_cache_root, verify_installed_plugin_metadata,
 };
 pub use manifest::{
-    DeliveryForm, ReleaseIdentity, RuntimeAsset, RuntimeFile, RuntimeManifest, SourceIdentity,
-    TargetRuntime,
+    Artifact, ArtifactRole, DeliveryForm, ReleaseIdentity, RuntimeAsset, RuntimeFile,
+    RuntimeManifest, SourceIdentity, TargetRuntime, CORE_ARTIFACT,
 };
 pub use platform::{launch_runtime, run_platform_main, HostTarget, RuntimeHandoff};
 pub use verification::verify_mcp_runtime;

@@ -121,6 +121,8 @@ fn runtime_command(entrypoint: &Path, args: &[String], handoff: &RuntimeHandoff<
         .env("UNICA_RUNTIME_MANIFEST", handoff.runtime_manifest);
     if let Some(notice) = handoff.startup_notice {
         command.env("UNICA_STARTUP_NOTICE", notice);
+    } else {
+        command.env_remove("UNICA_STARTUP_NOTICE");
     }
     command
 }
@@ -219,9 +221,14 @@ mod tests {
             startup_notice: None,
         };
 
-        let output = runtime_command(Path::new("/bin/sh"), &args, &handoff)
-            .output()
-            .unwrap();
+        let mut command = runtime_command(Path::new("/bin/sh"), &args, &handoff);
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| { name == "UNICA_STARTUP_NOTICE" && value.is_none() }),
+            "the child command must explicitly remove an inherited notice"
+        );
+        let output = command.output().unwrap();
 
         assert_eq!(output.stdout, b"unset");
     }

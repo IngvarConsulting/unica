@@ -6,6 +6,7 @@
 //! переживает отмену и достаётся следующему.
 
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -188,7 +189,8 @@ impl DeliveryDesk {
         let running = Arc::clone(&delivery);
         // Поток отцеплен намеренно: доставка переживает вызов, который её начал.
         thread::spawn(move || {
-            let outcome = work(Arc::clone(&running));
+            let outcome = catch_unwind(AssertUnwindSafe(|| work(Arc::clone(&running))))
+                .unwrap_or_else(|_| Err("engine delivery worker panicked".to_string()));
             running.settle(outcome);
         });
         (delivery, true)
@@ -218,7 +220,18 @@ impl DeliveryDesk {
             if left.is_zero() {
                 return None;
             }
+            // Progress sinks are outside the delivery outcome contract. A
+            // blocked host notification must not keep the worker from settling.
+            drop(outcome);
             publish(artifact, delivery, progress);
+            outcome = delivery.outcome.lock().expect("delivery outcome");
+            if outcome.is_some() {
+                continue;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
             let (next, _) = delivery
                 .settled
                 .wait_timeout(outcome, left.min(DELIVERY_PROGRESS_STEP))
@@ -766,6 +779,28 @@ mod tests {
 
         assert!(matches!(second, Delivered::Ready));
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_panicking_delivery_settles_as_a_failure_instead_of_wedging_the_artifact() {
+        let desk = desk();
+        let (delivery, started) =
+            desk.start("rlm-tools-bsl", |_| panic!("simulated delivery panic"));
+        assert!(started);
+
+        let outcome = desk
+            .wait(
+                "rlm-tools-bsl",
+                &delivery,
+                Duration::from_millis(500),
+                &CancellationToken::new(),
+                &NoopProgressSink,
+            )
+            .expect("panic must settle the delivery");
+
+        assert!(outcome
+            .expect_err("panic is a failed delivery")
+            .contains("panicked"));
     }
 
     #[test]

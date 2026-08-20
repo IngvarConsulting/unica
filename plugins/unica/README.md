@@ -212,14 +212,14 @@ a rebuilt engine with the same upstream version from reusing or overwriting old
 bytes. The generated `third-party/manifest.json` maps tools to those artifact
 roots, and internal launches re-check the pinned binary hash.
 
-The core download happens inside the host's MCP startup budget. Packaged `.mcp.json` therefore declares
-`startup_timeout_sec`, which Codex honours: a slow link no longer has the
-install killed part-way, and the session is not held up while it runs, because
-the tools appear once the core is published. A host that does not know the key
-ignores it.
+The core download happens inside the host's MCP startup budget. Packaged
+`.mcp.json` therefore declares `startup_timeout_sec`, which bounds this
+pre-startup transfer. The host waits for the core to be verified and published
+before it starts MCP; a host that does not know the key ignores it.
 
-After startup, the first call that needs an absent engine starts one
-server-owned delivery from the pinned `unica-toolchain` asset. Concurrent calls
+After startup, engine delivery is non-blocking for concurrent callers. The
+first call that needs an absent engine starts one server-owned delivery from the
+pinned `unica-toolchain` asset. Concurrent calls
 share it. If the owner cannot finish inside the bounded wait window, the call
 returns `work.status=working`; retry the same domain call after the suggested
 interval. There is no public install tool, and cancelling one call does not

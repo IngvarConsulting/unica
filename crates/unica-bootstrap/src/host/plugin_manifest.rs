@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::{BootstrapError, Result};
+use crate::error::{BootstrapError, Failure, Result};
 
 use super::descriptor::KNOWN;
 
@@ -29,7 +29,16 @@ pub fn verify_installed_plugin_metadata(plugin_root: &Path, version: &str) -> Re
                 metadata_path.display()
             )));
         }
-        let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
+        let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)
+            .map_err(|error| {
+            BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "failed to parse installed host manifest {}: {error}",
+                    metadata_path.display()
+                ),
+            )
+        })?;
         // Absence is checked on the raw entry rather than the string projection,
         // so a key of any type still counts as declared.
         let declared_skills = metadata.get("skills");
@@ -84,6 +93,12 @@ mod tests {
             )
             .unwrap();
         }
+
+        fn write_raw(&self, dir: &str, body: &[u8]) {
+            let manifest_dir = self.root.join(dir);
+            std::fs::create_dir_all(&manifest_dir).unwrap();
+            std::fs::write(manifest_dir.join("plugin.json"), body).unwrap();
+        }
     }
 
     impl Drop for ManifestFixture {
@@ -99,6 +114,20 @@ mod tests {
             "skills": "./skills/",
             "mcpServers": "./.mcp.json",
         })
+    }
+
+    #[test]
+    fn malformed_host_metadata_is_an_installation_configuration_failure() {
+        let fixture = ManifestFixture::new("malformed-json");
+        fixture.write(".codex-plugin", codex_manifest());
+        fixture.write(".claude-plugin", claude_manifest());
+        fixture.write_raw(".codex-plugin", b"{");
+
+        let error = verify_installed_plugin_metadata(&fixture.root, VERSION)
+            .expect_err("malformed plugin metadata");
+
+        assert_eq!(error.failure(), crate::error::Failure::Configuration);
+        assert!(error.to_string().contains("plugin.json"), "{error}");
     }
 
     fn claude_manifest() -> serde_json::Value {

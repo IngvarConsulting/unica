@@ -46,7 +46,9 @@ def read_version_contract(repo_root: Path) -> dict[str, str]:
 # адрес ассета прибит к тегу, поэтому нужна версия, которая существует для нас
 # и не существует для пользователей. Суффикс — часть версии, а не метка рядом:
 # манифест требует буквального совпадения тега с `v` + версия плагина.
-RELEASE_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$")
+RELEASE_VERSION = re.compile(
+    r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 
 
 def validate_version_contract(

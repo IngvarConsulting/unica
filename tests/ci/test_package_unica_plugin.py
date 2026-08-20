@@ -27,6 +27,37 @@ def load_package_module():
 
 
 class PackageUnicaPluginTests(unittest.TestCase):
+    def test_runtime_metadata_asset_must_be_an_object(self) -> None:
+        module = load_package_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_root = Path(tmp)
+            (metadata_root / "unica-runtime-linux-x64.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "artifact": "unica",
+                        "role": "core",
+                        "version": "0.12.0",
+                        "pluginVersion": "0.12.0",
+                        "target": "linux-x64",
+                        "targetTriple": "x86_64-unknown-linux-gnu",
+                        "asset": None,
+                        "files": [
+                            {
+                                "path": "bin/linux-x64/unica",
+                                "sha256": "a" * 64,
+                                "executable": True,
+                            }
+                        ],
+                        "entrypoint": "bin/linux-x64/unica",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "asset.*object"):
+                module.load_runtime_metadata(metadata_root, plugin_version="0.12.0")
+
     def make_lock(self) -> dict:
         return {
             "schemaVersion": 1,
@@ -1197,6 +1228,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
             )
             self.assertEqual(runtime_manifest["artifacts"]["bsl-analyzer"]["version"], "0.2.67")
             self.assertEqual(runtime_manifest["artifacts"]["bsl-analyzer"]["role"], "engine")
+            self.assertEqual(
+                sorted(runtime_manifest["artifacts"]["bsl-analyzer"]["targets"]),
+                sorted(target_triples),
+                "манифест несёт движок на все цели хоста",
+            )
             for target_data in runtime_manifest["artifacts"]["bsl-analyzer"]["targets"].values():
                 # Движок запускает рантайм, а не bootstrap: точки входа нет.
                 self.assertNotIn("entrypoint", target_data)

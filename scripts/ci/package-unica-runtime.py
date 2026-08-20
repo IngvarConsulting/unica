@@ -287,6 +287,8 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
     if core in assets:
         raise SystemExit(f"core artifact {core} must not name a toolchain asset")
     for artifact in sorted(set(delivered) - {core}):
+        if artifact not in artifact_versions:
+            raise SystemExit(f"artifact {artifact} has no tool version")
         asset = assets.get(artifact)
         if not isinstance(asset, dict):
             raise SystemExit(f"artifact {artifact} has no toolchain asset")

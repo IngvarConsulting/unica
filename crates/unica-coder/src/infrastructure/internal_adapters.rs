@@ -521,23 +521,15 @@ impl<'a> RuntimeAdapter<'a> {
         command.extend(report_args.iter().cloned());
 
         if dry_run {
-            return Ok(RuntimeAdapterOutcome::plain(AdapterOutcome {
-                ok: true,
-                summary: format!(
-                    "dry run: {tool_name} would call internal v8-runner runtime adapter"
-                ),
-                changes: if mutating {
-                    vec!["no files changed because dryRun is true".to_string()]
-                } else {
-                    Vec::new()
-                },
-                warnings: merge_warnings(invocation.warnings, bundled_tool.warnings),
-                errors: Vec::new(),
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: Some(command),
-            }));
+            let mut outcome = dry_run_outcome(
+                tool_name,
+                "v8-runner runtime",
+                mutating,
+                bundled_tool,
+                command,
+            );
+            outcome.warnings = merge_warnings(invocation.warnings, outcome.warnings);
+            return Ok(RuntimeAdapterOutcome::plain(outcome));
         }
 
         if cancellation.is_cancelled() {
@@ -1122,24 +1114,21 @@ impl RuntimeJobAdapter {
         let bundled_tool = resolve_bundled_tool(&plugin_root, "v8-runner", !dry_run)?;
         let mut command = vec![bundled_tool.program.display().to_string()];
         command.extend(reported_args);
-        let warnings = merge_warnings(invocation.warnings, bundled_tool.warnings);
 
         if dry_run {
-            return Ok(RuntimeJobAdapterOutcome {
-                outcome: AdapterOutcome {
-                    ok: true,
-                    summary: format!("dry run: {tool_name} would start a durable runtime job"),
-                    changes: vec!["no runtime job started because dryRun is true".to_string()],
-                    warnings,
-                    errors: Vec::new(),
-                    artifacts: Vec::new(),
-                    stdout: None,
-                    stderr: None,
-                    command: Some(command),
-                },
-                job: None,
-            });
+            let mut outcome = dry_run_outcome(
+                tool_name,
+                "v8-runner durable runtime job",
+                true,
+                bundled_tool,
+                command,
+            );
+            outcome.changes = vec!["no runtime job started because dryRun is true".to_string()];
+            outcome.warnings = merge_warnings(invocation.warnings, outcome.warnings);
+            return Ok(RuntimeJobAdapterOutcome { outcome, job: None });
         }
+
+        let warnings = merge_warnings(invocation.warnings, bundled_tool.warnings);
 
         if cancellation.is_cancelled() {
             return Ok(RuntimeJobAdapterOutcome {
@@ -1593,17 +1582,15 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         reported_command.extend(command.args.clone());
 
         if dry_run {
-            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
-                ok: true,
-                summary: format!("dry run: {tool_name} would call typed bsl-analyzer MCP adapter"),
-                changes: Vec::new(),
-                warnings: bundled_tool.warnings,
-                errors: Vec::new(),
-                artifacts: vec![source_dir.display().to_string()],
-                stdout: None,
-                stderr: None,
-                command: Some(reported_command),
-            }));
+            let mut outcome = dry_run_outcome(
+                tool_name,
+                "typed bsl-analyzer MCP",
+                false,
+                bundled_tool,
+                reported_command,
+            );
+            outcome.artifacts = vec![source_dir.display().to_string()];
+            return Ok(BslAnalyzerOutcome::plain(outcome));
         }
 
         let output = self.runner.call(&command)?;
@@ -1685,17 +1672,15 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         reported_command.extend(reported_args);
 
         if dry_run {
-            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
-                ok: true,
-                summary: format!("dry run: {tool_name} would call internal code analysis adapter"),
-                changes: Vec::new(),
-                warnings: bundled_tool.warnings,
-                errors: Vec::new(),
-                artifacts: vec![source_dir.display().to_string()],
-                stdout: None,
-                stderr: None,
-                command: Some(reported_command),
-            }));
+            let mut outcome = dry_run_outcome(
+                tool_name,
+                "bsl-analyzer code analysis",
+                false,
+                bundled_tool,
+                reported_command,
+            );
+            outcome.artifacts = vec![source_dir.display().to_string()];
+            return Ok(BslAnalyzerOutcome::plain(outcome));
         }
 
         let mut process_args = vec!["analyze".to_string()];
@@ -3215,6 +3200,25 @@ mod tests {
     }
 
     #[test]
+    fn runtime_execute_preview_fails_honestly_when_v8_runner_is_missing() {
+        let context = temp_context("runtime-preview-missing-v8-runner");
+        remove_fake_tool_binaries(&context, "v8-runner");
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let outcome = RuntimeAdapter::new()
+            .invoke("unica.runtime.execute", &args, &context, true, true)
+            .expect("preview remains structured");
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn runtime_adapter_maps_build_to_allowlisted_v8_runner_argv() {
         let context = temp_context("runtime-build-argv");
         let runner = RecordingProcessRunner {
@@ -3406,6 +3410,31 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("retry once")));
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn runtime_job_preview_fails_honestly_when_v8_runner_is_missing() {
+        let context = temp_context("runtime-job-preview-missing-v8-runner");
+        remove_fake_tool_binaries(&context, "v8-runner");
+        let mut args = Map::new();
+        args.insert("operation".to_string(), json!("build"));
+
+        let outcome = RuntimeJobAdapter::invoke(
+            RuntimeJobAction::Start,
+            "unica.runtime.job.start",
+            &args,
+            &context,
+            true,
+        )
+        .expect("preview remains structured")
+        .outcome;
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
         cleanup_context(&context);
     }
 
@@ -4805,6 +4834,22 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_preview_fails_honestly_when_bsl_analyzer_is_missing() {
+        let context = temp_context("diagnostics-preview-missing-analyzer");
+        remove_fake_tool_binaries(&context, "bsl-analyzer");
+        let args = Map::new();
+
+        let outcome = invoke_analyze(&BslAnalyzerMcpAdapter::new(), &args, &context, true).outcome;
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
+        cleanup_context(&context);
+    }
+
+    #[test]
     fn multi_source_set_resolve_source_dir_selects_main_configuration_root() {
         let context = temp_context("multi-source-set");
         fs::write(
@@ -5156,6 +5201,27 @@ analyze_timeout_seconds = 900
             runner.commands.borrow().is_empty(),
             "an absent provider is never invoked"
         );
+        cleanup_context(&context);
+    }
+
+    #[test]
+    fn bsl_graph_preview_fails_honestly_when_the_analyzer_binary_is_missing() {
+        let context = temp_context("graph-preview-missing-analyzer");
+        remove_fake_tool_binaries(&context, "bsl-analyzer");
+        let mut args = Map::new();
+        args.insert("mode".to_string(), json!("resolve"));
+        args.insert("query".to_string(), json!("ВидыНоменклатуры"));
+
+        let outcome = BslAnalyzerMcpAdapter::new()
+            .invoke("unica.code.graph", &args, &context, true)
+            .expect("preview remains structured")
+            .outcome;
+
+        assert!(!outcome.ok);
+        assert!(outcome
+            .errors
+            .iter()
+            .any(|error| { error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING) }));
         cleanup_context(&context);
     }
 
@@ -6583,6 +6649,19 @@ analyze_timeout_seconds = 900
         let tools = manifest["tools"].as_array_mut().unwrap();
         tools.retain(|tool| tool["name"] != json!(tool_name));
         fs::write(&manifest_path, serde_json::to_string(&manifest).unwrap()).unwrap();
+    }
+
+    fn remove_fake_tool_binaries(context: &WorkspaceContext, tool_name: &str) {
+        let plugin_root = context.cwd.join("plugins/unica");
+        for target in ["darwin-arm64", "linux-x64", "win-x64"] {
+            let suffix = if target == "win-x64" { ".exe" } else { "" };
+            let _ = fs::remove_file(
+                plugin_root
+                    .join("bin")
+                    .join(target)
+                    .join(format!("{tool_name}{suffix}")),
+            );
+        }
     }
 
     fn create_fake_plugin_root(root: &Path) {

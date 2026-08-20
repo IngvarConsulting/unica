@@ -450,6 +450,15 @@ def build_bundle_atomically(
         raise
 
 
+def register_artifact_asset(
+    artifact_assets: dict[str, dict], name: str, entry: dict
+) -> None:
+    """Keep one byte identity per delivered artifact name."""
+    existing = artifact_assets.setdefault(name, entry)
+    if existing != entry:
+        raise SystemExit(f"conflicting asset metadata for artifact {name}")
+
+
 def build_locked_bundle(
     args: argparse.Namespace,
     lock: dict,
@@ -521,8 +530,10 @@ def build_locked_bundle(
         shutil.copy2(downloaded, dest)
         set_file_mode(dest, executable=True)
         built_paths[tool["name"]] = dest
-        artifact_assets[artifact_name(tool)] = artifact_asset_entry(
-            tool, asset, media_type="application/octet-stream"
+        register_artifact_asset(
+            artifact_assets,
+            artifact_name(tool),
+            artifact_asset_entry(tool, asset, media_type="application/octet-stream"),
         )
         runtime_files.append(
             runtime_file_entry(
@@ -536,8 +547,14 @@ def build_locked_bundle(
 
     for identity in sorted(archive_groups):
         group = archive_groups[identity]
-        artifact_assets[artifact_name(group[0])] = artifact_asset_entry(
-            group[0], group[0]["assets"][args.target], media_type="application/gzip"
+        register_artifact_asset(
+            artifact_assets,
+            artifact_name(group[0]),
+            artifact_asset_entry(
+                group[0],
+                group[0]["assets"][args.target],
+                media_type="application/gzip",
+            ),
         )
         archive_paths, archive_files, group_download_seconds = materialize_archive_group(
             group,

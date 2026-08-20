@@ -154,6 +154,17 @@ def runtime_manifest(binary: bytes = b"multidist") -> dict:
 
 
 class BuildUnicaToolsTests(unittest.TestCase):
+    def test_conflicting_metadata_for_one_artifact_name_fails_closed(self) -> None:
+        module = load_build_module()
+        assets: dict[str, dict] = {}
+        first = {"name": "first", "sha256": "a" * 64}
+        second = {"name": "second", "sha256": "b" * 64}
+
+        module.register_artifact_asset(assets, "shared", first)
+        module.register_artifact_asset(assets, "shared", dict(first))
+        with self.assertRaisesRegex(SystemExit, "conflicting asset metadata for artifact shared"):
+            module.register_artifact_asset(assets, "shared", second)
+
     def assert_external_toolchain_contract(self, external_tools: list[dict]) -> None:
         expected_names = {
             "bsl-analyzer",

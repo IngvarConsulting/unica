@@ -1881,11 +1881,29 @@ class ProductContractTests(unittest.TestCase):
                 self.assertIn(f'"{origin}"', packager)
                 self.assertIn(f'"{origin}/releases/download/"', validator)
 
+        emitted_origins = set(
+            re.findall(
+                r'^(?:SOURCE_REPOSITORY|TOOLCHAIN_REPOSITORY) = "([^"]+)"$',
+                packager,
+                re.MULTILINE,
+            )
+        )
+        self.assertEqual(emitted_origins, approved)
+
         # Список закрыт с обеих сторон: третий адрес — новая запись реестра.
         self.assertEqual(
             len(re.findall(r'"https://github\.com/IngvarConsulting/[\w-]+/releases/download/"', validator)),
             len(approved),
         )
+
+    def test_startup_documentation_separates_core_blocking_from_engine_delivery(self) -> None:
+        readme = (
+            Path(__file__).resolve().parents[2] / "plugins/unica/README.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("host waits for the core", readme)
+        self.assertIn("engine delivery is non-blocking", readme)
+        self.assertNotIn("session is not held up while it runs", readme)
 
 
 if __name__ == "__main__":

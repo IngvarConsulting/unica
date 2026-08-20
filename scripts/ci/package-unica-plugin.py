@@ -484,6 +484,8 @@ def load_runtime_metadata(
             raise SystemExit(f"runtime target triple mismatch for {target}")
 
         asset = data.get("asset", {})
+        if not isinstance(asset, dict):
+            raise SystemExit(f"runtime asset for {artifact} {target} must be an object")
         origin = data.get("assetOrigin")
         if role == "core":
             # Ядро собирается здесь, и его имя выводится единым правилом.

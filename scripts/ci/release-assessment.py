@@ -11,6 +11,7 @@ import os
 import platform
 import queue
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -165,6 +166,12 @@ def overlay_runtime_files(run_unica: Path, overlay_root: Path) -> list[str]:
     if not overlay_root.is_dir():
         raise SystemExit(f"runtime assessment engine overlay is missing: {overlay_root}")
     runtime_root = plugin_root_for(run_unica)
+    tool_manifest = read_json(runtime_root / "third-party" / "manifest.json")
+    required_executables = {
+        str(tool.get("deliveredPath"))
+        for tool in tool_manifest.get("tools", [])
+        if tool.get("artifact") not in (None, "unica") and tool.get("deliveredPath")
+    }
     copied: list[str] = []
     for source in sorted(overlay_root.rglob("*")):
         if source.is_symlink():
@@ -172,6 +179,12 @@ def overlay_runtime_files(run_unica: Path, overlay_root: Path) -> list[str]:
         if not source.is_file():
             continue
         relative = source.relative_to(overlay_root)
+        if relative.as_posix() in required_executables and not (
+            stat.S_IMODE(source.stat().st_mode) & 0o111
+        ):
+            raise SystemExit(
+                f"runtime assessment engine entrypoint is not executable: {relative.as_posix()}"
+            )
         destination = runtime_root / relative
         if destination.exists():
             raise SystemExit(

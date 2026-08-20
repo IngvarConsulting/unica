@@ -133,6 +133,30 @@ def make_bundle(root: Path) -> Path:
 
 
 class PackageUnicaRuntimeTests(unittest.TestCase):
+    def test_a_delivered_artifact_without_a_tool_version_fails_closed(self) -> None:
+        module = load_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bundle = make_bundle(root)
+        manifest_path = bundle / "tools.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        library = next(
+            item
+            for item in manifest["runtimeFiles"]
+            if item["deliveredPath"] == "payload/libpython3.12.so.1.0"
+        )
+        library["artifact"] = "orphan-engine"
+        manifest["artifactAssets"]["orphan-engine"] = {
+            "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+            "tag": "orphan-v1.0.0-build.1",
+            "name": "orphan-linux-x64.tar.gz",
+            "mediaType": "application/gzip",
+            "sha256": "c" * 64,
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with self.assertRaisesRegex(SystemExit, "artifact orphan-engine has no tool version"):
+            module.package_runtime(bundle, root / "out")
+
     def test_runtime_archive_is_deterministic_and_target_only(self) -> None:
         module = load_module()
 

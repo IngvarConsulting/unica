@@ -5964,10 +5964,15 @@ mod tests {
     fn runtime_execute_defaults_to_dry_run_and_maps_cache_event_by_operation() {
         let mut args = Map::new();
         args.insert("operation".to_string(), Value::String("dump".to_string()));
+        let mut outcome = AdapterOutcome::ok("dry run: runtime adapter invoked");
+        outcome.command = Some(vec!["v8-runner".to_string(), "dump".to_string()]);
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.runtime.execute", &args)
-            .unwrap();
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome,
+            data: None,
+        }))
+        .call_tool("unica.runtime.execute", &args)
+        .unwrap();
 
         assert!(result.ok);
         assert!(result.summary.contains("dry run"));
@@ -6385,9 +6390,12 @@ mod tests {
         let mut args = Map::new();
         args.insert("operation".to_string(), Value::String("dump".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.runtime.job.start", &args)
-            .expect("dry-run job start succeeds");
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("dry run: runtime job adapter invoked"),
+            data: None,
+        }))
+        .call_tool("unica.runtime.job.start", &args)
+        .expect("dry-run job start succeeds");
 
         assert!(result.ok);
         assert!(result.summary.contains("dry run"));
@@ -6402,9 +6410,12 @@ mod tests {
         args.insert("operation".to_string(), Value::String("launch".to_string()));
         args.insert("clientMode".to_string(), Value::String("thin".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.runtime.execute", &args)
-            .unwrap();
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("dry run: runtime adapter invoked"),
+            data: None,
+        }))
+        .call_tool("unica.runtime.execute", &args)
+        .unwrap();
 
         assert!(result.ok);
         assert!(result.cache.events.is_empty());

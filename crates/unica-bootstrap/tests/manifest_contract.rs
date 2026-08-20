@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use unica_bootstrap::{HostTarget, RuntimeManifest};
+use unica_bootstrap::{Failure, HostTarget, RuntimeManifest};
 
 const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -100,6 +100,21 @@ fn manifest_rejects_parent_traversal_and_missing_entrypoint() {
 }
 
 #[test]
+fn a_core_target_without_an_entrypoint_is_rejected() {
+    let mut value = fixture();
+    value["artifacts"]["unica"]["targets"]["linux-x64"]
+        .as_object_mut()
+        .expect("target")
+        .remove("entrypoint");
+
+    let error = parse(value)
+        .validate("0.7.0")
+        .expect_err("missing core entrypoint");
+
+    assert!(error.to_string().contains("core entrypoint"), "{error}");
+}
+
+#[test]
 fn target_detection_accepts_git_for_windows_uname() {
     assert_eq!(
         HostTarget::detect("MINGW64_NT-10.0", "x86_64").expect("Git for Windows"),
@@ -180,6 +195,35 @@ fn an_engine_is_accepted_from_the_toolchain_release() {
     manifest
         .validate("0.7.0")
         .expect("toolchain origin is approved");
+}
+
+#[test]
+fn an_engine_target_may_not_declare_a_core_entrypoint() {
+    let mut value = fixture_with_engine();
+    value["artifacts"]["rlm-tools-bsl"]["targets"]["linux-x64"]["entrypoint"] =
+        serde_json::json!("rlm-bsl-index");
+
+    let error = parse(value)
+        .validate("0.7.0")
+        .expect_err("engine entrypoint is not a core launch contract");
+
+    assert!(error.to_string().contains("engine entrypoint"), "{error}");
+}
+
+#[test]
+fn a_missing_artifact_is_a_configuration_failure_everywhere() {
+    let manifest = parse(fixture());
+
+    let direct = manifest
+        .artifact("rlm-tools-bsl")
+        .expect_err("missing artifact");
+    let target = manifest
+        .artifact_target("rlm-tools-bsl", HostTarget::LinuxX64)
+        .expect_err("missing artifact target");
+
+    assert_eq!(direct.failure(), Failure::Configuration);
+    assert_eq!(target.failure(), Failure::Configuration);
+    assert_eq!(direct.to_string(), target.to_string());
 }
 
 #[test]
