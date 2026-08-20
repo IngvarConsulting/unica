@@ -1,15 +1,16 @@
 //! Доставка движка по требованию.
 //!
-//! Вызов, которому нужен ещё не доставленный движок, не отказывает: он ждёт с
-//! прогрессом и исполняется. Доставка при этом принадлежит серверу, а не вызову,
-//! который её застал, — она возобновляема и полезна следующему.
+//! Вызов, которому нужен ещё не доставленный движок, не отказывает: он ждёт
+//! столько, сколько разумно, и, не дождавшись, отвечает состоянием. Доставка
+//! принадлежит серверу, а не вызову, который её застал, — она возобновляема,
+//! переживает отмену и достаётся следующему.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 
@@ -29,8 +30,22 @@ pub(crate) const DELIVERY_PROGRESS_META_KEY: &str = "io.unica/deliveryProgress";
 /// в секунду. Вызывающему столько не нужно, а хосту столько вредно.
 const DELIVERY_PROGRESS_STEP: Duration = Duration::from_millis(500);
 
+/// Чем кончилось ожидание доставки.
+pub(crate) enum Delivered {
+    /// Движок на месте, вызов продолжается. Путь установки здесь не нужен:
+    /// инструмент найдёт движок обычным разрешением, в кеше артефактов.
+    Ready,
+    /// Не успела за окно. Доставка идёт дальше, вызывающий получает состояние.
+    Working {
+        received: u64,
+        total: Option<u64>,
+    },
+    Failed(String),
+}
+
 /// Идущая доставка одного артефакта.
 pub(crate) struct Delivery {
+    started: Instant,
     received: AtomicU64,
     /// Ноль означает «сервер не сказал», а не «нисколько».
     total: AtomicU64,
@@ -41,6 +56,7 @@ pub(crate) struct Delivery {
 impl Delivery {
     fn new() -> Self {
         Self {
+            started: Instant::now(),
             received: AtomicU64::new(0),
             total: AtomicU64::new(0),
             outcome: Mutex::new(None),
@@ -62,6 +78,25 @@ impl Delivery {
         )
     }
 
+    /// Через сколько повторять. Считается из измеренного темпа; пока считать
+    /// не из чего — `None`, потому что пустое место честнее выдуманного числа.
+    ///
+    /// Пол в секунду выведен из шага загрузчика: он обновляет счётчик раз в
+    /// 64 КБ, и опрос чаще не узнает ничего нового ни на одном канале.
+    fn poll_hint(&self) -> Option<u64> {
+        let (received, total) = self.seen();
+        let total = total?;
+        if received == 0 || received >= total {
+            return None;
+        }
+        let elapsed = self.started.elapsed().as_secs_f64();
+        if elapsed <= 0.0 {
+            return None;
+        }
+        let remaining = (total - received) as f64 / (received as f64 / elapsed);
+        Some((remaining * 1000.0).max(1000.0) as u64)
+    }
+
     fn settle(&self, outcome: Result<PathBuf, String>) {
         *self.outcome.lock().expect("delivery outcome") = Some(outcome);
         self.settled.notify_all();
@@ -79,24 +114,44 @@ impl DeliveryDesk {
     ///
     /// Отмена вызова прекращает ожидание, но не доставку: она доедет и достанется
     /// следующему вызову.
-    pub(crate) fn wait_for<W>(
+    pub(crate) fn deliver<W>(
         &self,
         artifact: &str,
         work: W,
+        window: Duration,
         cancellation: &CancellationToken,
         progress: &dyn ProgressSink,
-    ) -> Result<PathBuf, String>
+    ) -> Delivered
     where
         W: FnOnce(Arc<Delivery>) -> Result<PathBuf, String> + Send + 'static,
     {
         let delivery = self.start(artifact, work);
-        let outcome = self.wait(artifact, &delivery, cancellation, progress);
-        if outcome.is_some() {
-            // Расчёт окончен: следующий вызов либо возьмёт готовое из кеша, либо
-            // начнёт заново, если доставка не удалась.
-            self.in_flight.lock().expect("in flight").remove(artifact);
+        match self.wait(artifact, &delivery, window, cancellation, progress) {
+            Some(outcome) => {
+                // Расчёт окончен: следующий вызов либо возьмёт готовое из кеша,
+                // либо начнёт заново, если доставка не удалась.
+                self.in_flight.lock().expect("in flight").remove(artifact);
+                match outcome {
+                    Ok(_) => Delivered::Ready,
+                    Err(error) => Delivered::Failed(error),
+                }
+            }
+            // Учёт не снимается: доставка идёт, и следующий вызов присоединится
+            // к ней, а не начнёт вторую.
+            None => {
+                let (received, total) = delivery.seen();
+                Delivered::Working { received, total }
+            }
         }
-        outcome.unwrap_or_else(|| Err(format!("delivery of {artifact} was cancelled by the call")))
+    }
+
+    /// Подсказка о повторе для идущей доставки.
+    pub(crate) fn poll_hint(&self, artifact: &str) -> Option<u64> {
+        self.in_flight
+            .lock()
+            .expect("in flight")
+            .get(artifact)
+            .and_then(|delivery| delivery.poll_hint())
     }
 
     fn start<W>(&self, artifact: &str, work: W) -> Arc<Delivery>
@@ -118,14 +173,16 @@ impl DeliveryDesk {
         delivery
     }
 
-    /// `None` — вызов ушёл, не дождавшись.
+    /// `None` — вызов ушёл, не дождавшись: окно кончилось или его отменили.
     fn wait(
         &self,
         artifact: &str,
         delivery: &Arc<Delivery>,
+        window: Duration,
         cancellation: &CancellationToken,
         progress: &dyn ProgressSink,
     ) -> Option<Result<PathBuf, String>> {
+        let deadline = Instant::now() + window;
         let mut outcome = delivery.outcome.lock().expect("delivery outcome");
         loop {
             // Копия, а не изъятие: ждать могут несколько вызовов, и забравший
@@ -136,10 +193,14 @@ impl DeliveryDesk {
             if cancellation.is_cancelled() {
                 return None;
             }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
             publish(artifact, delivery, progress);
             let (next, _) = delivery
                 .settled
-                .wait_timeout(outcome, DELIVERY_PROGRESS_STEP)
+                .wait_timeout(outcome, left.min(DELIVERY_PROGRESS_STEP))
                 .expect("delivery outcome");
             outcome = next;
         }
@@ -339,27 +400,81 @@ mod tests {
         std::fs::remove_dir_all(&plugin_root).ok();
     }
 
+    const WIDE: Duration = Duration::from_secs(5);
+
+    fn expect_ready(delivered: Delivered) {
+        match delivered {
+            Delivered::Ready => {}
+            Delivered::Working { received, total } => {
+                panic!("ожидали движок, получили работу: {received}/{total:?}")
+            }
+            Delivered::Failed(error) => panic!("ожидали движок, получили отказ: {error}"),
+        }
+    }
+
     #[test]
-    fn a_call_waits_for_the_engine_and_gets_it() {
+    fn a_delivery_inside_the_window_hands_over_the_engine() {
         let desk = desk();
-        let heard = Heard::default();
 
-        let delivered = desk
-            .wait_for(
-                "rlm-tools-bsl",
-                |delivery| {
-                    delivery.moved(7, Some(7));
-                    Ok(PathBuf::from("/cache/rlm-tools-bsl/1.33.0/darwin-arm64"))
-                },
-                &CancellationToken::new(),
-                &heard,
-            )
-            .expect("движок доставлен");
-
-        assert_eq!(
-            delivered,
-            PathBuf::from("/cache/rlm-tools-bsl/1.33.0/darwin-arm64")
+        let delivered = desk.deliver(
+            "rlm-tools-bsl",
+            |delivery| {
+                delivery.moved(7, Some(7));
+                Ok(PathBuf::from("/cache/rlm-tools-bsl/1.33.0/darwin-arm64"))
+            },
+            WIDE,
+            &CancellationToken::new(),
+            &Heard::default(),
         );
+
+        expect_ready(delivered);
+    }
+
+    #[test]
+    fn a_delivery_longer_than_the_window_answers_working_and_keeps_going() {
+        // Хост режет вызов своим сроком, и его ответ уносит наш целиком.
+        // Поэтому отвечаем сами — а доставка продолжается.
+        let desk = Arc::new(desk());
+        let release = Arc::new(AtomicBool::new(false));
+        let held = Arc::clone(&release);
+
+        let delivered = desk.deliver(
+            "rlm-tools-bsl",
+            move |delivery| {
+                delivery.moved(1024, Some(4096));
+                while !held.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Ok(PathBuf::from("/cache/rlm-tools-bsl"))
+            },
+            Duration::from_millis(120),
+            &CancellationToken::new(),
+            &NoopProgressSink,
+        );
+
+        assert!(
+            matches!(
+                delivered,
+                Delivered::Working {
+                    received: 1024,
+                    total: Some(4096)
+                }
+            ),
+            "вызов отвечает состоянием, а не ждёт до конца"
+        );
+        assert!(
+            desk.poll_hint("rlm-tools-bsl").is_some(),
+            "подсказка о повторе считается из измеренного темпа"
+        );
+
+        release.store(true, Ordering::SeqCst);
+        expect_ready(desk.deliver(
+            "rlm-tools-bsl",
+            |_| panic!("доставка уже идёт, второй раз её не начинают"),
+            WIDE,
+            &CancellationToken::new(),
+            &NoopProgressSink,
+        ));
     }
 
     #[test]
@@ -373,27 +488,25 @@ mod tests {
                 let desk = Arc::clone(&desk);
                 let started = Arc::clone(&started);
                 thread::spawn(move || {
-                    desk.wait_for(
+                    expect_ready(desk.deliver(
                         "rlm-tools-bsl",
                         move |_| {
                             started.fetch_add(1, Ordering::SeqCst);
                             thread::sleep(Duration::from_millis(120));
                             Ok(PathBuf::from("/cache/rlm-tools-bsl"))
                         },
+                        WIDE,
                         &CancellationToken::new(),
                         &NoopProgressSink,
-                    )
+                    ))
                 })
             })
             .collect::<Vec<_>>();
 
-        let delivered = waiters
-            .into_iter()
-            .map(|waiter| waiter.join().expect("waiter"))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("оба вызова получают движок");
+        for waiter in waiters {
+            waiter.join().expect("waiter");
+        }
 
-        assert_eq!(delivered[0], delivered[1]);
         assert_eq!(started.load(Ordering::SeqCst), 1, "качали один раз");
     }
 
@@ -411,7 +524,7 @@ mod tests {
             let release = Arc::clone(&release);
             let cancellation = cancellation.clone();
             thread::spawn(move || {
-                desk.wait_for(
+                desk.deliver(
                     "rlm-tools-bsl",
                     move |_| {
                         started.fetch_add(1, Ordering::SeqCst);
@@ -420,6 +533,7 @@ mod tests {
                         }
                         Ok(PathBuf::from("/cache/rlm-tools-bsl"))
                     },
+                    Duration::from_secs(30),
                     &cancellation,
                     &NoopProgressSink,
                 )
@@ -432,20 +546,18 @@ mod tests {
         cancellation.cancel();
 
         assert!(
-            leaving.join().expect("waiter").is_err(),
-            "ушедший вызов получает отказ по отмене"
+            matches!(leaving.join().expect("waiter"), Delivered::Working { .. }),
+            "ушедший вызов перестаёт ждать, но доставку не отменяет"
         );
         release.store(true, Ordering::SeqCst);
 
-        let delivered = desk
-            .wait_for(
-                "rlm-tools-bsl",
-                |_| panic!("доставка уже идёт, второй раз её не начинают"),
-                &CancellationToken::new(),
-                &NoopProgressSink,
-            )
-            .expect("следующий вызов забирает то, что доехало");
-        assert_eq!(delivered, PathBuf::from("/cache/rlm-tools-bsl"));
+        expect_ready(desk.deliver(
+            "rlm-tools-bsl",
+            |_| panic!("доставка уже идёт, второй раз её не начинают"),
+            WIDE,
+            &CancellationToken::new(),
+            &NoopProgressSink,
+        ));
         assert_eq!(started.load(Ordering::SeqCst), 1, "качали один раз");
     }
 
@@ -456,17 +568,17 @@ mod tests {
         let desk = desk();
         let heard = Heard::default();
 
-        desk.wait_for(
+        desk.deliver(
             "rlm-tools-bsl",
             |delivery| {
                 delivery.moved(1024, Some(4096));
                 thread::sleep(Duration::from_millis(60));
                 Ok(PathBuf::from("/cache/rlm-tools-bsl"))
             },
+            WIDE,
             &CancellationToken::new(),
             &heard,
-        )
-        .expect("доставлено");
+        );
 
         let events = heard.events.lock().expect("events").clone();
         assert!(!events.is_empty(), "вызывающий видит, что доставка идёт");
@@ -523,7 +635,7 @@ mod tests {
         let desk = desk();
         let attempts = Arc::new(AtomicUsize::new(0));
 
-        let first = desk.wait_for(
+        let first = desk.deliver(
             "rlm-tools-bsl",
             {
                 let attempts = Arc::clone(&attempts);
@@ -532,12 +644,13 @@ mod tests {
                     Err("канал оборвался".to_string())
                 }
             },
+            WIDE,
             &CancellationToken::new(),
             &NoopProgressSink,
         );
-        assert!(first.is_err());
+        assert!(matches!(first, Delivered::Failed(_)));
 
-        let second = desk.wait_for(
+        let second = desk.deliver(
             "rlm-tools-bsl",
             {
                 let attempts = Arc::clone(&attempts);
@@ -546,11 +659,12 @@ mod tests {
                     Ok(PathBuf::from("/cache/rlm-tools-bsl"))
                 }
             },
+            WIDE,
             &CancellationToken::new(),
             &NoopProgressSink,
         );
 
-        assert!(second.is_ok());
+        assert!(matches!(second, Delivered::Ready));
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }

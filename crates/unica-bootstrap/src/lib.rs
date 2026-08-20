@@ -15,7 +15,9 @@ pub use attempt::{diagnose, AttemptLog, AttemptSubject, OpenAttempt, Stage, Unfi
 pub use cache::{RuntimeInstallation, RuntimeInstaller};
 pub use download::{DownloadObserver, Downloader, HttpDownloader, SilentDownload};
 pub use error::{BootstrapError, Failure, Result};
-pub use host::{provider_state_root, runtime_cache_root, verify_installed_plugin_metadata};
+pub use host::{
+    host_tool_deadline, provider_state_root, runtime_cache_root, verify_installed_plugin_metadata,
+};
 pub use manifest::{
     ReleaseIdentity, RuntimeAsset, RuntimeFile, RuntimeManifest, SourceIdentity, TargetRuntime,
 };

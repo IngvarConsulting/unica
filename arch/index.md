@@ -41,7 +41,7 @@
 | `DEC.2026-08-19.ENTRY-RUN` | решение · product | active | нет | `run` — работа платформы | [decisions/2026-08-19-entry-run.md](decisions/2026-08-19-entry-run.md) |
 | `DEC.2026-08-19.ENTRY-SEARCH` | решение · product | active | нет | `search` — по содержимому, а не по имени | [decisions/2026-08-19-entry-search.md](decisions/2026-08-19-entry-search.md) |
 | `DEC.2026-08-19.ENTRY-VIEW` | решение · product | active | нет | `view` — один читатель на всё дерево | [decisions/2026-08-19-entry-view.md](decisions/2026-08-19-entry-view.md) |
-| `DEC.2026-08-19.MISSING-ENGINE-WAITS` | решение · product | active | нет | Отсутствующий движок ведёт себя как непостроенный индекс | [decisions/2026-08-19-missing-engine-waits.md](decisions/2026-08-19-missing-engine-waits.md) |
+| `DEC.2026-08-19.MISSING-ENGINE-WAITS` | решение · product | superseded | нет | Отсутствующий движок ведёт себя как непостроенный индекс | [decisions/2026-08-19-missing-engine-waits.md](decisions/2026-08-19-missing-engine-waits.md) |
 | `DEC.2026-08-19.NO-SELF-GLOSS` | решение · process | active | да | Правило говорит о предмете, а не о себе | [decisions/2026-08-19-no-self-gloss.md](decisions/2026-08-19-no-self-gloss.md) |
 | `DEC.2026-08-19.PARKED-CONTOURS` | решение · process | active | да | Парити и харнесс сняты с прогона на время перестройки поверхности | [decisions/2026-08-19-parked-contours.md](decisions/2026-08-19-parked-contours.md) |
 | `DEC.2026-08-19.PRODUCT-OR-PROCESS` | решение · process | active | да | Запись объявляет, кто заметит её нарушение | [decisions/2026-08-19-product-or-process.md](decisions/2026-08-19-product-or-process.md) |
@@ -53,6 +53,7 @@
 | `DEC.2026-08-19.STARTUP-LEAVES-A-RECORD` | решение · product | active | да | Запуск оставляет след, который переживает убийство | [decisions/2026-08-19-startup-leaves-a-record.md](decisions/2026-08-19-startup-leaves-a-record.md) |
 | `DEC.2026-08-19.SURFACE-BY-QUESTION` | решение · product | active | нет | Вход отвечает на вопрос, а не обслуживает предмет | [decisions/2026-08-19-surface-by-question.md](decisions/2026-08-19-surface-by-question.md) |
 | `DEC.2026-08-19.VOCABULARY-BY-PROJECTION` | решение · product | active | нет | Словарь свойств узла читается проекцией, а не целиком | [decisions/2026-08-19-vocabulary-by-projection.md](decisions/2026-08-19-vocabulary-by-projection.md) |
+| `DEC.2026-08-20.LONG-WORK-ANSWERS-WITH-STATE` | решение · product | active | нет | Долгая работа отвечает состоянием раньше, чем её обрывает хост | [decisions/2026-08-20-long-work-answers-with-state.md](decisions/2026-08-20-long-work-answers-with-state.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Конфигурация вызова разрешается снимком | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEPENDENCY-DIRECTION` | инвариант · process | active |  | Направление зависимостей между слоями закреплено проверкой | [invariants/INV.APP.DEPENDENCY-DIRECTION.md](invariants/INV.APP.DEPENDENCY-DIRECTION.md) |
 | `INV.APP.HIDDEN-SERVICES` | инвариант · product | active |  | Внутренние сервисы привязаны к рабочему пространству | [invariants/INV.APP.HIDDEN-SERVICES.md](invariants/INV.APP.HIDDEN-SERVICES.md) |

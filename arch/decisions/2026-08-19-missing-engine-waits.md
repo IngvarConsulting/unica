@@ -1,10 +1,10 @@
 ---
 id: DEC.2026-08-19.MISSING-ENGINE-WAITS
-status: active
+status: superseded
 governs: product
 realized: null
 supersedes: []
-superseded-by: null
+superseded-by: DEC.2026-08-20.LONG-WORK-ANSWERS-WITH-STATE
 establishes: []
 ---
 
