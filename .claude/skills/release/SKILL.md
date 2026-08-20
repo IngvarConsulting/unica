@@ -36,6 +36,12 @@ gh api repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/marketp
 If the user named a version, act on that one. Without a named version, take the
 newest release that is not a prerelease.
 
+**Check `isPrerelease` before diagnosing a stall.** A prerelease is *supposed*
+to sit above the catalog with no publish run: the pipeline's `gate` job stops it
+on purpose, so it exists for measurement and never for consumers. Reruns and
+dispatches are refused the same way. Nothing is stuck — say so instead of
+resuming it.
+
 A source release newer than the catalog `ref` with no publish run in flight
 means the pipeline did not finish: find its failed run and rerun it — every
 stage is idempotent, a rerun resumes the publication:
@@ -68,6 +74,9 @@ because published bytes never move.
 - Never move or delete a published tag, and never force-push the marketplace
   default branch. A catalog naming a missing tag breaks every install, and it is
   the only genuinely corrupt state this process can reach.
+- Never delete a `unica-toolchain` release, move its tag, or re-upload an asset
+  under a published name. Unica versions name those bytes by address and
+  SHA-256, so it breaks releases that shipped long ago.
 - Never point the catalog at a tag by hand: the promote job is the catalog's
   only writer, and it runs only behind green install checks.
 - Stop and ask before creating the source tag or dispatching the publish

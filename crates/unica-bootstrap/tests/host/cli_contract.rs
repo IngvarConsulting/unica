@@ -103,7 +103,7 @@ fn prefetch_names_its_reason_when_there_is_nothing_to_prefetch() {
         .arg("prefetch")
         .arg("--plugin-root")
         .arg(&plugin_root)
-        .env("UNICA_RUNTIME_CACHE", scratch.join("cache"))
+        .env("UNICA_RUNTIME_CACHE_DIR", scratch.join("cache"))
         .output()
         .expect("bootstrap process must start");
 

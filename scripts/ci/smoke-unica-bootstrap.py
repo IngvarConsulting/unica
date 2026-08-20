@@ -33,13 +33,25 @@ def neutralise_published_checksums(manifest_path: Path) -> str:
     Replacing the archive checksum removes that dependency on release state: the
     bootstrap either cannot fetch the asset or rejects the bytes it fetched, and
     both are the controlled failure this probe asserts.
+
+    Каждый артефакт, а не только ядро: манифест обязан описывать байты, которых
+    не существует нигде.
     """
     if not manifest_path.is_file():
         raise SystemExit(f"packaged runtime manifest is missing: {manifest_path}")
     original = manifest_path.read_text(encoding="utf-8")
     manifest = json.loads(original)
-    for runtime in manifest.get("targets", {}).values():
-        runtime["asset"]["sha256"] = UNMATCHABLE_SHA256
+    neutralised = 0
+    for artifact in manifest.get("artifacts", {}).values():
+        for runtime in artifact.get("targets", {}).values():
+            runtime["asset"]["sha256"] = UNMATCHABLE_SHA256
+            neutralised += 1
+    if not neutralised:
+        # Молчаливый ноль оставил бы зонд холостым: он проверял бы, доехали ли
+        # опубликованные байты, а не то, что отказ управляем.
+        raise SystemExit(
+            f"packaged runtime manifest declares no artifact assets: {manifest_path}"
+        )
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

@@ -1787,6 +1787,26 @@ class ProductContractTests(unittest.TestCase):
             any("Git HEAD changed during update" in error for error in errors),
             errors,
         )
+    def test_the_release_checks_every_address_it_publishes(self) -> None:
+        """Ядро выпуск сверяет побайтно, поставки — только по адресу.
+
+        Их байты сверены на сборке, когда CI их качал, а адрес после этого не
+        трогает никто: опечатка в теге дожила бы до первого вызова движка у
+        пользователя. Шаг легко выпасть незамеченным, поэтому он закреплён.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("scripts/ci/verify-delivery-reachable.py", release)
+        self.assertIn("scripts/ci/verify-release-assets.py", release)
+        # Один сквозной прогрев на выпуск: адрес, сумма и раскладка вместе.
+        self.assertIn("prefetch --plugin-root", release)
+        self.assertTrue(
+            (repo_root / "scripts/ci/verify-delivery-reachable.py").is_file()
+        )
+
     def test_both_sides_of_the_wire_approve_the_same_two_origins(self) -> None:
         """Адрес пишет упаковщик, а сверяет bootstrap.
 
