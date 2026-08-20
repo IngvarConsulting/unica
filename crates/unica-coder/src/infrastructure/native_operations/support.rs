@@ -745,7 +745,9 @@ fn preflight_required_vendor_payloads<'a>(
     support_vendor_rule_flags(parent_configurations, vendor_count)?;
     let vendor_payloads = vendor_payloads.into_iter().collect::<Vec<_>>();
     let missing = quoted
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|fields| fields[2].as_str())
         .filter(|vendor_name| {
             !vendor_payloads.iter().any(|path| {
