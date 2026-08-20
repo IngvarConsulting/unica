@@ -73,8 +73,6 @@ class BootstrapLaunchPathTests(unittest.TestCase):
         self.assertIn('"method": "tools/list"', verification)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class LauncherExitCodeTests(unittest.TestCase):
@@ -130,3 +128,7 @@ class LauncherExitCodeTests(unittest.TestCase):
         # 78 общий, и намеренно: цель, которую не обслуживают, — одна и та же
         # причина, кто бы её ни заметил.
         self.assertIn(78, codes)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -11,7 +11,7 @@ mod platform;
 mod verification;
 
 pub use archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files};
-pub use attempt::{AttemptLog, AttemptSubject, OpenAttempt, Stage, UnfinishedAttempt};
+pub use attempt::{diagnose, AttemptLog, AttemptSubject, OpenAttempt, Stage, UnfinishedAttempt};
 pub use cache::{RuntimeInstallation, RuntimeInstaller};
 pub use download::{Downloader, HttpDownloader};
 pub use error::{BootstrapError, Failure, Result};
@@ -19,5 +19,5 @@ pub use host::{provider_state_root, runtime_cache_root, verify_installed_plugin_
 pub use manifest::{
     ReleaseIdentity, RuntimeAsset, RuntimeFile, RuntimeManifest, SourceIdentity, TargetRuntime,
 };
-pub use platform::{launch_runtime, run_platform_main, HostTarget};
+pub use platform::{launch_runtime, run_platform_main, HostTarget, RuntimeHandoff};
 pub use verification::verify_mcp_runtime;

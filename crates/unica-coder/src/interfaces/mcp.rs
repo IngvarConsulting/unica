@@ -108,14 +108,34 @@ fn drain_mcp_shutdown_with(
     calls_idle && providers_idle
 }
 
+/// Переменная, в которой загрузчик передаёт рассказ о прошлом запуске.
+///
+/// Убитая установка своего провода не имела: он появляется только здесь, и
+/// рассказать о ней может лишь тот, кого запустили следом.
+const STARTUP_NOTICE_ENV: &str = "UNICA_STARTUP_NOTICE";
+
 pub struct UnicaServer {
     handler: Arc<ToolCallHandler>,
     in_flight: Arc<InFlightRegistry>,
     structured_tools: HashSet<&'static str>,
+    /// О чём рассказать вызывающему при рукопожатии. Обычная сессия платит за
+    /// это ноль байтов поверхности: рассказывать нечего.
+    startup_notice: Option<String>,
+}
+
+/// Пустое значение — это «нечего рассказывать», а не пустой рассказ.
+fn startup_notice_from(value: Option<String>) -> Option<String> {
+    let notice = value?.trim().to_owned();
+    (!notice.is_empty()).then_some(notice)
 }
 
 impl UnicaServer {
     fn new(handler: Arc<ToolCallHandler>) -> Self {
+        let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
+        Self::with_startup_notice(handler, notice)
+    }
+
+    fn with_startup_notice(handler: Arc<ToolCallHandler>, startup_notice: Option<String>) -> Self {
         Self {
             handler,
             in_flight: Arc::new(InFlightRegistry::default()),
@@ -123,6 +143,7 @@ impl UnicaServer {
                 .into_iter()
                 .filter_map(|spec| has_structured_output(&spec).then_some(spec.name))
                 .collect(),
+            startup_notice,
         }
     }
 
@@ -205,9 +226,15 @@ impl ServerHandler for UnicaServer {
         // feature slice implements them — an advertised-but-empty surface
         // sends capability-gated clients probing dead ends. Each of those
         // features re-enters here together with its implementation.
-        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+        let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
-            .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")));
+        // Что осталось от убитого запуска, уходит обычным ответом: своего
+        // провода у него не было, а этот — первый, который вообще есть.
+        match &self.startup_notice {
+            Some(notice) => info.with_instructions(notice.clone()),
+            None => info,
+        }
     }
 
     fn accepted_subscription_filter(
@@ -830,6 +857,38 @@ mod tests {
         Arc::new(move |name, arguments, cancellation, progress| {
             call_tool_result_observed(&app, name, arguments, cancellation, progress)
         })
+    }
+
+    #[test]
+    fn initialize_carries_what_a_killed_startup_left_behind() {
+        // Убитая установка своего провода не имела: её рассказ приходит сюда
+        // от загрузчика и уходит вызывающему обычным ответом на `initialize`.
+        let notice = "a Unica startup was killed while downloading unica 0.13.0";
+        let server =
+            UnicaServer::with_startup_notice(application_handler(), Some(notice.to_owned()));
+
+        assert_eq!(server.get_info().instructions.as_deref(), Some(notice));
+    }
+
+    #[test]
+    fn a_session_with_nothing_to_report_carries_no_instructions() {
+        // Обычная сессия платит за это ноль байтов поверхности.
+        let server = UnicaServer::with_startup_notice(application_handler(), None);
+
+        assert_eq!(server.get_info().instructions, None);
+    }
+
+    #[test]
+    fn an_empty_notice_is_the_same_as_no_notice() {
+        // Переменная, которую хост передал пустой, — это «нечего рассказывать»,
+        // а не пустой рассказ.
+        assert_eq!(startup_notice_from(Some(String::new())), None);
+        assert_eq!(startup_notice_from(Some("   \n".to_owned())), None);
+        assert_eq!(
+            startup_notice_from(Some("  killed while downloading  ".to_owned())),
+            Some("killed while downloading".to_owned())
+        );
+        assert_eq!(startup_notice_from(None), None);
     }
 
     #[tokio::test]

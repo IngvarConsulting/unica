@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use unica_bootstrap::{
     launch_runtime, provider_state_root, runtime_cache_root, verify_installed_plugin_metadata,
-    verify_mcp_runtime, HostTarget, HttpDownloader, Result, RuntimeInstaller, RuntimeManifest,
+    verify_mcp_runtime, AttemptLog, HostTarget, HttpDownloader, Result, RuntimeHandoff,
+    RuntimeInstaller, RuntimeManifest, UnfinishedAttempt,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,19 +37,60 @@ fn run(args: Vec<String>) -> Result<i32> {
     let provider_state_root = provider_state_root()?;
     match command {
         Command::Run => {
-            let installed = install_runtime(&plugin_root)?;
             let artifact_cache = runtime_cache_root()?;
+            // Читаем до установки: сколько получила убитая попытка, видно лишь
+            // пока её недокачка на диске, а удачная установка её забирает.
+            let killed = KilledStartups::read(&artifact_cache);
+            let installed = install_runtime(&plugin_root)?;
+            // Убитый прошлый запуск своего провода не имел. Провод есть у
+            // рантайма — он и расскажет, если рассказывать есть о чём.
+            let notice = killed.notice();
             launch_runtime(
                 &installed.entrypoint,
                 &[],
-                &provider_state_root,
-                &artifact_cache,
+                &RuntimeHandoff {
+                    provider_state_root: &provider_state_root,
+                    artifact_cache: &artifact_cache,
+                    startup_notice: notice.as_deref(),
+                },
             )
         }
         Command::Verify => {
             install_and_verify_runtime(&plugin_root, &provider_state_root)?;
             Ok(0)
         }
+    }
+}
+
+/// Что осталось от запусков, которых убили снаружи.
+///
+/// Читается до установки — и это не порядок ради порядка: полученный объём
+/// живёт в недокачке на диске, а удачная установка её забирает. Прочитать
+/// после значило бы сообщить «получено 0 байт» о попытке, привёзшей полсотни
+/// мегабайт.
+///
+/// Отказ чтения журнала запуск не отменяет: рассказ о прошлой беде не стоит
+/// того, чтобы стать новой.
+struct KilledStartups {
+    log: AttemptLog,
+    found: Vec<UnfinishedAttempt>,
+}
+
+impl KilledStartups {
+    fn read(artifact_cache: &Path) -> Self {
+        let log = AttemptLog::in_cache(artifact_cache);
+        let found = log.unfinished().unwrap_or_default();
+        Self { log, found }
+    }
+
+    /// Рассказ для вызывающего. Отмечает попытки рассказанными: второй раз о
+    /// том же сообщать некому и незачем.
+    fn notice(&self) -> Option<String> {
+        let notice = unica_bootstrap::diagnose(&self.found);
+        if notice.is_some() {
+            let _ = self.log.report(&self.found);
+        }
+        notice
     }
 }
 
