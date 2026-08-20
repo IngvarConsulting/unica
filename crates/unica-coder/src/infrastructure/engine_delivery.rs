@@ -134,8 +134,9 @@ impl DeliveryDesk {
         match self.wait(artifact, &delivery, wait_window, cancellation, progress) {
             Some(outcome) => {
                 // Расчёт окончен: следующий вызов либо возьмёт готовое из кеша,
-                // либо начнёт заново, если доставка не удалась.
-                self.in_flight.lock().expect("in flight").remove(artifact);
+                // либо начнёт заново, если доставка не удалась. Поздний waiter
+                // старой попытки не имеет права снять уже начатую замену.
+                self.retire(artifact, &delivery);
                 match outcome {
                     Ok(_) => Delivered::Ready,
                     Err(error) => Delivered::Failed(error),
@@ -157,6 +158,21 @@ impl DeliveryDesk {
             .expect("in flight")
             .get(artifact)
             .and_then(|delivery| delivery.poll_hint())
+    }
+
+    /// Снять только ту доставку, чей результат наблюдал вызывающий.
+    ///
+    /// После отказа другой вызов может уже заменить запись новой попыткой;
+    /// удаление лишь по имени артефакта разрушило бы single-flight новой
+    /// доставки.
+    fn retire(&self, artifact: &str, settled: &Arc<Delivery>) {
+        let mut in_flight = self.in_flight.lock().expect("in flight");
+        if in_flight
+            .get(artifact)
+            .is_some_and(|current| Arc::ptr_eq(current, settled))
+        {
+            in_flight.remove(artifact);
+        }
     }
 
     fn start<W>(&self, artifact: &str, work: W) -> (Arc<Delivery>, bool)
@@ -750,5 +766,62 @@ mod tests {
 
         assert!(matches!(second, Delivered::Ready));
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_settled_delivery_cannot_retire_its_replacement() {
+        // Старый waiter может проснуться после того, как другой вызов уже
+        // увидел его отказ, снял запись и начал новую попытку. Очистка только
+        // по имени артефакта тогда удалит уже новую доставку и разрешит третью.
+        let desk = desk();
+        let (old, _) = desk.start("rlm-tools-bsl", |_| Err("old failed".to_string()));
+        assert!(desk
+            .wait(
+                "rlm-tools-bsl",
+                &old,
+                WIDE,
+                &CancellationToken::new(),
+                &NoopProgressSink,
+            )
+            .is_some());
+        desk.retire("rlm-tools-bsl", &old);
+
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (replacement, _) = desk.start("rlm-tools-bsl", {
+            let release = Arc::clone(&release);
+            move |_| {
+                let (lock, changed) = &*release;
+                let mut ready = lock.lock().expect("release");
+                while !*ready {
+                    ready = changed.wait(ready).expect("release");
+                }
+                Ok(PathBuf::from("/cache/replacement"))
+            }
+        });
+
+        desk.retire("rlm-tools-bsl", &old);
+
+        let current = desk
+            .in_flight
+            .lock()
+            .expect("in flight")
+            .get("rlm-tools-bsl")
+            .cloned()
+            .expect("replacement remains registered");
+        assert!(Arc::ptr_eq(&current, &replacement));
+
+        let (lock, changed) = &*release;
+        *lock.lock().expect("release") = true;
+        changed.notify_all();
+        assert!(desk
+            .wait(
+                "rlm-tools-bsl",
+                &replacement,
+                WIDE,
+                &CancellationToken::new(),
+                &NoopProgressSink,
+            )
+            .is_some());
+        desk.retire("rlm-tools-bsl", &replacement);
     }
 }

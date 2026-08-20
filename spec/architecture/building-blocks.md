@@ -14,7 +14,7 @@
 | Крейт | Библиотека | Бинарник | Назначение |
 | --- | --- | --- | --- |
 | `crates/unica-coder` | `unica_coder` | `unica` | Оркестратор: обслуживает единственную публичную MCP-поверхность, диспетчеризует все инструменты `unica.*` и владеет состоянием кеша рабочего пространства. |
-| `crates/unica-bootstrap` | `unica_bootstrap` | `unica-bootstrap` | Тонкий пусковой бинарник публичного пакета: разрешает закреплённый runtime, публикует его в проверенный кеш и передаёт ему stdio. |
+| `crates/unica-bootstrap` | `unica_bootstrap` | `unica-bootstrap` | Тонкий пусковой бинарник публичного пакета: получает закреплённое ядро, публикует артефакты в проверенный кеш, поддерживает полный `prefetch` и передаёт ядру stdio. |
 
 `unica` — единственный бинарник, который хост видит как MCP-сервер
 (INV-MCP-NO-ENGINE-SERVERS, INV-MCP-SINGLE-ENTRY); в публичном пакете перед ним стоит `unica-bootstrap`,
@@ -36,15 +36,15 @@
 - Сервер отвечает на `initialize`, `ping`, `tools/list` и `tools/call`,
   объявляет только возможность tools, а версию протокола берёт из константы SDK
   `ProtocolVersion::LATEST`, а не из литерала в коде.
-- Публикуемый пакет маркетплейса не несёт полного runtime. Его `.mcp.json`
-  запускает `unica-bootstrap`, который скачивает закреплённый runtime для
-  текущего хоста с утверждённого источника релизов
-  `https://github.com/IngvarConsulting/unica/releases/download/<tag>/` и
-  проверяет его до запуска (ADR-0008, INV-PKG-THIN-PACKAGE, INV-PKG-VERIFIED-ATOMIC-INSTALL).
+- Публикуемый пакет маркетплейса не несёт ядра или движков. Его `.mcp.json`
+  запускает `unica-bootstrap`, который до старта получает закреплённое ядро из
+  выпуска Unica, а нужные движки оркестратор позже получает из закреплённых
+  выпусков `unica-toolchain` (ADR-0076, INV-PKG-THIN-PACKAGE,
+  INV-PKG-VERIFIED-ATOMIC-INSTALL).
 - Поставляемые движки запускаются напрямую: путь к бинарнику разрешается через
-  сгенерированный `plugins/unica/third-party/manifest.json`, а его SHA-256
-  сверяется до старта процесса. Скрипта-обёртки между runtime и поставляемым
-  инструментом нет.
+  артефактный кеш и сгенерированный `plugins/unica/third-party/manifest.json`,
+  а его SHA-256 сверяется до старта процесса. Скрипта-обёртки между runtime и
+  поставляемым инструментом нет.
 
 ## Публичная поверхность и место реализации
 
@@ -106,6 +106,8 @@ runtime для операций платформы, поставляемый а�
   поиска и типизированные запросы чтения (INV-APP-CODE-PROVIDER-BOUNDARY).
 - `events` — `DomainEvent` и `DomainEventKind`: типизированные факты, о которых
   сообщает мутирующая операция.
+- `engine` — типизированный `MissingEngine`, режим происхождения поставки и
+  устойчивый код `bundled_tool_missing`.
 - `form_edit` — схема определения правки управляемой формы и правила её
   проверки.
 - `format_profile` — активный профиль формата выгрузки, классификация версии
@@ -115,6 +117,9 @@ runtime для операций платформы, поставляемый а�
   не меньше 1 без верхнего ограничения операционной политики, умолчания
   120/45/15/45/120 и безопасная форма диагностики без файлового ввода-вывода
   (INV-APP-CONFIG-SNAPSHOT).
+- `long_work` — `WorkState`, словарь состояний и вычисление ограниченного окна
+  ожидания доставки относительно срока хоста (INV-MCP-DELIVERY-STATE,
+  REQ-PERF-DELIVERY-WINDOW).
 - `project_sources` — модель наборов исходников: `ProjectSourceMap`,
   `ProjectSourceSet`, `SourceFormat`, `SourceSetKind`.
 - `source_roots` — `ResolvedSourceRoot` и детерминированный выбор набора
@@ -281,9 +286,14 @@ runtime для операций платформы, поставляемый а�
   процесса заданий и транспортного адаптера: хранилище заданий, переходы фаз,
   маркеры отмены и ограниченные хвосты вывода.
 - `bundled_tools` — `resolve_bundled_tool` находит поставляемый исполняемый файл
-  через `third-party/manifest.json` для текущей цели сборки и сверяет его
-  SHA-256 до запуска; в предпросмотре допускается откат к `tools.lock.json` с
-  предупреждением вместо отказа.
+  через `third-party/manifest.json` и неизменяемый корень артефактного кеша для
+  текущей цели, сверяет SHA-256 до запуска и возвращает типизированное описание
+  отсутствующего движка; в исходном чекауте сохраняется прямой путь из
+  `bin/<target>`.
+- `engine_delivery` — серверный single-flight на артефакт: одна фоновая
+  доставка, ограниченное ожидание владельца, немедленный результат followers,
+  прогресс и повтор после отказа (INV-MCP-BOUNDED-ADMISSION,
+  INV-MCP-DELIVERY-STATE).
 - `plugin_runtime` — `find_plugin_root` разрешает корень плагина, предпочитая
   `UNICA_PLUGIN_ROOT` и иначе поднимаясь вверх от исполняемого файла и от
   рабочего каталога.
@@ -507,16 +517,21 @@ ADR-0003). Оба проверяет один страж
 
 ## Уровень 2 — `unica-bootstrap`
 
-CLI принимает ровно две команды: `run --plugin-root <path>` и
-`verify --plugin-root <path>`, плюс отдельный `--version`.
+CLI принимает ровно три команды: `run --plugin-root <path>`,
+`verify --plugin-root <path>` и `prefetch --plugin-root <path>`, плюс отдельный
+`--version`.
 
 - `manifest` — `RuntimeManifest`, `TargetRuntime`, `RuntimeAsset`,
   `RuntimeFile`, `ReleaseIdentity`, `SourceIdentity`: метаданные закреплённого
   релиза, загружаемые из `runtime-manifest.json`.
-- `cache` — `RuntimeInstaller::ensure`: исключительная блокировка на пару
-  «версия и цель», транзакционный каталог с именем UUID, запись готовности
+- `cache` — `RuntimeInstaller::ensure`, `ensure_artifact` и `prefetch`:
+  исключительная блокировка на точную поставку и цель, возобновляемая
+  недокачка, транзакционный каталог с именем UUID, запись готовности
   `.ready.json` и атомарное переименование в
-  `<cacheRoot>/<pluginVersion>/<target>` (INV-PKG-VERIFIED-ATOMIC-INSTALL, INV-CACHE-RUNTIME-ROOT-ORDER).
+  `<cacheRoot>/<artifact>/<version>--<assetSha256>/<target>`
+  (INV-PKG-VERIFIED-ATOMIC-INSTALL, INV-CACHE-RUNTIME-ROOT-ORDER).
+- `attempt` — журнал стадий доставки, который переживает уничтоженный хостом
+  startup и позволяет следующей сессии сообщить причину и полученный объём.
 - `download` — `HttpDownloader`, единственный сетевой клиент крейта.
 - `archive` — `sha256_file`, `extract_verified_tar_gz`, `verify_runtime_files`:
   отпечаток архива, безопасное к обходу каталогов извлечение и пофайловая

@@ -180,8 +180,8 @@ did.
 ## Runtime delivery
 
 The marketplace plugin contains skills, references, assets, `launch.sh`, and
-three small native bootstrap binaries. It contains no full `bin/<target>` tool
-runtime. Packaged `.mcp.json` invokes a command-scoped Git alias. Git's shell
+three small native bootstrap binaries. It contains neither the `unica` core nor
+engine binaries. Packaged `.mcp.json` invokes a command-scoped Git alias. Git's shell
 runs `bootstrap/launch.sh`, which selects exactly one bootstrap:
 
 - `darwin-arm64`;
@@ -193,11 +193,11 @@ Code rewrites `${CLAUDE_PLUGIN_ROOT}` before the shell sees it; Codex leaves the
 token unset, and the shell falls back to Git's own `$PWD`/`$GIT_PREFIX` pair.
 One launcher therefore serves both hosts without a per-host package.
 
-The bootstrap reads the release-pinned `runtime-manifest.json`, downloads
-`unica-runtime-<target>.tar.gz`, verifies archive and file SHA-256 values, and
-publishes the runtime atomically in the host cache. It then execs the single
-`unica` MCP process. Runtime stdout stays reserved for JSON-RPC; bootstrap
-diagnostics use stderr.
+The bootstrap downloads only `unica-runtime-<target>.tar.gz` before MCP startup.
+It reads the release-pinned `runtime-manifest.json`, verifies archive and file
+SHA-256 values, publishes the core atomically in the host cache, and then execs
+the single `unica` MCP process. Runtime stdout stays reserved for JSON-RPC;
+bootstrap diagnostics use stderr.
 
 The cache is `$CODEX_HOME/unica/runtimes` under Codex and
 `${CLAUDE_PLUGIN_DATA}/runtimes` under Claude Code, which survives plugin
@@ -206,21 +206,28 @@ updates. Packaged `.mcp.json` passes the Claude token through
 literal token, and the bootstrap discards any value that still contains `${`
 rather than creating a directory named after it.
 
-The runtime archive contains the target's `unica`, `bsl-analyzer`, `v8-runner`,
-`rlm-bsl-mcp`, and `rlm-bsl-index` binaries plus the generated
-`third-party/manifest.json`. Internal launches re-check the pinned binary hash.
+Each installed artifact lives below
+`<artifact>/<version>--<asset-sha256>/<target>`. The SHA-256 component prevents
+a rebuilt engine with the same upstream version from reusing or overwriting old
+bytes. The generated `third-party/manifest.json` maps tools to those artifact
+roots, and internal launches re-check the pinned binary hash.
 
-Because the cache key carries the plugin version, the first session after an
-install or an update pays for that download, and it happens inside the host's
-MCP startup budget. Packaged `.mcp.json` therefore declares
+The core download happens inside the host's MCP startup budget. Packaged `.mcp.json` therefore declares
 `startup_timeout_sec`, which Codex honours: a slow link no longer has the
 install killed part-way, and the session is not held up while it runs, because
-the tools appear once the runtime is published. A host that does not know the
-key ignores it. To pay for the download outside a session on any host, run the
-bootstrap directly and open a new task afterwards:
+the tools appear once the core is published. A host that does not know the key
+ignores it.
+
+After startup, the first call that needs an absent engine starts one
+server-owned delivery from the pinned `unica-toolchain` asset. Concurrent calls
+share it. If the owner cannot finish inside the bounded wait window, the call
+returns `work.status=working`; retry the same domain call after the suggested
+interval. There is no public install tool, and cancelling one call does not
+cancel the shared delivery. To populate the core and every engine before
+building an offline image, run:
 
 ```sh
-<plugin-root>/bootstrap/bin/<target>/unica-bootstrap verify --plugin-root <plugin-root>
+<plugin-root>/bootstrap/bin/<target>/unica-bootstrap prefetch --plugin-root <plugin-root>
 ```
 
 ## Skills
@@ -281,10 +288,12 @@ To package a current-host Claude debug build instead, pass
 
 ## Release pipeline
 
-The source workflow builds tools and `unica-bootstrap` natively on each runner,
-creates deterministic runtime archives and checksum metadata, re-downloads
-published release bytes for verification, and emits one thin marketplace
-payload carrying both host catalogs. A separate workflow opens a plugin-only
+The source workflow builds the core and `unica-bootstrap` natively on each
+runner, creates three deterministic core archives and checksum metadata,
+re-downloads published core bytes, checks every pinned engine address, proves a
+full `prefetch`, and emits one thin marketplace payload carrying both host
+catalogs. Engine bytes remain in immutable `unica-toolchain` releases. A
+separate workflow opens a plugin-only
 staging PR in `IngvarConsulting/unica-marketplace`. After that commit is tagged
 immutably, a catalog-only promotion PR points both stable `git-subdir` entries,
 `.agents/plugins/marketplace.json` for Codex and `.claude-plugin/marketplace.json`

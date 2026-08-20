@@ -1651,25 +1651,38 @@ class RuntimeArtifactFlowContractTests(unittest.TestCase):
         legacy = (
             DECISIONS_DIR / "0010-ci-build-cache-and-artifact-flow.md"
         ).read_text(encoding="utf-8")
-        current_path = DECISIONS_DIR / "0055-smoke-proveryaet-upakovannyy-runtime.md"
-        self.assertTrue(current_path.exists(), "missing ADR-0055 runtime smoke decision")
+        packaged_smoke = (
+            DECISIONS_DIR / "0055-smoke-proveryaet-upakovannyy-runtime.md"
+        ).read_text(encoding="utf-8")
+        current_path = DECISIONS_DIR / "0076-yadro-pervym-dvizhki-po-trebovaniyu.md"
+        self.assertTrue(current_path.exists(), "missing ADR-0076 delivery decision")
         current = current_path.read_text(encoding="utf-8")
-        design = (
+        packaged_smoke_design = (
             REPO_ROOT / "docs/design/2026-08-12-bsl-analyzer-v0-2-67-design.md"
+        ).read_text(encoding="utf-8")
+        delivery_design = (
+            REPO_ROOT / "docs/design/2026-08-20-core-first-engine-delivery-design.md"
         ).read_text(encoding="utf-8")
 
         self.assertIn("- Статус: `superseded` — заменено ADR-0055", legacy)
+        self.assertIn("- Статус: `superseded` — заменено ADR-0076", packaged_smoke)
         self.assertIn("- Статус: `accepted`", current)
-        self.assertIn("извлеч", current.lower())
         self.assertIn("архив", current.lower())
-        self.assertIn("- Decision: `ADR-0055`", design)
+        self.assertIn("исполняет ядро из этого проверенного архива", current.lower())
+        self.assertIn("движк", current.lower())
+        self.assertIn("- Decision: `ADR-0055`", packaged_smoke_design)
+        self.assertIn("- Decision: `ADR-0076`", delivery_design)
         self.assertFalse(
-            any("ADR-0010" in (record.one("Decision") or "") for record in self.records),
-            "active registry rules must name ADR-0055 instead of superseded ADR-0010",
+            any(
+                old in (record.one("Decision") or "")
+                for record in self.records
+                for old in ("ADR-0010", "ADR-0055")
+            ),
+            "active registry rules must name ADR-0076 instead of superseded artifact-flow decisions",
         )
         self.assertTrue(
-            any("ADR-0055" in (record.one("Decision") or "") for record in self.records),
-            "ADR-0055 must own the derived runtime artifact-flow rules",
+            any("ADR-0076" in (record.one("Decision") or "") for record in self.records),
+            "ADR-0076 must own the derived core and engine artifact-flow rules",
         )
 
 class RlmGenerationCutoverContractTests(unittest.TestCase):
@@ -2096,28 +2109,36 @@ class LogicalDiagnosticsArchitectureTests(unittest.TestCase):
             self.assertIn(artifact, checklist.lower())
 
 class RlmStandalonePackagingContractTests(unittest.TestCase):
-    def test_accepted_decision_owns_the_multifile_runtime_choice(self) -> None:
-        decision = (
+    def test_current_decision_preserves_the_multifile_delivery_choice(self) -> None:
+        legacy = (
             REPO_ROOT
             / "spec"
             / "decisions"
             / "0061-rlm-mnogofaylovyy-runtime-iz-proveryaemogo-arhiva.md"
         ).read_text(encoding="utf-8")
+        current = (
+            REPO_ROOT
+            / "spec"
+            / "decisions"
+            / "0076-yadro-pervym-dvizhki-po-trebovaniyu.md"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("- Статус: `accepted`", decision)
-        self.assertIn("`Nuitka standalone multidist`", decision)
-        self.assertIn("`runtimeFiles`", decision)
-        self.assertIn("скачивает общий архив цели ровно один раз", decision)
-        self.assertIn("Bootstrap остаётся нейтральным", decision)
+        self.assertIn("- Статус: `superseded` — заменено ADR-0076", legacy)
+        self.assertIn("`Nuitka standalone multidist`", legacy)
+        self.assertIn("`runtimeFiles`", legacy)
+        self.assertIn("- Статус: `accepted`", current)
+        self.assertIn("полной файловой", current)
+        self.assertIn("обычных файлов", current)
+        self.assertIn("размеры и режимы", current)
 
     def test_registry_rule_owns_the_exact_runtime_closure(self) -> None:
         records = {record.id: record for record in all_records()}
         record = records["INV-PKG-TOOL-CLOSURE"]
         rendered = record.one("Rule") or ""
 
-        self.assertEqual(record.one("Decision"), "ADR-0061")
+        self.assertEqual(record.one("Decision"), "ADR-0076")
         for contract in (
-            "полная полезная нагрузка закреплённого архива",
+            "полная полезная нагрузка закреплённого артефакта",
             "только обычные файлы",
             "точный набор",
             "потерянная зависимость",

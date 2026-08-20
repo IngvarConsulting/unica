@@ -861,6 +861,50 @@ class ProductContractTests(unittest.TestCase):
         ]
         self.assertEqual(matches, [])
 
+    def test_active_delivery_docs_describe_core_first_and_digest_cache(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        root_readme = (repo_root / "README.md").read_text(encoding="utf-8")
+        plugin_readme = (repo_root / "plugins/unica/README.md").read_text(
+            encoding="utf-8"
+        )
+        internal = (repo_root / "docs/internal-package.md").read_text(encoding="utf-8")
+
+        for marker in (
+            "При старте MCP bootstrap скачивает только ядро",
+            "<artifact>/<version>--<asset-sha256>/<target>",
+            "unica-bootstrap prefetch --plugin-root",
+        ):
+            with self.subTest(document="README.md", marker=marker):
+                self.assertIn(marker, root_readme)
+        for marker in (
+            "The bootstrap downloads only `unica-runtime-<target>.tar.gz` before MCP startup",
+            "`<artifact>/<version>--<asset-sha256>/<target>`",
+            "`work.status=working`",
+            "unica-bootstrap prefetch --plugin-root",
+        ):
+            with self.subTest(document="plugins/unica/README.md", marker=marker):
+                self.assertIn(marker, plugin_readme)
+        for marker in (
+            "`<cacheRoot>/<artifact>/<version>--<assetSha256>/<target>`",
+            "`ensure_artifact`",
+            "`prefetch`",
+        ):
+            with self.subTest(document="docs/internal-package.md", marker=marker):
+                self.assertIn(marker, internal)
+
+        forbidden = (
+            "$CODEX_HOME/unica/runtimes/<version>/<target>",
+            "${CLAUDE_PLUGIN_DATA}/runtimes/<version>/<target>",
+            "The runtime archive contains the target's",
+        )
+        matches = [
+            marker
+            for text in (root_readme, plugin_readme, internal)
+            for marker in forbidden
+            if marker in text
+        ]
+        self.assertEqual(matches, [])
+
     def test_removed_script_backed_skills_do_not_leave_architecture_records(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         decisions = repo_root / "spec" / "decisions"
