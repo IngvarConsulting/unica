@@ -158,6 +158,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "plugins/unica/.mcp.json",
             "plugins/unica/third-party/tools.lock.json",
             "scripts/ci/package-unica-runtime.py",
+            "scripts/ci/stage-unica-assessment-engine.py",
         ):
             with self.subTest(path=path):
                 self.assert_classification(
@@ -168,6 +169,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     assessment_required=path in {
                         "plugins/unica/third-party/tools.lock.json",
                         "scripts/ci/package-unica-runtime.py",
+                        "scripts/ci/stage-unica-assessment-engine.py",
                     },
                 )
 

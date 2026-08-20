@@ -386,12 +386,12 @@ jobs:
           compression-level: 0
       - name: Stage BSP assessment engine
         if: matrix.target == 'linux-x64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          destination=".build/assessment-engine/bin/linux-x64"
-          mkdir -p "$destination"
-          cp ".build/tool-bundles/linux-x64/bin/linux-x64/bsl-analyzer" "$destination/"
+        run: >
+          python scripts/ci/stage-unica-assessment-engine.py
+          --bundle-root .build/tool-bundles/linux-x64
+          --out-dir .build/assessment-engine
+          --artifact bsl-analyzer
+          --artifact rlm-tools-bsl
       - name: Upload BSP assessment engine
         if: matrix.target == 'linux-x64'
         uses: actions/upload-artifact@v7

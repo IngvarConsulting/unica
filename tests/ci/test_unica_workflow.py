@@ -626,7 +626,9 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         assessment = job_block(self.release, "release-assessment")
 
         self.assertIn("unica-assessment-engine-linux-x64", build)
-        self.assertIn("bin/linux-x64/bsl-analyzer", build)
+        self.assertIn("stage-unica-assessment-engine.py", build)
+        self.assertIn("--artifact bsl-analyzer", build)
+        self.assertIn("--artifact rlm-tools-bsl", build)
         self.assertIn("name: unica-assessment-engine-linux-x64", assessment)
         self.assertIn("--engine-overlay .build/assessment-engine", assessment)
 
