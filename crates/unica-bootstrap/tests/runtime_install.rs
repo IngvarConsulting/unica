@@ -313,9 +313,10 @@ fn the_core_installs_without_any_engine_present() {
 }
 
 #[test]
-fn the_install_path_is_keyed_by_the_artifact_version() {
+fn the_install_path_is_keyed_by_version_and_archive_identity() {
     let runtime = b"unica-runtime";
     let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let delivery = format!("0.5.1--{}", sha256(&archive));
     let manifest = manifest_with(&archive, runtime, "0.7.0", "0.5.1");
     let cache = temp_dir("keyed");
     let downloader = Arc::new(FakeDownloader::new(archive));
@@ -330,8 +331,58 @@ fn the_install_path_is_keyed_by_the_artifact_version() {
         .expect("install lands inside the cache");
     assert_eq!(
         relative,
-        Path::new("unica").join("0.5.1").join("linux-x64"),
-        "путь содержит версию артефакта, а не версию плагина"
+        Path::new("unica").join(delivery).join("linux-x64"),
+        "путь содержит upstream-версию и неизменяемую сумму поставки"
+    );
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn rebuilt_artifact_with_the_same_version_gets_a_distinct_immutable_root() {
+    // Toolchain build tags may advance without changing the upstream semantic
+    // version. Reusing the version-only directory would overwrite bytes that an
+    // already running process may still execute and would let the runtime see a
+    // stale installation before the replacement is published.
+    let first_runtime = b"unica-runtime-build-1";
+    let first_archive = tar_gz(&[("bin/linux-x64/unica", first_runtime)]);
+    let second_runtime = b"unica-runtime-build-2";
+    let second_archive = tar_gz(&[("bin/linux-x64/unica", second_runtime)]);
+    let cache = temp_dir("immutable-delivery-root");
+
+    let first = RuntimeInstaller::new(
+        cache.clone(),
+        "0.7.0",
+        Arc::new(FakeDownloader::new(first_archive.clone())),
+    )
+    .ensure(
+        &manifest_with(&first_archive, first_runtime, "0.7.0", "0.5.1"),
+        HostTarget::LinuxX64,
+    )
+    .expect("first toolchain build installs");
+
+    let second = RuntimeInstaller::new(
+        cache.clone(),
+        "0.7.0",
+        Arc::new(FakeDownloader::new(second_archive.clone())),
+    )
+    .ensure(
+        &manifest_with(&second_archive, second_runtime, "0.7.0", "0.5.1"),
+        HostTarget::LinuxX64,
+    )
+    .expect("rebuilt artifact installs");
+
+    assert_ne!(
+        first.root, second.root,
+        "different bytes need different roots"
+    );
+    assert_eq!(
+        fs::read(&first.entrypoint).expect("first build remains readable"),
+        first_runtime,
+        "publishing a rebuild must not overwrite the previous immutable root",
+    );
+    assert_eq!(
+        fs::read(&second.entrypoint).expect("second build is readable"),
+        second_runtime,
     );
     fs::remove_dir_all(&cache).ok();
 }
@@ -746,6 +797,7 @@ fn an_engine_is_installed_on_demand_under_its_own_version() {
     let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
     let engine = b"rlm-bsl-index";
     let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let engine_delivery = format!("1.33.0--{}", sha256(&engine_archive));
     let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
     let cache = temp_dir("engine");
     let downloader = Arc::new(AssetDownloader::new(vec![
@@ -764,8 +816,10 @@ fn an_engine_is_installed_on_demand_under_its_own_version() {
 
     assert_eq!(
         root.strip_prefix(&cache).expect("установка внутри кеша"),
-        Path::new("rlm-tools-bsl").join("1.33.0").join("linux-x64"),
-        "путь движка содержит его собственную версию"
+        Path::new("rlm-tools-bsl")
+            .join(engine_delivery)
+            .join("linux-x64"),
+        "путь движка содержит его версию и сумму поставки"
     );
     assert_eq!(
         fs::read(root.join("bin/linux-x64/rlm-bsl-index")).unwrap(),
@@ -841,6 +895,49 @@ impl Downloader for DeadChannel {
             format!("failed to download runtime asset {url}: connection refused"),
         ))
     }
+}
+
+#[test]
+fn a_new_attempt_removes_only_stale_transactions_for_its_delivery() {
+    let runtime = b"unica-runtime";
+    let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let manifest = manifest(&archive, runtime);
+    let cache = temp_dir("stale-transactions");
+    let delivery = format!("0.7.0--{}", sha256(&archive));
+    let transactions = cache.join(".transactions");
+    let stale = transactions.join(format!("unica-{delivery}-linux-x64-dead-session"));
+    let other_target = transactions.join(format!("unica-{delivery}-darwin-arm64-live-session"));
+    let other_delivery = transactions.join(format!(
+        "unica-0.7.0--{}-linux-x64-other-build",
+        "b".repeat(64)
+    ));
+    for path in [&stale, &other_target, &other_delivery] {
+        fs::create_dir_all(path.join("runtime")).expect("seed abandoned transaction");
+    }
+    let partial = cache
+        .join(".partial/unica")
+        .join(format!("{delivery}-linux-x64.tar.gz"));
+    fs::create_dir_all(partial.parent().unwrap()).expect("seed partial directory");
+    fs::write(&partial, b"resumable bytes").expect("seed resumable partial");
+
+    RuntimeInstaller::new(cache.clone(), "0.7.0", Arc::new(DeadChannel))
+        .ensure(&manifest, HostTarget::LinuxX64)
+        .expect_err("offline attempt remains offline");
+
+    assert!(
+        !stale.exists(),
+        "the artifact lock proves no matching transaction can still be live"
+    );
+    assert!(other_target.is_dir(), "another target is outside this lock");
+    assert!(
+        other_delivery.is_dir(),
+        "another immutable delivery is outside this lock"
+    );
+    assert!(
+        partial.is_file(),
+        "resumable download bytes are state, not transaction garbage"
+    );
+    fs::remove_dir_all(&cache).ok();
 }
 
 #[test]
@@ -1164,6 +1261,8 @@ fn prefetch_delivers_every_artifact_the_target_needs() {
     let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
     let engine = b"rlm-bsl-index";
     let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let core_delivery = format!("0.7.0--{}", sha256(&core_archive));
+    let engine_delivery = format!("1.33.0--{}", sha256(&engine_archive));
     let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
     let cache = temp_dir("prefetch");
     let downloader = Arc::new(AssetDownloader::new(vec![
@@ -1185,10 +1284,14 @@ fn prefetch_delivers_every_artifact_the_target_needs() {
         "названы все артефакты цели, а не только ядро"
     );
     assert!(cache
-        .join("unica/0.7.0/linux-x64/bin/linux-x64/unica")
+        .join("unica")
+        .join(core_delivery)
+        .join("linux-x64/bin/linux-x64/unica")
         .is_file());
     assert!(cache
-        .join("rlm-tools-bsl/1.33.0/linux-x64/bin/linux-x64/rlm-bsl-index")
+        .join("rlm-tools-bsl")
+        .join(engine_delivery)
+        .join("linux-x64/bin/linux-x64/rlm-bsl-index")
         .is_file());
     assert_eq!(downloader.calls(), 2);
     fs::remove_dir_all(&cache).ok();

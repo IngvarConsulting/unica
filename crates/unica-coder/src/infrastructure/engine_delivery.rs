@@ -125,8 +125,13 @@ impl DeliveryDesk {
     where
         W: FnOnce(Arc<Delivery>) -> Result<PathBuf, String> + Send + 'static,
     {
-        let delivery = self.start(artifact, work);
-        match self.wait(artifact, &delivery, window, cancellation, progress) {
+        let (delivery, started_here) = self.start(artifact, work);
+        // Only the caller that created the server-owned delivery spends the
+        // synchronous window on it. Followers report the shared work state
+        // immediately, so one cold artifact can occupy at most one MCP
+        // admission slot instead of all 32.
+        let wait_window = if started_here { window } else { Duration::ZERO };
+        match self.wait(artifact, &delivery, wait_window, cancellation, progress) {
             Some(outcome) => {
                 // Расчёт окончен: следующий вызов либо возьмёт готовое из кеша,
                 // либо начнёт заново, если доставка не удалась.
@@ -154,13 +159,13 @@ impl DeliveryDesk {
             .and_then(|delivery| delivery.poll_hint())
     }
 
-    fn start<W>(&self, artifact: &str, work: W) -> Arc<Delivery>
+    fn start<W>(&self, artifact: &str, work: W) -> (Arc<Delivery>, bool)
     where
         W: FnOnce(Arc<Delivery>) -> Result<PathBuf, String> + Send + 'static,
     {
         let mut in_flight = self.in_flight.lock().expect("in flight");
         if let Some(delivery) = in_flight.get(artifact) {
-            return Arc::clone(delivery);
+            return (Arc::clone(delivery), false);
         }
         let delivery = Arc::new(Delivery::new());
         in_flight.insert(artifact.to_owned(), Arc::clone(&delivery));
@@ -170,7 +175,7 @@ impl DeliveryDesk {
             let outcome = work(Arc::clone(&running));
             running.settle(outcome);
         });
-        delivery
+        (delivery, true)
     }
 
     /// `None` — вызов ушёл, не дождавшись: окно кончилось или его отменили.
@@ -412,6 +417,26 @@ mod tests {
         }
     }
 
+    fn expect_eventually_ready(desk: &DeliveryDesk, artifact: &'static str) {
+        let deadline = Instant::now() + WIDE;
+        loop {
+            match desk.deliver(
+                artifact,
+                |_| panic!("the existing delivery must not be started twice"),
+                WIDE,
+                &CancellationToken::new(),
+                &NoopProgressSink,
+            ) {
+                Delivered::Ready => return,
+                Delivered::Working { .. } if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Delivered::Working { .. } => panic!("delivery did not settle before the deadline"),
+                Delivered::Failed(error) => panic!("delivery failed: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn a_delivery_inside_the_window_hands_over_the_engine() {
         let desk = desk();
@@ -468,45 +493,110 @@ mod tests {
         );
 
         release.store(true, Ordering::SeqCst);
-        expect_ready(desk.deliver(
-            "rlm-tools-bsl",
-            |_| panic!("доставка уже идёт, второй раз её не начинают"),
-            WIDE,
-            &CancellationToken::new(),
-            &NoopProgressSink,
-        ));
+        expect_eventually_ready(&desk, "rlm-tools-bsl");
     }
 
     #[test]
-    fn two_calls_wait_for_one_delivery() {
+    fn followers_of_an_in_flight_delivery_return_working_without_waiting() {
+        // Every waiting tools/call owns one MCP admission slot. If followers
+        // wait for the same 30-second delivery window, 32 identical cold calls
+        // can occupy the whole dispatcher even though only one download exists.
+        let desk = Arc::new(desk());
+        let release = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+
+        let first_desk = Arc::clone(&desk);
+        let first_release = Arc::clone(&release);
+        let first_started = Arc::clone(&started);
+        let first = thread::spawn(move || {
+            first_desk.deliver(
+                "rlm-tools-bsl",
+                move |delivery| {
+                    delivery.moved(1024, Some(4096));
+                    first_started.store(true, Ordering::SeqCst);
+                    while !first_release.load(Ordering::SeqCst) {
+                        thread::yield_now();
+                    }
+                    Ok(PathBuf::from("/cache/rlm-tools-bsl"))
+                },
+                WIDE,
+                &CancellationToken::new(),
+                &NoopProgressSink,
+            )
+        });
+        while !started.load(Ordering::SeqCst) {
+            thread::yield_now();
+        }
+
+        let follower_desk = Arc::clone(&desk);
+        let (sent, received) = std::sync::mpsc::channel();
+        let follower = thread::spawn(move || {
+            let outcome = follower_desk.deliver(
+                "rlm-tools-bsl",
+                |_| panic!("the follower must not start a second delivery"),
+                WIDE,
+                &CancellationToken::new(),
+                &NoopProgressSink,
+            );
+            sent.send(outcome).unwrap();
+        });
+        let prompt = received.recv_timeout(Duration::from_millis(200)).ok();
+
+        release.store(true, Ordering::SeqCst);
+        let first_outcome = first.join().expect("first caller");
+        follower.join().expect("follower caller");
+        expect_ready(first_outcome);
+
+        assert!(
+            matches!(
+                prompt,
+                Some(Delivered::Working {
+                    received: 1024,
+                    total: Some(4096)
+                })
+            ),
+            "a follower held an admission slot instead of returning current work state"
+        );
+    }
+
+    #[test]
+    fn two_calls_share_one_delivery_but_only_the_owner_waits() {
         // Один архив, две сессии. Качать его дважды значит платить дважды за то
         // же самое и получить два писателя на один файл.
         let desk = Arc::new(desk());
         let started = Arc::new(AtomicUsize::new(0));
-        let waiters = (0..2)
-            .map(|_| {
-                let desk = Arc::clone(&desk);
-                let started = Arc::clone(&started);
-                thread::spawn(move || {
-                    expect_ready(desk.deliver(
-                        "rlm-tools-bsl",
-                        move |_| {
-                            started.fetch_add(1, Ordering::SeqCst);
-                            thread::sleep(Duration::from_millis(120));
-                            Ok(PathBuf::from("/cache/rlm-tools-bsl"))
-                        },
-                        WIDE,
-                        &CancellationToken::new(),
-                        &NoopProgressSink,
-                    ))
-                })
-            })
-            .collect::<Vec<_>>();
-
-        for waiter in waiters {
-            waiter.join().expect("waiter");
+        let release = Arc::new(AtomicBool::new(false));
+        let owner_desk = Arc::clone(&desk);
+        let owner_started = Arc::clone(&started);
+        let owner_release = Arc::clone(&release);
+        let owner = thread::spawn(move || {
+            owner_desk.deliver(
+                "rlm-tools-bsl",
+                move |_| {
+                    owner_started.fetch_add(1, Ordering::SeqCst);
+                    while !owner_release.load(Ordering::SeqCst) {
+                        thread::yield_now();
+                    }
+                    Ok(PathBuf::from("/cache/rlm-tools-bsl"))
+                },
+                WIDE,
+                &CancellationToken::new(),
+                &NoopProgressSink,
+            )
+        });
+        while started.load(Ordering::SeqCst) == 0 {
+            thread::yield_now();
         }
-
+        let follower = desk.deliver(
+            "rlm-tools-bsl",
+            |_| panic!("the shared delivery must not start twice"),
+            WIDE,
+            &CancellationToken::new(),
+            &NoopProgressSink,
+        );
+        assert!(matches!(follower, Delivered::Working { .. }));
+        release.store(true, Ordering::SeqCst);
+        expect_ready(owner.join().expect("owner"));
         assert_eq!(started.load(Ordering::SeqCst), 1, "качали один раз");
     }
 
@@ -551,13 +641,7 @@ mod tests {
         );
         release.store(true, Ordering::SeqCst);
 
-        expect_ready(desk.deliver(
-            "rlm-tools-bsl",
-            |_| panic!("доставка уже идёт, второй раз её не начинают"),
-            WIDE,
-            &CancellationToken::new(),
-            &NoopProgressSink,
-        ));
+        expect_eventually_ready(&desk, "rlm-tools-bsl");
         assert_eq!(started.load(Ordering::SeqCst), 1, "качали один раз");
     }
 

@@ -32,8 +32,9 @@ pub struct RuntimeManifest {
     pub source: SourceIdentity,
     pub release: ReleaseIdentity,
     /// Артефакты по отдельности: у каждого своя версия и свой архив на цель.
-    /// Ключ установки берётся из версии артефакта, поэтому выпуск плагина не
-    /// объявляет холодным то, что не менялось.
+    /// Ключ установки берётся из версии и суммы архива, поэтому выпуск плагина
+    /// не объявляет холодными неизменившиеся байты, а новый toolchain build с
+    /// прежней upstream-версией не подменяет старую установку.
     #[serde(default)]
     pub artifacts: BTreeMap<String, Artifact>,
 }
@@ -168,7 +169,7 @@ impl RuntimeManifest {
         self.artifact(CORE_ARTIFACT)
     }
 
-    /// Артефакт по имени: версия ключует установку, цели несут архивы.
+    /// Артефакт по имени: версия вместе с суммой цели ключует установку.
     pub fn artifact(&self, name: &str) -> Result<&Artifact> {
         self.artifacts
             .get(name)

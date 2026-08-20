@@ -97,10 +97,11 @@ impl RuntimeInstaller {
         manifest.validate(&self.plugin_version)?;
         let mut delivered = Vec::new();
         for (name, artifact) in &manifest.artifacts {
+            let target = manifest.artifact_target(name, host)?;
             let root = self
                 .cache_root
                 .join(name)
-                .join(&artifact.version)
+                .join(delivery_key(&artifact.version, target))
                 .join(host.as_str());
             // Что уже лежало, видно только до доставки: она же это и создаёт.
             let already = root.is_dir();
@@ -130,19 +131,21 @@ impl RuntimeInstaller {
         manifest.validate(&self.plugin_version)?;
         let artifact = manifest.artifact(name)?;
         let target = manifest.artifact_target(name, host)?;
-        // Личность установки — артефакт, его версия и байты архива. Версия
-        // плагина сюда не входит: выпуск, не менявший артефакт, не должен
-        // объявлять кеш холодным.
+        let delivery = delivery_key(&artifact.version, target);
+        // Личность установки — артефакт, его версия и байты архива. Одной
+        // upstream-версии недостаточно: новый toolchain build может сохранить
+        // её, но опубликовать другие байты. Версия плагина сюда не входит:
+        // выпуск, не менявший артефакт, не должен объявлять кеш холодным.
         let final_root = self
             .cache_root
             .join(name)
-            .join(&artifact.version)
+            .join(&delivery)
             .join(host.as_str());
 
         fs::create_dir_all(self.cache_root.join(".locks"))?;
         let lock_path = self.cache_root.join(".locks").join(format!(
             "{name}-{}-{}.lock",
-            artifact.version,
+            delivery,
             host.as_str()
         ));
         let lock = open_lock(&lock_path)?;
@@ -153,6 +156,14 @@ impl RuntimeInstaller {
             ))
         })?;
 
+        // Эта блокировка охватывает ровно артефакт, неизменяемую поставку и
+        // цель. Значит любая более старая транзакция с тем же префиксом уже не
+        // может принадлежать живому установщику: её процесс либо завершился,
+        // либо был убит. Убираем её до новой staging-области, чтобы аварийные
+        // распаковки не росли без границ. `.partial` сюда намеренно не входит:
+        // полученные байты должны переживать сессию и возобновляться.
+        drop_stale_transactions(&self.cache_root, name, &delivery, host)?;
+
         if ready_installation(&final_root, target, name, &artifact.version, host)? {
             return Ok(final_root);
         }
@@ -162,12 +173,12 @@ impl RuntimeInstaller {
         // должны её пережить и достаться следующей сессии.
         let partial_root = self.cache_root.join(".partial").join(name);
         fs::create_dir_all(&partial_root)?;
-        let partial = partial_root.join(format!("{}-{}.tar.gz", artifact.version, host.as_str()));
+        let partial = partial_root.join(format!("{}-{}.tar.gz", delivery, host.as_str()));
         drop_other_partials(&self.cache_root, name, &partial);
 
         let transaction_root = self.cache_root.join(".transactions").join(format!(
             "{name}-{}-{}-{}",
-            artifact.version,
+            delivery,
             host.as_str(),
             Uuid::new_v4()
         ));
@@ -295,6 +306,15 @@ impl RuntimeInstaller {
     }
 }
 
+/// Устойчивая и неизменяемая личность одной поставки.
+///
+/// Семантическая версия оставляет каталог читаемым человеку, а сумма архива
+/// делает его байтовой личностью. Одинаковые байты под новым release tag могут
+/// безопасно разделить кеш; разные байты с той же upstream-версией — никогда.
+fn delivery_key(version: &str, target: &TargetRuntime) -> String {
+    format!("{version}--{}", target.asset.sha256)
+}
+
 /// Опубликовать скачанный архив: сумма, распаковка, маркер, подмена каталога.
 #[allow(clippy::too_many_arguments)]
 fn publish_artifact(
@@ -378,6 +398,32 @@ fn drop_other_partials(cache_root: &Path, artifact: &str, keep: &Path) {
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+fn drop_stale_transactions(
+    cache_root: &Path,
+    artifact: &str,
+    delivery: &str,
+    host: HostTarget,
+) -> Result<()> {
+    let root = cache_root.join(".transactions");
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Ok(());
+    };
+    let prefix = format!("{artifact}-{delivery}-{}-", host.as_str());
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        fs::remove_dir_all(entry.path()).map_err(|error| {
+            BootstrapError::new(format!(
+                "failed to clean stale runtime transaction {}: {error}",
+                entry.path().display()
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 /// Подкаталоги без служебных: `.locks` и `.transactions` артефактами не

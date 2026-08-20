@@ -22,10 +22,21 @@ pub(crate) struct BundledTool {
 struct BundledManifest {
     #[serde(default)]
     tools: Vec<ManifestTool>,
+    /// Байтовая личность внешнего артефакта для текущей цели. В исходном
+    /// checkout карта может отсутствовать: там бинарии собираются рядом с
+    /// плагином и кеш доставки не используется.
+    #[serde(default)]
+    artifact_assets: BTreeMap<String, ManifestArtifactAsset>,
     target_triple: Option<String>,
     /// Плейсхолдер исходного чекаута: инструменты там собираются на месте.
     #[serde(default)]
     source_manifest: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestArtifactAsset {
+    sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,8 +127,9 @@ pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Resul
         .ok_or_else(|| format!("tool {tool_name} has no pinned version"))
 }
 
-/// Каталог, куда bootstrap ставит артефакты по имени и версии. В дереве
-/// разработки переменной нет, и поиск идёт прежним путём — рядом с плагином.
+/// Каталог, куда bootstrap ставит артефакты по имени и неизменяемой личности
+/// поставки. В дереве разработки переменной нет, и поиск идёт прежним путём —
+/// рядом с плагином.
 const ARTIFACT_CACHE_ENV: &str = "UNICA_ARTIFACT_CACHE";
 
 pub(crate) fn resolve_bundled_tool(
@@ -149,7 +161,8 @@ fn resolve_bundled_tool_in(
     resolve_bundled_tool_for_target(plugin_root, tool_name, target_id, verify)
 }
 
-/// Движок в кеше артефактов: `<кеш>/<инструмент>/<версия>/<цель>/<путь>`.
+/// Движок в кеше артефактов:
+/// `<кеш>/<артефакт>/<версия--sha256-поставки>/<цель>/<путь>`.
 /// Отсутствие установки — не ошибка: её ещё могут доставить, и решает это
 /// вызывающий, а не резолвер.
 fn resolve_from_artifact_cache(
@@ -179,9 +192,10 @@ fn resolve_from_artifact_cache(
         .find(|tool| tool.name == tool_name)
         .and_then(|tool| tool.artifact.clone())
         .unwrap_or_else(|| tool_name.to_string());
+    let delivery = artifact_delivery_key(&manifest, &artifact, &version)?;
     let program = cache
         .join(&artifact)
-        .join(&version)
+        .join(delivery)
         .join(target_id)
         .join(binary.delivered());
     if !program.is_file() {
@@ -195,6 +209,30 @@ fn resolve_from_artifact_cache(
         warnings: Vec::new(),
         missing: None,
     }))
+}
+
+fn artifact_delivery_key(
+    manifest: &BundledManifest,
+    artifact: &str,
+    version: &str,
+) -> Result<String, String> {
+    let Some(asset) = manifest.artifact_assets.get(artifact) else {
+        // Дерево разработки и старые тестовые фикстуры не являются релизной
+        // доставкой. Их прежний путь сохраняется; опубликованный manifest
+        // всегда несёт artifactAssets и получает неизменяемый ключ ниже.
+        return Ok(version.to_string());
+    };
+    if asset.sha256.len() != 64
+        || !asset
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "artifact {artifact} has invalid delivery sha256 in the Unica manifest"
+        ));
+    }
+    Ok(format!("{version}--{}", asset.sha256))
 }
 
 /// Имя архива, в котором приезжает инструмент. Несколько инструментов делят
@@ -269,15 +307,16 @@ fn expected_engine_path(plugin_root: &Path, tool_name: &str, target_id: &str) ->
         artifact_for(plugin_root, tool_name),
     ) {
         let manifest_path = plugin_root.join("third-party").join("manifest.json");
-        if let Some(binary) = fs::read(&manifest_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BundledManifest>(&bytes).ok())
-            .and_then(|manifest| manifest_binary(&manifest, tool_name, target_id).ok())
-        {
+        if let Some((binary, delivery)) = fs::read(&manifest_path).ok().and_then(|bytes| {
+            let manifest = serde_json::from_slice::<BundledManifest>(&bytes).ok()?;
+            let binary = manifest_binary(&manifest, tool_name, target_id).ok()?;
+            let delivery = artifact_delivery_key(&manifest, &artifact, &version).ok()?;
+            Some((binary, delivery))
+        }) {
             return Some(
                 cache
                     .join(artifact)
-                    .join(version)
+                    .join(delivery)
                     .join(target_id)
                     .join(binary.delivered()),
             );
@@ -591,7 +630,7 @@ mod tests {
     #[test]
     fn an_engine_is_taken_from_the_artifact_cache_when_one_is_named() {
         // Разрез поставки уносит движки из каталога плагина: они лежат в кеше
-        // артефактов под своей версией, и рантайм обязан находить их там.
+        // под личностью поставки, и рантайм обязан находить их там.
         let plugin_root = temp_plugin_root("artifact-cache");
         write_manifest_with_bsl_analyzer(&plugin_root);
         let cache = plugin_root.join("..").join("artifact-cache");
@@ -762,6 +801,60 @@ mod tests {
 mod delivery_tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn artifact_cache_resolution_uses_the_delivery_digest_not_only_the_version() {
+        let plugin_root = tests::temp_plugin_root("immutable-cache-identity");
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "artifactAssets": {
+    "bsl-analyzer": {
+      "repository": "https://github.com/IngvarConsulting/unica-toolchain",
+      "tag": "bsl-analyzer-v0.2.67-build.2",
+      "name": "bsl-analyzer-darwin-arm64",
+      "mediaType": "application/octet-stream",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "tools": [{
+    "name": "bsl-analyzer",
+    "version": "0.2.67",
+    "binaries": {
+      "darwin-arm64": {
+        "targetTriple": "aarch64-apple-darwin",
+        "binaryPath": "bin/darwin-arm64/bsl-analyzer",
+        "deliveredPath": "bsl-analyzer-darwin-arm64",
+        "sha256": "e4002e1adb76d4e2bb4846ab27463ff6368d18b727eb2bd519e1579f0baf491b"
+      }
+    }
+  }]
+}"#,
+        )
+        .unwrap();
+        let cache = plugin_root.join("..").join("immutable-cache");
+        let stale = cache.join("bsl-analyzer/0.2.67/darwin-arm64/bsl-analyzer-darwin-arm64");
+        let current = cache.join(
+            "bsl-analyzer/0.2.67--aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/darwin-arm64/bsl-analyzer-darwin-arm64",
+        );
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(&stale, "old-build").unwrap();
+        fs::create_dir_all(current.parent().unwrap()).unwrap();
+        fs::write(&current, "current-build").unwrap();
+
+        let found = resolve_from_artifact_cache(
+            &plugin_root,
+            &cache,
+            "bsl-analyzer",
+            "darwin-arm64",
+            false,
+        )
+        .unwrap()
+        .expect("current delivery is installed");
+
+        assert_eq!(found.program, current);
+    }
 
     #[test]
     fn an_engine_in_the_artifact_cache_counts_as_installed() {
