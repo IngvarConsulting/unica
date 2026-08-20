@@ -451,7 +451,7 @@ fn try_lock_delivery_targets(
         let lock = open_lock(&path)?;
         match lock.try_lock_exclusive() {
             Ok(()) => locked.push(lock),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) if lock_is_contended(&error) => return Ok(None),
             Err(error) => {
                 return Err(BootstrapError::new(format!(
                     "failed to inspect runtime cache lock {}: {error}",
@@ -461,6 +461,18 @@ fn try_lock_delivery_targets(
         }
     }
     Ok(Some(locked))
+}
+
+/// `fs2` preserves the native lock error on Windows (error 33), while Unix
+/// commonly maps contention to `WouldBlock`. Both mean that another delivery
+/// owns the installation and collection must leave it alone.
+fn lock_is_contended(error: &std::io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error
+            .raw_os_error()
+            .zip(expected.raw_os_error())
+            .is_some_and(|(actual, expected)| actual == expected)
 }
 
 fn drop_stale_transactions(
