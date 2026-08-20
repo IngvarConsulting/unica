@@ -587,6 +587,11 @@ pub struct ProviderSearchSection {
     pub diagnostics: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
+    /// То же состояние и тем же словарём, что у всякой долгой работы: раздел,
+    /// ждущий зависимость, — это `working`, а не особый случай поиска.
+    /// Вызывающий узнаёт ожидание одним разбором, где бы оно ни встретилось.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::domain::long_work::WorkState>,
 }
 
 impl ProviderSearchSection {
@@ -683,6 +688,9 @@ impl ProviderSearchSection {
             hits,
             diagnostics,
             artifacts: Vec::new(),
+            // Ожидание объявляют те, кто его знает: раздел сам по себе ничего
+            // не ждёт.
+            work: None,
         })
     }
 
@@ -760,7 +768,17 @@ impl ProviderSearchSection {
         diagnostics: Vec<String>,
         detail_code: impl Into<String>,
     ) -> Result<Self, String> {
-        Self::bounded(
+        let waiting = crate::domain::long_work::WorkState {
+            status: crate::domain::long_work::WorkStatus::Working,
+            status_message: diagnostics
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "waiting for a dependency".to_string()),
+            // Построение индекса темпа не сообщает, а выдуманное число хуже
+            // пустого места.
+            poll_interval_ms: None,
+        };
+        let section = Self::bounded(
             identity,
             ProviderSectionStatus::TimedOut,
             ranking,
@@ -768,7 +786,11 @@ impl ProviderSearchSection {
             hits,
             diagnostics,
             SearchTermination::dependency_pending(detail_code),
-        )
+        );
+        section.map(|section| Self {
+            work: Some(waiting),
+            ..section
+        })
     }
 
     fn bounded(
@@ -1599,5 +1621,70 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error, "empty search section must carry an exact zero count");
+    }
+}
+
+#[cfg(test)]
+mod long_work_vocabulary_tests {
+    use super::*;
+    use crate::domain::long_work::WorkStatus;
+
+    fn identity() -> ProviderIdentity {
+        ProviderId::Rlm.identity()
+    }
+
+    #[test]
+    fn a_section_waiting_for_a_dependency_speaks_the_common_vocabulary() {
+        // Ждать построения индекса и ждать доставки движка — одно и то же для
+        // вызывающего. Одна форма — один разбор.
+        let section = ProviderSearchSection::dependency_pending(
+            identity(),
+            SearchRanking::None,
+            SearchOrdering::Provider,
+            Vec::new(),
+            vec!["rlm index is missing; background build requested".to_string()],
+            "buildingIndex",
+        )
+        .expect("valid section");
+
+        let work = section.work.as_ref().expect("ожидание названо");
+        assert_eq!(work.status, WorkStatus::Working);
+        assert!(
+            work.status_message.contains("background build requested"),
+            "{}",
+            work.status_message
+        );
+        assert_eq!(
+            work.poll_interval_ms, None,
+            "построение индекса темпа не сообщает"
+        );
+    }
+
+    #[test]
+    fn a_section_that_is_not_waiting_carries_no_state() {
+        // Недоступный поставщик — не идущая работа: повторять нечего.
+        let section =
+            ProviderSearchSection::unavailable(identity(), "analyzer is not installed".to_string());
+
+        assert!(section.work.is_none());
+    }
+
+    #[test]
+    fn the_pending_section_keeps_the_signals_it_had() {
+        // Словарь добавляется, а не подменяет: прежние поля читаются как читались.
+        let section = ProviderSearchSection::dependency_pending(
+            identity(),
+            SearchRanking::None,
+            SearchOrdering::Provider,
+            Vec::new(),
+            vec!["rlm index building".to_string()],
+            "buildingIndex",
+        )
+        .expect("valid section");
+
+        let termination = section.termination.as_ref().expect("termination");
+        assert_eq!(termination.code, SearchTerminationCode::DependencyPending);
+        assert!(termination.retryable);
+        assert_eq!(termination.detail_code.as_deref(), Some("buildingIndex"));
     }
 }
