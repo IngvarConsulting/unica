@@ -19,8 +19,10 @@ fn run_main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
         Ok(code) => ExitCode::from(normalize_exit_code(code)),
         Err(error) => {
-            eprintln!("unica-bootstrap: {error}");
-            ExitCode::from(1)
+            // Причина, место и лечение в потоке ошибок, различимый номер — в
+            // коде выхода: убитая сессия текста не увидит, а код увидит хост.
+            eprintln!("unica-bootstrap: {}", error.diagnosis());
+            ExitCode::from(error.exit_code())
         }
     }
 }

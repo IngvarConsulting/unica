@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::archive::{extract_verified_tar_gz, sha256_file, verify_runtime_files};
+use crate::attempt::{AttemptLog, AttemptSubject, OpenAttempt, Stage};
 use crate::download::Downloader;
-use crate::error::{BootstrapError, Result};
+use crate::error::{BootstrapError, Failure, Result};
 use crate::manifest::{RuntimeManifest, TargetRuntime};
 use crate::platform::HostTarget;
 
@@ -124,6 +125,16 @@ impl RuntimeInstaller {
         let staged_root = transaction_root.join("runtime");
         fs::create_dir_all(&staged_root)?;
 
+        // Запись о попытке открывается до первой стадии: убитый процесс не
+        // печатает ничего, и всё, что он оставит, должно быть написано заранее.
+        let attempt = AttemptLog::in_cache(&self.cache_root).open(AttemptSubject {
+            artifact: name.to_owned(),
+            version: artifact.version.clone(),
+            target: host.as_str().to_owned(),
+            url: target.asset.url.clone(),
+            partial: partial.clone(),
+        })?;
+
         let result = match self.downloader.download(&target.asset.url, &partial) {
             // Оборванный перенос — единственный случай, когда полученное
             // остаётся лежать: продолжить его дешевле, чем начать заново.
@@ -137,6 +148,7 @@ impl RuntimeInstaller {
                     name,
                     &artifact.version,
                     host,
+                    &attempt,
                 );
                 // Приехавшее целиком дальше либо установлено, либо негодно.
                 // В обоих случаях докачивать нечего, и место занимать незачем.
@@ -145,12 +157,23 @@ impl RuntimeInstaller {
             }
         };
 
+        // Закрытая запись больше никому не интересна: о замеченном отказе уже
+        // сказано кодом выхода и потоком ошибок. Неудача самой записи работу не
+        // отменяет — она диагностика, а не дело.
+        let closed = match &result {
+            Ok(()) => attempt.finished(),
+            Err(error) => attempt.failed(error.failure(), &error.to_string()),
+        };
+        if let Err(error) = closed {
+            eprintln!("unica-bootstrap: failed to close the attempt record: {error}");
+        }
+
         if result.is_ok() {
             // Сборка мусора не вправе отменить состоявшуюся установку: на
             // Windows каталог с работающим бинарём удалить нельзя, и соседняя
             // сессия — законная причина отказа, а не повод не стартовать.
             if let Err(error) = Self::collect(&self.cache_root, RETAINED_VERSIONS) {
-                eprintln!("unica-bootstrap: не удалось прибрать кеш: {error}");
+                eprintln!("unica-bootstrap: failed to tidy the runtime cache: {error}");
             }
         }
 
@@ -221,6 +244,7 @@ impl RuntimeInstaller {
 }
 
 /// Опубликовать скачанный архив: сумма, распаковка, маркер, подмена каталога.
+#[allow(clippy::too_many_arguments)]
 fn publish_artifact(
     archive_path: &Path,
     staged_root: &Path,
@@ -229,17 +253,24 @@ fn publish_artifact(
     artifact: &str,
     version: &str,
     host: HostTarget,
+    attempt: &OpenAttempt,
 ) -> Result<()> {
+    attempt.reached(Stage::Verify)?;
     let actual_archive_sha = sha256_file(archive_path)?;
     if actual_archive_sha != target.asset.sha256 {
-        return Err(BootstrapError::new(format!(
-            "runtime archive sha256 {actual_archive_sha} != expected {}",
-            target.asset.sha256
-        )));
+        return Err(BootstrapError::of(
+            Failure::Checksum,
+            format!(
+                "runtime archive sha256 {actual_archive_sha} != expected {} for {}",
+                target.asset.sha256, target.asset.url
+            ),
+        ));
     }
+    attempt.reached(Stage::Extract)?;
     extract_verified_tar_gz(archive_path, staged_root, &target.files)?;
     write_ready_marker(staged_root, artifact, version, host, &target.asset.sha256)?;
 
+    attempt.reached(Stage::Publish)?;
     if final_root.exists() {
         let quarantine =
             final_root.with_file_name(format!("{}.invalid-{}", host.as_str(), Uuid::new_v4()));

@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::error::{BootstrapError, Result};
+use crate::error::{BootstrapError, Failure, Result};
 
 pub trait Downloader: Send + Sync {
     fn download(&self, url: &str, destination: &Path) -> Result<()>;
@@ -69,17 +69,21 @@ impl HttpDownloader {
             // рассудит контрольная сумма у вызывающего.
             Err(ureq::Error::Status(416, _)) => return Ok(()),
             Err(error) => {
-                return Err(BootstrapError::new(format!(
-                    "failed to download runtime asset {url}: {error}"
-                )))
+                return Err(BootstrapError::of(
+                    Failure::Network,
+                    format!("failed to download runtime asset {url}: {error}"),
+                ))
             }
         };
         // Редирект не вправе понизить схему.
         if url.starts_with("https://") && !response.get_url().starts_with("https://") {
-            return Err(BootstrapError::new(format!(
-                "runtime download redirected to a non-HTTPS URL: {}",
-                response.get_url()
-            )));
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!(
+                    "runtime download redirected to a non-HTTPS URL: {}",
+                    response.get_url()
+                ),
+            ));
         }
 
         // Сервер вправе забыть про диапазон и ответить `200` целым файлом. Так
@@ -100,27 +104,35 @@ impl HttpDownloader {
         loop {
             if Instant::now() >= deadline {
                 output.sync_all()?;
-                return Err(BootstrapError::new(format!(
-                    "runtime asset {url} exhausted the {}s download budget after {} bytes; \
-                     the next attempt resumes from what already arrived",
-                    self.budget.as_secs(),
-                    start + moved
-                )));
+                return Err(BootstrapError::of(
+                    Failure::Timeout,
+                    format!(
+                        "runtime asset {url} exhausted the {}s download budget after {} bytes",
+                        self.budget.as_secs(),
+                        start + moved
+                    ),
+                ));
             }
             let read = reader.read(&mut buffer).map_err(|error| {
-                BootstrapError::new(format!(
-                    "failed to read runtime asset {url} after {} bytes: {error}",
-                    start + moved
-                ))
+                BootstrapError::of(
+                    Failure::Network,
+                    format!(
+                        "failed to read runtime asset {url} after {} bytes: {error}",
+                        start + moved
+                    ),
+                )
             })?;
             if read == 0 {
                 break;
             }
             output.write_all(&buffer[..read]).map_err(|error| {
-                BootstrapError::new(format!(
-                    "failed to write runtime asset {}: {error}",
-                    destination.display()
-                ))
+                BootstrapError::of(
+                    Failure::Disk,
+                    format!(
+                        "failed to write runtime asset {}: {error}",
+                        destination.display()
+                    ),
+                )
             })?;
             moved += read as u64;
         }
@@ -132,9 +144,10 @@ impl HttpDownloader {
 impl Downloader for HttpDownloader {
     fn download(&self, url: &str, destination: &Path) -> Result<()> {
         if !url.starts_with("https://") {
-            return Err(BootstrapError::new(format!(
-                "runtime download URL must use HTTPS: {url}"
-            )));
+            return Err(BootstrapError::of(
+                Failure::Configuration,
+                format!("runtime download URL must use HTTPS: {url}"),
+            ));
         }
         self.transfer(url, destination)
     }
