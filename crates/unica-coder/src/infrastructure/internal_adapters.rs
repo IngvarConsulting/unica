@@ -2197,7 +2197,7 @@ impl StandardsAdapter {
         // instead of the page. One bounded retry with the `std` prefix costs
         // nothing when the id was already resolvable and turns the common
         // case into a hit.
-        if request.method == "v8std_get_page" && !get_page_found(&outcome.data) {
+        if request.method == "v8std_get_page" && get_page_reports_missing(&outcome) {
             if let Some(digits) = bare_numeric_standard_id(&request.params) {
                 let retry = StandardsRequest {
                     method: "v8std_get_page",
@@ -2346,16 +2346,24 @@ fn bare_numeric_standard_id(params: &Value) -> Option<String> {
     (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| id.to_string())
 }
 
-/// `v8std_get_page`'s own verdict, read the same way its `structuredContent`
-/// reports it. Missing or unparseable reads as "not found": that only ever
-/// widens the retry to a case where it is a harmless extra call, never masks
-/// a real hit.
-fn get_page_found(data: &Option<Value>) -> bool {
-    data.as_ref()
-        .and_then(|value| value.get("structuredContent"))
-        .and_then(|value| value.get("found"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+/// Whether `v8std_get_page` itself reported the page missing — the only
+/// answer a retry may act on.
+///
+/// A failed call is not a verdict about the id: a refused connection, a
+/// JSON-RPC error and an unparseable body all say the server never got to
+/// look. Retrying those would double the wait on every failure and hand the
+/// caller the second attempt's error in place of the first one's, hiding the
+/// cause the failure actually carried. So the outcome must have succeeded,
+/// and `found` must be present and literally `false`.
+fn get_page_reports_missing(outcome: &StandardsOutcome) -> bool {
+    outcome.outcome.ok
+        && outcome
+            .data
+            .as_ref()
+            .and_then(|value| value.get("structuredContent"))
+            .and_then(|value| value.get("found"))
+            .and_then(Value::as_bool)
+            == Some(false)
 }
 
 /// `params` with `id_or_alias_or_url` replaced by the `std`-prefixed form of
@@ -6484,6 +6492,91 @@ analyze_timeout_seconds = 900
             outcome.data.unwrap()["structuredContent"]["found"],
             json!(false)
         );
+    }
+
+    /// Counts calls and answers each one with a caller-supplied failure, so a
+    /// retry decision made on a *failed* first call is visible as a second
+    /// call rather than inferred.
+    struct CountingFailureHttpClient {
+        calls: RefCell<usize>,
+        response: Result<String, String>,
+    }
+
+    impl HttpClient for CountingFailureHttpClient {
+        fn post_json(&self, _endpoint: &str, _payload: &Value) -> Result<String, String> {
+            *self.calls.borrow_mut() += 1;
+            self.response.clone()
+        }
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_when_the_transport_failed() {
+        let client = CountingFailureHttpClient {
+            calls: RefCell::new(0),
+            response: Err("connection refused".to_string()),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        // A dead endpoint is not evidence that `647` needs the `std` prefix.
+        // Retrying doubles the wait on every failure and replaces the first
+        // error with the second one's text.
+        assert_eq!(
+            *client.calls.borrow(),
+            1,
+            "a transport failure must not be retried as if it were a miss"
+        );
+        assert!(!outcome.outcome.ok);
+        assert!(
+            outcome
+                .outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("connection refused")),
+            "the original transport error must reach the caller: {:?}",
+            outcome.outcome.errors
+        );
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_a_remote_jsonrpc_error() {
+        let client = CountingFailureHttpClient {
+            calls: RefCell::new(0),
+            response: Ok(
+                r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad id"}}"#
+                    .to_string(),
+            ),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        // The server answered, and what it answered was a protocol error, not
+        // `found: false`. Only its own verdict about the page may drive a retry.
+        assert_eq!(
+            *client.calls.borrow(),
+            1,
+            "a remote JSON-RPC error must not be retried as if it were a miss"
+        );
+        assert!(!outcome.outcome.ok);
+        assert!(outcome
+            .outcome
+            .errors
+            .iter()
+            .any(|error| error.contains("bad id")));
     }
 
     struct FakeProcessRunner {
