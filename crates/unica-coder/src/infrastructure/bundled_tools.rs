@@ -11,6 +11,10 @@ use std::path::{Component, Path, PathBuf};
 pub(crate) struct BundledTool {
     pub(crate) program: PathBuf,
     pub(crate) warnings: Vec<String>,
+    /// Заполнено, когда предпросмотр строит план по несуществующему файлу.
+    /// Вызывающий обязан это показать: путь к тому, чего нет, выглядит как
+    /// готовая к запуску команда, и это худший из возможных ответов.
+    pub(crate) missing: Option<MissingEngine>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +176,7 @@ fn resolve_from_artifact_cache(
     Ok(Some(BundledTool {
         program,
         warnings: Vec::new(),
+        missing: None,
     }))
 }
 
@@ -306,6 +311,7 @@ fn resolve_bundled_tool_for_target(
 
     let program = manifest_relative_path(plugin_root, &binary.binary_path)?;
     let mut warnings = Vec::new();
+    let mut missing = None;
     if verify {
         verify_binary(plugin_root, tool_name, &program, &binary.sha256)?;
     } else if !program.is_file() {
@@ -313,8 +319,13 @@ fn resolve_bundled_tool_for_target(
             "dry run: bundled tool binary is not present yet: {}",
             program.display()
         ));
+        missing = missing_engine(plugin_root, tool_name);
     }
-    Ok(BundledTool { program, warnings })
+    Ok(BundledTool {
+        program,
+        warnings,
+        missing,
+    })
 }
 
 fn manifest_binary(
@@ -399,6 +410,7 @@ fn resolve_from_lock_for_dry_run(
         warnings: vec![format!(
             "dry run: {reason}; using expected bundled binary path from tools.lock.json"
         )],
+        missing: missing_engine(plugin_root, tool_name),
     })
 }
 
