@@ -1564,6 +1564,27 @@ for raw in sys.stdin:
                 b"analyzer",
             )
 
+    def test_runtime_assessment_extracts_an_overlay_archive_with_executable_modes(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "rlm-bsl-mcp"
+            source.write_bytes(b"rlm")
+            source.chmod(0o755)
+            archive = root / "engine.tar.gz"
+            with tarfile.open(archive, "w:gz") as packaged:
+                packaged.add(source, arcname="bin/linux-x64/rlm-bsl-mcp")
+
+            overlay = module.prepare_runtime_overlay(
+                archive,
+                root / "extracted-overlay",
+            )
+
+            engine = overlay / "bin/linux-x64/rlm-bsl-mcp"
+            self.assertEqual(engine.read_bytes(), b"rlm")
+            self.assertEqual(stat.S_IMODE(engine.stat().st_mode), 0o755)
+
 
 if __name__ == "__main__":
     unittest.main()

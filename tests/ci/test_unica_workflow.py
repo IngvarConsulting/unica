@@ -629,8 +629,12 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         self.assertIn("stage-unica-assessment-engine.py", build)
         self.assertIn("--artifact bsl-analyzer", build)
         self.assertIn("--artifact rlm-tools-bsl", build)
+        self.assertIn("--out-archive .build/unica-assessment-engine-linux-x64.tar.gz", build)
         self.assertIn("name: unica-assessment-engine-linux-x64", assessment)
-        self.assertIn("--engine-overlay .build/assessment-engine", assessment)
+        self.assertIn(
+            "--engine-overlay .build/assessment-engine/unica-assessment-engine-linux-x64.tar.gz",
+            assessment,
+        )
 
     def test_the_direct_mcp_smoke_is_given_the_engines_it_asserts_on(self) -> None:
         build = job_block(self.release, "build-tools")

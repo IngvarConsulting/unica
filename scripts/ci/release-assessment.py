@@ -185,6 +185,24 @@ def overlay_runtime_files(run_unica: Path, overlay_root: Path) -> list[str]:
     return copied
 
 
+def prepare_runtime_overlay(overlay_input: Path, extract_dir: Path) -> Path:
+    """Restore an engine overlay without trusting artifact file modes.
+
+    GitHub's zipped artifact transport normalizes ordinary files to 0644. The
+    engine layer therefore crosses the job boundary as a tar archive whose
+    member modes are part of the verified input.
+    """
+    if overlay_input.is_dir():
+        return overlay_input
+    if not overlay_input.is_file() or not tarfile.is_tarfile(overlay_input):
+        raise SystemExit(f"unsupported runtime assessment engine overlay: {overlay_input}")
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir)
+    extract_dir.mkdir(parents=True)
+    safe_extract_tar(overlay_input, extract_dir)
+    return extract_dir
+
+
 def unica_version(run_unica: Path) -> str:
     plugin_json = read_json(plugin_root_for(run_unica) / ".codex-plugin" / "plugin.json")
     return str(plugin_json.get("version", "unknown"))
@@ -1414,7 +1432,13 @@ def main() -> None:
     package_archive = args.package_archive.resolve()
     run_unica = extract_marketplace_archive(package_archive, work_dir / "marketplace")
     runtime_overlay = (
-        overlay_runtime_files(run_unica, args.engine_overlay.resolve())
+        overlay_runtime_files(
+            run_unica,
+            prepare_runtime_overlay(
+                args.engine_overlay.resolve(),
+                work_dir / "engine-overlay",
+            ),
+        )
         if args.engine_overlay
         else []
     )

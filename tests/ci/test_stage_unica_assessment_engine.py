@@ -5,6 +5,7 @@ import json
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,6 +71,49 @@ def make_bundle(root: Path) -> Path:
 
 
 class StageUnicaAssessmentEngineTests(unittest.TestCase):
+    def test_packages_selected_artifacts_with_executable_modes_inside_the_archive(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = make_bundle(root)
+            archive = root / "unica-assessment-engine-linux-x64.tar.gz"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--bundle-root",
+                    str(bundle),
+                    "--out-archive",
+                    str(archive),
+                    "--artifact",
+                    "bsl-analyzer",
+                    "--artifact",
+                    "rlm-tools-bsl",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            with tarfile.open(archive, "r:gz") as packaged:
+                members = {member.name: member for member in packaged.getmembers()}
+            self.assertEqual(
+                sorted(members),
+                [
+                    "bin/linux-x64/bsl-analyzer",
+                    "bin/linux-x64/lib/libpython3.12.so.1.0",
+                    "bin/linux-x64/rlm-bsl-index",
+                    "bin/linux-x64/rlm-bsl-mcp",
+                ],
+            )
+            self.assertEqual(members["bin/linux-x64/rlm-bsl-mcp"].mode, 0o755)
+            self.assertEqual(
+                members["bin/linux-x64/lib/libpython3.12.so.1.0"].mode,
+                0o644,
+            )
+
     def test_stages_complete_selected_artifacts_and_excludes_other_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

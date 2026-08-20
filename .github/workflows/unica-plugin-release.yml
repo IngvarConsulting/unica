@@ -389,7 +389,7 @@ jobs:
         run: >
           python scripts/ci/stage-unica-assessment-engine.py
           --bundle-root .build/tool-bundles/linux-x64
-          --out-dir .build/assessment-engine
+          --out-archive .build/unica-assessment-engine-linux-x64.tar.gz
           --artifact bsl-analyzer
           --artifact rlm-tools-bsl
       - name: Upload BSP assessment engine
@@ -397,9 +397,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: unica-assessment-engine-linux-x64
-          path: .build/assessment-engine
+          # Zipped workflow artifacts normalize files to 0644. The inner tar
+          # keeps the verified executable modes needed by both engines.
+          path: .build/unica-assessment-engine-linux-x64.tar.gz
           if-no-files-found: error
           retention-days: 1
+          compression-level: 0
 
   package-thin:
     name: Package thin marketplace payload
@@ -538,7 +541,7 @@ jobs:
         run: >
           python scripts/ci/release-assessment.py
           --package-archive dist/runtime/unica-runtime-linux-x64.tar.gz
-          --engine-overlay .build/assessment-engine
+          --engine-overlay .build/assessment-engine/unica-assessment-engine-linux-x64.tar.gz
           --work-dir .build/release-assessment
           --out-dir dist/release-assessment
           --bsp-ref 3.2.1.446

@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
 import re
 import shutil
 import stat
+import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
 
@@ -122,7 +124,11 @@ def selected_runtime_files(
     return [by_path[path] for path in sorted(by_path)]
 
 
-def stage_engine(bundle_root: Path, out_dir: Path, *, artifacts: set[str]) -> None:
+def load_selected_runtime_files(
+    bundle_root: Path,
+    *,
+    artifacts: set[str],
+) -> list[tuple[PurePosixPath, Path, bool]]:
     if not artifacts:
         raise SystemExit("at least one --artifact is required")
     for artifact in artifacts:
@@ -132,7 +138,13 @@ def stage_engine(bundle_root: Path, out_dir: Path, *, artifacts: set[str]) -> No
     bundle_root = bundle_root.resolve()
     manifest_path = bundle_root / "tools.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    files = selected_runtime_files(bundle_root, manifest, artifacts=artifacts)
+    if not isinstance(manifest, dict):
+        raise SystemExit("tools manifest must be an object")
+    return selected_runtime_files(bundle_root, manifest, artifacts=artifacts)
+
+
+def stage_engine(bundle_root: Path, out_dir: Path, *, artifacts: set[str]) -> None:
+    files = load_selected_runtime_files(bundle_root, artifacts=artifacts)
 
     out_dir = out_dir.resolve()
     if out_dir.exists():
@@ -157,13 +169,60 @@ def stage_engine(bundle_root: Path, out_dir: Path, *, artifacts: set[str]) -> No
     )
 
 
+def package_engine(bundle_root: Path, out_archive: Path, *, artifacts: set[str]) -> None:
+    files = load_selected_runtime_files(bundle_root, artifacts=artifacts)
+    out_archive = out_archive.resolve()
+    if out_archive.exists():
+        raise SystemExit(f"assessment engine archive already exists: {out_archive}")
+    out_archive.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{out_archive.name}.staging-",
+        dir=out_archive.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        with temporary.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
+                with tarfile.open(
+                    fileobj=compressed,
+                    mode="w",
+                    format=tarfile.PAX_FORMAT,
+                ) as archive:
+                    for relative, source, executable in files:
+                        info = tarfile.TarInfo(relative.as_posix())
+                        info.size = source.stat().st_size
+                        info.mode = 0o755 if executable else 0o644
+                        info.uid = 0
+                        info.gid = 0
+                        info.uname = ""
+                        info.gname = ""
+                        info.mtime = 0
+                        with source.open("rb") as payload:
+                            archive.addfile(info, payload)
+        os.replace(temporary, out_archive)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+    print(
+        f"packaged {len(files)} files for {', '.join(sorted(artifacts))} into {out_archive}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle-root", type=Path, required=True)
-    parser.add_argument("--out-dir", type=Path, required=True)
+    output = parser.add_mutually_exclusive_group(required=True)
+    output.add_argument("--out-dir", type=Path)
+    output.add_argument("--out-archive", type=Path)
     parser.add_argument("--artifact", action="append", required=True)
     args = parser.parse_args()
-    stage_engine(args.bundle_root, args.out_dir, artifacts=set(args.artifact))
+    artifacts = set(args.artifact)
+    if args.out_archive is not None:
+        package_engine(args.bundle_root, args.out_archive, artifacts=artifacts)
+    else:
+        stage_engine(args.bundle_root, args.out_dir, artifacts=artifacts)
 
 
 if __name__ == "__main__":
