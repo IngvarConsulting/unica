@@ -51,6 +51,7 @@ fn run(args: Vec<String>) -> Result<i32> {
                 &RuntimeHandoff {
                     provider_state_root: &provider_state_root,
                     artifact_cache: &artifact_cache,
+                    runtime_manifest: &plugin_root.join("runtime-manifest.json"),
                     startup_notice: notice.as_deref(),
                 },
             )

@@ -21,14 +21,41 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_runtime_asset_pair(asset_dir: Path, target: str) -> str:
-    metadata_path = asset_dir / f"unica-runtime-{target}.json"
-    archive_path = asset_dir / f"unica-runtime-{target}.tar.gz"
+# Имя артефакта ядра. Остальные архивы на цели — движки.
+CORE_ARTIFACT = "unica"
+
+
+def published_artifacts(asset_dir: Path, target: str) -> "list[str]":
+    """Какие артефакты опубликованы для цели.
+
+    Поставка разрезана по артефактам, и проверять один только сердечник значит
+    выпустить движки, которых никто не сверял.
+    """
+    suffix = f"-runtime-{target}.tar.gz"
+    found = sorted(
+        path.name[: -len(suffix)]
+        for path in asset_dir.glob(f"*{suffix}")
+        if path.name.endswith(suffix)
+    )
+    if CORE_ARTIFACT not in found:
+        raise SystemExit(f"published runtime asset pair is missing for {target}")
+    return found
+
+
+def verify_runtime_asset_pair(asset_dir: Path, target: str, artifact: str = CORE_ARTIFACT) -> str:
+    metadata_path = asset_dir / f"{artifact}-runtime-{target}.json"
+    archive_path = asset_dir / f"{artifact}-runtime-{target}.tar.gz"
     if not metadata_path.is_file() or not archive_path.is_file():
         raise SystemExit(f"published runtime asset pair is missing for {target}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("schemaVersion") != 1 or metadata.get("target") != target:
+    if (
+        metadata.get("schemaVersion") != 2
+        or metadata.get("target") != target
+        or metadata.get("artifact") != artifact
+    ):
         raise SystemExit(f"published runtime metadata identity mismatch for {target}")
+    if not metadata.get("version"):
+        raise SystemExit(f"published runtime metadata has no artifact version for {target}")
     if metadata.get("asset", {}).get("name") != archive_path.name:
         raise SystemExit(f"published runtime archive name mismatch for {target}")
     if metadata["asset"].get("sha256") != sha256(archive_path):
@@ -58,7 +85,10 @@ def verify_runtime_asset_pair(asset_dir: Path, target: str) -> str:
 
 
 def verify_release_assets(asset_dir: Path) -> str:
-    versions = {verify_runtime_asset_pair(asset_dir, target) for target in sorted(TARGETS)}
+    versions = set()
+    for target in sorted(TARGETS):
+        for artifact in published_artifacts(asset_dir, target):
+            versions.add(verify_runtime_asset_pair(asset_dir, target, artifact))
     if len(versions) != 1:
         raise SystemExit("published runtime target/version matrix is inconsistent")
     return versions.pop()
