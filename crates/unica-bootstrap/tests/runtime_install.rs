@@ -353,3 +353,65 @@ fn a_plugin_release_does_not_refetch_an_unchanged_artifact() {
     );
     fs::remove_dir_all(&cache).ok();
 }
+
+/// Установить артефакт заданной версии в кеш, минуя загрузку: сборке мусора
+/// важна раскладка, а не то, как она возникла.
+fn seed_installation(cache: &Path, artifact: &str, version: &str, host: HostTarget) -> PathBuf {
+    let root = cache.join(artifact).join(version).join(host.as_str());
+    fs::create_dir_all(root.join("bin").join(host.as_str())).expect("seed install");
+    fs::write(root.join(".ready.json"), "{}").expect("seed marker");
+    root
+}
+
+#[test]
+fn collecting_keeps_the_newest_versions_of_each_artifact() {
+    let cache = temp_dir("collect-keeps");
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        seed_installation(&cache, "rlm-tools-bsl", version, HostTarget::LinuxX64);
+        // Отметки времени должны различаться, иначе «свежайшие» неопределимы.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    seed_installation(&cache, "unica", "0.13.0", HostTarget::LinuxX64);
+
+    RuntimeInstaller::collect(&cache, 2).expect("collect");
+
+    let kept = |artifact: &str, version: &str| cache.join(artifact).join(version).is_dir();
+    assert!(
+        !kept("rlm-tools-bsl", "1.0.0"),
+        "самая старая версия удаляется"
+    );
+    assert!(kept("rlm-tools-bsl", "1.1.0"));
+    assert!(kept("rlm-tools-bsl", "1.2.0"));
+    assert!(kept("unica", "0.13.0"), "чужой артефакт не задет");
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn collecting_leaves_an_artifact_that_is_within_the_limit() {
+    let cache = temp_dir("collect-within");
+    seed_installation(&cache, "bsl-analyzer", "0.2.67", HostTarget::LinuxX64);
+
+    RuntimeInstaller::collect(&cache, 2).expect("collect");
+
+    assert!(cache.join("bsl-analyzer").join("0.2.67").is_dir());
+    fs::remove_dir_all(&cache).ok();
+}
+
+#[test]
+fn collecting_does_not_touch_the_lock_and_transaction_areas() {
+    // Служебные каталоги кеша артефактами не являются, и удалять их — потерять
+    // блокировку у соседнего процесса.
+    let cache = temp_dir("collect-service");
+    fs::create_dir_all(cache.join(".locks")).expect("locks");
+    // Двух незавершённых транзакций при пределе в одну достаточно, чтобы отличить
+    // пропуск служебных каталогов от их случайного попадания под лимит.
+    fs::create_dir_all(cache.join(".transactions").join("in-flight-a")).expect("transactions");
+    fs::create_dir_all(cache.join(".transactions").join("in-flight-b")).expect("transactions");
+
+    RuntimeInstaller::collect(&cache, 1).expect("collect");
+
+    assert!(cache.join(".locks").is_dir());
+    assert!(cache.join(".transactions").join("in-flight-a").is_dir());
+    assert!(cache.join(".transactions").join("in-flight-b").is_dir());
+    fs::remove_dir_all(&cache).ok();
+}

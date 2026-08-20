@@ -1,6 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,13 @@ struct ReadyMarker {
     target: String,
     asset_sha256: String,
 }
+
+/// Сколько версий одного артефакта переживают сборку мусора.
+///
+/// Две: текущая и предыдущая. Откат на предыдущую версию плагина — обычное
+/// действие, и заставлять его качать 69 МБ заново значит наказывать за откат.
+/// Третья версия уже не нужна: до неё откатываются реже, чем стоит место.
+pub const RETAINED_VERSIONS: usize = 2;
 
 impl RuntimeInstaller {
     pub fn new(
@@ -127,6 +135,15 @@ impl RuntimeInstaller {
             Ok(installation(final_root.clone(), target))
         })();
 
+        if result.is_ok() {
+            // Сборка мусора не вправе отменить состоявшуюся установку: на
+            // Windows каталог с работающим бинарём удалить нельзя, и соседняя
+            // сессия — законная причина отказа, а не повод не стартовать.
+            if let Err(error) = Self::collect(&self.cache_root, RETAINED_VERSIONS) {
+                eprintln!("unica-bootstrap: не удалось прибрать кеш: {error}");
+            }
+        }
+
         if transaction_root.exists() {
             fs::remove_dir_all(&transaction_root).map_err(|cleanup_error| {
                 BootstrapError::new(format!(
@@ -142,6 +159,86 @@ impl RuntimeInstaller {
         }
         result
     }
+
+    /// Оставить у каждого артефакта `keep` свежайших версий, остальные удалить.
+    ///
+    /// Удержание считается по артефакту, а не по ссылкам от версий ядра.
+    /// Ссылочный учёт потребовал бы записывать рядом с ядром список нужных ему
+    /// движков, и эта запись живёт отдельно от того, что описывает, — то есть
+    /// умеет протухнуть. Удержание по артефакту даёт тот же результат без
+    /// второго источника правды: движок, нужный удерживаемой версии ядра, либо
+    /// не менялся и потому свежайший, либо менялся и приехал новой версией.
+    ///
+    /// Крайний случай честный: откат через три выпуска подряд может не найти
+    /// движок в кеше и скачает его заново. Это медленнее, но не сломано.
+    pub fn collect(cache_root: &Path, keep: usize) -> Result<()> {
+        if !cache_root.is_dir() {
+            return Ok(());
+        }
+        let mut stuck = Vec::new();
+        for artifact in read_child_dirs(cache_root)? {
+            let mut versions = read_child_dirs(&artifact)?
+                .into_iter()
+                .map(|path| {
+                    let age = installed_at(&path);
+                    (age, path)
+                })
+                .collect::<Vec<_>>();
+            if versions.len() <= keep {
+                continue;
+            }
+            // Свежайшие вперёд; при равном времени — по имени, чтобы порядок не
+            // зависел от разрешения часов файловой системы.
+            versions.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+            for (_, path) in versions.into_iter().skip(keep) {
+                if fs::remove_dir_all(&path).is_err() {
+                    stuck.push(path);
+                }
+            }
+        }
+        if stuck.is_empty() {
+            return Ok(());
+        }
+        Err(BootstrapError::new(format!(
+            "не удалось удалить устаревшие версии: {}",
+            stuck
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
+}
+
+/// Подкаталоги без служебных: `.locks` и `.transactions` артефактами не
+/// являются, и удалить их значит отобрать блокировку у соседнего процесса.
+fn read_child_dirs(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || !entry.path().is_dir() {
+            continue;
+        }
+        found.push(entry.path());
+    }
+    Ok(found)
+}
+
+/// Когда версия появилась в кеше: свежайший маркер готовности среди её целей.
+///
+/// Берём маркер, а не сам каталог: каталог версии переживает установку соседней
+/// цели, и его время сказало бы о последней записи, а не о появлении версии.
+fn installed_at(version_root: &Path) -> SystemTime {
+    read_child_dirs(version_root)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|target| fs::metadata(target.join(".ready.json")).ok())
+        .filter_map(|meta| meta.modified().ok())
+        .max()
+        .or_else(|| fs::metadata(version_root).ok()?.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 fn open_lock(path: &Path) -> Result<File> {
@@ -206,8 +303,11 @@ fn write_ready_marker(
 }
 
 fn installation(root: PathBuf, target: &TargetRuntime) -> RuntimeInstallation {
+    // Устанавливает bootstrap только ядро, а у ядра точка входа проверена
+    // манифестом. Пустое значение сюда не доходит.
+    let entrypoint = target.entrypoint.clone().unwrap_or_default();
     RuntimeInstallation {
-        entrypoint: root.join(&target.entrypoint),
+        entrypoint: root.join(entrypoint),
         root,
     }
 }
