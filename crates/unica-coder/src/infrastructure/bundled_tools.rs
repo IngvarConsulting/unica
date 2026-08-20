@@ -188,7 +188,7 @@ fn resolve_from_artifact_cache(
         return Ok(None);
     }
     if verify {
-        verify_binary(plugin_root, tool_name, &program, &binary.sha256)?;
+        verify_binary(plugin_root, tool_name, target_id, &program, &binary.sha256)?;
     }
     Ok(Some(BundledTool {
         program,
@@ -216,7 +216,11 @@ pub(crate) fn artifact_for(plugin_root: &Path, tool_name: &str) -> Option<String
 /// довольно знать, чего ещё нет. Считать хеш десятков мегабайт на каждый вызов
 /// значит платить за ответ, который уже дала файловая система.
 pub(crate) fn installed_engine_path(plugin_root: &Path, tool_name: &str) -> Option<PathBuf> {
-    let target_id = current_target_id().ok()?;
+    engine_path_for(plugin_root, tool_name, current_target_id().ok()?)
+}
+
+/// Путь движка для названной цели. `None` — его там нет.
+fn engine_path_for(plugin_root: &Path, tool_name: &str, target_id: &str) -> Option<PathBuf> {
     if let Some(cache) = std::env::var_os(ARTIFACT_CACHE_ENV).map(PathBuf::from) {
         if let Ok(Some(tool)) =
             resolve_from_artifact_cache(plugin_root, &cache, tool_name, target_id, false)
@@ -238,10 +242,22 @@ pub(crate) fn installed_engine_path(plugin_root: &Path, tool_name: &str) -> Opti
 /// придётся — поля названы, а следующий шаг зависит от режима: исходный чекаут
 /// собирает инструменты сам, опубликованная поставка их доставляет.
 pub(crate) fn missing_engine(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
-    if installed_engine_path(plugin_root, tool_name).is_some() {
+    missing_engine_for(plugin_root, tool_name, current_target_id().ok()?)
+}
+
+/// То же, но про названную цель.
+///
+/// Отказ обязан говорить о той цели, которую разрешали, а не о цели хоста:
+/// когда они расходятся, вывод по хосту либо врёт, либо срывается в
+/// нетипизированную строку — ровно ту, на которую жаловался #549.
+pub(crate) fn missing_engine_for(
+    plugin_root: &Path,
+    tool_name: &str,
+    target_id: &str,
+) -> Option<MissingEngine> {
+    if engine_path_for(plugin_root, tool_name, target_id).is_some() {
         return None;
     }
-    let target_id = current_target_id().ok()?;
     let manifest_path = plugin_root.join("third-party").join("manifest.json");
     let manifest = fs::read(&manifest_path)
         .ok()
@@ -330,7 +346,7 @@ fn resolve_bundled_tool_for_target(
     let mut warnings = Vec::new();
     let mut missing = None;
     if verify {
-        verify_binary(plugin_root, tool_name, &program, &binary.sha256)?;
+        verify_binary(plugin_root, tool_name, target_id, &program, &binary.sha256)?;
     } else if !program.is_file() {
         warnings.push(format!(
             "dry run: bundled tool binary is not present yet: {}",
@@ -435,13 +451,14 @@ fn resolve_from_lock_for_dry_run(
 fn verify_binary(
     plugin_root: &Path,
     tool_name: &str,
+    target_id: &str,
     program: &Path,
     expected_sha: &str,
 ) -> Result<(), String> {
     if !program.is_file() {
         // Устойчивый код, инструмент, цель, ожидаемый путь и следующий шаг:
         // вызывающий не должен разбирать фразу, чтобы понять, чего не хватает.
-        return Err(missing_engine(plugin_root, tool_name)
+        return Err(missing_engine_for(plugin_root, tool_name, target_id)
             .map(|missing| missing.message())
             .unwrap_or_else(|| format!("Unica binary is missing: {}", program.display())));
     }
@@ -954,9 +971,14 @@ mod missing_engine_tests {
         assert_eq!(missing.tool, "v8-runner");
         assert_eq!(missing.install_mode, InstallMode::Source);
         assert_eq!(missing.pinned_version.as_deref(), Some("0.5.1"));
+        // Разделители приводятся к одному виду: Windows отдаёт путь с обратными
+        // слешами, и хвост с прямыми там не совпал бы. Сравнение компонентами
+        // не годится: на unix обратный слеш — обычный символ, и проверка на
+        // машине разработчика проходила бы вхолостую.
         assert!(
             missing
                 .expected_path
+                .replace('\\', "/")
                 .ends_with(&tests::host_binary("v8-runner")),
             "путь назван: {}",
             missing.expected_path
@@ -1046,6 +1068,32 @@ mod missing_binary_refusal_tests {
             error.contains("delivered") || error.contains("build-unica-tools.py"),
             "следующий шаг назван: {error}"
         );
+    }
+
+    #[test]
+    fn the_refusal_names_the_target_it_resolved_not_the_host() {
+        // Отказ строился по цели хоста. Когда разрешали другую, он либо называл
+        // чужую цель, либо срывался в «Unica binary is missing: <путь>» — ровно
+        // ту нетипизированную строку, на которую жаловался #549.
+        let plugin_root = tests::temp_plugin_root("foreign-target");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let host = tests::host_target();
+        let foreign = ["darwin-arm64", "linux-x64", "win-x64"]
+            .into_iter()
+            .find(|target| *target != host)
+            .expect("целей больше одной");
+        let exe = if foreign == "win-x64" { ".exe" } else { "" };
+        fs::remove_file(plugin_root.join(format!("bin/{foreign}/bsl-analyzer{exe}"))).unwrap();
+
+        let error = resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", foreign, true)
+            .unwrap_err();
+
+        assert!(
+            error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING),
+            "отказ типизирован: {error}"
+        );
+        assert!(error.contains(foreign), "названа разрешаемая цель: {error}");
+        assert!(!error.contains(host), "цель хоста тут ни при чём: {error}");
     }
 
     #[test]
