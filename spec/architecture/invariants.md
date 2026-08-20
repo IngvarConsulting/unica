@@ -529,6 +529,14 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_unica_mcp_script_parity.py`
 - **Scope:** source, runtime, packaged
 
+### INV-MCP-METHOD-NAMING — Новое имя BSL проверяется до публикации
+
+- **Rule:** `unica.code.patch` сравнивает синтаксические деревья до и после изменения, публикует в `data.validation.methodNaming` неблокирующий результат проверки нового или переименованного метода по `std647`, а каждый направляющий к нему навык до выбора имени читает общий справочник, сохраняя обработчики платформы и существующий публичный API.
+- **Decision:** ADR-0076
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `doc-assert` — `tests/ci/test_unica_skills.py`
+- **Scope:** source, packaged, runtime
+
 ### INV-MCP-SOURCE-SURFACE — Ресурсная поверхность логична и ограничена
 
 - **Rule:** Публичная группа источников содержит читающие

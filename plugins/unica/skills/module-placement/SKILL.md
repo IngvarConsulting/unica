@@ -27,6 +27,7 @@ This skill owns **where code lives**: which module hosts it and what that module
 
 ## References
 
+- Read `../../references/platform/method-naming.md` before naming any new or renamed BSL method; preserve platform handlers and existing public APIs.
 - Read `../../references/platform/module-placement.md` for the hosting decision, the four common module contexts, the server call flag, cached modules, presentation handlers, and first launch.
 - Read `../../references/platform/form-events.md` when the code is going into a form module.
 - Read `../../references/platform/object-events.md` when it is an object event handler.

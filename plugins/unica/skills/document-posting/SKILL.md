@@ -23,6 +23,7 @@ description: "Проведение документов 1С. Используй 
 
 ## References
 
+- Read `../../references/platform/method-naming.md` before naming any new or renamed BSL method; preserve platform handlers and existing public APIs.
 - Read `../../references/platform/document-posting.md` for the posting model, real-time versus regular branches, register choice, lock shape, and stop rules.
 - Read `../../references/platform/transactions-locks.md` for the transaction shape, managed lock modes, and what makes the balance read responsible; this skill adds only the ordering specific to posting.
 - Read `../../references/platform/db-performance.md` when posting is slow, contends on locks, or produces deadlocks.
