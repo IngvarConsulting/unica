@@ -245,6 +245,10 @@ pub struct OperationResult {
     pub data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job: Option<Value>,
+    /// Состояние работы, не успевшей кончиться внутри вызова. Пустое не
+    /// сериализуется: обычный вызов платит за этот слот ноль байтов.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::domain::long_work::WorkState>,
 }
 
 /// Closed MCP envelope shared by the four typed Meta operations.
@@ -578,6 +582,7 @@ pub fn role_edit_argument_failure_result(
                 .expect("typed role edit diagnostics are always serializable"),
         ),
         job: None,
+        work: None,
     })
 }
 
@@ -1128,7 +1133,15 @@ fn call_tool_with_runtime_admission(
     {
         match runtime_admission::runtime_risk_notice(spec.name, args)? {
             runtime_admission::RuntimeRiskOutcome::Refused(failure) => {
-                return Ok(runtime_receipt_admission_result(spec, failure));
+                // #549: отказ, назвавший одну причину из двух, уводит агента
+                // рассуждать про непрерываемые фазы, когда ставить нечего.
+                let missing = ports.missing_engine(
+                    spec,
+                    args.get("cwd")
+                        .and_then(Value::as_str)
+                        .map(std::path::Path::new),
+                );
+                return Ok(runtime_receipt_admission_result(spec, failure, missing));
             }
             runtime_admission::RuntimeRiskOutcome::Warned(notice) => {
                 applied_risk = Some(notice);
@@ -1252,6 +1265,7 @@ fn call_tool_with_runtime_admission(
                 diagnostics: Some(json!({"formatCompatibility": diagnostic})),
                 data: None,
                 job: None,
+                work: None,
             });
         }
     }
@@ -1273,6 +1287,7 @@ fn call_tool_with_runtime_admission(
             diagnostics: None,
             data: None,
             job: None,
+            work: None,
         });
     }
     let support_guard_warning = if spec.execution.is_mutating() {
@@ -1366,6 +1381,7 @@ fn call_tool_with_runtime_admission(
                     diagnostics: None,
                     data: None,
                     job: None,
+                    work: None,
                 });
             }
         }
@@ -1408,9 +1424,22 @@ fn call_tool_with_runtime_admission(
                 diagnostics: Some(json!({"operationalConfig": diagnostic})),
                 data: None,
                 job: None,
+                work: None,
             });
         }
     };
+    // Движок доставляется до того, как обработчик пойдёт его искать: отказ по
+    // недоставленному движку вызывающий починить сам не может, а ожидание — это
+    // работа, которая ещё едет. Отказ самой доставки вызов не отменяет:
+    // обработчик скажет про отсутствующий движок ровно то же, что говорил до
+    // сих пор. Предпросмотр ничего не исполняет и потому ничего не качает.
+    if !dry_run {
+        if let Some(state) = ports.deliver_engine_if_missing(spec, &context, cancellation, progress)
+        {
+            return Ok(long_work_result(spec, &context, mode, state));
+        }
+    }
+
     let handler_outcome = match prepared.handler.take() {
         Some(handler) => handler,
         None => match spec.handler {
@@ -1603,7 +1632,60 @@ fn call_tool_with_runtime_admission(
         } else {
             handler_outcome.job
         },
+        // Обработчик отработал целиком: незаконченной работы здесь не бывает.
+        work: None,
     })
+}
+
+/// Ответ вызова, чья работа не кончилась внутри него.
+///
+/// Идущая работа несёт `ok`: это состояние, а не неудача, и в задачах протокола
+/// оно называется так же. Неудача остаётся неудачей и называет причину.
+/// Обработчик при этом не звался, поэтому ни вывода, ни команды здесь нет.
+fn long_work_result(
+    spec: ToolSpec,
+    context: &WorkspaceContext,
+    mode: InvocationMode,
+    state: crate::domain::long_work::WorkState,
+) -> OperationResult {
+    use crate::domain::long_work::WorkStatus;
+    let ok = matches!(state.status, WorkStatus::Working | WorkStatus::Completed);
+    OperationResult {
+        ok,
+        summary: format!("{}: {}", spec.name, state.status_message),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: if ok {
+            Vec::new()
+        } else {
+            vec![state.status_message.clone()]
+        },
+        artifacts: Vec::new(),
+        cache: CacheReport {
+            mode: match mode {
+                InvocationMode::Read => "read",
+                InvocationMode::Preview => "preview",
+                InvocationMode::Apply => "apply",
+            }
+            .to_string(),
+            root: context.cache_root.display().to_string(),
+            workspace_epoch: context.workspace_epoch,
+            events: Vec::new(),
+            invalidated: Vec::new(),
+            refreshed: Vec::new(),
+            lazy_rebuilt: Vec::new(),
+            stale: Vec::new(),
+            fresh: Vec::new(),
+            publication_warnings: Vec::new(),
+        },
+        stdout: None,
+        stderr: None,
+        command: None,
+        diagnostics: None,
+        data: None,
+        job: None,
+        work: Some(state),
+    }
 }
 
 fn cancelled_operation_result(context: &WorkspaceContext, mode: InvocationMode) -> OperationResult {
@@ -1637,6 +1719,7 @@ fn cancelled_operation_result(context: &WorkspaceContext, mode: InvocationMode) 
         diagnostics: None,
         data: None,
         job: None,
+        work: None,
     }
 }
 
@@ -1695,6 +1778,7 @@ fn deferred_failure_result(spec: ToolSpec, code: &str, message: &str) -> Operati
         diagnostics: None,
         data: None,
         job: None,
+        work: None,
     }
 }
 
@@ -1749,6 +1833,7 @@ fn try_deferred_continuation(
             diagnostics: None,
             data: Some(data),
             job: None,
+            work: None,
         }),
         Err(error) => Some(deferred_failure_result(spec, error.code, &error.message)),
     }
@@ -1814,13 +1899,18 @@ fn defer_oversized_typed_read(
 fn runtime_receipt_admission_result(
     spec: ToolSpec,
     failure: runtime_admission::RuntimeAdmissionFailure,
+    missing_engine: Option<crate::domain::engine::MissingEngine>,
 ) -> OperationResult {
+    let mut errors = vec![format!("{}: {}", failure.code, failure.message)];
+    if let Some(missing) = &missing_engine {
+        errors.push(missing.message());
+    }
     OperationResult {
         ok: false,
         summary: format!("{} refused before runtime process spawn", spec.name),
         changes: Vec::new(),
         warnings: Vec::new(),
-        errors: vec![format!("{}: {}", failure.code, failure.message)],
+        errors,
         artifacts: Vec::new(),
         cache: CacheReport {
             mode: "read".to_string(),
@@ -1837,9 +1927,10 @@ fn runtime_receipt_admission_result(
         stdout: None,
         stderr: None,
         command: None,
-        diagnostics: None,
+        diagnostics: missing_engine.map(|missing| json!({"missingEngine": missing})),
         data: None,
         job: None,
+        work: None,
     }
 }
 
@@ -1876,6 +1967,7 @@ fn invalid_metadata_arguments_result(failure: metadata::MetaFailure) -> Operatio
         diagnostics: Some(diagnostics),
         data: None,
         job: None,
+        work: None,
     }
 }
 
@@ -1946,6 +2038,7 @@ impl RoleEditLogicalTarget {
                     .expect("typed role edit diagnostics are always serializable"),
             ),
             job: None,
+            work: None,
         }
     }
 }
@@ -4418,6 +4511,328 @@ mod tests {
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
 
+    /// Порты, запоминающие порядок: доставка движка должна случиться до того,
+    /// как обработчик пойдёт его искать.
+    #[derive(Default)]
+    struct DeliveryRecordingPorts {
+        steps: std::sync::Mutex<Vec<&'static str>>,
+        missing: Option<crate::domain::engine::MissingEngine>,
+        working: Option<crate::domain::long_work::WorkState>,
+    }
+
+    impl ports::ApplicationPorts for DeliveryRecordingPorts {
+        fn discover_workspace(
+            &self,
+            requested_cwd: Option<PathBuf>,
+        ) -> Result<WorkspaceContext, String> {
+            let cwd = requested_cwd.unwrap_or_else(|| PathBuf::from("/workspace"));
+            Ok(WorkspaceContext {
+                cwd: cwd.clone(),
+                workspace_root: cwd.clone(),
+                cache_root: cwd.join(".build/unica"),
+                workspace_epoch: 1,
+            })
+        }
+
+        fn validate_tool_context(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _mode: InvocationMode,
+            _context: &WorkspaceContext,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn missing_engine(
+            &self,
+            _spec: ToolSpec,
+            _cwd: Option<&std::path::Path>,
+        ) -> Option<crate::domain::engine::MissingEngine> {
+            self.missing.clone()
+        }
+
+        fn deliver_engine_if_missing(
+            &self,
+            _spec: ToolSpec,
+            _context: &WorkspaceContext,
+            _cancellation: &CancellationToken,
+            _progress: &dyn ProgressSink,
+        ) -> Option<crate::domain::long_work::WorkState> {
+            self.steps.lock().expect("steps").push("delivery");
+            self.working.clone()
+        }
+
+        fn invoke_handler_with_operational_config(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+            _mode: InvocationMode,
+            _operational_config: Option<&crate::domain::operational_config::OperationalConfig>,
+            _cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.steps.lock().expect("steps").push("handler");
+            let outcome = AdapterOutcome::ok("handled");
+            Ok(if _spec.result_contract == ResultContract::Typed {
+                ports::HandlerOutcome::with_data(outcome, json!({"fixture": true}))
+            } else {
+                ports::HandlerOutcome::plain(outcome)
+            })
+        }
+
+        fn evaluate_support_guard(
+            &self,
+            _spec: ToolSpec,
+            _args: &Map<String, Value>,
+            _context: &WorkspaceContext,
+        ) -> Result<SupportGuardCheck, String> {
+            Ok(SupportGuardCheck::Allow)
+        }
+
+        fn invoke_handler(
+            &self,
+            spec: ToolSpec,
+            args: &Map<String, Value>,
+            context: &WorkspaceContext,
+            mode: InvocationMode,
+            cancellation: &CancellationToken,
+        ) -> Result<ports::HandlerOutcome, String> {
+            self.invoke_handler_with_operational_config(
+                spec,
+                args,
+                context,
+                mode,
+                None,
+                cancellation,
+            )
+        }
+
+        fn cache_report(
+            &self,
+            context: &WorkspaceContext,
+            _events: &[DomainEvent],
+            mode: InvocationMode,
+            _cache_access: CacheAccess,
+        ) -> Result<CacheReport, String> {
+            Ok(CacheReport {
+                mode: match mode {
+                    InvocationMode::Read => "read",
+                    InvocationMode::Preview => "preview",
+                    InvocationMode::Apply => "apply",
+                }
+                .to_string(),
+                root: context.cache_root.display().to_string(),
+                workspace_epoch: context.workspace_epoch,
+                events: Vec::new(),
+                invalidated: Vec::new(),
+                refreshed: Vec::new(),
+                lazy_rebuilt: Vec::new(),
+                stale: Vec::new(),
+                fresh: Vec::new(),
+                publication_warnings: Vec::new(),
+            })
+        }
+
+        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
+    }
+
+    fn runtime_execute_args(dry_run: bool) -> Map<String, Value> {
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!("/workspace"));
+        args.insert("dryRun".to_string(), json!(dry_run));
+        args.insert("operation".to_string(), json!("dump"));
+        args.insert("mode".to_string(), json!("incremental"));
+        args
+    }
+
+    #[test]
+    fn an_admission_refusal_names_the_missing_engine_too() {
+        // #549 просил, чтобы отказ допуска не маскировал отсутствие бинаря.
+        // Сам маршрут из дефекта закрыт раньше: ADR-0074 пустил
+        // классифицированные операции исполняться с названным риском, а
+        // неклассифицированную аргументы до допуска не доносят. Отказ остаётся
+        // достижим изнутри, и вторая причина в нём названа.
+        let missing = crate::domain::engine::MissingEngine::new(
+            "v8-runner",
+            "darwin-arm64",
+            "/plugins/unica/bin/darwin-arm64/v8-runner",
+            Some("0.5.1".to_string()),
+            crate::domain::engine::InstallMode::Source,
+        );
+        let spec = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.runtime.execute")
+            .expect("runtime.execute");
+
+        let result = runtime_receipt_admission_result(
+            spec,
+            runtime_admission::RuntimeAdmissionFailure {
+                code: "runtime_operation_unbounded",
+                message: "operation `syntax` has no bounded terminal-receipt contract".to_string(),
+            },
+            Some(missing),
+        );
+
+        assert!(!result.ok);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("runtime_operation_unbounded")),
+            "причина допуска названа: {:?}",
+            result.errors
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("bundled_tool_missing")
+                    && error.contains("build-unica-tools.py")),
+            "отсутствие движка названо вместе со следующим шагом: {:?}",
+            result.errors
+        );
+        assert_eq!(
+            result
+                .diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.get("missingEngine"))
+                .and_then(|missing| missing.get("pinnedVersion"))
+                .and_then(Value::as_str),
+            Some("0.5.1"),
+            "поля отказа машиночитаемы: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn every_runtime_operation_is_classified_so_admission_cannot_mask_a_missing_tool() {
+        // Пока это верно, отказ допуска до резолва инструмента не доходит:
+        // классифицированная операция исполняется и сама говорит про бинарь.
+        for operation in crate::application::tool_contracts::RUNTIME_OPERATIONS {
+            let mut args = Map::new();
+            args.insert("operation".to_string(), json!(operation));
+            if *operation == "syntax" {
+                args.insert("mode".to_string(), json!("edt"));
+            }
+            let outcome = runtime_admission::runtime_risk_notice("unica.runtime.execute", &args)
+                .expect("classification");
+            assert!(
+                !matches!(outcome, runtime_admission::RuntimeRiskOutcome::Refused(_)),
+                "операция {operation} отказывает допуском"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_engine_is_delivered_before_the_handler_looks_for_it() {
+        // Вызов, которому нужен ещё не доставленный движок, не отказывает: он
+        // дожидается доставки и исполняется.
+        let ports = Arc::new(DeliveryRecordingPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!("/workspace"));
+        args.insert("mode".to_string(), json!("status"));
+        call_tool_after_runtime_admission_for_downstream_test(&app, "unica.code.graph", &args)
+            .expect("call");
+
+        assert_eq!(
+            *ports.steps.lock().expect("steps"),
+            vec!["delivery", "handler"]
+        );
+    }
+
+    #[test]
+    fn a_call_that_outran_the_window_answers_with_state_instead_of_working_blindly() {
+        // Срез хоста уносит наш ответ целиком, поэтому отвечаем сами: успешный
+        // результат с состоянием, а обработчик не зовётся — работать нечем.
+        let ports = Arc::new(DeliveryRecordingPorts {
+            working: Some(crate::domain::long_work::WorkState {
+                status: crate::domain::long_work::WorkStatus::Working,
+                status_message: "delivering bsl-analyzer: 12 of 69 bytes on disk".to_owned(),
+                poll_interval_ms: Some(9_000),
+            }),
+            ..Default::default()
+        });
+        let app = UnicaApplication::with_ports(ports.clone());
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!("/workspace"));
+        args.insert("mode".to_string(), json!("status"));
+
+        let result =
+            call_tool_after_runtime_admission_for_downstream_test(&app, "unica.code.graph", &args)
+                .expect("call");
+
+        assert!(result.ok, "идущая работа — состояние, а не неудача");
+        assert_eq!(
+            result.work.as_ref().map(|work| work.status),
+            Some(crate::domain::long_work::WorkStatus::Working)
+        );
+        assert_eq!(
+            result.work.as_ref().and_then(|work| work.poll_interval_ms),
+            Some(9_000)
+        );
+        assert_eq!(
+            *ports.steps.lock().expect("steps"),
+            vec!["delivery"],
+            "обработчик не зовётся: движка ещё нет"
+        );
+    }
+
+    #[test]
+    fn a_delivery_that_failed_is_not_dressed_up_as_progress() {
+        // `working` — состояние, а не неудача, и потому `ok`. Отказ доставки —
+        // неудача, и притворяться идущей работой ему нечем.
+        let ports = Arc::new(DeliveryRecordingPorts {
+            working: Some(crate::domain::long_work::WorkState {
+                status: crate::domain::long_work::WorkStatus::Failed,
+                status_message: "delivery of bsl-analyzer failed: connection refused".to_owned(),
+                poll_interval_ms: None,
+            }),
+            ..Default::default()
+        });
+        let app = UnicaApplication::with_ports(ports.clone());
+        let mut args = Map::new();
+        args.insert("cwd".to_string(), json!("/workspace"));
+        args.insert("mode".to_string(), json!("status"));
+
+        let result =
+            call_tool_after_runtime_admission_for_downstream_test(&app, "unica.code.graph", &args)
+                .expect("call");
+
+        assert!(!result.ok, "отказ доставки — неудача");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("connection refused")),
+            "причина названа: {:?}",
+            result.errors
+        );
+        assert_eq!(
+            result.work.as_ref().map(|work| work.status),
+            Some(crate::domain::long_work::WorkStatus::Failed)
+        );
+    }
+
+    #[test]
+    fn a_preview_does_not_fetch_an_engine_it_will_not_run() {
+        // Предпросмотр ничего не исполняет. Скачать ради него семьдесят
+        // мегабайт значит заплатить за работу, которой не будет.
+        let ports = Arc::new(DeliveryRecordingPorts::default());
+        let app = UnicaApplication::with_ports(ports.clone());
+
+        call_tool_after_runtime_admission_for_downstream_test(
+            &app,
+            "unica.runtime.execute",
+            &runtime_execute_args(true),
+        )
+        .expect("call");
+
+        assert_eq!(*ports.steps.lock().expect("steps"), vec!["handler"]);
+    }
+
     #[test]
     fn operational_config_is_loaded_once_only_for_affected_calls() {
         let ports = Arc::new(OperationalConfigRecordingPorts::default());
@@ -4768,6 +5183,7 @@ mod tests {
                 diagnostics: None,
                 data,
                 job: None,
+                work: None,
             }
         }
 
@@ -5548,10 +5964,15 @@ mod tests {
     fn runtime_execute_defaults_to_dry_run_and_maps_cache_event_by_operation() {
         let mut args = Map::new();
         args.insert("operation".to_string(), Value::String("dump".to_string()));
+        let mut outcome = AdapterOutcome::ok("dry run: runtime adapter invoked");
+        outcome.command = Some(vec!["v8-runner".to_string(), "dump".to_string()]);
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.runtime.execute", &args)
-            .unwrap();
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome,
+            data: None,
+        }))
+        .call_tool("unica.runtime.execute", &args)
+        .unwrap();
 
         assert!(result.ok);
         assert!(result.summary.contains("dry run"));
@@ -5969,9 +6390,12 @@ mod tests {
         let mut args = Map::new();
         args.insert("operation".to_string(), Value::String("dump".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.runtime.job.start", &args)
-            .expect("dry-run job start succeeds");
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("dry run: runtime job adapter invoked"),
+            data: None,
+        }))
+        .call_tool("unica.runtime.job.start", &args)
+        .expect("dry-run job start succeeds");
 
         assert!(result.ok);
         assert!(result.summary.contains("dry run"));
@@ -5986,9 +6410,12 @@ mod tests {
         args.insert("operation".to_string(), Value::String("launch".to_string()));
         args.insert("clientMode".to_string(), Value::String("thin".to_string()));
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.runtime.execute", &args)
-            .unwrap();
+        let result = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
+            outcome: AdapterOutcome::ok("dry run: runtime adapter invoked"),
+            data: None,
+        }))
+        .call_tool("unica.runtime.execute", &args)
+        .unwrap();
 
         assert!(result.ok);
         assert!(result.cache.events.is_empty());

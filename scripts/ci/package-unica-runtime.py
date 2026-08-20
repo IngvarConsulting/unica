@@ -22,6 +22,10 @@ SUPPORTED_TARGETS = {
 }
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
+# Единственный артефакт, который собирается здесь. Всё остальное приезжает из
+# тулчейна по своему адресу и своей версии.
+CORE_ARTIFACT = "unica"
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -52,7 +56,11 @@ def runtime_file_set(
     manifest: dict,
     *,
     target: str,
-) -> tuple[list[tuple[PurePosixPath, Path, bool]], dict[str, dict]]:
+) -> tuple[
+    list[tuple[PurePosixPath, Path, bool, str]],
+    dict[str, dict],
+    dict[str, list[dict]],
+]:
     if manifest.get("schemaVersion") != 2:
         raise SystemExit(
             f"unsupported tools manifest schemaVersion: {manifest.get('schemaVersion')}"
@@ -63,17 +71,42 @@ def runtime_file_set(
 
     prefix = PurePosixPath("bin") / target
     by_path: dict[str, dict] = {}
-    source_files: list[tuple[PurePosixPath, Path, bool]] = []
+    source_files: list[tuple[PurePosixPath, Path, bool, str]] = []
+    # Раскладка поставки: где файл окажется у пользователя. У ядра она совпадает
+    # с раскладкой сборки, у чужого архива — нет, и конверт такого архива в
+    # сборке вовсе не лежит.
+    delivered: dict[str, list[dict]] = {}
     for index, item in enumerate(declared):
         if not isinstance(item, dict):
             raise SystemExit(f"runtimeFiles[{index}] must be an object")
-        expected_fields = {"path", "sha256", "size", "executable"}
-        if set(item) != expected_fields:
+        required_fields = {"deliveredPath", "sha256", "size", "executable", "artifact"}
+        expected_fields = required_fields | {"path"}
+        if not required_fields <= set(item) or not set(item) <= expected_fields:
             raise SystemExit(
                 f"runtimeFiles[{index}] fields mismatch: "
-                f"missing={sorted(expected_fields - set(item))}, "
+                f"missing={sorted(required_fields - set(item))}, "
                 f"unknown={sorted(set(item) - expected_fields)}"
             )
+        delivered_path = safe_relative_path(item["deliveredPath"])
+        digest_text = item["sha256"]
+        if not isinstance(digest_text, str) or not SHA256.fullmatch(digest_text):
+            raise SystemExit(f"invalid runtime file sha256: {delivered_path}")
+        if not isinstance(item["executable"], bool):
+            raise SystemExit(f"invalid runtime file executable flag: {delivered_path}")
+        artifact_text = item["artifact"]
+        if not isinstance(artifact_text, str) or not artifact_text or "/" in artifact_text:
+            raise SystemExit(f"invalid runtime file artifact: {delivered_path}")
+        delivered.setdefault(artifact_text, []).append(
+            {
+                "path": delivered_path.as_posix(),
+                "sha256": digest_text,
+                "executable": item["executable"],
+            }
+        )
+        if "path" not in item:
+            # Конверт чужого архива переупаковка не переносит: сверять его с
+            # диском нечем, а сумму дал сам архив, проверенный по замку.
+            continue
         relative = safe_relative_path(item["path"])
         if relative.parent != prefix and prefix not in relative.parents:
             raise SystemExit(f"runtime file is outside {prefix}: {relative}")
@@ -89,6 +122,9 @@ def runtime_file_set(
         executable = item["executable"]
         if not isinstance(executable, bool):
             raise SystemExit(f"invalid runtime file executable flag: {relative}")
+        artifact = item["artifact"]
+        if not isinstance(artifact, str) or not artifact or "/" in artifact:
+            raise SystemExit(f"invalid runtime file artifact: {relative}")
 
         path = bundle_root.joinpath(*relative.parts)
         if path.is_symlink():
@@ -107,7 +143,11 @@ def runtime_file_set(
             if actual_executable != executable:
                 raise SystemExit(f"runtime file executable mode mismatch: {relative}")
         by_path[relative_text] = item
-        source_files.append((relative, path, executable))
+        # Пакуется только ядро: движки издаёт тулчейн, и вторая публикация тех
+        # же байтов стоит 439 МБ на выпуск. Распаковать их всё равно надо —
+        # суммы и замыкание берутся отсюда, — а вот перепубликовать нет.
+        if artifact == CORE_ARTIFACT:
+            source_files.append((relative, path, executable, artifact))
 
     target_root = bundle_root / "bin" / target
     actual_paths: set[str] = set()
@@ -132,10 +172,12 @@ def runtime_file_set(
             f"unexpected={sorted(actual_paths - declared_paths)}"
         )
     source_files.sort(key=lambda item: item[0].as_posix())
-    return source_files, by_path
+    for entries in delivered.values():
+        entries.sort(key=lambda item: item["path"])
+    return source_files, by_path, delivered
 
 
-def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path, bool]]]:
+def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path, bool, str]]]:
     manifest_path = bundle_root / "tools.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     target = manifest.get("target")
@@ -144,7 +186,7 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
     if manifest.get("targetTriple") != SUPPORTED_TARGETS[target]:
         raise SystemExit(f"runtime target triple mismatch for {target}")
 
-    runtime_files, runtime_by_path = runtime_file_set(
+    runtime_files, runtime_by_path, delivered = runtime_file_set(
         bundle_root,
         manifest,
         target=target,
@@ -199,12 +241,14 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
                 for key in (
                     "name",
                     "version",
+                    "artifact",
                     "repository",
                     "upstreamUrl",
                     "sourceTag",
                     "sourceCommit",
                     "license",
                     "binaryPath",
+                    "deliveredPath",
                     "sha256",
                 )
                 if key in tool
@@ -222,11 +266,47 @@ def load_bundle(bundle_root: Path) -> tuple[dict, list[tuple[PurePosixPath, Path
     manifest_bytes = (
         json.dumps(generated_manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
+    # Версия артефакта берётся у инструментов, которые он несёт: они делят
+    # архив, значит делят и версию. Расхождение — ошибка сборки, а не выбор.
+    artifact_versions: dict[str, str] = {}
+    for tool in tools:
+        artifact = tool.get("artifact", tool["name"])
+        version = tool.get("version")
+        if not version:
+            raise SystemExit(f"runtime tool {tool['name']} has no version")
+        known = artifact_versions.setdefault(artifact, version)
+        if known != version:
+            raise SystemExit(
+                f"artifact {artifact} carries conflicting versions: {known} and {version}"
+            )
+
+    assets = manifest.get("artifactAssets")
+    if not isinstance(assets, dict):
+        raise SystemExit("tools manifest has no artifactAssets map")
+    core = unica[0].get("artifact", CORE_ARTIFACT)
+    if core in assets:
+        raise SystemExit(f"core artifact {core} must not name a toolchain asset")
+    for artifact in sorted(set(delivered) - {core}):
+        if artifact not in artifact_versions:
+            raise SystemExit(f"artifact {artifact} has no tool version")
+        asset = assets.get(artifact)
+        if not isinstance(asset, dict):
+            raise SystemExit(f"artifact {artifact} has no toolchain asset")
+        missing = {"repository", "tag", "name", "mediaType", "sha256"} - set(asset)
+        if missing:
+            raise SystemExit(f"artifact {artifact} asset is missing {sorted(missing)}")
+        if not SHA256.fullmatch(asset["sha256"]):
+            raise SystemExit(f"invalid toolchain asset checksum for {artifact}")
+
     return {
         "target": target,
         "targetTriple": SUPPORTED_TARGETS[target],
         "pluginVersion": plugin_version,
         "entrypoint": unica[0]["binaryPath"],
+        "coreArtifact": core,
+        "artifactVersions": artifact_versions,
+        "artifactAssets": assets,
+        "deliveredFiles": delivered,
         "toolManifestBytes": manifest_bytes,
     }, runtime_files
 
@@ -243,53 +323,103 @@ def add_tar_member(archive: tarfile.TarFile, name: str, payload: bytes, executab
     archive.addfile(info, io.BytesIO(payload))
 
 
-def package_runtime(bundle_root: Path, out_dir: Path) -> tuple[Path, Path]:
+def package_runtime(bundle_root: Path, out_dir: Path) -> list[Path]:
+    """Ядро — архивом, всё прочее — описанием чужой поставки.
+
+    Раньше здесь собирался единственный архив со всем сразу, и первая же сессия
+    на медленном канале не укладывалась в бюджет. Потом архив разрезали по
+    артефактам — и выпуск начал перепубликовывать 439 МБ движков, которые
+    тулчейн уже издал. Теперь пакуется то, что собрано здесь, а на остальное
+    выписывается адрес.
+    """
     bundle_root = bundle_root.resolve()
     bundle, source_files = load_bundle(bundle_root)
     target = bundle["target"]
+    core = bundle["coreArtifact"]
     out_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = out_dir / f"unica-runtime-{target}.tar.gz"
-    metadata_path = out_dir / f"unica-runtime-{target}.json"
 
-    payloads = [
-        (relative.as_posix(), path.read_bytes(), executable)
-        for relative, path, executable in source_files
-    ]
-    payloads.append(("third-party/manifest.json", bundle["toolManifestBytes"], False))
+    payloads: list[tuple[str, bytes, bool]] = []
+    for relative, path, executable, artifact in source_files:
+        if artifact != core:
+            raise SystemExit(f"artifact {artifact} must not be packed with the core")
+        payloads.append((relative.as_posix(), path.read_bytes(), executable))
+    if not payloads:
+        raise SystemExit(f"runtime bundle has no files for the core artifact {core}")
+    # Манифест инструментов едет с ядром: рантайм читает из него версии, имена
+    # артефактов и раскладку поставки, а значит должен получить его раньше
+    # любого движка.
+    manifest_member = ("third-party/manifest.json", bundle["toolManifestBytes"], False)
+    payloads.append(manifest_member)
     payloads.sort(key=lambda item: item[0])
 
+    def describe(artifact: str, asset: dict, files: list[dict]) -> dict:
+        return {
+            "schemaVersion": 2,
+            "artifact": artifact,
+            "version": bundle["artifactVersions"][artifact],
+            "role": "core" if artifact == core else "engine",
+            "target": target,
+            "targetTriple": bundle["targetTriple"],
+            "pluginVersion": bundle["pluginVersion"],
+            "asset": asset,
+            "files": files,
+        }
+
+    def publish(artifact: str, document: dict) -> Path:
+        path = out_dir / f"{artifact}-runtime-{target}.json"
+        path.write_text(
+            json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    archive_path = out_dir / f"{core}-runtime-{target}.tar.gz"
     with archive_path.open("wb") as raw:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
-            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
+            with tarfile.open(
+                fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
+            ) as archive:
                 for name, payload, executable in payloads:
                     add_tar_member(archive, name, payload, executable)
 
-    files = [
+    core_document = describe(
+        core,
         {
-            "path": name,
-            "sha256": hashlib.sha256(payload).hexdigest(),
-            "executable": executable,
-        }
-        for name, payload, executable in payloads
-    ]
-    metadata = {
-        "schemaVersion": 1,
-        "target": target,
-        "targetTriple": bundle["targetTriple"],
-        "pluginVersion": bundle["pluginVersion"],
-        "asset": {
             "name": archive_path.name,
             "mediaType": "application/gzip",
             "sha256": sha256(archive_path),
         },
-        "files": files,
-        "entrypoint": bundle["entrypoint"],
-    }
-    metadata_path.write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        [
+            {
+                "path": name,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "executable": executable,
+            }
+            for name, payload, executable in payloads
+        ],
     )
-    return archive_path, metadata_path
+    core_document["entrypoint"] = bundle["entrypoint"]
+    produced: list[Path] = [archive_path, publish(core, core_document)]
+
+    # Чужая поставка описывается адресом. Архива здесь нет и не будет: он уже
+    # издан тулчейном под своим тегом, и его сумма пришла из замка.
+    for artifact in sorted(set(bundle["deliveredFiles"]) - {core}):
+        asset = bundle["artifactAssets"][artifact]
+        document = describe(
+            artifact,
+            {
+                "name": asset["name"],
+                "mediaType": asset["mediaType"],
+                "sha256": asset["sha256"],
+            },
+            bundle["deliveredFiles"][artifact],
+        )
+        document["assetOrigin"] = {
+            "repository": asset["repository"],
+            "tag": asset["tag"],
+        }
+        produced.append(publish(artifact, document))
+    return sorted(produced)
 
 
 def main() -> None:

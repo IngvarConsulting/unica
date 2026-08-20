@@ -335,6 +335,11 @@ jobs:
           mkdir -p "$runtime_root"
           tar -xzf ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz" \
             -C "$runtime_root"
+          # Этот смоук проверяет сам runtime и требует настоящий поиск. Тонкое
+          # ядро движков не несёт, поэтому прямому запуску явно даём проверенные
+          # файлы той же target-сборки. Доставку проверяют bootstrap-пробы.
+          cp -R ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}/." \
+            "$runtime_root/bin/${{ matrix.target }}/"
       - name: Smoke packaged Unica MCP
         shell: bash
         timeout-minutes: 3
@@ -358,7 +363,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: unica-runtime-metadata-${{ matrix.target }}
-          path: .build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.json
+          # Разрез поставки: по архиву на артефакт, и у каждого свои
+          # метаданные. Имя ядра здесь отобрало бы у выпуска движки.
+          path: .build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json
           if-no-files-found: error
           retention-days: 1
       - name: Upload bootstrap payload
@@ -373,7 +380,26 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: unica-runtime-${{ matrix.target }}
-          path: .build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz
+          path: .build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Stage BSP assessment engine
+        if: matrix.target == 'linux-x64'
+        run: >
+          python scripts/ci/stage-unica-assessment-engine.py
+          --bundle-root .build/tool-bundles/linux-x64
+          --out-archive .build/unica-assessment-engine-linux-x64.tar.gz
+          --artifact bsl-analyzer
+          --artifact rlm-tools-bsl
+      - name: Upload BSP assessment engine
+        if: matrix.target == 'linux-x64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unica-assessment-engine-linux-x64
+          # Zipped workflow artifacts normalize files to 0644. The inner tar
+          # keeps the verified executable modes needed by both engines.
+          path: .build/unica-assessment-engine-linux-x64.tar.gz
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -503,6 +529,10 @@ jobs:
         with:
           name: unica-runtime-linux-x64
           path: dist/runtime
+      - uses: actions/download-artifact@v8
+        with:
+          name: unica-assessment-engine-linux-x64
+          path: .build/assessment-engine
       - name: Run release assessment
         # A tag name is a ref, so it obeys the same rules a branch name does and
         # is the same command-injection sink: it reaches the shell as data.
@@ -511,6 +541,7 @@ jobs:
         run: >
           python scripts/ci/release-assessment.py
           --package-archive dist/runtime/unica-runtime-linux-x64.tar.gz
+          --engine-overlay .build/assessment-engine/unica-assessment-engine-linux-x64.tar.gz
           --work-dir .build/release-assessment
           --out-dir dist/release-assessment
           --bsp-ref 3.2.1.446
@@ -548,6 +579,15 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          # Предвыпуск не должен выглядеть последним релизом: его ищут те, кто
+          # ищет свежее, а он существует только для замеров.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          # Выпуск публикует ядро и его описание — их читает
+          # `verify-release-assets.py`, перекачивая с релиза. Описания поставок
+          # сюда не едут: их читает только упаковщик, и берёт он их из артефакта
+          # сборки. На релизе они были бы третьей копией фактов, уже записанных
+          # в `tools.lock.json` исходного тега и в `runtime-manifest.json`
+          # выложенного плагина, — и обещали бы ассет, которого здесь нет.
           files: |
             dist/runtime/unica-runtime-*.tar.gz
             dist/runtime/unica-runtime-*.json
@@ -589,6 +629,20 @@ jobs:
           python scripts/ci/smoke-unica-bootstrap.py
           --plugin-root .build/thin/plugins/unica
           --target "${{ matrix.target }}"
+      # Ядро выпуск публикует сам, и его байты сверяет `verify-release-assets`.
+      # Поставки приезжают из тулчейна, и до этого шага их путь целиком —
+      # адрес, сумма, раскладка — в выпуске не проходил никто. Одной цели
+      # довольно: адреса остальных проверены отдельно и стоят одного HEAD.
+      - name: Prefetch the whole delivery once, end to end
+        if: ${{ matrix.target == 'linux-x64' }}
+        shell: bash
+        env:
+          UNICA_RUNTIME_CACHE_DIR: ${{ runner.temp }}/prefetch-cache
+        run: |
+          set -euo pipefail
+          bootstrap=".build/thin/plugins/unica/bootstrap/bin/linux-x64/unica-bootstrap"
+          chmod +x "$bootstrap"
+          "$bootstrap" prefetch --plugin-root .build/thin/plugins/unica
 
   verify-published-assets:
     name: Re-download and verify published bytes
@@ -617,6 +671,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" --pattern 'unica-runtime-*' --dir published
       - run: python scripts/ci/verify-release-assets.py --asset-dir published
+      - uses: actions/download-artifact@v8
+        with:
+          name: unica-thin-marketplace
+          path: .build/thin
+      # Ядро сверено побайтно выше. У поставок из тулчейна байты сверены на
+      # сборке, а адрес после неё не трогает никто: опечатка в теге дожила бы
+      # до первого вызова движка у пользователя. Проверяются все цели —
+      # прогреть на месте можно лишь одну.
+      - run: >
+          python scripts/ci/verify-delivery-reachable.py
+          --plugin-root .build/thin/plugins/unica
 
   unica-ci:
     name: Unica CI

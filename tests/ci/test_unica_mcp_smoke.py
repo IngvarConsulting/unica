@@ -1405,7 +1405,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         self.assertIn("FormChanged", payload["cache"]["events"])
         self.assertIn("metadata_graph", payload["cache"]["invalidated"])
 
-    def test_runtime_execute_dry_run_reports_runner_cache_impact(self) -> None:
+    def test_runtime_execute_dry_run_reports_a_missing_runner_honestly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             responses = self.call_mcp(
@@ -1428,9 +1428,12 @@ class UnicaMcpSmokeTests(unittest.TestCase):
 
         text = responses[0]["result"]["content"][0]["text"]
         payload = json.loads(text)
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["cache"]["mode"], "dry-run")
-        self.assertIn("SourceSetChanged", payload["cache"]["events"])
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["cache"]["mode"], "read")
+        self.assertTrue(
+            any("bundled_tool_missing" in error for error in payload["errors"]),
+            payload,
+        )
         command = " ".join(payload["command"]).replace("\\", "/")
         self.assertIn("bin/", command)
         self.assertIn("v8-runner", command)

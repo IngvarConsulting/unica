@@ -1540,6 +1540,127 @@ for raw in sys.stdin:
 
             self.assertEqual(extracted.relative_to(module.plugin_root_for(extracted)).as_posix(), "bin/linux-x64/unica")
 
+    def test_runtime_assessment_overlay_adds_only_regular_engine_files(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = root / "runtime"
+            (runtime / "third-party").mkdir(parents=True)
+            (runtime / "third-party/manifest.json").write_text(
+                json.dumps(
+                    {
+                        "tools": [
+                            {
+                                "name": "bsl-analyzer",
+                                "artifact": "bsl-analyzer",
+                                "deliveredPath": "bin/linux-x64/bsl-analyzer",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            run_unica = runtime / "bin/linux-x64/unica"
+            run_unica.parent.mkdir(parents=True)
+            run_unica.write_bytes(b"unica")
+            overlay = root / "overlay"
+            engine = overlay / "bin/linux-x64/bsl-analyzer"
+            engine.parent.mkdir(parents=True)
+            engine.write_bytes(b"analyzer")
+            engine.chmod(0o755)
+
+            copied = module.overlay_runtime_files(run_unica, overlay)
+
+            self.assertEqual(copied, ["bin/linux-x64/bsl-analyzer"])
+            self.assertEqual(
+                (runtime / "bin/linux-x64/bsl-analyzer").read_bytes(),
+                b"analyzer",
+            )
+
+    def test_directory_overlay_rejects_a_non_executable_engine_entrypoint(self) -> None:
+        module = load_assessment_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        runtime = root / "runtime"
+        (runtime / "third-party").mkdir(parents=True)
+        (runtime / "third-party/manifest.json").write_text(
+            json.dumps(
+                {
+                    "tools": [
+                        {
+                            "name": "bsl-analyzer",
+                            "artifact": "bsl-analyzer",
+                            "deliveredPath": "bin/linux-x64/bsl-analyzer",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        run_unica = runtime / "bin/linux-x64/unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+        overlay = root / "overlay"
+        engine = overlay / "bin/linux-x64/bsl-analyzer"
+        engine.parent.mkdir(parents=True)
+        engine.write_bytes(b"analyzer")
+        engine.chmod(0o644)
+
+        with self.assertRaisesRegex(SystemExit, "not executable"):
+            module.overlay_runtime_files(run_unica, overlay)
+
+    def test_runtime_overlay_guards_symlink_replacement_and_empty_input(self) -> None:
+        module = load_assessment_module()
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        runtime = root / "runtime"
+        (runtime / "third-party").mkdir(parents=True)
+        (runtime / "third-party/manifest.json").write_text("{}", encoding="utf-8")
+        run_unica = runtime / "bin/linux-x64/unica"
+        run_unica.parent.mkdir(parents=True)
+        run_unica.write_bytes(b"unica")
+
+        empty = root / "empty"
+        empty.mkdir()
+        with self.assertRaisesRegex(SystemExit, "empty"):
+            module.overlay_runtime_files(run_unica, empty)
+
+        replacement = root / "replacement"
+        candidate = runtime / "bin/linux-x64/existing"
+        candidate.write_bytes(b"candidate")
+        source = replacement / "bin/linux-x64/existing"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"overlay")
+        with self.assertRaisesRegex(SystemExit, "replace candidate"):
+            module.overlay_runtime_files(run_unica, replacement)
+
+        if hasattr(os, "symlink"):
+            symlinked = root / "symlinked"
+            symlinked.mkdir()
+            os.symlink(candidate, symlinked / "engine")
+            with self.assertRaisesRegex(SystemExit, "symlink"):
+                module.overlay_runtime_files(run_unica, symlinked)
+
+    def test_runtime_assessment_extracts_an_overlay_archive_with_executable_modes(self) -> None:
+        module = load_assessment_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "rlm-bsl-mcp"
+            source.write_bytes(b"rlm")
+            source.chmod(0o755)
+            archive = root / "engine.tar.gz"
+            with tarfile.open(archive, "w:gz") as packaged:
+                packaged.add(source, arcname="bin/linux-x64/rlm-bsl-mcp")
+
+            overlay = module.prepare_runtime_overlay(
+                archive,
+                root / "extracted-overlay",
+            )
+
+            engine = overlay / "bin/linux-x64/rlm-bsl-mcp"
+            self.assertEqual(engine.read_bytes(), b"rlm")
+            self.assertEqual(stat.S_IMODE(engine.stat().st_mode), 0o755)
+
 
 if __name__ == "__main__":
     unittest.main()

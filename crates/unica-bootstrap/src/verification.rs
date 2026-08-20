@@ -2,13 +2,13 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::error::{BootstrapError, Result};
+use crate::error::{BootstrapError, Failure, Result};
 
 const REQUIRED_TOOLS: [&str; 3] = [
     "unica.project.status",
@@ -212,14 +212,26 @@ fn receive_response(
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(BootstrapError::new(format!(
-                "timed out waiting for Unica JSON-RPC response {id}"
-            )));
+            // Единственный настоящий срок в загрузчике: рантайм либо ответил,
+            // либо нет. У доставки срока нет — движок качают, чтобы им
+            // пользоваться, — и один код выхода на оба случая скрыл бы, какой
+            // из них случился.
+            return Err(BootstrapError::of(
+                Failure::Timeout,
+                format!("timed out waiting for Unica JSON-RPC response {id}"),
+            ));
         }
         let line = receiver.recv_timeout(remaining).map_err(|error| {
-            BootstrapError::new(format!(
-                "failed waiting for Unica JSON-RPC response {id}: {error}"
-            ))
+            // Истёкший срок и закрытый провод — разные беды: первую лечит
+            // повтор, вторая означает рантайм, который умер, не ответив.
+            let failure = match error {
+                RecvTimeoutError::Timeout => Failure::Timeout,
+                RecvTimeoutError::Disconnected => Failure::Internal,
+            };
+            BootstrapError::of(
+                failure,
+                format!("failed waiting for Unica JSON-RPC response {id}: {error}"),
+            )
         })?;
         let line = line.map_err(BootstrapError::new)?;
         let value: Value = serde_json::from_str(&line).map_err(|error| {

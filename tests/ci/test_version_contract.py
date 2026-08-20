@@ -33,7 +33,7 @@ class VersionContractTests(unittest.TestCase):
             ["claude-plugin", "plugin", "tools-lock-unica", "workspace"],
         )
         self.assertEqual(len(set(values.values())), 1, values)
-        self.assertRegex(next(iter(values.values())), r"^\d+\.\d+\.\d+$")
+        self.assertRegex(next(iter(values.values())), load_module().RELEASE_VERSION)
 
     def test_meta_surface_delivery_is_versioned_across_the_012_line(self) -> None:
         module = load_module()
@@ -52,11 +52,41 @@ class VersionContractTests(unittest.TestCase):
         delivered = set(values.values())
         self.assertEqual(len(delivered), 1, values)
         version = next(iter(delivered))
-        self.assertRegex(version, r"^0\.12\.\d+$")
+        # Пин держит линию поставки; суффикс предвыпуска ей не противоречит.
+        self.assertRegex(version, r"^0\.12\.\d+(?:-[0-9A-Za-z.]+)?$")
         self.assertEqual(
             workspace_packages,
             {"unica-bootstrap": version, "unica-coder": version},
         )
+
+    def test_a_prerelease_is_a_legal_release_version(self) -> None:
+        """Ранбук описывает предвыпуск, и контракт обязан его пропускать.
+
+        Замерить доставку можно только на настоящем релизе: адрес ассета прибит
+        к тегу репозитория. Запрет суффикса делал описанную процедуру
+        невыполнимой.
+        """
+        module = load_module()
+
+        for version in ("0.13.0-rc.1", "0.13.0-beta.2", "0.13.0-alpha-1", "1.0.0"):
+            with self.subTest(version=version):
+                self.assertRegex(version, module.RELEASE_VERSION)
+
+    def test_a_version_that_is_not_a_release_is_refused(self) -> None:
+        # Разрешить суффикс — не значит разрешить что угодно: контракт остаётся
+        # тем, кто ловит мусор в пяти файлах сразу.
+        module = load_module()
+
+        for version in ("0.13", "banana", "0.13.0-", "v0.13.0", "0.13.0 rc1"):
+            with self.subTest(version=version):
+                self.assertNotRegex(version, module.RELEASE_VERSION)
+
+    def test_the_contract_refuses_a_malformed_version_everywhere(self) -> None:
+        module = load_module()
+
+        errors = module.validate_version_contract({"cargo": "banana", "plugin": "banana"})
+
+        self.assertTrue(any("banana" in error for error in errors), errors)
 
     def test_0120_meta_migration_is_complete_and_linked(self) -> None:
         migration_index = REPO_ROOT / "docs/migrations/README.md"
@@ -110,6 +140,63 @@ class VersionContractTests(unittest.TestCase):
         )
 
         self.assertEqual(errors, ["plugin version 0.6.1 != expected 0.7.0"])
+
+
+
+
+class PrereleaseVersionTests(unittest.TestCase):
+    """Предвыпуск обязан быть версией, а не пометкой рядом с ней.
+
+    Манифест поставки требует, чтобы тег совпадал с версией плагина буквально:
+    `tag == "v" + pluginVersion`. Значит выпуск, который не должен доехать до
+    пользователей, отличается именно версией — суффиксом по SemVer, — и контракт
+    версий обязан его принимать.
+    """
+
+    def bumper(self):
+        import importlib.util
+
+        path = REPO_ROOT / "scripts" / "dev" / "bump-version.py"
+        spec = importlib.util.spec_from_file_location("bump_version", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_prerelease_suffix_is_a_valid_version(self) -> None:
+        semver = self.bumper().SEMVER
+        for version in (
+            "0.13.0-rc.1",
+            "1.0.0-probe.2",
+            "0.13.0-delivery.1",
+            "0.13.0-alpha-1",
+        ):
+            self.assertTrue(semver.fullmatch(version), version)
+
+    def test_bumper_and_gate_accept_the_same_version_grammar(self) -> None:
+        gate = load_module().RELEASE_VERSION
+        bumper = self.bumper().SEMVER
+        corpus = (
+            "0.13.0",
+            "0.13.0-alpha-1",
+            "0.13.0-rc.1",
+            "0.13.0-",
+            "0.13.0-alpha..1",
+            "0.13.0+build.1",
+        )
+        self.assertEqual(
+            {version: bool(gate.fullmatch(version)) for version in corpus},
+            {version: bool(bumper.fullmatch(version)) for version in corpus},
+        )
+
+    def test_a_plain_version_stays_valid(self) -> None:
+        semver = self.bumper().SEMVER
+        for version in ("0.13.0", "1.2.3"):
+            self.assertTrue(semver.fullmatch(version), version)
+
+    def test_what_is_not_a_version_is_still_refused(self) -> None:
+        semver = self.bumper().SEMVER
+        for version in ("0.13", "v0.13.0", "0.13.0-", "0.13.0 rc1", "next"):
+            self.assertIsNone(semver.fullmatch(version), version)
 
 
 if __name__ == "__main__":

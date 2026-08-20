@@ -28,6 +28,31 @@ from unica_runtime_archive import RuntimeArchiveFile, load_verified_archive
 
 ArchiveIdentity = tuple[str, str, str, str, str]
 
+# Конверт архива тулчейна: он лежит в корне рядом с `payload/` и приезжает
+# вместе с ним, потому что доставка распаковывает архив как есть.
+ARCHIVE_ENVELOPE = "manifest.json"
+
+
+def delivered_archive_path(archive_path: str) -> str:
+    """Где файл архива окажется после распаковки поставки."""
+    return f"payload/{archive_path}"
+
+
+def artifact_asset_entry(tool: dict, asset: dict, *, media_type: str) -> dict:
+    """Откуда артефакт приезжает к пользователю.
+
+    Тулчейн уже издал его — по своему тегу, со своей суммой. Записываем адрес,
+    а не байты: перепубликация тех же байтов в выпуске плагина стоила 439 МБ и
+    привязывала версию движка к темпу выпусков Unica.
+    """
+    return {
+        "repository": tool.get("assetRepository", tool["repository"]),
+        "tag": tool.get("assetTag", tool["sourceTag"]),
+        "name": asset["assetName"],
+        "mediaType": media_type,
+        "sha256": asset["sha256"],
+    }
+
 
 def load_lock(path: Path) -> dict:
     lock = json.loads(path.read_text(encoding="utf-8"))
@@ -126,17 +151,34 @@ def set_file_mode(path: Path, *, executable: bool) -> None:
     path.chmod(0o755 if executable else 0o644)
 
 
+def artifact_name(tool: dict) -> str:
+    """Имя скачиваемого архива. Несколько инструментов делят один: у RLM это
+    `rlm-tools-bsl` на `rlm-bsl-mcp` и `rlm-bsl-index`. Где архив свой,
+    артефакт зовётся как инструмент."""
+    return tool.get("releaseName", tool["name"])
+
+
 def runtime_file_entry(
     path: Path,
     *,
     relative_path: str,
+    delivered_path: str,
     executable: bool,
+    artifact: str,
 ) -> dict:
     return {
         "path": relative_path,
+        # Где файл окажется внутри доставленного артефакта. Раскладку задаёт
+        # издатель поставки, и совпадать с раскладкой плагина она не обязана:
+        # то, что мы собираем сами, кладём куда хотим, а чужой архив
+        # распаковывается как есть.
+        "deliveredPath": delivered_path,
         "sha256": sha256(path),
         "size": path.stat().st_size,
         "executable": executable,
+        # Из какого артефакта приехал файл: без этого разрезать поставку
+        # нечем — замыкание плоское и принадлежности не помнит.
+        "artifact": artifact,
     }
 
 
@@ -182,7 +224,7 @@ def materialize_archive_group(
     download_seconds = time.monotonic() - download_started_at
     verify_asset_checksum(downloaded, first_asset, tool_name=first["name"], target=target)
     verify_asset_size(downloaded, first_asset, tool_name=first["name"], target=target)
-    files = load_verified_archive(
+    verified = load_verified_archive(
         downloaded,
         release_tag=identity[1],
         source_commit=first["sourceCommit"],
@@ -191,7 +233,7 @@ def materialize_archive_group(
     )
 
     planned: list[tuple[RuntimeArchiveFile, str]] = []
-    for item in files:
+    for item in verified.files:
         relative = (Path("bin") / target / Path(*item.path.parts)).as_posix()
         owner = reserved_paths.get(relative)
         if owner is not None:
@@ -201,7 +243,17 @@ def materialize_archive_group(
         reserved_paths[relative] = f"archive {identity[3]}"
         planned.append((item, relative))
 
-    runtime_files: list[dict] = []
+    # У конверта нет пути в сборке: переупаковка его не переносит, он живёт
+    # только в поставке. Поэтому запись называет доставку и молчит о сборке.
+    runtime_files: list[dict] = [
+        {
+            "deliveredPath": ARCHIVE_ENVELOPE,
+            "sha256": verified.envelope.sha256,
+            "size": verified.envelope.size,
+            "executable": verified.envelope.executable,
+            "artifact": artifact_name(first),
+        }
+    ]
     by_archive_path: dict[str, Path] = {}
     for item, relative in planned:
         destination = target_bin_dir.joinpath(*item.path.parts)
@@ -212,7 +264,9 @@ def materialize_archive_group(
             runtime_file_entry(
                 destination,
                 relative_path=relative,
+                delivered_path=delivered_archive_path(item.path.as_posix()),
                 executable=item.executable,
+                artifact=artifact_name(first),
             )
         )
         by_archive_path[item.path.as_posix()] = destination
@@ -325,6 +379,22 @@ def write_build_metrics(
     )
 
 
+def delivered_binary_path(tool: dict, *, target: str, exe: str) -> str:
+    """Где бинарь инструмента окажется внутри доставленного артефакта.
+
+    Раскладку выбирает тот, кто пакует: свой архив мы кладём как хотим, чужой
+    распаковываем как есть, а голый ассет ложится под именем бинаря.
+    """
+    strategy = tool["assetStrategy"]
+    if strategy == "archive-release-asset":
+        return delivered_archive_path(tool["assets"][target]["archiveBinary"])
+    if strategy == "direct-release-asset":
+        return f"{tool['binaryName']}{exe}"
+    if strategy == "cargo-workspace":
+        return f"bin/{target}/{tool['binaryName']}{exe}"
+    raise SystemExit(f"unsupported assetStrategy for {tool['name']}: {strategy}")
+
+
 def tool_entry(
     *,
     target: str,
@@ -337,10 +407,13 @@ def tool_entry(
     license_id: str,
     binary: Path,
     relative_binary: str,
+    delivered_binary: str,
+    artifact: str,
 ) -> dict:
     return {
         "name": name,
         "version": version,
+        "artifact": artifact,
         "repository": repository,
         "upstreamUrl": f"{repository}/releases/tag/{tag}",
         "sourceTag": tag,
@@ -349,6 +422,7 @@ def tool_entry(
         "target": target,
         "targetTriple": target_triple,
         "binaryPath": relative_binary,
+        "deliveredPath": delivered_binary,
         "sha256": sha256(binary),
     }
 
@@ -376,6 +450,15 @@ def build_bundle_atomically(
         raise
 
 
+def register_artifact_asset(
+    artifact_assets: dict[str, dict], name: str, entry: dict
+) -> None:
+    """Keep one byte identity per delivered artifact name."""
+    existing = artifact_assets.setdefault(name, entry)
+    if existing != entry:
+        raise SystemExit(f"conflicting asset metadata for artifact {name}")
+
+
 def build_locked_bundle(
     args: argparse.Namespace,
     lock: dict,
@@ -397,6 +480,7 @@ def build_locked_bundle(
     archive_release_identities: dict[tuple[str, str, str], tuple[str, str, int]] = {}
     reserved_paths: dict[str, str] = {}
     runtime_files: list[dict] = []
+    artifact_assets: dict[str, dict] = {}
     archive_download_seconds = 0.0
     for tool in lock["tools"]:
         strategy = tool["assetStrategy"]
@@ -446,17 +530,34 @@ def build_locked_bundle(
         shutil.copy2(downloaded, dest)
         set_file_mode(dest, executable=True)
         built_paths[tool["name"]] = dest
+        register_artifact_asset(
+            artifact_assets,
+            artifact_name(tool),
+            artifact_asset_entry(tool, asset, media_type="application/octet-stream"),
+        )
         runtime_files.append(
             runtime_file_entry(
                 dest,
                 relative_path=f"bin/{args.target}/{dest.name}",
+                delivered_path=dest.name,
                 executable=True,
+                artifact=artifact_name(tool),
             )
         )
 
     for identity in sorted(archive_groups):
+        group = archive_groups[identity]
+        register_artifact_asset(
+            artifact_assets,
+            artifact_name(group[0]),
+            artifact_asset_entry(
+                group[0],
+                group[0]["assets"][args.target],
+                media_type="application/gzip",
+            ),
+        )
         archive_paths, archive_files, group_download_seconds = materialize_archive_group(
-            archive_groups[identity],
+            group,
             target=args.target,
             target_triple=cfg["targetTriple"],
             downloads_dir=downloads_dir,
@@ -485,7 +586,9 @@ def build_locked_bundle(
             runtime_file_entry(
                 path,
                 relative_path=f"bin/{args.target}/{path.name}",
+                delivered_path=f"bin/{args.target}/{path.name}",
                 executable=True,
+                artifact=artifact_name(tool),
             )
         )
     tools = [
@@ -500,6 +603,8 @@ def build_locked_bundle(
             license_id=tool["license"],
             binary=built_paths[tool["name"]],
             relative_binary=f"bin/{args.target}/{built_paths[tool['name']].name}",
+            delivered_binary=delivered_binary_path(tool, target=args.target, exe=exe),
+            artifact=artifact_name(tool),
         )
         for tool in lock["tools"]
     ]
@@ -512,7 +617,15 @@ def build_locked_bundle(
                 "targetTriple": cfg["targetTriple"],
                 "lockFile": str(args.lock_file),
                 "tools": tools,
-                "runtimeFiles": sorted(runtime_files, key=lambda item: item["path"]),
+                # Откуда каждый артефакт приезжает. Ядра здесь нет: его пакует
+                # выпуск, а не тулчейн.
+                "artifactAssets": {
+                    name: artifact_assets[name] for name in sorted(artifact_assets)
+                },
+                "runtimeFiles": sorted(
+                    runtime_files,
+                    key=lambda item: item.get("path") or item["deliveredPath"],
+                ),
             },
             ensure_ascii=False,
             indent=2,

@@ -1,6 +1,6 @@
 # ADR-0061: Многофайловый RLM входит в runtime замкнутой полезной нагрузкой
 
-- Статус: `accepted`
+- Статус: `superseded` — заменено ADR-0076
 - Дата: `2026-08-14`
 - Задача: [#505](https://github.com/IngvarConsulting/unica/issues/505)
 

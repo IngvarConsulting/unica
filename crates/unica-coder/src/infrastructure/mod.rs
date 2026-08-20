@@ -7,6 +7,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod diagnostics_jsonl;
 pub(crate) mod documentation_policy;
 pub(crate) mod documentation_retrieval;
+pub(crate) mod engine_delivery;
 pub(crate) mod format_guard;
 pub mod internal_adapters;
 pub(crate) mod kb_1ci;

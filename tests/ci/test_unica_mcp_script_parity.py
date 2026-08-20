@@ -3422,6 +3422,11 @@ def prepare_reader_standins(temp_root: Path) -> tuple[Path, dict[str, str], Path
         f"bsl-analyzer{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
         f"rlm-bsl-mcp{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
         f"rlm-bsl-index{suffix}": READER_STANDINS_ROOT / "rlm_index.py",
+        # Mutation examples are previews, but a preview may only promise a
+        # runnable command when the declared runner actually exists. The
+        # stand-in is never executed in dry-run mode; its bytes make the
+        # successful-fixture precondition explicit.
+        f"v8-runner{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
     }
     manifest_tools = []
     for binary_name, source in binaries.items():

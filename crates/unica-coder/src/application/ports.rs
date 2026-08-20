@@ -15,7 +15,9 @@ use crate::domain::diagnostics::{
     DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
     DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
 };
+use crate::domain::engine::MissingEngine;
 use crate::domain::events::DomainEvent;
+use crate::domain::long_work::WorkState;
 use crate::domain::metadata::{
     MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode, MetaInfoData, MetaInfoDeclarations,
     MetaInfoDetails, MetaInfoPropertyData, MetaMutationData, MetaPredefinedItemsData,
@@ -23,6 +25,7 @@ use crate::domain::metadata::{
     MetadataKind,
 };
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
+use crate::domain::progress::ProgressSink;
 use crate::domain::project_health::{ProjectHealthInspectionError, ProjectHealthSnapshot};
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
@@ -507,6 +510,33 @@ pub(crate) trait ApplicationPorts: Send + Sync {
         _deadline: ProviderDeadline,
     ) -> Result<PreparedToolInvocation, String> {
         Ok(PreparedToolInvocation::empty())
+    }
+
+    /// Чего не хватает инструменту, чтобы запуститься. `None` — всё на месте.
+    ///
+    /// Спрашивается там, где вызов и так отказывает: отказ, назвавший одну
+    /// причину из двух, уводит диагностику в заведомо неверную сторону.
+    fn missing_engine(
+        &self,
+        _spec: ToolSpec,
+        _cwd: Option<&std::path::Path>,
+    ) -> Option<MissingEngine> {
+        None
+    }
+
+    /// Дождаться движка, которого инструменту не хватает.
+    ///
+    /// `None` — ждать нечего: движок на месте, не нужен вовсе или доставке
+    /// взяться неоткуда; вызов идёт дальше. `Some` — доставка не успела за
+    /// окно, и вызывающий получает её состояние вместо результата работы.
+    fn deliver_engine_if_missing(
+        &self,
+        _spec: ToolSpec,
+        _context: &WorkspaceContext,
+        _cancellation: &CancellationToken,
+        _progress: &dyn ProgressSink,
+    ) -> Option<WorkState> {
+        None
     }
 
     fn read_metadata_local(

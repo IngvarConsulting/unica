@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::error::{BootstrapError, Result};
+use crate::error::{BootstrapError, Failure, Result};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum HostTarget {
@@ -27,9 +27,10 @@ impl HostTarget {
                 Self::WinX64
             }
             _ => {
-                return Err(BootstrapError::new(format!(
-                    "unsupported Unica host: {os}-{arch}"
-                )))
+                return Err(BootstrapError::of(
+                    Failure::Configuration,
+                    format!("unsupported Unica host: {os}-{arch}"),
+                ))
             }
         };
         Ok(target)

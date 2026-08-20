@@ -21,7 +21,10 @@ import sys
 from pathlib import Path
 
 
-SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+# Суффикс предвыпуска входит в версию, а не сопровождает её: манифест поставки
+# требует, чтобы тег совпадал с версией буквально, поэтому выпуск, который не
+# должен дойти до пользователей, отличается именно версией.
+SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
 
 
 def render_cargo_version(original: str, version: str, path: Path) -> str:
@@ -91,7 +94,10 @@ def main() -> int:
 
     version = args.version.removeprefix("v")
     if not SEMVER.fullmatch(version):
-        raise SystemExit(f"version must be MAJOR.MINOR.PATCH, got {args.version}")
+        raise SystemExit(
+            f"version must be MAJOR.MINOR.PATCH with an optional prerelease suffix, "
+            f"got {args.version}"
+        )
 
     repo_root = args.repo_root.resolve()
     changed = bump(repo_root, version)

@@ -24,7 +24,9 @@ use crate::domain::diagnostics::{
     DiagnosticProvider, DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
 };
 use crate::domain::events::DomainEvent;
+use crate::domain::long_work::WorkState;
 use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
+use crate::domain::progress::ProgressSink;
 use crate::domain::source_resources::{
     ResourceManifestPage, SourceReadResult, SourceResourceError,
 };
@@ -42,6 +44,7 @@ use crate::infrastructure::native_operations::NativeOperationAdapter;
 use crate::infrastructure::platform::full_dump_publication::{
     FullDumpInvocation, VerifiedFullDumpAdapter,
 };
+use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::support_state::{
     SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
 };
@@ -64,9 +67,42 @@ fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String>
     }
 }
 
+/// Какой движок инструмент запускает, если запускает.
+///
+/// Список повторяет диспетчеризацию `invoke_handler_with_operational_config`
+/// ниже: там движок называет `CliAdapter::new`, здесь — этот разбор. Ветки
+/// перечислены поимённо, без `_`, чтобы новый обработчик заставил ответить на
+/// вопрос, а не унаследовал молчание.
+///
+/// Поиска по коду здесь нет намеренно. Он опрашивает несколько поставщиков и на
+/// отсутствие одного отвечает разделом «недоступен» и рабочим результатом
+/// (ADR-0017); заставить его ждать доставку значит сломать быстрый ответ ради
+/// движка, без которого он умеет обойтись.
+pub(crate) fn engine_for(spec: ToolSpec) -> Option<&'static str> {
+    match spec.handler {
+        ToolHandler::BuildRuntime { .. }
+        | ToolHandler::RuntimeAdapter
+        | ToolHandler::RuntimeJob { .. } => Some("v8-runner"),
+        ToolHandler::CodeAdapter { .. } => Some("bsl-analyzer"),
+        ToolHandler::Metadata { .. }
+        | ToolHandler::NativeOperation { .. }
+        | ToolHandler::ProjectStatus
+        | ToolHandler::ProjectMap
+        | ToolHandler::CodeIntelligence { .. }
+        | ToolHandler::SourceNavigation { .. }
+        | ToolHandler::SourceResources { .. }
+        | ToolHandler::Diagnostics
+        | ToolHandler::StandardsAdapter { .. }
+        | ToolHandler::Documentation { .. } => None,
+    }
+}
+
 pub(crate) struct InfrastructureApplicationPorts {
     source_resources: crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider,
     support_state_readers: Arc<dyn SupportStateReaderFactory>,
+    /// Идущие доставки. Стол принадлежит серверу: доставка переживает вызов,
+    /// который её начал, и достаётся следующему.
+    deliveries: crate::infrastructure::engine_delivery::DeliveryDesk,
 }
 
 impl InfrastructureApplicationPorts {
@@ -75,6 +111,7 @@ impl InfrastructureApplicationPorts {
             source_resources:
                 crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
             support_state_readers: Arc::new(WorkspaceSupportStateReaderFactory),
+            deliveries: Default::default(),
         }
     }
 
@@ -86,6 +123,7 @@ impl InfrastructureApplicationPorts {
             source_resources:
                 crate::infrastructure::platform_xml_resources::PlatformXmlResourceProvider::new(),
             support_state_readers,
+            deliveries: Default::default(),
         }
     }
 }
@@ -474,6 +512,68 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             format_guard: Some(format_guard),
             handler: Some(native_handler_outcome(native)),
         })
+    }
+
+    fn missing_engine(
+        &self,
+        spec: ToolSpec,
+        cwd: Option<&std::path::Path>,
+    ) -> Option<crate::domain::engine::MissingEngine> {
+        let engine = engine_for(spec)?;
+        let plugin_root = find_plugin_root(cwd.unwrap_or_else(|| std::path::Path::new(".")))?;
+        crate::infrastructure::bundled_tools::missing_engine(&plugin_root, engine)
+    }
+
+    fn deliver_engine_if_missing(
+        &self,
+        spec: ToolSpec,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+        progress: &dyn ProgressSink,
+    ) -> Option<WorkState> {
+        let engine = engine_for(spec)?;
+        let plugin_root = find_plugin_root(&context.cwd)?;
+        if crate::infrastructure::bundled_tools::installed_engine_path(&plugin_root, engine)
+            .is_some()
+        {
+            return None;
+        }
+        // Источник неизвестен: исходный чекаут инструменты не описывает.
+        // Сказать об этом — дело отказа, а не доставки.
+        let order = crate::infrastructure::engine_delivery::order_for(&plugin_root, engine)?;
+        let artifact = order.artifact().to_owned();
+        // Срок хоста — знание фасада, а не этого места.
+        let window = crate::domain::long_work::sync_window(unica_bootstrap::host_tool_deadline());
+        match self.deliveries.deliver(
+            &artifact,
+            move |delivery| order.acquire(delivery),
+            window,
+            cancellation,
+            progress,
+        ) {
+            // Движок на месте — вызов идёт дальше и делает свою работу.
+            crate::infrastructure::engine_delivery::Delivered::Ready => None,
+            // Отказ доставки называет причину сам: обработчик сказал бы про
+            // отсутствующий бинарь и посоветовал ждать поставку, которая только
+            // что не удалась.
+            crate::infrastructure::engine_delivery::Delivered::Failed(reason) => Some(WorkState {
+                status: crate::domain::long_work::WorkStatus::Failed,
+                status_message: format!("delivery of {artifact} failed: {reason}"),
+                poll_interval_ms: None,
+            }),
+            crate::infrastructure::engine_delivery::Delivered::Working { received, total } => {
+                Some(WorkState {
+                    status: crate::domain::long_work::WorkStatus::Working,
+                    status_message: match total {
+                        Some(total) => {
+                            format!("delivering {artifact}: {received} of {total} bytes on disk")
+                        }
+                        None => format!("delivering {artifact}: {received} bytes on disk"),
+                    },
+                    poll_interval_ms: self.deliveries.poll_hint(&artifact),
+                })
+            }
+        }
     }
 
     fn invoke_handler(
@@ -3827,5 +3927,47 @@ mod tests {
             error.contains("query"),
             "отказ обязан назвать аргумент, получено {error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod engine_map_tests {
+    use super::engine_for;
+    use crate::application::tools;
+
+    fn spec(name: &str) -> crate::application::ToolSpec {
+        tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("инструмент {name} исчез с поверхности"))
+    }
+
+    #[test]
+    fn the_tools_that_run_an_engine_ask_for_it() {
+        // Список сверяется с настоящей поверхностью, а не с перечислением:
+        // разойтись он может только вместе с ней.
+        for (name, engine) in [
+            ("unica.runtime.execute", "v8-runner"),
+            ("unica.build.dump", "v8-runner"),
+            ("unica.runtime.job.start", "v8-runner"),
+            ("unica.code.graph", "bsl-analyzer"),
+        ] {
+            assert_eq!(engine_for(spec(name)), Some(engine), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_tool_that_runs_no_engine_asks_for_nothing() {
+        for name in ["unica.project.status", "unica.meta.info"] {
+            assert_eq!(engine_for(spec(name)), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn code_search_answers_without_waiting_for_a_delivery() {
+        // Поиск опрашивает несколько поставщиков и на отсутствие одного отвечает
+        // разделом «недоступен» и рабочим результатом. Ожидание доставки сломало
+        // бы быстрый ответ ради движка, без которого он умеет обойтись.
+        assert_eq!(engine_for(spec("unica.code.search")), None);
     }
 }

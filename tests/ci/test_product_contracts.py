@@ -861,6 +861,50 @@ class ProductContractTests(unittest.TestCase):
         ]
         self.assertEqual(matches, [])
 
+    def test_active_delivery_docs_describe_core_first_and_digest_cache(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        root_readme = (repo_root / "README.md").read_text(encoding="utf-8")
+        plugin_readme = (repo_root / "plugins/unica/README.md").read_text(
+            encoding="utf-8"
+        )
+        internal = (repo_root / "docs/internal-package.md").read_text(encoding="utf-8")
+
+        for marker in (
+            "При старте MCP bootstrap скачивает только ядро",
+            "<artifact>/<version>--<asset-sha256>/<target>",
+            "unica-bootstrap prefetch --plugin-root",
+        ):
+            with self.subTest(document="README.md", marker=marker):
+                self.assertIn(marker, root_readme)
+        for marker in (
+            "The bootstrap downloads only `unica-runtime-<target>.tar.gz` before MCP startup",
+            "`<artifact>/<version>--<asset-sha256>/<target>`",
+            "`work.status=working`",
+            "unica-bootstrap prefetch --plugin-root",
+        ):
+            with self.subTest(document="plugins/unica/README.md", marker=marker):
+                self.assertIn(marker, plugin_readme)
+        for marker in (
+            "`<cacheRoot>/<artifact>/<version>--<assetSha256>/<target>`",
+            "`ensure_artifact`",
+            "`prefetch`",
+        ):
+            with self.subTest(document="docs/internal-package.md", marker=marker):
+                self.assertIn(marker, internal)
+
+        forbidden = (
+            "$CODEX_HOME/unica/runtimes/<version>/<target>",
+            "${CLAUDE_PLUGIN_DATA}/runtimes/<version>/<target>",
+            "The runtime archive contains the target's",
+        )
+        matches = [
+            marker
+            for text in (root_readme, plugin_readme, internal)
+            for marker in forbidden
+            if marker in text
+        ]
+        self.assertEqual(matches, [])
+
     def test_removed_script_backed_skills_do_not_leave_architecture_records(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         decisions = repo_root / "spec" / "decisions"
@@ -1787,6 +1831,80 @@ class ProductContractTests(unittest.TestCase):
             any("Git HEAD changed during update" in error for error in errors),
             errors,
         )
+    def test_the_release_checks_every_address_it_publishes(self) -> None:
+        """Ядро выпуск сверяет побайтно, поставки — только по адресу.
+
+        Их байты сверены на сборке, когда CI их качал, а адрес после этого не
+        трогает никто: опечатка в теге дожила бы до первого вызова движка у
+        пользователя. Шаг легко выпасть незамеченным, поэтому он закреплён.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("scripts/ci/verify-delivery-reachable.py", release)
+        self.assertIn("scripts/ci/verify-release-assets.py", release)
+        # Выкладывается только то, у чего есть читатель. Подстановочный знак
+        # тянул сюда описания поставок: они обещали ассеты, которых на релизе
+        # нет, и не читал их никто.
+        self.assertIn("dist/runtime/unica-runtime-*.tar.gz", release)
+        self.assertIn("dist/runtime/unica-runtime-*.json", release)
+        self.assertNotIn("dist/runtime/*-runtime-*", release)
+        # Один сквозной прогрев на выпуск: адрес, сумма и раскладка вместе.
+        self.assertIn("prefetch --plugin-root", release)
+        self.assertTrue(
+            (repo_root / "scripts/ci/verify-delivery-reachable.py").is_file()
+        )
+
+    def test_both_sides_of_the_wire_approve_the_same_two_origins(self) -> None:
+        """Адрес пишет упаковщик, а сверяет bootstrap.
+
+        Разойдись эти списки — выпуск соберётся, а установка откажет уже у
+        пользователя: «origin is outside the approved release origin». Ловить
+        это надо здесь, а не в поле.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        packager = (repo_root / "scripts/ci/package-unica-plugin.py").read_text(
+            encoding="utf-8"
+        )
+        validator = (
+            repo_root / "crates/unica-bootstrap/src/manifest.rs"
+        ).read_text(encoding="utf-8")
+
+        approved = {
+            "https://github.com/IngvarConsulting/unica",
+            "https://github.com/IngvarConsulting/unica-toolchain",
+        }
+        for origin in approved:
+            with self.subTest(origin=origin):
+                self.assertIn(f'"{origin}"', packager)
+                self.assertIn(f'"{origin}/releases/download/"', validator)
+
+        emitted_origins = set(
+            re.findall(
+                r'^(?:SOURCE_REPOSITORY|TOOLCHAIN_REPOSITORY) = "([^"]+)"$',
+                packager,
+                re.MULTILINE,
+            )
+        )
+        self.assertEqual(emitted_origins, approved)
+
+        # Список закрыт с обеих сторон: третий адрес — новая запись реестра.
+        self.assertEqual(
+            len(re.findall(r'"https://github\.com/IngvarConsulting/[\w-]+/releases/download/"', validator)),
+            len(approved),
+        )
+
+    def test_startup_documentation_separates_core_blocking_from_engine_delivery(self) -> None:
+        readme = (
+            Path(__file__).resolve().parents[2] / "plugins/unica/README.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("host waits for the core", readme)
+        self.assertIn("engine delivery is non-blocking", readme)
+        self.assertNotIn("session is not held up while it runs", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

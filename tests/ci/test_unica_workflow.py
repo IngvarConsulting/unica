@@ -366,12 +366,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("name: unica-runtime-metadata-${{ matrix.target }}", build)
         self.assertIn("name: unica-bootstrap-${{ matrix.target }}", build)
         self.assertIn("name: unica-runtime-${{ matrix.target }}", text)
+        # Узость здесь — про цель, а не про артефакт: разрез поставки дал по
+        # архиву на артефакт, и выгрузка обязана нести их все.
         self.assertIn(
-            ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.json",
+            ".build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json",
             build,
         )
         self.assertIn(
-            ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz",
+            ".build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz",
             build,
         )
         self.assertIn(
@@ -582,6 +584,94 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("plugin remove unica@unica --json", text)
         self.assertEqual(text.count("plugin add unica@unica --json"), 3)
         self.assertIn("verify --plugin-root $pluginRoot", text)
+
+
+class ArtifactSplitPublicationTests(unittest.TestCase):
+    """Разрез поставки делит сборку и выкладку по-разному.
+
+    Сборка несёт все артефакты: их метаданные нужны упаковщику, чтобы манифест
+    объявил каждый. Выкладка несёт одно ядро: движки издал тулчейн, и вторая
+    публикация тех же байтов стоила 439 МБ на выпуск.
+    """
+
+    def setUp(self) -> None:
+        self.release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_release_publishes_the_core_and_only_it(self) -> None:
+        # Выкладывается то, у чего есть читатель: пару ядра перекачивает и
+        # перехеширует `verify-release-assets.py`. Описания поставок читает
+        # только упаковщик, и берёт он их из артефакта сборки.
+        self.assertIn("dist/runtime/unica-runtime-*.tar.gz", self.release)
+        self.assertIn("dist/runtime/unica-runtime-*.json", self.release)
+        self.assertNotIn("dist/runtime/*-runtime-*", self.release)
+
+    def test_the_manifest_still_names_the_artifacts_the_release_does_not_carry(
+        self,
+    ) -> None:
+        # Не выложить и не назвать — разные вещи. Движки объявлены адресом, и
+        # каждый адрес выпуск проверяет.
+        self.assertIn("verify-delivery-reachable.py", self.release)
+        self.assertIn("prefetch --plugin-root", self.release)
+
+    def test_packaging_uploads_every_artifact_of_the_target(self) -> None:
+        for glob in (
+            "runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz",
+            "runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.json",
+        ):
+            self.assertIn(glob, self.release, glob)
+
+    def test_bsp_runtime_assessment_receives_the_engine_its_search_requires(self) -> None:
+        build = job_block(self.release, "build-tools")
+        assessment = job_block(self.release, "release-assessment")
+
+        self.assertIn("unica-assessment-engine-linux-x64", build)
+        self.assertIn("stage-unica-assessment-engine.py", build)
+        self.assertIn("--artifact bsl-analyzer", build)
+        self.assertIn("--artifact rlm-tools-bsl", build)
+        self.assertIn("--out-archive .build/unica-assessment-engine-linux-x64.tar.gz", build)
+        self.assertIn("name: unica-assessment-engine-linux-x64", assessment)
+        self.assertIn(
+            "--engine-overlay .build/assessment-engine/unica-assessment-engine-linux-x64.tar.gz",
+            assessment,
+        )
+
+    def test_the_direct_mcp_smoke_is_given_the_engines_it_asserts_on(self) -> None:
+        build = job_block(self.release, "build-tools")
+        extract = build[
+            build.index("name: Extract deterministic runtime for MCP smoke") :
+        ].split("- name: Smoke packaged Unica MCP")[0]
+
+        self.assertIn("unica-runtime-${{ matrix.target }}.tar.gz", extract)
+        self.assertIn(".build/tool-bundles/${{ matrix.target }}/bin/", extract)
+
+
+class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
+    """Предвыпуск собирается и публикует ассеты, но каталога не касается.
+
+    Замерить доставку можно только на настоящем релизе: адрес архива прибит к
+    релизам репозитория. Значит нужен выпуск, который существует для нас и не
+    существует для пользователей, — и решать это должен конвейер, а не память
+    того, кто его запускал.
+    """
+
+    def setUp(self) -> None:
+        self.release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_a_prerelease_tag_marks_the_github_release_as_such(self) -> None:
+        # Иначе предвыпуск станет «последним релизом» и его начнут находить
+        # те, кто ищет свежее.
+        self.assertIn("prerelease: ${{ contains(github.ref_name, '-') }}", self.release)
+
+    def test_publication_asks_first_whether_this_release_is_for_consumers(self) -> None:
+        self.assertIn("\n  gate:\n", self.publish)
+        self.assertIn("promote:", self.publish)
+
+    def test_every_publishing_stage_waits_for_that_answer(self) -> None:
+        # Достаточно загейтить первую стадию: остальные ждут её через `needs`.
+        self.assertIn("needs: gate", self.publish)
+        self.assertIn("if: needs.gate.outputs.promote == 'true'", self.publish)
 
 
 if __name__ == "__main__":

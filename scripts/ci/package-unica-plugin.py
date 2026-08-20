@@ -13,6 +13,15 @@ from pathlib import Path
 
 
 PLUGIN_ID = "unica"
+
+# Ядро собирается здесь, поставки приезжают из тулчейна. Адресов ровно два, и
+# оба названы: третий — новая запись реестра, а не правка этого списка.
+SOURCE_REPOSITORY = "https://github.com/IngvarConsulting/unica"
+TOOLCHAIN_REPOSITORY = "https://github.com/IngvarConsulting/unica-toolchain"
+
+# Формы доставки: архив распаковывается, одиночный файл ложится под своим
+# именем. Форму объявляет издатель типом содержимого.
+DELIVERY_MEDIA_TYPES = ("application/gzip", "application/octet-stream")
 DISPLAY_NAME = "Unica"
 # One plugin directory serves both hosts. Each host reads its own manifest
 # directory and ignores the other, and the single `.mcp.json` launcher resolves
@@ -431,40 +440,86 @@ def _lower_hex(value: str, length: int) -> bool:
     return len(value) == length and all(ch in "0123456789abcdef" for ch in value)
 
 
-def load_runtime_metadata(metadata_root: Path, *, plugin_version: str) -> dict[str, dict]:
-    manifests = sorted(metadata_root.rglob("unica-runtime-*.json"))
+def load_runtime_metadata(
+    metadata_root: Path, *, plugin_version: str
+) -> dict[str, dict[str, dict]]:
+    """Метаданные всех артефактов, разложенные как артефакт → цель → описание.
+
+    Поставка разрезана: ядро едет в стартовом бюджете хоста, движки — отдельно,
+    и у каждого артефакта своя версия. Раньше здесь ожидался ровно один файл на
+    цель, и это же ожидание держало все инструменты в одном архиве.
+    """
+    manifests = sorted(metadata_root.rglob("*-runtime-*.json"))
     if not manifests:
         raise SystemExit(f"no runtime metadata found under {metadata_root}")
-    targets: dict[str, dict] = {}
+
+    artifacts: dict[str, dict[str, dict]] = {}
     for path in manifests:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("schemaVersion") != 2:
+            raise SystemExit(f"unsupported runtime metadata schema in {path.name}")
+        artifact = data.get("artifact")
+        if not isinstance(artifact, str) or not artifact or "/" in artifact:
+            raise SystemExit(f"invalid runtime metadata artifact in {path.name}")
         target = data.get("target")
         if target not in SUPPORTED_TARGETS:
             raise SystemExit(f"unsupported runtime metadata target: {target}")
-        if target in targets:
-            raise SystemExit(f"duplicate runtime metadata target: {target}")
+        if target in artifacts.get(artifact, {}):
+            raise SystemExit(f"duplicate runtime metadata for {artifact} {target}")
         target_triple, executable = SUPPORTED_TARGETS[target]
-        if data.get("schemaVersion") != 1:
-            raise SystemExit(f"unsupported runtime metadata schema for {target}")
+
+        role = data.get("role")
+        if role not in ("core", "engine"):
+            raise SystemExit(f"invalid runtime metadata role for {artifact}: {role}")
+        if (artifact == "unica") != (role == "core"):
+            raise SystemExit(f"artifact {artifact} declares a role that does not match its name")
+        if not data.get("version"):
+            raise SystemExit(f"runtime metadata for {artifact} has no version")
         if data.get("pluginVersion") != plugin_version:
             raise SystemExit(
-                f"runtime metadata version for {target} differs from plugin: "
+                f"runtime metadata version for {artifact} {target} differs from plugin: "
                 f"{data.get('pluginVersion')} != {plugin_version}"
             )
         if data.get("targetTriple") != target_triple:
             raise SystemExit(f"runtime target triple mismatch for {target}")
+
         asset = data.get("asset", {})
-        expected_asset = f"unica-runtime-{target}.tar.gz"
-        if asset.get("name") != expected_asset or asset.get("mediaType") != "application/gzip":
-            raise SystemExit(f"runtime asset identity mismatch for {target}")
+        if not isinstance(asset, dict):
+            raise SystemExit(f"runtime asset for {artifact} {target} must be an object")
+        origin = data.get("assetOrigin")
+        if role == "core":
+            # Ядро собирается здесь, и его имя выводится единым правилом.
+            expected_asset = f"{artifact}-runtime-{target}.tar.gz"
+            if asset.get("name") != expected_asset or asset.get("mediaType") != "application/gzip":
+                raise SystemExit(f"runtime asset identity mismatch for {artifact} {target}")
+            if origin is not None:
+                raise SystemExit(f"core artifact {artifact} must not name a foreign origin")
+        else:
+            # Поставку издал тулчейн: имя и тег назвал он, а не мы.
+            name = asset.get("name", "")
+            if not isinstance(name, str) or not name or "/" in name or "\\" in name:
+                raise SystemExit(f"unsafe runtime asset name for {artifact} {target}: {name}")
+            if asset.get("mediaType") not in DELIVERY_MEDIA_TYPES:
+                raise SystemExit(
+                    f"unsupported delivery mediaType for {artifact} {target}: "
+                    f"{asset.get('mediaType')}"
+                )
+            if not isinstance(origin, dict):
+                raise SystemExit(f"artifact {artifact} {target} does not name its origin")
+            if origin.get("repository") != TOOLCHAIN_REPOSITORY:
+                raise SystemExit(
+                    f"artifact {artifact} {target} comes from an unapproved repository: "
+                    f"{origin.get('repository')}"
+                )
+            tag = origin.get("tag", "")
+            if not isinstance(tag, str) or not tag or "/" in tag or ".." in tag:
+                raise SystemExit(f"unsafe origin tag for {artifact} {target}: {tag}")
         if not _lower_hex(asset.get("sha256", ""), 64):
-            raise SystemExit(f"invalid runtime asset checksum for {target}")
-        expected_entrypoint = f"bin/{target}/{'unica.exe' if executable.endswith('.exe') else 'unica'}"
-        if data.get("entrypoint") != expected_entrypoint:
-            raise SystemExit(f"runtime entrypoint mismatch for {target}")
+            raise SystemExit(f"invalid runtime asset checksum for {artifact} {target}")
+
         files = data.get("files")
         if not isinstance(files, list) or not files:
-            raise SystemExit(f"runtime file list is empty for {target}")
+            raise SystemExit(f"runtime file list is empty for {artifact} {target}")
         paths: set[str] = set()
         for runtime_file in files:
             relative = runtime_file.get("path", "")
@@ -476,19 +531,41 @@ def load_runtime_metadata(metadata_root: Path, *, plugin_version: str) -> dict[s
                 or ".." in rel_path.parts
                 or relative in paths
             ):
-                raise SystemExit(f"unsafe or duplicate runtime file for {target}: {relative}")
+                raise SystemExit(
+                    f"unsafe or duplicate runtime file for {artifact} {target}: {relative}"
+                )
             paths.add(relative)
             if not _lower_hex(runtime_file.get("sha256", ""), 64):
-                raise SystemExit(f"invalid runtime file checksum for {target}: {relative}")
-        if expected_entrypoint not in paths:
-            raise SystemExit(f"runtime entrypoint is not declared for {target}")
-        targets[target] = data
+                raise SystemExit(
+                    f"invalid runtime file checksum for {artifact} {target}: {relative}"
+                )
 
-    if set(targets) != set(SUPPORTED_TARGETS):
-        raise SystemExit(
-            f"runtime metadata targets {sorted(targets)} != {sorted(SUPPORTED_TARGETS)}"
-        )
-    return targets
+        # Точку входа запускает bootstrap, и запускает он только ядро.
+        entrypoint = data.get("entrypoint")
+        if role == "core":
+            expected_entrypoint = (
+                f"bin/{target}/{'unica.exe' if executable.endswith('.exe') else 'unica'}"
+            )
+            if entrypoint != expected_entrypoint:
+                raise SystemExit(f"runtime entrypoint mismatch for {target}")
+            if expected_entrypoint not in paths:
+                raise SystemExit(f"runtime entrypoint is not declared for {target}")
+        elif entrypoint is not None:
+            raise SystemExit(f"engine artifact {artifact} must not declare an entrypoint")
+
+        artifacts.setdefault(artifact, {})[target] = data
+
+    if "unica" not in artifacts:
+        raise SystemExit("runtime metadata has no core artifact")
+    for artifact, by_target in sorted(artifacts.items()):
+        if set(by_target) != set(SUPPORTED_TARGETS):
+            raise SystemExit(
+                f"artifact {artifact} covers {sorted(by_target)} != {sorted(SUPPORTED_TARGETS)}"
+            )
+        versions = {data["version"] for data in by_target.values()}
+        if len(versions) != 1:
+            raise SystemExit(f"artifact {artifact} carries conflicting versions: {sorted(versions)}")
+    return artifacts
 
 
 def copy_bootstrap_matrix(bootstrap_root: Path, plugin_dir: Path) -> None:
@@ -515,7 +592,7 @@ def copy_bootstrap_matrix(bootstrap_root: Path, plugin_dir: Path) -> None:
 
 def write_release_runtime_manifest(
     plugin_dir: Path,
-    metadata: dict[str, dict],
+    metadata: dict[str, dict[str, dict]],
     *,
     plugin_version: str,
     release_tag: str,
@@ -527,21 +604,40 @@ def write_release_runtime_manifest(
     if not _lower_hex(source_commit, 40):
         raise SystemExit("source commit must be 40 lowercase hexadecimal characters")
 
-    targets = {}
-    for target in sorted(metadata):
-        item = metadata[target]
-        asset = dict(item["asset"])
-        asset["url"] = (
-            "https://github.com/IngvarConsulting/unica/releases/download/"
-            f"{release_tag}/{asset['name']}"
-        )
-        targets[target] = {
-            "asset": asset,
-            "files": item["files"],
-            "entrypoint": item["entrypoint"],
+    artifacts = {}
+    for artifact, by_target in sorted(metadata.items()):
+        targets = {}
+        for target in sorted(by_target):
+            item = by_target[target]
+            asset = dict(item["asset"])
+            origin = item.get("assetOrigin")
+            # Происхождение решает роль: ядро лежит в выпуске плагина, всё
+            # прочее — в выпуске тулчейна под тегом, который назвал замок.
+            if origin is None:
+                asset["url"] = (
+                    f"{SOURCE_REPOSITORY}/releases/download/{release_tag}/{asset['name']}"
+                )
+            else:
+                asset["url"] = (
+                    f"{origin['repository']}/releases/download/"
+                    f"{origin['tag']}/{asset['name']}"
+                )
+            entry = {"asset": asset, "files": item["files"]}
+            # Точка входа есть только у ядра: движок запускает рантайм.
+            if item.get("entrypoint"):
+                entry["entrypoint"] = item["entrypoint"]
+            targets[target] = entry
+        artifacts[artifact] = {
+            "version": next(iter(by_target.values()))["version"],
+            "role": next(iter(by_target.values()))["role"],
+            "targets": targets,
         }
+
+    # Схема 2: артефакты по отдельности, у каждого своя версия. Ядро едет в
+    # стартовом бюджете хоста, движки — отдельными артефактами, а неизменяемый
+    # ключ кеша bootstrap выводит из версии и суммы ассета цели.
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "pluginVersion": plugin_version,
         "development": False,
         "source": {
@@ -552,7 +648,7 @@ def write_release_runtime_manifest(
             "repository": "https://github.com/IngvarConsulting/unica",
             "tag": release_tag,
         },
-        "targets": targets,
+        "artifacts": artifacts,
     }
     (plugin_dir / "runtime-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

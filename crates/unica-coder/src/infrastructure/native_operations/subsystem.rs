@@ -2893,12 +2893,19 @@ fn subsystem_tree_scope(
         .collect::<Result<Vec<_>, _>>()?;
     if parts.len() % 2 != 0
         || parts
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .any(|pair| pair.get(1).map(String::as_str) != Some("Subsystems"))
     {
         return Err("subsystem scope does not follow the nested Subsystems layout".to_string());
     }
-    let parent_address = parts.chunks_exact(2).map(|pair| pair[0].clone()).collect();
+    let parent_address = parts
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| pair[0].clone())
+        .collect();
     Ok(Some((source_root, parent_address)))
 }
 

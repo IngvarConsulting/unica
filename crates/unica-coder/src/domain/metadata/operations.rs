@@ -354,9 +354,7 @@ pub(crate) fn metadata_decimal_shape(value: &str) -> Option<(bool, usize, usize)
         Some(b'+') => (false, &value[1..]),
         _ => (false, value),
     };
-    let (integer, fraction) = unsigned
-        .split_once('.')
-        .map_or((unsigned, ""), |parts| parts);
+    let (integer, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
     if integer.is_empty()
         || !integer.bytes().all(|byte| byte.is_ascii_digit())
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
