@@ -139,6 +139,18 @@ mod tests {
         }
     }
 
+    /// Тот же провод, но путями этой платформы: на Windows unix-литерал ушёл бы
+    /// ребёнку как есть и сравнивать его было бы не с чем.
+    #[cfg(windows)]
+    fn silent_windows_handoff() -> RuntimeHandoff<'static> {
+        RuntimeHandoff {
+            provider_state_root: Path::new(r"C:\private\provider-state"),
+            artifact_cache: Path::new(r"C:\private\artifact-cache"),
+            runtime_manifest: Path::new(r"C:\plugins\unica\runtime-manifest.json"),
+            startup_notice: None,
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn runtime_command_hands_the_release_manifest_to_the_child() {
@@ -252,14 +264,9 @@ mod tests {
             "/C".to_string(),
             "echo(%UNICA_PROVIDER_STATE_DIR%".to_string(),
         ];
-        let output = runtime_command(
-            Path::new("cmd.exe"),
-            &args,
-            Path::new(r"C:\private\provider-state"),
-            Path::new(r"C:\private\artifact-cache"),
-        )
-        .output()
-        .unwrap();
+        let output = runtime_command(Path::new("cmd.exe"), &args, &silent_windows_handoff())
+            .output()
+            .unwrap();
 
         assert!(output.status.success());
         assert_eq!(output.stdout, b"C:\\private\\provider-state\r\n");
