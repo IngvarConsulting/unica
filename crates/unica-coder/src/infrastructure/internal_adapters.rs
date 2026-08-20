@@ -2207,6 +2207,35 @@ impl StandardsAdapter {
             }
         };
 
+        let outcome = Self::call(operation, &endpoint, &request, http);
+
+        // The server's own alias list for a standard never carries the bare
+        // number (`"647"`), only `"std647"` and its other spellings — the
+        // search fallback already names `std647` as the top `code_variant`
+        // candidate on a miss, so a caller who typed the bare number the
+        // codes are usually cited by (#591) gets an honest `found: false`
+        // instead of the page. One bounded retry with the `std` prefix costs
+        // nothing when the id was already resolvable and turns the common
+        // case into a hit.
+        if request.method == "v8std_get_page" && !get_page_found(&outcome.data) {
+            if let Some(digits) = bare_numeric_standard_id(&request.params) {
+                let retry = StandardsRequest {
+                    method: "v8std_get_page",
+                    params: with_prefixed_id(&request.params, &digits),
+                };
+                return Self::call(operation, &endpoint, &retry, http);
+            }
+        }
+
+        outcome
+    }
+
+    fn call(
+        operation: &str,
+        endpoint: &str,
+        request: &StandardsRequest,
+        http: &dyn HttpClient,
+    ) -> StandardsOutcome {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -2217,8 +2246,8 @@ impl StandardsAdapter {
             }
         });
 
-        match http.post_json(&endpoint, &payload) {
-            Ok(text) => Self::outcome_from_http_body(operation, &endpoint, request.method, &text),
+        match http.post_json(endpoint, &payload) {
+            Ok(text) => Self::outcome_from_http_body(operation, endpoint, request.method, &text),
             Err(err) => StandardsOutcome::plain(AdapterOutcome {
                 ok: false,
                 summary: format!(
@@ -2227,7 +2256,7 @@ impl StandardsAdapter {
                 changes: Vec::new(),
                 warnings: Vec::new(),
                 errors: vec![err.to_string()],
-                artifacts: vec![endpoint, request.method.to_string()],
+                artifacts: vec![endpoint.to_string(), request.method.to_string()],
                 stdout: None,
                 stderr: None,
                 command: None,
@@ -2325,6 +2354,42 @@ impl StandardsAdapter {
             }),
         }
     }
+}
+
+/// The digits of `id_or_alias_or_url` when it is nothing but a standard's
+/// bare number (`"647"`), the form skills and diagnostics cite it by but the
+/// server's own alias list never carries. `None` for every other shape,
+/// including an already-prefixed `"std647"` — that one already resolves and
+/// gains nothing from a retry.
+fn bare_numeric_standard_id(params: &Value) -> Option<String> {
+    let id = params.get("id_or_alias_or_url")?.as_str()?;
+    (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| id.to_string())
+}
+
+/// `v8std_get_page`'s own verdict, read the same way its `structuredContent`
+/// reports it. Missing or unparseable reads as "not found": that only ever
+/// widens the retry to a case where it is a harmless extra call, never masks
+/// a real hit.
+fn get_page_found(data: &Option<Value>) -> bool {
+    data.as_ref()
+        .and_then(|value| value.get("structuredContent"))
+        .and_then(|value| value.get("found"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// `params` with `id_or_alias_or_url` replaced by the `std`-prefixed form of
+/// `digits`. `params` is always the object `request_for` built for the
+/// `explain`+id path, so the key is always present to replace.
+fn with_prefixed_id(params: &Value, digits: &str) -> Value {
+    let mut params = params.clone();
+    if let Some(object) = params.as_object_mut() {
+        object.insert(
+            "id_or_alias_or_url".to_string(),
+            Value::String(format!("std{digits}")),
+        );
+    }
+    params
 }
 
 /// A standards answer plus the `result` payload the remote MCP returned.
@@ -6430,6 +6495,126 @@ analyze_timeout_seconds = 900
             "модальные окна"
         );
         assert_eq!(payloads[0]["params"]["arguments"]["limit"], 2);
+    }
+
+    /// #591 point 7: `unica.standards.explain` misses a standard when
+    /// `idOrAliasOrUrl` is the bare number skills and users type naturally
+    /// (`"647"`), even though the server's own alias list only ever carries
+    /// the `std`-prefixed form (`"std647"`) and the search fallback already
+    /// names it as the top `code_variant` candidate. Two calls, second one
+    /// prefixed, proves the retry rather than a lucky first hit.
+    struct BareNumericStandardIdHttpClient {
+        payloads: RefCell<Vec<Value>>,
+    }
+
+    impl HttpClient for BareNumericStandardIdHttpClient {
+        fn post_json(&self, _endpoint: &str, payload: &Value) -> Result<String, String> {
+            self.payloads.borrow_mut().push(payload.clone());
+            let id = payload["params"]["arguments"]["id_or_alias_or_url"]
+                .as_str()
+                .unwrap_or_default();
+            let body = if id == "std647" {
+                r#"{"jsonrpc":"2.0","id":1,"result":{
+                    "content":[{"type":"text","text":"{\"found\":true,\"page\":{\"id\":\"std647\"}}"}],
+                    "structuredContent":{"found":true,"page":{"id":"std647"}}
+                }}"#
+            } else {
+                r#"{"jsonrpc":"2.0","id":1,"result":{
+                    "content":[{"type":"text","text":"{\"found\":false,\"candidates\":[{\"id\":\"std647\"}]}"}],
+                    "structuredContent":{"found":false,"candidates":[{"id":"std647"}]}
+                }}"#
+            };
+            Ok(body.to_string())
+        }
+    }
+
+    #[test]
+    fn standards_explain_retries_a_bare_numeric_id_with_the_std_prefix() {
+        let client = BareNumericStandardIdHttpClient {
+            payloads: RefCell::new(Vec::new()),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        assert!(outcome.outcome.ok);
+        assert_eq!(
+            outcome.data.unwrap()["structuredContent"]["found"],
+            json!(true),
+            "the retried std647 lookup should be what the caller sees"
+        );
+
+        let payloads = client.payloads.borrow();
+        assert_eq!(
+            payloads.len(),
+            2,
+            "a bare number must be retried, not answered from the first miss"
+        );
+        assert_eq!(
+            payloads[0]["params"]["arguments"]["id_or_alias_or_url"],
+            "647"
+        );
+        assert_eq!(
+            payloads[1]["params"]["arguments"]["id_or_alias_or_url"],
+            "std647"
+        );
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_an_id_that_is_already_std_prefixed() {
+        let client = BareNumericStandardIdHttpClient {
+            payloads: RefCell::new(Vec::new()),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("std647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        assert!(outcome.outcome.ok);
+        let payloads = client.payloads.borrow();
+        assert_eq!(payloads.len(), 1, "an already-resolvable id must not retry");
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_a_non_numeric_miss() {
+        struct AlwaysMisses;
+        impl HttpClient for AlwaysMisses {
+            fn post_json(&self, _endpoint: &str, _payload: &Value) -> Result<String, String> {
+                Ok(r#"{"jsonrpc":"2.0","id":1,"result":{
+                    "content":[{"type":"text","text":"{\"found\":false}"}],
+                    "structuredContent":{"found":false}
+                }}"#
+                .to_string())
+            }
+        }
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("modal-windows"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &AlwaysMisses,
+        );
+
+        // A name that was never a bare number has no `std<N>` form to retry
+        // with; the honest miss must reach the caller unchanged.
+        assert!(outcome.outcome.ok);
+        assert_eq!(
+            outcome.data.unwrap()["structuredContent"]["found"],
+            json!(false)
+        );
     }
 
     struct FakeProcessRunner {
