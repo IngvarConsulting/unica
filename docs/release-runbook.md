@@ -111,10 +111,34 @@ rejects a manifest whose URL disagrees with its declared version.
 
 ## Step 2 — watch it land
 
-The tag push runs **Build Unica Codex Plugin** (runtime for three targets,
-`unica-runtime-<target>.tar.gz` with SHA-256 metadata on the GitHub release,
-the thin payload as the `unica-thin-marketplace` artifact), and its success
-triggers **Publish Unica Marketplace**: stage → tag → verify → promote.
+The tag push runs **Build Unica Codex Plugin**, and its success triggers
+**Publish Unica Marketplace**: stage → tag → verify → promote.
+
+### What the release carries
+
+Only the core is built here, so only the core is published here:
+
+| On the GitHub release | Count | What it is |
+| --- | --- | --- |
+| `unica-runtime-<target>.tar.gz` | 3 | the core, one archive per target |
+| `<artifact>-runtime-<target>.json` | 12 | what each artifact pins: version, asset, SHA-256, file closure |
+
+Engines are **named, not republished**. Their bytes live in `unica-toolchain`
+releases, and the runtime manifest points at them by address and SHA-256; the
+plugin release used to carry a second copy, 439 MB of it per release, for no
+gain. See `DEC.2026-08-20.ENGINES-COME-FROM-THE-TOOLCHAIN`.
+
+That splits verification three ways, and each part is a job in the build:
+
+| What | Checked by | How |
+| --- | --- | --- |
+| core bytes | `verify-published-assets` | re-downloads the release assets and rehashes every member |
+| every asset address | `verify-published-assets` | HEAD on all twelve URLs the manifest names, across all three targets |
+| the whole delivery | `smoke-thin-plugin` (linux-x64) | `unica-bootstrap prefetch` — address, checksum and layout, end to end |
+
+The address check exists because the toolchain bytes are verified when the build
+downloads them, and nothing touches the address after that: a typo in a tag would
+otherwise surface at a user's first engine call.
 
 ```bash
 gh run list --workflow "Build Unica Codex Plugin" --limit 3 \
@@ -193,9 +217,29 @@ the whole publication when the tag carries a suffix. Nothing is disabled by
 hand, so a colleague tagging a real release meanwhile is unaffected.
 
 A prerelease burns its own version number, never the stable one: measure
-against `0.13.0-rc.1`, then release `0.13.0` from the same code. Keep it marked
-as a prerelease — it is not a release waiting to be served, and `gh release
-view` without a tag must keep naming the last stable one.
+against `0.13.0-rc.1`, then release `0.13.0` from the same code. "The same
+code" still means a second bump pull request — the version is part of the
+package contract, so `0.13.0` is a commit, not a relabelling of `0.13.0-rc.1`.
+
+Two things follow from engines being named rather than republished. The
+measurement is cheaper than it looks: engine artifacts keep their own versions,
+so `0.13.0-rc.1` and `0.13.0` name the same engine bytes, and a machine that
+warmed its cache on the prerelease downloads nothing but the core for the
+stable. And the prerelease's own assets are only the core — the toolchain
+releases it points at are already published and are not touched.
+
+Keep it marked as a prerelease — it is not a release waiting to be served, and
+`gh release view` without a tag must keep naming the last stable one.
+
+Two things the gate does not stop, and you should not attempt:
+
+- **Dispatching the publish pipeline for a prerelease build.** The `gate` job
+  reads the tag, not the trigger, so a manual `source_run_id` is refused the
+  same way the automatic trigger is. Nothing breaks; nothing publishes either.
+- **Pointing the catalog at a prerelease by hand.** The forward-only guard sorts
+  with `sort -V`, which ranks `v0.13.0-rc.1` *above* `v0.13.0`. A catalog naming
+  the prerelease would make the stable release look like a rollback, and both
+  `stage` and `promote` would refuse it — the release after it could not ship.
 
 ## One-way doors
 
@@ -203,6 +247,11 @@ Two things can never be taken back once published, because other artifacts
 reference them by identity:
 
 - **Release assets** in `unica`. Runtime manifests pin them by SHA-256.
+- **Release assets in `unica-toolchain`.** Published Unica versions name them by
+  address and SHA-256, so deleting a toolchain release, moving its tag, or
+  re-uploading an asset under the same name breaks every Unica version that
+  pinned it — including versions released long ago. Toolchain releases are as
+  immutable as this repository's own.
 - **Tags** in either repository. Consumers resolve `git-subdir` against them.
 
 This gives the rule that replaces rollback: **never reuse a version number**. If
@@ -256,6 +305,9 @@ marketplace repository: deleting or moving a published tag by hand.
 | `tag` fails on an existing tag | The version was already published with different bytes | Never move the tag; release the next patch |
 | Packaging fails with `release tag ... != ...` | Step 0 missed the workflow `RELEASE_TAG` fallback | Bump it and re-run |
 | Consumers still report the old version | The publish run did not finish | Check its failed stage and rerun |
+| `verify-delivery-reachable` fails with HTTP 404 | The toolchain asset the lock names is gone or was renamed | Never re-tag a toolchain release; point the lock at a published asset and cut the next patch |
+| The prefetch step fails on a checksum | Toolchain bytes were replaced under a published name | Treat the toolchain release as burnt, publish a new toolchain build, bump the lock |
+| `build-tools` fails while downloading a tool asset | The lock names a toolchain tag that does not exist yet | Publish the toolchain release first; the lock may only pin what is already public |
 
 ## Never
 

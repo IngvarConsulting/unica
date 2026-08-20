@@ -590,6 +590,20 @@ jobs:
           python scripts/ci/smoke-unica-bootstrap.py
           --plugin-root .build/thin/plugins/unica
           --target "${{ matrix.target }}"
+      # Ядро выпуск публикует сам, и его байты сверяет `verify-release-assets`.
+      # Поставки приезжают из тулчейна, и до этого шага их путь целиком —
+      # адрес, сумма, раскладка — в выпуске не проходил никто. Одной цели
+      # довольно: адреса остальных проверены отдельно и стоят одного HEAD.
+      - name: Prefetch the whole delivery once, end to end
+        if: ${{ matrix.target == 'linux-x64' }}
+        shell: bash
+        env:
+          UNICA_RUNTIME_CACHE_DIR: ${{ runner.temp }}/prefetch-cache
+        run: |
+          set -euo pipefail
+          bootstrap=".build/thin/plugins/unica/bootstrap/bin/linux-x64/unica-bootstrap"
+          chmod +x "$bootstrap"
+          "$bootstrap" prefetch --plugin-root .build/thin/plugins/unica
 
   verify-published-assets:
     name: Re-download and verify published bytes
@@ -618,6 +632,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" --pattern 'unica-runtime-*' --dir published
       - run: python scripts/ci/verify-release-assets.py --asset-dir published
+      - uses: actions/download-artifact@v8
+        with:
+          name: unica-thin-marketplace
+          path: .build/thin
+      # Ядро сверено побайтно выше. У поставок из тулчейна байты сверены на
+      # сборке, а адрес после неё не трогает никто: опечатка в теге дожила бы
+      # до первого вызова движка у пользователя. Проверяются все цели —
+      # прогреть на месте можно лишь одну.
+      - run: >
+          python scripts/ci/verify-delivery-reachable.py
+          --plugin-root .build/thin/plugins/unica
 
   unica-ci:
     name: Unica CI
