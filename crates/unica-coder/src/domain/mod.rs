@@ -3,6 +3,7 @@ pub mod cancellation;
 pub mod code_intelligence;
 pub mod diagnostics;
 pub mod documentation;
+pub mod engine;
 pub mod events;
 pub mod form_edit;
 pub mod format_profile;

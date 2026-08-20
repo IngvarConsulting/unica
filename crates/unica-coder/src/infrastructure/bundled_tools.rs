@@ -1,3 +1,4 @@
+use crate::domain::engine::{InstallMode, MissingEngine};
 use crate::infrastructure::platform::current_target_id;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -18,6 +19,9 @@ struct BundledManifest {
     #[serde(default)]
     tools: Vec<ManifestTool>,
     target_triple: Option<String>,
+    /// Плейсхолдер исходного чекаута: инструменты там собираются на месте.
+    #[serde(default)]
+    source_manifest: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,12 +167,110 @@ fn resolve_from_artifact_cache(
         return Ok(None);
     }
     if verify {
-        verify_binary(tool_name, &program, &binary.sha256)?;
+        verify_binary(plugin_root, tool_name, &program, &binary.sha256)?;
     }
     Ok(Some(BundledTool {
         program,
         warnings: Vec::new(),
     }))
+}
+
+/// Имя архива, в котором приезжает инструмент. Несколько инструментов делят
+/// один: `rlm-tools-bsl` несёт два.
+pub(crate) fn artifact_for(plugin_root: &Path, tool_name: &str) -> Option<String> {
+    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    let manifest: BundledManifest = serde_json::from_slice(&fs::read(&manifest_path).ok()?).ok()?;
+    let tool = manifest.tools.iter().find(|tool| tool.name == tool_name)?;
+    Some(
+        tool.artifact
+            .clone()
+            .unwrap_or_else(|| tool_name.to_string()),
+    )
+}
+
+/// Лежит ли движок на диске.
+///
+/// Проверяется наличие файла, а не его сумма: сумму сверит запуск, а доставке
+/// довольно знать, чего ещё нет. Считать хеш десятков мегабайт на каждый вызов
+/// значит платить за ответ, который уже дала файловая система.
+pub(crate) fn installed_engine_path(plugin_root: &Path, tool_name: &str) -> Option<PathBuf> {
+    let target_id = current_target_id().ok()?;
+    if let Some(cache) = std::env::var_os(ARTIFACT_CACHE_ENV).map(PathBuf::from) {
+        if let Ok(Some(tool)) =
+            resolve_from_artifact_cache(plugin_root, &cache, tool_name, target_id, false)
+        {
+            return Some(tool.program);
+        }
+    }
+    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    let manifest: BundledManifest = serde_json::from_slice(&fs::read(&manifest_path).ok()?).ok()?;
+    let binary = manifest_binary(&manifest, tool_name, target_id).ok()?;
+    let program = manifest_relative_path(plugin_root, &binary.binary_path).ok()?;
+    program.is_file().then_some(program)
+}
+
+/// Чего не хватает инструменту, чтобы запуститься. `None` — движок на месте.
+///
+/// Собирается из того, что уже известно поставке: имя, цель, ожидаемый путь,
+/// пин версии и режим установки. Разбирать текст сообщения вызывающему не
+/// придётся — поля названы, а следующий шаг зависит от режима: исходный чекаут
+/// собирает инструменты сам, опубликованная поставка их доставляет.
+pub(crate) fn missing_engine(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
+    if installed_engine_path(plugin_root, tool_name).is_some() {
+        return None;
+    }
+    let target_id = current_target_id().ok()?;
+    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    let manifest = fs::read(&manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BundledManifest>(&bytes).ok());
+    let install_mode = match manifest.as_ref() {
+        Some(manifest) if !manifest.source_manifest => InstallMode::Marketplace,
+        _ => InstallMode::Source,
+    };
+    let expected = expected_engine_path(plugin_root, tool_name, target_id)
+        .unwrap_or_else(|| plugin_root.join("bin").join(target_id).join(tool_name));
+    Some(MissingEngine::new(
+        tool_name,
+        target_id,
+        expected.display().to_string(),
+        bundled_tool_version(plugin_root, tool_name).ok(),
+        install_mode,
+    ))
+}
+
+/// Где движок оказался бы, если бы приехал.
+fn expected_engine_path(plugin_root: &Path, tool_name: &str, target_id: &str) -> Option<PathBuf> {
+    if let (Some(cache), Ok(version), Some(artifact)) = (
+        std::env::var_os(ARTIFACT_CACHE_ENV).map(PathBuf::from),
+        bundled_tool_version(plugin_root, tool_name),
+        artifact_for(plugin_root, tool_name),
+    ) {
+        let manifest_path = plugin_root.join("third-party").join("manifest.json");
+        if let Some(binary) = fs::read(&manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<BundledManifest>(&bytes).ok())
+            .and_then(|manifest| manifest_binary(&manifest, tool_name, target_id).ok())
+        {
+            return Some(
+                cache
+                    .join(artifact)
+                    .join(version)
+                    .join(target_id)
+                    .join(binary.binary_path),
+            );
+        }
+    }
+    let lock_path = plugin_root.join("third-party").join("tools.lock.json");
+    let lock: ToolsLock = serde_json::from_slice(&fs::read(&lock_path).ok()?).ok()?;
+    let target = lock.targets.get(target_id)?;
+    let tool = lock.tools.iter().find(|tool| tool.name == tool_name)?;
+    Some(
+        plugin_root
+            .join("bin")
+            .join(target_id)
+            .join(format!("{}{}", tool.binary_name, target.exe)),
+    )
 }
 
 fn resolve_bundled_tool_for_target(
@@ -205,7 +307,7 @@ fn resolve_bundled_tool_for_target(
     let program = manifest_relative_path(plugin_root, &binary.binary_path)?;
     let mut warnings = Vec::new();
     if verify {
-        verify_binary(tool_name, &program, &binary.sha256)?;
+        verify_binary(plugin_root, tool_name, &program, &binary.sha256)?;
     } else if !program.is_file() {
         warnings.push(format!(
             "dry run: bundled tool binary is not present yet: {}",
@@ -300,9 +402,18 @@ fn resolve_from_lock_for_dry_run(
     })
 }
 
-fn verify_binary(tool_name: &str, program: &Path, expected_sha: &str) -> Result<(), String> {
+fn verify_binary(
+    plugin_root: &Path,
+    tool_name: &str,
+    program: &Path,
+    expected_sha: &str,
+) -> Result<(), String> {
     if !program.is_file() {
-        return Err(format!("Unica binary is missing: {}", program.display()));
+        // Устойчивый код, инструмент, цель, ожидаемый путь и следующий шаг:
+        // вызывающий не должен разбирать фразу, чтобы понять, чего не хватает.
+        return Err(missing_engine(plugin_root, tool_name)
+            .map(|missing| missing.message())
+            .unwrap_or_else(|| format!("Unica binary is missing: {}", program.display())));
     }
     let actual = sha256_file(program)?;
     if !actual.eq_ignore_ascii_case(expected_sha) {
@@ -539,7 +650,7 @@ mod tests {
         );
     }
 
-    fn temp_plugin_root(name: &str) -> PathBuf {
+    pub(super) fn temp_plugin_root(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -551,7 +662,7 @@ mod tests {
         plugin_root
     }
 
-    fn write_manifest_with_bsl_analyzer(plugin_root: &Path) {
+    pub(super) fn write_manifest_with_bsl_analyzer(plugin_root: &Path) {
         fs::create_dir_all(plugin_root.join("bin/win-x64")).unwrap();
         fs::create_dir_all(plugin_root.join("bin/darwin-arm64")).unwrap();
         fs::write(
@@ -589,5 +700,204 @@ mod tests {
 }"#,
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn an_engine_in_the_artifact_cache_counts_as_installed() {
+        let plugin_root = tests::temp_plugin_root("installed-in-cache");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let cache = plugin_root.join("..").join("installed-cache");
+        let installed = cache
+            .join("bsl-analyzer")
+            .join("test")
+            .join("darwin-arm64")
+            .join("bin/darwin-arm64");
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("bsl-analyzer"), "darwin-binary").unwrap();
+
+        let found = resolve_from_artifact_cache(
+            &plugin_root,
+            cache.as_path(),
+            "bsl-analyzer",
+            "darwin-arm64",
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            found.map(|tool| tool.program),
+            Some(installed.join("bsl-analyzer"))
+        );
+    }
+
+    #[test]
+    fn an_engine_that_never_arrived_is_not_installed() {
+        let plugin_root = tests::temp_plugin_root("never-arrived");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let cache = plugin_root.join("..").join("empty-cache");
+
+        let found = resolve_from_artifact_cache(
+            &plugin_root,
+            cache.as_path(),
+            "bsl-analyzer",
+            "darwin-arm64",
+            false,
+        )
+        .unwrap();
+
+        assert!(found.is_none(), "чего нет на диске, то и не установлено");
+    }
+
+    #[test]
+    fn tools_sharing_one_archive_name_one_artifact() {
+        let plugin_root = tests::temp_plugin_root("artifact-name");
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{
+  "schemaVersion": 2,
+  "tools": [
+    {"name": "rlm-bsl-index", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
+    {"name": "v8-runner", "version": "0.4.0"}
+  ]
+}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            artifact_for(&plugin_root, "rlm-bsl-index").as_deref(),
+            Some("rlm-tools-bsl")
+        );
+        assert_eq!(
+            artifact_for(&plugin_root, "v8-runner").as_deref(),
+            Some("v8-runner"),
+            "без имени архива артефакт зовётся как инструмент"
+        );
+        assert_eq!(artifact_for(&plugin_root, "unknown"), None);
+    }
+}
+
+#[cfg(test)]
+mod missing_engine_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn a_source_checkout_is_told_to_build_the_tool() {
+        // Плейсхолдер исходного чекаута инструментов не описывает, и доставке
+        // взяться неоткуда: следующий шаг — собрать их на месте.
+        let plugin_root = tests::temp_plugin_root("source-mode");
+        fs::write(
+            plugin_root.join("third-party/manifest.json"),
+            r#"{"schemaVersion":2,"sourceManifest":true,"tools":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin_root.join("third-party/tools.lock.json"),
+            r#"{
+  "schemaVersion": 1,
+  "targets": {"darwin-arm64": {"targetTriple": "aarch64-apple-darwin", "exe": ""}},
+  "tools": [{"name": "v8-runner", "version": "0.5.1", "binaryName": "v8-runner",
+             "assets": {"darwin-arm64": {"assetName": "v8-runner"}}}]
+}"#,
+        )
+        .unwrap();
+
+        let missing = missing_engine(&plugin_root, "v8-runner").expect("движка нет");
+
+        assert_eq!(missing.code, crate::domain::engine::BUNDLED_TOOL_MISSING);
+        assert_eq!(missing.tool, "v8-runner");
+        assert_eq!(missing.install_mode, InstallMode::Source);
+        assert_eq!(missing.pinned_version.as_deref(), Some("0.5.1"));
+        assert!(
+            missing
+                .expected_path
+                .ends_with("bin/darwin-arm64/v8-runner"),
+            "путь назван: {}",
+            missing.expected_path
+        );
+        assert!(
+            missing.next_step.contains("build-unica-tools.py"),
+            "следующий шаг назван: {}",
+            missing.next_step
+        );
+    }
+
+    #[test]
+    fn a_published_install_is_told_the_tool_will_be_delivered() {
+        let plugin_root = tests::temp_plugin_root("marketplace-mode");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        fs::remove_file(plugin_root.join("bin/darwin-arm64/bsl-analyzer")).unwrap();
+
+        let missing = missing_engine(&plugin_root, "bsl-analyzer").expect("движка нет");
+
+        assert_eq!(missing.install_mode, InstallMode::Marketplace);
+        assert!(
+            missing.next_step.contains("delivered"),
+            "следующий шаг назван: {}",
+            missing.next_step
+        );
+    }
+
+    #[test]
+    fn an_engine_on_disk_is_not_missing() {
+        let plugin_root = tests::temp_plugin_root("present");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+
+        assert_eq!(missing_engine(&plugin_root, "bsl-analyzer"), None);
+    }
+}
+
+#[cfg(test)]
+mod missing_binary_refusal_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn a_missing_binary_is_refused_with_a_machine_readable_code() {
+        // #549: «Unica binary is missing: <path>» не машиночитаемо и не
+        // подсказывает действие. Отказ обязан назвать код, инструмент, цель и
+        // следующий шаг.
+        let plugin_root = tests::temp_plugin_root("missing-code");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        fs::remove_file(plugin_root.join("bin/darwin-arm64/bsl-analyzer")).unwrap();
+
+        let error =
+            resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", "darwin-arm64", true)
+                .unwrap_err();
+
+        assert!(
+            error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING),
+            "код назван: {error}"
+        );
+        assert!(error.contains("bsl-analyzer"), "инструмент назван: {error}");
+        assert!(error.contains("darwin-arm64"), "цель названа: {error}");
+        assert!(
+            error.contains("delivered") || error.contains("build-unica-tools.py"),
+            "следующий шаг назван: {error}"
+        );
+    }
+
+    #[test]
+    fn a_missing_binary_still_reads_as_an_unavailable_provider() {
+        // Поставщики, умеющие обойтись без движка, узнают это состояние по
+        // устойчивому коду, а не по фразе, которую перепишут.
+        let plugin_root = tests::temp_plugin_root("missing-unavailable");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        fs::remove_file(plugin_root.join("bin/darwin-arm64/bsl-analyzer")).unwrap();
+
+        let error =
+            resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", "darwin-arm64", true)
+                .unwrap_err();
+
+        assert!(
+            crate::infrastructure::code_intelligence::is_provider_unavailable_error(&error),
+            "{error}"
+        );
     }
 }

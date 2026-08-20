@@ -1212,6 +1212,7 @@ fn contained_provider_relative_path(
 /// place rather than being restated per caller.
 pub(crate) fn is_provider_unavailable_error(error: &str) -> bool {
     [
+        crate::domain::engine::BUNDLED_TOOL_MISSING,
         "could not locate Unica plugin root",
         "Unica third-party manifest not found",
         "bundled tool binary is not present",
