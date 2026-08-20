@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use unica_bootstrap::verify_mcp_runtime;
+use unica_bootstrap::{verify_mcp_runtime, Failure};
 
 #[test]
 fn verify_requires_both_lifecycles_and_the_three_public_tools() {
@@ -100,4 +100,28 @@ fn temp_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("unica-verification-{name}-{nanos}"));
     fs::create_dir_all(&root).unwrap();
     root
+}
+
+#[test]
+fn a_runtime_that_never_answers_is_a_timeout_not_a_defect() {
+    // Единственный настоящий срок в загрузчике — рукопожатие релизного шлюза:
+    // рантайм либо ответил, либо нет. У доставки срока нет, и путать эти два
+    // отказа одним кодом выхода значит скрывать, какой из них случился.
+    let root = temp_root("silent");
+    let runtime = root.join("silent-runtime.sh");
+    // Провод открыт, ответа нет: ровно тот случай, ради которого срок и стоит.
+    fs::write(&runtime, "#!/bin/sh\nexec sleep 5\n").unwrap();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let error = verify_mcp_runtime(
+        &runtime,
+        &root,
+        &root.join("private-provider-state"),
+        Duration::from_millis(300),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("timed out"), "{error}");
+    assert_eq!(error.failure(), Failure::Timeout);
+    assert_eq!(error.exit_code(), 75);
 }
