@@ -159,6 +159,7 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
         return source[node.start_byte : node.end_byte]
 
     errors = []
+    root_run_stdio_count = 0
     stack = [tree.root_node]
     while stack:
         node = stack.pop()
@@ -169,8 +170,18 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
                 (child for child in node.named_children if child.type == "attribute"),
                 None,
             )
-            attribute_name = attribute.named_child(0) if attribute is not None else None
-            if attribute_name is not None and node_text(attribute_name) == b"macro_export":
+            attribute_nodes = [attribute] if attribute is not None else []
+            exports_macro = False
+            while attribute_nodes:
+                attribute_node = attribute_nodes.pop()
+                if (
+                    attribute_node.type == "identifier"
+                    and node_text(attribute_node) == b"macro_export"
+                ):
+                    exports_macro = True
+                    break
+                attribute_nodes.extend(attribute_node.named_children)
+            if exports_macro:
                 errors.append(f"{owner}: macro_export leaves the transport module")
 
         visibility = next(
@@ -188,6 +199,7 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
                 and node_text(visibility) == b"pub"
             )
             if root_run_stdio:
+                root_run_stdio_count += 1
                 parameters = node.child_by_field_name("parameters")
                 return_type = node.child_by_field_name("return_type")
                 type_parameters = node.child_by_field_name("type_parameters")
@@ -222,6 +234,11 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
                     f"{owner}: {nested}public {node.type} is outside run_stdio"
                 )
         stack.extend(reversed(node.named_children))
+    if root_run_stdio_count != 1:
+        errors.append(
+            f"{owner}: expected exactly one root pub fn run_stdio(), "
+            f"found {root_run_stdio_count}"
+        )
     return errors
 
 
@@ -587,6 +604,47 @@ class ProductContractTests(unittest.TestCase):
             ),
             [f"{owner}: macro_export leaves the transport module"],
         )
+
+    def test_rmcp_owner_rejects_conditional_macro_export(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+
+        self.assertEqual(
+            rmcp_owner_export_boundary_errors(
+                b"""
+                    pub fn run_stdio() {}
+                    #[cfg_attr(not(test), macro_export)]
+                    macro_rules! exported { () => {}; }
+                """,
+                owner,
+            ),
+            [f"{owner}: macro_export leaves the transport module"],
+        )
+
+    def test_rmcp_owner_requires_exactly_one_root_run_stdio(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        fixtures = {
+            "missing": (
+                b"struct Internal;",
+                [f"{owner}: expected exactly one root pub fn run_stdio(), found 0"],
+            ),
+            "duplicate": (
+                b"pub fn run_stdio() {} pub fn run_stdio() {}",
+                [f"{owner}: expected exactly one root pub fn run_stdio(), found 2"],
+            ),
+            "nested-only": (
+                b"mod nested { pub fn run_stdio() {} }",
+                [
+                    f"{owner}: nested public function_item is outside run_stdio",
+                    f"{owner}: expected exactly one root pub fn run_stdio(), found 0",
+                ],
+            ),
+        }
+
+        for name, (source, expected) in fixtures.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    rmcp_owner_export_boundary_errors(source, owner), expected
+                )
 
     def test_rmcp_owner_rejects_sdk_bound_on_generic_run_stdio(self) -> None:
         owner = "crates/unica-coder/src/interfaces/mcp.rs"

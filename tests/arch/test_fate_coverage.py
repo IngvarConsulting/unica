@@ -599,6 +599,36 @@ class FateCoverageTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_sdk_module_export_boundary_has_its_new_process_decision(self) -> None:
+        records = {}
+        for path in (REPO_ROOT / "arch").rglob("*.md"):
+            props = FATE_GUARD._front_matter_props(path)
+            if identifier := props.get("id"):
+                records[identifier] = props
+
+        invariant = records["INV.WIRE.SDK-MODULE-EXPORTS"]
+        self.assertEqual(
+            invariant.get("decision"),
+            "DEC.2026-08-21.SDK-MODULE-EXPORT-BOUNDARY",
+        )
+        decision = records.get("DEC.2026-08-21.SDK-MODULE-EXPORT-BOUNDARY")
+        self.assertIsNotNone(decision)
+        assert decision is not None
+        self.assertEqual(decision.get("status"), "active")
+        self.assertEqual(decision.get("governs"), "process")
+        self.assertEqual(
+            decision.get("realized"),
+            "tests/ci/test_product_contracts.py::"
+            "test_rmcp_module_exports_only_run_stdio",
+        )
+        self.assertEqual(
+            decision.get("establishes"), "[INV.WIRE.SDK-MODULE-EXPORTS]"
+        )
+        self.assertNotIn(
+            "INV.WIRE.SDK-MODULE-EXPORTS",
+            records["DEC.2026-08-18.CARRIED-RULES"]["establishes"],
+        )
+
     def test_every_v1_subject_has_exactly_one_fate(self) -> None:
         """A moved ADR, rule, requirement, or acceptance contract cannot disappear."""
         result = subprocess.run(

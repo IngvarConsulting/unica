@@ -2,7 +2,7 @@
 id: INV.WIRE.SDK-MODULE-EXPORTS
 status: active
 governs: process
-decision: DEC.2026-08-18.CARRIED-RULES
+decision: DEC.2026-08-21.SDK-MODULE-EXPORT-BOUNDARY
 check: tests/ci/test_product_contracts.py::test_rmcp_module_exports_only_run_stdio
 scope: [wire]
 ---
