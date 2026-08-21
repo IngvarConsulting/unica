@@ -8033,10 +8033,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn cf_edit_equal_serialized_result_is_a_public_noop() {
+    pub(crate) fn cf_edit_equal_serialized_result_is_a_public_noop_and_preserves_identity() {
         let before = cf_edit_configuration_bytes();
         let (root, workspace, config_path) =
             cf_edit_mutation_workspace("unica-cf-edit-equal-noop", &before);
+        let identity = file_identity_for_test(&config_path).unwrap();
 
         let result = UnicaApplication::new()
             .call_tool(
@@ -8051,6 +8052,7 @@ pub(crate) mod tests {
         let data = result.data.as_ref().expect("cf.edit answers with data");
         assert_eq!(data["configUpdated"], serde_json::json!(false), "{data:?}");
         assert_eq!(std::fs::read(&config_path).unwrap(), before);
+        assert_eq!(file_identity_for_test(&config_path).unwrap(), identity);
         assert_no_cf_edit_stage_debris(&config_path);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -9429,7 +9431,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn incompatible_format_blocks_before_native_handler() {
+    pub(crate) fn incompatible_format_blocks_before_native_handler() {
         let root = std::env::temp_dir().join(format!(
             "unica-application-format-guard-{}",
             std::process::id()
@@ -9463,6 +9465,193 @@ pub(crate) mod tests {
         );
         assert_eq!(std::fs::read_to_string(config).unwrap(), before);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    pub(crate) fn public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects() {
+        for version in ["2.19", "2.21"] {
+            for tool in ["unica.meta.add", "unica.meta.edit", "unica.meta.remove"] {
+                let root = test_workspace_root(&format!(
+                    "unica-meta-common-format-gate-{}-{version}",
+                    tool.replace('.', "-")
+                ));
+                let workspace = root.join("workspace");
+                let source = workspace.join("src");
+                std::fs::create_dir_all(source.join("Catalogs")).unwrap();
+                std::fs::write(
+                    workspace.join("v8project.yaml"),
+                    "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                )
+                .unwrap();
+                std::fs::write(
+                    source.join("Configuration.xml"),
+                    format!(
+                        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#
+                    ),
+                )
+                .unwrap();
+                std::fs::write(
+                    source.join("Catalogs/Items.xml"),
+                    support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                )
+                .unwrap();
+                let before = crate::test_support::tree_snapshot(&source);
+                let mut args = match tool {
+                    "unica.meta.add" => Map::from_iter([
+                        ("sourceSet".to_string(), json!("main")),
+                        ("kind".to_string(), json!("Catalog")),
+                        ("name".to_string(), json!("Future")),
+                    ]),
+                    "unica.meta.edit" => Map::from_iter([
+                        ("sourceSet".to_string(), json!("main")),
+                        ("metadataPath".to_string(), json!("Catalog.Items")),
+                        (
+                            "operations".to_string(),
+                            json!([{
+                                "op": "setProperties",
+                                "values": {"Comment": "changed"}
+                            }]),
+                        ),
+                    ]),
+                    "unica.meta.remove" => Map::from_iter([
+                        ("sourceSet".to_string(), json!("main")),
+                        ("metadataPath".to_string(), json!("Catalog.Items")),
+                    ]),
+                    _ => unreachable!(),
+                };
+                args.insert(
+                    "cwd".to_string(),
+                    Value::String(workspace.display().to_string()),
+                );
+                args.insert("dryRun".to_string(), Value::Bool(false));
+
+                let result = UnicaApplication::new().call_tool(tool, &args).unwrap();
+
+                assert!(!result.ok, "{tool}, version={version}: {result:?}");
+                let diagnostic = result
+                    .diagnostics
+                    .as_ref()
+                    .and_then(Value::as_array)
+                    .and_then(|diagnostics| diagnostics.first())
+                    .expect("metadata refusal has one typed diagnostic");
+                assert_eq!(diagnostic["code"], "capability_unavailable");
+                assert_eq!(
+                    crate::test_support::tree_snapshot(&source),
+                    before,
+                    "{tool}, version={version} changed source bytes"
+                );
+                assert!(result.changes.is_empty(), "{tool}: {result:?}");
+                assert!(result.artifacts.is_empty(), "{tool}: {result:?}");
+                assert!(result.cache.events.is_empty(), "{tool}: {result:?}");
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    pub(crate) fn public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal() {
+        let expected = std::collections::BTreeSet::from([
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.init",
+            "unica.cfe.patch_method",
+            "unica.code.patch",
+            "unica.dcs.compile",
+            "unica.dcs.edit",
+            "unica.epf.init",
+            "unica.erf.init",
+            "unica.form.add",
+            "unica.form.compile",
+            "unica.form.edit",
+            "unica.form.remove",
+            "unica.interface.edit",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.meta.remove",
+            "unica.mxl.compile",
+            "unica.role.compile",
+            "unica.role.edit",
+            "unica.subsystem.compile",
+            "unica.subsystem.edit",
+            "unica.support.edit",
+            "unica.xdto.edit",
+        ]);
+        let actual = tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+            .filter(|tool| {
+                matches!(
+                    tool.handler,
+                    ToolHandler::NativeOperation { .. } | ToolHandler::Metadata { .. }
+                )
+            })
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected);
+
+        let concrete_ports =
+            crate::infrastructure::application_ports::InfrastructureApplicationPorts::new();
+        let workspace_root = test_workspace_root("unica-native-common-format-route");
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            workspace_root: workspace_root.clone(),
+            cache_root: workspace_root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let mut metadata_tools = std::collections::BTreeSet::new();
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| expected.contains(tool.name))
+        {
+            match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => {
+                    assert!(
+                        operation_descriptors::native_operation_descriptor(operation).is_some(),
+                        "{} could bypass the common format gate because {operation} has no descriptor",
+                        tool.name
+                    );
+                    let prepared = concrete_ports
+                        .prepare_tool_invocation(
+                            tool,
+                            &Map::new(),
+                            &context,
+                            InvocationMode::Apply,
+                            &CancellationToken::new(),
+                            ProviderDeadline::from_budget(Duration::from_secs(1)),
+                        )
+                        .expect("native mutator preparation succeeds without preempting its gate");
+                    assert!(
+                        prepared.format_guard.is_none() && prepared.handler.is_none(),
+                        "{} could replace the common pre-handler format gate during preparation",
+                        tool.name
+                    );
+                }
+                ToolHandler::Metadata { .. } => {
+                    metadata_tools.insert(tool.name);
+                }
+                _ => panic!("{} left the closed XML mutation handlers", tool.name),
+            }
+        }
+        assert_eq!(
+            metadata_tools,
+            std::collections::BTreeSet::from([
+                "unica.meta.add",
+                "unica.meta.edit",
+                "unica.meta.remove"
+            ])
+        );
+
+        // Every native descriptor enters the unconditional application
+        // format-guard branch before its handler match: the concrete production
+        // preparation port above proves that no native mutator substitutes a
+        // prepared guard or handler. Typed metadata keeps its provider-neutral
+        // diagnostic route, so exercise all three of those public calls
+        // separately. Together these close the exact two handler variants
+        // without pretending their public diagnostics match.
+        incompatible_format_blocks_before_native_handler();
+        public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
+        std::fs::remove_dir_all(workspace_root).unwrap();
     }
 
     fn subsystem_format_guard_workspace(

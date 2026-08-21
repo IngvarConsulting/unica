@@ -3937,7 +3937,9 @@ pub(crate) mod role_edit_contract_tests {
     }
 
     #[test]
-    pub(crate) fn role_edit_without_vendor_support_is_logically_addressed_and_idempotent() {
+    pub(crate) fn role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let (context, args, rights) = fixture("roundtrip");
         assert!(
             !context
@@ -3975,6 +3977,7 @@ pub(crate) mod role_edit_contract_tests {
         assert_ne!(after, before);
         assert!(after.starts_with(&[0xEF, 0xBB, 0xBF]));
         assert!(!String::from_utf8_lossy(&after).contains("DataProcessor.Worker"));
+        let identity = file_identity_for_test(&rights).unwrap();
 
         let repeated = apply_edit_with_data(&args, &context);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome);
@@ -3982,6 +3985,7 @@ pub(crate) mod role_edit_contract_tests {
         assert!(repeated.recorded_cache.is_none());
         assert!(!repeated.data.unwrap().changed);
         assert_eq!(fs::read(&rights).unwrap(), after);
+        assert_eq!(file_identity_for_test(&rights).unwrap(), identity);
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 

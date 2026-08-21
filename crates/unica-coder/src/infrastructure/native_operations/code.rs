@@ -1441,7 +1441,10 @@ pub(super) mod tests {
     }
 
     #[test]
-    pub(crate) fn applied_patch_returns_typed_data_and_repeated_apply_is_noop() {
+    pub(crate) fn applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity()
+    {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("applied-patch");
         let module = context
             .workspace_root
@@ -1473,10 +1476,12 @@ pub(super) mod tests {
         assert_eq!(data.validation.validated_post_hash, data.post_hash);
         assert_eq!(data.changed_ranges[0].start_line, 3);
         assert!(data.diff.starts_with("--- a/"));
+        let identity = file_identity_for_test(&module).unwrap();
 
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
         assert_eq!(fs::read(&module).unwrap(), expected);
+        assert_eq!(file_identity_for_test(&module).unwrap(), identity);
         assert!(repeated.outcome.changes.is_empty());
         let data = repeated.data.unwrap();
         assert_eq!(data.pre_hash, data.post_hash);

@@ -11810,6 +11810,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    pub(crate) fn add_form_rejects_scaffold_member_created_after_planning() {
+        let context = temp_context("add-late-scaffold-member");
+        let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
+        let descriptor = context.cwd.join("src/Catalogs/Goods/Forms/ListForm.xml");
+        let form_xml = context
+            .cwd
+            .join("src/Catalogs/Goods/Forms/ListForm/Ext/Form.xml");
+        let module = context
+            .cwd
+            .join("src/Catalogs/Goods/Forms/ListForm/Ext/Form/Module.bsl");
+        write_file(&root_xml, &empty_catalog_xml("\n", true));
+        let owner_before = fs::read(&root_xml).unwrap();
+        let concurrent = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"/></MetaDataObject>"#.to_vec();
+        let descriptor_for_hook = descriptor.clone();
+        let concurrent_for_hook = concurrent.clone();
+        let args = add_list_form_args(&root_xml, "ListForm");
+
+        let outcome = with_before_commit_hook(
+            move |_| fs::write(&descriptor_for_hook, concurrent_for_hook).unwrap(),
+            || add_form(&args, &context),
+        );
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert!(
+            outcome.errors.join("\n").contains("created concurrently")
+                || outcome.errors.join("\n").contains("already exists")
+                || outcome.errors.join("\n").contains("preimage"),
+            "{outcome:?}"
+        );
+        assert_eq!(fs::read(&root_xml).unwrap(), owner_before);
+        assert_eq!(fs::read(&descriptor).unwrap(), concurrent);
+        assert!(!form_xml.exists(), "{outcome:?}");
+        assert!(!module.exists(), "{outcome:?}");
+        assert!(outcome.changes.is_empty(), "{outcome:?}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn add_form_set_default_false_leaves_empty_default_slot() {
         let context = temp_context("add-set-default-false");
         let root_xml = context.cwd.join("src").join("Catalogs").join("Goods.xml");
@@ -18866,7 +18904,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn edit_form_identical_event_is_byte_exact_idempotent_noop() {
+    pub(crate) fn edit_form_identical_event_is_byte_and_identity_exact_idempotent_noop() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("edit-event-idempotent");
         let form_path = context.cwd.join("Form.xml");
         let original = event_form_xml(
@@ -18880,6 +18920,7 @@ pub(crate) mod tests {
         .trim_end_matches("\r\n")
         .to_string();
         write_file(&form_path, &original);
+        let identity = file_identity_for_test(&form_path).unwrap();
         let args = Map::from_iter([
             (
                 "FormPath".to_string(),
@@ -18908,6 +18949,7 @@ pub(crate) mod tests {
             "{outcome:?}"
         );
         assert_eq!(fs::read_to_string(&form_path).unwrap(), original);
+        assert_eq!(file_identity_for_test(&form_path).unwrap(), identity);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

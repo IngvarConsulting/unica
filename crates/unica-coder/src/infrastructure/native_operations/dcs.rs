@@ -12715,11 +12715,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn native_dcs_edit_noop_leaves_file_untouched() {
+    pub(crate) fn native_dcs_edit_noop_leaves_file_bytes_and_identity_untouched() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("dcs-edit-noop");
         let template_path = context.cwd.join("Template.xml");
         fs::write(&template_path, base_dcs_xml()).unwrap();
         let before = fs::read(&template_path).unwrap();
+        let identity = file_identity_for_test(&template_path).unwrap();
 
         let mut args = Map::new();
         args.insert("TemplatePath".to_string(), json!("Template.xml"));
@@ -12738,6 +12741,7 @@ pub(crate) mod tests {
             data.items
         );
         assert_eq!(fs::read(&template_path).unwrap(), before);
+        assert_eq!(file_identity_for_test(&template_path).unwrap(), identity);
 
         let _ = fs::remove_dir_all(&context.cwd);
     }

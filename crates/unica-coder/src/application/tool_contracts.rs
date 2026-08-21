@@ -6267,19 +6267,67 @@ pub(crate) mod tests {
         }
     }
 
+    fn native_mutation_schema_signature(schema: &Value) -> String {
+        fn write_canonical(value: &Value, output: &mut Vec<u8>) {
+            match value {
+                Value::Array(items) => {
+                    output.push(b'[');
+                    for (index, item) in items.iter().enumerate() {
+                        if index != 0 {
+                            output.push(b',');
+                        }
+                        write_canonical(item, output);
+                    }
+                    output.push(b']');
+                }
+                Value::Object(object) => {
+                    output.push(b'{');
+                    let mut keys = object.keys().collect::<Vec<_>>();
+                    keys.sort_unstable();
+                    for (index, key) in keys.into_iter().enumerate() {
+                        if index != 0 {
+                            output.push(b',');
+                        }
+                        serde_json::to_writer(&mut *output, key).expect("schema key serializes");
+                        output.push(b':');
+                        write_canonical(&object[key], output);
+                    }
+                    output.push(b'}');
+                }
+                _ => serde_json::to_writer(output, value).expect("schema scalar serializes"),
+            }
+        }
+
+        let mut canonical = Vec::new();
+        write_canonical(schema, &mut canonical);
+        let mut hash = 0xcbf29ce484222325u64;
+        for byte in &canonical {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        format!("{}:{hash:016x}", canonical.len())
+    }
+
+    #[test]
+    fn native_mutation_schema_fingerprint_detects_nested_contract_changes() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.cf.edit")
+            .expect("cf.edit is registered");
+        let schema = input_schema_for_tool(&tool);
+        let mut changed = schema.clone();
+        changed["properties"]["dryRun"]["type"] = json!("string");
+
+        assert_ne!(
+            native_mutation_schema_signature(&schema),
+            native_mutation_schema_signature(&changed),
+            "a nested schema type change must alter the complete fingerprint",
+        );
+    }
+
     #[test]
     pub(crate) fn native_mutation_surface_has_exact_operations_and_schemas() {
         use std::collections::BTreeMap;
-
-        fn property_signature(properties: &Map<String, Value>) -> String {
-            let joined = properties.keys().cloned().collect::<Vec<_>>().join("\0");
-            let mut hash = 0xcbf29ce484222325u64;
-            for byte in joined.bytes() {
-                hash ^= u64::from(byte);
-                hash = hash.wrapping_mul(0x100000001b3);
-            }
-            format!("{}:{hash:016x}", properties.len())
-        }
 
         let actual = tools()
             .into_iter()
@@ -6297,89 +6345,102 @@ pub(crate) mod tests {
                     _ => unreachable!(),
                 };
                 let schema = input_schema_for_tool(&tool);
-                let properties = schema["properties"]
-                    .as_object()
-                    .expect("tool schema properties");
-                (tool.name, (operation, property_signature(properties)))
+                let signature = native_mutation_schema_signature(&schema);
+                (tool.name, (operation, signature))
             })
             .collect::<BTreeMap<_, _>>();
         fn entry(operation: &str, signature: &str) -> (String, String) {
             (operation.to_string(), signature.to_string())
         }
         let expected = BTreeMap::from([
-            ("unica.cf.edit", entry("cf-edit", "133:8023fae4acfb5883")),
-            ("unica.cf.init", entry("cf-init", "136:5eaa688f27e81413")),
+            ("unica.cf.edit", entry("cf-edit", "31140:0dfa39055a94ec4a")),
+            ("unica.cf.init", entry("cf-init", "32217:893638c6206fff82")),
             (
                 "unica.cfe.borrow",
-                entry("cfe-borrow", "133:2e35199dad7e1f5a"),
+                entry("cfe-borrow", "31181:e0138a6de5ab4446"),
             ),
-            ("unica.cfe.init", entry("cfe-init", "131:d3f30fc861e6b684")),
+            (
+                "unica.cfe.init",
+                entry("cfe-init", "30676:08fdc87570145611"),
+            ),
             (
                 "unica.cfe.patch_method",
-                entry("cfe-patch-method", "135:7cfe81d25f614d2e"),
+                entry("cfe-patch-method", "32493:c72e4d6e943f0724"),
             ),
             (
                 "unica.code.patch",
-                entry("code-patch", "9:2c0e89c9941eca7e"),
+                entry("code-patch", "2893:4855cf0424173695"),
             ),
             (
                 "unica.dcs.compile",
-                entry("dcs-compile", "135:12e36dabfa17cafc"),
+                entry("dcs-compile", "32043:6a7d31e2ba3e5813"),
             ),
-            ("unica.dcs.edit", entry("dcs-edit", "133:b066dd6774450885")),
-            ("unica.epf.init", entry("epf-init", "7:3540d83119f085fa")),
-            ("unica.erf.init", entry("erf-init", "7:3540d83119f085fa")),
-            ("unica.form.add", entry("form-add", "134:1fb9234c1795173b")),
+            (
+                "unica.dcs.edit",
+                entry("dcs-edit", "31150:ab08c9da4f06de92"),
+            ),
+            ("unica.epf.init", entry("epf-init", "1729:02a6a6ebaf86d9f6")),
+            ("unica.erf.init", entry("erf-init", "1729:02a6a6ebaf86d9f6")),
+            (
+                "unica.form.add",
+                entry("form-add", "31503:ad0297af29ca9ed3"),
+            ),
             (
                 "unica.form.compile",
-                entry("form-compile", "132:ecd02b7fe90bfc56"),
+                entry("form-compile", "31140:8c354e756d3bb2f2"),
             ),
             (
                 "unica.form.edit",
-                entry("form-edit", "134:b358c4285ee56454"),
+                entry("form-edit", "32016:c091f5e4c8fe6835"),
             ),
             (
                 "unica.form.remove",
-                entry("form-remove", "136:ea26472ea784ff7a"),
+                entry("form-remove", "32225:41144b8a4d71de9c"),
             ),
             (
                 "unica.interface.edit",
-                entry("interface-edit", "133:6cb9f1a52fd58e3d"),
+                entry("interface-edit", "31248:b6f1a20a2f4a1dde"),
             ),
             (
                 "unica.meta.add",
-                entry("metadata:Add", "6:c94ddb9d858cd103"),
+                entry("metadata:Add", "27646:331032f4d1cfefb7"),
             ),
             (
                 "unica.meta.edit",
-                entry("metadata:Edit", "5:50dbdc06067d2f08"),
+                entry("metadata:Edit", "28145:c93c0b516cc77cf1"),
             ),
             (
                 "unica.meta.remove",
-                entry("metadata:Remove", "6:1ed1ef8f4e760749"),
+                entry("metadata:Remove", "1025:b8843dc27d6b5b7e"),
             ),
             (
                 "unica.mxl.compile",
-                entry("mxl-compile", "135:970e3503a4c45b72"),
+                entry("mxl-compile", "32111:7da4e1b775eca3c1"),
             ),
             (
                 "unica.role.compile",
-                entry("role-compile", "135:68941a28ee374868"),
+                entry("role-compile", "32058:21d9a4e0c9bd3f92"),
             ),
-            ("unica.role.edit", entry("role-edit", "4:ac166c3aa7864340")),
+            (
+                "unica.role.edit",
+                entry("role-edit", "2468:5f8ba12273760906"),
+            ),
             (
                 "unica.subsystem.compile",
-                entry("subsystem-compile", "134:b92cd1749096353e"),
+                entry("subsystem-compile", "31797:0b2d56b36dee4581"),
             ),
             (
                 "unica.subsystem.edit",
-                entry("subsystem-edit", "133:eff3c7a07b781a72"),
+                entry("subsystem-edit", "31164:52fff7efa16e1c71"),
             ),
             (
                 "unica.support.edit",
-                entry("support-edit", "134:6f550d3fecc026b0"),
+                entry("support-edit", "31857:0742d10d9c5080e6"),
             ),
-            ("unica.xdto.edit", entry("xdto-edit", "6:0af38559977d0b9a")),
+            (
+                "unica.xdto.edit",
+                entry("xdto-edit", "6126:3957bd36139d3b35"),
+            ),
         ]);
         assert_eq!(actual, expected);
     }

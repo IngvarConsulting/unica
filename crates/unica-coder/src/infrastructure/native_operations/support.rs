@@ -1093,18 +1093,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn repeated_support_edit_is_a_byte_exact_noop() {
+    pub(crate) fn repeated_support_edit_is_a_byte_and_identity_exact_noop() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let fixture = SupportFixture::new("repeat-noop", "2.20");
 
         let first = edit_support_result(&fixture.capability_off_args(), &fixture.context).unwrap();
         assert!(first.ok, "{first:?}");
         let after = fs::read(&fixture.bin_path).unwrap();
+        let identity = file_identity_for_test(&fixture.bin_path).unwrap();
 
         let repeated =
             edit_support_result(&fixture.capability_off_args(), &fixture.context).unwrap();
         assert!(repeated.ok, "{repeated:?}");
         assert!(repeated.changes.is_empty(), "{repeated:?}");
         assert_eq!(fs::read(&fixture.bin_path).unwrap(), after);
+        assert_eq!(file_identity_for_test(&fixture.bin_path).unwrap(), identity);
     }
 
     #[test]

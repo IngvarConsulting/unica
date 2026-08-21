@@ -8458,7 +8458,9 @@ pub(crate) mod tests {
     /// described was still open as #435: the report was truthful about a
     /// rewrite that should never have happened.
     #[test]
-    pub(crate) fn borrow_cfe_preserves_object_identity_on_repeated_borrow() {
+    pub(crate) fn borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("borrow-repeat-identity");
         write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
         let target = context.cwd.join("ext/Catalogs/Items.xml");
@@ -8466,6 +8468,7 @@ pub(crate) mod tests {
         let first = borrow_cfe_with_data(&minimal_borrow_args(), &context);
         assert!(first.outcome.ok, "{:?}", first.outcome);
         let after_first = fs::read(&target).unwrap();
+        let file_identity = file_identity_for_test(&target).unwrap();
 
         let second = borrow_cfe_with_data(&minimal_borrow_args(), &context);
 
@@ -8475,6 +8478,7 @@ pub(crate) mod tests {
             after_first,
             "a repeated borrow must not reissue the descriptor identity"
         );
+        assert_eq!(file_identity_for_test(&target).unwrap(), file_identity);
         let mutation = &second
             .data
             .as_ref()

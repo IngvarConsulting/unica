@@ -2052,7 +2052,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn xdto_events_follow_changed_plan_and_exact_noop_for_preview_and_apply() {
+    pub(crate) fn xdto_events_and_file_identity_follow_changed_plan_and_exact_noop() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let (context, base_args, package, _) = xdto_guard_fixture("events");
         let before = fs::read(&package).unwrap();
         let call_args = |dry_run| {
@@ -2091,6 +2093,7 @@ pub(crate) mod tests {
             .contains(&"metadata_graph".to_string()));
         let after = fs::read(&package).unwrap();
         assert_ne!(after, before);
+        let identity = file_identity_for_test(&package).unwrap();
 
         for dry_run in [true, false] {
             let repeated = UnicaApplication::new()
@@ -2103,6 +2106,7 @@ pub(crate) mod tests {
             assert!(repeated.cache.invalidated.is_empty(), "dryRun={dry_run}");
             assert_eq!(fs::read(&package).unwrap(), after);
         }
+        assert_eq!(file_identity_for_test(&package).unwrap(), identity);
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 

@@ -5070,7 +5070,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn repeated_subsystem_compile_does_not_overwrite_or_report_changes() {
+    pub(crate) fn repeated_subsystem_compile_preserves_file_identities_and_reports_no_changes() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("repeat-noop");
         let args = compile_args(
             &context.cwd,
@@ -5088,6 +5090,8 @@ pub(crate) mod tests {
             .join("Subsystems/StableArea/Subsystems/StableChild.xml");
         let object_before = fs::read(&object_path).unwrap();
         let child_before = fs::read(&child_path).unwrap();
+        let object_identity = file_identity_for_test(&object_path).unwrap();
+        let child_identity = file_identity_for_test(&child_path).unwrap();
 
         let repeated = compile_subsystem(&args, &context);
 
@@ -5096,6 +5100,11 @@ pub(crate) mod tests {
         assert!(repeated.artifacts.is_empty(), "{:?}", repeated.artifacts);
         assert_eq!(fs::read(&object_path).unwrap(), object_before);
         assert_eq!(fs::read(&child_path).unwrap(), child_before);
+        assert_eq!(
+            file_identity_for_test(&object_path).unwrap(),
+            object_identity
+        );
+        assert_eq!(file_identity_for_test(&child_path).unwrap(), child_identity);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 

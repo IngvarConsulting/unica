@@ -82,8 +82,8 @@ mod predefined;
 mod publisher;
 
 #[cfg(test)]
-pub(crate) fn typed_resource_noop_contract_is_complete() {
-    edit::tests::typed_exact_noop_form_update_has_no_resource_mutation_or_event();
+pub(crate) fn typed_resource_noop_and_identity_contract_is_complete() {
+    edit::tests::typed_exact_noop_form_update_preserves_resource_bytes_and_identities();
 }
 
 #[cfg(test)]

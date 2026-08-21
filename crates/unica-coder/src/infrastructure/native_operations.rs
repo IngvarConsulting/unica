@@ -180,18 +180,18 @@ mod source_invariant_tests {
     #[test]
     fn verified_public_mutator_idempotence_cases_are_exact() {
         let cases: [(&str, fn()); 12] = [
-            ("unica.cf.edit", crate::application::tests::cf_edit_equal_serialized_result_is_a_public_noop),
-            ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_preserves_object_identity_on_repeated_borrow),
-            ("unica.code.patch", super::code::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop),
-            ("unica.dcs.edit", super::dcs::tests::native_dcs_edit_noop_leaves_file_untouched),
-            ("unica.form.edit", super::form::tests::edit_form_identical_event_is_byte_exact_idempotent_noop),
+            ("unica.cf.edit", crate::application::tests::cf_edit_equal_serialized_result_is_a_public_noop_and_preserves_identity),
+            ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow),
+            ("unica.code.patch", super::code::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity),
+            ("unica.dcs.edit", super::dcs::tests::native_dcs_edit_noop_leaves_file_bytes_and_identity_untouched),
+            ("unica.form.edit", super::form::tests::edit_form_identical_event_is_byte_and_identity_exact_idempotent_noop),
             ("unica.interface.edit", super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update),
-            ("unica.meta.edit", super::meta::typed_resource_noop_contract_is_complete),
+            ("unica.meta.edit", super::meta::typed_resource_noop_and_identity_contract_is_complete),
             ("unica.mxl.compile", super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update),
-            ("unica.role.edit", super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_idempotent),
-            ("unica.subsystem.compile", super::subsystem::tests::repeated_subsystem_compile_does_not_overwrite_or_report_changes),
-            ("unica.support.edit", super::support::tests::repeated_support_edit_is_a_byte_exact_noop),
-            ("unica.xdto.edit", super::xdto::tests::xdto_events_follow_changed_plan_and_exact_noop_for_preview_and_apply),
+            ("unica.role.edit", super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity),
+            ("unica.subsystem.compile", super::subsystem::tests::repeated_subsystem_compile_preserves_file_identities_and_reports_no_changes),
+            ("unica.support.edit", super::support::tests::repeated_support_edit_is_a_byte_and_identity_exact_noop),
+            ("unica.xdto.edit", super::xdto::tests::xdto_events_and_file_identity_follow_changed_plan_and_exact_noop),
         ];
         let registered = public_platform_xml_mutator_inventory();
         for (tool, evidence) in cases {
@@ -205,9 +205,9 @@ mod source_invariant_tests {
 
     #[test]
     fn typed_platform_resource_noop_emits_no_effects() {
-        super::meta::typed_resource_noop_contract_is_complete();
-        super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_idempotent();
-        super::xdto::tests::xdto_events_follow_changed_plan_and_exact_noop_for_preview_and_apply();
+        super::meta::typed_resource_noop_and_identity_contract_is_complete();
+        super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity();
+        super::xdto::tests::xdto_events_and_file_identity_follow_changed_plan_and_exact_noop();
     }
 
     #[test]
@@ -223,7 +223,7 @@ mod source_invariant_tests {
             ("unica.dcs.edit", super::dcs::tests::dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it),
             ("unica.epf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
             ("unica.erf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
-            ("unica.form.add", super::form::tests::add_form_rejects_partial_existing_scaffold_before_any_mutation),
+            ("unica.form.add", super::form::tests::add_form_rejects_scaffold_member_created_after_planning),
             ("unica.form.compile", super::form::tests::form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication),
             ("unica.form.edit", super::form::tests::edit_form_rejects_stale_preimage_without_overwriting_concurrent_change),
             ("unica.form.remove", super::form::tests::remove_form_rejects_payload_directory_that_appears_after_absent_probe),

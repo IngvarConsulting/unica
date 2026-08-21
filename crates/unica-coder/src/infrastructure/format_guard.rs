@@ -3439,6 +3439,7 @@ mod tests {
     #[test]
     fn native_mutation_surface_and_format_refusal_are_exact() {
         crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
+        crate::application::tests::public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
         dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
         cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
     }
