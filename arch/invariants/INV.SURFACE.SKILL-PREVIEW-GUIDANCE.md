@@ -3,11 +3,11 @@ id: INV.SURFACE.SKILL-PREVIEW-GUIDANCE
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: tests/ci/test_unica_skills.py::test_meta_examples_follow_final_typed_contracts
+check: tests/ci/test_unica_skills.py::test_migrated_skills_use_task_parameterized_mcp_examples
 scope: [wire]
 ---
 
-# Мутации метаданных показывают предпросмотр
+# Поставляемые meta-сценарии сохраняют явный dry-run пример
 
-Примеры добавления, изменения и удаления метаданных публикуют типизированные
-последствия и содержат вызов предпросмотра до применения.
+Скиллы `meta-add` и `meta-remove` содержат задачно-параметризованные MCP-примеры
+с литералом `"dryRun": true`.

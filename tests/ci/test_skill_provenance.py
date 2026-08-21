@@ -626,7 +626,7 @@ class SkillProvenanceTests(unittest.TestCase):
             with self.subTest(excluded_route=excluded_route):
                 self.assertIn(excluded_route, notes)
 
-    def test_tool_lock_ref_uses_tools_lock_as_single_binary_baseline(self) -> None:
+    def test_v8_runner_tool_lock_ref_resolves_to_locked_baseline(self) -> None:
         data = self.load_provenance()
         tool_lock = json.loads(
             (self.repo_root() / "plugins" / "unica" / "third-party" / "tools.lock.json").read_text(

@@ -7,7 +7,8 @@ check: tests/ci/test_package_unica_plugin.py::test_unica_coder_has_no_runtime_op
 scope: [app]
 ---
 
-# Ядро не откатывается на скрипты операций
+# Literal-страж не находит прежний скриптовый backend
 
-Продуктивные Rust-источники не содержат legacy-обработчика и не запускают
-Python, PowerShell или shell как запасной backend операций.
+В продуктивных Rust-источниках отсутствуют проверяемые литералы legacy-
+обработчика и `Command::new` для `python3`, `python`, `bash`, `powershell` и
+`pwsh`; каталог `plugins/unica/scripts/legacy` отсутствует.

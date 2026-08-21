@@ -7,7 +7,8 @@ check: crates/unica-coder/src/infrastructure/documentation_policy.rs::default_de
 scope: [app]
 ---
 
-# Сетевая политика по умолчанию допускает только явно разрешённого поставщика
+# Явное разрешение перекрывает общий сетевой запрет
 
-При общем запрете сети поставщик с собственным разрешением доступен, а другой
-сетевой поставщик получает `policy-denied`; локальный поставщик не затронут.
+При `network.default = deny` поставщик `v8std` с собственным `allow` получает
+`NetworkAccess::Allow`, а `kb-1ci` без собственного правила —
+`NetworkAccess::Deny`.

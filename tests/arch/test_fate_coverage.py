@@ -485,6 +485,71 @@ class FateCoverageTests(unittest.TestCase):
             ],
         )
 
+    def test_mandatory_mcp_fates_name_exact_architecture_evidence(self) -> None:
+        records = {}
+        for path in (REPO_ROOT / "arch").rglob("*.md"):
+            props = FATE_GUARD._front_matter_props(path)
+            if identifier := props.get("id"):
+                records[identifier] = props
+        rows = {row.subject: row for row in FATE_GUARD.fate_rows(REPO_ROOT)}
+        expected = {
+            "INV-MCP-DATA-DRIVEN-SCHEMA": {
+                "INV.WIRE.DATA-DRIVEN-TOOL-LIST": (
+                    "process",
+                    "crates/unica-coder/src/interfaces/mcp.rs::"
+                    "application_registry_owns_tool_names_descriptions_and_wire_schemas",
+                ),
+                "INV.SURFACE.NO-RAW-ADAPTER-ARGS": (
+                    "product",
+                    "crates/unica-coder/src/interfaces/mcp.rs::"
+                    "no_public_tool_schema_exposes_raw_adapter_args",
+                ),
+            },
+            "INV-MCP-SDK-TRANSPORT": {
+                "INV.WIRE.SDK-TRANSPORT": (
+                    "process",
+                    "tests/ci/test_product_contracts.py::"
+                    "test_rmcp_transport_is_confined_to_mcp_interface",
+                ),
+                "INV.WIRE.SDK-INITIALIZE": (
+                    "product",
+                    "crates/unica-coder/src/interfaces/mcp.rs::"
+                    "initialize_uses_single_public_server_name_and_negotiates_version",
+                ),
+                "INV.WIRE.DIRECT-FIRST-LIFECYCLE": (
+                    "product",
+                    "crates/unica-coder/src/interfaces/mcp.rs::"
+                    "modern_direct_first_tools_list_pages_through_the_full_registry",
+                ),
+            },
+        }
+
+        errors = []
+        for subject, required in expected.items():
+            row = rows[subject]
+            if set(row.successors) != set(required):
+                errors.append(
+                    f"{subject}: successors {row.successors!r}, "
+                    f"expected {tuple(required)!r}"
+                )
+            for successor, (governs, check) in required.items():
+                record = records.get(successor)
+                if record is None:
+                    errors.append(f"{subject}: missing {successor}")
+                    continue
+                if record.get("governs") != governs:
+                    errors.append(
+                        f"{successor}: governs {record.get('governs')!r}, "
+                        f"expected {governs!r}"
+                    )
+                if record.get("check") != check:
+                    errors.append(
+                        f"{successor}: check {record.get('check')!r}, "
+                        f"expected {check!r}"
+                    )
+
+        self.assertEqual(errors, [])
+
     def test_every_v1_subject_has_exactly_one_fate(self) -> None:
         """A moved ADR, rule, requirement, or acceptance contract cannot disappear."""
         result = subprocess.run(

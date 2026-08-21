@@ -17,8 +17,32 @@ import warnings
 from pathlib import Path
 from unittest.mock import patch
 
+from tree_sitter import Language, Parser
+import tree_sitter_rust
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def rust_code_without_comments_and_literals(source: bytes) -> str:
+    parser = Parser(Language(tree_sitter_rust.language()))
+    tree = parser.parse(source)
+    ignored = {
+        "block_comment",
+        "char_literal",
+        "line_comment",
+        "raw_string_literal",
+        "string_literal",
+    }
+    code = bytearray(source)
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in ignored:
+            code[node.start_byte : node.end_byte] = b" " * (node.end_byte - node.start_byte)
+            continue
+        stack.extend(node.children)
+    return code.decode("utf-8")
 
 
 def load_contract_module():
@@ -32,6 +56,29 @@ def load_contract_module():
 
 
 class ProductContractTests(unittest.TestCase):
+    def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
+        rust_root = REPO_ROOT / "crates" / "unica-coder" / "src"
+        owner = rust_root / "interfaces" / "mcp.rs"
+        owner_code = rust_code_without_comments_and_literals(owner.read_bytes())
+
+        self.assertRegex(
+            owner_code,
+            r"\bimpl\s+ServerHandler\s+for\s+UnicaServer\b",
+            "the public transport must be the SDK ServerHandler implementation",
+        )
+        offenders = []
+        for source in sorted(rust_root.rglob("*.rs")):
+            if source == owner:
+                continue
+            code = rust_code_without_comments_and_literals(source.read_bytes())
+            if re.search(r"\brmcp\b", code):
+                offenders.append(source.relative_to(REPO_ROOT).as_posix())
+        self.assertEqual(
+            offenders,
+            [],
+            "rmcp types and calls must stay behind interfaces/mcp.rs",
+        )
+
     def test_native_validators_do_not_expose_internal_local_owner_only_switch(
         self,
     ) -> None:

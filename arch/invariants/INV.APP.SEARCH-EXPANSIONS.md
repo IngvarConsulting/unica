@@ -3,11 +3,11 @@ id: INV.APP.SEARCH-EXPANSIONS
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/documentation_retrieval.rs::expansions_add_terms_without_penalizing_originals
+check: crates/unica-coder/src/infrastructure/documentation_retrieval.rs::expansions_can_add_a_match_for_an_unmatched_query
 scope: [app]
 ---
 
-# Расширения запроса не ослабляют исходные термы
+# Расширения могут добавить совпадение для исходно пустого запроса
 
-Лексическое ядро добавляет термы расширения, сохраняя исходное совпадение и
-не заменяя его менее точным вариантом.
+Для русскоязычного запроса без попаданий английские расширения `group`, `table`
+и `value` находят ожидаемый документ о таблицах значений.

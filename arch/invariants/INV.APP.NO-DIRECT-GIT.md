@@ -7,6 +7,7 @@ check: tests/ci/test_product_contracts.py::test_application_layer_does_not_spawn
 scope: [app]
 ---
 
-# Application не запускает git
+# Application не содержит прямой literal-запуск git
 
-Продуктивный код слоя application не создаёт процесс `git` напрямую.
+Префикс продуктивного кода до тестового модуля в каждом Rust-файле application
+не содержит литерал `std::process::Command::new("git")`.

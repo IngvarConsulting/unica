@@ -869,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn event_subscription_requires_explicit_non_global_server_module_facts() {
+    fn event_subscription_requires_explicit_non_global_module_fact() {
         let fixture = Fixture::new("event-handler-context-facts");
         let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
         let module_descriptor = fixture.root.join("src/CommonModules/EventHandlers.xml");

@@ -981,6 +981,57 @@ mod tests {
         client.shutdown().await;
     }
 
+    #[test]
+    fn application_registry_owns_tool_names_descriptions_and_wire_schemas() {
+        let specs = crate::application::tools();
+        let listed = tool_definitions(&specs);
+
+        assert_eq!(listed.len(), specs.len());
+        let unique_names: HashSet<&str> = specs.iter().map(|spec| spec.name).collect();
+        assert_eq!(
+            unique_names.len(),
+            specs.len(),
+            "ToolSpec names must be unique"
+        );
+
+        for (spec, tool) in specs.iter().zip(&listed) {
+            assert_eq!(tool.name, spec.name);
+            assert!(
+                !spec.description.trim().is_empty(),
+                "{} must retain its application-owned description",
+                spec.name
+            );
+            assert_eq!(
+                tool.description, None,
+                "{} must keep application prose off the schema-only wire",
+                spec.name
+            );
+
+            let mut expected_input = input_schema_for_tool(spec);
+            strip_schema_descriptions(&mut expected_input);
+            assert_eq!(
+                Value::Object(tool.input_schema.as_ref().clone()),
+                expected_input,
+                "{} input schema must be projected from the application contract",
+                spec.name
+            );
+
+            let mut expected_output = structured_output_schema(spec);
+            if let Some(schema) = &mut expected_output {
+                strip_schema_descriptions(schema);
+            }
+            let actual_output = tool
+                .output_schema
+                .as_ref()
+                .map(|schema| Value::Object(schema.as_ref().clone()));
+            assert_eq!(
+                actual_output, expected_output,
+                "{} output schema must follow its application handler contract",
+                spec.name
+            );
+        }
+    }
+
     #[tokio::test]
     async fn tools_list_serves_schema_only_baseline() {
         // #479 §1 baseline experiment: the wire carries no prose. Stripping an

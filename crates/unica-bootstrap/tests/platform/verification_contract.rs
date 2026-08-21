@@ -11,7 +11,12 @@ use unica_bootstrap::{verify_mcp_runtime, Failure};
 fn verify_requires_both_lifecycles_and_the_three_public_tools() {
     let root = temp_root("valid");
     let record = root.join("provider-state.txt");
-    let runtime = write_fake_runtime(&root, &record, true, true);
+    let runtime = write_fake_runtime(
+        &root,
+        &record,
+        true,
+        &["2025-06-18", "2025-11-25", "2026-07-28"],
+    );
     let provider_state = root.join("private-provider-state");
 
     verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap();
@@ -26,7 +31,12 @@ fn verify_requires_both_lifecycles_and_the_three_public_tools() {
 fn verify_rejects_incomplete_tools_list() {
     let root = temp_root("missing-tool");
     let record = root.join("provider-state.txt");
-    let runtime = write_fake_runtime(&root, &record, false, true);
+    let runtime = write_fake_runtime(
+        &root,
+        &record,
+        false,
+        &["2025-06-18", "2025-11-25", "2026-07-28"],
+    );
     let provider_state = root.join("private-provider-state");
 
     let error =
@@ -41,24 +51,32 @@ fn verify_rejects_incomplete_tools_list() {
 
 #[test]
 fn verify_rejects_discover_without_the_guaranteed_versions() {
-    let root = temp_root("stale-discover");
-    let record = root.join("provider-state.txt");
-    let runtime = write_fake_runtime(&root, &record, true, false);
-    let provider_state = root.join("private-provider-state");
+    const GUARANTEED: [&str; 3] = ["2025-06-18", "2025-11-25", "2026-07-28"];
+    for missing in GUARANTEED {
+        let root = temp_root(&format!("discover-without-{missing}"));
+        let record = root.join("provider-state.txt");
+        let supported = GUARANTEED
+            .into_iter()
+            .filter(|version| *version != missing)
+            .collect::<Vec<_>>();
+        let runtime = write_fake_runtime(&root, &record, true, &supported);
+        let provider_state = root.join("private-provider-state");
 
-    let error =
-        verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap_err();
+        let error = verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2))
+            .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("does not list guaranteed protocol version"));
+        assert!(
+            error.to_string().contains(missing),
+            "omitting {missing} must name that guaranteed version: {error}"
+        );
+    }
 }
 
 fn write_fake_runtime(
     root: &Path,
     provider_state_record: &Path,
     complete: bool,
-    modern: bool,
+    supported_versions: &[&str],
 ) -> PathBuf {
     let path = root.join("fake-unica");
     let explain = if complete {
@@ -66,11 +84,7 @@ fn write_fake_runtime(
     } else {
         ""
     };
-    let supported = if modern {
-        r#"["2025-06-18","2025-11-25","2026-07-28"]"#
-    } else {
-        r#"["2025-06-18"]"#
-    };
+    let supported = serde_json::to_string(supported_versions).unwrap();
     fs::write(
         &path,
         format!(

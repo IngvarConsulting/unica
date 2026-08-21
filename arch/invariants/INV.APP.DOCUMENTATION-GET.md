@@ -3,11 +3,11 @@ id: INV.APP.DOCUMENTATION-GET
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/documentation.rs::the_first_provider_owning_the_locator_answers_the_get
+check: crates/unica-coder/src/application/documentation.rs::get_skips_a_non_owner_and_projects_the_owners_document
 scope: [app]
 ---
 
-# Полный документ отдаёт первый владелец локатора
+# Get пропускает поставщика без ответа и проецирует документ владельца
 
-Получение документа опрашивает поставщиков в порядке реестра и возвращает
-ответ первого поставщика, который признал локатор своим.
+После поставщика, вернувшего `None`, следующий владелец локатора возвращает
+документ с проверенными полями происхождения, идентичности и полного текста.

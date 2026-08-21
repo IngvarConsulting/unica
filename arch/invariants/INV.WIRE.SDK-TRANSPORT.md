@@ -1,13 +1,13 @@
 ---
 id: INV.WIRE.SDK-TRANSPORT
 status: active
-governs: product
+governs: process
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/interfaces/mcp.rs::initialize_uses_single_public_server_name_and_negotiates_version
+check: tests/ci/test_product_contracts.py::test_rmcp_transport_is_confined_to_mcp_interface
 scope: [wire]
 ---
 
-# Инициализация согласует версию протокола
+# Официальный SDK изолирован в транспортном модуле
 
-Публичный stdio-транспорт отвечает именем `unica` и согласованной версией
-протокола, предложенной поддерживаемым legacy-клиентом.
+Продуктивные ссылки на `rmcp` остаются в `interfaces/mcp.rs`, и этот модуль
+реализует `ServerHandler` для публичного сервера `UnicaServer`.
