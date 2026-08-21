@@ -4274,7 +4274,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod mxl_read_selector_bridge_tests {
+pub(super) mod mxl_read_selector_bridge_tests {
     use super::*;
     use crate::infrastructure::native_operations::dcs::{analyze_dcs_info_with_data, validate_dcs};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -4363,7 +4363,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-info");
 
         let support_reader = WorkspaceSupportStateReader::new(&context);
@@ -4379,7 +4379,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-validate");
 
         let physical = validate_mxl(&physical_args(), &context);
@@ -4391,7 +4391,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-decompile");
 
         let physical = decompile_mxl(&physical_args(), &context);
@@ -4420,7 +4420,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-info");
 
         let support_reader = WorkspaceSupportStateReader::new(&context);
@@ -4443,7 +4443,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn dcs_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn dcs_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-validate");
 
         let physical = validate_dcs(&dcs_physical_args(), &context);

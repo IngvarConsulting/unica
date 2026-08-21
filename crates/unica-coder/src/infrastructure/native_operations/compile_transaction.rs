@@ -4402,6 +4402,25 @@ mod tests {
         assert_eq!(rollback.kind(), CommitFailureKind::RollbackFailed);
     }
 
+    #[test]
+    fn rollback_and_cleanup_diagnostics_keep_distinct_failure_classes() {
+        let cleanup = with_cleanup_diagnostics(
+            CommitFailure::concurrent("primary"),
+            vec!["temporary residue remains".into()],
+        );
+        assert_eq!(cleanup.kind(), CommitFailureKind::ConcurrentModification);
+        assert!(cleanup.message.contains("cleanup encountered:"));
+        assert!(!cleanup.message.contains("rollback encountered:"));
+
+        let rollback = with_rollback_diagnostics(
+            CommitFailure::concurrent("primary"),
+            vec!["source restoration failed at /source/recovery".into()],
+        );
+        assert_eq!(rollback.kind(), CommitFailureKind::RollbackFailed);
+        assert!(rollback.message.contains("rollback encountered:"));
+        assert!(rollback.message.contains("/source/recovery"));
+    }
+
     fn temp_root(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

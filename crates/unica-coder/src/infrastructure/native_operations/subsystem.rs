@@ -2184,6 +2184,18 @@ mod subsystem_info_typed_result_tests {
         assert!(data.command_interface.is_none());
         let _ = fs::remove_dir_all(root);
     }
+
+    /// Registry-facing falsifier for the typed public subsystem projection.
+    #[test]
+    fn subsystem_projection_contract_is_complete() {
+        pointing_at_the_subsystems_folder_answers_only_with_tree();
+        concrete_subsystem_contains_its_root_chain_and_complete_descendant_tree();
+        unregistered_alias_keeps_local_data_without_borrowing_a_registered_tree();
+        root_subsystems_symlink_is_not_followed_for_a_tree_answer();
+        nested_subsystems_symlink_is_not_followed_for_a_tree_answer();
+        subsystem_info_answers_content_and_command_interface_at_once();
+        a_missing_command_interface_is_null_not_an_empty_interface();
+    }
 }
 
 #[cfg(test)]
@@ -5118,7 +5130,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod subsystem_read_selector_bridge_tests {
+pub(super) mod subsystem_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -5168,7 +5180,7 @@ mod subsystem_read_selector_bridge_tests {
     }
 
     #[test]
-    fn subsystem_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn subsystem_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("info");
 
         let physical = analyze_subsystem_info(
@@ -5302,7 +5314,7 @@ mod subsystem_read_selector_bridge_tests {
     }
 
     #[test]
-    fn subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("validate");
 
         let physical = validate_subsystem(

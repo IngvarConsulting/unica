@@ -1141,7 +1141,7 @@ fn unified_diff(path: &str, before: &str, after: &str) -> Result<String, String>
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::{
         analyze_module, hash, insertion_is_present, line_column, local_line_ending_at,
         locate_insertion, module_identity, normalized_content, patch_inner, unified_diff,
@@ -2446,7 +2446,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
+    pub(crate) fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
         let context = temp_context("tail-append");
         let module = context
             .workspace_root
@@ -2479,7 +2479,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_creates_a_module_file_the_platform_never_exported() {
+    pub(crate) fn code_patch_creates_a_module_file_the_platform_never_exported() {
         let context = temp_context("tail-absent");
         let module = context
             .workspace_root
@@ -2518,7 +2518,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_refuses_a_module_role_the_metadata_kind_never_owns() {
+    pub(crate) fn code_patch_refuses_a_module_role_the_metadata_kind_never_owns() {
         let context = temp_context("tail-absent-role");
         // A common module owns `Module`; it never owns an object module, so the
         // absent file is not an omitted empty one and must stay unaddressable.
@@ -2537,7 +2537,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() {
+    pub(crate) fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() {
         for (label, before, expected) in [
             (
                 "bom-only",

@@ -4161,7 +4161,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::metadata::MetadataOperation;
     use crate::application::{tools, ResultContract, ToolExecution};
@@ -6152,6 +6152,19 @@ mod tests {
         }
     }
 
+    /// Registry-facing falsifier for the complete public selector bridge.
+    /// The component tests stay independently runnable, while this name binds
+    /// one architecture record to publication, exclusivity and acceptance for
+    /// every bridged reader.
+    #[test]
+    fn bridged_reader_selector_schema_contract_is_complete() {
+        bridged_readers_publish_two_mutually_exclusive_selector_branches();
+        bridged_readers_that_have_no_address_do_not_publish_one();
+        bridged_readers_refuse_two_selectors_at_once();
+        bridged_readers_still_refuse_a_call_with_no_selector();
+        bridged_readers_accept_either_selector_on_its_own();
+    }
+
     #[test]
     fn meta_info_rejects_legacy_target_fields_as_unknown_arguments() {
         let tool = tools()
@@ -7139,7 +7152,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_schema_accepts_each_documented_selector_variant() {
+    pub(crate) fn code_patch_schema_accepts_each_documented_selector_variant() {
         let tool = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.code.patch")

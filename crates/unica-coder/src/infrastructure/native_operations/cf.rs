@@ -5272,7 +5272,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod cf_read_selector_bridge_tests {
+pub(super) mod cf_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -5306,7 +5306,7 @@ mod cf_read_selector_bridge_tests {
     }
 
     #[test]
-    fn cf_info_answers_identically_for_a_source_set_and_a_config_path() {
+    pub(crate) fn cf_info_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("info");
 
         let physical = analyze_cf_info(
@@ -5355,7 +5355,7 @@ mod cf_read_selector_bridge_tests {
     }
 
     #[test]
-    fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
+    pub(crate) fn cf_validate_answers_identically_for_a_source_set_and_a_config_path() {
         let context = workspace("validate");
 
         let physical = validate_cf(

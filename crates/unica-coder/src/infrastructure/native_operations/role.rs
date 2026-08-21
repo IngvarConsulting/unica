@@ -4438,7 +4438,7 @@ mod role_edit_contract_tests {
 }
 
 #[cfg(test)]
-mod role_info_typed_result_tests {
+pub(super) mod role_info_typed_result_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -4558,7 +4558,7 @@ mod role_info_typed_result_tests {
     }
 
     #[test]
-    fn role_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn role_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = addressable_workspace("bridge");
 
         let physical = analyze_role_info(
@@ -4637,7 +4637,7 @@ mod role_info_typed_result_tests {
     }
 
     #[test]
-    fn role_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn role_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = addressable_workspace("bridge-validate");
 
         let physical = validate_role(

@@ -3089,6 +3089,27 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// One registry-facing falsifier for the composed autodetection policy.
+    /// Each component remains an independently runnable regression below; this
+    /// aggregate prevents an architecture record from naming only the happy
+    /// path while claiming the closed catalog, no-follow filtering, naming and
+    /// provenance guarantees together.
+    #[test]
+    fn autodetect_catalog_contract_is_complete() {
+        autodetect_discovers_configuration_extension_source_sets();
+        autodetect_skips_a_container_that_is_not_a_directory();
+        autodetect_propagates_an_unreadable_extensions_container();
+        autodetect_skips_entries_that_are_not_extension_directories();
+        autodetect_skips_linked_entries_in_the_extensions_container();
+        autodetect_skips_a_linked_extensions_container();
+        autodetect_discovers_a_single_extension_at_the_container_root();
+        autodetect_at_the_container_root_does_not_report_object_directories_as_extensions();
+        autodetect_discovers_extensions_under_the_named_extensions_container();
+        autodetect_discovers_edt_extension_source_sets();
+        autodetect_gives_the_reserved_name_to_one_claimant_only();
+        transactional_autodetect_binds_the_extensions_container_listing();
+    }
+
     #[test]
     fn transactional_autodetect_binds_an_absent_extensions_container() {
         let root = temp_workspace("unica-source-map-autodetect-absent-container-provenance");

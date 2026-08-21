@@ -19536,7 +19536,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod form_read_selector_bridge_tests {
+pub(super) mod form_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19597,7 +19597,7 @@ mod form_read_selector_bridge_tests {
     }
 
     #[test]
-    fn form_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn form_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("info");
 
         let physical = analyze_form_info_with_data(
@@ -19646,7 +19646,7 @@ mod form_read_selector_bridge_tests {
     }
 
     #[test]
-    fn form_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn form_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("validate");
 
         let physical = validate_form(

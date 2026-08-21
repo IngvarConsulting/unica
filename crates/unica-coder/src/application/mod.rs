@@ -13500,6 +13500,47 @@ mod tests {
     }
 
     #[test]
+    fn native_xml_metadata_tools_reject_ambiguous_source_set_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-xml-tool-ambiguous-guard-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/.project"), "<projectDescription/>").unwrap();
+        std::fs::write(workspace.join("src/Configuration.xml"), "not XML").unwrap();
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            (
+                "ConfigPath".to_string(),
+                Value::String("src/Configuration.xml".to_string()),
+            ),
+        ]);
+
+        let error = UnicaApplication::new()
+            .call_tool("unica.cf.info", &args)
+            .expect_err("ambiguous source format must fail before XML parsing");
+
+        assert!(error.contains("invalid/ambiguous format"), "{error}");
+        assert!(error.contains("platform_xml"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_xml_metadata_tools_require_platform_xml_source_sets() {
+        native_xml_metadata_tools_reject_edt_source_set_targets();
+        native_xml_metadata_tools_reject_ambiguous_source_set_targets();
+    }
+
+    #[test]
     fn read_only_native_outfile_is_rejected_before_any_write() {
         let root = std::env::temp_dir().join(format!(
             "unica-read-outfile-write-guard-{}",
