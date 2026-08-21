@@ -1414,7 +1414,10 @@ mod tests {
     };
     use crate::application::metadata::MetaInfoRequest;
     use crate::application::ports::ApplicationPorts;
-    use crate::application::{InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
+    use crate::application::{
+        preview_strategy, tools, InvocationMode, PreviewStrategy, RuntimeJobAction, ToolHandler,
+        ToolSpec, UnicaApplication,
+    };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::{
         CodeIntelligenceContext, CodeIntelligenceReadRequest, ProviderDeadline,
@@ -1436,9 +1439,198 @@ mod tests {
     };
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct RecursiveStorageEntry {
+        kind: &'static str,
+        identity: Option<String>,
+        bytes: Option<Vec<u8>>,
+    }
+
+    fn recursive_storage_snapshot(root: &Path) -> BTreeMap<PathBuf, RecursiveStorageEntry> {
+        fn visit(
+            root: &Path,
+            path: &Path,
+            snapshot: &mut BTreeMap<PathBuf, RecursiveStorageEntry>,
+        ) {
+            let metadata = std::fs::symlink_metadata(path).expect("snapshot metadata");
+            let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+            let file_type = metadata.file_type();
+            let kind = if file_type.is_dir() {
+                "directory"
+            } else if file_type.is_file() {
+                "file"
+            } else if file_type.is_symlink() {
+                "symlink"
+            } else {
+                "other"
+            };
+            let identity = if file_type.is_symlink() {
+                None
+            } else {
+                crate::infrastructure::platform::testing::file_identity_for_test(path)
+                    .expect("snapshot identity")
+            };
+            let bytes = if file_type.is_file() {
+                Some(std::fs::read(path).expect("snapshot bytes"))
+            } else if file_type.is_symlink() {
+                Some(
+                    std::fs::read_link(path)
+                        .expect("snapshot link")
+                        .as_os_str()
+                        .to_string_lossy()
+                        .as_bytes()
+                        .to_vec(),
+                )
+            } else {
+                None
+            };
+            snapshot.insert(
+                relative,
+                RecursiveStorageEntry {
+                    kind,
+                    identity,
+                    bytes,
+                },
+            );
+            if file_type.is_dir() {
+                let mut children = std::fs::read_dir(path)
+                    .expect("snapshot directory")
+                    .map(|entry| entry.expect("snapshot child").path())
+                    .collect::<Vec<_>>();
+                children.sort();
+                for child in children {
+                    visit(root, &child, snapshot);
+                }
+            }
+        }
+
+        let mut snapshot = BTreeMap::new();
+        if root.exists() {
+            visit(root, root, &mut snapshot);
+        }
+        snapshot
+    }
+
+    #[test]
+    fn public_preview_strategies_are_real_and_recursively_write_free() {
+        let expected_post_image = [
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.init",
+            "unica.cfe.patch_method",
+            "unica.code.patch",
+            "unica.dcs.compile",
+            "unica.dcs.edit",
+            "unica.epf.init",
+            "unica.erf.init",
+            "unica.form.add",
+            "unica.form.compile",
+            "unica.form.edit",
+            "unica.form.remove",
+            "unica.interface.edit",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.meta.remove",
+            "unica.mxl.compile",
+            "unica.role.compile",
+            "unica.role.edit",
+            "unica.subsystem.compile",
+            "unica.subsystem.edit",
+            "unica.support.edit",
+            "unica.xdto.edit",
+        ];
+        let expected_planned_command = [
+            "unica.build.dump",
+            "unica.build.load",
+            "unica.build.make",
+            "unica.build.run",
+            "unica.build.update",
+            "unica.runtime.execute",
+            "unica.runtime.job.cancel",
+            "unica.runtime.job.start",
+        ];
+        let mut post_image = Vec::new();
+        let mut planned_command = Vec::new();
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+        {
+            match preview_strategy(&tool).expect("mutator preview strategy") {
+                PreviewStrategy::PostImage => post_image.push(tool.name),
+                PreviewStrategy::PlannedCommand => planned_command.push(tool.name),
+            }
+        }
+        post_image.sort_unstable();
+        planned_command.sort_unstable();
+        assert_eq!(post_image, expected_post_image);
+        assert_eq!(planned_command, expected_planned_command);
+
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let cache = workspace.join(".build/unica");
+        std::fs::create_dir_all(workspace.join("src/Ext")).unwrap();
+        std::fs::create_dir_all(cache.join("indexes/main")).unwrap();
+        std::fs::create_dir_all(cache.join("services/main")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(workspace.join("src/Configuration.xml"), b"source-sentinel").unwrap();
+        std::fs::write(cache.join("state.json"), b"state-sentinel").unwrap();
+        std::fs::write(cache.join("indexes/main/index.json"), b"index-sentinel").unwrap();
+        std::fs::write(
+            cache.join("services/main/service.json"),
+            b"service-sentinel",
+        )
+        .unwrap();
+        let absent = [
+            workspace.join("preview-src"),
+            cache.join("jobs"),
+            cache.join("caches"),
+            cache.join("services/preview-created"),
+        ];
+        assert!(absent.iter().all(|path| !path.exists()));
+        let before = recursive_storage_snapshot(&workspace);
+
+        let post_image_result = UnicaApplication::new()
+            .call_tool(
+                "unica.cf.init",
+                json!({
+                    "cwd": workspace,
+                    "Name": "PreviewConfiguration",
+                    "OutputDir": "preview-src"
+                })
+                .as_object()
+                .unwrap(),
+            )
+            .expect("real post-image public preview");
+        assert!(post_image_result.ok, "{post_image_result:?}");
+        assert!(post_image_result.data.is_some(), "{post_image_result:?}");
+        assert!(post_image_result.command.is_none(), "{post_image_result:?}");
+        assert_eq!(recursive_storage_snapshot(&workspace), before);
+        assert!(absent.iter().all(|path| !path.exists()));
+
+        let planned_result = UnicaApplication::new()
+            .call_tool(
+                "unica.build.load",
+                json!({"cwd": workspace}).as_object().unwrap(),
+            )
+            .expect("real planned-command public preview");
+        assert!(
+            planned_result.summary.starts_with("dry run:"),
+            "{planned_result:?}"
+        );
+        assert!(planned_result.command.is_some(), "{planned_result:?}");
+        assert_eq!(recursive_storage_snapshot(&workspace), before);
+        assert!(absent.iter().all(|path| !path.exists()));
+    }
 
     #[test]
     fn code_search_logical_selector_resolves_one_named_scope_and_fails_closed() {

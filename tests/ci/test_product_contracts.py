@@ -78,6 +78,49 @@ def productive_rust_code(source: bytes) -> bytes:
     return bytes(code)
 
 
+def direct_git_command_calls(source: bytes) -> list[int]:
+    """Return productive direct std::process git spawn offsets."""
+    parser = Parser(Language(tree_sitter_rust.language()))
+    tree = parser.parse(source)
+    test_ranges = cfg_test_item_ranges(source, tree)
+
+    def is_test_only(node) -> bool:
+        return any(
+            node.start_byte >= start and node.end_byte <= end
+            for start, end in test_ranges
+        )
+
+    def is_git_literal(node) -> bool:
+        literal = source[node.start_byte : node.end_byte]
+        if node.type == "string_literal":
+            return literal == b'"git"'
+        if node.type != "raw_string_literal":
+            return False
+        match = re.fullmatch(rb'r(?P<hashes>#{0,255})"git"(?P=hashes)', literal)
+        return match is not None
+
+    calls = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if is_test_only(node):
+            continue
+        if node.type == "call_expression":
+            function = node.child_by_field_name("function")
+            arguments = node.child_by_field_name("arguments")
+            if (
+                function is not None
+                and source[function.start_byte : function.end_byte]
+                == b"std::process::Command::new"
+                and arguments is not None
+                and arguments.named_child_count == 1
+                and is_git_literal(arguments.named_child(0))
+            ):
+                calls.append(node.start_byte)
+        stack.extend(node.named_children)
+    return sorted(calls)
+
+
 def cargo_workspace_metadata(repo_root: Path) -> dict:
     result = subprocess.run(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"],
@@ -1617,11 +1660,23 @@ class ProductContractTests(unittest.TestCase):
         )
         offenders = []
         for path in application_root.rglob("*.rs"):
-            production = productive_rust_code(path.read_bytes())
-            if b'std::process::Command::new("git")' in production:
+            if direct_git_command_calls(path.read_bytes()):
                 offenders.append(str(path.relative_to(repo_root)))
 
         self.assertEqual(offenders, [])
+
+    def test_direct_git_command_guard_matches_calls_before_masking_literals(self) -> None:
+        source = br'''
+fn productive() { std::process::Command::new("git"); }
+fn harmless() {
+    let mention = "std::process::Command::new(\"git\")";
+    // std::process::Command::new("git");
+}
+#[cfg(test)]
+fn test_only() { std::process::Command::new("git"); }
+'''
+
+        self.assertEqual(len(direct_git_command_calls(source)), 1)
 
     def write_executable(self, tools_dir: Path, name: str, body: str) -> None:
         commands = {

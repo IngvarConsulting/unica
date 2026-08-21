@@ -5883,7 +5883,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn code_patch_apply_is_blocked_for_a_locked_supported_object() {
+    pub(crate) fn code_patch_locked_support_blocks_preview_and_apply_before_handler() {
         let root = test_workspace_root("unica-code-patch-support-guard");
         let workspace = root.join("workspace");
         let src = workspace.join("src");
@@ -5916,9 +5916,8 @@ pub(crate) mod tests {
         .unwrap();
         let before = b"Procedure Run()\nEndProcedure\n";
         std::fs::write(&module, before).unwrap();
-        let args = json!({
+        let mut args = json!({
             "cwd": workspace,
-            "dryRun": false,
             "sourceSet": "main",
             "metadataPath": "Catalog.Items.ObjectModule",
             "operation": "insert",
@@ -5930,159 +5929,159 @@ pub(crate) mod tests {
         .unwrap()
         .clone();
 
-        let result = UnicaApplication::new()
-            .call_tool("unica.code.patch", &args)
-            .unwrap();
+        let mut results = Vec::new();
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), json!(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.code.patch", &args)
+                .unwrap();
 
-        assert!(!result.ok);
-        assert!(result.summary.contains("support guard"));
-        assert!(result.errors.join("\n").contains("на замке"));
-        assert!(result.data.is_none());
-        assert!(result.cache.events.is_empty());
-        assert_eq!(std::fs::read(&module).unwrap(), before);
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert!(result.summary.contains("support guard"));
+            assert!(result.errors.join("\n").contains("на замке"));
+            assert!(result.data.is_none());
+            assert!(result.cache.events.is_empty());
+            assert_eq!(std::fs::read(&module).unwrap(), before);
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
 
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn every_mutator_defaults_to_preview_without_touching_storage() {
-        fn value_for(name: &str, schema: &Value) -> Value {
-            if let Some(default) = schema.get("default") {
-                return default.clone();
-            }
-            if let Some(first) = schema
-                .get("enum")
-                .and_then(Value::as_array)
-                .and_then(|v| v.first())
-            {
-                return first.clone();
-            }
-            match name {
-                "sourceSet" => json!("main"),
-                "metadataPath" => json!("Catalog.Items"),
-                "jobId" => json!("00000000-0000-4000-8000-000000000001"),
-                "Name" | "MethodName" | "Object" => json!("PreviewName"),
-                "selector" => json!({"method": "Run"}),
-                "content" => json!("Procedure Added()\nEndProcedure"),
-                "operations" => json!([{"op": "set", "path": "synonym", "value": "Preview"}]),
-                "definition" | "Value" => json!("{}"),
-                _ => match schema.get("type").and_then(Value::as_str) {
-                    Some("boolean") => json!(true),
-                    Some("integer") => schema.get("minimum").cloned().unwrap_or_else(|| json!(1)),
-                    Some("array") => json!([]),
-                    Some("object") => json!({}),
-                    _ => json!(format!("preview-{name}")),
-                },
-            }
-        }
-
-        let root = test_workspace_root("unica-all-mutator-preview-storage");
+    pub(crate) fn form_remove_locked_support_blocks_preview_and_apply_before_handler() {
+        let root = test_workspace_root("unica-form-remove-support-guard");
         let workspace = root.join("workspace");
-        let cache = workspace.join(".build/unica");
-        let index = cache.join("indexes/main/index.json");
-        let state = cache.join("state.json");
-        let hidden_service = cache.join("services/main/service.json");
-        std::fs::create_dir_all(index.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(hidden_service.parent().unwrap()).unwrap();
-        std::fs::write(workspace.join("source.bin"), b"source-before").unwrap();
-        std::fs::write(&index, b"index-before").unwrap();
-        std::fs::write(&state, b"state-before").unwrap();
-        std::fs::write(&hidden_service, b"service-before").unwrap();
-        let storage = [workspace.join("source.bin"), state, index, hidden_service];
-        let before = storage
-            .iter()
-            .map(|path| (path.clone(), std::fs::read(path).unwrap()))
-            .collect::<Vec<_>>();
+        let src = workspace.join("src");
+        std::fs::create_dir_all(src.join("Ext")).unwrap();
+        std::fs::create_dir_all(src.join("Catalogs")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Configuration.xml"),
+            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        .unwrap();
+        let object = src.join("Catalogs/Items.xml");
+        std::fs::write(
+            &object,
+            support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("Ext/ParentConfigurations.bin"),
+            support_test_parent_configurations_bin(
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            ),
+        )
+        .unwrap();
+        let before = std::fs::read(&object).unwrap();
+        let mut args = json!({
+            "cwd": workspace,
+            "SrcDir": "src/Catalogs",
+            "ObjectName": "Items",
+            "FormName": "Order"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut results = Vec::new();
 
+        for dry_run in [false, true] {
+            args.insert("dryRun".to_string(), json!(dry_run));
+            let result = UnicaApplication::new()
+                .call_tool("unica.form.remove", &args)
+                .unwrap();
+            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
+            assert!(result.summary.contains("support guard"), "{result:?}");
+            assert!(result.errors.join("\n").contains("на замке"), "{result:?}");
+            assert!(result.cache.events.is_empty(), "{result:?}");
+            assert_eq!(std::fs::read(&object).unwrap(), before);
+            assert!(!src.join("Catalogs/Items/Forms/Order.xml").exists());
+            results.push(result);
+        }
+        assert_support_guard_block_parity(&results[0], &results[1]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    pub(crate) fn cf_init_support_exemption_reaches_preview_and_apply_handlers() {
+        let root = test_workspace_root("unica-cf-init-support-exemption");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut args = json!({
+            "cwd": workspace,
+            "Name": "GuardExemption",
+            "OutputDir": "src"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let preview = UnicaApplication::new()
+            .call_tool("unica.cf.init", &args)
+            .unwrap();
+        assert!(preview.ok, "{preview:?}");
+        assert!(preview.data.is_some(), "{preview:?}");
+        assert!(!workspace.join("src/Configuration.xml").exists());
+
+        args.insert("dryRun".to_string(), json!(false));
+        let applied = UnicaApplication::new()
+            .call_tool("unica.cf.init", &args)
+            .unwrap();
+        assert!(applied.ok, "{applied:?}");
+        assert!(applied.data.is_some(), "{applied:?}");
+        assert!(workspace.join("src/Configuration.xml").exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preview_result_contains_cache_shape_without_second_call() {
         let app = UnicaApplication::with_ports(Arc::new(FixedOutcomePorts {
-            outcome: AdapterOutcome::ok("preview handler completed"),
+            outcome: AdapterOutcome::ok("planned preview"),
             data: None,
         }));
-        let mut observed = Vec::new();
-        for tool in tools()
-            .into_iter()
-            .filter(|tool| tool.execution.is_mutating())
-        {
-            let schema = tool_contracts::input_schema_for_tool(&tool);
-            let mut args = Map::new();
-            if schema["properties"].get("cwd").is_some() {
-                args.insert("cwd".to_string(), json!(workspace.display().to_string()));
-            }
-            for required in schema["required"].as_array().into_iter().flatten() {
-                let name = required.as_str().unwrap();
-                args.insert(
-                    name.to_string(),
-                    value_for(name, &schema["properties"][name]),
-                );
-            }
-            if args.contains_key("operations") {
-                args.insert(
-                    "operations".to_string(),
-                    match tool.name {
-                        "unica.meta.edit" => json!([{
-                            "op": "setProperties",
-                            "values": {"Comment": "Preview"}
-                        }]),
-                        "unica.xdto.edit" => json!([{
-                            "op": "addObjectType",
-                            "name": "PreviewType"
-                        }]),
-                        "unica.role.edit" => json!([{
-                            "op": "setRight",
-                            "objectName": "Catalog.Items",
-                            "right": "Read",
-                            "value": true
-                        }]),
-                        _ => args["operations"].clone(),
-                    },
-                );
-            }
-            if tool.name == "unica.form.edit" {
-                args.insert("definition".to_string(), json!({}));
-            }
-            if tool.name == "unica.role.edit" {
-                args.insert("metadataPath".to_string(), json!("Role.Preview"));
-            }
-            if tool.name == "unica.xdto.edit" {
-                args.insert("metadataPath".to_string(), json!("XDTOPackage.Preview"));
-            }
-            assert!(
-                !args.contains_key("dryRun"),
-                "{} test must exercise the default",
-                tool.name
-            );
-            let result = app
-                .call_tool_after_runtime_admission_for_test(tool.name, &args)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "{} default preview failed: {error}; args={args:?}",
-                        tool.name
-                    )
-                });
-            assert_eq!(result.cache.mode, "dry-run", "{}: {result:?}", tool.name);
-            assert_eq!(result.command, None, "{}: {result:?}", tool.name);
-            observed.push((tool.name, preview_strategy(&tool).unwrap()));
-            for (path, bytes) in &before {
-                assert_eq!(
-                    std::fs::read(path).unwrap(),
-                    *bytes,
-                    "{} changed {}",
-                    tool.name,
-                    path.display()
-                );
-            }
-        }
+        let result = app.call_tool("unica.build.load", &Map::new()).unwrap();
+        let wire = serde_json::to_value(&result).unwrap();
 
-        let expected = tools()
-            .into_iter()
-            .filter(|tool| tool.execution.is_mutating())
-            .map(|tool| (tool.name, preview_strategy(&tool).unwrap()))
-            .collect::<Vec<_>>();
+        assert_eq!(result.cache.mode, "dry-run");
+        assert_eq!(wire["cache"]["mode"], "dry-run");
         assert_eq!(
-            observed, expected,
-            "the public call matrix must be production-derived"
+            wire["cache"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
+                "events",
+                "fresh",
+                "invalidated",
+                "lazy_rebuilt",
+                "mode",
+                "refreshed",
+                "root",
+                "stale",
+                "workspace_epoch",
+            ])
         );
-        std::fs::remove_dir_all(root).unwrap();
+        for field in [
+            "events",
+            "invalidated",
+            "refreshed",
+            "lazy_rebuilt",
+            "stale",
+            "fresh",
+        ] {
+            assert!(wire["cache"][field].is_array(), "missing cache.{field}");
+        }
     }
 
     #[test]
@@ -9303,7 +9302,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn mutating_native_support_guard_coverage_is_explicit() {
+    pub(crate) fn mutating_native_support_guard_coverage_is_explicit() {
         use operation_descriptors::{SupportGuardPolicy, SupportGuardRequirement};
 
         let mut guarded = Vec::new();
@@ -9408,247 +9407,6 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             "every unguarded native mutation must remain an explicitly justified support-guard exception"
         );
-    }
-
-    #[derive(Default)]
-    struct SupportGuardMatrixPorts {
-        invoked: Mutex<Vec<&'static str>>,
-    }
-
-    impl ports::ApplicationPorts for SupportGuardMatrixPorts {
-        fn discover_workspace(
-            &self,
-            requested_cwd: Option<PathBuf>,
-        ) -> Result<WorkspaceContext, String> {
-            let cwd = requested_cwd.unwrap_or_default();
-            Ok(WorkspaceContext {
-                cwd: cwd.clone(),
-                workspace_root: cwd.clone(),
-                cache_root: cwd.join(".build/unica"),
-                workspace_epoch: 1,
-            })
-        }
-
-        fn validate_tool_context(
-            &self,
-            _spec: ToolSpec,
-            _args: &Map<String, Value>,
-            _mode: InvocationMode,
-            _context: &WorkspaceContext,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn evaluate_support_guard(
-            &self,
-            spec: ToolSpec,
-            _args: &Map<String, Value>,
-            _context: &WorkspaceContext,
-        ) -> Result<SupportGuardCheck, String> {
-            let ToolHandler::NativeOperation { operation, .. } = spec.handler else {
-                return Ok(SupportGuardCheck::Allow);
-            };
-            if operation_descriptors::native_operation_descriptor(operation)
-                .and_then(|descriptor| descriptor.support_guard)
-                .is_none()
-            {
-                return Ok(SupportGuardCheck::Allow);
-            }
-            Ok(SupportGuardCheck::Block(AdapterOutcome {
-                ok: false,
-                summary: format!("{} blocked by support guard", spec.name),
-                changes: Vec::new(),
-                warnings: Vec::new(),
-                errors: vec!["support locked".to_string()],
-                artifacts: Vec::new(),
-                stdout: None,
-                stderr: None,
-                command: None,
-            }))
-        }
-
-        fn invoke_handler(
-            &self,
-            spec: ToolSpec,
-            _args: &Map<String, Value>,
-            _context: &WorkspaceContext,
-            _mode: InvocationMode,
-            _cancellation: &CancellationToken,
-        ) -> Result<ports::HandlerOutcome, String> {
-            self.invoked.lock().unwrap().push(spec.name);
-            Ok(ports::HandlerOutcome::plain(AdapterOutcome::ok(format!(
-                "{} planner ran",
-                spec.name
-            ))))
-        }
-
-        fn cache_report(
-            &self,
-            context: &WorkspaceContext,
-            _events: &[DomainEvent],
-            _mode: InvocationMode,
-            _cache_access: CacheAccess,
-        ) -> Result<CacheReport, String> {
-            Ok(CacheReport {
-                mode: "read".to_string(),
-                root: context.cache_root.display().to_string(),
-                workspace_epoch: context.workspace_epoch,
-                events: Vec::new(),
-                invalidated: Vec::new(),
-                refreshed: Vec::new(),
-                lazy_rebuilt: Vec::new(),
-                stale: Vec::new(),
-                fresh: Vec::new(),
-                publication_warnings: Vec::new(),
-            })
-        }
-
-        fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
-    }
-
-    fn support_guard_matrix_args(
-        tool: &ToolSpec,
-        workspace: &std::path::Path,
-    ) -> Map<String, Value> {
-        fn value_for(name: &str, schema: &Value) -> Value {
-            if let Some(default) = schema.get("default") {
-                return default.clone();
-            }
-            if let Some(first) = schema
-                .get("enum")
-                .and_then(Value::as_array)
-                .and_then(|v| v.first())
-            {
-                return first.clone();
-            }
-            match name {
-                "sourceSet" => json!("main"),
-                "metadataPath" => json!("Catalog.Items"),
-                "Name" | "MethodName" | "Object" => json!("GuardName"),
-                "selector" => json!({"method": "Run"}),
-                "content" => json!("Procedure Added()\nEndProcedure"),
-                "operations" => json!([{"op": "set", "path": "synonym", "value": "Guard"}]),
-                "definition" | "Value" => json!("{}"),
-                _ => match schema.get("type").and_then(Value::as_str) {
-                    Some("boolean") => json!(true),
-                    Some("integer") => schema.get("minimum").cloned().unwrap_or_else(|| json!(1)),
-                    Some("array") => json!([]),
-                    Some("object") => json!({}),
-                    _ => json!(format!("guard-{name}")),
-                },
-            }
-        }
-
-        let schema = tool_contracts::input_schema_for_tool(tool);
-        let mut args = Map::new();
-        if schema["properties"].get("cwd").is_some() {
-            args.insert("cwd".to_string(), json!(workspace.display().to_string()));
-        }
-        for required in schema["required"].as_array().into_iter().flatten() {
-            let name = required.as_str().unwrap();
-            args.insert(
-                name.to_string(),
-                value_for(name, &schema["properties"][name]),
-            );
-        }
-        if args.contains_key("operations") {
-            args.insert(
-                "operations".to_string(),
-                match tool.name {
-                    "unica.meta.edit" => json!([{"op": "setProperties", "values": {"Comment": "Guard"}}]),
-                    "unica.xdto.edit" => json!([{"op": "addObjectType", "name": "GuardType"}]),
-                    "unica.role.edit" => json!([{"op": "setRight", "objectName": "Catalog.Items", "right": "Read", "value": true}]),
-                    _ => args["operations"].clone(),
-                },
-            );
-        }
-        if tool.name == "unica.form.edit" {
-            args.insert("definition".to_string(), json!({}));
-        }
-        if tool.name == "unica.role.edit" {
-            args.insert("metadataPath".to_string(), json!("Role.Guard"));
-        }
-        if tool.name == "unica.xdto.edit" {
-            args.insert("metadataPath".to_string(), json!("XDTOPackage.Guard"));
-        }
-        if tool.name == "unica.support.edit" {
-            args.insert("Path".to_string(), json!("src"));
-            args.insert("Capability".to_string(), json!("off"));
-        }
-        args
-    }
-
-    #[test]
-    fn mutating_native_support_guard_matrix_is_closed() {
-        mutating_native_support_guard_coverage_is_explicit();
-        let root = test_workspace_root("unica-support-guard-production-matrix");
-        let ports = Arc::new(SupportGuardMatrixPorts::default());
-        let app = UnicaApplication::with_ports(ports.clone());
-        let mut observed = Vec::new();
-
-        for tool in tools().into_iter().filter(|tool| {
-            tool.execution.is_mutating()
-                && matches!(tool.handler, ToolHandler::NativeOperation { .. })
-        }) {
-            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
-                unreachable!()
-            };
-            let guarded = operation_descriptors::native_operation_descriptor(operation)
-                .unwrap()
-                .support_guard
-                .is_some();
-            observed.push((operation, guarded));
-            let calls_before = ports.invoked.lock().unwrap().len();
-            let mut results = Vec::new();
-            for dry_run in [false, true] {
-                let mut args = support_guard_matrix_args(&tool, &root);
-                args.insert("dryRun".to_string(), json!(dry_run));
-                let result = app.call_tool(tool.name, &args).unwrap_or_else(|error| {
-                    panic!("{} support matrix: {error}; args={args:?}", tool.name)
-                });
-                assert_eq!(
-                    result.ok, !guarded,
-                    "{} dryRun={dry_run}: {result:?}",
-                    tool.name
-                );
-                results.push(result);
-            }
-            let calls_after = ports.invoked.lock().unwrap().len();
-            if guarded {
-                assert_eq!(
-                    calls_after, calls_before,
-                    "{operation} planner ran behind a support lock"
-                );
-                assert_support_guard_block_parity(&results[0], &results[1]);
-            } else {
-                assert_eq!(
-                    calls_after,
-                    calls_before + 2,
-                    "{operation} exemption did not reach both planners"
-                );
-            }
-        }
-
-        let expected = tools()
-            .into_iter()
-            .filter_map(|tool| match tool.handler {
-                ToolHandler::NativeOperation { operation, .. } if tool.execution.is_mutating() => {
-                    Some((
-                        operation,
-                        operation_descriptors::native_operation_descriptor(operation)
-                            .unwrap()
-                            .support_guard
-                            .is_some(),
-                    ))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            observed, expected,
-            "support coverage must derive from the production registry"
-        );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -14273,7 +14031,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn subsystem_compile_guards_locked_parent_before_both_planners() {
+    pub(crate) fn subsystem_compile_guards_locked_parent_before_both_planners() {
         for dry_run in [false, true] {
             let root = test_workspace_root(if dry_run {
                 "unica-subsystem-parent-guard-preview"

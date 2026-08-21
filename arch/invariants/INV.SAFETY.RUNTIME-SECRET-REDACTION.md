@@ -3,7 +3,7 @@ id: INV.SAFETY.RUNTIME-SECRET-REDACTION
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/runtime_jobs.rs::production_secret_key_matrix_is_redacted_from_runtime_surfaces
+check: crates/unica-coder/src/infrastructure/internal_adapters.rs::production_secret_redaction_surfaces_are_closed
 scope: [app, product]
 ---
 

@@ -3,7 +3,7 @@ id: INV.SAFETY.SUPPORT-GUARD-PARITY
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::mutating_native_support_guard_matrix_is_closed
+check: crates/unica-coder/src/infrastructure/support_guard.rs::public_support_guard_resolver_matrix_runs_real_handlers
 scope: [app, product]
 ---
 

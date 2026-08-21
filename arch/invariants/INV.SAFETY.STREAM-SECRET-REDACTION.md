@@ -3,7 +3,7 @@ id: INV.SAFETY.STREAM-SECRET-REDACTION
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/redaction.rs::stream_redactor_covers_production_secret_keys_at_every_chunk_boundary
+check: crates/unica-coder/src/infrastructure/internal_adapters.rs::production_secret_redaction_surfaces_are_closed
 scope: [app, product]
 ---
 

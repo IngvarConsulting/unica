@@ -3,7 +3,7 @@ id: INV.SAFETY.PREVIEW-BY-DEFAULT
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::every_mutator_defaults_to_preview_without_touching_storage
+check: crates/unica-coder/src/infrastructure/application_ports.rs::public_preview_strategies_are_real_and_recursively_write_free
 scope: [app, product]
 ---
 

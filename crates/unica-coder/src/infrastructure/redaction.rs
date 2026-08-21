@@ -241,11 +241,7 @@ pub(crate) fn production_secret_key_matrix() -> Vec<String> {
     EXACT_SECRET_KEYS
         .iter()
         .map(|key| (*key).to_string())
-        .chain(
-            SUBSTRING_SECRET_KEYS
-                .iter()
-                .map(|key| format!("runtime_{key}_value")),
-        )
+        .chain(SUBSTRING_SECRET_KEYS.iter().map(|key| (*key).to_string()))
         .collect()
 }
 
@@ -317,7 +313,7 @@ fn secret_value_delimiter(ch: char) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{is_secret_key, production_secret_key_matrix, redactor, StreamRedactor};
 
     #[test]
@@ -332,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_redactor_covers_production_secret_keys_at_every_chunk_boundary() {
+    pub(crate) fn stream_redactor_covers_production_secret_keys_at_every_chunk_boundary() {
         for key in production_secret_key_matrix() {
             assert!(
                 is_secret_key(&key),

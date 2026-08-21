@@ -350,7 +350,7 @@ for raw in sys.stdin:
         )
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-    def test_scenario_runner_records_success_metrics_and_json_lines(self) -> None:
+    def test_non_default_bsp_ref_is_recorded_in_actual_report(self) -> None:
         module = load_assessment_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -376,13 +376,20 @@ for raw in sys.stdin:
                 candidate_package="unica-codex-marketplace-linux-x64.tar.gz",
                 bsp_commit="abc123",
                 timeout_seconds=10,
+                bsp_ref="review/non-default-ref",
             )
 
             self.assertEqual(report["schemaVersion"], 1)
             self.assertEqual(report["summary"]["status"], "passed")
             self.assertEqual(report["bsp"]["commit"], "abc123")
-            self.assertEqual(report["bsp"]["ref"], module.BSP_REF)
-            self.assertEqual(report["bsp"]["requestedRef"], module.BSP_REF)
+            self.assertEqual(report["bsp"]["ref"], "review/non-default-ref")
+            self.assertEqual(report["bsp"]["requestedRef"], "review/non-default-ref")
+            persisted = json.loads(
+                (out_dir / "assessment.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                persisted["bsp"]["requestedRef"], "review/non-default-ref"
+            )
             self.assertTrue(all(scenario["durationMs"] >= 0 for scenario in report["scenarios"]))
             self.assertIn("UnusedLocalVariable", report["summary"]["qualityFindings"]["diagnosticCodes"])
             self.assertTrue((out_dir / "assessment.json").is_file())
@@ -391,6 +398,10 @@ for raw in sys.stdin:
             self.assertEqual(len(lines), len(report["scenarios"]))
             self.assertTrue((out_dir / "index.html").read_text(encoding="utf-8").startswith("<!doctype html>"))
             self.assertIn("v9.9.9", (out_dir / "summary.md").read_text(encoding="utf-8"))
+
+    def test_scenario_runner_records_success_metrics_and_json_lines(self) -> None:
+        """Keep the report-shape architecture check on the same real scenario run."""
+        self.test_non_default_bsp_ref_is_recorded_in_actual_report()
 
     def test_mcp_client_keeps_stdin_open_until_delayed_response(self) -> None:
         module = load_assessment_module()
@@ -1058,7 +1069,7 @@ for raw in sys.stdin:
             scenario,
         )
 
-    def test_default_bsp_ref_is_pinned_and_report_records_requested_ref(self) -> None:
+    def test_default_bsp_ref_is_pinned(self) -> None:
         module = load_assessment_module()
 
         self.assertNotEqual(module.BSP_REF, "master")

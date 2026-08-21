@@ -7833,8 +7833,26 @@ fn main() {
         }
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ServiceDeadlineClass {
+        Work,
+        Control,
+    }
+
+    fn service_deadline_class(kind: &ServiceRequestKind) -> ServiceDeadlineClass {
+        match kind {
+            ServiceRequestKind::BslMcp { .. }
+            | ServiceRequestKind::RlmReady { .. }
+            | ServiceRequestKind::RlmMcp { .. } => ServiceDeadlineClass::Work,
+            ServiceRequestKind::Ping
+            | ServiceRequestKind::Cancel { .. }
+            | ServiceRequestKind::Invalidate { .. }
+            | ServiceRequestKind::Shutdown => ServiceDeadlineClass::Control,
+        }
+    }
+
     #[test]
-    fn service_request_kind_deadline_matrix_is_closed() {
+    fn service_request_kind_deadline_matrix_is_exhaustive() {
         let work = [
             ServiceRequestKind::BslMcp {
                 operation_id: "bsl".into(),
@@ -7894,6 +7912,7 @@ fn main() {
         );
 
         for kind in work {
+            assert_eq!(service_deadline_class(&kind), ServiceDeadlineClass::Work);
             assert!(!kind.is_control());
             let cancellation = CancellationToken::new();
             let io = RacingIo::new(cancellation.clone(), FailureStage::Eof);
@@ -7912,6 +7931,7 @@ fn main() {
             );
         }
         for kind in control {
+            assert_eq!(service_deadline_class(&kind), ServiceDeadlineClass::Control);
             assert!(kind.is_control());
         }
         cancellable_connector_uses_short_connect_budget_for_every_control_kind();

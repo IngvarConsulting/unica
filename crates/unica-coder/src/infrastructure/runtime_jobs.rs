@@ -40,6 +40,11 @@ const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(30);
 const LIFECYCLE_LOCK_RETRY: Duration = Duration::from_millis(20);
 const STREAM_FINISH_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_SECRET_VALUE_FLAGS: &[&str] =
+    &["password", "pwd", "token", "secret", "connection", "c"];
+const RUNTIME_CONNECTION_MARKERS: &[&str] = &[
+    "file=", "srvr=", "ref=", "usr=", "pwd=", "dbsrvr=", "dbname=",
+];
 
 type JobResult<T> = Result<T, String>;
 
@@ -2454,10 +2459,7 @@ fn redact_argv(argv: &[String]) -> Vec<String> {
         .map(|argument| {
             let lower = argument.trim_start_matches('-').to_ascii_lowercase();
             let redact_argument = redact_next;
-            redact_next = matches!(
-                lower.as_str(),
-                "password" | "pwd" | "token" | "secret" | "connection" | "c"
-            );
+            redact_next = RUNTIME_SECRET_VALUE_FLAGS.contains(&lower.as_str());
             if redact_argument || looks_like_connection_string(argument) {
                 "<redacted>".to_string()
             } else {
@@ -2469,11 +2471,19 @@ fn redact_argv(argv: &[String]) -> Vec<String> {
 
 fn looks_like_connection_string(argument: &str) -> bool {
     let lower = argument.to_ascii_lowercase();
-    [
-        "file=", "srvr=", "ref=", "usr=", "pwd=", "dbsrvr=", "dbname=",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
+    RUNTIME_CONNECTION_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+#[cfg(test)]
+pub(crate) fn production_runtime_secret_flags() -> &'static [&'static str] {
+    RUNTIME_SECRET_VALUE_FLAGS
+}
+
+#[cfg(test)]
+pub(crate) fn production_runtime_connection_markers() -> &'static [&'static str] {
+    RUNTIME_CONNECTION_MARKERS
 }
 
 fn bounded_redacted_tail(text: &str, max_bytes: usize) -> String {
@@ -2564,7 +2574,7 @@ fn io_error(context: &str, error: &std::io::Error) -> String {
 pub(crate) use tests::assert_system_cancellation_reaps_process_tree;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::infrastructure::platform::testing::{
         create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
@@ -3371,7 +3381,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts() {
+    pub(crate) fn terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts() {
         const ARGV_SECRET: &str = "argv-secret";
         const TARGET_SECRET: &str = "target-secret";
         const ARTIFACT_SECRET: &str = "artifact-secret";
@@ -3435,8 +3445,17 @@ mod tests {
     }
 
     #[test]
-    fn production_secret_key_matrix_is_redacted_from_runtime_surfaces() {
+    pub(crate) fn production_secret_key_matrix_is_redacted_from_runtime_surfaces() {
         let keys = crate::infrastructure::redaction::production_secret_key_matrix();
+        assert_eq!(keys, ["connection", "pwd", "password", "token", "secret"]);
+        assert_eq!(
+            production_runtime_secret_flags(),
+            ["password", "pwd", "token", "secret", "connection", "c"]
+        );
+        assert_eq!(
+            production_runtime_connection_markers(),
+            ["file=", "srvr=", "ref=", "usr=", "pwd=", "dbsrvr=", "dbname="]
+        );
         let stdout = keys
             .iter()
             .map(|key| format!("{key}=stdout-value-{key}"))
@@ -3448,7 +3467,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let argv = std::iter::once("runner".to_string())
-            .chain(keys.iter().map(|key| format!("{key}=argv-value-{key}")))
+            .chain(
+                keys.iter()
+                    .flat_map(|key| [format!("--{key}"), format!("argv-value-{key}")]),
+            )
             .collect::<Vec<_>>();
         let target = keys
             .iter()
@@ -3483,6 +3505,27 @@ mod tests {
         )
         .expect("read runtime record");
 
+        assert_eq!(terminal.redacted_argv.len(), keys.len() * 2 + 1);
+        assert_eq!(terminal.redacted_argv[0], "runner");
+        assert!(terminal
+            .artifact_path
+            .as_deref()
+            .unwrap()
+            .contains("<redacted>"));
+        for key in &keys {
+            assert!(
+                terminal
+                    .redacted_argv
+                    .windows(2)
+                    .any(|pair| { pair == [format!("--{key}"), "<redacted>".to_string()] }),
+                "argv lost the redacted {key} field: {:?}",
+                terminal.redacted_argv
+            );
+            assert!(logs.stdout.contains(&format!("{key}=<redacted>")));
+            assert!(logs.stderr.contains(&format!("{key}=<redacted>")));
+            assert!(persistence.contains(&format!("--{key}")));
+        }
+
         for key in keys {
             for secret in [
                 format!("stdout-value-{key}"),
@@ -3501,10 +3544,27 @@ mod tests {
                 }
             }
         }
+
+        for flag in production_runtime_secret_flags() {
+            let secret = format!("flag-secret-{flag}");
+            let raw = vec!["runner".to_string(), format!("--{flag}"), secret.clone()];
+            let redacted = redact_argv(&raw);
+            assert_eq!(redacted.len(), raw.len());
+            assert_eq!(redacted[1], format!("--{flag}"));
+            assert_eq!(redacted[2], "<redacted>");
+            assert!(!redacted.join(" ").contains(&secret));
+        }
+        for marker in production_runtime_connection_markers() {
+            let secret = format!("{marker}connection-secret");
+            let redacted = redact_argv(&["runner".to_string(), "--c".to_string(), secret.clone()]);
+            assert_eq!(redacted, ["runner", "--c", "<redacted>"]);
+            assert!(!redacted.join(" ").contains(&secret));
+        }
     }
 
     #[test]
-    fn direct_status_rejects_corrupt_unknown_schema_and_non_uuid_without_touching_active_lock() {
+    pub(crate) fn direct_status_rejects_corrupt_unknown_schema_and_non_uuid_without_touching_active_lock(
+    ) {
         let cache = TestCache::new();
         let runner = Arc::new(FakeRunner::success_after(50));
         let service = RuntimeJobService::new(cache.path(), runner);
@@ -3559,7 +3619,7 @@ mod tests {
     }
 
     #[test]
-    fn list_skips_a_corrupt_record_and_redacts_its_warning() {
+    pub(crate) fn list_skips_a_corrupt_record_and_redacts_its_warning() {
         let cache = TestCache::new();
         let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(1)));
         let corrupt_id = Uuid::new_v4().to_string();
@@ -4937,7 +4997,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_handoff_never_persists_actual_argv_or_output_secrets() {
+    pub(crate) fn worker_handoff_never_persists_actual_argv_or_output_secrets() {
         const REQUEST_SECRET: &str = "request-secret";
         const OUTPUT_SECRET: &str = "output-secret";
 
@@ -4985,7 +5045,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_command_redacts_a_launch_connection_string_completely() {
+    pub(crate) fn persisted_command_redacts_a_launch_connection_string_completely() {
         let cache = TestCache::new();
         let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(1)));
         let job = service

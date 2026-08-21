@@ -629,23 +629,23 @@ class FateCoverageTests(unittest.TestCase):
         exact_checks = {
             "INV.SAFETY.PREVIEW-BY-DEFAULT": (
                 "product",
-                "crates/unica-coder/src/application/mod.rs::"
-                "every_mutator_defaults_to_preview_without_touching_storage",
+                "crates/unica-coder/src/infrastructure/application_ports.rs::"
+                "public_preview_strategies_are_real_and_recursively_write_free",
             ),
             "INV.SAFETY.STREAM-SECRET-REDACTION": (
                 "product",
-                "crates/unica-coder/src/infrastructure/redaction.rs::"
-                "stream_redactor_covers_production_secret_keys_at_every_chunk_boundary",
+                "crates/unica-coder/src/infrastructure/internal_adapters.rs::"
+                "production_secret_redaction_surfaces_are_closed",
             ),
             "INV.SAFETY.RUNTIME-SECRET-REDACTION": (
                 "product",
-                "crates/unica-coder/src/infrastructure/runtime_jobs.rs::"
-                "production_secret_key_matrix_is_redacted_from_runtime_surfaces",
+                "crates/unica-coder/src/infrastructure/internal_adapters.rs::"
+                "production_secret_redaction_surfaces_are_closed",
             ),
             "INV.SAFETY.CONFIG-ERROR-REDACTION": (
                 "product",
-                "crates/unica-coder/src/infrastructure/operational_config.rs::"
-                "diagnostics_never_expose_absolute_paths_raw_toml_or_values",
+                "crates/unica-coder/src/infrastructure/internal_adapters.rs::"
+                "production_secret_redaction_surfaces_are_closed",
             ),
             "INV.CI.ALL-TARGETS-GREEN": (
                 "process",
@@ -715,6 +715,74 @@ class FateCoverageTests(unittest.TestCase):
         self.assertNotIn(
             "INV.WIRE.SDK-MODULE-EXPORTS",
             records["DEC.2026-08-18.CARRIED-RULES"]["establishes"],
+        )
+
+    def test_task6_round2_evidence_runs_real_paths_and_owns_source_apply_removal(self) -> None:
+        records = {}
+        for path in (REPO_ROOT / "arch").rglob("*.md"):
+            props = FATE_GUARD._front_matter_props(path)
+            if identifier := props.get("id"):
+                records[identifier] = props
+        rows = {row.subject: row for row in FATE_GUARD.fate_rows(REPO_ROOT)}
+
+        exact_checks = {
+            "INV.SAFETY.PREVIEW-BY-DEFAULT": (
+                "crates/unica-coder/src/infrastructure/application_ports.rs::"
+                "public_preview_strategies_are_real_and_recursively_write_free"
+            ),
+            "INV.TOKEN.CACHE-IMPACT-IN-RESULT": (
+                "crates/unica-coder/src/application/mod.rs::"
+                "preview_result_contains_cache_shape_without_second_call"
+            ),
+            "INV.SAFETY.SUPPORT-GUARD-COVERAGE": (
+                "crates/unica-coder/src/infrastructure/support_guard.rs::"
+                "public_support_guard_resolver_matrix_runs_real_handlers"
+            ),
+            "INV.SAFETY.SUPPORT-GUARD-PARITY": (
+                "crates/unica-coder/src/infrastructure/support_guard.rs::"
+                "public_support_guard_resolver_matrix_runs_real_handlers"
+            ),
+            "INV.SAFETY.RUNTIME-SECRET-REDACTION": (
+                "crates/unica-coder/src/infrastructure/internal_adapters.rs::"
+                "production_secret_redaction_surfaces_are_closed"
+            ),
+            "INV.SAFETY.STREAM-SECRET-REDACTION": (
+                "crates/unica-coder/src/infrastructure/internal_adapters.rs::"
+                "production_secret_redaction_surfaces_are_closed"
+            ),
+            "INV.SAFETY.CONFIG-ERROR-REDACTION": (
+                "crates/unica-coder/src/infrastructure/internal_adapters.rs::"
+                "production_secret_redaction_surfaces_are_closed"
+            ),
+            "INV.PERF.SERVICE-OPERATION-DEADLINE": (
+                "crates/unica-coder/src/infrastructure/workspace_services.rs::"
+                "service_request_kind_deadline_matrix_is_exhaustive"
+            ),
+            "INV.REL.ASSESSMENT-PIN": (
+                "tests/ci/test_release_assessment.py::"
+                "test_non_default_bsp_ref_is_recorded_in_actual_report"
+            ),
+            "INV.SURFACE.SOURCE-TOOL-SPECS": (
+                "crates/unica-coder/src/application/mod.rs::"
+                "source_resource_tools_are_read_only_and_have_no_cache_or_event_effects"
+            ),
+        }
+        self.assertEqual(
+            {identifier: records.get(identifier, {}).get("check") for identifier in exact_checks},
+            exact_checks,
+        )
+
+        removal = records.get("DEC.2026-08-21.SOURCE-READ-ONLY-SURFACE", {})
+        self.assertEqual(removal.get("status"), "active")
+        self.assertEqual(removal.get("governs"), "product")
+        self.assertEqual(
+            removal.get("realized"),
+            exact_checks["INV.SURFACE.SOURCE-TOOL-SPECS"],
+        )
+        self.assertEqual(removal.get("establishes"), "[INV.SURFACE.SOURCE-TOOL-SPECS]")
+        self.assertIn(
+            "INV.SURFACE.SOURCE-TOOL-SPECS",
+            rows["REQ-PERF-SOURCE-BOUNDS"].successors,
         )
 
     def test_every_v1_subject_has_exactly_one_fate(self) -> None:

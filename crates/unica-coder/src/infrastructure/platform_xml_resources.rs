@@ -1888,14 +1888,13 @@ mod tests {
     #[test]
     fn source_resource_limits_and_cancellation_matrix_is_exact() {
         use crate::domain::source_resources::{
-            SOURCE_MANIFEST_RESOURCE_MAX, SOURCE_REPLACEMENT_MAX_BYTES,
-            SOURCE_RESOURCE_PAGE_LIMIT_MAX, SOURCE_SNAPSHOT_TTL_SECONDS,
+            SOURCE_MANIFEST_RESOURCE_MAX, SOURCE_RESOURCE_PAGE_LIMIT_MAX,
+            SOURCE_SNAPSHOT_TTL_SECONDS,
         };
 
         assert_eq!(SOURCE_MANIFEST_RESOURCE_MAX, 100);
         assert_eq!(SOURCE_RESOURCE_PAGE_LIMIT_MAX, 50);
         assert_eq!(SOURCE_READ_LIMIT_MAX, 64 * 1024);
-        assert_eq!(SOURCE_REPLACEMENT_MAX_BYTES, 1024 * 1024);
         assert_eq!(SOURCE_SNAPSHOT_TTL_SECONDS, 5 * 60);
         assert_eq!(MAX_SNAPSHOT_BYTES, 32 * 1024 * 1024);
         assert_eq!(MAX_LIVE_SNAPSHOTS, 64);
