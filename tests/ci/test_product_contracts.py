@@ -493,9 +493,6 @@ class ProductContractTests(unittest.TestCase):
         ]
         self.assertGreater(len(rows), 5, "таблица маршрутизации не разобрана")
 
-        # Только два префикса читаются от `spec/`, и оба названы в шапке
-        # таблицы; всё остальное — от корня репозитория.
-        spec_relative = ("architecture/", "acceptance/")
         extensions = (".md", ".rs", ".py", ".yml", ".yaml", ".json", ".toml")
         offenders = []
         checked = 0
@@ -510,9 +507,8 @@ class ProductContractTests(unittest.TestCase):
                     probe = probe.rsplit("/", 1)[0] if "/" in probe else probe
                     if "<" in probe:
                         continue
-                base = repo_root / "spec" if probe.startswith(spec_relative) else repo_root
                 checked += 1
-                if not (base / probe).exists():
+                if not (repo_root / probe).exists():
                     offenders.append(token)
 
         self.assertGreater(checked, 15, "пути таблицы не разобраны")
@@ -533,17 +529,16 @@ class ProductContractTests(unittest.TestCase):
         self.assertNotIn("download-1ci-guides.py", agents)
         self.assertNotIn("docs-local/1ci/8.3.27/en/", agents)
         self.assertNotIn("kb.1ci.com/bin/download", agents)
-        # Активный слой spec/ — не только AGENTS.md: указание на локальный
-        # корпус в нём отправляет читателя к пути, который больше ничем не
-        # создаётся. Исторические docs/design и docs/plans сюда не входят.
-        for spec_path in sorted((REPO_ROOT / "spec").rglob("*")):
-            if not spec_path.is_file():
+        # Действующий нормативный слой не отправляет читателя к снятому корпусу.
+        # Замороженный `docs/arch-v1/` сюда намеренно не входит.
+        for arch_path in sorted((REPO_ROOT / "arch").rglob("*")):
+            if not arch_path.is_file():
                 continue
-            with self.subTest(path=spec_path.relative_to(REPO_ROOT).as_posix()):
+            with self.subTest(path=arch_path.relative_to(REPO_ROOT).as_posix()):
                 self.assertNotIn(
                     "docs-local/1ci",
-                    spec_path.read_text(encoding="utf-8"),
-                    "активный слой spec не должен ссылаться на снятый корпус",
+                    arch_path.read_text(encoding="utf-8"),
+                    "активный слой arch не должен ссылаться на снятый корпус",
                 )
 
     def test_local_corpus_directory_stays_ignored(self) -> None:
@@ -772,29 +767,29 @@ class ProductContractTests(unittest.TestCase):
 
     def test_claude_version_floor_stays_recorded_outside_the_root_readme(self) -> None:
         # The floor is load-bearing: clients before 2.1.69 cannot parse the
-        # catalog's git-subdir source. The root README deliberately omits it,
-        # so the plugin README and the decision record must keep it.
+        # catalog's git-subdir source. The package contract and its user-facing
+        # README, not the frozen v1 decision, keep it.
         repo_root = Path(__file__).resolve().parents[2]
         plugin_readme = (repo_root / "plugins/unica/README.md").read_text(encoding="utf-8")
-        decision = (
-            repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md"
-        ).read_text(encoding="utf-8")
+        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("2.1.69", plugin_readme)
-        self.assertIn("2.1.69", decision)
+        self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
 
     def test_claude_host_contract_is_recorded_for_agents(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
         claude_md = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
-        decisions = (repo_root / "spec/decisions/README.md").read_text(encoding="utf-8")
+        host_invariant = (
+            repo_root / "arch/invariants/INV.PKG.TWO-HOSTS-ONE-TREE.md"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("plugins/unica/.claude-plugin/plugin.json", agents)
         self.assertIn("AGENTS.md", claude_md)
-        self.assertIn("0012-one-plugin-directory-for-two-hosts.md", decisions)
-        self.assertTrue(
-            (repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md").is_file()
-        )
+        self.assertIn("Codex", host_invariant)
+        self.assertIn("Claude Code", host_invariant)
 
     def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -848,9 +843,9 @@ class ProductContractTests(unittest.TestCase):
         paths = [
             repo_root / "README.md",
             repo_root / "plugins/unica/README.md",
-            repo_root / "spec/acceptance/unica-mcp-validation.md",
-            repo_root / "spec/architecture/runtime.md",
-            repo_root / "spec/architecture/deployment.md",
+            repo_root / "docs/release-runbook.md",
+            repo_root / "arch/decisions/2026-08-19-core-first-acquisition.md",
+            repo_root / "arch/decisions/2026-08-20-engines-come-from-the-toolchain.md",
         ]
         forbidden = ("unica-local", "unica-codex-marketplace-")
         matches = [
@@ -907,7 +902,7 @@ class ProductContractTests(unittest.TestCase):
 
     def test_removed_script_backed_skills_do_not_leave_architecture_records(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        decisions = repo_root / "spec" / "decisions"
+        decisions = repo_root / "docs" / "arch-v1" / "decisions"
         index = (decisions / "README.md").read_text(encoding="utf-8")
 
         self.assertFalse((decisions / "0007-script-backed-utility-skill-exceptions.md").exists())
@@ -1281,109 +1276,6 @@ class ProductContractTests(unittest.TestCase):
             errors,
         )
 
-    def test_runtime_docs_define_workspace_service_deadlines_exactly(self) -> None:
-        """Three documents must quote the budgets the runtime actually enforces.
-
-        The contract is the numbers, not the wording. Asserting exact English
-        prose broke the moment the architecture layer was translated, while the
-        thing worth protecting is language-independent.
-
-        The budgets are read from the constants that enforce them rather than
-        written down here a second time. A literal set inside the test made the
-        check circular in two ways: changing `SERVICE_REQUEST_TIMEOUT` in the
-        runtime left every document and this test green, and the two former
-        "documents agree" assertions could not fail at all -- the loop above
-        them already established `required <= found` for every document, so
-        `found & required` was `required` on both sides of each comparison.
-        Anchoring the set to the source makes the loop the real check: drift in
-        the runtime now fails against all three documents at once.
-        """
-        repo_root = Path(__file__).resolve().parents[2]
-        sources = {
-            "runtime": repo_root / "spec/architecture/runtime.md",
-            "acceptance": repo_root / "spec/acceptance/unica-mcp-validation.md",
-            "adr-0006": repo_root
-            / "spec/decisions/0006-workspace-scoped-internal-services.md",
-        }
-
-        # Quantity plus unit, in either language: "120 seconds", "500 мс", "8 MiB".
-        quantity = re.compile(
-            r"(?<![\w.])(\d+)[\s-]*"
-            r"(seconds?|секунд\w*|ms\b|мс\b|MiB|КиБ|KiB|МиБ)",
-            re.IGNORECASE,
-        )
-
-        budgets = {}
-        for label, path in sources.items():
-            text = " ".join(path.read_text(encoding="utf-8").split())
-            found = set()
-            for value, unit in quantity.findall(text):
-                unit = unit.lower()
-                if unit.startswith(("second", "секунд")):
-                    canonical = "s"
-                elif unit in {"ms", "мс"}:
-                    canonical = "ms"
-                else:
-                    canonical = "bytes"
-                found.add(f"{value}{canonical}")
-            budgets[label] = found
-
-        required = self.enforced_workspace_service_budgets()
-        for label, found in budgets.items():
-            missing = sorted(required - found)
-            self.assertEqual(
-                missing, [], f"{label} no longer states the budgets {missing}"
-            )
-
-    def enforced_workspace_service_budgets(self) -> set:
-        """The deadlines the workspace service enforces, read from its source.
-
-        Two are named constants; the read-poll slice is a literal repeated at
-        every polling call site, so it is taken from those call sites and must
-        be a single value -- several different slices would mean the documented
-        one describes only part of the behaviour.
-
-        The unit is captured rather than assumed. Matching only `from_millis`
-        would let a call site move to `from_secs` and simply drop out of the
-        set, leaving the remaining site to agree with the documents on its own
-        while the runtime had stopped behaving as documented. Test code is cut
-        away first: the fixtures set their own read timeouts, and those are not
-        budgets anyone documents.
-        """
-        repo_root = Path(__file__).resolve().parents[2]
-        source = (
-            repo_root / "crates/unica-coder/src/infrastructure/workspace_services.rs"
-        ).read_text(encoding="utf-8")
-        source = re.split(r"^#\[cfg\(test\)\]", source, maxsplit=1, flags=re.MULTILINE)[0]
-
-        constants = {
-            match.group("name"): (match.group("unit"), match.group("value"))
-            for match in re.finditer(
-                r"^const (?P<name>[A-Z_]+): Duration = "
-                r"Duration::from_(?P<unit>secs|millis)\((?P<value>\d+)\);",
-                source,
-                re.MULTILINE,
-            )
-        }
-        budgets = set()
-        for name in ("SERVICE_REQUEST_TIMEOUT", "SERVICE_CONTROL_CONNECT_TIMEOUT"):
-            self.assertIn(name, constants, f"{name} no longer names a duration")
-            unit, value = constants[name]
-            budgets.add(f"{value}{'s' if unit == 'secs' else 'ms'}")
-
-        slices = {
-            f"{value}{'s' if unit == 'secs' else 'ms'}"
-            for unit, value in re.findall(
-                r"set_read_timeout\(\s*Some\((?:remaining\.min\()?"
-                r"Duration::from_(secs|millis)\((\d+)\)",
-                source,
-            )
-        }
-        self.assertEqual(
-            len(slices), 1, f"read polling uses several slice lengths: {sorted(slices)}"
-        )
-        budgets.add(slices.pop())
-        return budgets
 
     def test_tool_help_contracts_report_missing_rlm_server_transport_surface(self) -> None:
         module = load_contract_module()

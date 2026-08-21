@@ -20,8 +20,8 @@ import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REVIEW_PATH = REPO_ROOT / "spec/architecture/tool-surface-review.json"
-LEDGER_PATH = REPO_ROOT / "spec/architecture/tool-surface.md"
+REVIEW_PATH = REPO_ROOT / "arch/tool-surface-review.json"
+LEDGER_PATH = REPO_ROOT / "arch/tool-surface.md"
 DEFAULT_BINARY = REPO_ROOT / "target/debug/unica"
 
 # Above this count a tool is publishing the shared XML/DSL argument list rather
@@ -30,8 +30,8 @@ DEFAULT_BINARY = REPO_ROOT / "target/debug/unica"
 SHARED_ARGUMENT_THRESHOLD = 20
 
 # Состояние контракта — явное поле ревью, а не догадка по тексту: считать
-# метрику разбором свободной прозы значит повторить ровно ту ошибку, которую
-# лечит ADR-0023.
+# метрику разбором свободной прозы значит повторить ошибку, от которой
+# `CTR.WIRE.TOOL-SURFACE` отделяет механическую ведомость и ручное ревью.
 CONTRACT_STATES = {
     "typed": "Отвечают типизированным `data`",
     "partial": "Типизированы частично: часть результата всё ещё текст",
@@ -322,7 +322,7 @@ def render(tools: list[dict], review: dict) -> str:
         " результата и сценарии. Имена, описания и аргументы принадлежат"
         " реестру в `crates/unica-coder/src/application/mod.rs` и"
         " `tool_contracts.rs`; здесь они лишь показаны рядом"
-        " (`INV-DOC-SINGLE-RULE-OWNER`)."
+        " (`CTR.WIRE.TOOL-SURFACE`)."
     )
     out.append("")
     out.append(

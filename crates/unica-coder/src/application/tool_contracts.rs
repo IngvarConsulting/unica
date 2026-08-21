@@ -4672,6 +4672,20 @@ mod tests {
     }
 
     #[test]
+    fn every_public_tool_lives_in_the_unica_namespace() {
+        let offenders = tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .filter(|name| !name.starts_with("unica."))
+            .collect::<Vec<_>>();
+
+        assert!(
+            offenders.is_empty(),
+            "foreign public tool names: {offenders:?}"
+        );
+    }
+
+    #[test]
     fn argument_descriptions_cover_both_spellings_once() {
         let mut names: Vec<&str> = ARG_DESCRIPTIONS.iter().map(|(name, _)| *name).collect();
         let count = names.len();

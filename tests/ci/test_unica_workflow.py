@@ -323,6 +323,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertIn(f"timeout-minutes: {minutes}", job_block(publish, job_id))
 
+    def test_registry_guards_run_in_the_source_contour(self) -> None:
+        verify = job_block(self.release_text(), "verify-source")
+
+        self.assertIn("python -m unittest discover -s tests/arch", verify)
+        self.assertNotIn("python -m unittest discover -s tests/arch -t .", verify)
+        self.assertIn("python -m py_compile scripts/arch/*.py tests/arch/*.py", verify)
+
     def test_platform_build_uses_exact_cargo_cache_and_reports_outcome(self) -> None:
         text = self.release_text()
         build = job_block(text, "build-tools")

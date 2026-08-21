@@ -110,7 +110,7 @@ class SkillProvenanceTests(unittest.TestCase):
         return Path(__file__).resolve().parents[2]
 
     def provenance_path(self) -> Path:
-        return self.repo_root() / "spec" / "provenance" / "skill-upstreams.json"
+        return self.repo_root() / "docs" / "provenance" / "skill-upstreams.json"
 
     def reviews_dir(self) -> Path:
         return self.repo_root() / "docs" / "provenance" / "reviews"
@@ -288,7 +288,7 @@ class SkillProvenanceTests(unittest.TestCase):
         path = self.provenance_path()
 
         self.assertTrue(path.is_file())
-        self.assertIn("spec/provenance", path.as_posix())
+        self.assertIn("docs/provenance", path.as_posix())
         self.assertNotIn("plugins/unica", path.as_posix())
         self.assertFalse((self.repo_root() / "plugins" / "unica" / "provenance").exists())
 

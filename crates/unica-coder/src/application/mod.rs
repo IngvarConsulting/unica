@@ -9173,10 +9173,9 @@ mod tests {
 
     #[test]
     fn tool_specs_match_reviewed_result_contracts() {
-        let review: Value = serde_json::from_str(include_str!(
-            "../../../../spec/architecture/tool-surface-review.json"
-        ))
-        .expect("tool-surface review is valid JSON");
+        let review: Value =
+            serde_json::from_str(include_str!("../../../../arch/tool-surface-review.json"))
+                .expect("tool-surface review is valid JSON");
         let review = review
             .as_object()
             .expect("tool-surface review is a tool-name object");

@@ -16,8 +16,7 @@ The catalog must never point at bytes that are not final. If it moved in the
 same step that published them, a partial or unverified upload would be served to
 every consumer immediately.
 
-So publication is split, per
-[ADR-0076](../spec/decisions/0076-yadro-pervym-dvizhki-po-trebovaniyu.md):
+The release workflow and its contract tests therefore split publication:
 
 1. **Stage** — put the plugin bytes on the marketplace default branch. The
    catalog still names the previous tag, so no consumer is affected yet.
@@ -29,9 +28,8 @@ Between the two sits an immutable tag the catalog pins `git-subdir` to, which
 
 ## One human action, one linear pipeline
 
-Per [ADR-0068](../spec/decisions/0068-lineynyy-konveyer-postavki.md) the whole
-publication runs as one pass of **Publish Unica Marketplace**, started
-automatically when the tag-triggered build succeeds:
+The workflow runs the whole publication as one pass of **Publish Unica
+Marketplace**, started automatically when the tag-triggered build succeeds:
 
 | You | The pipeline |
 | --- | --- |
@@ -149,7 +147,8 @@ this release does not carry.
 Engines are **named, not republished**. Their bytes live in `unica-toolchain`
 releases, and the runtime manifest points at them by address and SHA-256; the
 plugin release used to carry a second copy, 439 MB of it per release, for no
-gain. See [ADR-0076](../spec/decisions/0076-yadro-pervym-dvizhki-po-trebovaniyu.md).
+gain. See
+[`DEC.2026-08-20.ENGINES-COME-FROM-THE-TOOLCHAIN`](../arch/decisions/2026-08-20-engines-come-from-the-toolchain.md).
 
 That splits verification three ways, and each part is a job in the build:
 
