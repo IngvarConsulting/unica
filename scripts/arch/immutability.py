@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import re
 import subprocess
@@ -158,8 +159,157 @@ def _records_introduced(repo: Path, base: dict[str, str]) -> dict[str, Introduce
     return introduced
 
 
+def _python_defines(source: str, name: str) -> bool:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+        for node in ast.walk(tree)
+    )
+
+
+def _rust_quoted_end(source: str, start: int, quote: str) -> int | None:
+    """End of a normal Rust string or character literal, if it closes on its line."""
+    index = start + 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+            continue
+        if source[index] == quote:
+            return index + 1
+        if source[index] == "\n":
+            break
+        index += 1
+    return None
+
+
+def _rust_raw_string_end(source: str, start: int) -> int | None:
+    """End of a Rust raw or raw-byte string, including its prefix and suffix."""
+    index = start
+    if source.startswith("br", index):
+        index += 2
+    elif source.startswith("r", index):
+        index += 1
+    else:
+        return None
+    hashes = 0
+    while index < len(source) and source[index] == "#":
+        hashes += 1
+        index += 1
+    if index == len(source) or source[index] != '"':
+        return None
+    closing = '"' + "#" * hashes
+    end = source.find(closing, index + 1)
+    return len(source) if end == -1 else end + len(closing)
+
+
+def _rust_code(source: str) -> str:
+    """Mask Rust comments and literals, preserving newlines and real code."""
+    code = list(source)
+
+    def mask(start: int, end: int) -> None:
+        for index in range(start, end):
+            if code[index] != "\n":
+                code[index] = " "
+
+    index = 0
+    while index < len(source):
+        if source.startswith("//", index):
+            end = source.find("\n", index)
+            end = len(source) if end == -1 else end
+            mask(index, end)
+            index = end
+            continue
+        if source.startswith("/*", index):
+            end, depth = index + 2, 1
+            while end < len(source) and depth:
+                if source.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif source.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            mask(index, end)
+            index = end
+            continue
+        raw_end = _rust_raw_string_end(source, index)
+        if raw_end is not None:
+            mask(index, raw_end)
+            index = raw_end
+            continue
+        if source[index] == '"':
+            end = _rust_quoted_end(source, index, '"')
+            if end is None:
+                end = len(source)
+            mask(index, end)
+            index = end
+            continue
+        if source.startswith('b"', index):
+            end = _rust_quoted_end(source, index + 1, '"')
+            if end is None:
+                end = len(source)
+            mask(index, end)
+            index = end
+            continue
+        if source[index] == "'":
+            end = _rust_quoted_end(source, index, "'")
+            if end is None:
+                index += 1
+            else:
+                mask(index, end)
+                index = end
+            continue
+        if source.startswith("b'", index):
+            end = _rust_quoted_end(source, index + 1, "'")
+            if end is None:
+                index += 1
+            else:
+                mask(index, end)
+                index = end
+            continue
+        index += 1
+    return "".join(code)
+
+
+def _rust_test_function_has_body(source: str, name: str) -> bool:
+    """Find an attributed Rust test definition, never just a declaration."""
+    code = _rust_code(source)
+    escaped_name = re.escape(name)
+    test_function = re.compile(
+        rf"""(?mx)
+        ^[ \t]*
+        \#[ \t]*\[[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*::)*test\b[^\n]*\][ \t]*\n
+        (?:[ \t]*\#[^\n]*\][ \t]*\n)*
+        [ \t]*(?:pub(?:\([^\n)]*\))?[ \t]+)?
+        (?:async[ \t]+)?
+        (?:unsafe[ \t]+)?
+        fn[ \t]+{escaped_name}\b
+        """
+    )
+    for match in test_function.finditer(code):
+        parens = brackets = 0
+        for token in code[match.end() :]:
+            if token == "(":
+                parens += 1
+            elif token == ")" and parens:
+                parens -= 1
+            elif token == "[":
+                brackets += 1
+            elif token == "]" and brackets:
+                brackets -= 1
+            elif parens == brackets == 0 and token == "{":
+                return True
+            elif parens == brackets == 0 and token == ";":
+                break
+    return False
+
+
 def _evidence_resolves(repo: Path, evidence: object) -> bool:
-    """The named evidence belongs to this repository and defines a function."""
+    """The named evidence belongs to this repository and defines a test function."""
     if not isinstance(evidence, str):
         return False
     relative, separator, name = evidence.partition("::")
@@ -170,27 +320,10 @@ def _evidence_resolves(repo: Path, evidence: object) -> bool:
     if not target.is_relative_to(root) or not target.is_file():
         return False
     source = target.read_text(encoding="utf-8")
-    escaped_name = re.escape(name)
     if target.suffix == ".py":
-        return bool(
-            re.search(
-                rf"(?m)^[ \t]*(?:async[ \t]+)?def[ \t]+{escaped_name}[ \t]*\(", source
-            )
-        )
+        return _python_defines(source, name)
     if target.suffix == ".rs":
-        return bool(
-            re.search(
-                rf"""(?mx)
-                ^[ \t]*
-                (?:\#\[[^\n]*\][ \t]*\n[ \t]*)*
-                (?:pub(?:\([^\n)]*\))?[ \t]+)?
-                (?:async[ \t]+)?
-                (?:unsafe[ \t]+)?
-                fn[ \t]+{escaped_name}[ \t]*(?:<|\()
-                """,
-                source,
-            )
-        )
+        return _rust_test_function_has_body(source, name)
     return False
 
 

@@ -109,6 +109,16 @@ ASYNC_METHOD_EVIDENCE_GROUND = GROUND.replace("test_reason", "test_async_reason"
 RUST_EVIDENCE_GROUND = GROUND.replace(
     "tests/evidence.py::test_reason", "crates/evidence.rs::test_rust_reason"
 )
+PYTHON_STRING_EVIDENCE_GROUND = GROUND.replace(
+    "tests/evidence.py::test_reason", "tests/fake_string.py::test_fake_python_reason"
+)
+RUST_STRING_EVIDENCE_GROUND = GROUND.replace(
+    "tests/evidence.py::test_reason", "crates/fake_string.rs::test_fake_rust_string_reason"
+)
+RUST_DECLARATION_EVIDENCE_GROUND = GROUND.replace(
+    "tests/evidence.py::test_reason",
+    "crates/fake_declaration.rs::test_fake_rust_declaration_reason",
+)
 
 
 class Fixture:
@@ -132,12 +142,27 @@ class Fixture:
             "def test_reason(): pass\n\nclass Evidence:\n    async def test_async_reason(self): pass\n",
             encoding="utf-8",
         )
+        (self.root / "tests" / "fake_string.py").write_text(
+            'FAKE = """\ndef test_fake_python_reason():\n    pass\n"""\n',
+            encoding="utf-8",
+        )
         script = self.root / "scripts" / "arch" / "immutability.py"
         script.parent.mkdir(parents=True)
         script.write_text("status = 'active'\n", encoding="utf-8")
         rust = self.root / "crates" / "evidence.rs"
         rust.parent.mkdir(parents=True)
-        rust.write_text("    #[test]\n    fn test_rust_reason() {}\n", encoding="utf-8")
+        rust.write_text(
+            "const LABEL: &'static str = \"evidence\";\n    #[test]\n    fn test_rust_reason() {}\n",
+            encoding="utf-8",
+        )
+        (self.root / "crates" / "fake_string.rs").write_text(
+            'const FAKE: &str = r#"\n    #[test]\n    fn test_fake_rust_string_reason() {}\n"#;\n',
+            encoding="utf-8",
+        )
+        (self.root / "crates" / "fake_declaration.rs").write_text(
+            "trait Evidence {\n    #[test]\n    fn test_fake_rust_declaration_reason();\n}\n",
+            encoding="utf-8",
+        )
         self._git("add", "arch", "tests", "scripts", "crates")
         self._git("commit", "--quiet", "--no-gpg-sign", "-m", "base")
 
@@ -317,6 +342,33 @@ class ProductImmutabilityTests(unittest.TestCase):
         verdict = self.point_rule_at(
             "decisions/2026-03-03-why-it-changes.md",
             NON_DEFINITION_EVIDENCE_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("realized", verdict.offenders[0])
+
+    def test_an_active_decision_with_a_python_string_definition_is_not_a_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            PYTHON_STRING_EVIDENCE_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("realized", verdict.offenders[0])
+
+    def test_an_active_decision_with_a_rust_string_function_is_not_a_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            RUST_STRING_EVIDENCE_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("realized", verdict.offenders[0])
+
+    def test_an_active_decision_with_a_rust_declaration_is_not_a_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            RUST_DECLARATION_EVIDENCE_GROUND,
             "DEC.2026-03-03.WHY-IT-CHANGES",
         )
         self.assertEqual(len(verdict.offenders), 1)
