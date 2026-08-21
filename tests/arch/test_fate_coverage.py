@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD = REPO_ROOT / "scripts" / "arch" / "fate.py"
+SPEC = importlib.util.spec_from_file_location("arch_fate", GUARD)
+FATE_GUARD = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = FATE_GUARD
+SPEC.loader.exec_module(FATE_GUARD)
 
 
 COMPLETE_FATE = """# Fate
@@ -74,6 +79,18 @@ class Fixture:
         slug = identifier.removeprefix("DEC.").lower().replace(".", "-")
         (self.root / "arch" / "decisions" / f"{slug}.md").write_text(
             f"---\nid: {identifier}\nstatus: {status}\ngoverns: {governs}\n---\n",
+            encoding="utf-8",
+        )
+
+    def add_v1_rule_with_fate(self, subject: str, reason: str) -> None:
+        invariants = self.root / "docs" / "arch-v1" / "architecture" / "invariants.md"
+        invariants.write_text(
+            invariants.read_text(encoding="utf-8") + f"\n### {subject} — Boundary\n",
+            encoding="utf-8",
+        )
+        self.fate.write_text(
+            self.fate.read_text(encoding="utf-8")
+            + f"| `{subject}` | `retired` | — | `{reason}` |\n",
             encoding="utf-8",
         )
 
@@ -378,6 +395,42 @@ class FateCoverageTests(unittest.TestCase):
         )
         result = self.fixture.run()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_code_provider_boundary_accepts_a_product_removal_decision(self) -> None:
+        decision = "DEC.2026-08-21.PRODUCT-REMOVAL"
+        self.fixture.add_decision(decision, governs="product")
+        self.fixture.add_v1_rule_with_fate(
+            "INV-APP-CODE-PROVIDER-BOUNDARY", f"behavior-removed: {decision}"
+        )
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_code_provider_boundary_rejects_a_process_removal_decision(self) -> None:
+        decision = "DEC.2026-08-21.PROCESS-REMOVAL"
+        self.fixture.add_decision(decision, governs="process")
+        self.fixture.add_v1_rule_with_fate(
+            "INV-APP-CODE-PROVIDER-BOUNDARY", f"behavior-removed: {decision}"
+        )
+        result = self.fixture.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected 'product'", result.stderr)
+        self.assertIn("got 'process'", result.stderr)
+
+    def test_carried_classified_subjects_keep_their_successor_side(self) -> None:
+        records = {}
+        for path in (REPO_ROOT / "arch").rglob("*.md"):
+            props = FATE_GUARD._front_matter_props(path)
+            if identifier := props.get("id"):
+                records[identifier] = props
+
+        for row in FATE_GUARD.fate_rows(REPO_ROOT):
+            expected = FATE_GUARD._legacy_governs(row.subject)
+            if row.fate != "carried" or expected is None:
+                continue
+            with self.subTest(subject=row.subject):
+                self.assertEqual(len(row.successors), 1)
+                successor = records[row.successors[0]]
+                self.assertEqual(successor.get("governs"), expected)
 
     def test_every_v1_subject_has_exactly_one_fate(self) -> None:
         """A moved ADR, rule, requirement, or acceptance contract cannot disappear."""
