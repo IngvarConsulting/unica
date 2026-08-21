@@ -3116,7 +3116,7 @@ mod tests {
             for marker in SOURCE_ROOT_MARKERS {
                 let root = temp_workspace(&format!(
                     "unica-source-map-catalog-base-{}-{}",
-                    layout.replace('.', "root").replace('/', "root"),
+                    layout.replace(['.', '/'], "root"),
                     marker.replace('/', "-")
                 ));
                 write(&root.join(layout).join(marker), "<marker/>");
