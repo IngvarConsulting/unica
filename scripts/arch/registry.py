@@ -33,8 +33,18 @@ SYMBOL_PREFIX = {"decision": "DEC", "invariant": "INV", "contract": "CTR"}
 
 REQUIRED_PROPS = {
     "decision": ("id", "status", "governs", "realized"),
-    "invariant": ("id", "status", "governs", "decision", "check"),
-    "contract": ("id", "status", "governs", "version", "decision", "producer", "check"),
+    "invariant": ("id", "status", "governs", "decision", "check", "scope"),
+    "contract": (
+        "id",
+        "status",
+        "governs",
+        "version",
+        "decision",
+        "producer",
+        "consumers",
+        "check",
+        "scope",
+    ),
 }
 
 # Кто заметит нарушение: потребитель или только мы. Ось решает не предмет
@@ -131,6 +141,31 @@ def expected_symbol(record: Record) -> str:
     return record.path.stem
 
 
+def validation_errors(found: list[Record]) -> list[str]:
+    """Return violations of the published record schema."""
+    by_id = {record.id: record for record in found}
+    errors: list[str] = []
+    for record in found:
+        for key in REQUIRED_PROPS[record.kind]:
+            if key not in record.props or record.props[key] in (None, ""):
+                errors.append(f"{record.relative}: missing prop `{key}`")
+        if record.kind in {"invariant", "contract"}:
+            list_keys = ("scope",) + (("consumers",) if record.kind == "contract" else ())
+            for key in list_keys:
+                if not isinstance(record.props.get(key), list) or not record.props[key]:
+                    errors.append(f"{record.relative}: `{key}` must be a non-empty list")
+            owner = by_id.get(record.props.get("decision"))
+            if owner is None or owner.kind != "decision":
+                errors.append(f"{record.relative}: decision does not resolve to a decision")
+            elif record.props.get("status") == "active" and owner.props.get("status") != "active":
+                errors.append(f"{record.relative}: active rule cites a non-active decision")
+        if record.kind == "contract":
+            version = str(record.props.get("version", ""))
+            if not version.isdecimal() or int(version) < 1:
+                errors.append(f"{record.relative}: version must be a positive integer")
+    return errors
+
+
 def render_index(found: list[Record]) -> str:
     """One line per symbol, sorted, with no fact that props do not carry."""
     kind_ru = {"decision": "решение", "invariant": "инвариант", "contract": "контракт"}
@@ -163,7 +198,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args(argv)
 
-    rendered = render_index(records())
+    found = records()
+    errors = validation_errors(found)
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+
+    rendered = render_index(found)
     if arguments.write_index:
         INDEX_PATH.write_text(rendered, encoding="utf-8")
         print(f"написано: {INDEX_PATH.relative_to(REPO_ROOT)}")

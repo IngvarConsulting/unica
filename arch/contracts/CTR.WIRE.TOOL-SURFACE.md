@@ -7,6 +7,7 @@ decision: DEC.2026-08-18.CARRIED-RULES
 producer: scripts/ci/generate-tool-surface.py
 consumers: [review, docs]
 check: tests/ci/test_tool_surface_ledger.py::test_ledger_matches_the_live_registry
+scope: [wire]
 ---
 
 # Ведомость поверхности порождается из бинаря

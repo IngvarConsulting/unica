@@ -42,7 +42,144 @@ TRACKER_REFERENCES = (
 )
 
 
+def contract_record(props: dict) -> REGISTRY.Record:
+    return REGISTRY.Record(
+        id=props.get("id", ""),
+        kind="contract",
+        path=REGISTRY.ARCH_ROOT / "contracts" / "CTR.WIRE.EXAMPLE.md",
+        props=props,
+        body="# Example\n",
+    )
+
+
+def decision_record(props: dict) -> REGISTRY.Record:
+    return REGISTRY.Record(
+        id=props.get("id", ""),
+        kind="decision",
+        path=REGISTRY.ARCH_ROOT / "decisions" / "2026-08-21-example.md",
+        props=props,
+        body="# Example\n",
+    )
+
+
+def invariant_record(props: dict) -> REGISTRY.Record:
+    return REGISTRY.Record(
+        id=props.get("id", ""),
+        kind="invariant",
+        path=REGISTRY.ARCH_ROOT / "invariants" / "INV.WIRE.EXAMPLE.md",
+        props=props,
+        body="# Example\n",
+    )
+
+
 class RecordShapeTests(unittest.TestCase):
+    def contract_props(self, **overrides: object) -> dict:
+        props = {
+            "id": "CTR.WIRE.EXAMPLE",
+            "status": "active",
+            "governs": "product",
+            "version": "1",
+            "decision": "DEC.2026-08-21.EXAMPLE",
+            "producer": "scripts/arch/registry.py",
+            "consumers": ["host"],
+            "check": "tests/arch/test_registry.py::RecordShapeTests",
+            "scope": ["wire"],
+        }
+        props.update(overrides)
+        return props
+
+    def active_decision(self, **overrides: object) -> REGISTRY.Record:
+        props = {
+            "id": "DEC.2026-08-21.EXAMPLE",
+            "status": "active",
+            "governs": "product",
+            "realized": "scripts/arch/registry.py::validation_errors",
+        }
+        props.update(overrides)
+        return decision_record(props)
+
+    def test_contract_requires_scope_consumers_and_a_decision(self) -> None:
+        props = {
+            "id": "CTR.WIRE.EXAMPLE",
+            "status": "active",
+            "governs": "product",
+            "version": "1",
+            "producer": "src/example.rs",
+            "check": (
+                "tests/arch/test_registry.py::"
+                "RecordShapeTests.test_contract_requires_scope_consumers_and_a_decision"
+            ),
+        }
+
+        errors = REGISTRY.validation_errors([contract_record(props)])
+
+        self.assertTrue(any("scope" in error for error in errors), errors)
+        self.assertTrue(any("consumers" in error for error in errors), errors)
+        self.assertTrue(any("decision" in error for error in errors), errors)
+
+    def test_null_decision_does_not_ground_a_rule(self) -> None:
+        errors = REGISTRY.validation_errors(
+            [self.active_decision(), contract_record(self.contract_props(decision=None))]
+        )
+
+        self.assertTrue(any("decision does not resolve to a decision" in error for error in errors), errors)
+
+    def test_rule_cannot_use_an_invariant_as_its_decision(self) -> None:
+        invariant = invariant_record(
+            {
+                "id": "INV.WIRE.EXAMPLE",
+                "status": "active",
+                "governs": "product",
+                "decision": "DEC.2026-08-21.EXAMPLE",
+                "check": "tests/arch/test_registry.py::RecordShapeTests",
+                "scope": ["wire"],
+            }
+        )
+        errors = REGISTRY.validation_errors(
+            [
+                self.active_decision(),
+                invariant,
+                contract_record(self.contract_props(decision="INV.WIRE.EXAMPLE")),
+            ]
+        )
+
+        self.assertTrue(any("decision does not resolve to a decision" in error for error in errors), errors)
+
+    def test_active_rules_reference_active_decisions(self) -> None:
+        superseded = self.active_decision(status="superseded")
+
+        errors = REGISTRY.validation_errors(
+            [superseded, contract_record(self.contract_props())]
+        )
+
+        self.assertTrue(any("active rule cites a non-active decision" in error for error in errors), errors)
+
+    def test_scope_and_consumers_are_non_empty_lists(self) -> None:
+        errors = REGISTRY.validation_errors(
+            [
+                self.active_decision(),
+                contract_record(self.contract_props(scope=[], consumers=[])),
+            ]
+        )
+
+        self.assertTrue(any("`scope` must be a non-empty list" in error for error in errors), errors)
+        self.assertTrue(any("`consumers` must be a non-empty list" in error for error in errors), errors)
+
+    def test_contract_version_is_a_positive_integer(self) -> None:
+        for version in ("0", "text"):
+            with self.subTest(version=version):
+                errors = REGISTRY.validation_errors(
+                    [
+                        self.active_decision(),
+                        contract_record(self.contract_props(version=version)),
+                    ]
+                )
+
+                self.assertTrue(
+                    any("version must be a positive integer" in error for error in errors),
+                    errors,
+                )
+
     def test_symbol_matches_its_path(self) -> None:
         """A reader who has the symbol must be able to open the file without an index."""
         offenders = [
