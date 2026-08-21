@@ -174,6 +174,7 @@ MANDATORY_CASE_IDS = frozenset(
         "meta-compile-enum",
         "meta-compile-event-subscription",
         "meta-compile-exchange-plan",
+        "meta-compile-external-data-source",
         "meta-compile-http-service",
         "meta-compile-information-register",
         "meta-compile-report",
