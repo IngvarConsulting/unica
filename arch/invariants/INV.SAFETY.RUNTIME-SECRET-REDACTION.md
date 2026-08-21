@@ -3,7 +3,7 @@ id: INV.SAFETY.RUNTIME-SECRET-REDACTION
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/runtime_jobs.rs::terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts
+check: crates/unica-coder/src/infrastructure/runtime_jobs.rs::production_secret_key_matrix_is_redacted_from_runtime_surfaces
 scope: [app, product]
 ---
 

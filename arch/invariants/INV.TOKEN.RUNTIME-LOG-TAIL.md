@@ -3,11 +3,11 @@ id: INV.TOKEN.RUNTIME-LOG-TAIL
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/runtime_jobs.rs::truncated_worker_stdout_cannot_authorize_full_fallback
+check: crates/unica-coder/src/infrastructure/runtime_jobs.rs::runtime_job_lifecycle_and_log_bounds_are_complete
 scope: [app, product]
 ---
 
-# В памяти удерживается ограниченный хвост вывода задания
+# Выдача журналов ограничивает оба хвоста
 
-Рабочий поток обрезает длинный stdout до точного предела удерживаемого хвоста;
-усечённый вывод не используется как доказательство полного результата.
+Запрос журналов обрезает stdout и stderr по заданному числу символов, не
+разрезая многобайтовые символы, и не возвращает предшествующее содержимое.

@@ -154,6 +154,45 @@ class RecordShapeTests(unittest.TestCase):
 
         self.assertTrue(any("active rule cites a non-active decision" in error for error in errors), errors)
 
+    def test_rule_ownership_is_reciprocal(self) -> None:
+        rule = contract_record(self.contract_props())
+
+        missing_from_decision = REGISTRY.validation_errors([self.active_decision(), rule])
+        self.assertTrue(
+            any("does not establish its rule" in error for error in missing_from_decision),
+            missing_from_decision,
+        )
+
+        unrelated = invariant_record(
+            {
+                "id": "INV.WIRE.EXAMPLE",
+                "status": "active",
+                "governs": "product",
+                "decision": "DEC.2026-08-21.OTHER",
+                "check": "tests/arch/test_registry.py::RecordShapeTests",
+                "scope": ["wire"],
+            }
+        )
+        stale_establishes = REGISTRY.validation_errors(
+            [
+                self.active_decision(establishes=["INV.WIRE.EXAMPLE"]),
+                decision_record(
+                    {
+                        "id": "DEC.2026-08-21.OTHER",
+                        "status": "active",
+                        "governs": "product",
+                        "realized": "scripts/arch/registry.py::validation_errors",
+                        "establishes": ["INV.WIRE.EXAMPLE"],
+                    }
+                ),
+                unrelated,
+            ]
+        )
+        self.assertTrue(
+            any("establishes a rule owned by" in error for error in stale_establishes),
+            stale_establishes,
+        )
+
     def test_scope_and_consumers_are_non_empty_lists(self) -> None:
         errors = REGISTRY.validation_errors(
             [
@@ -323,6 +362,90 @@ class ReferenceTests(unittest.TestCase):
                             offenders.append(f"{record.relative}: {key} cites {item}")
         self.assertEqual(offenders, [])
 
+    def test_rule_decision_and_establishes_are_reciprocal(self) -> None:
+        by_id = {record.id: record for record in REGISTRY.records()}
+        offenders = []
+        for record in REGISTRY.records():
+            if record.kind not in ("invariant", "contract"):
+                continue
+            decision = by_id.get(record.props.get("decision"))
+            if decision is None or record.id not in (decision.props.get("establishes") or []):
+                offenders.append(
+                    f"{record.relative}: {record.props.get('decision')} does not establish {record.id}"
+                )
+        for decision in (record for record in REGISTRY.records() if record.kind == "decision"):
+            for rule_id in decision.props.get("establishes") or []:
+                rule = by_id.get(rule_id)
+                if rule is not None and rule.props.get("decision") != decision.id:
+                    offenders.append(
+                        f"{decision.relative}: establishes {rule_id}, owned by "
+                        f"{rule.props.get('decision')}"
+                    )
+        self.assertEqual(offenders, [])
+
+    def test_record_ids_are_globally_unique_and_not_reused(self) -> None:
+        found = REGISTRY.records()
+        paths_by_id: dict[str, set[str]] = {}
+        ids_by_path: dict[str, set[str]] = {}
+        for record in found:
+            paths_by_id.setdefault(record.id, set()).add(record.relative)
+            ids_by_path.setdefault(record.relative, set()).add(record.id)
+
+        history = subprocess.run(
+            [
+                "git",
+                "rev-list",
+                "--all",
+                "--",
+                "arch/decisions",
+                "arch/invariants",
+                "arch/contracts",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commits = history.stdout.splitlines()
+        for offset in range(0, len(commits), 64):
+            batch = commits[offset : offset + 64]
+            grep = subprocess.run(
+                [
+                    "git",
+                    "grep",
+                    "-E",
+                    r"^id: (DEC|INV|CTR)\.",
+                    *batch,
+                    "--",
+                    "arch/decisions/*.md",
+                    "arch/invariants/*.md",
+                    "arch/contracts/*.md",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn(grep.returncode, (0, 1), grep.stderr)
+            for line in grep.stdout.splitlines():
+                _commit, path, declaration = line.split(":", 2)
+                identifier = declaration.removeprefix("id: ").strip()
+                relative = path.removeprefix("arch/")
+                paths_by_id.setdefault(identifier, set()).add(relative)
+                ids_by_path.setdefault(relative, set()).add(identifier)
+
+        reused_ids = {
+            identifier: sorted(paths)
+            for identifier, paths in paths_by_id.items()
+            if len(paths) != 1
+        }
+        reused_paths = {
+            path: sorted(identifiers)
+            for path, identifiers in ids_by_path.items()
+            if len(identifiers) != 1
+        }
+        self.assertEqual(reused_ids, {}, "a deleted ID must not return at another path")
+        self.assertEqual(reused_paths, {}, "a deleted path must not receive another ID")
+
     def test_supersession_is_mutual(self) -> None:
         by_id = {record.id: record for record in REGISTRY.records()}
         offenders = []
@@ -460,6 +583,13 @@ class IndexTests(unittest.TestCase):
         self.assertTrue(REGISTRY.INDEX_PATH.is_file(), "arch/index.md must exist")
         self.assertEqual(REGISTRY.INDEX_PATH.read_text(encoding="utf-8"), rendered)
 
+    def test_generated_index_is_the_exact_registry_inventory(self) -> None:
+        rendered = REGISTRY.render_index(REGISTRY.records())
+        indexed_ids = re.findall(r"(?m)^\| `([^`]+)` \|", rendered)
+        record_ids = [record.id for record in REGISTRY.records()]
+        self.assertEqual(indexed_ids, record_ids)
+        self.assertEqual(REGISTRY.INDEX_PATH.read_text(encoding="utf-8"), rendered)
+
 
 class LayerBoundaryTests(unittest.TestCase):
     def test_superpowers_shapes_never_enter_arch(self) -> None:
@@ -508,6 +638,13 @@ class LayerBoundaryTests(unittest.TestCase):
         }
         self.assertEqual(set(actual), set(expected), "archive file set differs from its manifest")
         self.assertEqual(actual, expected, "archive bytes differ from their frozen digests")
+
+    def test_v2_process_policy_changes_are_explicit_and_compatible(self) -> None:
+        agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("Проектная записка фиксирует путь к выбору и нормативной не становится", agents)
+        self.assertTrue(all(record.path.is_relative_to(ARCH_ROOT) for record in REGISTRY.records()))
+        self.assertFalse((REPO_ROOT / "tests/ci/test_architecture_registry.py").exists())
+        self.assertFalse(any("RUSSIAN-NORMATIVE" in record.id for record in REGISTRY.records()))
 
     def test_archive_manifest_cannot_change_after_acceptance(self) -> None:
         """Once the freeze reaches main, a matching rewritten manifest is still drift."""

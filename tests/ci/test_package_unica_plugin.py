@@ -851,7 +851,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             for link in local_license_links:
                 self.assertTrue((destination / link).is_file(), link)
 
-    def test_documented_resources_are_packaged(self) -> None:
+    def test_all_active_packaged_documentation_links_are_relative_and_resolve(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         plugin_src = repo_root / "plugins" / "unica"
@@ -873,11 +873,17 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 text = doc.read_text(encoding="utf-8")
                 for link in [m for p in patterns for m in p.findall(text)]:
                     checked += 1
+                    self.assertFalse(Path(link).is_absolute(), f"{relative_doc}: {link}")
+                    resolved = (doc.parent / link).resolve()
+                    self.assertTrue(
+                        resolved.is_relative_to(destination.resolve()),
+                        f"{relative_doc}: {link} escapes the package",
+                    )
                     # The package has no repository root and no knowable
                     # plugin root, so a link only survives packaging when it
                     # resolves from the document that carries it.
                     self.assertTrue(
-                        (doc.parent / link).is_file(),
+                        resolved.is_file(),
                         f"{relative_doc}: {link}",
                     )
 

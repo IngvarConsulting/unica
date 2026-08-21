@@ -7485,6 +7485,24 @@ pub(crate) mod tests {
 
     #[test]
     fn runtime_job_schemas_keep_execution_typed_and_controls_narrow() {
+        let runtime_jobs = tools()
+            .into_iter()
+            .filter(|tool| tool.name.starts_with("unica.runtime.job."))
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            runtime_jobs,
+            [
+                "unica.runtime.job.cancel",
+                "unica.runtime.job.list",
+                "unica.runtime.job.logs",
+                "unica.runtime.job.start",
+                "unica.runtime.job.status",
+                "unica.runtime.job.wait",
+            ]
+            .into_iter()
+            .collect()
+        );
         let job_start = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.runtime.job.start")
@@ -7514,6 +7532,7 @@ pub(crate) mod tests {
         let logs_schema = input_schema_for_tool(&job_logs);
         assert_eq!(logs_schema["required"], json!(["jobId"]));
         assert_eq!(logs_schema["properties"]["tailChars"]["type"], "integer");
+        runtime_job_controls_reject_invalid_ids_bounds_and_execution_arguments();
     }
 
     #[test]
@@ -7677,6 +7696,29 @@ pub(crate) mod tests {
             false
         )
         .is_err());
+        for tail_chars in [-1, 0, 32_769] {
+            assert!(
+                validate_tool_arguments(
+                    logs,
+                    json!({"jobId":valid_id,"tailChars":tail_chars})
+                        .as_object()
+                        .unwrap(),
+                    false
+                )
+                .is_err(),
+                "tailChars={tail_chars}"
+            );
+        }
+        for tail_chars in [1, 32_768] {
+            validate_tool_arguments(
+                logs,
+                json!({"jobId":valid_id,"tailChars":tail_chars})
+                    .as_object()
+                    .unwrap(),
+                false,
+            )
+            .unwrap_or_else(|error| panic!("tailChars={tail_chars}: {error}"));
+        }
         assert!(validate_tool_arguments(
             cancel,
             json!({"jobId":valid_id,"operation":"build"})

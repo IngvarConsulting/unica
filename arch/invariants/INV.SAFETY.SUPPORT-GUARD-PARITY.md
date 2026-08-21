@@ -3,11 +3,12 @@ id: INV.SAFETY.SUPPORT-GUARD-PARITY
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::subsystem_compile_guards_locked_parent_before_both_planners
+check: crates/unica-coder/src/application/mod.rs::mutating_native_support_guard_matrix_is_closed
 scope: [app, product]
 ---
 
-# Защищённая подсистема одинаково блокирует preview и apply
+# Защита поддержки одинакова для preview и apply
 
-`unica.subsystem.compile` проверяет запертого владельца до обоих планировщиков;
-предпросмотр и применение возвращают одинаковый отказ без изменений дерева.
+Каждая защищённая нативная мутация проверяет запертого владельца до обоих
+планировщиков; отказ preview и apply совпадает по публичному результату. Каждое
+исключение явно перечислено и достигает обоих планировщиков.

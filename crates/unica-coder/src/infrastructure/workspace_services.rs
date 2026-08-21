@@ -7810,6 +7810,9 @@ fn main() {
     fn cancellable_connector_uses_short_connect_budget_for_every_control_kind() {
         for kind in [
             ServiceRequestKind::Ping,
+            ServiceRequestKind::Cancel {
+                operation_id: "cancel-budget".to_string(),
+            },
             ServiceRequestKind::Invalidate { events: vec![] },
             ServiceRequestKind::Shutdown,
         ] {
@@ -7828,6 +7831,92 @@ fn main() {
                 &[SERVICE_CONTROL_CONNECT_TIMEOUT]
             );
         }
+    }
+
+    #[test]
+    fn service_request_kind_deadline_matrix_is_closed() {
+        let work = [
+            ServiceRequestKind::BslMcp {
+                operation_id: "bsl".into(),
+                tool_name: "search".into(),
+                tool_args: json!({}),
+                timeout_seconds: 120,
+                timeout_nanos: 0,
+            },
+            ServiceRequestKind::RlmReady {
+                operation_id: "ready".into(),
+                args: json!({}),
+                timeout_seconds: 120,
+                timeout_nanos: 0,
+            },
+            ServiceRequestKind::RlmMcp {
+                operation_id: "rlm".into(),
+                operation: WorkspaceRlmOperation::Search {
+                    query: "needle".into(),
+                    limit: 20,
+                },
+                timeout_seconds: 120,
+                timeout_nanos: 0,
+            },
+        ];
+        let control = [
+            ServiceRequestKind::Ping,
+            ServiceRequestKind::Cancel {
+                operation_id: "cancel".into(),
+            },
+            ServiceRequestKind::Invalidate { events: vec![] },
+            ServiceRequestKind::Shutdown,
+        ];
+        let tags = work
+            .iter()
+            .chain(control.iter())
+            .map(|kind| {
+                serde_json::to_value(kind).unwrap()["type"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            tags,
+            [
+                "bsl-mcp",
+                "cancel",
+                "invalidate",
+                "ping",
+                "rlm-mcp",
+                "rlm-ready",
+                "shutdown"
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+        );
+
+        for kind in work {
+            assert!(!kind.is_control());
+            let cancellation = CancellationToken::new();
+            let io = RacingIo::new(cancellation.clone(), FailureStage::Eof);
+            let _ = SYSTEM_SERVICE_CONNECTOR.send_with(
+                &connector_test_record(),
+                connector_test_request(kind),
+                &cancellation,
+                SERVICE_REQUEST_TIMEOUT,
+                &io,
+                &ManualClock::default(),
+            );
+            assert_eq!(
+                io.connect_timeouts.lock().unwrap().as_slice(),
+                &[SERVICE_CONNECT_TIMEOUT, SERVICE_CONTROL_CONNECT_TIMEOUT],
+                "work request must use its full connect cap and a separately bounded cancellation path"
+            );
+        }
+        for kind in control {
+            assert!(kind.is_control());
+        }
+        cancellable_connector_uses_short_connect_budget_for_every_control_kind();
+        cancellable_connector_partial_response_cannot_bypass_deadline();
+        manager_shares_one_deadline_across_late_transport_retry();
     }
 
     #[test]

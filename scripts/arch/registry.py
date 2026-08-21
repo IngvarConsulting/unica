@@ -168,10 +168,22 @@ def validation_errors(found: list[Record]) -> list[str]:
                 errors.append(f"{record.relative}: decision does not resolve to a decision")
             elif record.props.get("status") == "active" and owner.props.get("status") != "active":
                 errors.append(f"{record.relative}: active rule cites a non-active decision")
+            elif record.id not in (owner.props.get("establishes") or []):
+                errors.append(
+                    f"{owner.relative}: does not establish its rule {record.id}"
+                )
         if record.kind == "contract":
             version = str(record.props.get("version", ""))
             if not version.isdecimal() or int(version) < 1:
                 errors.append(f"{record.relative}: version must be a positive integer")
+        if record.kind == "decision":
+            for rule_id in record.props.get("establishes") or []:
+                rule = by_id.get(rule_id)
+                if rule is not None and rule.props.get("decision") != record.id:
+                    errors.append(
+                        f"{record.relative}: establishes a rule owned by "
+                        f"{rule.props.get('decision')}: {rule_id}"
+                    )
     return errors
 
 

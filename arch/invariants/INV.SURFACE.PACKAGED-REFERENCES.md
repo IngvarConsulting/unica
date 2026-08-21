@@ -3,7 +3,7 @@ id: INV.SURFACE.PACKAGED-REFERENCES
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: tests/ci/test_package_unica_plugin.py::test_documented_resources_are_packaged
+check: tests/ci/test_package_unica_plugin.py::test_all_active_packaged_documentation_links_are_relative_and_resolve
 scope: [pkg]
 ---
 

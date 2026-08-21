@@ -3,7 +3,7 @@ id: INV.PERF.SOURCE-SNAPSHOT-TTL
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/platform_xml_resources.rs::ttl_boundary_expires_pages_and_reads_at_exact_deadline
+check: crates/unica-coder/src/infrastructure/platform_xml_resources.rs::source_resource_limits_and_cancellation_matrix_is_exact
 scope: [product, source]
 ---
 

@@ -3,7 +3,7 @@ id: INV.PERF.SERVICE-IO-DEADLINE
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/workspace_services.rs::cancellable_connector_partial_response_cannot_bypass_deadline
+check: crates/unica-coder/src/infrastructure/workspace_services.rs::service_request_kind_deadline_matrix_is_closed
 scope: [app, product]
 ---
 

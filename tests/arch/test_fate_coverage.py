@@ -630,22 +630,22 @@ class FateCoverageTests(unittest.TestCase):
             "INV.SAFETY.PREVIEW-BY-DEFAULT": (
                 "product",
                 "crates/unica-coder/src/application/mod.rs::"
-                "mutating_tool_defaults_to_dry_run_and_reports_cache",
+                "every_mutator_defaults_to_preview_without_touching_storage",
             ),
             "INV.SAFETY.STREAM-SECRET-REDACTION": (
                 "product",
                 "crates/unica-coder/src/infrastructure/redaction.rs::"
-                "stream_redactor_redacts_secret_key_split_across_chunks",
+                "stream_redactor_covers_production_secret_keys_at_every_chunk_boundary",
             ),
             "INV.SAFETY.RUNTIME-SECRET-REDACTION": (
                 "product",
                 "crates/unica-coder/src/infrastructure/runtime_jobs.rs::"
-                "terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts",
+                "production_secret_key_matrix_is_redacted_from_runtime_surfaces",
             ),
             "INV.SAFETY.CONFIG-ERROR-REDACTION": (
                 "product",
                 "crates/unica-coder/src/infrastructure/operational_config.rs::"
-                "read_errors_are_redacted_to_the_fixed_basename",
+                "diagnostics_never_expose_absolute_paths_raw_toml_or_values",
             ),
             "INV.CI.ALL-TARGETS-GREEN": (
                 "process",

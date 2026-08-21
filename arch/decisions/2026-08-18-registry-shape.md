@@ -5,7 +5,7 @@ governs: process
 realized: tests/arch/test_registry.py::test_symbol_matches_its_path
 supersedes: []
 superseded-by: null
-establishes: [INV.REGISTRY.SYMBOL-MATCHES-PATH, INV.DOC.SUPERPOWERS-BOUNDARY]
+establishes: [INV.DOC.GENERATED-INDEX-SYNC, INV.DOC.GLOBAL-ID-NONREUSE, INV.DOC.RECORD-SHAPE, INV.DOC.SUPERPOWERS-BOUNDARY, INV.REGISTRY.CHECK-EXISTS, INV.REGISTRY.RECIPROCAL-OWNERSHIP, INV.REGISTRY.SYMBOL-MATCHES-PATH]
 ---
 
 # Три символических реестра, одна запись — один файл

@@ -293,6 +293,22 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
         self.assertEqual([], offenders)
 
+    def test_release_assessment_affected_contour_is_closed(self) -> None:
+        module = load_classifier_module()
+
+        for path in sorted(module.ASSESSMENT_PATHS):
+            with self.subTest(affected=path):
+                self.assertTrue(module.classify_paths([path]).assessment_required)
+        for path in (
+            "README.md",
+            "plugins/unica/skills/meta-add/SKILL.md",
+            "crates/unica-coder/src/domain/cache.rs",
+            "docs/provenance/skill-upstreams.json",
+        ):
+            with self.subTest(unaffected=path):
+                self.assertFalse(module.classify_paths([path]).assessment_required)
+        self.assertTrue(module.classify_paths([], force_full=True).assessment_required)
+
     def test_forced_full_contour_enables_every_output(self) -> None:
         module = load_classifier_module()
 

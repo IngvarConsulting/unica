@@ -1457,18 +1457,26 @@ class ProductContractTests(unittest.TestCase):
         self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
 
     def test_release_gate_pins_the_oldest_supported_client(self) -> None:
-        release = (
-            REPO_ROOT / ".github/workflows/unica-plugin-release.yml"
-        ).read_text(encoding="utf-8")
+        from tests.ci.test_unica_workflow import parse_workflow_jobs
 
-        self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
-        self.assertIn(
-            'npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"',
-            release,
+        release = (REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
         )
-        self.assertIn(
+        package = parse_workflow_jobs(release)["package-thin"].body
+        pins = re.findall(r"(?m)^          CLAUDE_CLI_VERSION: ([0-9.]+)$", package)
+        self.assertEqual(pins, ["2.1.69"])
+        ordered = (
+            'npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"',
             'test "$(claude --version | cut -d\' \' -f1)" = "$CLAUDE_CLI_VERSION"',
-            release,
+            "claude plugin validate dist/thin/marketplace/plugins/unica",
+            "claude plugin validate dist/thin/marketplace",
+        )
+        positions = [package.index(command) for command in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("python scripts/ci/package-unica-plugin.py", package)
+        self.assertLess(
+            package.index("python scripts/ci/package-unica-plugin.py"),
+            positions[0],
         )
 
     def test_claude_host_contract_is_recorded_for_agents(self) -> None:

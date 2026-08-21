@@ -25,6 +25,16 @@ fn verify_requires_both_lifecycles_and_the_three_public_tools() {
         fs::read_to_string(record).unwrap(),
         provider_state.display().to_string()
     );
+    assert_eq!(
+        fs::read_to_string(root.join("requests.txt")).unwrap(),
+        concat!(
+            "initialize\n",
+            "notifications/initialized\n",
+            "tools/list\n",
+            "server/discover\n",
+            "tools/list\n",
+        )
+    );
 }
 
 #[test]
@@ -85,6 +95,7 @@ fn write_fake_runtime(
         ""
     };
     let supported = serde_json::to_string(supported_versions).unwrap();
+    let requests = root.join("requests.txt");
     fs::write(
         &path,
         format!(
@@ -92,13 +103,15 @@ fn write_fake_runtime(
 printf '%s' "$UNICA_PROVIDER_STATE_DIR" > '{record}'
 while IFS= read -r line; do
   case "$line" in
-    *'"method":"initialize"'*) printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"unica","version":"0.7.0"}}}}}}' ;;
-    *'"method":"server/discover"'*) printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","supportedVersions":{supported},"capabilities":{{}},"ttlMs":0,"cacheScope":"private"}}}}' ;;
-    *'"method":"tools/list"'*) printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"unica.project.status"}},{{"name":"unica.standards.search"}}{explain}]}}}}' ;;
+    *'"method":"initialize"'*) printf '%s\n' initialize >> '{requests}'; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"unica","version":"0.7.0"}}}}}}' ;;
+    *'"method":"notifications/initialized"'*) printf '%s\n' notifications/initialized >> '{requests}' ;;
+    *'"method":"server/discover"'*) printf '%s\n' server/discover >> '{requests}'; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","supportedVersions":{supported},"capabilities":{{}},"ttlMs":0,"cacheScope":"private"}}}}' ;;
+    *'"method":"tools/list"'*) printf '%s\n' tools/list >> '{requests}'; printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[{{"name":"unica.project.status"}},{{"name":"unica.standards.search"}}{explain}]}}}}' ;;
   esac
 done
 "#,
-            record = provider_state_record.display()
+            record = provider_state_record.display(),
+            requests = requests.display()
         ),
     )
     .unwrap();

@@ -351,3 +351,67 @@ fn support_guard_blocked_outcome(
         command: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{support_guard_mode, support_guard_mode_value, SupportGuardMode};
+    use crate::domain::workspace::WorkspaceContext;
+
+    #[test]
+    fn project_editing_policy_is_the_closed_support_guard_downgrade_source() {
+        assert_eq!(support_guard_mode_value("warn"), SupportGuardMode::Warn);
+        assert_eq!(support_guard_mode_value("off"), SupportGuardMode::Off);
+        for value in ["deny", "", "WARN", "unsupported"] {
+            assert_eq!(
+                support_guard_mode_value(value),
+                SupportGuardMode::Deny,
+                "{value}"
+            );
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "unica-support-policy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        let config = workspace.join("src");
+        std::fs::create_dir_all(&config).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        assert_eq!(
+            support_guard_mode(&config, &context),
+            SupportGuardMode::Deny
+        );
+        for (document, expected) in [
+            (r#"{"editingAllowedCheck":"deny"}"#, SupportGuardMode::Deny),
+            (r#"{"editingAllowedCheck":"warn"}"#, SupportGuardMode::Warn),
+            (r#"{"editingAllowedCheck":"off"}"#, SupportGuardMode::Off),
+            (
+                r#"{"editingAllowedCheck":"off","databases":[{"configSrc":"src","editingAllowedCheck":"warn"}]}"#,
+                SupportGuardMode::Warn,
+            ),
+        ] {
+            std::fs::write(workspace.join(".v8-project.json"), document).unwrap();
+            assert_eq!(
+                support_guard_mode(&config, &context),
+                expected,
+                "{document}"
+            );
+        }
+        std::fs::write(workspace.join(".v8-project.json"), "not json").unwrap();
+        assert_eq!(
+            support_guard_mode(&config, &context),
+            SupportGuardMode::Deny
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

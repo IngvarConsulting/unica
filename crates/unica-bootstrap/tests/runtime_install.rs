@@ -70,6 +70,35 @@ fn unsafe_tar_gz() -> Vec<u8> {
         .expect("finish gzip")
 }
 
+fn link_tar_gz() -> Vec<u8> {
+    let output = Vec::new();
+    let encoder = GzEncoder::new(output, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut header = Header::new_gnu();
+    header.set_size(0);
+    header.set_mode(0o777);
+    header.set_entry_type(EntryType::Symlink);
+    header.set_link_name("../../escape").unwrap();
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "bin/linux-x64/unica", std::io::empty())
+        .unwrap();
+    builder.into_inner().unwrap().finish().unwrap()
+}
+
+fn contains_ready(root: &Path) -> bool {
+    fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let path = entry.path();
+            path.file_name().is_some_and(|name| name == ".ready.json")
+                || (path.is_dir() && contains_ready(&path))
+        })
+}
+
 /// Манифест схемы 2: артефакты перечислены по отдельности, у каждого своя
 /// версия. Ключ установки берётся из неё, а не из версии плагина — иначе выпуск
 /// объявляет холодным то, что не менялось.
@@ -256,6 +285,62 @@ fn traversal_archive_is_rejected_before_publication() {
     assert!(error.to_string().contains("unsafe archive path"));
     assert!(!cache.parent().unwrap().join("escape").exists());
     fs::remove_dir_all(cache).expect("remove temp directory");
+}
+
+#[test]
+fn install_closure_rejects_unsafe_or_drifted_archives_without_ready() {
+    let runtime = b"unica-runtime";
+    let valid = tar_gz(&[("bin/linux-x64/unica", runtime)]);
+    let cases = [
+        ("traversal", unsafe_tar_gz(), None),
+        ("link", link_tar_gz(), None),
+        (
+            "duplicate",
+            tar_gz(&[
+                ("bin/linux-x64/unica", runtime),
+                ("bin/linux-x64/unica", runtime),
+            ]),
+            None,
+        ),
+        (
+            "extra",
+            tar_gz(&[
+                ("bin/linux-x64/unica", runtime),
+                ("bin/linux-x64/extra", b"extra"),
+            ]),
+            None,
+        ),
+        ("missing", tar_gz(&[("bin/linux-x64/other", runtime)]), None),
+        ("digest", valid.clone(), Some("0".repeat(64))),
+        ("truncated-size", valid[..valid.len() / 2].to_vec(), None),
+    ];
+
+    for (label, archive, file_digest) in cases {
+        let mut contract = manifest(&archive, runtime);
+        if let Some(file_digest) = file_digest {
+            contract
+                .artifacts
+                .get_mut("unica")
+                .unwrap()
+                .targets
+                .get_mut("linux-x64")
+                .unwrap()
+                .files[0]
+                .sha256 = file_digest;
+        }
+        let cache = temp_dir(&format!("closure-{label}"));
+        let installer = RuntimeInstaller::new(
+            cache.clone(),
+            "0.7.0",
+            Arc::new(FakeDownloader::new(archive)),
+        );
+
+        installer
+            .ensure(&contract, HostTarget::LinuxX64)
+            .unwrap_err();
+        assert!(!contains_ready(&cache), "{label} published a ready marker");
+        fs::remove_dir_all(cache).unwrap();
+    }
 }
 
 #[test]

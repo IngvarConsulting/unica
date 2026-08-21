@@ -2,7 +2,7 @@
 id: INV.REL.ASSESSMENT-WORKFLOW-GATE
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
+decision: DEC.2026-08-21.AFFECTED-RELEASE-ASSESSMENT
 check: tests/ci/test_unica_workflow.py::test_release_assessment_uses_affected_mechanism_contour
 scope: [ci, product]
 ---

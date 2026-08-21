@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -61,6 +62,64 @@ def job_block(workflow: str, job_id: str) -> str:
         return workflow[start:]
     end = start + len(marker) + next_job.start()
     return workflow[start:end]
+
+
+@dataclass(frozen=True)
+class ParsedJob:
+    body: str
+    needs: tuple[str, ...]
+    targets: tuple[tuple[str, str], ...]
+    steps: tuple[str, ...]
+
+
+def parse_workflow_jobs(workflow: str) -> dict[str, ParsedJob]:
+    """Parse the job graph and matrix/step order from the workflow subset we own."""
+    lines = workflow.splitlines()
+    jobs_start = lines.index("jobs:") + 1
+    boundaries = [
+        index
+        for index in range(jobs_start, len(lines))
+        if re.fullmatch(r"  [A-Za-z0-9_-]+:", lines[index])
+    ]
+    jobs: dict[str, ParsedJob] = {}
+    for position, start in enumerate(boundaries):
+        end = boundaries[position + 1] if position + 1 < len(boundaries) else len(lines)
+        name = lines[start].strip()[:-1]
+        block_lines = lines[start:end]
+        body = "\n".join(block_lines) + "\n"
+        needs: list[str] = []
+        for index, line in enumerate(block_lines):
+            match = re.fullmatch(r"    needs:\s*(.*)", line)
+            if not match:
+                continue
+            raw = match.group(1).strip()
+            if raw.startswith("["):
+                needs.extend(item.strip() for item in raw[1:-1].split(",") if item.strip())
+            elif raw:
+                needs.append(raw)
+            else:
+                cursor = index + 1
+                while cursor < len(block_lines):
+                    item = re.fullmatch(r"      - ([A-Za-z0-9_-]+)", block_lines[cursor])
+                    if item is None:
+                        break
+                    needs.append(item.group(1))
+                    cursor += 1
+            break
+        targets = tuple(
+            (target, runner)
+            for target, runner in re.findall(
+                r"(?m)^          - target: ([^\s]+)\n            runner: ([^\s]+)$",
+                body,
+            )
+        )
+        steps = tuple(
+            match.group(1).strip('"\'')
+            for line in block_lines
+            if (match := re.fullmatch(r"      - (?:name|uses): (.+)", line))
+        )
+        jobs[name] = ParsedJob(body=body, needs=tuple(needs), targets=targets, steps=steps)
+    return jobs
 
 
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
@@ -653,44 +712,76 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         self.assertIn(".build/tool-bundles/${{ matrix.target }}/bin/", extract)
 
     def test_every_supported_target_must_pass_before_publication(self) -> None:
-        expected_targets = (
-            "          - target: linux-x64\n            runner: ubuntu-latest",
-            "          - target: win-x64\n            runner: windows-latest",
-            "          - target: darwin-arm64\n            runner: macos-14",
+        jobs = parse_workflow_jobs(self.release)
+        authoritative = jobs["build-tools"].targets
+        self.assertEqual(
+            authoritative,
+            (
+                ("linux-x64", "ubuntu-latest"),
+                ("win-x64", "windows-latest"),
+                ("darwin-arm64", "macos-14"),
+            ),
         )
-        build = job_block(self.release, "build-tools")
-        probe = job_block(self.release, "probe-thin-bootstrap")
-        smoke = job_block(self.release, "smoke-thin-plugin")
-        package = job_block(self.release, "package-thin")
-        publish = job_block(self.release, "publish-release-assets")
-        verification = job_block(self.release, "verify-published-assets")
+        authoritative_targets = {target for target, _ in authoritative}
+        for contour in ("probe-thin-bootstrap", "smoke-thin-plugin"):
+            self.assertEqual(
+                {target for target, _ in jobs[contour].targets},
+                authoritative_targets,
+                contour,
+            )
 
-        for target in expected_targets:
-            with self.subTest(contour="build", target=target):
-                self.assertIn(target, build)
-        for target in (
-            expected_targets[0],
-            expected_targets[1].replace("windows-latest", "windows-2022"),
-            expected_targets[2],
-        ):
-            with self.subTest(contour="probe", target=target):
-                self.assertIn(target, probe)
-            with self.subTest(contour="published-smoke", target=target):
-                self.assertIn(target, smoke)
+        build = jobs["build-tools"]
+        ordered_steps = (
+            "Build target bundle and bootstrap",
+            "Package deterministic runtime",
+            "Verify local runtime asset pair",
+            "Upload runtime metadata",
+            "Upload bootstrap payload",
+            "Upload required runtime archive",
+        )
+        positions = [build.steps.index(step) for step in ordered_steps]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("tools.json", build.body)
+        self.assertIn('manifest["runtimeFiles"]', build.body)
+        self.assertIn("--target \"${{ matrix.target }}\"", build.body)
 
-        self.assertIn("needs: build-tools", package)
-        self.assertIn("needs.build-tools.result == 'success'", package)
-        self.assertIn("needs: build-tools", publish)
-        self.assertIn("needs.build-tools.result == 'success'", publish)
-        self.assertIn("needs: package-thin", probe)
-        self.assertIn("needs.package-thin.result == 'success'", probe)
-        self.assertIn("needs: [package-thin, publish-release-assets]", smoke)
-        self.assertIn("needs.package-thin.result == 'success'", smoke)
-        self.assertIn("needs.publish-release-assets.result == 'success'", smoke)
-        self.assertIn("      - publish-release-assets", verification)
-        self.assertIn("      - package-thin", verification)
-        self.assertIn("needs.package-thin.result == 'success'", verification)
-        self.assertIn("needs.publish-release-assets.result == 'success'", verification)
+        expected_needs = {
+            "package-thin": ("build-tools",),
+            "publish-release-assets": ("build-tools",),
+            "probe-thin-bootstrap": ("package-thin",),
+            "smoke-thin-plugin": ("package-thin", "publish-release-assets"),
+            "verify-published-assets": ("publish-release-assets", "package-thin"),
+        }
+        for job, needs in expected_needs.items():
+            self.assertEqual(jobs[job].needs, needs, job)
+            for dependency in needs:
+                self.assertIn(f"needs.{dependency}.result == 'success'", jobs[job].body)
+
+        local_verifier = "python scripts/ci/verify-release-assets.py"
+        self.assertIn(local_verifier, build.body)
+        self.assertIn('--asset-dir ".build/runtime-assets/${{ matrix.target }}"', build.body)
+        self.assertIn('--target "${{ matrix.target }}"', build.body)
+
+        published = jobs["verify-published-assets"]
+        published_lifecycle = (
+            'gh release download "$GITHUB_REF_NAME" --pattern \'unica-runtime-*\' --dir published',
+            local_verifier + " --asset-dir published",
+            "name: unica-thin-marketplace",
+            "python scripts/ci/verify-delivery-reachable.py",
+        )
+        published_positions = [published.body.index(step) for step in published_lifecycle]
+        self.assertEqual(published_positions, sorted(published_positions))
+        self.assertNotIn("--target", published.body, "published verification must cover every target")
+
+        smoke = jobs["smoke-thin-plugin"]
+        smoke_lifecycle = (
+            "Smoke packaged bootstrap against published runtime",
+            "Prefetch the whole delivery once, end to end",
+        )
+        smoke_positions = [smoke.steps.index(step) for step in smoke_lifecycle]
+        self.assertEqual(smoke_positions, sorted(smoke_positions))
+        self.assertIn("matrix.target == 'linux-x64'", smoke.body)
+        self.assertIn('prefetch --plugin-root .build/thin/plugins/unica', smoke.body)
 
 
 class PrereleaseNeverReachesConsumersTests(unittest.TestCase):

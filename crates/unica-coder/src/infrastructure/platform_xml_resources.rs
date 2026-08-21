@@ -1884,4 +1884,95 @@ mod tests {
             .message
             .contains(fixture.root.to_string_lossy().as_ref()));
     }
+
+    #[test]
+    fn source_resource_limits_and_cancellation_matrix_is_exact() {
+        use crate::domain::source_resources::{
+            SOURCE_MANIFEST_RESOURCE_MAX, SOURCE_REPLACEMENT_MAX_BYTES,
+            SOURCE_RESOURCE_PAGE_LIMIT_MAX, SOURCE_SNAPSHOT_TTL_SECONDS,
+        };
+
+        assert_eq!(SOURCE_MANIFEST_RESOURCE_MAX, 100);
+        assert_eq!(SOURCE_RESOURCE_PAGE_LIMIT_MAX, 50);
+        assert_eq!(SOURCE_READ_LIMIT_MAX, 64 * 1024);
+        assert_eq!(SOURCE_REPLACEMENT_MAX_BYTES, 1024 * 1024);
+        assert_eq!(SOURCE_SNAPSHOT_TTL_SECONDS, 5 * 60);
+        assert_eq!(MAX_SNAPSHOT_BYTES, 32 * 1024 * 1024);
+        assert_eq!(MAX_LIVE_SNAPSHOTS, 64);
+        assert_eq!(MAX_LIVE_SNAPSHOT_BYTES, 128 * 1024 * 1024);
+
+        let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
+        for limit in [0, SOURCE_RESOURCE_PAGE_LIMIT_MAX + 1] {
+            let (provider, _) = provider();
+            let error = provider
+                .resources(
+                    fixture.module_request(ResourceScope::SelfOnly, limit),
+                    &fixture.context,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                SourceResourceErrorCode::LimitExceeded,
+                "limit={limit}"
+            );
+        }
+        for limit in [0, SOURCE_READ_LIMIT_MAX + 1] {
+            let (provider, _) = provider();
+            let error = provider
+                .read(
+                    SourceReadRequest {
+                        snapshot_id: Uuid::new_v4().to_string(),
+                        resource_id: Uuid::new_v4().to_string(),
+                        offset: 0,
+                        limit,
+                    },
+                    &fixture.context,
+                    &CancellationToken::new(),
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                SourceResourceErrorCode::LimitExceeded,
+                "read limit={limit}"
+            );
+        }
+
+        let cancelled_before_resolution = CancellationToken::new();
+        cancelled_before_resolution.cancel();
+        let (cancelled_provider, _) = provider();
+        let error = cancelled_provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 1),
+                &fixture.context,
+                &cancelled_before_resolution,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, SourceResourceErrorCode::Cancelled);
+
+        let (publication_provider, _) = provider();
+        let cancelled_before_publication = CancellationToken::new();
+        let observer_token = cancelled_before_publication.clone();
+        publication_provider.set_construction_observer_for_test(move |_| observer_token.cancel());
+        let error = publication_provider
+            .resources(
+                fixture.module_request(ResourceScope::SelfOnly, 1),
+                &fixture.context,
+                &cancelled_before_publication,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, SourceResourceErrorCode::Cancelled);
+        assert!(publication_provider
+            .snapshots
+            .lock()
+            .unwrap()
+            .snapshots
+            .is_empty());
+
+        source_resources_cancellation_between_phases_returns_private_error();
+        ttl_boundary_expires_pages_and_reads_at_exact_deadline();
+        live_snapshot_capacity_is_bounded_without_evicting_unexpired_snapshots();
+        single_snapshot_byte_limit_has_stable_capacity_error();
+        aggregate_construction_never_buffers_beyond_snapshot_budget();
+    }
 }

@@ -3435,6 +3435,75 @@ mod tests {
     }
 
     #[test]
+    fn production_secret_key_matrix_is_redacted_from_runtime_surfaces() {
+        let keys = crate::infrastructure::redaction::production_secret_key_matrix();
+        let stdout = keys
+            .iter()
+            .map(|key| format!("{key}=stdout-value-{key}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stderr = keys
+            .iter()
+            .map(|key| format!("{key}=error-value-{key}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let argv = std::iter::once("runner".to_string())
+            .chain(keys.iter().map(|key| format!("{key}=argv-value-{key}")))
+            .collect::<Vec<_>>();
+        let target = keys
+            .iter()
+            .map(|key| format!("{key}=target-value-{key}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let artifact = keys
+            .iter()
+            .map(|key| format!("{key}=artifact-value-{key}"))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let cache = TestCache::new();
+        let runner = Arc::new(FakeRunner::exits_after(1, 17, &stdout, &stderr));
+        let service = RuntimeJobService::new(cache.path(), runner);
+        let job = service
+            .start(RuntimeJobRequest::new(
+                RuntimeJobOperation::Test,
+                argv,
+                target,
+                Some(artifact),
+            ))
+            .expect("start redaction matrix job");
+        let terminal = service.poll(&job.id).expect("finish redaction matrix job");
+        let logs = service.logs(&job.id).expect("read redaction matrix logs");
+        let snapshot = serde_json::to_string(&terminal).expect("serialize terminal snapshot");
+        let persistence = fs::read_to_string(
+            service
+                .store
+                .record_path(&job.id)
+                .expect("runtime record path"),
+        )
+        .expect("read runtime record");
+
+        for key in keys {
+            for secret in [
+                format!("stdout-value-{key}"),
+                format!("error-value-{key}"),
+                format!("argv-value-{key}"),
+                format!("target-value-{key}"),
+                format!("artifact-value-{key}"),
+            ] {
+                for (surface, rendered) in [
+                    ("snapshot", snapshot.as_str()),
+                    ("persistence", persistence.as_str()),
+                    ("stdout", logs.stdout.as_str()),
+                    ("stderr", logs.stderr.as_str()),
+                ] {
+                    assert!(!rendered.contains(&secret), "{surface} leaked {secret}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn direct_status_rejects_corrupt_unknown_schema_and_non_uuid_without_touching_active_lock() {
         let cache = TestCache::new();
         let runner = Arc::new(FakeRunner::success_after(50));
@@ -3883,6 +3952,48 @@ mod tests {
             service.poll(&job.id).expect("third poll").phase,
             RuntimeJobPhase::Succeeded
         );
+    }
+
+    #[test]
+    fn runtime_job_lifecycle_and_log_bounds_are_complete() {
+        detached_worker_owns_the_queued_record_until_terminal_state();
+        let cache = TestCache::new();
+        let runner = Arc::new(FakeRunner::success_after(50));
+        let service = RuntimeJobService::new(cache.path(), runner);
+        let started = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("start runtime job");
+
+        assert_eq!(service.status(&started.id).unwrap().id, started.id);
+        let waited = service.wait(&started.id, Duration::ZERO).unwrap();
+        assert!(waited.wait_timed_out);
+        assert_eq!(
+            service
+                .list()
+                .jobs
+                .iter()
+                .filter(|job| job.id == started.id)
+                .count(),
+            1
+        );
+
+        fs::write(
+            service.store.stdout_path(&started.id).unwrap(),
+            "stdout-абвгд",
+        )
+        .unwrap();
+        fs::write(
+            service.store.stderr_path(&started.id).unwrap(),
+            "stderr-12345",
+        )
+        .unwrap();
+        let logs = RuntimeJobService::logs_at(cache.path(), &started.id, 3).unwrap();
+        assert_eq!(logs.stdout, "вгд");
+        assert_eq!(logs.stderr, "345");
+
+        let cancelled = service.cancel(&started.id).unwrap();
+        assert_eq!(cancelled.phase, RuntimeJobPhase::Cancelled);
+        assert!(cancelled.cancelled);
     }
 
     #[test]
