@@ -599,6 +599,94 @@ class FateCoverageTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_live_safety_and_compatibility_guarantees_are_not_retired(self) -> None:
+        records = {}
+        for path in (REPO_ROOT / "arch").rglob("*.md"):
+            props = FATE_GUARD._front_matter_props(path)
+            if identifier := props.get("id"):
+                records[identifier] = props
+        rows = {row.subject: row for row in FATE_GUARD.fate_rows(REPO_ROOT)}
+        required = {
+            "INV-CACHE-WRITE-FREE-PREVIEW": {
+                "INV.CACHE.INDEX-PREVIEW-WRITE-FREE",
+                "INV.SAFETY.PREVIEW-BY-DEFAULT",
+            },
+            "REQ-SAFETY-PREVIEW-BY-DEFAULT": {
+                "INV.SAFETY.PREVIEW-BY-DEFAULT",
+            },
+            "REQ-SAFETY-SECRET-REDACTION": {
+                "INV.SAFETY.STREAM-SECRET-REDACTION",
+                "INV.SAFETY.RUNTIME-SECRET-REDACTION",
+                "INV.SAFETY.CONFIG-ERROR-REDACTION",
+            },
+            "REQ-COMPAT-ALL-TARGETS-GREEN": {
+                "INV.CI.ALL-TARGETS-GREEN",
+            },
+            "REQ-COMPAT-OLDEST-CLIENT-LOAD": {
+                "INV.PKG.OLDEST-CLIENT-LOAD",
+            },
+        }
+        exact_checks = {
+            "INV.SAFETY.PREVIEW-BY-DEFAULT": (
+                "product",
+                "crates/unica-coder/src/application/mod.rs::"
+                "mutating_tool_defaults_to_dry_run_and_reports_cache",
+            ),
+            "INV.SAFETY.STREAM-SECRET-REDACTION": (
+                "product",
+                "crates/unica-coder/src/infrastructure/redaction.rs::"
+                "stream_redactor_redacts_secret_key_split_across_chunks",
+            ),
+            "INV.SAFETY.RUNTIME-SECRET-REDACTION": (
+                "product",
+                "crates/unica-coder/src/infrastructure/runtime_jobs.rs::"
+                "terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts",
+            ),
+            "INV.SAFETY.CONFIG-ERROR-REDACTION": (
+                "product",
+                "crates/unica-coder/src/infrastructure/operational_config.rs::"
+                "read_errors_are_redacted_to_the_fixed_basename",
+            ),
+            "INV.CI.ALL-TARGETS-GREEN": (
+                "process",
+                "tests/ci/test_unica_workflow.py::"
+                "test_every_supported_target_must_pass_before_publication",
+            ),
+            "INV.PKG.OLDEST-CLIENT-LOAD": (
+                "product",
+                "tests/ci/test_product_contracts.py::"
+                "test_release_gate_pins_the_oldest_supported_client",
+            ),
+        }
+
+        errors = []
+        for subject, successors in required.items():
+            row = rows[subject]
+            if row.fate not in {"carried", "superseded"}:
+                errors.append(f"{subject}: live guarantee is {row.fate!r}")
+            if set(row.successors) != successors:
+                errors.append(
+                    f"{subject}: successors {set(row.successors)!r}, "
+                    f"expected {successors!r}"
+                )
+        for identifier, (governs, check) in exact_checks.items():
+            record = records.get(identifier)
+            if record is None:
+                errors.append(f"missing {identifier}")
+                continue
+            if record.get("governs") != governs:
+                errors.append(
+                    f"{identifier}: governs {record.get('governs')!r}, "
+                    f"expected {governs!r}"
+                )
+            if record.get("check") != check:
+                errors.append(
+                    f"{identifier}: check {record.get('check')!r}, "
+                    f"expected {check!r}"
+                )
+
+        self.assertEqual(errors, [])
+
     def test_sdk_module_export_boundary_has_its_new_process_decision(self) -> None:
         records = {}
         for path in (REPO_ROOT / "arch").rglob("*.md"):

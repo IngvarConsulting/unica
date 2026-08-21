@@ -664,6 +664,26 @@ for raw in sys.stdin:
         self.assertEqual(summary["blockingFailures"], 0)
         self.assertEqual(summary["qualityFindings"]["nonBlockingFailures"], 1)
 
+    def test_a_failed_blocking_scenario_fails_the_assessment_summary(self) -> None:
+        module = load_assessment_module()
+        scenarios = [
+            module.scenario_result(
+                scenario_id="blocking-smoke",
+                title="Blocking smoke",
+                tool="unica.code.search",
+                arguments={},
+                status="failed",
+                duration_ms=7,
+                blocking=True,
+                errors=["contract mismatch"],
+            )
+        ]
+
+        summary = module.build_summary(scenarios, [], Path("/tmp/unica-no-cache"))
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["blockingFailures"], 1)
+
     def test_code_search_is_blocking_and_requires_fixed_role_sections(self) -> None:
         module = load_assessment_module()
         project_map = {

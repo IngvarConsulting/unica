@@ -652,6 +652,46 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         self.assertIn("unica-runtime-${{ matrix.target }}.tar.gz", extract)
         self.assertIn(".build/tool-bundles/${{ matrix.target }}/bin/", extract)
 
+    def test_every_supported_target_must_pass_before_publication(self) -> None:
+        expected_targets = (
+            "          - target: linux-x64\n            runner: ubuntu-latest",
+            "          - target: win-x64\n            runner: windows-latest",
+            "          - target: darwin-arm64\n            runner: macos-14",
+        )
+        build = job_block(self.release, "build-tools")
+        probe = job_block(self.release, "probe-thin-bootstrap")
+        smoke = job_block(self.release, "smoke-thin-plugin")
+        package = job_block(self.release, "package-thin")
+        publish = job_block(self.release, "publish-release-assets")
+        verification = job_block(self.release, "verify-published-assets")
+
+        for target in expected_targets:
+            with self.subTest(contour="build", target=target):
+                self.assertIn(target, build)
+        for target in (
+            expected_targets[0],
+            expected_targets[1].replace("windows-latest", "windows-2022"),
+            expected_targets[2],
+        ):
+            with self.subTest(contour="probe", target=target):
+                self.assertIn(target, probe)
+            with self.subTest(contour="published-smoke", target=target):
+                self.assertIn(target, smoke)
+
+        self.assertIn("needs: build-tools", package)
+        self.assertIn("needs.build-tools.result == 'success'", package)
+        self.assertIn("needs: build-tools", publish)
+        self.assertIn("needs.build-tools.result == 'success'", publish)
+        self.assertIn("needs: package-thin", probe)
+        self.assertIn("needs.package-thin.result == 'success'", probe)
+        self.assertIn("needs: [package-thin, publish-release-assets]", smoke)
+        self.assertIn("needs.package-thin.result == 'success'", smoke)
+        self.assertIn("needs.publish-release-assets.result == 'success'", smoke)
+        self.assertIn("      - publish-release-assets", verification)
+        self.assertIn("      - package-thin", verification)
+        self.assertIn("needs.package-thin.result == 'success'", verification)
+        self.assertIn("needs.publish-release-assets.result == 'success'", verification)
+
 
 class PrereleaseNeverReachesConsumersTests(unittest.TestCase):
     """Предвыпуск собирается и публикует ассеты, но каталога не касается.

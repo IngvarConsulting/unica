@@ -1455,6 +1455,21 @@ class ProductContractTests(unittest.TestCase):
         self.assertIn("2.1.69", plugin_readme)
         self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
 
+    def test_release_gate_pins_the_oldest_supported_client(self) -> None:
+        release = (
+            REPO_ROOT / ".github/workflows/unica-plugin-release.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
+        self.assertIn(
+            'npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"',
+            release,
+        )
+        self.assertIn(
+            'test "$(claude --version | cut -d\' \' -f1)" = "$CLAUDE_CLI_VERSION"',
+            release,
+        )
+
     def test_claude_host_contract_is_recorded_for_agents(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
