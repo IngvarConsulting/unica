@@ -1,5 +1,5 @@
 - Date: `2026-08-21`
-- Status: `draft`
+- Status: `approved`
 - Decision: `DEC.2026-08-18.ARCHITECTURE-RESET`
 
 # Исправления архитектурного реестра v2 по ревью PR 605
