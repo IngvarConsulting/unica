@@ -16,22 +16,61 @@ FATE_ROW = re.compile(
     r"^\|\s*`(?P<subject>[^`]+)`\s*\|\s*`(?P<fate>[^`]+)`\s*\|"
     r"(?P<successor>.*?)\|(?P<reason>.*?)\|\s*$"
 )
-V2_ID = re.compile(r"\b(?:DEC|INV|CTR)\.[A-Z0-9]+(?:[.-][A-Z0-9]+)+\b")
 FRONTMATTER_ID = re.compile(r"^id:\s*((?:DEC|INV|CTR)\.[A-Z0-9.-]+)\s*$", re.MULTILINE)
 FRONT_MATTER = re.compile(r"\A---\s*\n(?P<props>.*?)\n---(?:\s*\n|\Z)", re.DOTALL)
 INLINE_CODE = re.compile(r"`([^`]+)`")
 LITERAL_TOOL_NAME = re.compile(r"`unica\.[^`\s]+`")
+SUCCESSOR_TOKEN = re.compile(
+    r"`(?P<id>(?:DEC|INV|CTR)\.[A-Z0-9]+(?:[.-][A-Z0-9]+)+)`"
+)
+SUCCESSOR_SEPARATOR = re.compile(r"\s*(?:,\s*(?:<br>\s*)?|<br>\s*)\Z")
 BEHAVIOR_REMOVED = re.compile(
     r"^behavior-removed:\s+(?P<decision>DEC\.[A-Z0-9]+(?:[.-][A-Z0-9]+)+)$"
 )
 ALLOWED_FATES = {"carried", "superseded", "retired"}
 RETIRED_REASONS = {"tool-surface-bound", "check-removed", "historical-only"}
+PROCESS_SUBJECTS = {
+    "INV-APP-DISPATCH-OWNERSHIP",
+    "INV-APP-THIN-TRANSPORT",
+    "INV-APP-NO-ADAPTER-BYPASS",
+    "INV-APP-NO-SCRIPT-BACKEND",
+    "INV-APP-DEPENDENCY-DIRECTION",
+    "INV-APP-NO-DIRECT-GIT",
+    "INV-APP-CODE-PROVIDER-BOUNDARY",
+    "INV-MCP-DATA-DRIVEN-SCHEMA",
+    "INV-MCP-SDK-TRANSPORT",
+}
+PRODUCT_SUBJECTS = {
+    "INV-APP-DOCUMENTATION-NETWORK-POLICY",
+    "INV-APP-SUPPORT-STATE",
+    "INV-APP-PARTIAL-FALLBACK",
+    "INV-APP-CONFIG-SNAPSHOT",
+    "INV-APP-DIAGNOSTIC-PROVIDERS",
+    "INV-APP-DOCUMENTATION-NO-DISK-STATE",
+    "INV-APP-LAZY-HIDDEN-SERVICES",
+    "INV-APP-OUTLINE-SOURCE",
+}
+PRODUCT_PREFIXES = (
+    "INV-PRODUCT-",
+    "INV-MCP-",
+    "INV-CACHE-",
+    "INV-SOURCE-",
+    "INV-PKG-",
+    "REQ-PERF-",
+    "REQ-TOKEN-",
+    "REQ-SAFETY-",
+    "REQ-OBS-",
+    "REQ-COMPAT-",
+    "REQ-REL-",
+)
+PROCESS_PREFIXES = ("INV-CI-", "INV-DOC-", "INV-SKILL-", "REQ-MAINT-")
 
 
 @dataclass(frozen=True)
 class FateRow:
     subject: str
     fate: str
+    successor_cell: str
     successors: tuple[str, ...]
     reason: str
 
@@ -83,15 +122,29 @@ def fate_rows(root: Path) -> list[FateRow]:
     for line in ledger.read_text(encoding="utf-8").splitlines():
         match = FATE_ROW.match(line)
         if match:
+            successor_cell = match.group("successor").strip()
             rows.append(
                 FateRow(
                     subject=match.group("subject"),
                     fate=match.group("fate"),
-                    successors=tuple(V2_ID.findall(match.group("successor"))),
+                    successor_cell=successor_cell,
+                    successors=tuple(
+                        token.group("id") for token in SUCCESSOR_TOKEN.finditer(successor_cell)
+                    ),
                     reason=_cell_value(match.group("reason")),
                 )
             )
     return rows
+
+
+def _valid_successor_list(cell: str) -> bool:
+    tokens = list(SUCCESSOR_TOKEN.finditer(cell))
+    if not tokens or cell[: tokens[0].start()].strip():
+        return False
+    for previous, current in zip(tokens, tokens[1:]):
+        if not SUCCESSOR_SEPARATOR.fullmatch(cell[previous.end() : current.start()]):
+            return False
+    return not cell[tokens[-1].end() :].strip()
 
 
 def v1_rules(root: Path) -> dict[str, V1Rule]:
@@ -150,6 +203,18 @@ def _check_resolves(root: Path, check: str) -> bool:
     return name in path.read_text(encoding="utf-8")
 
 
+def _legacy_governs(subject: str) -> str | None:
+    if subject in PROCESS_SUBJECTS:
+        return "process"
+    if subject in PRODUCT_SUBJECTS:
+        return "product"
+    if subject.startswith(PRODUCT_PREFIXES):
+        return "product"
+    if subject.startswith(PROCESS_PREFIXES):
+        return "process"
+    return None
+
+
 def _retirement_errors(
     root: Path,
     row: FateRow,
@@ -171,10 +236,17 @@ def _retirement_errors(
                 f"{row.subject}: behavior-removal decision {decision_id} has status "
                 f"{decision.get('status')!r}, not 'active'"
             ]
-        if decision.get("governs") not in {"product", "process"}:
+        expected_governs = _legacy_governs(row.subject)
+        if expected_governs is None:
             return [
-                f"{row.subject}: behavior-removal decision {decision_id} must govern "
-                "product or process"
+                f"{row.subject}: cannot classify legacy behavior as product or process; "
+                f"behavior-removal decision {decision_id} is not admissible"
+            ]
+        actual_governs = decision.get("governs")
+        if actual_governs != expected_governs:
+            return [
+                f"{row.subject}: behavior-removal decision {decision_id} governs mismatch: "
+                f"expected {expected_governs!r}, got {actual_governs!r}"
             ]
         return []
 
@@ -231,12 +303,19 @@ def inspect(root: Path) -> list[str]:
             errors.append(f"{row.subject}: unknown fate {row.fate!r}")
             continue
         if row.fate == "retired":
-            if row.successors:
-                errors.append(f"{row.subject}: retired subjects cannot name a successor")
+            if row.successor_cell != "—":
+                errors.append(
+                    f"{row.subject}: retired successor cell must be exactly '—', got "
+                    f"{row.successor_cell!r}"
+                )
             errors.extend(_retirement_errors(root, row, rules, decisions))
         else:
-            if not row.successors:
-                errors.append(f"{row.subject}: {row.fate} fate must name a v2 successor")
+            if not _valid_successor_list(row.successor_cell):
+                errors.append(
+                    f"{row.subject}: {row.fate} successor cell must contain only backtick-quoted "
+                    "v2 IDs separated by comma and/or <br>, got "
+                    f"{row.successor_cell!r}"
+                )
             if row.reason != "—":
                 errors.append(f"{row.subject}: {row.fate} fate must use reason '—'")
         for successor in row.successors:

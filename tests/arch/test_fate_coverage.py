@@ -64,10 +64,16 @@ class Fixture:
     def fate(self) -> Path:
         return self.root / "docs" / "arch-v1" / "FATE.md"
 
-    def add_decision(self, identifier: str, *, status: str = "active") -> None:
+    def add_decision(
+        self,
+        identifier: str,
+        *,
+        status: str = "active",
+        governs: str = "product",
+    ) -> None:
         slug = identifier.removeprefix("DEC.").lower().replace(".", "-")
         (self.root / "arch" / "decisions" / f"{slug}.md").write_text(
-            f"---\nid: {identifier}\nstatus: {status}\ngoverns: product\n---\n",
+            f"---\nid: {identifier}\nstatus: {status}\ngoverns: {governs}\n---\n",
             encoding="utf-8",
         )
 
@@ -130,6 +136,44 @@ class FateCoverageTests(unittest.TestCase):
         result = self.fixture.run()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("INV.APP.MISSING", result.stderr)
+
+    def test_a_retired_subject_rejects_raw_successor_text(self) -> None:
+        self.fixture.fate.write_text(
+            COMPLETE_FATE.replace(
+                "| `ADR-0001` | `retired` | — | `historical-only` |",
+                "| `ADR-0001` | `retired` | legacy-replacement | `historical-only` |",
+            ),
+            encoding="utf-8",
+        )
+        result = self.fixture.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ADR-0001", result.stderr)
+        self.assertIn("legacy-replacement", result.stderr)
+
+    def test_a_successor_cell_rejects_text_left_after_a_v2_id(self) -> None:
+        self.fixture.fate.write_text(
+            COMPLETE_FATE.replace(
+                "| `INV-APP-BOUNDARY` | `carried` | `INV.APP.BOUNDARY` | — |",
+                "| `INV-APP-BOUNDARY` | `carried` | `INV.APP.BOUNDARY` legacy | — |",
+            ),
+            encoding="utf-8",
+        )
+        result = self.fixture.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("INV-APP-BOUNDARY", result.stderr)
+        self.assertIn("legacy", result.stderr)
+
+    def test_multiple_successors_accept_documented_separators(self) -> None:
+        self.fixture.fate.write_text(
+            COMPLETE_FATE.replace(
+                "| `REQ-PERF-DEADLINE` | `superseded` | `INV.APP.BOUNDARY` | — |",
+                "| `REQ-PERF-DEADLINE` | `superseded` | "
+                "`INV.APP.BOUNDARY`,<br>`CTR.WIRE.RUNTIME` | — |",
+            ),
+            encoding="utf-8",
+        )
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_a_missing_retirement_reason_is_rejected(self) -> None:
         self.fixture.fate.write_text(
@@ -275,6 +319,61 @@ class FateCoverageTests(unittest.TestCase):
                 "| `REQ-PERF-DEADLINE` | `superseded` | `INV.APP.BOUNDARY` | — |",
                 f"| `REQ-PERF-DEADLINE` | `retired` | — | `behavior-removed: {decision}` |",
             ),
+            encoding="utf-8",
+        )
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_product_behavior_cannot_be_removed_by_a_process_decision(self) -> None:
+        decision = "DEC.2026-08-21.PROCESS-REMOVAL"
+        self.fixture.add_decision(decision, governs="process")
+        self.fixture.fate.write_text(
+            COMPLETE_FATE.replace(
+                "| `REQ-PERF-DEADLINE` | `superseded` | `INV.APP.BOUNDARY` | — |",
+                f"| `REQ-PERF-DEADLINE` | `retired` | — | `behavior-removed: {decision}` |",
+            ),
+            encoding="utf-8",
+        )
+        result = self.fixture.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("REQ-PERF-DEADLINE", result.stderr)
+        self.assertIn("expected 'product'", result.stderr)
+        self.assertIn("got 'process'", result.stderr)
+
+    def test_unclassified_behavior_cannot_cite_a_removal_decision(self) -> None:
+        decision = "DEC.2026-08-21.REMOVAL"
+        self.fixture.add_decision(decision)
+        self.fixture.fate.write_text(
+            COMPLETE_FATE.replace(
+                "| `INV-APP-BOUNDARY` | `carried` | `INV.APP.BOUNDARY` | — |",
+                f"| `INV-APP-BOUNDARY` | `retired` | — | `behavior-removed: {decision}` |",
+            ),
+            encoding="utf-8",
+        )
+        result = self.fixture.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("INV-APP-BOUNDARY", result.stderr)
+        self.assertIn("cannot classify", result.stderr)
+
+    def test_process_behavior_can_be_removed_by_a_process_decision(self) -> None:
+        decision = "DEC.2026-08-21.PROCESS-REMOVAL"
+        self.fixture.add_decision(decision, governs="process")
+        requirements = (
+            self.fixture.root
+            / "docs"
+            / "arch-v1"
+            / "architecture"
+            / "quality-requirements.md"
+        )
+        requirements.write_text(
+            requirements.read_text(encoding="utf-8")
+            + "\n### REQ-MAINT-BOUNDARY — Boundary\n",
+            encoding="utf-8",
+        )
+        self.fixture.fate.write_text(
+            COMPLETE_FATE
+            + f"| `REQ-MAINT-BOUNDARY` | `retired` | — | "
+            f"`behavior-removed: {decision}` |\n",
             encoding="utf-8",
         )
         result = self.fixture.run()
