@@ -3,12 +3,12 @@ id: INV.SOURCE.PLATFORM-XML-ONLY
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::native_xml_metadata_tools_require_platform_xml_source_sets
+check: crates/unica-coder/src/infrastructure/tool_context.rs::native_platform_xml_source_format_guard_is_closed_over_public_operations
 scope: [source]
 ---
 
-# Нативные операции с XML требуют platform XML
+# Нативная граница не принимает EDT
 
-Нативная операция над метаданными сначала разрешает набор исходников с
-`sourceFormat: platform_xml` и лишь затем трогает XML-файлы. EDT, недопустимый
-или неоднозначный формат отклоняется типизированной ошибкой.
+Каждая зарегистрированная `NativeOperation` применяет одинаковый гейт формата:
+принимает явный `platform_xml` и исторический `unknown`, но отклоняет EDT и
+недопустимую или неоднозначную классификацию типизированной ошибкой.

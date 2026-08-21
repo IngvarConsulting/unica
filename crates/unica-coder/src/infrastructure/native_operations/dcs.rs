@@ -10647,7 +10647,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::{
         with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
@@ -10919,7 +10919,7 @@ mod tests {
     }
 
     #[test]
-    fn dcs_compile_rolls_back_if_format_owner_changes_during_publication() {
+    pub(crate) fn dcs_compile_rolls_back_if_format_owner_changes_during_publication() {
         let context = temp_context("dcs-compile-format-owner-race");
         let source = context.cwd.join("src");
         let output = source.join("Templates/Guarded/Ext/Template.xml");
@@ -12715,7 +12715,7 @@ mod tests {
     }
 
     #[test]
-    fn native_dcs_edit_noop_leaves_file_untouched() {
+    pub(crate) fn native_dcs_edit_noop_leaves_file_untouched() {
         let context = temp_context("dcs-edit-noop");
         let template_path = context.cwd.join("Template.xml");
         fs::write(&template_path, base_dcs_xml()).unwrap();

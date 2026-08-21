@@ -718,6 +718,19 @@ fn project_health_full_portable_repository_is_ready() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// Registry-facing positive/negative matrix for every clause that contributes
+/// to portable repository readiness.  Keeping the failure cases beside the
+/// real public `project.status` fixtures prevents the happy path from being
+/// mistaken for proof that each repository prerequisite closes readiness.
+#[test]
+fn portable_git_readiness_contract_is_a_closed_positive_and_negative_matrix() {
+    project_health_full_portable_repository_is_ready();
+    project_health_rejects_cross_kind_staged_config_dump_descriptors();
+    project_health_reports_index_eol_even_when_text_policy_is_missing();
+    project_health_reports_working_eol_even_when_text_policy_is_local_only();
+    project_health_keeps_lfs_errors_scoped_to_the_source_set();
+}
+
 #[test]
 fn project_health_mixed_platform_and_nested_edt_publish_profile_specific_checks() {
     let root = temp_root("mixed-platform-edt");

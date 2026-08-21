@@ -3,11 +3,11 @@ id: INV.SOURCE.IDEMPOTENT-EFFECTS
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::mutating_native_noop_does_not_emit_cache_events
+check: crates/unica-coder/src/infrastructure/native_operations.rs::typed_platform_resource_noop_emits_no_effects
 scope: [source]
 ---
 
-# Семантический noop не публикует событие кеша
+# Типизированный noop ресурса не публикует эффект
 
-Нативная мутация с пустым набором изменений не публикует доменное событие и не
-инвалидирует кеш.
+Точные noop-ветви типизированных метаданных, роли и XDTO не публикуют мутацию,
+доменное событие или изменение кеша и сохраняют исходные байты.

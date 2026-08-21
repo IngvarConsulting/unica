@@ -3,7 +3,7 @@ id: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs::rollback_and_cleanup_diagnostics_keep_distinct_failure_classes
+check: crates/unica-coder/src/infrastructure/native_operations/compile_transaction.rs::fault_injected_rollback_and_cleanup_paths_keep_distinct_diagnostics
 scope: [source]
 ---
 

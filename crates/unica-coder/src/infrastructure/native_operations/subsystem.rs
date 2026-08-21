@@ -1447,7 +1447,7 @@ pub(crate) fn validate_subsystem_owner_path(
 }
 
 #[cfg(test)]
-mod subsystem_info_typed_result_tests {
+pub(crate) mod subsystem_info_typed_result_tests {
     use super::*;
     use crate::infrastructure::platform::secure_read::{
         with_secure_tree_test_hook, SecureTreePhase,
@@ -2187,7 +2187,7 @@ mod subsystem_info_typed_result_tests {
 
     /// Registry-facing falsifier for the typed public subsystem projection.
     #[test]
-    fn subsystem_projection_contract_is_complete() {
+    pub(crate) fn subsystem_projection_contract_is_complete() {
         pointing_at_the_subsystems_folder_answers_only_with_tree();
         concrete_subsystem_contains_its_root_chain_and_complete_descendant_tree();
         unregistered_alias_keeps_local_data_without_borrowing_a_registered_tree();
@@ -3924,7 +3924,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::workspace::WorkspaceContext;
@@ -4137,7 +4137,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_subsystem_compile_rolls_back_if_format_owner_changes_during_publication() {
+    pub(crate) fn nested_subsystem_compile_rolls_back_if_format_owner_changes_during_publication() {
         let context = temp_context("nested-format-owner-race");
         let source = context.cwd.join("src");
         fs::create_dir_all(&source).unwrap();
@@ -5070,7 +5070,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_subsystem_compile_does_not_overwrite_or_report_changes() {
+    pub(crate) fn repeated_subsystem_compile_does_not_overwrite_or_report_changes() {
         let context = temp_context("repeat-noop");
         let args = compile_args(
             &context.cwd,

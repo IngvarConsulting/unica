@@ -3105,7 +3105,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod role_edit_contract_tests {
+pub(crate) mod role_edit_contract_tests {
     use super::super::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
     use super::*;
 
@@ -3937,7 +3937,7 @@ mod role_edit_contract_tests {
     }
 
     #[test]
-    fn role_edit_without_vendor_support_is_logically_addressed_and_idempotent() {
+    pub(crate) fn role_edit_without_vendor_support_is_logically_addressed_and_idempotent() {
         let (context, args, rights) = fixture("roundtrip");
         assert!(
             !context
@@ -4662,7 +4662,7 @@ pub(super) mod role_info_typed_result_tests {
 }
 
 #[cfg(test)]
-mod role_compile_contract_tests {
+pub(crate) mod role_compile_contract_tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::with_before_commit_hook;
     use super::*;
@@ -4925,7 +4925,7 @@ mod role_compile_contract_tests {
     }
 
     #[test]
-    fn role_compile_rolls_back_if_supported_format_owner_appears_during_publication() {
+    pub(crate) fn role_compile_rolls_back_if_supported_format_owner_appears_during_publication() {
         let workspace = temp_root("supported-owner-appears-during-publication");
         let source = temp_root("detached-supported-owner-appears-during-publication");
         fs::create_dir_all(&source).unwrap();

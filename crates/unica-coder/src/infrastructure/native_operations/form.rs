@@ -10822,7 +10822,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::cancellation::CancellationToken;
@@ -17431,7 +17431,7 @@ mod tests {
     }
 
     #[test]
-    fn form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication() {
+    pub(crate) fn form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication() {
         let context = temp_context("compile-parent-owner-race");
         let source = context.cwd.join("src");
         let definition_path = context.cwd.join("form.json");
@@ -18866,7 +18866,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_form_identical_event_is_byte_exact_idempotent_noop() {
+    pub(crate) fn edit_form_identical_event_is_byte_exact_idempotent_noop() {
         let context = temp_context("edit-event-idempotent");
         let form_path = context.cwd.join("Form.xml");
         let original = event_form_xml(

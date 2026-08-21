@@ -5088,7 +5088,7 @@ fn apply_typed_event_subscription_source(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::domain::metadata::{
         DateFractions, MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
@@ -8653,7 +8653,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_exact_noop_form_update_has_no_resource_mutation_or_event() {
+    pub(crate) fn typed_exact_noop_form_update_has_no_resource_mutation_or_event() {
         let root = std::env::temp_dir().join(format!(
             "unica-meta-edit-form-noop-{}",
             uuid::Uuid::new_v4()

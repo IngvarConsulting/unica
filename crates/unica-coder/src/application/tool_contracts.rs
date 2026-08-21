@@ -94,6 +94,28 @@ const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
     ),
 ];
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReaderMigrationMode {
+    Bridge,
+    DirectSwitch,
+}
+
+/// One test-only view derived from the production selector bridge plus the
+/// already direct diagnostics handler.  Schema, migration and response-parity
+/// tests consume this same view, so none of those proofs owns a second reader
+/// list that can drift independently.
+#[cfg(test)]
+pub(crate) fn authoritative_reader_migration_inventory() -> Vec<(&'static str, ReaderMigrationMode)>
+{
+    let mut inventory = BRIDGED_SELECTORS
+        .iter()
+        .map(|(name, _, _)| (*name, ReaderMigrationMode::Bridge))
+        .collect::<Vec<_>>();
+    inventory.push(("unica.code.diagnostics", ReaderMigrationMode::DirectSwitch));
+    inventory
+}
+
 /// Arguments a bridged reader still accepts but must not advertise: no branch
 /// of its schema can honour them, and publishing one would name a selector the
 /// tool cannot use. Refusing them instead would break calls that worked before
@@ -6166,6 +6188,146 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn subject_reader_migration_inventory_is_complete() {
+        let inventory = authoritative_reader_migration_inventory();
+        assert_eq!(inventory.len(), BRIDGED_SELECTORS.len() + 1);
+
+        let bridge_names = inventory
+            .iter()
+            .filter_map(|(name, mode)| (*mode == ReaderMigrationMode::Bridge).then_some(*name))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bridge_names,
+            BRIDGED_SELECTORS
+                .iter()
+                .map(|(name, _, _)| *name)
+                .collect::<Vec<_>>()
+        );
+        let direct_names = inventory
+            .iter()
+            .filter_map(|(name, mode)| {
+                (*mode == ReaderMigrationMode::DirectSwitch).then_some(*name)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(direct_names, ["unica.code.diagnostics"]);
+
+        for (name, mode) in inventory {
+            let tool = tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("reader migration inventory lost {name}"));
+            let schema = input_schema_for_tool(&tool);
+            match mode {
+                ReaderMigrationMode::Bridge => {
+                    let (legacy, _) = bridged_selector(name).expect("bridge selector");
+                    assert!(schema["properties"].get(legacy).is_some(), "{name}");
+                    assert!(schema["properties"].get("sourceSet").is_some(), "{name}");
+                }
+                ReaderMigrationMode::DirectSwitch => {
+                    assert!(matches!(tool.handler, ToolHandler::Diagnostics), "{name}");
+                    for legacy in ["sourceDir", "path", "mode"] {
+                        assert!(
+                            schema["properties"].get(legacy).is_none(),
+                            "{name}: {legacy}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_mutation_surface_has_no_format_migration_operation_or_selector() {
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+            .filter(|tool| {
+                matches!(
+                    tool.handler,
+                    ToolHandler::NativeOperation { .. } | ToolHandler::Metadata { .. }
+                )
+            })
+        {
+            let name = tool.name.to_ascii_lowercase();
+            assert!(!name.contains("migrat"), "{}", tool.name);
+            if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
+                assert!(!operation.contains("migrat"), "{}: {operation}", tool.name);
+            }
+            let schema = input_schema_for_tool(&tool);
+            for selector in schema["properties"]
+                .as_object()
+                .expect("tool schema properties")
+                .keys()
+            {
+                let normalized = selector
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>();
+                assert!(
+                    !matches!(
+                        normalized.as_str(),
+                        "targetformat" | "exportformat" | "formatversion" | "targetplatform"
+                    ),
+                    "{} exposes implicit format migration selector {selector}",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn logical_target_tools_do_not_publish_physical_identity_fields() {
+        let physical_fields = [
+            "path",
+            "Path",
+            "sourceDir",
+            "ConfigPath",
+            "RightsPath",
+            "FormPath",
+            "TemplatePath",
+            "SubsystemPath",
+            "ObjectPath",
+        ];
+        let mut inspected = Vec::new();
+        for tool in tools() {
+            let schema = input_schema_for_tool(&tool);
+            let Some(properties) = schema["properties"].as_object() else {
+                continue;
+            };
+            if !properties.contains_key("sourceSet") || !properties.contains_key("metadataPath") {
+                continue;
+            }
+            if bridged_selector(tool.name).is_some()
+                || tool.name == "unica.code.search"
+                || matches!(
+                    tool.handler,
+                    ToolHandler::SourceNavigation {
+                        operation: SourceNavigationOperation::Locate
+                    }
+                )
+            {
+                continue;
+            }
+            inspected.push(tool.name);
+            assert_eq!(schema["additionalProperties"], false, "{}", tool.name);
+            for field in physical_fields {
+                assert!(
+                    !properties.contains_key(field),
+                    "{} publishes physical identity field {field}",
+                    tool.name
+                );
+            }
+        }
+        assert!(
+            inspected.contains(&"unica.code.patch")
+                && inspected.contains(&"unica.code.diagnostics")
+                && inspected.contains(&"unica.meta.info"),
+            "logical-only inventory is unexpectedly empty or incomplete: {inspected:?}"
+        );
+    }
+
+    #[test]
     fn meta_info_rejects_legacy_target_fields_as_unknown_arguments() {
         let tool = tools()
             .into_iter()
@@ -7184,6 +7346,23 @@ pub(crate) mod tests {
         assert!(schema["required"]
             .as_array()
             .is_some_and(|items| { items.iter().all(|value| value != "position") }));
+    }
+
+    #[test]
+    pub(crate) fn code_patch_tail_insert_public_contract_is_closed() {
+        code_patch_contract_is_narrow_and_requires_one_typed_selector();
+        code_patch_schema_accepts_each_documented_selector_variant();
+        assert!(tools().iter().all(|tool| tool.name != "unica.code.init"));
+
+        let patch = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.code.patch")
+            .expect("code patch is registered");
+        let schema = input_schema_for_tool(&patch);
+        assert_eq!(
+            schema["properties"]["operation"]["enum"],
+            json!(["insert", "replace"])
+        );
     }
 
     #[test]

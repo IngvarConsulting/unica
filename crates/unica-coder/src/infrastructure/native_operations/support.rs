@@ -916,7 +916,7 @@ fn replace_object_rule_flags(text: &mut String, object_uuid: &str, target: u8) -
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::single_file_publisher::with_before_commit_hook;
     use super::*;
     use serde_json::json;
@@ -1090,6 +1090,21 @@ mod tests {
         assert!(fs::read_to_string(&fixture.bin_path)
             .unwrap()
             .contains("{6,1,"));
+    }
+
+    #[test]
+    pub(crate) fn repeated_support_edit_is_a_byte_exact_noop() {
+        let fixture = SupportFixture::new("repeat-noop", "2.20");
+
+        let first = edit_support_result(&fixture.capability_off_args(), &fixture.context).unwrap();
+        assert!(first.ok, "{first:?}");
+        let after = fs::read(&fixture.bin_path).unwrap();
+
+        let repeated =
+            edit_support_result(&fixture.capability_off_args(), &fixture.context).unwrap();
+        assert!(repeated.ok, "{repeated:?}");
+        assert!(repeated.changes.is_empty(), "{repeated:?}");
+        assert_eq!(fs::read(&fixture.bin_path).unwrap(), after);
     }
 
     #[test]
@@ -1319,7 +1334,7 @@ mod tests {
     }
 
     #[test]
-    fn support_edit_rejects_a_concurrent_configuration_owner_change() {
+    pub(crate) fn support_edit_rejects_a_concurrent_configuration_owner_change() {
         let fixture = SupportFixture::new("owner-race", "2.20");
         let bin_before = fs::read(&fixture.bin_path).unwrap();
         let concurrent =

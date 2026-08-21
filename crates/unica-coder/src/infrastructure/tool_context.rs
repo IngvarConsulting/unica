@@ -392,6 +392,52 @@ mod tests {
     }
 
     #[test]
+    fn native_platform_xml_source_format_guard_is_closed_over_public_operations() {
+        use crate::domain::project_sources::{ProjectSourceSet, SourceFormat, SourceSetKind};
+
+        let native_tools = tools()
+            .into_iter()
+            .filter(|tool| matches!(tool.handler, ToolHandler::NativeOperation { .. }))
+            .collect::<Vec<_>>();
+        assert!(!native_tools.is_empty());
+
+        for tool in native_tools {
+            let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+                unreachable!()
+            };
+            assert!(
+                native_operation_descriptor(operation).is_some(),
+                "{} has no source-format descriptor",
+                tool.name
+            );
+
+            for (format, accepted, diagnostic) in [
+                (SourceFormat::PlatformXml, true, ""),
+                (SourceFormat::Unknown, true, ""),
+                (SourceFormat::Edt, false, "sourceFormat=edt"),
+                (SourceFormat::Invalid, false, "invalid/ambiguous format"),
+            ] {
+                let source_set = ProjectSourceSet {
+                    name: "guarded".to_string(),
+                    kind: SourceSetKind::Configuration,
+                    path: "src".to_string(),
+                    source_format: format,
+                    format_evidence: Vec::new(),
+                    format_probe_error: None,
+                };
+                let result = validate_platform_xml_source_format(tool, &source_set);
+                if accepted {
+                    result.unwrap_or_else(|error| panic!("{}: {error}", tool.name));
+                } else {
+                    let error = result.expect_err("non-platform format must fail closed");
+                    assert!(error.contains(diagnostic), "{}: {error}", tool.name);
+                    assert!(error.contains("platform_xml"), "{}: {error}", tool.name);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn runtime_stderr_output_rejects_lexical_workspace_escape() {
         let (root, context) = fixture("stderr-lexical-escape");
         let args = json!({"stderrOutput": "../outside/stderr.log"})

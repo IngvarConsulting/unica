@@ -2502,7 +2502,7 @@ fn cf_edit_transaction_error(error: String) -> String {
 }
 
 #[cfg(test)]
-mod cf_edit_transaction_tests {
+pub(crate) mod cf_edit_transaction_tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::with_before_commit_hook;
     use super::*;
@@ -2649,7 +2649,7 @@ mod cf_edit_transaction_tests {
     }
 
     #[test]
-    fn cf_edit_external_only_change_rejects_concurrent_format_owner_change() {
+    pub(crate) fn cf_edit_external_only_change_rejects_concurrent_format_owner_change() {
         let fixture = BooleanEditFixture::new("external-owner-guard");
         let config_before = fs::read(&fixture.config_path).unwrap();
         let concurrent_config = String::from_utf8(config_before)
@@ -4814,7 +4814,7 @@ fn cf_init_execute(
 }
 
 #[cfg(test)]
-mod cf_init_transaction_tests {
+pub(crate) mod cf_init_transaction_tests {
     use super::super::compile_transaction::{with_commit_failpoint, CommitFailpoint};
     use super::super::single_file_publisher::with_before_commit_hook;
     use super::*;
@@ -5032,7 +5032,7 @@ mod cf_init_transaction_tests {
     }
 
     #[test]
-    fn cf_init_reauthorizes_containing_owner_immediately_before_publication() {
+    pub(crate) fn cf_init_reauthorizes_containing_owner_immediately_before_publication() {
         let (root, context) = init_test_context("owner-race");
         fs::write(
             root.join("v8project.yaml"),

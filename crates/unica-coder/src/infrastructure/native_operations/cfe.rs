@@ -6853,7 +6853,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::domain::workspace::WorkspaceContext;
@@ -8271,7 +8271,7 @@ mod tests {
     }
 
     #[test]
-    fn borrow_cfe_rejects_concurrent_base_format_owner_change() {
+    pub(crate) fn borrow_cfe_rejects_concurrent_base_format_owner_change() {
         let context = temp_context("borrow-base-owner-guard");
         let init = create_extension_scaffold(
             &Map::from_iter([
@@ -8429,7 +8429,7 @@ mod tests {
     /// to the write plan, so it is proven there: planning a file with exactly
     /// the bytes it already holds must leave the commit report empty.
     #[test]
-    fn cfe_write_plan_identical_bytes_publish_no_created_or_updated_entry() {
+    pub(crate) fn cfe_write_plan_identical_bytes_publish_no_created_or_updated_entry() {
         let context = temp_context("borrow-noop-plan");
         let owner = context.cwd.join("Configuration.xml");
         let image = "<Owner><State>stable</State></Owner>\n";

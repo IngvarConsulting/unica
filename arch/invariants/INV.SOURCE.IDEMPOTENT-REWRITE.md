@@ -2,13 +2,14 @@
 id: INV.SOURCE.IDEMPOTENT-REWRITE
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/native_operations/code.rs::applied_patch_returns_typed_data_and_repeated_apply_is_noop
+decision: DEC.2026-08-21.MUTATION-IDEMPOTENCE-SCOPE
+check: crates/unica-coder/src/infrastructure/native_operations.rs::public_platform_xml_mutator_idempotence_contract_is_complete
 scope: [source]
 ---
 
-# Повторная идентичная мутация ничего не пишет
+# Повторный эквивалентный постобраз не заменяет файл
 
-Повторный идентичный `unica.code.patch` распознаётся до записи как семантически
-пустой: хеш до совпадает с хешем после, diff и диапазоны пусты, а байты файла
-остаются образом первого применения.
+Все 25 публичных нативных и типизированных мутаторов platform XML принадлежат
+одному из 13 закрытых семейств. Представительный повтор каждого семейства
+сохраняет байты, а общий транзакционный писатель не заменяет файл при
+эквивалентном постобразе; форма публичной квитанции регулируется отдельно.

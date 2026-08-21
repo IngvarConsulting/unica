@@ -119,33 +119,183 @@ impl NativeOperationAdapter {
 
 #[cfg(test)]
 mod source_invariant_tests {
+    use crate::application::{tools, ToolHandler};
+    use std::collections::BTreeMap;
+
+    /// The public platform-XML mutation surface is closed here by domain
+    /// family. A new native or typed metadata mutator cannot inherit rewrite
+    /// or preimage claims merely by being registered: both aggregate
+    /// falsifiers below must be extended with real family evidence.
+    fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static str> {
+        let expected = BTreeMap::from([
+            ("unica.cf.edit", "configuration"),
+            ("unica.cf.init", "configuration"),
+            ("unica.cfe.borrow", "extension"),
+            ("unica.cfe.init", "extension"),
+            ("unica.cfe.patch_method", "extension"),
+            ("unica.code.patch", "code"),
+            ("unica.dcs.compile", "dcs"),
+            ("unica.dcs.edit", "dcs"),
+            ("unica.epf.init", "external"),
+            ("unica.erf.init", "external"),
+            ("unica.form.add", "form"),
+            ("unica.form.compile", "form"),
+            ("unica.form.edit", "form"),
+            ("unica.form.remove", "form"),
+            ("unica.interface.edit", "interface"),
+            ("unica.meta.add", "metadata"),
+            ("unica.meta.edit", "metadata"),
+            ("unica.meta.remove", "metadata"),
+            ("unica.mxl.compile", "mxl"),
+            ("unica.role.compile", "role"),
+            ("unica.role.edit", "role"),
+            ("unica.subsystem.compile", "subsystem"),
+            ("unica.subsystem.edit", "subsystem"),
+            ("unica.support.edit", "support"),
+            ("unica.xdto.edit", "xdto"),
+        ]);
+        let actual = tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+            .filter(|tool| {
+                matches!(
+                    tool.handler,
+                    ToolHandler::NativeOperation { .. } | ToolHandler::Metadata { .. }
+                )
+            })
+            .map(|tool| {
+                let family = expected.get(tool.name).unwrap_or_else(|| {
+                    panic!(
+                        "public platform-XML mutator {} has no source contract family",
+                        tool.name
+                    )
+                });
+                (tool.name, *family)
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(actual, expected);
+        actual
+    }
+
+    #[test]
+    fn public_platform_xml_mutator_idempotence_contract_is_complete() {
+        let inventory = public_platform_xml_mutator_inventory();
+        let families = inventory
+            .values()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            families,
+            std::collections::BTreeSet::from([
+                "code",
+                "configuration",
+                "dcs",
+                "extension",
+                "external",
+                "form",
+                "interface",
+                "metadata",
+                "mxl",
+                "role",
+                "subsystem",
+                "support",
+                "xdto",
+            ])
+        );
+
+        super::compile_transaction::tests::identical_replacement_commits_as_a_byte_for_byte_noop();
+        super::compile_transaction::tests::already_present_registration_commits_as_a_byte_for_byte_noop();
+        crate::application::tests::cf_edit_equal_serialized_result_is_a_public_noop();
+        super::cfe::tests::cfe_write_plan_identical_bytes_publish_no_created_or_updated_entry();
+        super::code::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop();
+        super::dcs::tests::native_dcs_edit_noop_leaves_file_untouched();
+        super::external::tests::external_init_rejects_invalid_name_and_existing_targets_without_mutation();
+        super::form::tests::edit_form_identical_event_is_byte_exact_idempotent_noop();
+        super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update();
+        typed_platform_resource_noop_emits_no_effects();
+        super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update();
+        super::subsystem::tests::repeated_subsystem_compile_does_not_overwrite_or_report_changes();
+        super::support::tests::repeated_support_edit_is_a_byte_exact_noop();
+    }
+
+    #[test]
+    fn typed_platform_resource_noop_emits_no_effects() {
+        super::meta::typed_resource_noop_contract_is_complete();
+        super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_idempotent();
+        super::xdto::tests::xdto_events_follow_changed_plan_and_exact_noop_for_preview_and_apply();
+    }
+
+    #[test]
+    fn public_platform_xml_mutator_preimage_contract_is_complete() {
+        public_platform_xml_mutator_inventory();
+
+        super::compile_transaction::tests::exact_read_guard_serializes_with_owner_writer_and_rejects_stale_plan();
+        super::cf::cf_edit_transaction_tests::cf_edit_external_only_change_rejects_concurrent_format_owner_change();
+        super::cf::cf_init_transaction_tests::cf_init_reauthorizes_containing_owner_immediately_before_publication();
+        super::cfe::tests::borrow_cfe_rejects_concurrent_base_format_owner_change();
+        super::code::tests::code_patch_rolls_back_if_owner_descriptor_changes_before_commit();
+        super::dcs::tests::dcs_compile_rolls_back_if_format_owner_changes_during_publication();
+        super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication();
+        super::form::tests::form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication();
+        super::interface::tests::interface_edit_rolls_back_if_unchanged_metadata_owner_changes_during_publication();
+        super::meta::typed_resource_preimage_contract_is_complete();
+        super::mxl::tests::mxl_compile_rolls_back_if_format_owner_changes_during_publication();
+        super::role::role_compile_contract_tests::role_compile_rolls_back_if_supported_format_owner_appears_during_publication();
+        super::subsystem::tests::nested_subsystem_compile_rolls_back_if_format_owner_changes_during_publication();
+        super::support::tests::support_edit_rejects_a_concurrent_configuration_owner_change();
+        super::xdto::tests::xdto_guard_rejects_descriptor_identity_drift_before_commit();
+    }
+
+    #[test]
+    fn repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates() {
+        super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update();
+        super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update();
+    }
+
     /// One registry-facing falsifier for response parity across the complete
     /// subject-reader bridge. Each family keeps its focused fixture below its
     /// handler; this aggregate prevents a partial family list from grounding
     /// the cross-family invariant.
     #[test]
     fn bridged_reader_outputs_are_identical_for_logical_and_physical_selectors() {
-        super::cf::cf_read_selector_bridge_tests::cf_info_answers_identically_for_a_source_set_and_a_config_path();
-        super::cf::cf_read_selector_bridge_tests::cf_validate_answers_identically_for_a_source_set_and_a_config_path();
-        super::form::form_read_selector_bridge_tests::form_info_answers_identically_for_a_logical_and_a_physical_selector();
-        super::form::form_read_selector_bridge_tests::form_validate_answers_identically_for_a_logical_and_a_physical_selector();
-        super::role::role_info_typed_result_tests::role_info_answers_identically_for_a_logical_and_a_physical_selector();
-        super::role::role_info_typed_result_tests::role_validate_answers_identically_for_a_logical_and_a_physical_selector();
-        super::mxl::mxl_read_selector_bridge_tests::mxl_info_answers_identically_for_a_logical_and_a_physical_selector();
-        super::mxl::mxl_read_selector_bridge_tests::mxl_validate_answers_identically_for_a_logical_and_a_physical_selector();
-        super::mxl::mxl_read_selector_bridge_tests::mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector();
-        super::mxl::mxl_read_selector_bridge_tests::dcs_info_answers_identically_for_a_logical_and_a_physical_selector();
-        super::mxl::mxl_read_selector_bridge_tests::dcs_validate_answers_identically_for_a_logical_and_a_physical_selector();
-        super::subsystem::subsystem_read_selector_bridge_tests::subsystem_info_answers_identically_for_a_logical_and_a_physical_selector();
-        super::subsystem::subsystem_read_selector_bridge_tests::subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector();
+        use crate::application::tool_contracts::{
+            authoritative_reader_migration_inventory, ReaderMigrationMode,
+        };
+        use std::collections::BTreeSet;
+
+        let cases: [(&str, fn()); 13] = [
+            ("unica.cf.info", super::cf::cf_read_selector_bridge_tests::cf_info_answers_identically_for_a_source_set_and_a_config_path),
+            ("unica.cf.validate", super::cf::cf_read_selector_bridge_tests::cf_validate_answers_identically_for_a_source_set_and_a_config_path),
+            ("unica.form.info", super::form::form_read_selector_bridge_tests::form_info_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.form.validate", super::form::form_read_selector_bridge_tests::form_validate_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.role.info", super::role::role_info_typed_result_tests::role_info_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.role.validate", super::role::role_info_typed_result_tests::role_validate_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.mxl.info", super::mxl::mxl_read_selector_bridge_tests::mxl_info_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.mxl.validate", super::mxl::mxl_read_selector_bridge_tests::mxl_validate_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.mxl.decompile", super::mxl::mxl_read_selector_bridge_tests::mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.dcs.info", super::mxl::mxl_read_selector_bridge_tests::dcs_info_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.dcs.validate", super::mxl::mxl_read_selector_bridge_tests::dcs_validate_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.subsystem.info", super::subsystem::subsystem_read_selector_bridge_tests::subsystem_info_answers_identically_for_a_logical_and_a_physical_selector),
+            ("unica.subsystem.validate", super::subsystem::subsystem_read_selector_bridge_tests::subsystem_validate_answers_identically_for_a_logical_and_a_physical_selector),
+        ];
+        let expected = authoritative_reader_migration_inventory()
+            .into_iter()
+            .filter_map(|(name, mode)| (mode == ReaderMigrationMode::Bridge).then_some(name))
+            .collect::<BTreeSet<_>>();
+        let actual = cases.iter().map(|(name, _)| *name).collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+        for (_, parity_test) in cases {
+            parity_test();
+        }
     }
 
     /// One registry-facing falsifier for every clause of selector-free tail
     /// insertion, whose public schema and write behavior live on opposite
     /// sides of the application/infrastructure boundary.
     #[test]
-    fn tail_insert_contract_is_complete() {
-        crate::application::tool_contracts::tests::code_patch_schema_accepts_each_documented_selector_variant();
+    fn tail_insert_public_and_write_contract_is_complete() {
+        crate::application::tool_contracts::tests::code_patch_tail_insert_public_contract_is_closed(
+        );
         super::code::tests::code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat(
         );
         super::code::tests::code_patch_writes_the_first_body_of_an_empty_or_bom_only_module();

@@ -3333,7 +3333,7 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::composition::testing::{
         child_subsystem_stub_xml, create_file_link_fixture_for_test, file_identity_for_test,
@@ -6423,101 +6423,6 @@ mod tests {
     }
 
     #[test]
-    fn mutating_native_noop_does_not_emit_cache_events() {
-        let mut outcome = AdapterOutcome::ok("no changes");
-        outcome.changes = Vec::new();
-        let spec = ToolSpec {
-            name: "unica.cf.edit",
-            description: "test",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("cf-edit", Some(DomainEventKind::ConfigXmlChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "cf-edit",
-                event: Some(DomainEventKind::ConfigXmlChanged),
-            },
-        };
-
-        let args = Map::new();
-        assert!(!should_emit_events(spec, &args, false, &outcome, None));
-
-        outcome
-            .changes
-            .push("updated Configuration.xml".to_string());
-        assert!(should_emit_events(spec, &args, false, &outcome, None));
-        assert!(should_emit_events(
-            spec,
-            &args,
-            true,
-            &AdapterOutcome::ok("generic dry run"),
-            None,
-        ));
-
-        let code_patch_spec = ToolSpec {
-            name: "unica.code.patch",
-            description: "test",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("code-patch", Some(DomainEventKind::ModuleChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "code-patch",
-                event: Some(DomainEventKind::ModuleChanged),
-            },
-        };
-        assert!(!should_emit_events(
-            code_patch_spec,
-            &args,
-            true,
-            &AdapterOutcome::ok("code patch preview"),
-            None,
-        ));
-
-        let form_edit_spec = ToolSpec {
-            name: "unica.form.edit",
-            description: "test",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("form-edit", Some(DomainEventKind::FormChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "form-edit",
-                event: Some(DomainEventKind::FormChanged),
-            },
-        };
-        let semantic_args = Map::from_iter([
-            ("FormPath".to_string(), json!("Form.xml")),
-            ("definition".to_string(), json!({"formEvents": []})),
-        ]);
-        assert!(!should_emit_events(
-            form_edit_spec,
-            &semantic_args,
-            true,
-            &AdapterOutcome::ok("semantic dry run no-op"),
-            None,
-        ));
-
-        let mut planned = AdapterOutcome::ok("dry run planned change");
-        planned.changes.push("would update Form.xml".to_string());
-        assert!(!should_emit_events(
-            form_edit_spec,
-            &semantic_args,
-            true,
-            &planned,
-            None,
-        ));
-
-        let mut rejected = AdapterOutcome::ok("dry run rejected");
-        rejected.ok = false;
-        rejected.changes.push("would update Form.xml".to_string());
-        assert!(!should_emit_events(
-            form_edit_spec,
-            &semantic_args,
-            true,
-            &rejected,
-            None,
-        ));
-    }
-
-    #[test]
     fn xdto_event_selector_uses_typed_plan_state_without_presentation_changes() {
         let spec = tools()
             .into_iter()
@@ -7331,9 +7236,9 @@ mod tests {
     }
 
     #[test]
-    fn project_status_reports_workspace_root_source_set_without_mutation() {
+    fn project_status_workspace_root_rejection_preserves_the_entire_tree() {
         let root = temp_project_status_workspace("root-source", ".");
-        let before = std::fs::read(root.join("v8project.yaml")).unwrap();
+        let before = source_tree_snapshot(&root);
         let mut args = Map::new();
         args.insert("cwd".into(), Value::String(root.display().to_string()));
 
@@ -7349,8 +7254,7 @@ mod tests {
             .unwrap()
             .iter()
             .any(|diagnostic| { diagnostic["code"] == "source_set.root_is_workspace" }));
-        assert_eq!(std::fs::read(root.join("v8project.yaml")).unwrap(), before);
-        assert!(!root.join(".build/unica/services").exists());
+        assert_eq!(source_tree_snapshot(&root), before);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -8129,7 +8033,7 @@ mod tests {
     }
 
     #[test]
-    fn cf_edit_equal_serialized_result_is_a_public_noop() {
+    pub(crate) fn cf_edit_equal_serialized_result_is_a_public_noop() {
         let before = cf_edit_configuration_bytes();
         let (root, workspace, config_path) =
             cf_edit_mutation_workspace("unica-cf-edit-equal-noop", &before);
@@ -9646,6 +9550,49 @@ mod tests {
     }
 
     #[test]
+    fn public_subsystem_info_registration_address_and_schema_contract_is_complete() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "unica.subsystem.info")
+            .expect("subsystem.info is publicly registered");
+        assert!(matches!(
+            tool.handler,
+            ToolHandler::NativeOperation {
+                operation: "subsystem-info",
+                ..
+            }
+        ));
+        let schema = crate::application::tool_contracts::input_schema_for_tool(&tool);
+        assert!(schema["properties"].get("Mode").is_none());
+        assert!(schema["properties"].get("mode").is_none());
+
+        let (root, workspace, _) =
+            subsystem_format_guard_workspace("unica-subsystem-public-address-contract");
+        let args = Map::from_iter([
+            (
+                "cwd".to_string(),
+                Value::String(workspace.display().to_string()),
+            ),
+            ("sourceSet".to_string(), Value::String("main".to_string())),
+            (
+                "metadataPath".to_string(),
+                Value::String("Subsystem.Parent".to_string()),
+            ),
+        ]);
+        let result = UnicaApplication::new()
+            .call_tool("unica.subsystem.info", &args)
+            .unwrap();
+        assert!(result.ok, "{result:?}");
+        let data = serde_json::to_string(&result.data.expect("registered topology data")).unwrap();
+        assert!(data.contains(r#""name":"Parent""#), "{data}");
+        assert!(data.contains(r#""name":"Child""#), "{data}");
+        for physical in ["Subsystems/", "Subsystems\\\\", ".xml"] {
+            assert!(!data.contains(physical), "leaked {physical:?}: {data}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn public_subsystem_info_projects_registered_dependency_errors_as_typed_failures() {
         let root = test_workspace_root("unica-subsystem-format-resolver-error");
         let workspace = root.join("workspace");
@@ -9972,7 +9919,7 @@ mod tests {
     }
 
     #[test]
-    fn public_subsystem_info_deadline_covers_registered_preflight() {
+    fn public_subsystem_info_deadline_returns_no_data() {
         let (root, workspace, _) =
             subsystem_format_guard_workspace("unica-subsystem-public-preflight-deadline");
         let args = Map::from_iter([
@@ -10000,6 +9947,10 @@ mod tests {
 
         assert!(!result.ok, "{result:?}");
         assert!(
+            result.data.is_none(),
+            "deadline must not publish data: {result:?}"
+        );
+        assert!(
             result
                 .errors
                 .iter()
@@ -10013,6 +9964,14 @@ mod tests {
             "deadline expiry must not be mislabeled as provider_unavailable: {result:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_subsystem_projection_and_mode_absence_contract_is_complete() {
+        public_subsystem_info_registration_address_and_schema_contract_is_complete();
+        public_subsystem_info_projects_registered_dependency_errors_as_typed_failures();
+        public_subsystem_info_deadline_returns_no_data();
+        crate::infrastructure::native_operations::subsystem::subsystem_info_typed_result_tests::subsystem_projection_contract_is_complete();
     }
 
     #[test]

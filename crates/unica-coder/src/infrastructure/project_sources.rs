@@ -3089,23 +3089,92 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// One registry-facing falsifier for the composed autodetection policy.
-    /// Each component remains an independently runnable regression below; this
-    /// aggregate prevents an architecture record from naming only the happy
-    /// path while claiming the closed catalog, no-follow filtering, naming and
-    /// provenance guarantees together.
+    /// The scenario matrix is derived from the production layout and marker
+    /// catalogs. Exact catalog assertions make an intentional new layout a
+    /// review event instead of allowing it to bypass the near-miss matrix.
     #[test]
-    fn autodetect_catalog_contract_is_complete() {
-        autodetect_discovers_configuration_extension_source_sets();
+    fn autodetect_catalog_contract_is_closed_over_production_layouts() {
+        assert_eq!(BASE_CONFIGURATION_LAYOUTS, [".", "src", "src/cf"]);
+        assert_eq!(
+            SOURCE_ROOT_MARKERS,
+            [
+                "Configuration.xml",
+                "Configuration/Configuration.mdo",
+                "src/Configuration/Configuration.mdo",
+            ]
+        );
+        assert_eq!(EXTENSION_LAYOUTS.len(), 2);
+        assert_eq!(EXTENSION_LAYOUTS[0].directory, "src/cfe");
+        assert_eq!(
+            EXTENSION_LAYOUTS[0].shape,
+            ExtensionLayoutShape::RootOrContainer
+        );
+        assert_eq!(EXTENSION_LAYOUTS[1].directory, "src/extensions");
+        assert_eq!(EXTENSION_LAYOUTS[1].shape, ExtensionLayoutShape::Container);
+
+        for layout in BASE_CONFIGURATION_LAYOUTS {
+            for marker in SOURCE_ROOT_MARKERS {
+                let root = temp_workspace(&format!(
+                    "unica-source-map-catalog-base-{}-{}",
+                    layout.replace('.', "root").replace('/', "root"),
+                    marker.replace('/', "-")
+                ));
+                write(&root.join(layout).join(marker), "<marker/>");
+                let winning_layout = BASE_CONFIGURATION_LAYOUTS
+                    .iter()
+                    .find(|candidate| {
+                        SOURCE_ROOT_MARKERS.iter().any(|candidate_marker| {
+                            root.join(candidate).join(candidate_marker).is_file()
+                        })
+                    })
+                    .expect("the written marker belongs to a catalog layout");
+                assert_routes_agree(
+                    &root,
+                    &[("main", SourceSetKind::Configuration, *winning_layout)],
+                );
+                fs::remove_dir_all(root).unwrap();
+            }
+        }
+
+        for layout in EXTENSION_LAYOUTS {
+            for marker in SOURCE_ROOT_MARKERS {
+                let root = temp_workspace(&format!(
+                    "unica-source-map-catalog-extension-{}-{}",
+                    layout.directory.replace('/', "-"),
+                    marker.replace('/', "-")
+                ));
+                let child = root.join(layout.directory).join("Named");
+                write(&child.join(marker), "<marker/>");
+                assert_routes_agree(
+                    &root,
+                    &[(
+                        "Named",
+                        SourceSetKind::Extension,
+                        &format!("{}/Named", layout.directory),
+                    )],
+                );
+                fs::remove_dir_all(root).unwrap();
+            }
+        }
+
+        for near_miss in ["sources", "src/cfes", "src/extension"] {
+            let root = temp_workspace(&format!(
+                "unica-source-map-catalog-near-miss-{}",
+                near_miss.replace('/', "-")
+            ));
+            write(
+                &root.join(near_miss).join("Named/Configuration.xml"),
+                "<marker/>",
+            );
+            assert_routes_agree(&root, &[]);
+            fs::remove_dir_all(root).unwrap();
+        }
+
         autodetect_skips_a_container_that_is_not_a_directory();
         autodetect_propagates_an_unreadable_extensions_container();
         autodetect_skips_entries_that_are_not_extension_directories();
         autodetect_skips_linked_entries_in_the_extensions_container();
         autodetect_skips_a_linked_extensions_container();
-        autodetect_discovers_a_single_extension_at_the_container_root();
-        autodetect_at_the_container_root_does_not_report_object_directories_as_extensions();
-        autodetect_discovers_extensions_under_the_named_extensions_container();
-        autodetect_discovers_edt_extension_source_sets();
         autodetect_gives_the_reserved_name_to_one_claimant_only();
         transactional_autodetect_binds_the_extensions_container_listing();
     }

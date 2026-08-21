@@ -3,7 +3,7 @@ id: INV.SOURCE.ROOT-READINESS
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::project_status_reports_workspace_root_source_set_without_mutation
+check: crates/unica-coder/src/application/mod.rs::project_status_workspace_root_rejection_preserves_the_entire_tree
 scope: [source]
 ---
 

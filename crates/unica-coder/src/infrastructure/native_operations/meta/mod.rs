@@ -80,6 +80,16 @@ mod info_projection;
 mod integrity_check;
 mod predefined;
 mod publisher;
+
+#[cfg(test)]
+pub(crate) fn typed_resource_noop_contract_is_complete() {
+    edit::tests::typed_exact_noop_form_update_has_no_resource_mutation_or_event();
+}
+
+#[cfg(test)]
+pub(crate) fn typed_resource_preimage_contract_is_complete() {
+    publisher::typed_add_publication_tests::meta_add_detects_concurrent_owner_change_without_overwriting_it();
+}
 mod remove;
 mod template_catalog;
 mod usage_scan;

@@ -521,7 +521,7 @@ fn failure_outcome(tool_name: &str, error: String) -> AdapterOutcome {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::infrastructure::native_operations::compile_transaction::{
@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn external_init_rejects_invalid_name_and_existing_targets_without_mutation() {
+    pub(crate) fn external_init_rejects_invalid_name_and_existing_targets_without_mutation() {
         let root = temp_root("external-init-collision");
         let output = root.join("external");
         fs::create_dir_all(&output).unwrap();
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn external_init_reauthorizes_containing_owner_immediately_before_publication() {
+    pub(crate) fn external_init_reauthorizes_containing_owner_immediately_before_publication() {
         let root = temp_root("external-owner-race");
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(

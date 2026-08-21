@@ -3,7 +3,7 @@ id: INV.SOURCE.WRITE-TARGET-KIND
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs::platform_xml_target_kind_policy_table_is_closed
+check: crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs::write_target_kind_and_revalidation_contract_is_complete
 scope: [source]
 ---
 

@@ -1393,7 +1393,7 @@ fn required<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, Str
         .ok_or_else(|| format!("{name} must be a non-empty string"))
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{apply_with_data, decode, encode_like, info_with_data, preview_with_data, writer};
     use crate::application::{SupportGuardRequirement, UnicaApplication};
     use crate::domain::workspace::WorkspaceContext;
@@ -2052,7 +2052,7 @@ mod tests {
     }
 
     #[test]
-    fn xdto_events_follow_changed_plan_and_exact_noop_for_preview_and_apply() {
+    pub(crate) fn xdto_events_follow_changed_plan_and_exact_noop_for_preview_and_apply() {
         let (context, base_args, package, _) = xdto_guard_fixture("events");
         let before = fs::read(&package).unwrap();
         let call_args = |dry_run| {
@@ -2810,7 +2810,7 @@ mod tests {
     }
 
     #[test]
-    fn xdto_guard_rejects_descriptor_identity_drift_before_commit() {
+    pub(crate) fn xdto_guard_rejects_descriptor_identity_drift_before_commit() {
         let (context, args, package, descriptor) = xdto_guard_fixture("descriptor-drift");
         let before = fs::read(&package).unwrap();
         let descriptor_for_hook = descriptor.clone();

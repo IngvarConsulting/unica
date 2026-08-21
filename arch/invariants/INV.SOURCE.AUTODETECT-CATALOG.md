@@ -3,7 +3,7 @@ id: INV.SOURCE.AUTODETECT-CATALOG
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/project_sources.rs::autodetect_catalog_contract_is_complete
+check: crates/unica-coder/src/infrastructure/project_sources.rs::autodetect_catalog_contract_is_closed_over_production_layouts
 scope: [source]
 ---
 

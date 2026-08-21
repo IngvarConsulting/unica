@@ -1441,7 +1441,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn applied_patch_returns_typed_data_and_repeated_apply_is_noop() {
+    pub(crate) fn applied_patch_returns_typed_data_and_repeated_apply_is_noop() {
         let context = temp_context("applied-patch");
         let module = context
             .workspace_root
@@ -2755,7 +2755,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn code_patch_rolls_back_if_owner_descriptor_changes_before_commit() {
+    pub(crate) fn code_patch_rolls_back_if_owner_descriptor_changes_before_commit() {
         let context = temp_context("owner-descriptor-race");
         let module = context
             .workspace_root

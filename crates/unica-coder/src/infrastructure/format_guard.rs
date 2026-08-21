@@ -3385,7 +3385,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_version_bearing_standalone_root_is_invalid() {
+    fn unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog() {
         let root = std::env::temp_dir().join(format!(
             "unica-format-guard-unknown-standalone-root-{}",
             std::process::id()
@@ -3405,6 +3405,33 @@ mod tests {
         };
         assert_eq!(diagnostic["code"], "formatVersionInvalid");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn single_writable_platform_xml_profile_is_exact() {
+        assert_eq!(
+            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.platform_line,
+            "8.3.27"
+        );
+        assert_eq!(
+            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+            "2.20"
+        );
+        older_dump_blocks_mutation_and_recommends_platform_reexport();
+        supported_dump_allows_mutation_preflight();
+    }
+
+    #[test]
+    fn owner_version_read_write_gate_is_complete() {
+        newer_dump_warns_for_read_only_with_roadmap_copy();
+        mxl_info_warns_old_external_source_set_via_owner_descriptor();
+        missing_root_version_is_classified_as_1_0();
+        versionless_known_standalone_form_is_classified_as_1_0_owner();
+        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
+        version_owning_target_cannot_hide_behind_supported_source_set_owner();
+        xdto_guard_empty_handler_resolution_is_a_contract_error();
+        valid_standalone_mxl_without_owner_version_is_not_an_old_dump();
+        unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog();
     }
 
     #[test]
