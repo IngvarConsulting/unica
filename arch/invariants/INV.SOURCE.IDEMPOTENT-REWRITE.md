@@ -3,7 +3,7 @@ id: INV.SOURCE.IDEMPOTENT-REWRITE
 status: active
 governs: product
 decision: DEC.2026-08-21.MUTATION-IDEMPOTENCE-SCOPE
-check: crates/unica-coder/src/infrastructure/native_operations.rs::verified_public_mutator_idempotence_cases_are_exact
+check: crates/unica-coder/src/infrastructure/native_operations/source_invariant_tests.rs::verified_public_mutator_idempotence_cases_are_exact
 scope: [source]
 ---
 

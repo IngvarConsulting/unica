@@ -66,7 +66,7 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
         )
         self.assertNotIn("INV.SOURCE.PLATFORM-BEFORE-XSD", profile)
         self.assertIn(
-            "realized: crates/unica-coder/src/infrastructure/native_operations.rs::mutation_idempotence_scope_decision_is_fully_realized",
+            "realized: crates/unica-coder/src/infrastructure/native_operations/source_invariant_tests.rs::mutation_idempotence_scope_decision_is_fully_realized",
             mutation,
         )
 

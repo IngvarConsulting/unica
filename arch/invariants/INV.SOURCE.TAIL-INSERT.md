@@ -3,7 +3,7 @@ id: INV.SOURCE.TAIL-INSERT
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/native_operations.rs::tail_insert_public_and_write_contract_is_complete
+check: crates/unica-coder/src/infrastructure/native_operations/source_invariant_tests.rs::tail_insert_public_and_write_contract_is_complete
 scope: [source]
 ---
 

@@ -2,7 +2,7 @@
 id: DEC.2026-08-21.MUTATION-IDEMPOTENCE-SCOPE
 status: active
 governs: product
-realized: crates/unica-coder/src/infrastructure/native_operations.rs::mutation_idempotence_scope_decision_is_fully_realized
+realized: crates/unica-coder/src/infrastructure/native_operations/source_invariant_tests.rs::mutation_idempotence_scope_decision_is_fully_realized
 supersedes: []
 superseded-by: null
 establishes: [INV.SOURCE.IDEMPOTENT-REWRITE, INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA]
