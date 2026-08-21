@@ -12804,10 +12804,10 @@ pub(crate) mod tests {
             _cache_access: CacheAccess,
         ) -> Result<CacheReport, String> {
             Ok(CacheReport {
-                mode: if mode.is_preview() {
-                    "dry-run".to_string()
-                } else if events.is_empty() {
+                mode: if events.is_empty() {
                     "read".to_string()
+                } else if mode.is_preview() {
+                    "dry-run".to_string()
                 } else {
                     "applied".to_string()
                 },
