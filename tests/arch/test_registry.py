@@ -180,6 +180,43 @@ class RecordShapeTests(unittest.TestCase):
                     errors,
                 )
 
+    def test_decision_realized_is_status_dependent(self) -> None:
+        planned = decision_record(
+            {
+                "id": "DEC.2026-08-21.EXAMPLE",
+                "status": "planned",
+                "governs": "product",
+                "realized": None,
+            }
+        )
+        active = decision_record(
+            {
+                "id": "DEC.2026-08-21.EXAMPLE",
+                "status": "active",
+                "governs": "product",
+                "realized": None,
+            }
+        )
+        planned_blank = decision_record(
+            {
+                "id": "DEC.2026-08-21.EXAMPLE",
+                "status": "planned",
+                "governs": "product",
+                "realized": "",
+            }
+        )
+
+        self.assertEqual(REGISTRY.validation_errors([planned]), [])
+        self.assertTrue(
+            any("missing prop `realized`" in error for error in REGISTRY.validation_errors([active]))
+        )
+        self.assertTrue(
+            any(
+                "missing prop `realized`" in error
+                for error in REGISTRY.validation_errors([planned_blank])
+            )
+        )
+
     def test_symbol_matches_its_path(self) -> None:
         """A reader who has the symbol must be able to open the file without an index."""
         offenders = [

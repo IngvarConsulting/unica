@@ -29,7 +29,7 @@
 | `ADR-0013` | `retired` | — |
 | `ADR-0014` | `carried` | `INV.HOST.KNOWLEDGE-BEHIND-FACADE` |
 | `ADR-0015` | `retired` | — |
-| `ADR-0016` | `superseded` | `CTR.FORMAT.PLATFORM-XML-8-3-27` |
+| `ADR-0016` | `retired` | — |
 | `ADR-0017` | `superseded` | `INV.APP.PROVIDER-NEUTRAL` |
 | `ADR-0018` | `retired` | — |
 | `ADR-0019` | `retired` | — |

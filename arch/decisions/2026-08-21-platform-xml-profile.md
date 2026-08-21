@@ -6,7 +6,7 @@ realized: crates/unica-coder/tests/format_8_3_27_xml_corpus.rs::source_resource_
 establishes: [CTR.FORMAT.PLATFORM-XML-8-3-27]
 ---
 
-# Writable Platform XML profile is 8.3.27 / format 2.20
+# Resource reads preserve the Platform XML 8.3.27 corpus
 
-**Решение.** Единственный записываемый профиль Platform XML — 8.3.27 / формат
-2.20.
+**Решение.** Ресурсное чтение дампов и фикстур профиля Platform XML 8.3.27 /
+формат 2.20 сохраняет каждый файл корпуса побайтно.

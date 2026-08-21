@@ -147,7 +147,16 @@ def validation_errors(found: list[Record]) -> list[str]:
     errors: list[str] = []
     for record in found:
         for key in REQUIRED_PROPS[record.kind]:
-            if key not in record.props or record.props[key] in (None, ""):
+            realized_is_planned = (
+                record.kind == "decision"
+                and key == "realized"
+                and record.props.get("status") == "planned"
+            )
+            if (
+                key not in record.props
+                or record.props[key] == ""
+                or (record.props[key] is None and not realized_is_planned)
+            ):
                 errors.append(f"{record.relative}: missing prop `{key}`")
         if record.kind in {"invariant", "contract"}:
             list_keys = ("scope",) + (("consumers",) if record.kind == "contract" else ())

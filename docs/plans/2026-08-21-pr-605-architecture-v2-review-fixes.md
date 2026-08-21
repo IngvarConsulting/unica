@@ -133,7 +133,11 @@ realized: crates/unica-coder/tests/format_8_3_27_xml_corpus.rs::source_resource_
 establishes: [CTR.FORMAT.PLATFORM-XML-8-3-27]
 ```
 
-Its single decision is the writable Platform XML 8.3.27 / format 2.20 profile. Create `DEC.2026-08-21.LIST-CACHE-FIELDS` with:
+Its single decision is that resource reads preserve every corpus byte for
+Platform XML 8.3.27 / format 2.20. It grounds only
+`CTR.FORMAT.PLATFORM-XML-8-3-27`; Task 5 later supersedes broad ADR-0016 with
+the complete set of exact source invariants. Create
+`DEC.2026-08-21.LIST-CACHE-FIELDS` with:
 
 ```yaml
 status: active
@@ -448,7 +452,7 @@ Use the existing `INV.SOURCE.ATOMIC-PUBLISH`, `DEFAULT-SET-SELECTION`, `EXACT-VE
 
 - [ ] **Step 2: Create exact records for uncovered live rules**
 
-Preserve every word of the old stable semantic suffix and replace the `INV-SOURCE-` namespace separator with the dotted `INV.SOURCE.` form. Set `governs: product`, `decision: DEC.2026-08-18.CARRIED-RULES`, and `scope: [source]`. Name one exact test from the old check modules; when the old rule spans several modules, add one aggregate test at the narrowest existing boundary and formulate the rule to that test.
+Preserve every word of the old stable semantic suffix and replace the `INV-SOURCE-` namespace separator with the dotted `INV.SOURCE.` form. Set `governs: product`, `decision: DEC.2026-08-18.CARRIED-RULES`, and `scope: [source]`. Name one exact test from the old check modules; when the old rule spans several modules, add one aggregate test at the narrowest existing boundary and formulate the rule to that test. Set ADR-0016 in Fate to `superseded` only after the complete exact source-invariant set exists; the narrow read-preservation contract from Task 1 is not its successor on its own.
 
 - [ ] **Step 3: Refuse silent behavior removal**
 
