@@ -5,21 +5,21 @@ governs: process
 realized: tests/arch/test_registry.py::test_every_rule_names_a_check_that_exists
 supersedes: []
 superseded-by: null
-establishes: []
+establishes: [INV.APP.DEFERRED-MANIFEST, INV.APP.DEFERRED-READ, INV.APP.DIAGNOSTIC-PROVIDERS, INV.APP.DOCUMENTATION-GET, INV.APP.DOCUMENTATION-NETWORK-POLICY, INV.APP.DOCUMENTATION-NO-DISK-STATE, INV.APP.DOCUMENTATION-SECTIONS, INV.APP.EVENT-BINDING, INV.APP.EVENT-SOURCE, INV.APP.META-FINDINGS, INV.APP.META-INFO-COVERAGE, INV.APP.META-OBSERVATION, INV.APP.NO-DIRECT-GIT, INV.APP.NO-SCRIPT-BACKEND, INV.APP.OUTLINE-SOURCE, INV.APP.PARTIAL-FALLBACK, INV.APP.SEARCH-EXPANSIONS, INV.APP.SEARCH-TIE-ORDER, INV.APP.SKILL-REFERENCE-REACHABILITY, INV.APP.SKILL-SCRIPT-FIXTURES, INV.APP.SUPPORT-STATE, INV.CACHE.GENERATION-CUTOVER, INV.CACHE.PERSISTED-STALENESS, INV.CACHE.RLM-REVISION, INV.CACHE.RUNTIME-ROOT-ORDER, INV.CACHE.WORKSPACE-ROOT, INV.CACHE.WORKTREE-ISOLATION, INV.SURFACE.CODE-SEARCH-ROLES, INV.SURFACE.DCS-NAMING, INV.SURFACE.DIAGNOSTIC-TARGET, INV.SURFACE.EXECUTABLE-SKILL-EXAMPLES, INV.SURFACE.META-TOOLSET, INV.SURFACE.NO-ADAPTER-TARGETS, INV.SURFACE.PACKAGED-REFERENCES, INV.SURFACE.PROJECT-READINESS, INV.SURFACE.ROLE-EDIT-LOGICAL, INV.SURFACE.SKILL-NO-SCRIPT-ROUTE, INV.SURFACE.SKILL-PREVIEW-GUIDANCE, INV.SURFACE.SKILL-ROUTING, INV.SURFACE.SOURCE-READ-ONLY, INV.SURFACE.SOURCE-SKILL-ROUTING, INV.SURFACE.TOOL-VERSION-SOURCE, INV.SURFACE.XDTO-LOGICAL-TARGET, INV.WIRE.DATA-DRIVEN-TOOL-LIST, INV.WIRE.DIRECT-FIRST-LIFECYCLE, INV.WIRE.GUARANTEED-VERSIONS, INV.WIRE.PINNED-FALLBACK-VERSION, INV.WIRE.SDK-TRANSPORT]
 ---
 
-# Правило переносится, если его проверка жива и предмет не про имена инструментов
+# Неизменённое обязательство переносится вместе с точной проверкой
 
-**Решение.** Правило попадает в этот реестр при двух условиях: у него есть
-работающая проверка, и его предмет не зависит от того, как называются публичные
-инструменты. Переносится сам смысл, а не текст: близкие правила сводятся в одно,
-пока формулировка остаётся проверяемой.
+**Решение.** В этот реестр попадает только существовавшее до перехода на v2
+обязательство, которое не меняет поведение и полностью фальсифицируется одной
+названной живой проверкой. Сохранившаяся публичная идентичность переносится как
+часть обязательства; удалённая идентичность не переносится. Если проверка
+доказывает лишь часть составного правила v1, запись утверждает только эту часть,
+а непокрытый остаток перенесённым не объявляется.
 
-**Почему.** Смена поверхности отменяет правила о конкретных инструментах и их
-аргументах, но не отменяет того, как устроены запись на диск, границы слоёв,
-кеш, упаковка и платформа. Выбросить это значило бы заново открывать то, что уже
-доказано тестами.
+**Почему.** Сам переход между реестрами не удаляет действующее поведение и не
+создаёт новое. Связь с точной проверкой отделяет сохранённое обязательство от
+похожего по названию, но уже не доказанного текста.
 
-**Цена.** Сведение теряет частности: правило, покрывавшее один узкий случай,
-растворяется в более общем и перестаёт называть этот случай. Проверка при этом
-остаётся прежней, поэтому потеря — в описании, а не в защите.
+**Цена.** Составное правило может распасться на несколько узких записей; часть,
+для которой нет точного фальсификатора, остаётся явно неперенесённой.
