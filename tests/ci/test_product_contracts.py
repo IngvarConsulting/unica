@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 from contextlib import nullcontext
-from fnmatch import fnmatchcase
 import gc
 import importlib.util
 import json
@@ -12,7 +11,6 @@ import signal
 import subprocess
 import tempfile
 import time
-import tomllib
 import unittest
 import warnings
 from pathlib import Path
@@ -23,6 +21,9 @@ import tree_sitter_rust
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+RMCP_OWNER = "crates/unica-coder/src/interfaces/mcp.rs"
+RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
+RMCP_ALLOWED_FEATURES = ["server", "transport-io"]
 
 
 def cfg_test_item_ranges(source: bytes, tree) -> list[tuple[int, int]]:
@@ -76,18 +77,29 @@ def productive_rust_code(source: bytes) -> bytes:
     return bytes(code)
 
 
+def cargo_workspace_metadata(repo_root: Path) -> dict:
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
 def tracked_workspace_production_rust_sources(repo_root: Path) -> dict[str, bytes]:
-    manifest = tomllib.loads(
-        (repo_root / "Cargo.toml").read_text(encoding="utf-8")
-    )
-    workspace = manifest.get("workspace", {})
-    member_patterns = tuple(
-        pattern.rstrip("/") for pattern in workspace.get("members", [])
-    )
-    excluded_patterns = tuple(
-        pattern.rstrip("/") for pattern in workspace.get("exclude", [])
-    )
-    root_is_package = "package" in manifest
+    metadata = cargo_workspace_metadata(repo_root)
+    workspace_members = set(metadata["workspace_members"])
+    root = repo_root.resolve()
+    source_roots = []
+    for package in metadata["packages"]:
+        if package["id"] not in workspace_members:
+            continue
+        package_root = Path(package["manifest_path"]).resolve().parent
+        source_root = package_root / "src"
+        source_roots.append(source_root.relative_to(root))
+
     tracked = subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=repo_root,
@@ -101,20 +113,18 @@ def tracked_workspace_production_rust_sources(repo_root: Path) -> dict[str, byte
         path = raw_path.decode()
         if not path.endswith(".rs"):
             continue
-        if root_is_package and path.startswith("src/"):
-            sources[path] = (repo_root / path).read_bytes()
-            continue
-        if "/src/" not in path:
-            continue
-        member = path.split("/src/", 1)[0]
-        included = any(fnmatchcase(member, pattern) for pattern in member_patterns)
-        excluded = any(fnmatchcase(member, pattern) for pattern in excluded_patterns)
-        if included and not excluded:
+        tracked_path = Path(path)
+        if any(
+            tracked_path == source_root or tracked_path.is_relative_to(source_root)
+            for source_root in source_roots
+        ):
             sources[path] = (repo_root / path).read_bytes()
     return sources
 
 
-def rmcp_transport_boundary_errors(sources: dict[str, bytes], owner: str) -> list[str]:
+def rmcp_reference_confinement_errors(
+    sources: dict[str, bytes], owner: str
+) -> list[str]:
     productive = {
         path: productive_rust_code(source) for path, source in sources.items()
     }
@@ -125,12 +135,156 @@ def rmcp_transport_boundary_errors(sources: dict[str, bytes], owner: str) -> lis
     ]
 
 
-def workspace_rmcp_transport_boundary_errors(repo_root: Path) -> list[str]:
-    owner = "crates/unica-coder/src/interfaces/mcp.rs"
-    return rmcp_transport_boundary_errors(
+def workspace_rmcp_reference_confinement_errors(repo_root: Path) -> list[str]:
+    return rmcp_reference_confinement_errors(
         tracked_workspace_production_rust_sources(repo_root),
-        owner,
+        RMCP_OWNER,
     )
+
+
+def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
+    parser = Parser(Language(tree_sitter_rust.language()))
+    tree = parser.parse(source)
+    if tree.root_node.has_error:
+        return [f"{owner}: Rust parser could not resolve the export boundary"]
+    test_ranges = cfg_test_item_ranges(source, tree)
+
+    def is_test_only(node) -> bool:
+        return any(
+            node.start_byte >= start and node.end_byte <= end
+            for start, end in test_ranges
+        )
+
+    def node_text(node) -> bytes:
+        return source[node.start_byte : node.end_byte]
+
+    errors = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if is_test_only(node):
+            continue
+        if node.type == "attribute_item":
+            attribute = next(
+                (child for child in node.named_children if child.type == "attribute"),
+                None,
+            )
+            attribute_name = attribute.named_child(0) if attribute is not None else None
+            if attribute_name is not None and node_text(attribute_name) == b"macro_export":
+                errors.append(f"{owner}: macro_export leaves the transport module")
+
+        visibility = next(
+            (child for child in node.named_children if child.type == "visibility_modifier"),
+            None,
+        )
+        if visibility is not None:
+            name = node.child_by_field_name("name")
+            root_run_stdio = (
+                node.type == "function_item"
+                and node.parent is not None
+                and node.parent.type == "source_file"
+                and name is not None
+                and node_text(name) == b"run_stdio"
+                and node_text(visibility) == b"pub"
+            )
+            if root_run_stdio:
+                parameters = node.child_by_field_name("parameters")
+                return_type = node.child_by_field_name("return_type")
+                type_parameters = node.child_by_field_name("type_parameters")
+                where_clause = next(
+                    (
+                        child
+                        for child in node.named_children
+                        if child.type == "where_clause"
+                    ),
+                    None,
+                )
+                if (
+                    parameters is None
+                    or parameters.named_child_count != 0
+                    or return_type is not None
+                    or type_parameters is not None
+                    or where_clause is not None
+                ):
+                    errors.append(
+                        f"{owner}: run_stdio must be non-generic, take no parameters, "
+                        "and return unit"
+                    )
+            else:
+                nested = (
+                    "nested "
+                    if node.type == "function_item"
+                    and node.parent is not None
+                    and node.parent.type != "source_file"
+                    else ""
+                )
+                errors.append(
+                    f"{owner}: {nested}public {node.type} is outside run_stdio"
+                )
+        stack.extend(reversed(node.named_children))
+    return errors
+
+
+def workspace_rmcp_owner_export_boundary_errors(repo_root: Path) -> list[str]:
+    sources = tracked_workspace_production_rust_sources(repo_root)
+    if RMCP_OWNER not in sources:
+        return [f"{RMCP_OWNER}: owner is not a tracked workspace production source"]
+    return rmcp_owner_export_boundary_errors(sources[RMCP_OWNER], RMCP_OWNER)
+
+
+def rmcp_dependency_contract_errors(metadata: dict) -> list[str]:
+    workspace_members = set(metadata["workspace_members"])
+    packages = sorted(
+        (
+            package
+            for package in metadata["packages"]
+            if package["id"] in workspace_members
+        ),
+        key=lambda package: package["name"],
+    )
+    errors = []
+    coder_dependencies = []
+    for package in packages:
+        dependencies = [
+            dependency
+            for dependency in package["dependencies"]
+            if dependency["name"] == "rmcp"
+        ]
+        if package["name"] == "unica-coder":
+            coder_dependencies.extend(dependencies)
+            continue
+        for dependency in dependencies:
+            alias = dependency.get("rename") or "rmcp"
+            errors.append(
+                f"{package['name']}: rmcp dependency is outside unica-coder "
+                f"(alias {alias})"
+            )
+
+    if len(coder_dependencies) != 1:
+        errors.append(
+            "unica-coder: expected exactly one direct rmcp dependency, "
+            f"found {len(coder_dependencies)}"
+        )
+        return errors
+
+    dependency = coder_dependencies[0]
+    if dependency.get("rename") is not None:
+        errors.append("unica-coder: rmcp dependency must use its canonical name")
+    if dependency.get("source") != RMCP_CRATES_IO_SOURCE:
+        errors.append("unica-coder: rmcp dependency must come from crates.io")
+    if dependency.get("uses_default_features") is not False:
+        errors.append("unica-coder: rmcp default features must be disabled")
+    features = sorted(dependency.get("features", []))
+    if features != RMCP_ALLOWED_FEATURES:
+        errors.append(
+            f"unica-coder: rmcp features {features!r} differ from "
+            f"{RMCP_ALLOWED_FEATURES!r}"
+        )
+    return errors
+
+
+def workspace_rmcp_dependency_errors(repo_root: Path) -> list[str]:
+    return rmcp_dependency_contract_errors(cargo_workspace_metadata(repo_root))
 
 
 def load_contract_module():
@@ -155,18 +309,25 @@ class ProductContractTests(unittest.TestCase):
                 '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-coder"]\n',
                 encoding="utf-8",
             )
+            for package_name in ("unica-bootstrap", "unica-coder"):
+                (root / "crates" / package_name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{package_name}"\nversion = "0.1.0"\n'
+                    'edition = "2021"\n',
+                    encoding="utf-8",
+                )
             owner.write_text(
                 "use rmcp::ServerHandler;\n"
                 "struct UnicaServer;\n"
                 "impl ServerHandler for UnicaServer {}\n",
                 encoding="utf-8",
             )
+            (owner.parents[1] / "lib.rs").write_text("", encoding="utf-8")
             sibling.write_text("use rmcp::model::ProtocolVersion;\n", encoding="utf-8")
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "add", "."], cwd=root, check=True)
 
             self.assertEqual(
-                workspace_rmcp_transport_boundary_errors(root),
+                workspace_rmcp_reference_confinement_errors(root),
                 [
                     "crates/unica-bootstrap/src/lib.rs: productive rmcp "
                     "reference outside transport owner"
@@ -204,6 +365,12 @@ class ProductContractTests(unittest.TestCase):
                 'exclude = ["crates/excluded"]\n',
                 encoding="utf-8",
             )
+            for package_name in ("included", "excluded"):
+                (root / "crates" / package_name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{package_name}"\nversion = "0.1.0"\n'
+                    'edition = "2021"\n',
+                    encoding="utf-8",
+                )
             included.write_text("pub struct Included;\n", encoding="utf-8")
             excluded.write_text("pub struct Excluded;\n", encoding="utf-8")
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
@@ -214,12 +381,254 @@ class ProductContractTests(unittest.TestCase):
                 {"crates/included/src/lib.rs"},
             )
 
+    def test_tracked_workspace_sources_include_implicit_path_dependency_member(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = root / "app"
+            shared = root / "shared"
+            (app / "src").mkdir(parents=True)
+            (shared / "src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nresolver = "2"\nmembers = ["app"]\n',
+                encoding="utf-8",
+            )
+            (app / "Cargo.toml").write_text(
+                '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n'
+                '[dependencies]\nshared = { path = "../shared" }\n',
+                encoding="utf-8",
+            )
+            (shared / "Cargo.toml").write_text(
+                '[package]\nname = "shared"\nversion = "0.1.0"\nedition = "2021"\n',
+                encoding="utf-8",
+            )
+            (app / "src" / "lib.rs").write_text(
+                "pub fn app() {}\n", encoding="utf-8"
+            )
+            (shared / "src" / "lib.rs").write_text(
+                "pub fn shared() {}\n", encoding="utf-8"
+            )
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                set(tracked_workspace_production_rust_sources(root)),
+                {"app/src/lib.rs", "shared/src/lib.rs"},
+            )
+
+    def test_rmcp_dependency_contract_rejects_alias_in_sibling_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coder = root / "unica-coder"
+            sibling = root / "sibling"
+            vendor = root / "vendor" / "rmcp"
+            for package in (coder, sibling, vendor):
+                (package / "src").mkdir(parents=True)
+                (package / "src" / "lib.rs").write_text("", encoding="utf-8")
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nresolver = "2"\n'
+                'members = ["unica-coder", "sibling"]\n'
+                '[workspace.dependencies]\n'
+                'rmcp = { version = "3.1.2", default-features = false, '
+                'features = ["server", "transport-io"] }\n'
+                'sdk_alias = { package = "rmcp", version = "3.1.2", '
+                'default-features = false, features = ["server", "transport-io"] }\n'
+                '[patch.crates-io]\nrmcp = { path = "vendor/rmcp" }\n',
+                encoding="utf-8",
+            )
+            (coder / "Cargo.toml").write_text(
+                '[package]\nname = "unica-coder"\nversion = "0.1.0"\n'
+                'edition = "2021"\n[dependencies]\nrmcp.workspace = true\n',
+                encoding="utf-8",
+            )
+            (sibling / "Cargo.toml").write_text(
+                '[package]\nname = "sibling"\nversion = "0.1.0"\n'
+                'edition = "2021"\n[dependencies]\nsdk_alias.workspace = true\n',
+                encoding="utf-8",
+            )
+            (vendor / "Cargo.toml").write_text(
+                '[package]\nname = "rmcp"\nversion = "3.1.2"\nedition = "2021"\n'
+                '[features]\ndefault = []\nserver = []\ntransport-io = []\n',
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                workspace_rmcp_dependency_errors(root),
+                ["sibling: rmcp dependency is outside unica-coder (alias sdk_alias)"],
+            )
+
+    def test_rmcp_dependency_contract_rejects_renamed_local_macro_dependency(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coder = root / "unica-coder"
+            vendor = root / "vendor" / "rmcp"
+            for package in (coder, vendor):
+                (package / "src").mkdir(parents=True)
+                (package / "src" / "lib.rs").write_text("", encoding="utf-8")
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nresolver = "2"\nmembers = ["unica-coder"]\n',
+                encoding="utf-8",
+            )
+            (coder / "Cargo.toml").write_text(
+                '[package]\nname = "unica-coder"\nversion = "0.1.0"\n'
+                'edition = "2021"\n[dependencies]\n'
+                'sdk_alias = { package = "rmcp", path = "../vendor/rmcp", '
+                'features = ["server", "transport-io", "macros"] }\n',
+                encoding="utf-8",
+            )
+            (vendor / "Cargo.toml").write_text(
+                '[package]\nname = "rmcp"\nversion = "3.1.2"\nedition = "2021"\n'
+                '[features]\ndefault = []\nserver = []\ntransport-io = []\nmacros = []\n',
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                workspace_rmcp_dependency_errors(root),
+                [
+                    "unica-coder: rmcp dependency must use its canonical name",
+                    "unica-coder: rmcp dependency must come from crates.io",
+                    "unica-coder: rmcp default features must be disabled",
+                    "unica-coder: rmcp features ['macros', 'server', "
+                    "'transport-io'] differ from ['server', 'transport-io']",
+                ],
+            )
+
+    def test_rmcp_owner_rejects_public_reexport_and_type_alias(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub fn run_stdio() {}
+                pub use rmcp::model::Tool as ExportedTool;
+                pub type SdkTool = rmcp::model::Tool;
+            """,
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                f"{owner}: public use_declaration is outside run_stdio",
+                f"{owner}: public type_item is outside run_stdio",
+            ],
+        )
+
+    def test_rmcp_owner_rejects_other_public_items_members_and_macros(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub(crate) const LIMIT: usize = 1;
+                struct Internal { pub value: usize }
+                pub struct Exported;
+                #[macro_export]
+                macro_rules! exported { () => {}; }
+                mod nested { pub fn run_stdio() {} }
+                pub fn run_stdio(_: rmcp::model::Tool) -> rmcp::model::Tool {
+                    unreachable!()
+                }
+            """,
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                f"{owner}: public const_item is outside run_stdio",
+                f"{owner}: public field_declaration is outside run_stdio",
+                f"{owner}: public struct_item is outside run_stdio",
+                f"{owner}: macro_export leaves the transport module",
+                f"{owner}: nested public function_item is outside run_stdio",
+                f"{owner}: run_stdio must be non-generic, take no parameters, "
+                "and return unit",
+            ],
+        )
+
+    def test_rmcp_owner_ignores_exports_inside_exact_cfg_test_item(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub fn run_stdio() {}
+                #[cfg(test)]
+                mod tests {
+                    pub use rmcp::model::Tool;
+                    pub type SdkTool = rmcp::model::Tool;
+                }
+            """,
+            owner,
+        )
+
+        self.assertEqual(errors, [])
+
+    def test_rmcp_owner_export_guard_fails_closed_on_invalid_rust(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+
+        self.assertEqual(
+            rmcp_owner_export_boundary_errors(b"pub fn run_stdio(", owner),
+            [f"{owner}: Rust parser could not resolve the export boundary"],
+        )
+
+    def test_rmcp_owner_rejects_parameterized_macro_export(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+
+        self.assertEqual(
+            rmcp_owner_export_boundary_errors(
+                b"""
+                    pub fn run_stdio() {}
+                    #[macro_export(local_inner_macros)]
+                    macro_rules! exported { () => {}; }
+                """,
+                owner,
+            ),
+            [f"{owner}: macro_export leaves the transport module"],
+        )
+
+    def test_rmcp_owner_rejects_sdk_bound_on_generic_run_stdio(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+
+        self.assertEqual(
+            rmcp_owner_export_boundary_errors(
+                b"pub fn run_stdio<T: rmcp::ServerHandler>() {}",
+                owner,
+            ),
+            [
+                f"{owner}: run_stdio must be non-generic, take no parameters, "
+                "and return unit"
+            ],
+        )
+
+    def test_rmcp_dependency_is_owned_by_unica_coder_without_macro_features(
+        self,
+    ) -> None:
+        self.assertEqual(workspace_rmcp_dependency_errors(REPO_ROOT), [])
+
+    def test_unica_coder_production_library_satisfies_rmcp_handler_bound(
+        self,
+    ) -> None:
+        result = subprocess.run(
+            ["cargo", "check", "-q", "-p", "unica-coder", "--lib"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_rmcp_module_exports_only_run_stdio(self) -> None:
+        self.assertEqual(workspace_rmcp_owner_export_boundary_errors(REPO_ROOT), [])
+
     def test_rmcp_confinement_ignores_comments_literals_and_exact_cfg_test(
         self,
     ) -> None:
         owner = "crates/unica-coder/src/interfaces/mcp.rs"
         outside = "crates/other/src/lib.rs"
-        errors = rmcp_transport_boundary_errors(
+        errors = rmcp_reference_confinement_errors(
             {
                 owner: b"use rmcp::ServerHandler;",
                 outside: b'''
@@ -237,7 +646,7 @@ class ProductContractTests(unittest.TestCase):
 
     def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
         self.assertEqual(
-            workspace_rmcp_transport_boundary_errors(REPO_ROOT),
+            workspace_rmcp_reference_confinement_errors(REPO_ROOT),
             [],
             "productive rmcp references must stay in interfaces/mcp.rs",
         )
