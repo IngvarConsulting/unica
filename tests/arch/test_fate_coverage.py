@@ -29,6 +29,27 @@ COMPLETE_FATE = """# Fate
 """
 
 
+def carried_successor_side_errors(
+    row: FATE_GUARD.FateRow,
+    records: dict[str, dict[str, str]],
+    expected: str,
+) -> list[str]:
+    if not row.successors:
+        return [f"{row.subject}: expected at least one carried successor"]
+    errors = []
+    for successor in row.successors:
+        record = records.get(successor)
+        if record is None:
+            errors.append(f"{row.subject}: successor {successor} does not resolve")
+            continue
+        actual = record.get("governs")
+        if actual != expected:
+            errors.append(
+                f"{row.subject}: {successor} governs {actual!r}, expected {expected!r}"
+            )
+    return errors
+
+
 class Fixture:
     def __init__(self, stack: tempfile.TemporaryDirectory[str]) -> None:
         self.root = Path(stack.name)
@@ -428,9 +449,41 @@ class FateCoverageTests(unittest.TestCase):
             if row.fate != "carried" or expected is None:
                 continue
             with self.subTest(subject=row.subject):
-                self.assertEqual(len(row.successors), 1)
-                successor = records[row.successors[0]]
-                self.assertEqual(successor.get("governs"), expected)
+                self.assertEqual(carried_successor_side_errors(row, records, expected), [])
+
+    def test_carried_side_consistency_accepts_two_product_successors(self) -> None:
+        row = FATE_GUARD.FateRow(
+            subject="REQ-PERF-DEADLINE",
+            fate="carried",
+            successor_cell="`INV.APP.ONE`, `INV.APP.TWO`",
+            successors=("INV.APP.ONE", "INV.APP.TWO"),
+            reason="—",
+        )
+        records = {
+            "INV.APP.ONE": {"governs": "product"},
+            "INV.APP.TWO": {"governs": "product"},
+        }
+        self.assertEqual(carried_successor_side_errors(row, records, "product"), [])
+
+    def test_carried_side_consistency_rejects_a_mixed_successor_set(self) -> None:
+        row = FATE_GUARD.FateRow(
+            subject="REQ-PERF-DEADLINE",
+            fate="carried",
+            successor_cell="`INV.APP.ONE`, `INV.APP.TWO`",
+            successors=("INV.APP.ONE", "INV.APP.TWO"),
+            reason="—",
+        )
+        records = {
+            "INV.APP.ONE": {"governs": "product"},
+            "INV.APP.TWO": {"governs": "process"},
+        }
+        self.assertEqual(
+            carried_successor_side_errors(row, records, "product"),
+            [
+                "REQ-PERF-DEADLINE: INV.APP.TWO governs 'process', "
+                "expected 'product'"
+            ],
+        )
 
     def test_every_v1_subject_has_exactly_one_fate(self) -> None:
         """A moved ADR, rule, requirement, or acceptance contract cannot disappear."""
