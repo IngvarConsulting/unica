@@ -2196,6 +2196,14 @@ pub(crate) mod subsystem_info_typed_result_tests {
         subsystem_info_answers_content_and_command_interface_at_once();
         a_missing_command_interface_is_null_not_an_empty_interface();
     }
+
+    #[test]
+    pub(crate) fn public_subsystem_projection_and_mode_absence_contract_is_complete() {
+        crate::application::tests::public_subsystem_info_registration_address_and_schema_contract_is_complete();
+        crate::application::tests::public_subsystem_info_projects_registered_dependency_errors_as_typed_failures();
+        crate::application::tests::public_subsystem_info_deadline_returns_no_data();
+        subsystem_projection_contract_is_complete();
+    }
 }
 
 #[cfg(test)]

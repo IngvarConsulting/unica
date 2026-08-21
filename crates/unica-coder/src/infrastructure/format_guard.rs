@@ -1011,11 +1011,12 @@ mod tests {
         evaluate_prepared_subsystem_info_format_guard,
     };
     use crate::application::operation_descriptors::native_operation_descriptor;
-    use crate::application::ports::{FormatGuardCheck, XdtoPublicErrorCode};
-    use crate::application::tools;
+    use crate::application::ports::{ApplicationPorts, FormatGuardCheck, XdtoPublicErrorCode};
+    use crate::application::{tools, InvocationMode, ToolHandler};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use crate::infrastructure::native_operations::cfe::cfe_borrow_format_dependency_inspection;
     use crate::infrastructure::native_operations::dcs::analyze_dcs_info;
     use crate::infrastructure::native_operations::subsystem::prepare_subsystem_info;
@@ -3437,9 +3438,115 @@ mod tests {
     }
 
     #[test]
+    fn public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal() {
+        let expected = std::collections::BTreeSet::from([
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.init",
+            "unica.cfe.patch_method",
+            "unica.code.patch",
+            "unica.dcs.compile",
+            "unica.dcs.edit",
+            "unica.epf.init",
+            "unica.erf.init",
+            "unica.form.add",
+            "unica.form.compile",
+            "unica.form.edit",
+            "unica.form.remove",
+            "unica.interface.edit",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.meta.remove",
+            "unica.mxl.compile",
+            "unica.role.compile",
+            "unica.role.edit",
+            "unica.subsystem.compile",
+            "unica.subsystem.edit",
+            "unica.support.edit",
+            "unica.xdto.edit",
+        ]);
+        let actual = tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+            .filter(|tool| {
+                matches!(
+                    tool.handler,
+                    ToolHandler::NativeOperation { .. } | ToolHandler::Metadata { .. }
+                )
+            })
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected);
+
+        let concrete_ports = InfrastructureApplicationPorts::new();
+        let workspace_root = test_root("native-common-format-route");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            workspace_root: workspace_root.clone(),
+            cache_root: workspace_root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let mut metadata_tools = std::collections::BTreeSet::new();
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| expected.contains(tool.name))
+        {
+            match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => {
+                    assert!(
+                        native_operation_descriptor(operation).is_some(),
+                        "{} could bypass the common format gate because {operation} has no descriptor",
+                        tool.name
+                    );
+                    let prepared = concrete_ports
+                        .prepare_tool_invocation(
+                            tool,
+                            &Map::new(),
+                            &context,
+                            InvocationMode::Apply,
+                            &CancellationToken::new(),
+                            ProviderDeadline::from_budget(Duration::from_secs(1)),
+                        )
+                        .expect("native mutator preparation succeeds without preempting its gate");
+                    assert!(
+                        prepared.format_guard.is_none() && prepared.handler.is_none(),
+                        "{} could replace the common pre-handler format gate during preparation",
+                        tool.name
+                    );
+                }
+                ToolHandler::Metadata { .. } => {
+                    metadata_tools.insert(tool.name);
+                }
+                _ => panic!("{} left the closed XML mutation handlers", tool.name),
+            }
+        }
+        assert_eq!(
+            metadata_tools,
+            std::collections::BTreeSet::from([
+                "unica.meta.add",
+                "unica.meta.edit",
+                "unica.meta.remove"
+            ])
+        );
+
+        // Every native descriptor enters the unconditional application
+        // format-guard branch before its handler match: the concrete production
+        // preparation port above proves that no native mutator substitutes a
+        // prepared guard or handler. Typed metadata keeps its provider-neutral
+        // diagnostic route, so exercise all three of those public calls
+        // separately. Together these close the exact two handler variants
+        // without pretending their public diagnostics match.
+        crate::application::tests::incompatible_format_blocks_before_native_handler();
+        crate::application::tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
+        std::fs::remove_dir_all(workspace_root).unwrap();
+    }
+
+    #[test]
     fn native_mutation_surface_and_format_refusal_are_exact() {
         crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
-        crate::application::tests::public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
+        public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
         dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
         cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
     }

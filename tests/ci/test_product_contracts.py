@@ -11,6 +11,7 @@ import signal
 import subprocess
 import tempfile
 import time
+import tomllib
 import unittest
 import warnings
 from pathlib import Path
@@ -1608,10 +1609,8 @@ class ProductContractTests(unittest.TestCase):
         )
         offenders = []
         for path in application_root.rglob("*.rs"):
-            production = path.read_text(encoding="utf-8").split(
-                "#[cfg(test)]\nmod tests", maxsplit=1
-            )[0]
-            if 'std::process::Command::new("git")' in production:
+            production = productive_rust_code(path.read_bytes())
+            if b'std::process::Command::new("git")' in production:
                 offenders.append(str(path.relative_to(repo_root)))
 
         self.assertEqual(offenders, [])

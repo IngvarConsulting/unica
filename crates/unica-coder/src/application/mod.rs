@@ -9548,112 +9548,6 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    pub(crate) fn public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal() {
-        let expected = std::collections::BTreeSet::from([
-            "unica.cf.edit",
-            "unica.cf.init",
-            "unica.cfe.borrow",
-            "unica.cfe.init",
-            "unica.cfe.patch_method",
-            "unica.code.patch",
-            "unica.dcs.compile",
-            "unica.dcs.edit",
-            "unica.epf.init",
-            "unica.erf.init",
-            "unica.form.add",
-            "unica.form.compile",
-            "unica.form.edit",
-            "unica.form.remove",
-            "unica.interface.edit",
-            "unica.meta.add",
-            "unica.meta.edit",
-            "unica.meta.remove",
-            "unica.mxl.compile",
-            "unica.role.compile",
-            "unica.role.edit",
-            "unica.subsystem.compile",
-            "unica.subsystem.edit",
-            "unica.support.edit",
-            "unica.xdto.edit",
-        ]);
-        let actual = tools()
-            .into_iter()
-            .filter(|tool| tool.execution.is_mutating())
-            .filter(|tool| {
-                matches!(
-                    tool.handler,
-                    ToolHandler::NativeOperation { .. } | ToolHandler::Metadata { .. }
-                )
-            })
-            .map(|tool| tool.name)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(actual, expected);
-
-        let concrete_ports =
-            crate::infrastructure::application_ports::InfrastructureApplicationPorts::new();
-        let workspace_root = test_workspace_root("unica-native-common-format-route");
-        let context = WorkspaceContext {
-            cwd: workspace_root.clone(),
-            workspace_root: workspace_root.clone(),
-            cache_root: workspace_root.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let mut metadata_tools = std::collections::BTreeSet::new();
-        for tool in tools()
-            .into_iter()
-            .filter(|tool| expected.contains(tool.name))
-        {
-            match tool.handler {
-                ToolHandler::NativeOperation { operation, .. } => {
-                    assert!(
-                        operation_descriptors::native_operation_descriptor(operation).is_some(),
-                        "{} could bypass the common format gate because {operation} has no descriptor",
-                        tool.name
-                    );
-                    let prepared = concrete_ports
-                        .prepare_tool_invocation(
-                            tool,
-                            &Map::new(),
-                            &context,
-                            InvocationMode::Apply,
-                            &CancellationToken::new(),
-                            ProviderDeadline::from_budget(Duration::from_secs(1)),
-                        )
-                        .expect("native mutator preparation succeeds without preempting its gate");
-                    assert!(
-                        prepared.format_guard.is_none() && prepared.handler.is_none(),
-                        "{} could replace the common pre-handler format gate during preparation",
-                        tool.name
-                    );
-                }
-                ToolHandler::Metadata { .. } => {
-                    metadata_tools.insert(tool.name);
-                }
-                _ => panic!("{} left the closed XML mutation handlers", tool.name),
-            }
-        }
-        assert_eq!(
-            metadata_tools,
-            std::collections::BTreeSet::from([
-                "unica.meta.add",
-                "unica.meta.edit",
-                "unica.meta.remove"
-            ])
-        );
-
-        // Every native descriptor enters the unconditional application
-        // format-guard branch before its handler match: the concrete production
-        // preparation port above proves that no native mutator substitutes a
-        // prepared guard or handler. Typed metadata keeps its provider-neutral
-        // diagnostic route, so exercise all three of those public calls
-        // separately. Together these close the exact two handler variants
-        // without pretending their public diagnostics match.
-        incompatible_format_blocks_before_native_handler();
-        public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
-        std::fs::remove_dir_all(workspace_root).unwrap();
-    }
-
     fn subsystem_format_guard_workspace(
         prefix: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
@@ -9739,7 +9633,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn public_subsystem_info_registration_address_and_schema_contract_is_complete() {
+    pub(crate) fn public_subsystem_info_registration_address_and_schema_contract_is_complete() {
         let tool = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.subsystem.info")
@@ -9782,7 +9676,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn public_subsystem_info_projects_registered_dependency_errors_as_typed_failures() {
+    pub(crate) fn public_subsystem_info_projects_registered_dependency_errors_as_typed_failures() {
         let root = test_workspace_root("unica-subsystem-format-resolver-error");
         let workspace = root.join("workspace");
         let source = workspace.join("src");
@@ -10108,7 +10002,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn public_subsystem_info_deadline_returns_no_data() {
+    pub(crate) fn public_subsystem_info_deadline_returns_no_data() {
         let (root, workspace, _) =
             subsystem_format_guard_workspace("unica-subsystem-public-preflight-deadline");
         let args = Map::from_iter([
@@ -10153,14 +10047,6 @@ pub(crate) mod tests {
             "deadline expiry must not be mislabeled as provider_unavailable: {result:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn public_subsystem_projection_and_mode_absence_contract_is_complete() {
-        public_subsystem_info_registration_address_and_schema_contract_is_complete();
-        public_subsystem_info_projects_registered_dependency_errors_as_typed_failures();
-        public_subsystem_info_deadline_returns_no_data();
-        crate::infrastructure::native_operations::subsystem::subsystem_info_typed_result_tests::subsystem_projection_contract_is_complete();
     }
 
     #[test]

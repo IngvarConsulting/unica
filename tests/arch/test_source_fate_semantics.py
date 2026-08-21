@@ -144,10 +144,10 @@ class SourceFateSemanticClosureTests(unittest.TestCase):
                 "::public_subsystem_info_deadline_returns_no_data"
             )
         )
-        self.assertTrue(
-            check("INV.SOURCE.SUBSYSTEM-TOPOLOGY").endswith(
-                "::public_subsystem_projection_and_mode_absence_contract_is_complete"
-            )
+        self.assertEqual(
+            check("INV.SOURCE.SUBSYSTEM-TOPOLOGY"),
+            "crates/unica-coder/src/infrastructure/native_operations/subsystem.rs"
+            "::public_subsystem_projection_and_mode_absence_contract_is_complete",
         )
 
     def test_reader_records_share_one_authoritative_migration_inventory(self) -> None:
