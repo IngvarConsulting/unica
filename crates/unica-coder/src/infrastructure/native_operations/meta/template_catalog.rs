@@ -569,7 +569,8 @@ pub(crate) fn minimal_module_files(kind: MetadataKind) -> &'static [&'static str
         MetadataKind::ScheduledJob
         | MetadataKind::EventSubscription
         | MetadataKind::DocumentJournal
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::ExternalDataSource => &[],
     }
 }
 
@@ -765,6 +766,10 @@ pub(super) fn minimal_metadata_xml(
         crate::domain::metadata::MetadataKind::DefinedType => {
             emit_meta_defined_type_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym)
         }
+        crate::domain::metadata::MetadataKind::ExternalDataSource => {
+            emit_meta_base_properties(&mut lines, "\t\t\t", &defn, obj_name, &synonym);
+            lines.push("\t\t\t<DataLockControlMode>Automatic</DataLockControlMode>".to_string());
+        }
     }
     lines.push("\t\t</Properties>".to_string());
     // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
@@ -943,6 +948,11 @@ pub(crate) fn metadata_generated_types_8_3_27(
         "Sequence" => Some(&[("SequenceRecordSet", "RecordSet")]),
         "IntegrationService" => Some(&[("IntegrationServiceManager", "Manager")]),
         "DefinedType" => Some(&[("DefinedType", "DefinedType")]),
+        "ExternalDataSource" => Some(&[
+            ("ExternalDataSourceManager", "Manager"),
+            ("ExternalDataSourceTablesManager", "TablesManager"),
+            ("ExternalDataSourceCubesManager", "CubesManager"),
+        ]),
         "Language"
         | "Subsystem"
         | "StyleItem"

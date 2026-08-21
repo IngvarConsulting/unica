@@ -104,7 +104,7 @@ pub(crate) fn diagnostic_metadata_focus_route(
     }
 }
 
-/// Closed collection capability matrix for the 23 metadata kinds exposed by
+/// Closed collection capability matrix for the 24 metadata kinds exposed by
 /// the typed metadata surface. Platform XML validation and mutation both use
 /// this registry so a child cannot be accepted by one boundary and rejected by
 /// the other.
@@ -156,7 +156,8 @@ pub(crate) fn metadata_kind_collections(kind: super::MetadataKind) -> &'static [
         | MetadataKind::EventSubscription
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::ExternalDataSource => &[],
     }
 }
 
@@ -687,7 +688,8 @@ pub(crate) fn metadata_fill_value_contexts(
         | MetadataKind::EventSubscription
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::ExternalDataSource => &[],
     }
 }
 
@@ -1063,7 +1065,8 @@ pub(crate) fn metadata_relation_specs(kind: MetadataKind) -> &'static [MetaRelat
         | MetadataKind::ScheduledJob
         | MetadataKind::HTTPService
         | MetadataKind::WebService
-        | MetadataKind::DefinedType => &[],
+        | MetadataKind::DefinedType
+        | MetadataKind::ExternalDataSource => &[],
     }
 }
 

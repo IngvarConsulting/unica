@@ -1754,11 +1754,40 @@ XML-элемент: `<EventSubscription>`.
 
 ---
 
-## 24. HTTP-сервисы (HTTPServices)
+## 24. Внешние источники данных (ExternalDataSources)
+
+Корневой дескриптор располагается в
+`ExternalDataSources/<Имя>.xml`, имеет тип `ExternalDataSource` и содержит
+`Properties` с `Name`, `Synonym`, `Comment`, `DataLockControlMode`, а также
+`ChildObjects`. Для минимального объекта `DataLockControlMode` равен
+`Automatic`.
+
+`InternalInfo` содержит три сгенерированных типа:
+
+| Имя | `category` |
+|---|---|
+| `ExternalDataSourceManager.<Имя>` | `Manager` |
+| `ExternalDataSourceTablesManager.<Имя>` | `TablesManager` |
+| `ExternalDataSourceCubesManager.<Имя>` | `CubesManager` |
+
+Вложенные дескрипторы и их логические адреса связаны так:
+
+| Объект | Относительный путь | Логический адрес |
+|---|---|---|
+| Таблица | `ExternalDataSources/<Источник>/Tables/<Таблица>.xml` | `ExternalDataSource.<Источник>.Table.<Таблица>` |
+| Куб | `ExternalDataSources/<Источник>/Cubes/<Куб>.xml` | `ExternalDataSource.<Источник>.Cube.<Куб>` |
+| Таблица измерения | `ExternalDataSources/<Источник>/Cubes/<Куб>/DimensionTables/<Таблица>.xml` | `ExternalDataSource.<Источник>.Cube.<Куб>.DimensionTable.<Таблица>` |
+
+Модули находятся в каталоге `Ext` соответствующего вложенного объекта.
+Таблица и куб допускают `ManagerModule.bsl` и `RecordSetModule.bsl`, таблица
+измерения — `ObjectModule.bsl` и `ManagerModule.bsl`. Полный логический адрес
+модуля получается добавлением имени роли к адресу объекта.
+
+## 25. HTTP-сервисы (HTTPServices)
 
 XML-элемент: `<HTTPService>`. Трёхуровневая вложенность: сервис → шаблон URL → метод.
 
-### 24.1. Свойства
+### 25.1. Свойства
 
 ```xml
 <Properties>
@@ -1771,7 +1800,7 @@ XML-элемент: `<HTTPService>`. Трёхуровневая вложенно
 </Properties>
 ```
 
-### 24.2. Дочерние объекты: URLTemplate → Method
+### 25.2. Дочерние объекты: URLTemplate → Method
 
 ```xml
 <ChildObjects>
@@ -1799,11 +1828,11 @@ XML-элемент: `<HTTPService>`. Трёхуровневая вложенно
 
 ---
 
-## 25. Веб-сервисы (WebServices)
+## 26. Веб-сервисы (WebServices)
 
 XML-элемент: `<WebService>`. Трёхуровневая вложенность: сервис → операция → параметр.
 
-### 25.1. Свойства
+### 26.1. Свойства
 
 ```xml
 <Properties>
@@ -1817,7 +1846,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 </Properties>
 ```
 
-### 25.2. Дочерние объекты: Operation → Parameter
+### 26.2. Дочерние объекты: Operation → Parameter
 
 ```xml
 <ChildObjects>
@@ -1857,9 +1886,9 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 ---
 
 <!-- legacy-format-reference:start -->
-## 26. Различия версий платформы
+## 27. Различия версий платформы
 
-### 26.1. Версия 2.17 → 2.20
+### 27.1. Версия 2.17 → 2.20
 
 Атрибут `version` корневого элемента `<MetaDataObject>`.
 
@@ -1887,7 +1916,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 </TabularSection>
 ```
 
-### 26.2. Стабильные элементы
+### 27.2. Стабильные элементы
 
 Между версиями 8.3.20 → 8.3.24 → 8.3.27:
 - Структура каталогов **без изменений**
@@ -1898,7 +1927,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 ---
 <!-- legacy-format-reference:end -->
 
-## 27. Сводная таблица: свойства по типам объектов
+## 28. Сводная таблица: свойства по типам объектов
 
 | Свойство | Cat | Doc | Enum | Const | InfoReg | AccReg | AcctReg | CalcReg | CoA | CoCT | CoCaT | BP | Task | EP | DJ | Rep | DP |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -1932,7 +1961,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 
 ---
 
-## 28. Формат ссылок на объекты метаданных
+## 29. Формат ссылок на объекты метаданных
 
 В свойствах типа `DefaultObjectForm`, `InputByString`, `RegisterRecords`, `DataLockFields` и др. используется формат ссылок:
 
@@ -1954,7 +1983,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 
 ---
 
-## 29. GeneratedType категории
+## 30. GeneratedType категории
 
 Каждый объект метаданных содержит блок `<InternalInfo>` с элементами `<GeneratedType>`, описывающими платформенные типы. Ниже — эталонная таблица категорий по типам объектов (источник: выгрузки ACC 8.3.24, ERP 8.3.24).
 
@@ -1985,7 +2014,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 
 ---
 
-## 30. Кодировка
+## 31. Кодировка
 
 Все XML-файлы используют кодировку UTF-8 с BOM (байты `EF BB BF`):
 

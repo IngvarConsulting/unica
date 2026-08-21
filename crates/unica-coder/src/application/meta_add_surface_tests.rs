@@ -32,6 +32,7 @@ const METADATA_KINDS: &[&str] = &[
     "HTTPService",
     "WebService",
     "DefinedType",
+    "ExternalDataSource",
 ];
 
 struct TempWorkspace(PathBuf);
@@ -520,7 +521,7 @@ fn add_rejects_kind_incompatible_property_without_writes() {
 }
 
 #[test]
-fn meta_add_preview_all_23_kinds_returns_logical_valid_plan_without_writes() {
+fn meta_add_preview_all_24_kinds_returns_logical_valid_plan_without_writes() {
     let workspace = create_configuration_workspace("preview-all-kinds");
     let owner = workspace.path().join("src/Configuration.xml");
     let owner_before = std::fs::read(&owner).unwrap();
@@ -699,12 +700,13 @@ fn kind_directory(kind: &str) -> &'static str {
         "HTTPService" => "HTTPServices",
         "WebService" => "WebServices",
         "DefinedType" => "DefinedTypes",
+        "ExternalDataSource" => "ExternalDataSources",
         other => panic!("missing test directory for {other}"),
     }
 }
 
 #[test]
-fn meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable() {
+fn meta_add_apply_all_24_kinds_is_atomic_and_duplicate_is_byte_stable() {
     let workspace = create_configuration_workspace("apply-all-kinds");
     for kind in METADATA_KINDS {
         let name = format!("Applied{kind}");
@@ -770,6 +772,53 @@ fn meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable() {
             "{kind}: duplicate changed source bytes"
         );
     }
+}
+
+#[test]
+fn external_data_source_is_created_read_and_edited_through_typed_meta_tools() {
+    let workspace = create_configuration_workspace("external-data-source-round-trip");
+    let mut args = add_args(workspace.path(), "ExternalDataSource", "Remote", false);
+    args.insert(
+        "operations".to_string(),
+        json!([{"op": "setProperties", "values": {"Comment": "Created"}}]),
+    );
+    let added = call_add_with_args(workspace.path(), &args);
+    assert!(added.ok, "{:?}", added.errors);
+
+    let edited = call_edit(
+        workspace.path(),
+        "ExternalDataSource.Remote",
+        json!([{"op": "setProperties", "values": {
+            "Synonym": "Remote source",
+            "Comment": "Edited"
+        }}]),
+        false,
+    );
+    assert!(edited.ok, "{:?}", edited.errors);
+
+    let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
+    let read = UnicaApplication::new()
+        .call_tool(
+            "unica.meta.info",
+            &Map::from_iter([
+                ("sourceSet".to_string(), json!("main")),
+                (
+                    "metadataPath".to_string(),
+                    json!("ExternalDataSource.Remote"),
+                ),
+            ]),
+        )
+        .expect("internal meta.info call");
+    assert!(read.ok, "{:?}", read.errors);
+    let data = read.data.unwrap();
+    assert_eq!(data["kind"], "ExternalDataSource");
+    assert_eq!(data["synonym"], "Remote source");
+    assert!(data["properties"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|property| property["key"] == "Comment" && property["value"] == "Edited"));
+    assert_eq!(data["validation"]["status"], "passed");
 }
 
 #[test]

@@ -1423,7 +1423,7 @@ class LogicalSourceContractTests(unittest.TestCase):
     def test_derived_source_rules_name_their_owner_and_real_check(self) -> None:
         expected = {
             "INV-SOURCE-LOGICAL-IDENTITY": (
-                "ADR-0021",
+                "ADR-0021, ADR-0077",
                 "crates/unica-coder/src/domain/source_target.rs",
             ),
             "INV-SOURCE-SNAPSHOT-BINDING": (

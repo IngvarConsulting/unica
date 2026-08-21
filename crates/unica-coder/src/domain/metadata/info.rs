@@ -228,6 +228,10 @@ pub(crate) enum MetaInfoDetails {
     DefinedType {
         r#type: Option<ObservedMetadataType>,
     },
+    ExternalDataSource {
+        tables: Option<Vec<MetadataAddress>>,
+        cubes: Option<Vec<MetadataAddress>>,
+    },
 }
 
 impl MetaInfoDetails {
@@ -267,6 +271,10 @@ impl MetaInfoDetails {
                 operations: None,
             },
             MetadataKind::DefinedType => Self::DefinedType { r#type: None },
+            MetadataKind::ExternalDataSource => Self::ExternalDataSource {
+                tables: None,
+                cubes: None,
+            },
         }
     }
 }

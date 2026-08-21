@@ -1889,7 +1889,7 @@ mod metadata_kind_consumer_tests {
     fn cf_consumers_share_the_canonical_metadata_kind_order() {
         let validate_kinds = cf_validate_child_object_types();
 
-        assert_eq!(validate_kinds.len(), 45);
+        assert_eq!(validate_kinds.len(), 46);
         assert_eq!(validate_kinds, cf_type_order());
         let bot_index = validate_kinds
             .iter()
@@ -1898,6 +1898,10 @@ mod metadata_kind_consumer_tests {
         assert_eq!(validate_kinds[bot_index - 1], "CommonModule");
         assert_eq!(validate_kinds[bot_index + 1], "CommonAttribute");
         assert_eq!(cf_validate_child_type_dir("Bot"), Some("Bots"));
+        assert_eq!(
+            cf_validate_child_type_dir("ExternalDataSource"),
+            Some("ExternalDataSources")
+        );
         assert_eq!(cf_type_ru_name("Bot"), "Боты");
         assert_eq!(cf_validate_child_type_dir("SyntheticMetadata"), None);
 

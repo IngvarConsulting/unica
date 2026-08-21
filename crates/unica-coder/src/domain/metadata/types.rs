@@ -59,6 +59,7 @@ metadata_kinds! {
     HTTPService,
     WebService,
     DefinedType,
+    ExternalDataSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -435,7 +436,7 @@ mod tests {
     use crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
 
     #[test]
-    fn metadata_kind_accepts_exactly_the_23_creation_spellings() {
+    fn metadata_kind_accepts_exactly_the_24_creation_spellings() {
         const EXPECTED: &[&str] = &[
             "Catalog",
             "Document",
@@ -460,6 +461,7 @@ mod tests {
             "HTTPService",
             "WebService",
             "DefinedType",
+            "ExternalDataSource",
         ];
 
         assert_eq!(
@@ -512,6 +514,14 @@ mod tests {
             assert_eq!(diagnostic.code, MetaDiagnosticCode::UnsupportedKind);
             assert_eq!(diagnostic.field.as_deref(), Some("kind"));
         }
+    }
+
+    #[test]
+    fn metadata_kind_accepts_external_data_source() {
+        assert_eq!(
+            MetadataKind::parse("ExternalDataSource").unwrap().as_str(),
+            "ExternalDataSource"
+        );
     }
 
     #[test]

@@ -3842,6 +3842,7 @@ pub(super) fn meta_validate_valid_types() -> &'static [&'static str] {
         "HTTPService",
         "WebService",
         "DefinedType",
+        "ExternalDataSource",
     ]
 }
 
@@ -3928,6 +3929,7 @@ pub(super) fn meta_validate_generated_categories(md_type: &str) -> Option<&'stat
         "Report" | "DataProcessor" => Some(&["Object", "Manager"]),
         "ExternalReport" | "ExternalDataProcessor" => Some(&["Object"]),
         "DefinedType" => Some(&["DefinedType"]),
+        "ExternalDataSource" => Some(&["Manager", "TablesManager", "CubesManager"]),
         _ => None,
     }
 }

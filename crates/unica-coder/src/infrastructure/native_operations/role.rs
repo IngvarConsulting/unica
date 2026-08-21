@@ -3807,6 +3807,34 @@ mod role_edit_contract_tests {
         assert_eq!(second.action, RoleEditEffectAction::RemoveObject);
     }
 
+    #[test]
+    fn external_data_source_table_right_round_trips_through_writer() {
+        let body = r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.20">
+  <setForNewObjects>false</setForNewObjects>
+  <setForAttributesByDefault>true</setForAttributesByDefault>
+  <independentRightsOfChildObjects>false</independentRightsOfChildObjects>
+  <object>
+    <name>ExternalDataSource.Remote.Table.Items</name>
+    <right><name>Read</name><value>true</value></right>
+  </object>
+</Rights>
+"#;
+        let (updated, effect) = apply_role_edit_operation(
+            body,
+            &operation(
+                "ExternalDataSource.Remote.Table.Items",
+                "InputByString",
+                true,
+            ),
+            0,
+        )
+        .unwrap();
+
+        assert!(effect.changed);
+        assert!(updated.contains("<name>InputByString</name>"), "{updated}");
+        validate_every_role_value(&updated).unwrap();
+    }
+
     fn fixture(name: &str) -> (WorkspaceContext, Map<String, Value>, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "unica-role-edit-{name}-{}-{}",

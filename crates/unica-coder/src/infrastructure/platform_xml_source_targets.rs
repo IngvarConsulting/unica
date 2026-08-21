@@ -517,6 +517,53 @@ fn locate_platform_xml_source_path_in_with_policy(
         }
     }
 
+    let external_nested = if kind.tag == "ExternalDataSource" {
+        match parts.as_slice() {
+            [_, source, directory @ ("Tables" | "Cubes"), child] => {
+                let child_kind = if *directory == "Tables" {
+                    "Table"
+                } else {
+                    "Cube"
+                };
+                Some(format!(
+                    "ExternalDataSource.{source}.{child_kind}.{}",
+                    child.trim_end_matches(".xml")
+                ))
+            }
+            [_, source, "Cubes", cube, "DimensionTables", dimension_table] => Some(format!(
+                "ExternalDataSource.{source}.Cube.{cube}.DimensionTable.{}",
+                dimension_table.trim_end_matches(".xml")
+            )),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some(nested) = external_nested {
+        if let Ok(nested_address) = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &nested,
+        ) {
+            if exact_object_outcome_with_policy(
+                source_root,
+                &nested_address,
+                cancellation,
+                version_policy,
+            )? == ExactCandidate::Proven
+            {
+                let is_own_descriptor = parts.last().is_some_and(|part| part.ends_with(".xml"));
+                return Ok(SourceLocateResult {
+                    source_set: source_set.name.clone(),
+                    relative_path: relative_text,
+                    metadata_path: is_own_descriptor.then(|| nested_address.clone()),
+                    target_kind: is_own_descriptor.then_some(TargetKind::MetadataObject),
+                    owner_metadata_path: Some(nested_address),
+                    rejection: (!is_own_descriptor).then_some(LocateRejection::NotAddressable),
+                });
+            }
+        }
+    }
+
     let is_object_descriptor = parts.len() == 2 && parts[1].ends_with(".xml");
     Ok(SourceLocateResult {
         source_set: source_set.name.clone(),
@@ -1198,10 +1245,11 @@ fn exact_object_outcome_with_policy(
 ) -> Result<ExactCandidate, String> {
     check_navigation_cancellation(cancellation)?;
     let parts = address.segments().collect::<Vec<_>>();
-    // A nested child is only as real as the owner that declares it, so the
-    // owner descriptor is proven first and its verdict wins when it fails.
-    if parts.len() == 4 {
-        let Some(owner) = object_descriptor_evidence(&parts[..2]) else {
+    // A nested child is only as real as every ancestor that declares it, so
+    // ancestor descriptors are proven from the root down and the first failed
+    // verdict wins.
+    for ancestor_len in (2..parts.len()).step_by(2) {
+        let Some(owner) = object_descriptor_evidence(&parts[..ancestor_len]) else {
             return Ok(ExactCandidate::Absent);
         };
         let outcome = descriptor_outcome_with_policy(
@@ -1290,6 +1338,33 @@ fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence
                     .join(format!("{child_name}.xml")),
                 kind: (*child_kind).to_string(),
                 name: (*child_name).to_string(),
+            })
+        }
+        ["ExternalDataSource", source_name, child_kind @ ("Table" | "Cube"), child_name] => {
+            let child_directory = if *child_kind == "Table" {
+                "Tables"
+            } else {
+                "Cubes"
+            };
+            Some(ObjectDescriptorEvidence {
+                path: PathBuf::from("ExternalDataSources")
+                    .join(source_name)
+                    .join(child_directory)
+                    .join(format!("{child_name}.xml")),
+                kind: (*child_kind).to_string(),
+                name: (*child_name).to_string(),
+            })
+        }
+        ["ExternalDataSource", source_name, "Cube", cube_name, "DimensionTable", table_name] => {
+            Some(ObjectDescriptorEvidence {
+                path: PathBuf::from("ExternalDataSources")
+                    .join(source_name)
+                    .join("Cubes")
+                    .join(cube_name)
+                    .join("DimensionTables")
+                    .join(format!("{table_name}.xml")),
+                kind: "DimensionTable".to_string(),
+                name: (*table_name).to_string(),
             })
         }
         _ => None,
@@ -1564,7 +1639,7 @@ fn collect_configuration_navigation(
             .next_back()
             .unwrap_or(module_address.as_str())
             .to_string();
-        if module_address.as_str().split('.').count() == 5 {
+        if module_address.as_str().split('.').count() >= 5 {
             if let Some((object, _)) = module_address.as_str().rsplit_once('.') {
                 add_address(
                     inventory,
@@ -1637,6 +1712,48 @@ fn module_descriptor_identity_is_proven(
                 child_descriptor,
                 child_kind,
                 child_name,
+                cancellation,
+            )?
+        }
+        (
+            ["ExternalDataSource", source_name, child_kind @ ("Table" | "Cube"), child_name, _],
+            [source_descriptor, child_descriptor],
+        ) => {
+            descriptor_identity_matches(
+                source_root,
+                source_descriptor,
+                "ExternalDataSource",
+                source_name,
+                cancellation,
+            )? && descriptor_identity_matches(
+                source_root,
+                child_descriptor,
+                child_kind,
+                child_name,
+                cancellation,
+            )?
+        }
+        (
+            ["ExternalDataSource", source_name, "Cube", cube_name, "DimensionTable", table_name, _],
+            [source_descriptor, cube_descriptor, table_descriptor],
+        ) => {
+            descriptor_identity_matches(
+                source_root,
+                source_descriptor,
+                "ExternalDataSource",
+                source_name,
+                cancellation,
+            )? && descriptor_identity_matches(
+                source_root,
+                cube_descriptor,
+                "Cube",
+                cube_name,
+                cancellation,
+            )? && descriptor_identity_matches(
+                source_root,
+                table_descriptor,
+                "DimensionTable",
+                table_name,
                 cancellation,
             )?
         }
@@ -2972,6 +3089,9 @@ enum PlatformXmlModuleLayoutFamily {
     DirectMetadata,
     NestedForm,
     NestedCommand,
+    ExternalDataSourceTable,
+    ExternalDataSourceCube,
+    ExternalDataSourceDimensionTable,
 }
 
 const OWNER_MODULE_KINDS: &[&str] = &[
@@ -2988,6 +3108,7 @@ enum ModuleLayoutToken {
     MetadataDirectory,
     OwnerName,
     ChildName,
+    GrandchildName,
     Role(ModuleRoleClass),
     RoleFile(ModuleRoleClass),
 }
@@ -3004,6 +3125,9 @@ enum ModuleLayoutCapability {
     OwnerModule,
     DirectModule,
     NestedFormOrCommand,
+    ExternalDataSourceTable,
+    ExternalDataSourceCube,
+    ExternalDataSourceDimensionTable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3019,6 +3143,11 @@ enum ModuleDescriptorRule {
         /// from the logical address, so it is not repeated here.
         child_directory: &'static str,
     },
+    ExternalDataSourceChild {
+        child_kind: &'static str,
+        child_directory: &'static str,
+    },
+    ExternalDataSourceDimensionTable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3165,6 +3294,79 @@ const PLATFORM_XML_MODULE_LAYOUT_FAMILIES: &[PlatformXmlModuleLayoutDescriptor] 
             child_directory: "Commands",
         },
     },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::ExternalDataSourceTable,
+        physical: &[
+            ModuleLayoutToken::Literal("ExternalDataSources"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Tables"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::RoleFile(ModuleRoleClass::Direct),
+        ],
+        logical: &[
+            ModuleLayoutToken::Literal("ExternalDataSource"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Table"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Role(ModuleRoleClass::Direct),
+        ],
+        capability: ModuleLayoutCapability::ExternalDataSourceTable,
+        fixed_role: None,
+        descriptor_rule: ModuleDescriptorRule::ExternalDataSourceChild {
+            child_kind: "Table",
+            child_directory: "Tables",
+        },
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::ExternalDataSourceCube,
+        physical: &[
+            ModuleLayoutToken::Literal("ExternalDataSources"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Cubes"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::RoleFile(ModuleRoleClass::Direct),
+        ],
+        logical: &[
+            ModuleLayoutToken::Literal("ExternalDataSource"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Cube"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Role(ModuleRoleClass::Direct),
+        ],
+        capability: ModuleLayoutCapability::ExternalDataSourceCube,
+        fixed_role: None,
+        descriptor_rule: ModuleDescriptorRule::ExternalDataSourceChild {
+            child_kind: "Cube",
+            child_directory: "Cubes",
+        },
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::ExternalDataSourceDimensionTable,
+        physical: &[
+            ModuleLayoutToken::Literal("ExternalDataSources"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Cubes"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("DimensionTables"),
+            ModuleLayoutToken::GrandchildName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::RoleFile(ModuleRoleClass::Direct),
+        ],
+        logical: &[
+            ModuleLayoutToken::Literal("ExternalDataSource"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Cube"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("DimensionTable"),
+            ModuleLayoutToken::GrandchildName,
+            ModuleLayoutToken::Role(ModuleRoleClass::Direct),
+        ],
+        capability: ModuleLayoutCapability::ExternalDataSourceDimensionTable,
+        fixed_role: None,
+        descriptor_rule: ModuleDescriptorRule::ExternalDataSourceDimensionTable,
+    },
 ];
 
 impl PlatformXmlModuleLayoutDescriptor {
@@ -3207,6 +3409,7 @@ impl PlatformXmlModuleLayoutDescriptor {
                 }
                 ModuleLayoutToken::OwnerName => captures.owner_name = Some(value),
                 ModuleLayoutToken::ChildName => captures.child_name = Some(value),
+                ModuleLayoutToken::GrandchildName => captures.grandchild_name = Some(value),
                 ModuleLayoutToken::Role(class) => {
                     captures.role = Some(class.parse(value)?);
                 }
@@ -3231,6 +3434,15 @@ impl PlatformXmlModuleLayoutDescriptor {
             ModuleLayoutCapability::NestedFormOrCommand => captures
                 .kind
                 .is_some_and(|kind| supports_nested_form_or_command(kind.tag)),
+            ModuleLayoutCapability::ExternalDataSourceTable
+            | ModuleLayoutCapability::ExternalDataSourceCube => matches!(
+                captures.role,
+                Some(PlatformXmlModuleRole::ManagerModule | PlatformXmlModuleRole::RecordSetModule)
+            ),
+            ModuleLayoutCapability::ExternalDataSourceDimensionTable => matches!(
+                captures.role,
+                Some(PlatformXmlModuleRole::ObjectModule | PlatformXmlModuleRole::ManagerModule)
+            ),
         }
     }
 
@@ -3260,6 +3472,10 @@ impl PlatformXmlModuleLayoutDescriptor {
                 ModuleLayoutToken::ChildName => captures
                     .child_name
                     .expect("accepted layout must capture child name")
+                    .to_string(),
+                ModuleLayoutToken::GrandchildName => captures
+                    .grandchild_name
+                    .expect("accepted layout must capture grandchild name")
                     .to_string(),
                 ModuleLayoutToken::Role(_) => captures
                     .role
@@ -3325,6 +3541,46 @@ impl PlatformXmlModuleLayoutDescriptor {
                     ],
                 )
             }
+            ModuleDescriptorRule::ExternalDataSourceChild {
+                child_kind,
+                child_directory,
+            } => {
+                let source = captures.owner_name.ok_or_else(unsupported_module_layout)?;
+                let child = captures.child_name.ok_or_else(unsupported_module_layout)?;
+                (
+                    format!("ExternalDataSource.{source}.{child_kind}.{child}"),
+                    vec![
+                        metadata_descriptor("ExternalDataSources", source),
+                        PathBuf::from("ExternalDataSources")
+                            .join(source)
+                            .join(child_directory)
+                            .join(format!("{child}.xml")),
+                    ],
+                )
+            }
+            ModuleDescriptorRule::ExternalDataSourceDimensionTable => {
+                let source = captures.owner_name.ok_or_else(unsupported_module_layout)?;
+                let cube = captures.child_name.ok_or_else(unsupported_module_layout)?;
+                let table = captures
+                    .grandchild_name
+                    .ok_or_else(unsupported_module_layout)?;
+                (
+                    format!("ExternalDataSource.{source}.Cube.{cube}.DimensionTable.{table}"),
+                    vec![
+                        metadata_descriptor("ExternalDataSources", source),
+                        PathBuf::from("ExternalDataSources")
+                            .join(source)
+                            .join("Cubes")
+                            .join(format!("{cube}.xml")),
+                        PathBuf::from("ExternalDataSources")
+                            .join(source)
+                            .join("Cubes")
+                            .join(cube)
+                            .join("DimensionTables")
+                            .join(format!("{table}.xml")),
+                    ],
+                )
+            }
         };
         module_identity(address, owner, role, descriptors)
     }
@@ -3356,6 +3612,7 @@ struct ModuleLayoutCaptures<'a> {
     kind: Option<&'static MetadataLayout>,
     owner_name: Option<&'a str>,
     child_name: Option<&'a str>,
+    grandchild_name: Option<&'a str>,
     role: Option<PlatformXmlModuleRole>,
 }
 
@@ -4071,6 +4328,21 @@ mod tests {
                 "Catalog.Items.Command.Open.CommandModule",
                 "Catalogs/Items/Commands/Open/Ext/CommandModule.bsl",
             ),
+            (
+                super::PlatformXmlModuleLayoutFamily::ExternalDataSourceTable,
+                "ExternalDataSource.Remote.Table.Items.ManagerModule",
+                "ExternalDataSources/Remote/Tables/Items/Ext/ManagerModule.bsl",
+            ),
+            (
+                super::PlatformXmlModuleLayoutFamily::ExternalDataSourceCube,
+                "ExternalDataSource.Remote.Cube.Sales.RecordSetModule",
+                "ExternalDataSources/Remote/Cubes/Sales/Ext/RecordSetModule.bsl",
+            ),
+            (
+                super::PlatformXmlModuleLayoutFamily::ExternalDataSourceDimensionTable,
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar.ObjectModule",
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ObjectModule.bsl",
+            ),
         ];
 
         let descriptors = super::module_layout_descriptors_for_test();
@@ -4087,6 +4359,70 @@ mod tests {
             assert_eq!(
                 descriptor.parse_physical(Path::new(relative)).unwrap(),
                 address
+            );
+        }
+    }
+
+    #[test]
+    fn external_data_source_module_layouts_round_trip_in_both_directions() {
+        let cases = [
+            (
+                "ExternalDataSource.Remote.Table.Items.ManagerModule",
+                "ExternalDataSources/Remote/Tables/Items/Ext/ManagerModule.bsl",
+                &["ExternalDataSources/Remote.xml", "ExternalDataSources/Remote/Tables/Items.xml"][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Table.Items.RecordSetModule",
+                "ExternalDataSources/Remote/Tables/Items/Ext/RecordSetModule.bsl",
+                &["ExternalDataSources/Remote.xml", "ExternalDataSources/Remote/Tables/Items.xml"][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.ManagerModule",
+                "ExternalDataSources/Remote/Cubes/Sales/Ext/ManagerModule.bsl",
+                &["ExternalDataSources/Remote.xml", "ExternalDataSources/Remote/Cubes/Sales.xml"][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.RecordSetModule",
+                "ExternalDataSources/Remote/Cubes/Sales/Ext/RecordSetModule.bsl",
+                &["ExternalDataSources/Remote.xml", "ExternalDataSources/Remote/Cubes/Sales.xml"][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar.ObjectModule",
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ObjectModule.bsl",
+                &[
+                    "ExternalDataSources/Remote.xml",
+                    "ExternalDataSources/Remote/Cubes/Sales.xml",
+                    "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+                ][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar.ManagerModule",
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ManagerModule.bsl",
+                &[
+                    "ExternalDataSources/Remote.xml",
+                    "ExternalDataSources/Remote/Cubes/Sales.xml",
+                    "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+                ][..],
+            ),
+        ];
+
+        for (raw_address, raw_path, expected_descriptors) in cases {
+            let address =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_address).unwrap();
+            assert_eq!(
+                super::module_path_for_address(&address).unwrap(),
+                Path::new(raw_path),
+                "{raw_address}"
+            );
+            let identity = super::platform_xml_module_identity(Path::new(raw_path)).unwrap();
+            assert_eq!(identity.address, address, "{raw_path}");
+            assert_eq!(
+                identity.descriptors,
+                expected_descriptors
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>(),
+                "{raw_path}"
             );
         }
     }
@@ -5261,6 +5597,76 @@ mod tests {
             outside.relative_path, "",
             "a path outside the source set has no relative form to echo"
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn locate_external_data_source_descriptors_recovers_full_nested_addresses() {
+        let context = fixture(
+            "external-data-source-locate",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote.xml",
+            "ExternalDataSources/Remote/Tables/Items/Ext/ManagerModule.bsl",
+            "ExternalDataSource",
+            "Remote",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Tables/Items.xml",
+            "ExternalDataSources/Remote/Tables/Items/Ext/RecordSetModule.bsl",
+            "Table",
+            "Items",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Cubes/Sales.xml",
+            "ExternalDataSources/Remote/Cubes/Sales/Ext/ManagerModule.bsl",
+            "Cube",
+            "Sales",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+            "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ObjectModule.bsl",
+            "DimensionTable",
+            "Calendar",
+        );
+
+        for (path, expected) in [
+            (
+                "ExternalDataSources/Remote/Tables/Items.xml",
+                "ExternalDataSource.Remote.Table.Items",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales.xml",
+                "ExternalDataSource.Remote.Cube.Sales",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar",
+            ),
+        ] {
+            let result = super::locate_platform_xml_source_path(
+                &context,
+                &crate::application::source_navigation::SourceLocateRequest {
+                    source_set: "main".to_string(),
+                    path: path.to_string(),
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                result.metadata_path.as_ref().map(MetadataAddress::as_str),
+                Some(expected),
+                "{path}"
+            );
+            assert!(result.rejection.is_none(), "{path}: {:?}", result.rejection);
+        }
         cleanup(&context);
     }
 

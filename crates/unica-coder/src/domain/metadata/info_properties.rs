@@ -705,6 +705,7 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
         ScheduledJob => name == "Key",
         HTTPService => false,
         WebService => name == "DescriptorFileName",
+        ExternalDataSource => name == "DataLockControlMode",
         DefinedType | EventSubscription => false,
     }
 }

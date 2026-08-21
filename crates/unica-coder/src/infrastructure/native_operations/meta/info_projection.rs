@@ -840,6 +840,60 @@ pub(super) fn project_meta_info_details(
                 operations,
             }
         }
+        MetadataKind::ExternalDataSource => {
+            let children = child_objects.map(|container| {
+                ensure_only_direct_md_children(container, &["Table", "Cube"], "details")?;
+                let addresses = |child_kind: &str| {
+                    direct_children_with_namespace(container, MD_CLASSES_NAMESPACE, child_kind)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, node)| {
+                            if !strict_text_leaf_is_valid(node) {
+                                return Err(ProjectionError::malformed(
+                                    format!("details.{}[{index}]", child_kind.to_ascii_lowercase()),
+                                    format!("ExternalDataSource {child_kind} name is malformed"),
+                                ));
+                            }
+                            let name = direct_text_content(node);
+                            if !metadata_identifier_is_valid(&name) {
+                                return Err(ProjectionError::malformed(
+                                    format!("details.{}[{index}]", child_kind.to_ascii_lowercase()),
+                                    format!("ExternalDataSource {child_kind} name is invalid"),
+                                ));
+                            }
+                            MetadataAddress::parse(
+                                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                                &format!("{}.{child_kind}.{name}", target.as_str()),
+                            )
+                            .map_err(|_| {
+                                ProjectionError::malformed(
+                                    format!("details.{}[{index}]", child_kind.to_ascii_lowercase()),
+                                    format!("ExternalDataSource {child_kind} address is invalid"),
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                };
+                Ok((addresses("Table")?, addresses("Cube")?))
+            });
+            match children {
+                Some(Ok((tables, cubes))) => MetaInfoDetails::ExternalDataSource {
+                    tables: Some(tables),
+                    cubes: Some(cubes),
+                },
+                Some(Err(error)) => {
+                    diagnostic(error, diagnostics);
+                    MetaInfoDetails::ExternalDataSource {
+                        tables: None,
+                        cubes: None,
+                    }
+                }
+                None => MetaInfoDetails::ExternalDataSource {
+                    tables: None,
+                    cubes: None,
+                },
+            }
+        }
         _ => MetaInfoDetails::empty(kind),
     }
 }
@@ -1678,6 +1732,16 @@ static META_INFO_CHILD_ROUTES: &[MetaInfoChildRouteSpec] = &[
         name: "Operation",
         route: MetaInfoChildRoute::Details,
         kinds: &[MetadataKind::WebService],
+    },
+    MetaInfoChildRouteSpec {
+        name: "Table",
+        route: MetaInfoChildRoute::Details,
+        kinds: &[MetadataKind::ExternalDataSource],
+    },
+    MetaInfoChildRouteSpec {
+        name: "Cube",
+        route: MetaInfoChildRoute::Details,
+        kinds: &[MetadataKind::ExternalDataSource],
     },
 ];
 

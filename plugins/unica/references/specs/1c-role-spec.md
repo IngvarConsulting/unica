@@ -575,6 +575,7 @@ Subsystem.Администрирование.Subsystem.Пользователи
 | `Sequence` | Read, Update |
 | `WebService` | Use |
 | `HTTPService` | Use |
+| `ExternalDataSource` | Use |
 | `IntegrationService` | Use |
 | `SessionParameter` | Get, Set |
 | `CommonAttribute` | View, Edit |
@@ -590,13 +591,22 @@ Subsystem.Администрирование.Subsystem.Пользователи
 - `CommonPicture`
 - `CommonTemplate`
 - `SettingsStorage`
-- `ExternalDataSource`
 
 ---
 
 ### Права вложенных объектов
 
 Права можно задавать не только на уровне объекта, но и на уровне его составных частей.
+
+#### Таблицы внешнего источника данных
+
+| Логический объект | Права |
+|---|---|
+| `ExternalDataSource.<Источник>.Table.<Таблица>` | `Read`, `Insert`, `Update`, `View`, `InputByString` |
+| `ExternalDataSource.<Источник>.Table.<Таблица>.Field.<Поле>` | `View`, `Edit` |
+
+Неподтверждённые права таблицы, включая `Delete` и `Edit`, не входят в закрытый
+профиль записывающего компонента.
 
 #### Реквизиты и стандартные реквизиты
 

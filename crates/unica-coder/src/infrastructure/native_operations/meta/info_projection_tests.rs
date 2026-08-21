@@ -62,6 +62,32 @@ fn project_declarations(xml: &str, kind: MetadataKind, metadata_path: &str) -> s
 }
 
 #[test]
+fn external_data_source_details_observe_registered_tables_and_cubes() {
+    let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+<ExternalDataSource><Properties><Name>Remote</Name><DataLockControlMode>Automatic</DataLockControlMode></Properties>
+<ChildObjects><Table>Items</Table><Cube>Sales</Cube></ChildObjects></ExternalDataSource></MetaDataObject>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    validate_meta_info_profile(
+        MetadataKind::ExternalDataSource,
+        meta_info_child(object, "Properties"),
+        meta_info_child(object, "ChildObjects"),
+    )
+    .unwrap();
+    assert_eq!(
+        project(
+            xml,
+            MetadataKind::ExternalDataSource,
+            "ExternalDataSource.Remote"
+        ),
+        serde_json::json!({
+            "tables": ["ExternalDataSource.Remote.Table.Items"],
+            "cubes": ["ExternalDataSource.Remote.Cube.Sales"]
+        })
+    );
+}
+
+#[test]
 fn scheduled_job_details_split_the_logical_common_module_method() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
