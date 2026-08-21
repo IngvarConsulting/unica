@@ -512,9 +512,9 @@ class FateCoverageTests(unittest.TestCase):
                     "test_rmcp_dependency_is_owned_by_unica_coder_without_macro_features",
                 ),
                 "INV.WIRE.SDK-MODULE-EXPORTS": (
-                    "process",
+                    "product",
                     "tests/ci/test_product_contracts.py::"
-                    "test_rmcp_module_exports_only_run_stdio",
+                    "test_rmcp_module_preserves_legacy_public_exports_only",
                 ),
                 "INV.WIRE.SDK-SERVER-HANDLER": (
                     "product",
@@ -687,7 +687,7 @@ class FateCoverageTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
-    def test_sdk_module_export_boundary_has_its_new_process_decision(self) -> None:
+    def test_sdk_module_export_boundary_preserves_its_product_api(self) -> None:
         records = {}
         for path in (REPO_ROOT / "arch").rglob("*.md"):
             props = FATE_GUARD._front_matter_props(path)
@@ -703,11 +703,11 @@ class FateCoverageTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         assert decision is not None
         self.assertEqual(decision.get("status"), "active")
-        self.assertEqual(decision.get("governs"), "process")
+        self.assertEqual(decision.get("governs"), "product")
         self.assertEqual(
             decision.get("realized"),
             "tests/ci/test_product_contracts.py::"
-            "test_rmcp_module_exports_only_run_stdio",
+            "test_rmcp_module_preserves_legacy_public_exports_only",
         )
         self.assertEqual(
             decision.get("establishes"), "[INV.WIRE.SDK-MODULE-EXPORTS]"
@@ -731,8 +731,8 @@ class FateCoverageTests(unittest.TestCase):
                 "public_preview_strategies_are_real_and_recursively_write_free"
             ),
             "INV.TOKEN.CACHE-IMPACT-IN-RESULT": (
-                "crates/unica-coder/src/application/mod.rs::"
-                "preview_result_contains_cache_shape_without_second_call"
+                "crates/unica-coder/src/application/meta_remove_surface_tests.rs::"
+                "real_public_meta_remove_reports_typed_cache_impact_in_the_same_result"
             ),
             "INV.SAFETY.SUPPORT-GUARD-COVERAGE": (
                 "crates/unica-coder/src/infrastructure/support_guard.rs::"
@@ -784,6 +784,165 @@ class FateCoverageTests(unittest.TestCase):
             "INV.SURFACE.SOURCE-TOOL-SPECS",
             rows["REQ-PERF-SOURCE-BOUNDS"].successors,
         )
+
+    def test_reviewed_high_risk_fates_name_semantically_complete_evidence(self) -> None:
+        records = {}
+        for path in (REPO_ROOT / "arch").rglob("*.md"):
+            props = FATE_GUARD._front_matter_props(path)
+            if identifier := props.get("id"):
+                records[identifier] = props
+        rows = {row.subject: row for row in FATE_GUARD.fate_rows(REPO_ROOT)}
+
+        expected_successors = {
+            "INV-PRODUCT-PACKAGE-PARITY": {
+                "INV.PKG.PACKAGED-PUBLIC-SURFACE",
+            },
+            "INV-MCP-RUNTIME-RECEIPT": {
+                "INV.RUNTIME.EXECUTE-RECEIPT",
+                "INV.RUNTIME.RISK-CLASSIFICATION",
+                "INV.RUNTIME.PREVIEW-NONEXECUTING",
+                "INV.RUNTIME.NO-REFUSAL-FALLBACK",
+            },
+            "INV-CACHE-REPORTED-EFFECTS": {
+                "INV.CACHE.MUTATION-EVENT-COVERAGE",
+                "INV.CACHE.EVENT-IMPACT-CLOSED",
+                "INV.CACHE.REPORTED-EFFECTS",
+            },
+            "INV-SOURCE-OBSERVED-EOL": {
+                "INV.SOURCE.OBSERVED-EOL-PROFILE",
+                "INV.SOURCE.CODE-PATCH-EOL",
+            },
+            "INV-PKG-VERIFIED-ATOMIC-INSTALL": {
+                "INV.PKG.VERIFIED-ATOMIC-INSTALL",
+            },
+            "INV-PLATFORM-NO-ORPHAN-PROCESSES": {
+                "INV.PLATFORM.PROCESS-TREE-LIFECYCLE",
+            },
+            "INV-DOC-REAL-CHECKS": {
+                "INV.REGISTRY.CHECK-EXISTS",
+            },
+            "REQ-COMPAT-FORMAT-PROFILE": {
+                "INV.PRODUCT.FULL-DUMP-PROFILE",
+                "INV.SOURCE.WRITABLE-PROFILE",
+            },
+            "REQ-REL-COLD-INSTALL-BUDGET": {
+                "INV.PKG.COLD-INSTALL-STARTUP-BUDGET",
+            },
+            "REQ-REL-NO-SILENT-STALL": {
+                "INV.CI.LINEAR-IDEMPOTENT-PUBLICATION",
+            },
+        }
+        for subject, successors in expected_successors.items():
+            with self.subTest(subject=subject):
+                self.assertEqual(set(rows[subject].successors), successors)
+
+        expected_retirements = {
+            "INV-SOURCE-ROLE-ALLOWLIST": (
+                "behavior-removed: DEC.2026-08-21.SOURCE-READ-ONLY-SURFACE"
+            ),
+            "acceptance/format-profile-8-3-27.md": "historical-only",
+            "acceptance/logical-source-addressing-and-resource-access.md": (
+                "historical-only"
+            ),
+        }
+        for subject, reason in expected_retirements.items():
+            with self.subTest(subject=subject):
+                self.assertEqual(rows[subject].fate, "retired")
+                self.assertEqual(rows[subject].successors, ())
+                self.assertEqual(rows[subject].reason, reason)
+
+        exact_checks = {
+            "INV.PKG.PACKAGED-PUBLIC-SURFACE": (
+                "tests/ci/test_unica_workflow.py::"
+                "test_packaged_bootstrap_is_smoked_on_every_supported_host"
+            ),
+            "INV.RUNTIME.EXECUTE-RECEIPT": (
+                "crates/unica-coder/src/application/mod.rs::"
+                "runtime_execute_terminal_result_is_returned_in_original_call"
+            ),
+            "INV.RUNTIME.RISK-CLASSIFICATION": (
+                "crates/unica-coder/src/application/runtime_admission.rs::"
+                "runtime_risk_classification_is_closed"
+            ),
+            "INV.RUNTIME.NO-REFUSAL-FALLBACK": (
+                "tests/ci/test_unica_skills.py::"
+                "test_shipped_guidance_never_routes_runtime_refusal_through_fallbacks"
+            ),
+            "INV.RUNTIME.PREVIEW-NONEXECUTING": (
+                "crates/unica-coder/src/application/mod.rs::"
+                "a_preview_does_not_fetch_an_engine_it_will_not_run"
+            ),
+            "INV.CACHE.MUTATION-EVENT-COVERAGE": (
+                "crates/unica-coder/src/application/mod.rs::"
+                "mutating_tools_have_typed_cache_event_or_explicit_non_cache_effect"
+            ),
+            "INV.CACHE.REPORTED-EFFECTS": (
+                "crates/unica-coder/src/application/meta_remove_surface_tests.rs::"
+                "real_public_meta_remove_reports_typed_cache_impact_in_the_same_result"
+            ),
+            "INV.CACHE.EVENT-IMPACT-CLOSED": (
+                "crates/unica-coder/src/domain/cache.rs::"
+                "typed_event_cache_impact_catalog_is_closed"
+            ),
+            "INV.SOURCE.OBSERVED-EOL-PROFILE": (
+                "crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::"
+                "observed_line_ending_profile_is_closed"
+            ),
+            "INV.SOURCE.CODE-PATCH-EOL": (
+                "crates/unica-coder/src/infrastructure/native_operations/code.rs::"
+                "code_patch_observed_eol_policy_is_closed"
+            ),
+            "INV.PKG.VERIFIED-ATOMIC-INSTALL": (
+                "crates/unica-bootstrap/tests/runtime_install.rs::"
+                "verified_install_publishes_exact_closure_atomically"
+            ),
+            "INV.PLATFORM.PROCESS-TREE-LIFECYCLE": (
+                "crates/unica-coder/src/infrastructure/platform/process.rs::"
+                "managed_process_tree_lifecycle_is_bounded"
+            ),
+            "INV.PKG.COLD-INSTALL-STARTUP-BUDGET": (
+                "tests/ci/test_package_unica_plugin.py::"
+                "test_packaged_mcp_declares_its_own_cold_install_startup_budget"
+            ),
+            "INV.CI.LINEAR-IDEMPOTENT-PUBLICATION": (
+                "tests/ci/test_unica_workflow.py::"
+                "test_publication_is_one_linear_pass_ordered_by_needs"
+            ),
+            "INV.TOKEN.CACHE-IMPACT-IN-RESULT": (
+                "crates/unica-coder/src/application/meta_remove_surface_tests.rs::"
+                "real_public_meta_remove_reports_typed_cache_impact_in_the_same_result"
+            ),
+        }
+        for identifier, check in exact_checks.items():
+            with self.subTest(identifier=identifier):
+                self.assertEqual(records.get(identifier, {}).get("check"), check)
+
+    def test_safety_claims_are_owned_by_an_evidence_boundary_decision(self) -> None:
+        records = {}
+        bodies = {}
+        for path in (REPO_ROOT / "arch").rglob("*.md"):
+            props = FATE_GUARD._front_matter_props(path)
+            if identifier := props.get("id"):
+                records[identifier] = props
+                bodies[identifier] = path.read_text(encoding="utf-8")
+
+        decision_id = "DEC.2026-08-22.EVIDENCE-BOUNDED-SAFETY"
+        decision = records.get(decision_id, {})
+        self.assertEqual(decision.get("status"), "active")
+        self.assertEqual(decision.get("governs"), "product")
+        self.assertEqual(
+            decision.get("establishes"),
+            "[INV.SAFETY.PREVIEW-BY-DEFAULT, INV.SAFETY.SUPPORT-GUARD-PARITY]",
+        )
+        for identifier in (
+            "INV.SAFETY.PREVIEW-BY-DEFAULT",
+            "INV.SAFETY.SUPPORT-GUARD-PARITY",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(records[identifier].get("decision"), decision_id)
+                self.assertIn("представитель", bodies[identifier].lower())
+                self.assertNotIn("Каждый мутирующий инструмент", bodies[identifier])
+                self.assertNotIn("Каждая защищённая нативная мутация", bodies[identifier])
 
     def test_every_v1_subject_has_exactly_one_fate(self) -> None:
         """A moved ADR, rule, requirement, or acceptance contract cannot disappear."""

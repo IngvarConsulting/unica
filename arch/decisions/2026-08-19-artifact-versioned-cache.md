@@ -5,7 +5,7 @@ governs: product
 realized: crates/unica-bootstrap/tests/runtime_install.rs::the_install_path_is_keyed_by_version_and_archive_identity
 supersedes: []
 superseded-by: null
-establishes: []
+establishes: [INV.PKG.VERIFIED-ATOMIC-INSTALL]
 ---
 
 # Артефакт кешируется по своей версии, а не по версии плагина

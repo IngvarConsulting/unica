@@ -375,6 +375,15 @@ fn concurrent_installers_download_and_publish_once() {
 }
 
 #[test]
+fn verified_install_publishes_exact_closure_atomically() {
+    valid_archive_is_published_with_a_ready_marker();
+    ready_marker_waits_for_the_complete_runtime_file_closure();
+    corrupt_archive_never_publishes_a_ready_runtime();
+    install_closure_rejects_unsafe_or_drifted_archives_without_ready();
+    concurrent_installers_download_and_publish_once();
+}
+
+#[test]
 fn the_core_installs_without_any_engine_present() {
     // Ядро обязано подниматься само: движки уходят из стартового пути.
     let runtime = b"unica-runtime";

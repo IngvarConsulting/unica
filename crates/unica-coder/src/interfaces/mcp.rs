@@ -28,7 +28,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-const MCP_MAX_TOOL_WORKERS: usize = 32;
+pub const MCP_MAX_TOOL_WORKERS: usize = 32;
 const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 const TOOL_EXECUTION_ERROR: i32 = -32000;
@@ -114,7 +114,7 @@ fn drain_mcp_shutdown_with(
 /// рассказать о ней может лишь тот, кого запустили следом.
 const STARTUP_NOTICE_ENV: &str = "UNICA_STARTUP_NOTICE";
 
-struct UnicaServer {
+pub struct UnicaServer {
     handler: Arc<ToolCallHandler>,
     in_flight: Arc<InFlightRegistry>,
     structured_tools: HashSet<&'static str>,
@@ -450,7 +450,7 @@ fn progress_notification(
 }
 
 /// Data-driven MCP tool definitions from the application descriptor registry.
-fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
+pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
     specs
         .iter()
         .map(|spec| {

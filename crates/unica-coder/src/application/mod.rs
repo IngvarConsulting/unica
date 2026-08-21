@@ -7006,7 +7006,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn bounded_runtime_success_exposes_typed_exit_and_execute_receipt() {
+    fn runtime_execute_terminal_result_is_returned_in_original_call() {
         let root = test_workspace_root("runtime-bounded-success-diagnostics");
         let result = call_runtime_with_outcome_and_data(
             &root,
@@ -9406,6 +9406,44 @@ pub(crate) mod tests {
                 .map(|(operation, _)| *operation)
                 .collect::<Vec<_>>(),
             "every unguarded native mutation must remain an explicitly justified support-guard exception"
+        );
+    }
+
+    #[test]
+    fn mutating_tools_have_typed_cache_event_or_explicit_non_cache_effect() {
+        let mut explicit_non_cache_effect = Vec::new();
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+        {
+            match tool.handler {
+                ToolHandler::NativeOperation { event, .. } => {
+                    assert!(event.is_some(), "{} has no typed event", tool.name);
+                }
+                ToolHandler::Metadata { operation } => {
+                    assert!(
+                        !matches!(operation, metadata::MetadataOperation::Info),
+                        "{} uses a read-only metadata operation as a mutation",
+                        tool.name
+                    );
+                }
+                ToolHandler::BuildRuntime { event: Some(_), .. } | ToolHandler::RuntimeAdapter => {}
+                ToolHandler::BuildRuntime { event: None, .. } | ToolHandler::RuntimeJob { .. } => {
+                    assert!(tool.cache_access.writes.is_empty(), "{}", tool.name);
+                    explicit_non_cache_effect.push(tool.name);
+                }
+                _ => panic!("{} has an unclassified mutating handler", tool.name),
+            }
+        }
+        explicit_non_cache_effect.sort_unstable();
+        assert_eq!(
+            explicit_non_cache_effect,
+            [
+                "unica.build.make",
+                "unica.build.run",
+                "unica.runtime.job.cancel",
+                "unica.runtime.job.start",
+            ]
         );
     }
 

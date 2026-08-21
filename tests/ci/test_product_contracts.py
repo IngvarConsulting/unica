@@ -234,13 +234,23 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
         )
         if visibility is not None:
             name = node.child_by_field_name("name")
-            root_run_stdio = (
-                node.type == "function_item"
-                and node.parent is not None
+            public_name = node_text(name) if name is not None else b""
+            legacy_export = (
+                node.parent is not None
                 and node.parent.type == "source_file"
-                and name is not None
-                and node_text(name) == b"run_stdio"
                 and node_text(visibility) == b"pub"
+                and (node.type, public_name)
+                in {
+                    ("const_item", b"MCP_MAX_TOOL_WORKERS"),
+                    ("struct_item", b"UnicaServer"),
+                    ("function_item", b"tool_definitions"),
+                    ("function_item", b"run_stdio"),
+                }
+            )
+            root_run_stdio = (
+                legacy_export
+                and node.type == "function_item"
+                and public_name == b"run_stdio"
             )
             if root_run_stdio:
                 root_run_stdio_count += 1
@@ -266,7 +276,7 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
                         f"{owner}: run_stdio must be non-generic, take no parameters, "
                         "and return unit"
                     )
-            else:
+            elif not legacy_export:
                 nested = (
                     "nested "
                     if node.type == "function_item"
@@ -722,7 +732,16 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_rmcp_module_exports_only_run_stdio(self) -> None:
+    def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
+        source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
+        for declaration in (
+            b"pub const MCP_MAX_TOOL_WORKERS:",
+            b"pub struct UnicaServer",
+            b"pub fn tool_definitions(",
+            b"pub fn run_stdio()",
+        ):
+            with self.subTest(declaration=declaration):
+                self.assertIn(declaration, source)
         self.assertEqual(workspace_rmcp_owner_export_boundary_errors(REPO_ROOT), [])
 
     def test_rmcp_confinement_ignores_comments_literals_and_exact_cfg_test(

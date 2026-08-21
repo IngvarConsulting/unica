@@ -2,13 +2,15 @@
 id: INV.SAFETY.SUPPORT-GUARD-PARITY
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
+decision: DEC.2026-08-22.EVIDENCE-BOUNDED-SAFETY
 check: crates/unica-coder/src/infrastructure/support_guard.rs::public_support_guard_resolver_matrix_runs_real_handlers
 scope: [app, product]
 ---
 
-# Защита поддержки одинакова для preview и apply
+# Ветви защиты поддержки имеют preview/apply представителей
 
-Каждая защищённая нативная мутация проверяет запертого владельца до обоих
-планировщиков; отказ preview и apply совпадает по публичному результату. Каждое
-исключение явно перечислено и достигает обоих планировщиков.
+Закрытый инвентарь политик проверяется отдельно. Реальные представители
+handler-resolved, path-arg и object-name защиты — `code.patch`,
+`subsystem.compile` и `form.remove` — одинаково блокируют preview и apply до
+обработчика; представитель исключения `cf.init` достигает обоих планировщиков.
+Это не объявляет исполненными остальные строки инвентаря.

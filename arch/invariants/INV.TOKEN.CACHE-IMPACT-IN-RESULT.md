@@ -3,7 +3,7 @@ id: INV.TOKEN.CACHE-IMPACT-IN-RESULT
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/application/mod.rs::preview_result_contains_cache_shape_without_second_call
+check: crates/unica-coder/src/application/meta_remove_surface_tests.rs::real_public_meta_remove_reports_typed_cache_impact_in_the_same_result
 scope: [app, cache, product]
 ---
 

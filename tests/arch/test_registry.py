@@ -12,13 +12,18 @@ rather than amended.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import hashlib
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+
+from tree_sitter import Language, Parser
+import tree_sitter_rust
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "arch" / "registry.py"
@@ -40,6 +45,54 @@ TRACKER_REFERENCES = (
     (re.compile(r"(?<![\w&])#\d+\b"), "issue reference"),
     (re.compile(r"github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+"), "tracker link"),
 )
+
+
+def evidence_reference_error(root: Path, reference: str, owner: str) -> str | None:
+    """Resolve one `path::declaration` without accepting prose lookalikes."""
+    path_text, separator, name = reference.partition("::")
+    relative = Path(path_text)
+    if not separator or not name:
+        return f"{owner}: evidence must name an exact path::declaration"
+    if relative.is_absolute() or ".." in relative.parts:
+        return f"{owner}: evidence path {path_text} escapes the repository"
+    target = root / relative
+    if not target.is_file():
+        return f"{owner}: evidence file {path_text} is missing"
+
+    if target.suffix == ".py":
+        try:
+            tree = ast.parse(target.read_text(encoding="utf-8"), filename=path_text)
+        except (OSError, SyntaxError, UnicodeError) as error:
+            return f"{owner}: cannot parse Python evidence {path_text}: {error}"
+        declarations = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+    elif target.suffix == ".rs":
+        try:
+            source = target.read_bytes()
+        except OSError as error:
+            return f"{owner}: cannot read Rust evidence {path_text}: {error}"
+        parser = Parser(Language(tree_sitter_rust.language()))
+        tree = parser.parse(source)
+        declarations = set()
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            if node.type == "function_item":
+                identifier = node.child_by_field_name("name")
+                if identifier is not None:
+                    declarations.add(
+                        source[identifier.start_byte : identifier.end_byte].decode("utf-8")
+                    )
+            stack.extend(node.named_children)
+    else:
+        return f"{owner}: unsupported evidence source {path_text}"
+
+    if name not in declarations:
+        return f"{owner}: {path_text} does not declare {name}"
+    return None
 
 
 def contract_record(props: dict) -> REGISTRY.Record:
@@ -474,13 +527,51 @@ class ReferenceTests(unittest.TestCase):
             if not check:
                 offenders.append(f"{record.relative}: no check named")
                 continue
-            path, _, name = check.partition("::")
-            target = REPO_ROOT / path
-            if not target.is_file():
-                offenders.append(f"{record.relative}: check file {path} is missing")
-            elif name and name not in target.read_text(encoding="utf-8"):
-                offenders.append(f"{record.relative}: {path} does not define {name}")
+            error = evidence_reference_error(REPO_ROOT, check, record.relative)
+            if error:
+                offenders.append(error)
         self.assertEqual(offenders, [])
+
+    def test_evidence_reference_requires_an_exact_python_or_rust_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            python = root / "checks.py"
+            rust = root / "checks.rs"
+            python.write_text(
+                "TEXT = 'test_only_in_a_literal'\n"
+                "# def test_only_in_a_comment(): pass\n"
+                "class Checks:\n"
+                "    def test_real_python(self):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            rust.write_text(
+                'const TEXT: &str = "test_only_in_a_literal";\n'
+                "// fn test_only_in_a_comment() {}\n"
+                "#[test]\n"
+                "fn test_real_rust() {}\n",
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(
+                evidence_reference_error(
+                    root, "checks.py::test_real_python", "fixture"
+                )
+            )
+            self.assertIsNone(
+                evidence_reference_error(root, "checks.rs::test_real_rust", "fixture")
+            )
+            for reference in (
+                "checks.py",
+                "checks.py::test_only_in_a_literal",
+                "checks.py::test_only_in_a_comment",
+                "checks.rs::test_only_in_a_literal",
+                "checks.rs::test_only_in_a_comment",
+            ):
+                with self.subTest(reference=reference):
+                    self.assertIsNotNone(
+                        evidence_reference_error(root, reference, "fixture")
+                    )
 
     def test_a_realized_decision_names_evidence_that_exists(self) -> None:
         """`realized` separates what was decided from what was built.
@@ -497,12 +588,9 @@ class ReferenceTests(unittest.TestCase):
             evidence = record.props.get("realized")
             if evidence in (None, ""):
                 continue
-            path, _, name = str(evidence).partition("::")
-            target = REPO_ROOT / path
-            if not target.is_file():
-                offenders.append(f"{record.relative}: evidence file {path} is missing")
-            elif name and name not in target.read_text(encoding="utf-8"):
-                offenders.append(f"{record.relative}: {path} does not define {name}")
+            error = evidence_reference_error(REPO_ROOT, str(evidence), record.relative)
+            if error:
+                offenders.append(error)
         self.assertEqual(offenders, [])
 
     def test_no_rule_explains_its_own_props(self) -> None:
