@@ -152,7 +152,9 @@ class Fixture:
         rust = self.root / "crates" / "evidence.rs"
         rust.parent.mkdir(parents=True)
         rust.write_text(
-            "const LABEL: &'static str = \"evidence\";\n    #[test]\n    fn test_rust_reason() {}\n",
+            "const MULTILINE: &str = \"first line\nsecond line\";\n"
+            "const LABEL: &'static str = \"evidence\";\n"
+            "    #[test]\n    fn test_rust_reason() {}\n",
             encoding="utf-8",
         )
         (self.root / "crates" / "fake_string.rs").write_text(
@@ -160,7 +162,8 @@ class Fixture:
             encoding="utf-8",
         )
         (self.root / "crates" / "fake_declaration.rs").write_text(
-            "trait Evidence {\n    #[test]\n    fn test_fake_rust_declaration_reason();\n}\n",
+            "trait Evidence {\n    #[test]\n"
+            "    fn test_fake_rust_declaration_reason() -> Marker<{ 1 }>;\n}\n",
             encoding="utf-8",
         )
         self._git("add", "arch", "tests", "scripts", "crates")

@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
-import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -170,8 +169,8 @@ def _python_defines(source: str, name: str) -> bool:
     )
 
 
-def _rust_quoted_end(source: str, start: int, quote: str) -> int | None:
-    """End of a normal Rust string or character literal, if it closes on its line."""
+def _rust_quoted_end(source: str, start: int, quote: str, multiline: bool) -> int | None:
+    """End of a quoted literal, respecting escapes and its newline rule."""
     index = start + 1
     while index < len(source):
         if source[index] == "\\":
@@ -179,10 +178,10 @@ def _rust_quoted_end(source: str, start: int, quote: str) -> int | None:
             continue
         if source[index] == quote:
             return index + 1
-        if source[index] == "\n":
-            break
+        if source[index] == "\n" and not multiline:
+            return None
         index += 1
-    return None
+    return len(source) if multiline else None
 
 
 def _rust_raw_string_end(source: str, start: int) -> int | None:
@@ -205,106 +204,185 @@ def _rust_raw_string_end(source: str, start: int) -> int | None:
     return len(source) if end == -1 else end + len(closing)
 
 
-def _rust_code(source: str) -> str:
-    """Mask Rust comments and literals, preserving newlines and real code."""
-    code = list(source)
-
-    def mask(start: int, end: int) -> None:
-        for index in range(start, end):
-            if code[index] != "\n":
-                code[index] = " "
-
+def _rust_tokens(source: str) -> list[str]:
+    """Tokenize enough Rust to recognize a real attributed test definition."""
+    tokens: list[str] = []
     index = 0
     while index < len(source):
+        if source[index].isspace():
+            index += 1
+            continue
         if source.startswith("//", index):
             end = source.find("\n", index)
-            end = len(source) if end == -1 else end
-            mask(index, end)
-            index = end
+            index = len(source) if end == -1 else end
             continue
         if source.startswith("/*", index):
-            end, depth = index + 2, 1
-            while end < len(source) and depth:
-                if source.startswith("/*", end):
+            index += 2
+            depth = 1
+            while index < len(source) and depth:
+                if source.startswith("/*", index):
                     depth += 1
-                    end += 2
-                elif source.startswith("*/", end):
+                    index += 2
+                elif source.startswith("*/", index):
                     depth -= 1
-                    end += 2
+                    index += 2
                 else:
-                    end += 1
-            mask(index, end)
-            index = end
+                    index += 1
             continue
         raw_end = _rust_raw_string_end(source, index)
         if raw_end is not None:
-            mask(index, raw_end)
             index = raw_end
             continue
         if source[index] == '"':
-            end = _rust_quoted_end(source, index, '"')
-            if end is None:
-                end = len(source)
-            mask(index, end)
-            index = end
+            index = _rust_quoted_end(source, index, '"', multiline=True)
             continue
         if source.startswith('b"', index):
-            end = _rust_quoted_end(source, index + 1, '"')
-            if end is None:
-                end = len(source)
-            mask(index, end)
-            index = end
+            index = _rust_quoted_end(source, index + 1, '"', multiline=True)
             continue
         if source[index] == "'":
-            end = _rust_quoted_end(source, index, "'")
-            if end is None:
-                index += 1
-            else:
-                mask(index, end)
-                index = end
-            continue
+            char_end = _rust_quoted_end(source, index, "'", multiline=False)
+            if char_end is not None:
+                index = char_end
+                continue
         if source.startswith("b'", index):
-            end = _rust_quoted_end(source, index + 1, "'")
-            if end is None:
-                index += 1
-            else:
-                mask(index, end)
-                index = end
+            char_end = _rust_quoted_end(source, index + 1, "'", multiline=False)
+            if char_end is not None:
+                index = char_end
+                continue
+        if source[index].isalpha() or source[index] == "_":
+            end = index + 1
+            while end < len(source) and (source[end].isalnum() or source[end] == "_"):
+                end += 1
+            tokens.append(source[index:end])
+            index = end
             continue
+        if source.startswith("::", index):
+            tokens.append("::")
+            index += 2
+            continue
+        tokens.append(source[index])
         index += 1
-    return "".join(code)
+    return tokens
+
+
+def _rust_balanced(tokens: list[str], index: int, opening: str, closing: str) -> int | None:
+    """Return the token after a balanced delimiter pair beginning at index."""
+    if index == len(tokens) or tokens[index] != opening:
+        return None
+    depth = 1
+    braces = 0
+    index += 1
+    while index < len(tokens) and depth:
+        token = tokens[index]
+        if opening == "<" and token == "{":
+            braces += 1
+        elif opening == "<" and token == "}" and braces:
+            braces -= 1
+        elif token == opening and braces == 0:
+            depth += 1
+        elif token == closing and braces == 0:
+            depth -= 1
+        index += 1
+    return index if depth == 0 else None
+
+
+def _rust_attribute(tokens: list[str], index: int) -> tuple[bool, int] | None:
+    """Classify one `#[...]` attribute and return the first token after it."""
+    if tokens[index : index + 2] != ["#", "["]:
+        return None
+    end = _rust_balanced(tokens, index + 1, "[", "]")
+    if end is None:
+        return None
+    path: list[str] = []
+    cursor = index + 2
+    while cursor < end - 1 and (not path or tokens[cursor - 1] == "::"):
+        if not (tokens[cursor][0].isalpha() or tokens[cursor][0] == "_"):
+            break
+        path.append(tokens[cursor])
+        cursor += 1
+        if cursor < end - 1 and tokens[cursor] == "::":
+            cursor += 1
+            continue
+        break
+    return (bool(path) and path[-1] == "test", end)
+
+
+def _rust_after_qualifiers(tokens: list[str], index: int) -> int:
+    """Skip the qualifiers Rust permits before a free or associated function."""
+    while index < len(tokens):
+        if tokens[index] == "pub":
+            index += 1
+            if index < len(tokens) and tokens[index] == "(":
+                after = _rust_balanced(tokens, index, "(", ")")
+                if after is None:
+                    return len(tokens)
+                index = after
+            continue
+        if tokens[index] in {"async", "unsafe", "const"}:
+            index += 1
+            continue
+        if tokens[index] == "extern":
+            index += 1
+            continue
+        break
+    return index
+
+
+def _rust_signature_has_body(tokens: list[str], index: int) -> bool:
+    """A signature ends in `{` only at its outer delimiter depth, not in a type."""
+    if index < len(tokens) and tokens[index] == "<":
+        after = _rust_balanced(tokens, index, "<", ">")
+        if after is None:
+            return False
+        index = after
+    after_parameters = _rust_balanced(tokens, index, "(", ")")
+    if after_parameters is None:
+        return False
+    index = after_parameters
+    parens = brackets = angles = braces = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "(":
+            parens += 1
+        elif token == ")" and parens:
+            parens -= 1
+        elif token == "[":
+            brackets += 1
+        elif token == "]" and brackets:
+            brackets -= 1
+        elif token == "<" and braces == 0:
+            angles += 1
+        elif token == ">" and braces == 0 and angles:
+            angles -= 1
+        elif token == "{":
+            if parens == brackets == angles == braces == 0:
+                return True
+            braces += 1
+        elif token == "}" and braces:
+            braces -= 1
+        elif token == ";" and parens == brackets == angles == braces == 0:
+            return False
+        index += 1
+    return False
 
 
 def _rust_test_function_has_body(source: str, name: str) -> bool:
-    """Find an attributed Rust test definition, never just a declaration."""
-    code = _rust_code(source)
-    escaped_name = re.escape(name)
-    test_function = re.compile(
-        rf"""(?mx)
-        ^[ \t]*
-        \#[ \t]*\[[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*::)*test\b[^\n]*\][ \t]*\n
-        (?:[ \t]*\#[^\n]*\][ \t]*\n)*
-        [ \t]*(?:pub(?:\([^\n)]*\))?[ \t]+)?
-        (?:async[ \t]+)?
-        (?:unsafe[ \t]+)?
-        fn[ \t]+{escaped_name}\b
-        """
-    )
-    for match in test_function.finditer(code):
-        parens = brackets = 0
-        for token in code[match.end() :]:
-            if token == "(":
-                parens += 1
-            elif token == ")" and parens:
-                parens -= 1
-            elif token == "[":
-                brackets += 1
-            elif token == "]" and brackets:
-                brackets -= 1
-            elif parens == brackets == 0 and token == "{":
-                return True
-            elif parens == brackets == 0 and token == ";":
-                break
+    """Find an exact attributed Rust test definition, never a declaration."""
+    tokens = _rust_tokens(source)
+    for index, token in enumerate(tokens):
+        if token != "#":
+            continue
+        attribute = _rust_attribute(tokens, index)
+        if attribute is None or not attribute[0]:
+            continue
+        cursor = attribute[1]
+        while (next_attribute := _rust_attribute(tokens, cursor)) is not None:
+            cursor = next_attribute[1]
+        cursor = _rust_after_qualifiers(tokens, cursor)
+        if tokens[cursor : cursor + 2] != ["fn", name]:
+            continue
+        if _rust_signature_has_body(tokens, cursor + 2):
+            return True
     return False
 
 
