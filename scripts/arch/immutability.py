@@ -35,6 +35,16 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from tree_sitter import Language, Parser
+    import tree_sitter_rust
+
+    _RUST_PARSER = Parser(Language(tree_sitter_rust.language()))
+    _RUST_PARSER_ERROR: str | None = None
+except Exception as error:  # The guard must reject Rust evidence without its parser.
+    _RUST_PARSER = None
+    _RUST_PARSER_ERROR = f"tree-sitter Rust parser unavailable: {error}"
+
 _SPEC = importlib.util.spec_from_file_location(
     "arch_registry_for_immutability", Path(__file__).resolve().parent / "registry.py"
 )
@@ -169,219 +179,60 @@ def _python_defines(source: str, name: str) -> bool:
     )
 
 
-def _rust_quoted_end(source: str, start: int, quote: str, multiline: bool) -> int | None:
-    """End of a quoted literal, respecting escapes and its newline rule."""
-    index = start + 1
-    while index < len(source):
-        if source[index] == "\\":
-            index += 2
-            continue
-        if source[index] == quote:
-            return index + 1
-        if source[index] == "\n" and not multiline:
-            return None
-        index += 1
-    return len(source) if multiline else None
-
-
-def _rust_raw_string_end(source: str, start: int) -> int | None:
-    """End of a Rust raw or raw-byte string, including its prefix and suffix."""
-    index = start
-    if source.startswith("br", index):
-        index += 2
-    elif source.startswith("r", index):
-        index += 1
-    else:
-        return None
-    hashes = 0
-    while index < len(source) and source[index] == "#":
-        hashes += 1
-        index += 1
-    if index == len(source) or source[index] != '"':
-        return None
-    closing = '"' + "#" * hashes
-    end = source.find(closing, index + 1)
-    return len(source) if end == -1 else end + len(closing)
-
-
-def _rust_tokens(source: str) -> list[str]:
-    """Tokenize enough Rust to recognize a real attributed test definition."""
-    tokens: list[str] = []
-    index = 0
-    while index < len(source):
-        if source[index].isspace():
-            index += 1
-            continue
-        if source.startswith("//", index):
-            end = source.find("\n", index)
-            index = len(source) if end == -1 else end
-            continue
-        if source.startswith("/*", index):
-            index += 2
-            depth = 1
-            while index < len(source) and depth:
-                if source.startswith("/*", index):
-                    depth += 1
-                    index += 2
-                elif source.startswith("*/", index):
-                    depth -= 1
-                    index += 2
-                else:
-                    index += 1
-            continue
-        raw_end = _rust_raw_string_end(source, index)
-        if raw_end is not None:
-            index = raw_end
-            continue
-        if source[index] == '"':
-            index = _rust_quoted_end(source, index, '"', multiline=True)
-            continue
-        if source.startswith('b"', index):
-            index = _rust_quoted_end(source, index + 1, '"', multiline=True)
-            continue
-        if source[index] == "'":
-            char_end = _rust_quoted_end(source, index, "'", multiline=False)
-            if char_end is not None:
-                index = char_end
-                continue
-        if source.startswith("b'", index):
-            char_end = _rust_quoted_end(source, index + 1, "'", multiline=False)
-            if char_end is not None:
-                index = char_end
-                continue
-        if source[index].isalpha() or source[index] == "_":
-            end = index + 1
-            while end < len(source) and (source[end].isalnum() or source[end] == "_"):
-                end += 1
-            tokens.append(source[index:end])
-            index = end
-            continue
-        if source.startswith("::", index):
-            tokens.append("::")
-            index += 2
-            continue
-        tokens.append(source[index])
-        index += 1
-    return tokens
-
-
-def _rust_balanced(tokens: list[str], index: int, opening: str, closing: str) -> int | None:
-    """Return the token after a balanced delimiter pair beginning at index."""
-    if index == len(tokens) or tokens[index] != opening:
-        return None
-    depth = 1
-    braces = 0
-    index += 1
-    while index < len(tokens) and depth:
-        token = tokens[index]
-        if opening == "<" and token == "{":
-            braces += 1
-        elif opening == "<" and token == "}" and braces:
-            braces -= 1
-        elif token == opening and braces == 0:
-            depth += 1
-        elif token == closing and braces == 0:
-            depth -= 1
-        index += 1
-    return index if depth == 0 else None
-
-
-def _rust_attribute(tokens: list[str], index: int) -> tuple[bool, int] | None:
-    """Classify one `#[...]` attribute and return the first token after it."""
-    if tokens[index : index + 2] != ["#", "["]:
-        return None
-    end = _rust_balanced(tokens, index + 1, "[", "]")
-    if end is None:
-        return None
-    path: list[str] = []
-    cursor = index + 2
-    while cursor < end - 1 and (not path or tokens[cursor - 1] == "::"):
-        if not (tokens[cursor][0].isalpha() or tokens[cursor][0] == "_"):
-            break
-        path.append(tokens[cursor])
-        cursor += 1
-        if cursor < end - 1 and tokens[cursor] == "::":
-            cursor += 1
-            continue
-        break
-    return (bool(path) and path[-1] == "test", end)
-
-
-def _rust_after_qualifiers(tokens: list[str], index: int) -> int:
-    """Skip the qualifiers Rust permits before a free or associated function."""
-    while index < len(tokens):
-        if tokens[index] == "pub":
-            index += 1
-            if index < len(tokens) and tokens[index] == "(":
-                after = _rust_balanced(tokens, index, "(", ")")
-                if after is None:
-                    return len(tokens)
-                index = after
-            continue
-        if tokens[index] in {"async", "unsafe", "const"}:
-            index += 1
-            continue
-        if tokens[index] == "extern":
-            index += 1
-            continue
-        break
-    return index
-
-
-def _rust_signature_has_body(tokens: list[str], index: int) -> bool:
-    """A signature ends in `{` only at its outer delimiter depth, not in a type."""
-    if index < len(tokens) and tokens[index] == "<":
-        after = _rust_balanced(tokens, index, "<", ">")
-        if after is None:
-            return False
-        index = after
-    after_parameters = _rust_balanced(tokens, index, "(", ")")
-    if after_parameters is None:
+def _is_test_attribute(attribute_item) -> bool:
+    """Accept `#[test]` and a namespaced `#[...::test]`, never cfg_attr."""
+    attribute = next(
+        (child for child in attribute_item.named_children if child.type == "attribute"),
+        None,
+    )
+    if attribute is None or not attribute.named_children:
         return False
-    index = after_parameters
-    parens = brackets = angles = braces = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "(":
-            parens += 1
-        elif token == ")" and parens:
-            parens -= 1
-        elif token == "[":
-            brackets += 1
-        elif token == "]" and brackets:
-            brackets -= 1
-        elif token == "<" and braces == 0:
-            angles += 1
-        elif token == ">" and braces == 0 and angles:
-            angles -= 1
-        elif token == "{":
-            if parens == brackets == angles == braces == 0:
-                return True
-            braces += 1
-        elif token == "}" and braces:
-            braces -= 1
-        elif token == ";" and parens == brackets == angles == braces == 0:
-            return False
-        index += 1
+    name = attribute.named_children[0]
+    if name.type == "identifier":
+        return name.text == b"test"
+    if name.type == "scoped_identifier":
+        final = name.child_by_field_name("name")
+        return final is not None and final.text == b"test"
     return False
 
 
+def _has_attached_test_attribute(node) -> bool:
+    """Look at the contiguous preceding attribute chain in the syntax tree."""
+    siblings = node.parent.children if node.parent is not None else ()
+    try:
+        index = siblings.index(node)
+    except ValueError:
+        return False
+    found = False
+    for sibling in reversed(siblings[:index]):
+        if sibling.type in {"line_comment", "block_comment"}:
+            continue
+        if sibling.type != "attribute_item":
+            break
+        found = found or _is_test_attribute(sibling)
+    return found
+
+
+def _rust_nodes(node):
+    yield node
+    for child in node.children:
+        yield from _rust_nodes(child)
+
+
 def _rust_test_function_has_body(source: str, name: str) -> bool:
-    """Find an exact attributed Rust test definition, never a declaration."""
-    tokens = _rust_tokens(source)
-    for index, token in enumerate(tokens):
-        if token != "#":
+    """Resolve an exact attributed Rust function_item with a syntax-tree body."""
+    if _RUST_PARSER is None:
+        return False
+    root = _RUST_PARSER.parse(source.encode("utf-8")).root_node
+    if root.has_error:
+        return False
+    for node in _rust_nodes(root):
+        if node.type != "function_item" or not _has_attached_test_attribute(node):
             continue
-        attribute = _rust_attribute(tokens, index)
-        if attribute is None or not attribute[0]:
+        function_name = node.child_by_field_name("name")
+        if function_name is None or function_name.text.decode("utf-8") != name:
             continue
-        cursor = attribute[1]
-        while (next_attribute := _rust_attribute(tokens, cursor)) is not None:
-            cursor = next_attribute[1]
-        cursor = _rust_after_qualifiers(tokens, cursor)
-        if tokens[cursor : cursor + 2] != ["fn", name]:
-            continue
-        if _rust_signature_has_body(tokens, cursor + 2):
+        if node.child_by_field_name("body") is not None:
             return True
     return False
 
@@ -405,6 +256,16 @@ def _evidence_resolves(repo: Path, evidence: object) -> bool:
     return False
 
 
+def _evidence_dependency_error(evidence: object) -> str | None:
+    if (
+        _RUST_PARSER_ERROR is not None
+        and isinstance(evidence, str)
+        and evidence.partition("::")[0].endswith(".rs")
+    ):
+        return f"{_RUST_PARSER_ERROR}; install tests/ci/requirements.txt"
+    return None
+
+
 def _ground_error(repo: Path, ground: IntroducedRecord) -> str | None:
     """A new product-rule ground must be an implemented product decision."""
     if ground.kind != "decision":
@@ -416,6 +277,8 @@ def _ground_error(repo: Path, ground: IntroducedRecord) -> str | None:
     evidence = ground.props.get("realized")
     if not evidence:
         return f"решение {ground.path} не имеет realized evidence"
+    if dependency_error := _evidence_dependency_error(evidence):
+        return dependency_error
     if not _evidence_resolves(repo, evidence):
         return f"realized evidence {evidence!r} решения {ground.path} не разрешается"
     return None

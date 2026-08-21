@@ -119,6 +119,10 @@ RUST_DECLARATION_EVIDENCE_GROUND = GROUND.replace(
     "tests/evidence.py::test_reason",
     "crates/fake_declaration.rs::test_fake_rust_declaration_reason",
 )
+RUST_MACRO_DECLARATION_EVIDENCE_GROUND = GROUND.replace(
+    "tests/evidence.py::test_reason",
+    "crates/fake_macro_declaration.rs::test_fake_rust_macro_reason",
+)
 
 
 class Fixture:
@@ -164,6 +168,11 @@ class Fixture:
         (self.root / "crates" / "fake_declaration.rs").write_text(
             "trait Evidence {\n    #[test]\n"
             "    fn test_fake_rust_declaration_reason() -> Marker<{ 1 }>;\n}\n",
+            encoding="utf-8",
+        )
+        (self.root / "crates" / "fake_macro_declaration.rs").write_text(
+            "trait Evidence {\n    #[test]\n"
+            "    fn test_fake_rust_macro_reason() -> Marker!{ u32 };\n}\n",
             encoding="utf-8",
         )
         self._git("add", "arch", "tests", "scripts", "crates")
@@ -372,6 +381,15 @@ class ProductImmutabilityTests(unittest.TestCase):
         verdict = self.point_rule_at(
             "decisions/2026-03-03-why-it-changes.md",
             RUST_DECLARATION_EVIDENCE_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("realized", verdict.offenders[0])
+
+    def test_an_active_decision_with_a_rust_macro_declaration_is_not_a_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            RUST_MACRO_DECLARATION_EVIDENCE_GROUND,
             "DEC.2026-03-03.WHY-IT-CHANGES",
         )
         self.assertEqual(len(verdict.offenders), 1)

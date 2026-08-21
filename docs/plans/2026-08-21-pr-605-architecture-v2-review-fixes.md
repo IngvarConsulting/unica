@@ -6,7 +6,9 @@
 
 **Architecture:** Keep the archive, Fate ledger, active records and their guards in one PR. Strengthen the registry and immutability guards first, then make Fate prove why every v1 subject was carried, superseded or retired, and finally align the loading decisions with the already-merged runtime. Runtime delivery resilience remains a separate future PR from `main`.
 
-**Tech Stack:** Python 3.12, `unittest`, Markdown front matter, Git, GitHub CLI, Rust tests used as named architectural evidence.
+**Tech Stack:** Python 3.12, `unittest`, Markdown front matter, Git, GitHub CLI,
+`tree-sitter==0.25.2`, `tree-sitter-rust==0.24.0`, Rust tests used as named
+architectural evidence.
 
 **Spec:** `docs/design/2026-08-21-pr-605-architecture-v2-review-fixes-design.md`
 
@@ -174,6 +176,8 @@ git commit -m "fix(arch): enforce registry record schema"
 **Files:**
 - Modify: `scripts/arch/immutability.py`
 - Modify: `tests/arch/test_product_immutability.py`
+- Modify: `tests/ci/requirements.txt`
+- Modify: `docs/design/2026-08-21-pr-605-architecture-v2-review-fixes-design.md`
 
 **Interfaces:**
 - Consumes: base records returned by `_records_at()`, current records below `arch/`
@@ -269,7 +273,14 @@ def _records_introduced(repo: Path, base: dict[str, str]) -> dict[str, Introduce
     return introduced
 ```
 
-Derive `kind` from the directory. For a changed product invariant or contract, reject the new ground unless its record is a decision with `status == "active"`, `governs == "product"`, and a non-empty `realized`. Resolve the evidence `path::name` against the temporary repository so an invented evidence string cannot pass.
+Derive `kind` from the directory. For a changed product invariant or contract,
+reject the new ground unless its record is a decision with `status == "active"`,
+`governs == "product"`, and a non-empty `realized`. Resolve `path::name`
+against the temporary repository as a function definition: Python uses stdlib
+`ast`; Rust uses a pinned `tree-sitter-rust` syntax tree and requires an exact
+attributed `function_item` with a body. Do not accept comments, strings, trait
+signatures, macro token trees or identifier substrings. The two parser pins live
+in `tests/ci/requirements.txt`, which CI installs before the arch checks.
 
 - [ ] **Step 5: Run focused and full immutability tests**
 
