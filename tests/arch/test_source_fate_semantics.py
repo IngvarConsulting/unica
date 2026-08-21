@@ -22,14 +22,31 @@ def check(record_id: str) -> str:
 
 
 class SourceFateSemanticClosureTests(unittest.TestCase):
-    def test_adr_0016_is_not_classified_without_platform_roundtrip_evidence(self) -> None:
+    def test_adr_0016_is_superseded_by_explicitly_narrower_profile_decision(self) -> None:
         fate = (REPO_ROOT / "docs" / "arch-v1" / "FATE.md").read_text(
             encoding="utf-8"
         )
-        self.assertFalse(
-            any("`ADR-0016`" in line for line in fate.splitlines()),
-            "ADR-0016 must remain unresolved until a preserved platform before/after fixture exists",
+        row = next(line for line in fate.splitlines() if "`ADR-0016`" in line)
+        self.assertEqual(
+            row,
+            "| `ADR-0016` | `superseded` | "
+            "`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE` | — |",
         )
+
+        decision = (
+            REPO_ROOT
+            / "arch"
+            / "decisions"
+            / "2026-08-21-single-writable-platform-xml-profile.md"
+        ).read_text(encoding="utf-8")
+        decision_words = " ".join(decision.split())
+        self.assertIn(
+            "самостоятельная норма platform-before-XSD не переносится",
+            decision_words,
+        )
+        self.assertIn("нет сохранённой независимой пары", decision_words)
+        self.assertIn("не создаёт нового проверяемого инварианта", decision_words)
+        self.assertNotIn("INV.SOURCE.PLATFORM-BEFORE-XSD", decision)
         self.assertFalse(
             (REPO_ROOT / "arch" / "invariants" / "INV.SOURCE.PLATFORM-BEFORE-XSD.md").exists()
         )

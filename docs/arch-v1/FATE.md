@@ -38,6 +38,7 @@
 | `ADR-0013` | `retired` | — | `historical-only` |
 | `ADR-0014` | `carried` | `INV.HOST.KNOWLEDGE-BEHIND-FACADE` | — |
 | `ADR-0015` | `retired` | — | `historical-only` |
+| `ADR-0016` | `superseded` | `DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE` | — |
 | `ADR-0017` | `superseded` | `INV.APP.PROVIDER-NEUTRAL` | — |
 | `ADR-0018` | `retired` | — | `historical-only` |
 | `ADR-0019` | `retired` | — | `historical-only` |
