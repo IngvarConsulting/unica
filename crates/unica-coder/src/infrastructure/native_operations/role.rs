@@ -4014,7 +4014,7 @@ pub(crate) mod role_edit_contract_tests {
     }
 
     #[test]
-    fn rights_drift_in_the_staging_window_is_classified_as_concurrent() {
+    pub(crate) fn rights_drift_in_the_staging_window_is_classified_as_concurrent() {
         let (context, args, rights) = fixture("staging-byte-drift");
         let changed_rights = rights.clone();
         let changed = with_role_edit_after_rights_reread_hook(

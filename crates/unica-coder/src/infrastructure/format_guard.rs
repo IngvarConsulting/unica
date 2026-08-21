@@ -1457,11 +1457,9 @@ mod tests {
         let root = test_root("cf-init-home-page");
         let home_page = root.join("src/Ext/HomePageWorkArea.xml");
         std::fs::create_dir_all(home_page.parent().unwrap()).unwrap();
-        std::fs::write(
-            &home_page,
-            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#,
-        )
-        .unwrap();
+        let original =
+            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#;
+        std::fs::write(&home_page, original).unwrap();
         let args = Map::from_iter([
             ("Name".to_string(), Value::String("Demo".to_string())),
             ("OutputDir".to_string(), Value::String("src".to_string())),
@@ -1479,6 +1477,7 @@ mod tests {
             normalized_path(&home_page).display().to_string()
         );
         assert!(!root.join("src/Configuration.xml").exists());
+        assert_eq!(std::fs::read_to_string(&home_page).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2988,7 +2987,8 @@ mod tests {
         );
         let target = source_root.join("PriceLoader/Templates/Main/Ext/Template.xml");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(&target, "<DataCompositionSchema/>").unwrap();
+        let original = "<DataCompositionSchema/>";
+        std::fs::write(&target, original).unwrap();
         let mut args = Map::new();
         args.insert(
             "TemplatePath".into(),
@@ -3005,6 +3005,7 @@ mod tests {
         };
         assert_eq!(diagnostic["actualFormat"], "2.19");
         assert_platform_reexport_warning(&outcome.warnings.join("\n"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3432,6 +3433,21 @@ mod tests {
         xdto_guard_empty_handler_resolution_is_a_contract_error();
         valid_standalone_mxl_without_owner_version_is_not_an_old_dump();
         unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog();
+        crate::infrastructure::platform_xml_owner::tests::equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs();
+    }
+
+    #[test]
+    fn native_mutation_surface_and_format_refusal_are_exact() {
+        crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
+        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
+        cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
+    }
+
+    #[test]
+    fn single_writable_platform_xml_profile_decision_is_fully_realized() {
+        single_writable_platform_xml_profile_is_exact();
+        owner_version_read_write_gate_is_complete();
+        native_mutation_surface_and_format_refusal_are_exact();
     }
 
     #[test]

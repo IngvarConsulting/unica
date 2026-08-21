@@ -8458,7 +8458,7 @@ pub(crate) mod tests {
     /// described was still open as #435: the report was truthful about a
     /// rewrite that should never have happened.
     #[test]
-    fn borrow_cfe_preserves_object_identity_on_repeated_borrow() {
+    pub(crate) fn borrow_cfe_preserves_object_identity_on_repeated_borrow() {
         let context = temp_context("borrow-repeat-identity");
         write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
         let target = context.cwd.join("ext/Catalogs/Items.xml");
@@ -10482,7 +10482,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cfe_patch_method_binds_exact_existing_bsl_preimage() {
+    pub(crate) fn cfe_patch_method_binds_exact_existing_bsl_preimage() {
         let context = temp_context("patch-bsl-preimage");
         write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
         register_borrowed_patch_object(&context, "CommonModule", "GuardedModule", "");
@@ -10601,7 +10601,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cfe_init_rejects_concurrent_base_format_owner_change() {
+    pub(crate) fn cfe_init_rejects_concurrent_base_format_owner_change() {
         let context = temp_context("init-base-owner-guard");
         let base_owner = context.cwd.join("src/Configuration.xml");
         write_file(

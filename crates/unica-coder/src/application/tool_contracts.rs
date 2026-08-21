@@ -94,26 +94,34 @@ const BRIDGED_SELECTORS: &[(&str, &str, LogicalAddress)] = &[
     ),
 ];
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReaderMigrationMode {
     Bridge,
     DirectSwitch,
 }
 
-/// One test-only view derived from the production selector bridge plus the
-/// already direct diagnostics handler.  Schema, migration and response-parity
-/// tests consume this same view, so none of those proofs owns a second reader
-/// list that can drift independently.
-#[cfg(test)]
-pub(crate) fn authoritative_reader_migration_inventory() -> Vec<(&'static str, ReaderMigrationMode)>
-{
-    let mut inventory = BRIDGED_SELECTORS
-        .iter()
-        .map(|(name, _, _)| (*name, ReaderMigrationMode::Bridge))
-        .collect::<Vec<_>>();
-    inventory.push(("unica.code.diagnostics", ReaderMigrationMode::DirectSwitch));
-    inventory
+/// Production-owned migration inventory. Schema routing and parity evidence
+/// consume this exact owner rather than maintaining independent reader lists.
+const READER_MIGRATION_INVENTORY: &[(&str, ReaderMigrationMode)] = &[
+    ("unica.cf.info", ReaderMigrationMode::Bridge),
+    ("unica.cf.validate", ReaderMigrationMode::Bridge),
+    ("unica.subsystem.info", ReaderMigrationMode::Bridge),
+    ("unica.subsystem.validate", ReaderMigrationMode::Bridge),
+    ("unica.role.info", ReaderMigrationMode::Bridge),
+    ("unica.role.validate", ReaderMigrationMode::Bridge),
+    ("unica.form.info", ReaderMigrationMode::Bridge),
+    ("unica.form.validate", ReaderMigrationMode::Bridge),
+    ("unica.dcs.info", ReaderMigrationMode::Bridge),
+    ("unica.dcs.validate", ReaderMigrationMode::Bridge),
+    ("unica.mxl.info", ReaderMigrationMode::Bridge),
+    ("unica.mxl.validate", ReaderMigrationMode::Bridge),
+    ("unica.mxl.decompile", ReaderMigrationMode::Bridge),
+    ("unica.code.diagnostics", ReaderMigrationMode::DirectSwitch),
+];
+
+pub(crate) fn authoritative_reader_migration_inventory(
+) -> impl Iterator<Item = (&'static str, ReaderMigrationMode)> {
+    READER_MIGRATION_INVENTORY.iter().copied()
 }
 
 /// Arguments a bridged reader still accepts but must not advertise: no branch
@@ -134,6 +142,11 @@ fn unpublished_bridge_args(name: &str) -> &'static [&'static str] {
 }
 
 fn bridged_selector(name: &str) -> Option<(&'static str, LogicalAddress)> {
+    if !authoritative_reader_migration_inventory()
+        .any(|(reader, mode)| reader == name && mode == ReaderMigrationMode::Bridge)
+    {
+        return None;
+    }
     BRIDGED_SELECTORS
         .iter()
         .find(|(tool, _, _)| *tool == name)
@@ -6189,8 +6202,26 @@ pub(crate) mod tests {
 
     #[test]
     fn subject_reader_migration_inventory_is_complete() {
-        let inventory = authoritative_reader_migration_inventory();
-        assert_eq!(inventory.len(), BRIDGED_SELECTORS.len() + 1);
+        let inventory = authoritative_reader_migration_inventory().collect::<Vec<_>>();
+        assert_eq!(
+            inventory,
+            vec![
+                ("unica.cf.info", ReaderMigrationMode::Bridge),
+                ("unica.cf.validate", ReaderMigrationMode::Bridge),
+                ("unica.subsystem.info", ReaderMigrationMode::Bridge),
+                ("unica.subsystem.validate", ReaderMigrationMode::Bridge),
+                ("unica.role.info", ReaderMigrationMode::Bridge),
+                ("unica.role.validate", ReaderMigrationMode::Bridge),
+                ("unica.form.info", ReaderMigrationMode::Bridge),
+                ("unica.form.validate", ReaderMigrationMode::Bridge),
+                ("unica.dcs.info", ReaderMigrationMode::Bridge),
+                ("unica.dcs.validate", ReaderMigrationMode::Bridge),
+                ("unica.mxl.info", ReaderMigrationMode::Bridge),
+                ("unica.mxl.validate", ReaderMigrationMode::Bridge),
+                ("unica.mxl.decompile", ReaderMigrationMode::Bridge),
+                ("unica.code.diagnostics", ReaderMigrationMode::DirectSwitch),
+            ]
+        );
 
         let bridge_names = inventory
             .iter()
@@ -6237,8 +6268,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn native_mutation_surface_has_no_format_migration_operation_or_selector() {
-        for tool in tools()
+    pub(crate) fn native_mutation_surface_has_exact_operations_and_schemas() {
+        use std::collections::BTreeMap;
+
+        fn property_signature(properties: &Map<String, Value>) -> String {
+            let joined = properties.keys().cloned().collect::<Vec<_>>().join("\0");
+            let mut hash = 0xcbf29ce484222325u64;
+            for byte in joined.bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            format!("{}:{hash:016x}", properties.len())
+        }
+
+        let actual = tools()
             .into_iter()
             .filter(|tool| tool.execution.is_mutating())
             .filter(|tool| {
@@ -6247,49 +6290,105 @@ pub(crate) mod tests {
                     ToolHandler::NativeOperation { .. } | ToolHandler::Metadata { .. }
                 )
             })
-        {
-            let name = tool.name.to_ascii_lowercase();
-            assert!(!name.contains("migrat"), "{}", tool.name);
-            if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
-                assert!(!operation.contains("migrat"), "{}: {operation}", tool.name);
-            }
-            let schema = input_schema_for_tool(&tool);
-            for selector in schema["properties"]
-                .as_object()
-                .expect("tool schema properties")
-                .keys()
-            {
-                let normalized = selector
-                    .chars()
-                    .filter(|character| character.is_ascii_alphanumeric())
-                    .flat_map(char::to_lowercase)
-                    .collect::<String>();
-                assert!(
-                    !matches!(
-                        normalized.as_str(),
-                        "targetformat" | "exportformat" | "formatversion" | "targetplatform"
-                    ),
-                    "{} exposes implicit format migration selector {selector}",
-                    tool.name
-                );
-            }
+            .map(|tool| {
+                let operation = match tool.handler {
+                    ToolHandler::NativeOperation { operation, .. } => operation.to_string(),
+                    ToolHandler::Metadata { operation } => format!("metadata:{operation:?}"),
+                    _ => unreachable!(),
+                };
+                let schema = input_schema_for_tool(&tool);
+                let properties = schema["properties"]
+                    .as_object()
+                    .expect("tool schema properties");
+                (tool.name, (operation, property_signature(properties)))
+            })
+            .collect::<BTreeMap<_, _>>();
+        fn entry(operation: &str, signature: &str) -> (String, String) {
+            (operation.to_string(), signature.to_string())
         }
+        let expected = BTreeMap::from([
+            ("unica.cf.edit", entry("cf-edit", "133:8023fae4acfb5883")),
+            ("unica.cf.init", entry("cf-init", "136:5eaa688f27e81413")),
+            (
+                "unica.cfe.borrow",
+                entry("cfe-borrow", "133:2e35199dad7e1f5a"),
+            ),
+            ("unica.cfe.init", entry("cfe-init", "131:d3f30fc861e6b684")),
+            (
+                "unica.cfe.patch_method",
+                entry("cfe-patch-method", "135:7cfe81d25f614d2e"),
+            ),
+            (
+                "unica.code.patch",
+                entry("code-patch", "9:2c0e89c9941eca7e"),
+            ),
+            (
+                "unica.dcs.compile",
+                entry("dcs-compile", "135:12e36dabfa17cafc"),
+            ),
+            ("unica.dcs.edit", entry("dcs-edit", "133:b066dd6774450885")),
+            ("unica.epf.init", entry("epf-init", "7:3540d83119f085fa")),
+            ("unica.erf.init", entry("erf-init", "7:3540d83119f085fa")),
+            ("unica.form.add", entry("form-add", "134:1fb9234c1795173b")),
+            (
+                "unica.form.compile",
+                entry("form-compile", "132:ecd02b7fe90bfc56"),
+            ),
+            (
+                "unica.form.edit",
+                entry("form-edit", "134:b358c4285ee56454"),
+            ),
+            (
+                "unica.form.remove",
+                entry("form-remove", "136:ea26472ea784ff7a"),
+            ),
+            (
+                "unica.interface.edit",
+                entry("interface-edit", "133:6cb9f1a52fd58e3d"),
+            ),
+            (
+                "unica.meta.add",
+                entry("metadata:Add", "6:c94ddb9d858cd103"),
+            ),
+            (
+                "unica.meta.edit",
+                entry("metadata:Edit", "5:50dbdc06067d2f08"),
+            ),
+            (
+                "unica.meta.remove",
+                entry("metadata:Remove", "6:1ed1ef8f4e760749"),
+            ),
+            (
+                "unica.mxl.compile",
+                entry("mxl-compile", "135:970e3503a4c45b72"),
+            ),
+            (
+                "unica.role.compile",
+                entry("role-compile", "135:68941a28ee374868"),
+            ),
+            ("unica.role.edit", entry("role-edit", "4:ac166c3aa7864340")),
+            (
+                "unica.subsystem.compile",
+                entry("subsystem-compile", "134:b92cd1749096353e"),
+            ),
+            (
+                "unica.subsystem.edit",
+                entry("subsystem-edit", "133:eff3c7a07b781a72"),
+            ),
+            (
+                "unica.support.edit",
+                entry("support-edit", "134:6f550d3fecc026b0"),
+            ),
+            ("unica.xdto.edit", entry("xdto-edit", "6:0af38559977d0b9a")),
+        ]);
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn logical_target_tools_do_not_publish_physical_identity_fields() {
-        let physical_fields = [
-            "path",
-            "Path",
-            "sourceDir",
-            "ConfigPath",
-            "RightsPath",
-            "FormPath",
-            "TemplatePath",
-            "SubsystemPath",
-            "ObjectPath",
-        ];
-        let mut inspected = Vec::new();
+    fn logical_only_tool_schemas_match_exact_property_allowlists() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let mut actual = BTreeMap::new();
         for tool in tools() {
             let schema = input_schema_for_tool(&tool);
             let Some(properties) = schema["properties"].as_object() else {
@@ -6309,22 +6408,115 @@ pub(crate) mod tests {
             {
                 continue;
             }
-            inspected.push(tool.name);
             assert_eq!(schema["additionalProperties"], false, "{}", tool.name);
-            for field in physical_fields {
-                assert!(
-                    !properties.contains_key(field),
-                    "{} publishes physical identity field {field}",
-                    tool.name
-                );
-            }
+            actual.insert(
+                tool.name,
+                properties.keys().cloned().collect::<BTreeSet<_>>(),
+            );
         }
-        assert!(
-            inspected.contains(&"unica.code.patch")
-                && inspected.contains(&"unica.code.diagnostics")
-                && inspected.contains(&"unica.meta.info"),
-            "logical-only inventory is unexpectedly empty or incomplete: {inspected:?}"
-        );
+        fn fields(names: &[&str]) -> BTreeSet<String> {
+            names.iter().map(|name| (*name).to_string()).collect()
+        }
+        let expected = BTreeMap::from([
+            (
+                "unica.code.diagnostics",
+                fields(&[
+                    "action",
+                    "cwd",
+                    "filter",
+                    "limit",
+                    "metadataPath",
+                    "range",
+                    "sourceSet",
+                    "timeoutSeconds",
+                ]),
+            ),
+            (
+                "unica.code.patch",
+                fields(&[
+                    "confirm",
+                    "content",
+                    "cwd",
+                    "dryRun",
+                    "metadataPath",
+                    "operation",
+                    "position",
+                    "selector",
+                    "sourceSet",
+                ]),
+            ),
+            (
+                "unica.meta.edit",
+                fields(&["cwd", "dryRun", "metadataPath", "operations", "sourceSet"]),
+            ),
+            (
+                "unica.meta.info",
+                fields(&["cwd", "limit", "metadataPath", "sections", "sourceSet"]),
+            ),
+            (
+                "unica.meta.remove",
+                fields(&[
+                    "confirm",
+                    "cwd",
+                    "dryRun",
+                    "force",
+                    "metadataPath",
+                    "sourceSet",
+                ]),
+            ),
+            (
+                "unica.role.edit",
+                fields(&["dryRun", "metadataPath", "operations", "sourceSet"]),
+            ),
+            (
+                "unica.source.children",
+                fields(&[
+                    "confirm",
+                    "cursor",
+                    "cwd",
+                    "limit",
+                    "metadataPath",
+                    "sourceSet",
+                ]),
+            ),
+            (
+                "unica.source.resources",
+                fields(&[
+                    "confirm",
+                    "cursor",
+                    "cwd",
+                    "limit",
+                    "metadataPath",
+                    "scope",
+                    "snapshotId",
+                    "sourceSet",
+                ]),
+            ),
+            (
+                "unica.xdto.edit",
+                fields(&[
+                    "confirm",
+                    "cwd",
+                    "dryRun",
+                    "metadataPath",
+                    "operations",
+                    "sourceSet",
+                ]),
+            ),
+            (
+                "unica.xdto.info",
+                fields(&[
+                    "confirm",
+                    "cursor",
+                    "cwd",
+                    "limit",
+                    "metadataPath",
+                    "sourceSet",
+                    "typeName",
+                ]),
+            ),
+        ]);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -7352,7 +7544,7 @@ pub(crate) mod tests {
     pub(crate) fn code_patch_tail_insert_public_contract_is_closed() {
         code_patch_contract_is_narrow_and_requires_one_typed_selector();
         code_patch_schema_accepts_each_documented_selector_variant();
-        assert!(tools().iter().all(|tool| tool.name != "unica.code.init"));
+        public_code_mutator_inventory_is_exact();
 
         let patch = tools()
             .into_iter()
@@ -7363,6 +7555,18 @@ pub(crate) mod tests {
             schema["properties"]["operation"]["enum"],
             json!(["insert", "replace"])
         );
+    }
+
+    #[test]
+    fn public_code_mutator_inventory_is_exact() {
+        let mut mutators = tools()
+            .into_iter()
+            .filter(|tool| tool.name.starts_with("unica.code."))
+            .filter(|tool| tool.execution.is_mutating())
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        mutators.sort_unstable();
+        assert_eq!(mutators, ["unica.code.patch"]);
     }
 
     #[test]

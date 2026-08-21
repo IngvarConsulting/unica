@@ -3,7 +3,7 @@ id: INV.SOURCE.PORTABLE-LFS-ADVISORY
 status: active
 governs: product
 decision: DEC.2026-08-18.CARRIED-RULES
-check: crates/unica-coder/src/infrastructure/project_health/resources.rs::project_health_repository_policy_lfs_is_advisory_for_exact_large_binary
+check: crates/unica-coder/src/infrastructure/project_health/resources.rs::portable_lfs_advice_and_readiness_contract_is_complete
 scope: [source]
 ---
 

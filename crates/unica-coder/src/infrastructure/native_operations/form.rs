@@ -11772,7 +11772,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn add_form_rejects_partial_existing_scaffold_before_any_mutation() {
+    pub(crate) fn add_form_rejects_partial_existing_scaffold_before_any_mutation() {
         let context = temp_context("add-partial-scaffold");
         let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
         let descriptor = context.cwd.join("src/Catalogs/Goods/Forms/ListForm.xml");
@@ -12031,7 +12031,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn remove_form_rejects_payload_directory_that_appears_after_absent_probe() {
+    pub(crate) fn remove_form_rejects_payload_directory_that_appears_after_absent_probe() {
         let context = temp_context("remove-late-payload-directory");
         let root_xml = context.cwd.join("src/Catalogs/Goods.xml");
         let forms_dir = context.cwd.join("src/Catalogs/Goods/Forms");
@@ -13761,7 +13761,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn edit_form_rejects_stale_preimage_without_overwriting_concurrent_change() {
+    pub(crate) fn edit_form_rejects_stale_preimage_without_overwriting_concurrent_change() {
         let context = temp_context("edit-stale-preimage");
         let form_path = context.cwd.join("Form.xml");
         let original = editable_contract_form(FORM_LOGFORM_NS, "");

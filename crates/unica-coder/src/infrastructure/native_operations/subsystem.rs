@@ -4359,7 +4359,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn subsystem_compile_exact_binds_a_reused_existing_child() {
+    pub(crate) fn subsystem_compile_exact_binds_a_reused_existing_child() {
         let context = temp_context("compile-reused-child-race");
         let config_before = write_configuration(&context.cwd);
         let child_path = context
@@ -4401,7 +4401,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn subsystem_edit_exact_binds_a_reused_existing_child() {
+    pub(crate) fn subsystem_edit_exact_binds_a_reused_existing_child() {
         let context = temp_context("edit-reused-child-race");
         let subsystem = create_edit_fixture(&context, "Parent");
         let subsystem_before = fs::read(&subsystem).unwrap();

@@ -3175,6 +3175,9 @@ mod tests {
         autodetect_skips_entries_that_are_not_extension_directories();
         autodetect_skips_linked_entries_in_the_extensions_container();
         autodetect_skips_a_linked_extensions_container();
+        autodetect_discovers_a_single_extension_at_the_container_root();
+        autodetect_at_the_container_root_does_not_report_object_directories_as_extensions();
+        autodetect_discovers_extensions_under_the_named_extensions_container();
         autodetect_gives_the_reserved_name_to_one_claimant_only();
         transactional_autodetect_binds_the_extensions_container_listing();
     }

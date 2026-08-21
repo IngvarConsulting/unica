@@ -3573,7 +3573,7 @@ mod tests {
     }
 
     #[test]
-    fn project_health_repository_policy_lfs_is_advisory_for_exact_large_binary() {
+    pub(crate) fn project_health_repository_policy_lfs_is_advisory_for_exact_large_binary() {
         let fixture = policy_fixture();
         fs::write(fixture.root.join(".gitattributes"), "*.bin -text\n").unwrap();
         let large = fs::File::create(fixture.root.join("src/Large.bin")).unwrap();
@@ -3591,6 +3591,12 @@ mod tests {
             "{:?}",
             inspection.facts
         );
+    }
+
+    #[test]
+    fn portable_lfs_advice_and_readiness_contract_is_complete() {
+        project_health_repository_policy_lfs_is_advisory_for_exact_large_binary();
+        crate::domain::project_health::tests::lfs_advice_is_informational_and_does_not_close_readiness();
     }
 
     thread_local! {

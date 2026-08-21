@@ -2,7 +2,7 @@
 id: DEC.2026-08-21.MUTATION-IDEMPOTENCE-SCOPE
 status: active
 governs: product
-realized: crates/unica-coder/src/infrastructure/native_operations.rs::repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates
+realized: crates/unica-coder/src/infrastructure/native_operations.rs::mutation_idempotence_scope_decision_is_fully_realized
 supersedes: []
 superseded-by: null
 establishes: [INV.SOURCE.IDEMPOTENT-REWRITE, INV.SOURCE.IDEMPOTENT-ATTEMPT-METADATA]
@@ -10,10 +10,11 @@ establishes: [INV.SOURCE.IDEMPOTENT-REWRITE, INV.SOURCE.IDEMPOTENT-ATTEMPT-METAD
 
 # Идемпотентность записи не равна универсально пустому отчёту
 
-**Решение.** Все публичные мутаторы platform XML остаются в закрытом реестре
-семейств, и повторный эквивалентный постобраз не заменяет файл. Однако это не
-создаёт универсальной гарантии пустых `changes`, diff, диапазонов, событий и
-состояния кеша для каждого обработчика. В действующем контракте
+**Решение.** Универсальная гарантия повторного эквивалентного постобраза для
+всех публичных мутаторов снята как неподтверждённая. Для точного закрытого
+набора обработчиков повтор доказан собственным сценарием и не заменяет файл;
+это не создаёт универсальной гарантии пустых `changes`, diff, диапазонов,
+событий и состояния кеша. В действующем контракте
 `unica.interface.edit` и `unica.mxl.compile` сохраняют байты и идентичность
 файла, но возвращают метаданные о предпринятом обновлении; точные семантические
 noop-квитанции остальных семейств доказываются только их собственными тестами.

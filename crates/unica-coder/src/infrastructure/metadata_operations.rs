@@ -194,7 +194,7 @@ fn capability_unavailable(message: &str) -> MetaFailure {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::metadata::{
         MetaAddRequest, MetaEditRequest, MetaInfoRequest, MetaInfoSection, MetaRemoveRequest,
@@ -2758,7 +2758,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_edit_concurrency_and_rollback_preserve_exact_external_or_preimage_bytes() {
+    pub(crate) fn typed_edit_concurrency_and_rollback_preserve_exact_external_or_preimage_bytes() {
         let fixture = Fixture::new("concurrency-rollback");
         let cancellation = CancellationToken::new();
         let request = fixture.edit("Comment", MetaPropertyValue::String("changed".into()));
@@ -5080,7 +5080,7 @@ mod tests {
     }
 
     #[test]
-    fn meta_remove_publish_honors_cancellation_and_owner_exact_preimages() {
+    pub(crate) fn meta_remove_publish_honors_cancellation_and_owner_exact_preimages() {
         let cancellation_fixture = Fixture::new("remove-publish-cancelled");
         let cancellation = CancellationToken::new();
         let request = cancellation_fixture.remove_request(

@@ -10767,7 +10767,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it() {
+    pub(crate) fn dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it() {
         let context = temp_context("dcs-edit-concurrent-replacement");
         let template_path = context.cwd.join("Template.xml");
         fs::write(&template_path, exact_dcs_bytes(base_dcs_xml())).unwrap();

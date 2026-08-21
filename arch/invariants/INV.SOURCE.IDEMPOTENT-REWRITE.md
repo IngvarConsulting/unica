@@ -3,13 +3,12 @@ id: INV.SOURCE.IDEMPOTENT-REWRITE
 status: active
 governs: product
 decision: DEC.2026-08-21.MUTATION-IDEMPOTENCE-SCOPE
-check: crates/unica-coder/src/infrastructure/native_operations.rs::public_platform_xml_mutator_idempotence_contract_is_complete
+check: crates/unica-coder/src/infrastructure/native_operations.rs::verified_public_mutator_idempotence_cases_are_exact
 scope: [source]
 ---
 
 # Повторный эквивалентный постобраз не заменяет файл
 
-Все 25 публичных нативных и типизированных мутаторов platform XML принадлежат
-одному из 13 закрытых семейств. Представительный повтор каждого семейства
-сохраняет байты, а общий транзакционный писатель не заменяет файл при
-эквивалентном постобразе; форма публичной квитанции регулируется отдельно.
+Точный набор из 12 публичных мутаторов имеет собственный повторный сценарий,
+который сохраняет байты и идентичность файла. Это правило не распространяет
+доказательство на остальные мутаторы и не задаёт форму публичной квитанции.

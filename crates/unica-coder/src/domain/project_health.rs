@@ -1405,7 +1405,7 @@ const fn severity_rank(severity: DiagnosticSeverity) -> u8 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::domain::project_sources::{ProjectSourceSet, SourceFormat, SourceSetKind};
 
@@ -1625,7 +1625,7 @@ mod tests {
     }
 
     #[test]
-    fn lfs_advice_is_informational_and_does_not_close_readiness() {
+    pub(crate) fn lfs_advice_is_informational_and_does_not_close_readiness() {
         let report = evaluate_project_health(snapshot_with(
             vec![ProjectHealthFact::LfsConsider {
                 source_set: "main".into(),

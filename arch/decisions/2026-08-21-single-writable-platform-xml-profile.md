@@ -2,10 +2,10 @@
 id: DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE
 status: active
 governs: product
-realized: crates/unica-coder/src/infrastructure/format_guard.rs::single_writable_platform_xml_profile_is_exact
+realized: crates/unica-coder/src/infrastructure/format_guard.rs::single_writable_platform_xml_profile_decision_is_fully_realized
 supersedes: []
 superseded-by: null
-establishes: [INV.SOURCE.WRITABLE-PROFILE, INV.SOURCE.OWNER-VERSION-GATE, INV.SOURCE.NO-FORMAT-MIGRATION, INV.SOURCE.PLATFORM-BEFORE-XSD]
+establishes: [INV.SOURCE.WRITABLE-PROFILE, INV.SOURCE.OWNER-VERSION-GATE, INV.SOURCE.NO-FORMAT-MIGRATION]
 ---
 
 # Записываемый профиль platform XML остаётся единственным
@@ -19,14 +19,12 @@ establishes: [INV.SOURCE.WRITABLE-PROFILE, INV.SOURCE.OWNER-VERSION-GATE, INV.SO
 подменяется.
 
 Нативной миграции и параметра целевого формата нет: перенос выполняется самой
-платформой с последующей выгрузкой. Когда наблюдаемое поведение 8.3.27 строже
-XSD, действует наблюдаемое поведение платформы. Второй профиль требует нового
+платформой с последующей выгрузкой. Второй профиль требует нового
 продуктового решения, отдельного корпуса и полного независимого гейта, а не
 добавления ветви или значения параметра в это решение.
 
 **Почему.** Способность платформы импортировать другой формат не доказывает,
-что прямое редактирование такого дерева безопасно. XSD также разрешает формы,
-которые платформа удаляет при цикле импорта и выгрузки.
+что прямое редактирование такого дерева безопасно.
 
 **Цена.** Пользователь переносит старую выгрузку явно, а поддержка следующей
 линейки платформы не появляется постепенно или неявно.
