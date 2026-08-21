@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -158,7 +159,7 @@ def _records_introduced(repo: Path, base: dict[str, str]) -> dict[str, Introduce
 
 
 def _evidence_resolves(repo: Path, evidence: object) -> bool:
-    """The named evidence belongs to this repository and defines its name."""
+    """The named evidence belongs to this repository and defines a function."""
     if not isinstance(evidence, str):
         return False
     relative, separator, name = evidence.partition("::")
@@ -168,7 +169,29 @@ def _evidence_resolves(repo: Path, evidence: object) -> bool:
     target = (root / relative).resolve()
     if not target.is_relative_to(root) or not target.is_file():
         return False
-    return name in target.read_text(encoding="utf-8")
+    source = target.read_text(encoding="utf-8")
+    escaped_name = re.escape(name)
+    if target.suffix == ".py":
+        return bool(
+            re.search(
+                rf"(?m)^[ \t]*(?:async[ \t]+)?def[ \t]+{escaped_name}[ \t]*\(", source
+            )
+        )
+    if target.suffix == ".rs":
+        return bool(
+            re.search(
+                rf"""(?mx)
+                ^[ \t]*
+                (?:\#\[[^\n]*\][ \t]*\n[ \t]*)*
+                (?:pub(?:\([^\n)]*\))?[ \t]+)?
+                (?:async[ \t]+)?
+                (?:unsafe[ \t]+)?
+                fn[ \t]+{escaped_name}[ \t]*(?:<|\()
+                """,
+                source,
+            )
+        )
+    return False
 
 
 def _ground_error(repo: Path, ground: IntroducedRecord) -> str | None:

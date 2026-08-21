@@ -102,6 +102,13 @@ PLANNED_GROUND = GROUND.replace("status: active", "status: planned").replace(
 PROCESS_GROUND = GROUND.replace("governs: product", "governs: process")
 UNREALIZED_GROUND = GROUND.replace("realized: tests/evidence.py::test_reason", "realized: null")
 MISSING_EVIDENCE_GROUND = GROUND.replace("test_reason", "test_missing")
+NON_DEFINITION_EVIDENCE_GROUND = GROUND.replace(
+    "tests/evidence.py::test_reason", "scripts/arch/immutability.py::active"
+)
+ASYNC_METHOD_EVIDENCE_GROUND = GROUND.replace("test_reason", "test_async_reason")
+RUST_EVIDENCE_GROUND = GROUND.replace(
+    "tests/evidence.py::test_reason", "crates/evidence.rs::test_rust_reason"
+)
 
 
 class Fixture:
@@ -122,9 +129,16 @@ class Fixture:
         self.rule.write_text(RULE, encoding="utf-8")
         (self.root / "tests").mkdir()
         (self.root / "tests" / "evidence.py").write_text(
-            "def test_reason(): pass\n", encoding="utf-8"
+            "def test_reason(): pass\n\nclass Evidence:\n    async def test_async_reason(self): pass\n",
+            encoding="utf-8",
         )
-        self._git("add", "arch", "tests")
+        script = self.root / "scripts" / "arch" / "immutability.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("status = 'active'\n", encoding="utf-8")
+        rust = self.root / "crates" / "evidence.rs"
+        rust.parent.mkdir(parents=True)
+        rust.write_text("    #[test]\n    fn test_rust_reason() {}\n", encoding="utf-8")
+        self._git("add", "arch", "tests", "scripts", "crates")
         self._git("commit", "--quiet", "--no-gpg-sign", "-m", "base")
 
     def _git(self, *args: str) -> None:
@@ -299,10 +313,35 @@ class ProductImmutabilityTests(unittest.TestCase):
         self.assertEqual(len(verdict.offenders), 1)
         self.assertIn("realized", verdict.offenders[0])
 
+    def test_an_active_decision_with_a_non_definition_token_is_not_a_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            NON_DEFINITION_EVIDENCE_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("realized", verdict.offenders[0])
+
     def test_an_active_realized_product_decision_is_a_ground(self) -> None:
         verdict = self.point_rule_at(
             "decisions/2026-03-03-why-it-changes.md",
             GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(verdict.offenders, ())
+
+    def test_an_active_product_decision_with_an_async_python_method_is_a_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            ASYNC_METHOD_EVIDENCE_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(verdict.offenders, ())
+
+    def test_an_active_product_decision_with_an_attributed_rust_function_is_a_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            RUST_EVIDENCE_GROUND,
             "DEC.2026-03-03.WHY-IT-CHANGES",
         )
         self.assertEqual(verdict.offenders, ())
