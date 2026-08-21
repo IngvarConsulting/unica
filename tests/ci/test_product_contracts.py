@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from contextlib import nullcontext
+from fnmatch import fnmatchcase
 import gc
 import importlib.util
 import json
@@ -24,7 +25,35 @@ import tree_sitter_rust
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def rust_code_without_comments_and_literals(source: bytes) -> str:
+def cfg_test_item_ranges(source: bytes, tree) -> list[tuple[int, int]]:
+    ranges = []
+
+    def collect(parent) -> None:
+        children = parent.named_children
+        index = 0
+        while index < len(children):
+            child = children[index]
+            compact = re.sub(
+                r"\s+",
+                "",
+                source[child.start_byte : child.end_byte].decode(),
+            )
+            if child.type == "attribute_item" and compact == "#[cfg(test)]":
+                end = index + 1
+                while end < len(children) and children[end].type == "attribute_item":
+                    end += 1
+                if end < len(children):
+                    ranges.append((child.start_byte, children[end].end_byte))
+                    index = end + 1
+                    continue
+            collect(child)
+            index += 1
+
+    collect(tree.root_node)
+    return ranges
+
+
+def productive_rust_code(source: bytes) -> bytes:
     parser = Parser(Language(tree_sitter_rust.language()))
     tree = parser.parse(source)
     ignored = {
@@ -35,6 +64,8 @@ def rust_code_without_comments_and_literals(source: bytes) -> str:
         "string_literal",
     }
     code = bytearray(source)
+    for start, end in cfg_test_item_ranges(source, tree):
+        code[start:end] = b" " * (end - start)
     stack = [tree.root_node]
     while stack:
         node = stack.pop()
@@ -42,26 +73,174 @@ def rust_code_without_comments_and_literals(source: bytes) -> str:
             code[node.start_byte : node.end_byte] = b" " * (node.end_byte - node.start_byte)
             continue
         stack.extend(node.children)
-    return code.decode("utf-8")
+    return bytes(code)
+
+
+def flattened_use_imports(
+    source: bytes,
+    node,
+    prefix: tuple[str, ...] = (),
+) -> list[tuple[tuple[str, ...], str]]:
+    def text(child) -> str:
+        return source[child.start_byte : child.end_byte].decode().replace(" ", "")
+
+    if node.type == "use_list":
+        return [
+            imported
+            for child in node.named_children
+            for imported in flattened_use_imports(source, child, prefix)
+        ]
+    if node.type == "scoped_use_list":
+        path = node.child_by_field_name("path")
+        use_list = next(
+            (child for child in node.named_children if child.type == "use_list"),
+            None,
+        )
+        if path is None or use_list is None:
+            return []
+        return flattened_use_imports(
+            source,
+            use_list,
+            prefix + tuple(text(path).split("::")),
+        )
+    if node.type == "use_as_clause":
+        children = node.named_children
+        if len(children) != 2:
+            return []
+        target, alias = children
+        return [
+            (path, text(alias))
+            for path, _ in flattened_use_imports(source, target, prefix)
+        ]
+    if node.type in {"identifier", "scoped_identifier"}:
+        segments = tuple(text(node).split("::"))
+        if segments == ("self",):
+            return [(prefix, prefix[-1])] if prefix else []
+        path = prefix + segments
+        return [(path, path[-1])]
+    return []
+
+
+def implements_rmcp_server_handler(source: bytes) -> bool:
+    parser = Parser(Language(tree_sitter_rust.language()))
+    tree = parser.parse(source)
+    if tree.root_node.has_error:
+        return False
+    test_ranges = cfg_test_item_ranges(source, tree)
+
+    def is_test_only(node) -> bool:
+        return any(
+            node.start_byte >= start and node.end_byte <= end
+            for start, end in test_ranges
+        )
+
+    imports = []
+    impls = []
+    local_rmcp_module = False
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if is_test_only(node):
+            continue
+        if node.type == "use_declaration":
+            argument = node.child_by_field_name("argument")
+            if argument is not None:
+                imports.extend(flattened_use_imports(source, argument))
+            continue
+        if node.type == "impl_item":
+            impls.append(node)
+        if node.type == "mod_item":
+            name = node.child_by_field_name("name")
+            if name is not None and source[name.start_byte : name.end_byte] == b"rmcp":
+                local_rmcp_module = True
+        stack.extend(node.named_children)
+
+    rmcp_is_shadowed = local_rmcp_module or any(
+        local == "rmcp" and path != ("rmcp",) for path, local in imports
+    )
+    root_aliases = set() if rmcp_is_shadowed else {"rmcp"}
+    changed = True
+    while changed:
+        changed = False
+        for path, local in imports:
+            if len(path) == 1 and path[0] in root_aliases and local not in root_aliases:
+                root_aliases.add(local)
+                changed = True
+    trait_bindings = {
+        local
+        for path, local in imports
+        if len(path) >= 2 and path[0] in root_aliases and path[-1] == "ServerHandler"
+    }
+
+    def node_text(node) -> str:
+        return source[node.start_byte : node.end_byte].decode().replace(" ", "")
+
+    for impl in impls:
+        target = impl.child_by_field_name("type")
+        trait = impl.child_by_field_name("trait")
+        if (
+            target is None
+            or trait is None
+            or node_text(target).split("::")[-1] != "UnicaServer"
+        ):
+            continue
+        trait_path = node_text(trait).split("::")
+        if len(trait_path) == 1 and trait_path[0] in trait_bindings:
+            return True
+        if (
+            len(trait_path) >= 2
+            and trait_path[0] in root_aliases
+            and trait_path[-1] == "ServerHandler"
+        ):
+            return True
+    return False
+
+
+def tracked_workspace_production_rust_sources(repo_root: Path) -> dict[str, bytes]:
+    workspace = tomllib.loads((repo_root / "Cargo.toml").read_text(encoding="utf-8"))[
+        "workspace"
+    ]
+    member_patterns = workspace["members"]
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    sources = {}
+    for raw_path in tracked:
+        if not raw_path:
+            continue
+        path = raw_path.decode()
+        if not path.endswith(".rs") or "/src/" not in path:
+            continue
+        member = path.split("/src/", 1)[0]
+        if any(fnmatchcase(member, pattern) for pattern in member_patterns):
+            sources[path] = (repo_root / path).read_bytes()
+    return sources
 
 
 def rmcp_transport_boundary_errors(sources: dict[str, bytes], owner: str) -> list[str]:
-    productive = {
-        path: rust_code_without_comments_and_literals(source)
-        for path, source in sources.items()
-    }
-    owner_code = productive.get(owner, "")
     errors = []
-    if not re.search(r"\brmcp\s*::", owner_code):
-        errors.append(f"{owner}: missing productive rmcp SDK import or reference")
-    if not re.search(r"\bimpl\s+ServerHandler\s+for\s+UnicaServer\b", owner_code):
-        errors.append(f"{owner}: missing ServerHandler implementation for UnicaServer")
+    productive = {
+        path: productive_rust_code(source) for path, source in sources.items()
+    }
+    if not implements_rmcp_server_handler(sources.get(owner, b"")):
+        errors.append(f"{owner}: UnicaServer does not implement rmcp::ServerHandler")
     errors.extend(
         f"{path}: productive rmcp reference outside transport owner"
         for path, code in sorted(productive.items())
-        if path != owner and re.search(r"\brmcp\b", code)
+        if path != owner and re.search(rb"\brmcp\b", code)
     )
     return errors
+
+
+def workspace_rmcp_transport_boundary_errors(repo_root: Path) -> list[str]:
+    owner = "crates/unica-coder/src/interfaces/mcp.rs"
+    return rmcp_transport_boundary_errors(
+        tracked_workspace_production_rust_sources(repo_root),
+        owner,
+    )
 
 
 def load_contract_module():
@@ -93,18 +272,99 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertEqual(
             errors,
-            [f"{owner}: missing productive rmcp SDK import or reference"],
+            [f"{owner}: UnicaServer does not implement rmcp::ServerHandler"],
         )
 
-    def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
-        rust_root = REPO_ROOT / "crates" / "unica-coder" / "src"
+    def test_rmcp_transport_guard_rejects_unrelated_sdk_import_with_local_trait(self) -> None:
         owner = "crates/unica-coder/src/interfaces/mcp.rs"
-        sources = {
-            source.relative_to(REPO_ROOT).as_posix(): source.read_bytes()
-            for source in sorted(rust_root.rglob("*.rs"))
-        }
+        errors = rmcp_transport_boundary_errors(
+            {
+                owner: b"""
+                    use rmcp::model::ProtocolVersion;
+                    trait ServerHandler {}
+                    struct UnicaServer;
+                    impl ServerHandler for UnicaServer {}
+                """,
+            },
+            owner,
+        )
+
         self.assertEqual(
-            rmcp_transport_boundary_errors(sources, owner),
+            errors,
+            [f"{owner}: UnicaServer does not implement rmcp::ServerHandler"],
+        )
+
+    def test_rmcp_transport_guard_rejects_shadowing_local_rmcp_module(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        errors = rmcp_transport_boundary_errors(
+            {
+                owner: b"""
+                    mod rmcp { pub trait ServerHandler {} }
+                    struct UnicaServer;
+                    impl rmcp::ServerHandler for UnicaServer {}
+                """,
+            },
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [f"{owner}: UnicaServer does not implement rmcp::ServerHandler"],
+        )
+
+    def test_rmcp_transport_guard_resolves_import_alias_and_qualified_trait(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        valid_owners = (
+            b"""
+                use rmcp::ServerHandler as OfficialHandler;
+                struct UnicaServer;
+                impl OfficialHandler for UnicaServer {}
+            """,
+            b"""
+                struct UnicaServer;
+                impl rmcp::ServerHandler for UnicaServer {}
+            """,
+        )
+
+        for source in valid_owners:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    rmcp_transport_boundary_errors({owner: source}, owner),
+                    [],
+                )
+
+    def test_rmcp_transport_live_guard_scans_other_tracked_workspace_crates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            owner = root / "crates" / "unica-coder" / "src" / "interfaces" / "mcp.rs"
+            sibling = root / "crates" / "unica-bootstrap" / "src" / "lib.rs"
+            owner.parent.mkdir(parents=True)
+            sibling.parent.mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-coder"]\n',
+                encoding="utf-8",
+            )
+            owner.write_text(
+                "use rmcp::ServerHandler;\n"
+                "struct UnicaServer;\n"
+                "impl ServerHandler for UnicaServer {}\n",
+                encoding="utf-8",
+            )
+            sibling.write_text("use rmcp::model::ProtocolVersion;\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                workspace_rmcp_transport_boundary_errors(root),
+                [
+                    "crates/unica-bootstrap/src/lib.rs: productive rmcp "
+                    "reference outside transport owner"
+                ],
+            )
+
+    def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
+        self.assertEqual(
+            workspace_rmcp_transport_boundary_errors(REPO_ROOT),
             [],
             "the official SDK and ServerHandler implementation must stay in interfaces/mcp.rs",
         )
