@@ -69,6 +69,13 @@ class Verdict:
         return head + "\n" + "\n".join(f"  {line}" for line in self.offenders)
 
 
+@dataclass(frozen=True)
+class IntroducedRecord:
+    kind: str
+    path: str
+    props: dict
+
+
 def _git(repo: Path, *args: str) -> str:
     done = subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True, check=True
@@ -125,28 +132,65 @@ def _is_recordable_only(before: str, after: str) -> bool:
     return False
 
 
-def _ids_introduced(repo: Path, base: dict[str, str]) -> set[str]:
-    """Символы записей, которых в базе не было: основания, заводимые этой правкой."""
-    known = set()
-    for text in base.values():
-        props, _ = _split(text)
-        if props.get("id"):
-            known.add(props["id"])
-    introduced = set()
-    for path in sorted((repo / "arch").rglob("*.md")):
-        if path.name in ("index.md", "README.md"):
-            continue
-        props, _ = _split(path.read_text(encoding="utf-8"))
-        identifier = props.get("id")
-        if identifier and identifier not in known:
-            introduced.add(identifier)
+def _records_introduced(repo: Path, base: dict[str, str]) -> dict[str, IntroducedRecord]:
+    """Новые записи вместе с видом и props, нужными для проверки основания."""
+    known = {
+        props["id"]
+        for text in base.values()
+        if (props := _split(text)[0]).get("id")
+    }
+    introduced: dict[str, IntroducedRecord] = {}
+    for directory, kind in (
+        ("decisions", "decision"),
+        ("invariants", "invariant"),
+        ("contracts", "contract"),
+    ):
+        for path in sorted((repo / "arch" / directory).glob("*.md")):
+            props, _ = _split(path.read_text(encoding="utf-8"))
+            identifier = props.get("id")
+            if identifier and identifier not in known:
+                introduced[identifier] = IntroducedRecord(
+                    kind=kind,
+                    path=path.relative_to(repo).as_posix(),
+                    props=props,
+                )
     return introduced
+
+
+def _evidence_resolves(repo: Path, evidence: object) -> bool:
+    """The named evidence belongs to this repository and defines its name."""
+    if not isinstance(evidence, str):
+        return False
+    relative, separator, name = evidence.partition("::")
+    if separator != "::" or not relative or not name:
+        return False
+    root = repo.resolve()
+    target = (root / relative).resolve()
+    if not target.is_relative_to(root) or not target.is_file():
+        return False
+    return name in target.read_text(encoding="utf-8")
+
+
+def _ground_error(repo: Path, ground: IntroducedRecord) -> str | None:
+    """A new product-rule ground must be an implemented product decision."""
+    if ground.kind != "decision":
+        return f"основание {ground.path} не является decision"
+    if ground.props.get("status") != "active":
+        return f"решение {ground.path} имеет status {ground.props.get('status')!r}, не active"
+    if ground.props.get("governs") != "product":
+        return f"решение {ground.path} governs {ground.props.get('governs')!r}, не product"
+    evidence = ground.props.get("realized")
+    if not evidence:
+        return f"решение {ground.path} не имеет realized evidence"
+    if not _evidence_resolves(repo, evidence):
+        return f"realized evidence {evidence!r} решения {ground.path} не разрешается"
+    return None
 
 
 def inspect(repo: Path, base_ref: str) -> Verdict:
     """Сверить принятые продуктовые записи базы с рабочим деревом."""
     base = _records_at(repo, base_ref)
-    introduced = _ids_introduced(repo, base)
+    introduced = _records_introduced(repo, base)
     offenders: list[str] = []
     compared = 0
 
@@ -174,10 +218,14 @@ def inspect(repo: Path, base_ref: str) -> Verdict:
         # решение, на которое запись теперь и ссылается. Существующее основание
         # не годится — оно писалось раньше и этой перемены не предвидело.
         ground = _split(after)[0].get("decision")
-        if ground not in introduced:
+        introduced_ground = introduced.get(ground)
+        if introduced_ground is None:
             offenders.append(
                 f"{path}: продуктовое правило изменено без нового решения о причине"
             )
+            continue
+        if error := _ground_error(repo, introduced_ground):
+            offenders.append(f"{path}: продуктовое правило изменено, но {error}")
 
     return Verdict(tuple(offenders), compared)
 

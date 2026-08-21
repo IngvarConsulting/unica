@@ -73,7 +73,7 @@ GROUND = """---
 id: DEC.2026-03-03.WHY-IT-CHANGES
 status: active
 governs: product
-realized: null
+realized: tests/evidence.py::test_reason
 supersedes: []
 superseded-by: null
 establishes: []
@@ -83,6 +83,25 @@ establishes: []
 
 **Решение.** Замер показал, что прежняя формулировка не покрывала случай.
 """
+
+INVARIANT_GROUND = """---
+id: INV.WIRE.WHY-IT-CHANGES
+status: active
+governs: product
+decision: DEC.2026-01-01.PROMISE
+check: tests/evidence.py::test_reason
+scope: [wire]
+---
+
+# Не решение
+"""
+
+PLANNED_GROUND = GROUND.replace("status: active", "status: planned").replace(
+    "realized: tests/evidence.py::test_reason", "realized: null"
+)
+PROCESS_GROUND = GROUND.replace("governs: product", "governs: process")
+UNREALIZED_GROUND = GROUND.replace("realized: tests/evidence.py::test_reason", "realized: null")
+MISSING_EVIDENCE_GROUND = GROUND.replace("test_reason", "test_missing")
 
 
 class Fixture:
@@ -101,7 +120,11 @@ class Fixture:
         (self.root / "arch" / "invariants").mkdir(parents=True)
         self.rule = self.root / "arch" / "invariants" / "INV.WIRE.PROMISE.md"
         self.rule.write_text(RULE, encoding="utf-8")
-        self._git("add", "arch")
+        (self.root / "tests").mkdir()
+        (self.root / "tests" / "evidence.py").write_text(
+            "def test_reason(): pass\n", encoding="utf-8"
+        )
+        self._git("add", "arch", "tests")
         self._git("commit", "--quiet", "--no-gpg-sign", "-m", "base")
 
     def _git(self, *args: str) -> None:
@@ -116,6 +139,18 @@ class ProductImmutabilityTests(unittest.TestCase):
         self.stack = tempfile.TemporaryDirectory()
         self.addCleanup(self.stack.cleanup)
         self.fixture = Fixture(self.stack)
+
+    def point_rule_at(self, filename: str, text: str, identifier: str):
+        target = self.fixture.root / "arch" / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        self.fixture.rule.write_text(
+            RULE.replace("так, а не иначе", "уже совсем иначе").replace(
+                "DEC.2026-01-01.PROMISE", identifier
+            ),
+            encoding="utf-8",
+        )
+        return self.fixture.inspect()
 
     def test_an_untouched_tree_is_clean_and_says_what_it_compared(self) -> None:
         verdict = self.fixture.inspect()
@@ -219,18 +254,58 @@ class ProductImmutabilityTests(unittest.TestCase):
         self.assertEqual(len(verdict.offenders), 1)
         self.assertIn("без нового решения", verdict.offenders[0])
 
-    def test_editing_a_product_rule_with_a_new_ground_is_allowed(self) -> None:
-        """A rule may be sharpened; the reason has to arrive with it."""
-        (self.fixture.root / "arch" / "decisions" / "2026-03-03-why-it-changes.md").write_text(
-            GROUND, encoding="utf-8"
+    def test_a_new_invariant_is_not_a_product_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "invariants/INV.WIRE.WHY-IT-CHANGES.md",
+            INVARIANT_GROUND,
+            "INV.WIRE.WHY-IT-CHANGES",
         )
-        self.fixture.rule.write_text(
-            RULE.replace("так, а не иначе", "уже совсем иначе").replace(
-                "decision: DEC.2026-01-01.PROMISE", "decision: DEC.2026-03-03.WHY-IT-CHANGES"
-            ),
-            encoding="utf-8",
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("decision", verdict.offenders[0])
+
+    def test_a_planned_decision_is_not_a_product_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            PLANNED_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
         )
-        self.assertEqual(self.fixture.inspect().offenders, ())
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("planned", verdict.offenders[0])
+
+    def test_a_process_decision_is_not_a_product_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            PROCESS_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("process", verdict.offenders[0])
+
+    def test_an_unrealized_active_decision_is_not_a_product_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            UNREALIZED_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("realized", verdict.offenders[0])
+
+    def test_an_active_decision_with_missing_evidence_is_not_a_product_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            MISSING_EVIDENCE_GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("realized", verdict.offenders[0])
+
+    def test_an_active_realized_product_decision_is_a_ground(self) -> None:
+        verdict = self.point_rule_at(
+            "decisions/2026-03-03-why-it-changes.md",
+            GROUND,
+            "DEC.2026-03-03.WHY-IT-CHANGES",
+        )
+        self.assertEqual(verdict.offenders, ())
 
     def test_an_existing_ground_does_not_cover_a_new_change(self) -> None:
         """A decision written earlier did not foresee today's edit."""
