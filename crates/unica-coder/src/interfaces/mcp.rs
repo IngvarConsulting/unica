@@ -656,24 +656,39 @@ mod tests {
     fn object_schema_property_maps(
         schema: &serde_json::Map<String, serde_json::Value>,
     ) -> Vec<&serde_json::Map<String, serde_json::Value>> {
-        if let Some(properties) = schema
-            .get("properties")
-            .and_then(serde_json::Value::as_object)
-        {
-            return vec![properties];
+        fn visit_value<'a>(
+            value: &'a serde_json::Value,
+            property_maps: &mut Vec<&'a serde_json::Map<String, serde_json::Value>>,
+        ) {
+            match value {
+                serde_json::Value::Object(object) => visit_object(object, property_maps),
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        visit_value(item, property_maps);
+                    }
+                }
+                _ => {}
+            }
         }
-        schema
-            .get("oneOf")
-            .expect("tool schema publishes properties or closed object oneOf branches")
-            .as_array()
-            .expect("tool schema publishes properties or closed object oneOf branches")
-            .iter()
-            .map(|branch| {
-                branch["properties"]
-                    .as_object()
-                    .expect("oneOf branch properties are an object")
-            })
-            .collect()
+
+        fn visit_object<'a>(
+            object: &'a serde_json::Map<String, serde_json::Value>,
+            property_maps: &mut Vec<&'a serde_json::Map<String, serde_json::Value>>,
+        ) {
+            if let Some(properties) = object
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+            {
+                property_maps.push(properties);
+            }
+            for value in object.values() {
+                visit_value(value, property_maps);
+            }
+        }
+
+        let mut property_maps = Vec::new();
+        visit_object(schema, &mut property_maps);
+        property_maps
     }
 
     fn successful_test_result(summary: &str) -> OperationResult {
@@ -2302,6 +2317,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn object_schema_property_maps_visit_nested_schema_nodes() {
+        let schema = json!({
+            "properties": {
+                "object": {"properties": {"args": {"type": "string"}}},
+                "array": {"items": {"properties": {"args": {"type": "string"}}}},
+                "map": {"additionalProperties": {"properties": {"args": {"type": "string"}}}},
+                "combinators": {
+                    "allOf": [{"properties": {"args": {"type": "string"}}}],
+                    "anyOf": [{"properties": {"args": {"type": "string"}}}],
+                    "oneOf": [{"properties": {"args": {"type": "string"}}}],
+                    "not": {"properties": {"args": {"type": "string"}}},
+                    "if": {"properties": {"args": {"type": "string"}}},
+                    "then": {"properties": {"args": {"type": "string"}}},
+                    "else": {"properties": {"args": {"type": "string"}}},
+                    "dependentSchemas": {
+                        "mode": {"properties": {"args": {"type": "string"}}}
+                    },
+                    "definitions": {
+                        "legacy": {"properties": {"args": {"type": "string"}}}
+                    },
+                    "$defs": {
+                        "modern": {"properties": {"args": {"type": "string"}}}
+                    }
+                }
+            }
+        });
+        let maps = object_schema_property_maps(schema.as_object().unwrap());
+
+        assert_eq!(maps.len(), 14);
+        assert_eq!(
+            maps.into_iter()
+                .filter(|properties| properties.contains_key("args"))
+                .count(),
+            13
+        );
     }
 
     #[test]

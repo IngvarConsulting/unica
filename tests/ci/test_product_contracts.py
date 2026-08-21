@@ -45,6 +45,25 @@ def rust_code_without_comments_and_literals(source: bytes) -> str:
     return code.decode("utf-8")
 
 
+def rmcp_transport_boundary_errors(sources: dict[str, bytes], owner: str) -> list[str]:
+    productive = {
+        path: rust_code_without_comments_and_literals(source)
+        for path, source in sources.items()
+    }
+    owner_code = productive.get(owner, "")
+    errors = []
+    if not re.search(r"\brmcp\s*::", owner_code):
+        errors.append(f"{owner}: missing productive rmcp SDK import or reference")
+    if not re.search(r"\bimpl\s+ServerHandler\s+for\s+UnicaServer\b", owner_code):
+        errors.append(f"{owner}: missing ServerHandler implementation for UnicaServer")
+    errors.extend(
+        f"{path}: productive rmcp reference outside transport owner"
+        for path, code in sorted(productive.items())
+        if path != owner and re.search(r"\brmcp\b", code)
+    )
+    return errors
+
+
 def load_contract_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "check-tool-contracts.py"
     spec = importlib.util.spec_from_file_location("check_tool_contracts", module_path)
@@ -56,27 +75,38 @@ def load_contract_module():
 
 
 class ProductContractTests(unittest.TestCase):
+    def test_rmcp_transport_guard_rejects_local_server_handler_without_sdk(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        errors = rmcp_transport_boundary_errors(
+            {
+                owner: b"""
+                    // use rmcp::ServerHandler;
+                    trait ServerHandler {}
+                    struct UnicaServer;
+                    const SDK_CLAIM: &str = "rmcp::ServerHandler";
+                    impl ServerHandler for UnicaServer {}
+                """,
+                "crates/unica-coder/src/application/mod.rs": b"pub struct Application;",
+            },
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [f"{owner}: missing productive rmcp SDK import or reference"],
+        )
+
     def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
         rust_root = REPO_ROOT / "crates" / "unica-coder" / "src"
-        owner = rust_root / "interfaces" / "mcp.rs"
-        owner_code = rust_code_without_comments_and_literals(owner.read_bytes())
-
-        self.assertRegex(
-            owner_code,
-            r"\bimpl\s+ServerHandler\s+for\s+UnicaServer\b",
-            "the public transport must be the SDK ServerHandler implementation",
-        )
-        offenders = []
-        for source in sorted(rust_root.rglob("*.rs")):
-            if source == owner:
-                continue
-            code = rust_code_without_comments_and_literals(source.read_bytes())
-            if re.search(r"\brmcp\b", code):
-                offenders.append(source.relative_to(REPO_ROOT).as_posix())
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        sources = {
+            source.relative_to(REPO_ROOT).as_posix(): source.read_bytes()
+            for source in sorted(rust_root.rglob("*.rs"))
+        }
         self.assertEqual(
-            offenders,
+            rmcp_transport_boundary_errors(sources, owner),
             [],
-            "rmcp types and calls must stay behind interfaces/mcp.rs",
+            "the official SDK and ServerHandler implementation must stay in interfaces/mcp.rs",
         )
 
     def test_native_validators_do_not_expose_internal_local_owner_only_switch(

@@ -522,7 +522,41 @@ class FateCoverageTests(unittest.TestCase):
                     "modern_direct_first_tools_list_pages_through_the_full_registry",
                 ),
             },
+            "INV-MCP-VERSION-TIERS": {
+                "INV.WIRE.GUARANTEED-VERSIONS": (
+                    "product",
+                    "crates/unica-bootstrap/tests/platform/verification_contract.rs::"
+                    "verify_rejects_discover_without_the_guaranteed_versions",
+                ),
+                "INV.WIRE.PINNED-FALLBACK-VERSION": (
+                    "product",
+                    "crates/unica-coder/src/interfaces/mcp.rs::"
+                    "legacy_unknown_offer_falls_back_to_pinned_version",
+                ),
+            },
+            "INV-MCP-DEFERRED-READ": {
+                "INV.APP.DEFERRED-MANIFEST": (
+                    "product",
+                    "crates/unica-coder/src/application/mod.rs::"
+                    "oversized_typed_read_returns_a_manifest_within_budget",
+                ),
+                "INV.APP.DEFERRED-READ": (
+                    "product",
+                    "crates/unica-coder/src/application/mod.rs::"
+                    "continuation_slices_byte_stably_without_rereading_the_source",
+                ),
+            },
         }
+        self.assertEqual(
+            set(expected),
+            {
+                "INV-MCP-DATA-DRIVEN-SCHEMA",
+                "INV-MCP-SDK-TRANSPORT",
+                "INV-MCP-VERSION-TIERS",
+                "INV-MCP-DEFERRED-READ",
+            },
+            "all four mandatory MCP subjects need exact successor evidence",
+        )
 
         errors = []
         for subject, required in expected.items():
