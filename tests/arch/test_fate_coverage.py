@@ -506,6 +506,11 @@ class FateCoverageTests(unittest.TestCase):
                 ),
             },
             "INV-MCP-SDK-TRANSPORT": {
+                "INV.WIRE.SDK-SERVER-HANDLER": (
+                    "product",
+                    "crates/unica-coder/src/interfaces/mcp.rs::"
+                    "unica_server_implements_official_rmcp_server_handler",
+                ),
                 "INV.WIRE.SDK-TRANSPORT": (
                     "process",
                     "tests/ci/test_product_contracts.py::"

@@ -653,6 +653,13 @@ mod tests {
 
     const TEST_STEP: Duration = Duration::from_secs(10);
 
+    #[test]
+    fn unica_server_implements_official_rmcp_server_handler() {
+        fn assert_server_handler<T: ::rmcp::ServerHandler>() {}
+
+        assert_server_handler::<super::UnicaServer>();
+    }
+
     fn object_schema_property_maps(
         schema: &serde_json::Map<String, serde_json::Value>,
     ) -> Vec<&serde_json::Map<String, serde_json::Value>> {
