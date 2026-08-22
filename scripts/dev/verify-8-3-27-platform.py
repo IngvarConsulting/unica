@@ -102,7 +102,13 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 # role editing on top of the previous 67. Two independent generator runs
 # reproduced this digest and the full exact 8.3.27.2074 gate passed all 69
 # checkpoints.
-EXPECTED_CASE_CONTRACT_SHA256: str | None = LAST_VERIFIED_CASE_CONTRACT_SHA256
+# The current 70-case inventory additionally covers ExternalDataSource. Two
+# independent generator runs reproduced this candidate digest; the exact
+# 8.3.27.2074 platform gate is still pending, so LAST_VERIFIED remains the
+# completed 69-case evidence above.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = (
+    "5a5ae6f07ff1b420aaf6c89447eee1f07797c9a0e9898b47147219939803b404"
+)
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")

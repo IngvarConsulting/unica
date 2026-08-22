@@ -699,6 +699,8 @@ Subsystem.Администрирование.Subsystem.Пользователи
 | `URLTemplate.*.Method` | HTTPService | Use |
 | `IntegrationServiceChannel` | IntegrationService | Use |
 | `Subsystem` | Subsystem | View |
+| `Table` | ExternalDataSource | Read, Insert, Update, View, InputByString |
+| `Table.*.Field` | ExternalDataSource | View, Edit |
 
 ---
 

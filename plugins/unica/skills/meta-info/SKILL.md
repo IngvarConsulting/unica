@@ -76,7 +76,10 @@ DefinedType возвращают в нём наблюдаемый `type`, вкл
 ScheduledJob — логический адрес общего модуля и имя метода;
 CalculationRegister — тройку `schedule`; HTTPService — `urlTemplates` с
 методами; WebService — `xdtoPackages`, операции, параметры и XDTO QName в форме
-`{namespace, localName}`. Возможность прочитать иной тип или свойство не
+`{namespace, localName}`; ExternalDataSource — логические адреса дочерних
+таблиц в `details.tables` и кубов в `details.cubes`. Доказанно пустая коллекция
+равна `[]`, отсутствующий или повреждённый `ChildObjects` даёт `null` вместе с
+диагностикой. Возможность прочитать иной тип или свойство не
 означает, что `unica.meta.add/edit` разрешит его записать.
 
 Дополнительные владельцы не сваливаются в общий словарь:

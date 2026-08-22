@@ -2007,6 +2007,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 | Report | Object, Manager |
 | DataProcessor | Object, Manager |
 | DefinedType | DefinedType |
+| ExternalDataSource | Manager, TablesManager, CubesManager |
 
 Формат `name` в XML: `{Prefix}.{ObjectName}`, где Prefix = `{MetaType}{Category}` (например `CatalogObject.Номенклатура`, `AccountingRegisterExtDimensions.Хозрасчетный`).
 

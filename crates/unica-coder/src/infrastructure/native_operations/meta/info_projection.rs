@@ -844,6 +844,7 @@ pub(super) fn project_meta_info_details(
             let children = child_objects.map(|container| {
                 ensure_only_direct_md_children(container, &["Table", "Cube"], "details")?;
                 let addresses = |child_kind: &str| {
+                    let mut seen_names = std::collections::HashSet::new();
                     direct_children_with_namespace(container, MD_CLASSES_NAMESPACE, child_kind)
                         .into_iter()
                         .enumerate()
@@ -855,6 +856,14 @@ pub(super) fn project_meta_info_details(
                                 ));
                             }
                             let name = direct_text_content(node);
+                            if !seen_names.insert(name.clone()) {
+                                return Err(ProjectionError::malformed(
+                                    format!("details.{}[{index}]", child_kind.to_ascii_lowercase()),
+                                    format!(
+                                        "duplicate ExternalDataSource {child_kind} name `{name}`"
+                                    ),
+                                ));
+                            }
                             if !metadata_identifier_is_valid(&name) {
                                 return Err(ProjectionError::malformed(
                                     format!("details.{}[{index}]", child_kind.to_ascii_lowercase()),
@@ -1126,6 +1135,7 @@ pub(super) fn meta_info_profile_errors(
         }
     }
     if let Some(child_objects) = child_objects {
+        let mut seen_external_data_source_children = std::collections::HashSet::new();
         for child in child_objects.children().filter(roxmltree::Node::is_element) {
             let name = child.tag_name().name();
             if child.tag_name().namespace() != Some(MD_CLASSES_NAMESPACE)
@@ -1138,6 +1148,16 @@ pub(super) fn meta_info_profile_errors(
                         kind.as_str()
                     ),
                 ));
+            } else if kind == MetadataKind::ExternalDataSource {
+                let child_name = direct_text_content(child);
+                if !seen_external_data_source_children.insert((name, child_name.clone())) {
+                    errors.push(ProjectionError::malformed(
+                        format!("collections.{name}"),
+                        format!(
+                            "ExternalDataSource contains a duplicate {name} name `{child_name}`"
+                        ),
+                    ));
+                }
             }
         }
     }
