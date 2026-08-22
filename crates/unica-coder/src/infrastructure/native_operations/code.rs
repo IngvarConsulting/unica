@@ -42,7 +42,42 @@ pub(crate) fn preview_with_data(
 
 pub(crate) struct CodePatchExecution {
     pub(crate) outcome: AdapterOutcome,
-    pub(crate) data: Option<CodePatchData>,
+    pub(crate) data: Option<CodePatchResultData>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub(crate) enum CodePatchResultData {
+    Patch(Box<CodePatchData>),
+    Failure(CodePatchFailureData),
+}
+
+#[cfg(test)]
+impl CodePatchResultData {
+    fn patch_data(self) -> CodePatchData {
+        match self {
+            Self::Patch(data) => *data,
+            Self::Failure(_) => panic!("expected successful code.patch data"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CodePatchFailureData {
+    code: &'static str,
+    conflicts: Vec<ReplacementConflict>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplacementConflict {
+    left_replacement_index: usize,
+    left_start_byte: usize,
+    left_end_byte: usize,
+    right_replacement_index: usize,
+    right_start_byte: usize,
+    right_end_byte: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,9 +192,15 @@ impl Selector {
     }
 
     fn parse(args: &Map<String, Value>) -> Result<Self, String> {
-        let selector = args
-            .get("selector")
-            .and_then(Value::as_object)
+        Self::parse_value(
+            args.get("selector")
+                .ok_or_else(|| "selector must be an object".to_string())?,
+        )
+    }
+
+    fn parse_value(value: &Value) -> Result<Self, String> {
+        let selector = value
+            .as_object()
             .ok_or_else(|| "selector must be an object".to_string())?;
         if selector.len() != 1 {
             return Err("selector must contain exactly one of method or anchor".to_string());
@@ -216,11 +257,10 @@ enum PatchSite {
 }
 
 impl PatchSite {
-    /// First byte the patch writes, in postimage coordinates.
-    fn changed_start(self) -> usize {
+    fn original_range(self) -> (usize, usize) {
         match self {
-            Self::Insertion(site) => site.offset,
-            Self::Replacement(site) => site.start,
+            Self::Insertion(site) => (site.offset, site.offset),
+            Self::Replacement(site) => (site.start, site.end),
         }
     }
 }
@@ -240,7 +280,21 @@ fn patch_inner(
 ) -> CodePatchExecution {
     match build_patch(args, context) {
         Ok(plan) => finish_patch(plan, mode, context),
-        Err(error) => CodePatchExecution::failure(error, None),
+        Err(error) => CodePatchExecution::failure(error.message, error.data),
+    }
+}
+
+struct CodePatchBuildError {
+    message: String,
+    data: Option<CodePatchResultData>,
+}
+
+impl From<String> for CodePatchBuildError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            data: None,
+        }
     }
 }
 
@@ -248,17 +302,25 @@ struct CodePatchPlan {
     target: CodePatchTarget,
     before: Vec<u8>,
     after: Vec<u8>,
+    edits: Vec<PlannedEdit>,
+    no_op: bool,
+}
+
+struct PlannedEdit {
     selector: Option<Selector>,
     content: String,
-    insertion: Vec<u8>,
+    bytes: Vec<u8>,
     site: PatchSite,
     no_op: bool,
+    request_index: usize,
+    expected_count: usize,
+    occurrence_index: usize,
 }
 
 fn build_patch(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Result<CodePatchPlan, String> {
+) -> Result<CodePatchPlan, CodePatchBuildError> {
     let target = resolve_target(args, context)?;
     // A module the platform never exported reads as no bytes at all, which is
     // exactly the preimage a first body is appended to.
@@ -274,9 +336,14 @@ fn build_patch(
     let operation = PatchOperation::parse(string_arg(args, "operation")?)?;
     let indexed = analyze_module(text)?;
     reject_parse_diagnostics(&indexed.diagnostics, "validate original BSL module")?;
-    let content = string_arg(args, "content")?.to_string();
-    let (selector, site, insertion, no_op, after) = match operation {
+    let mut edits = match operation {
         PatchOperation::Insert => {
+            if args.contains_key("replacements") {
+                return Err("unica.code.patch does not accept `replacements` for insert"
+                    .to_string()
+                    .into());
+            }
+            let content = string_arg(args, "content")?.to_string();
             let selector = Selector::parse_optional(args)?;
             let site = match &selector {
                 Some(selector) => {
@@ -288,55 +355,170 @@ fn build_patch(
                 None => {
                     if args.contains_key("position") {
                         return Err(
-                            "unica.code.patch does not accept `position` without a `selector`; content goes to the end of the module"
-                                .to_string(),
+                                "unica.code.patch does not accept `position` without a `selector`; content goes to the end of the module"
+                                    .to_string()
+                                    .into(),
                         );
                     }
                     locate_module_tail(&snapshot)?
                 }
             };
-            let insertion = normalized_content(&content, site.eol, site.leading_separator);
-            let no_op = insertion_is_present(snapshot.raw(), site, &insertion);
-            let mut after = snapshot.raw().to_vec();
-            if !no_op {
-                after.splice(site.offset..site.offset, insertion.iter().copied());
-            }
-            (
+            let bytes = normalized_content(&content, site.eol, site.leading_separator);
+            let no_op = insertion_is_present(snapshot.raw(), site, &bytes);
+            vec![PlannedEdit {
                 selector,
-                PatchSite::Insertion(site),
-                insertion,
+                content,
+                bytes,
+                site: PatchSite::Insertion(site),
                 no_op,
-                after,
-            )
+                request_index: 0,
+                expected_count: 1,
+                occurrence_index: 0,
+            }]
         }
         PatchOperation::Replace => {
-            let selector = Selector::parse(args)?;
-            let site = locate_replacement(&snapshot, &selector, &indexed.methods)?;
-            let replacement = normalized_replacement(&content, site.eol, site.trailing_eol);
-            let no_op = snapshot.raw().get(site.start..site.end) == Some(replacement.as_slice());
-            let mut after = snapshot.raw().to_vec();
-            if !no_op {
-                after.splice(site.start..site.end, replacement.iter().copied());
+            if let Some(replacements) = args.get("replacements") {
+                if args.contains_key("selector")
+                    || args.contains_key("content")
+                    || args.contains_key("position")
+                {
+                    return Err(
+                        "unica.code.patch does not mix `replacements` with selector, content, or position"
+                            .to_string()
+                            .into(),
+                    );
+                }
+                plan_replacement_batch(replacements, &snapshot, &indexed.methods)?
+            } else {
+                let content = string_arg(args, "content")?.to_string();
+                let selector = Selector::parse(args)?;
+                let site = locate_replacement(&snapshot, &selector, &indexed.methods)?;
+                let bytes = normalized_replacement(&content, site.eol, site.trailing_eol);
+                let no_op = snapshot.raw().get(site.start..site.end) == Some(bytes.as_slice());
+                vec![PlannedEdit {
+                    selector: Some(selector),
+                    content,
+                    bytes,
+                    site: PatchSite::Replacement(site),
+                    no_op,
+                    request_index: 0,
+                    expected_count: 1,
+                    occurrence_index: 0,
+                }]
             }
-            (
-                Some(selector),
-                PatchSite::Replacement(site),
-                replacement,
-                no_op,
-                after,
-            )
         }
     };
+    edits.sort_by_key(|edit| edit.site.original_range());
+    reject_overlapping_replacements(&edits)?;
+    let no_op = edits.iter().all(|edit| edit.no_op);
+    let mut after = snapshot.raw().to_vec();
+    for edit in edits.iter().rev().filter(|edit| !edit.no_op) {
+        let (start, end) = edit.site.original_range();
+        after.splice(start..end, edit.bytes.iter().copied());
+    }
     Ok(CodePatchPlan {
         target,
         before,
         after,
-        selector,
-        content,
-        insertion,
-        site,
+        edits,
         no_op,
     })
+}
+
+fn plan_replacement_batch(
+    value: &Value,
+    snapshot: &SourceTextSnapshot,
+    methods: &[Method],
+) -> Result<Vec<PlannedEdit>, String> {
+    let replacements = value
+        .as_array()
+        .ok_or_else(|| "replacements must be an array".to_string())?;
+    if replacements.is_empty() || replacements.len() > 50 {
+        return Err("replacements must contain between 1 and 50 items".to_string());
+    }
+    let mut edits = Vec::new();
+    for (request_index, value) in replacements.iter().enumerate() {
+        let replacement = value
+            .as_object()
+            .ok_or_else(|| format!("replacements[{request_index}] must be an object"))?;
+        if replacement
+            .keys()
+            .any(|key| !matches!(key.as_str(), "selector" | "content" | "expectedCount"))
+        {
+            return Err(format!(
+                "replacements[{request_index}] contains an unsupported field"
+            ));
+        }
+        let selector = Selector::parse_value(
+            replacement
+                .get("selector")
+                .ok_or_else(|| format!("replacements[{request_index}].selector is required"))?,
+        )?;
+        let content = replacement
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|content| !content.is_empty())
+            .ok_or_else(|| format!("replacements[{request_index}].content must be non-empty"))?
+            .to_string();
+        let expected_count = replacement
+            .get("expectedCount")
+            .and_then(Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count > 0)
+            .ok_or_else(|| {
+                format!("replacements[{request_index}].expectedCount must be a positive integer")
+            })?;
+        let sites = locate_replacements(snapshot, &selector, methods)?;
+        if sites.len() != expected_count {
+            return Err(format!(
+                "replacement_count_mismatch: replacements[{request_index}] expected {expected_count}, matched {}",
+                sites.len()
+            ));
+        }
+        for (occurrence_index, site) in sites.into_iter().enumerate() {
+            let bytes = normalized_replacement(&content, site.eol, site.trailing_eol);
+            let no_op = snapshot.raw().get(site.start..site.end) == Some(bytes.as_slice());
+            edits.push(PlannedEdit {
+                selector: Some(selector.clone()),
+                content: content.clone(),
+                bytes,
+                site: PatchSite::Replacement(site),
+                no_op,
+                request_index,
+                expected_count,
+                occurrence_index,
+            });
+        }
+    }
+    Ok(edits)
+}
+
+fn reject_overlapping_replacements(edits: &[PlannedEdit]) -> Result<(), CodePatchBuildError> {
+    for pair in edits.windows(2) {
+        let (left_start, left_end) = pair[0].site.original_range();
+        let (right_start, right_end) = pair[1].site.original_range();
+        if right_start < left_end {
+            let message = format!(
+                "replacement_overlap: replacements[{}] range [{left_start}, {left_end}) overlaps replacements[{}] range [{right_start}, {right_end})",
+                pair[0].request_index, pair[1].request_index
+            );
+            return Err(CodePatchBuildError {
+                message,
+                data: Some(CodePatchResultData::Failure(CodePatchFailureData {
+                    code: "replacement_overlap",
+                    conflicts: vec![ReplacementConflict {
+                        left_replacement_index: pair[0].request_index,
+                        left_start_byte: left_start,
+                        left_end_byte: left_end,
+                        right_replacement_index: pair[1].request_index,
+                        right_start_byte: right_start,
+                        right_end_byte: right_end,
+                    }],
+                })),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn finish_patch(
@@ -384,11 +566,14 @@ fn finish_patch(
             .join("; ");
         return CodePatchExecution::failure(
             format!("validate patched BSL module: {details}"),
-            Some(data),
+            Some(CodePatchResultData::Patch(Box::new(data))),
         );
     }
     if let Err(error) = prove_repeat_is_noop(postimage, &plan, &analysis.methods) {
-        return CodePatchExecution::failure(error, Some(data));
+        return CodePatchExecution::failure(
+            error,
+            Some(CodePatchResultData::Patch(Box::new(data))),
+        );
     }
     if mode == PatchMode::Apply && !plan.no_op {
         let publish_result = (|| -> Result<(), String> {
@@ -410,21 +595,28 @@ fn finish_patch(
             Ok(())
         })();
         if let Err(error) = publish_result {
-            return CodePatchExecution::failure(format!("publish BSL module: {error}"), Some(data));
+            return CodePatchExecution::failure(
+                format!("publish BSL module: {error}"),
+                Some(CodePatchResultData::Patch(Box::new(data))),
+            );
         }
     }
-    let (edit, verb) = match plan.site {
-        PatchSite::Insertion(_) => ("insertion", "inserted"),
-        PatchSite::Replacement(_) => ("replacement", "replaced"),
+    let changed_count = plan.edits.iter().filter(|edit| !edit.no_op).count();
+    let (edit, verb) = match plan.edits[0].site {
+        PatchSite::Insertion(_) => ("one insertion".to_string(), "inserted"),
+        PatchSite::Replacement(_) if changed_count == 1 => {
+            ("one replacement".to_string(), "replaced")
+        }
+        PatchSite::Replacement(_) => (format!("{changed_count} replacements"), "replaced"),
     };
     let outcome = AdapterOutcome {
         ok: true,
         summary: if plan.no_op {
             "unica.code.patch is already applied".to_string()
         } else if mode == PatchMode::Preview {
-            format!("dry run: unica.code.patch planned one {edit}")
+            format!("dry run: unica.code.patch planned {edit}")
         } else {
-            format!("unica.code.patch applied one {edit}")
+            format!("unica.code.patch applied {edit}")
         },
         changes: (mode == PatchMode::Apply && !plan.no_op)
             .then(|| {
@@ -449,7 +641,7 @@ fn finish_patch(
     };
     CodePatchExecution {
         outcome,
-        data: Some(data),
+        data: Some(CodePatchResultData::Patch(Box::new(data))),
     }
 }
 
@@ -462,18 +654,26 @@ fn patch_data(
     let changed_ranges = if plan.no_op {
         Vec::new()
     } else {
-        let start = plan.site.changed_start();
-        let end = start + plan.insertion.len();
-        let (start_line, start_column) = line_column(postimage, start)?;
-        let (end_line, end_column) = line_column(postimage, end)?;
-        vec![ChangedRange {
-            start_byte: start,
-            end_byte: end,
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-        }]
+        let mut delta = 0_i64;
+        let mut ranges = Vec::new();
+        for edit in plan.edits.iter().filter(|edit| !edit.no_op) {
+            let (original_start, original_end) = edit.site.original_range();
+            let start = usize::try_from(original_start as i64 + delta)
+                .map_err(|_| "patched range has an invalid start".to_string())?;
+            let end = start + edit.bytes.len();
+            let (start_line, start_column) = line_column(postimage, start)?;
+            let (end_line, end_column) = line_column(postimage, end)?;
+            ranges.push(ChangedRange {
+                start_byte: start,
+                end_byte: end,
+                start_line,
+                start_column,
+                end_line,
+                end_column,
+            });
+            delta += edit.bytes.len() as i64 - (original_end - original_start) as i64;
+        }
+        ranges
     };
     let diff = if plan.no_op {
         String::new()
@@ -504,7 +704,7 @@ fn patch_data(
 }
 
 impl CodePatchExecution {
-    fn failure(error: String, data: Option<CodePatchData>) -> Self {
+    fn failure(error: String, data: Option<CodePatchResultData>) -> Self {
         Self {
             outcome: AdapterOutcome {
                 ok: false,
@@ -760,6 +960,51 @@ fn locate_replacement(
     })
 }
 
+fn locate_replacements(
+    snapshot: &SourceTextSnapshot,
+    selector: &Selector,
+    methods: &[Method],
+) -> Result<Vec<ReplacementSite>, String> {
+    reject_lone_cr_line_endings(snapshot)?;
+    let text = snapshot.decoded_text();
+    let ranges = match selector {
+        Selector::Method(name) => {
+            let folded_name = name.to_lowercase();
+            methods
+                .iter()
+                .filter(|method| method.name.to_lowercase() == folded_name)
+                .map(|method| {
+                    (
+                        safe_line_start(text, method.start),
+                        line_end(text, method.end),
+                    )
+                })
+                .collect::<Vec<_>>()
+        }
+        Selector::Anchor(anchor) => anchor_occurrences(text, anchor, methods)
+            .into_iter()
+            .map(|occurrence| (occurrence.start, occurrence.end))
+            .collect(),
+    };
+    ranges
+        .into_iter()
+        .map(|(start, end)| {
+            let local = local_line_ending_at(text, start, Position::Before);
+            let eol = resolve_observed_line_ending(snapshot, local)
+                .map_err(|error| format!("resolve code.patch EOL: {error}"))?;
+            let trailing_eol = text
+                .get(..end)
+                .is_some_and(|head| head.ends_with('\n') || head.ends_with('\r'));
+            Ok(ReplacementSite {
+                start,
+                end,
+                eol,
+                trailing_eol,
+            })
+        })
+        .collect()
+}
+
 fn normalized_replacement(content: &str, eol: LineEnding, trailing_eol: bool) -> Vec<u8> {
     let eol = eol.as_str();
     let mut bytes = canonicalize_eol(content).replace('\n', eol).into_bytes();
@@ -851,9 +1096,10 @@ fn prove_repeat_is_noop(
         .map_err(|error| format!("patched BSL module snapshot: {error}"))?;
     let stale =
         |error: String| format!("patch cannot be applied idempotently on the next call: {error}");
-    let repeated_is_noop = match plan.site {
+    let repeated_is_noop = match plan.edits[0].site {
         PatchSite::Insertion(site) => {
-            let repeat_site = match plan.selector.as_ref() {
+            let edit = &plan.edits[0];
+            let repeat_site = match edit.selector.as_ref() {
                 Some(selector) => {
                     locate_selector(&snapshot, site.position, selector, methods).map_err(stale)?
                 }
@@ -862,32 +1108,53 @@ fn prove_repeat_is_noop(
                 None => locate_module_tail(&snapshot).map_err(stale)?,
             };
             let repeat_insertion = normalized_content(
-                &plan.content,
+                &edit.content,
                 repeat_site.eol,
                 repeat_site.leading_separator,
             );
             insertion_is_present(postimage.as_bytes(), repeat_site, &repeat_insertion)
         }
-        PatchSite::Replacement(_) => match locate_replacement(
-            &snapshot,
-            plan.selector.as_ref().expect("replacement has a selector"),
-            methods,
-        ) {
-            // The edit consumed its own selector — an anchor rewritten to new
-            // text, a method renamed. A repeated identical call then resolves
-            // nothing and fails closed without writing, which is exactly the
-            // double application the guard exists to prevent.
-            Err(_) => true,
-            Ok(repeat_site) => {
-                let repeat_replacement = normalized_replacement(
-                    &plan.content,
-                    repeat_site.eol,
-                    repeat_site.trailing_eol,
-                );
-                snapshot.raw().get(repeat_site.start..repeat_site.end)
-                    == Some(repeat_replacement.as_slice())
+        PatchSite::Replacement(_) => {
+            let mut repeated_edits = Vec::new();
+            for edit in plan.edits.iter().filter(|edit| edit.occurrence_index == 0) {
+                let repeat_sites = locate_replacements(
+                    &snapshot,
+                    edit.selector.as_ref().expect("replacement has a selector"),
+                    methods,
+                )?;
+                // A consumed selector or changed multiplicity makes the next
+                // identical request fail closed before publication.
+                if repeat_sites.len() != edit.expected_count {
+                    return Ok(());
+                }
+                for (occurrence_index, repeat_site) in repeat_sites.into_iter().enumerate() {
+                    let bytes = normalized_replacement(
+                        &edit.content,
+                        repeat_site.eol,
+                        repeat_site.trailing_eol,
+                    );
+                    let no_op = snapshot.raw().get(repeat_site.start..repeat_site.end)
+                        == Some(bytes.as_slice());
+                    repeated_edits.push(PlannedEdit {
+                        selector: edit.selector.clone(),
+                        content: edit.content.clone(),
+                        bytes,
+                        site: PatchSite::Replacement(repeat_site),
+                        no_op,
+                        request_index: edit.request_index,
+                        expected_count: edit.expected_count,
+                        occurrence_index,
+                    });
+                }
             }
-        },
+            repeated_edits.sort_by_key(|edit| edit.site.original_range());
+            // An overlap created by the first application also makes the whole
+            // repeat fail during planning before publication.
+            if reject_overlapping_replacements(&repeated_edits).is_err() {
+                return Ok(());
+            }
+            repeated_edits.iter().all(|edit| edit.no_op)
+        }
     };
     if repeated_is_noop {
         Ok(())
@@ -1465,7 +1732,7 @@ mod tests {
         assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
         assert_eq!(fs::read(&module).unwrap(), expected);
         assert!(applied.outcome.stdout.is_none());
-        let data = applied.data.unwrap();
+        let data = applied.data.unwrap().patch_data();
         assert_eq!(data.source_set, "main");
         assert_eq!(data.affected_target.owner, "CommonModule.Sample");
         assert_eq!(data.affected_target.module_role, "Module");
@@ -1478,7 +1745,7 @@ mod tests {
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
         assert_eq!(fs::read(&module).unwrap(), expected);
         assert!(repeated.outcome.changes.is_empty());
-        let data = repeated.data.unwrap();
+        let data = repeated.data.unwrap().patch_data();
         assert_eq!(data.pre_hash, data.post_hash);
         assert!(data.changed_ranges.is_empty());
         assert!(data.diff.is_empty());
@@ -1562,7 +1829,7 @@ mod tests {
 
             let repeated = patch_inner(&args, &context, PatchMode::Apply);
             assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
-            assert!(repeated.data.unwrap().no_op);
+            assert!(repeated.data.unwrap().patch_data().no_op);
             assert_eq!(fs::read(&module).unwrap(), expected);
         }
         for (path, bytes) in protected_before {
@@ -1710,7 +1977,7 @@ mod tests {
         );
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
-        assert!(repeated.data.unwrap().no_op);
+        assert!(repeated.data.unwrap().patch_data().no_op);
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
@@ -1737,7 +2004,7 @@ mod tests {
         assert!(result.outcome.errors[0].contains("cannot be applied idempotently"));
         assert_eq!(fs::read(&module).unwrap(), before);
         assert_eq!(
-            result.data.unwrap().validation.status,
+            result.data.unwrap().patch_data().validation.status,
             ValidationStatus::Passed
         );
         fs::remove_dir_all(&context.workspace_root).unwrap();
@@ -1790,7 +2057,7 @@ mod tests {
         );
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok);
-        assert!(repeated.data.unwrap().no_op);
+        assert!(repeated.data.unwrap().patch_data().no_op);
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
@@ -1802,6 +2069,131 @@ mod tests {
         args.insert("selector".to_string(), selector);
         args.insert("content".to_string(), json!(content));
         args
+    }
+
+    fn replace_batch_args(metadata_path: &str, replacements: Value) -> Map<String, Value> {
+        Map::from_iter([
+            ("sourceSet".to_string(), json!("main")),
+            ("metadataPath".to_string(), json!(metadata_path)),
+            ("operation".to_string(), json!("replace")),
+            ("replacements".to_string(), replacements),
+        ])
+    }
+
+    #[test]
+    fn code_patch_replaces_multiple_anchors_atomically() {
+        let context = temp_context("replace-batch");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before =
+            "\u{feff}Процедура Цель()\r\n\tA = Старое;\r\n\tB = Старое;\r\nКонецПроцедуры\r\n";
+        fs::write(&module, before).unwrap();
+        let args = replace_batch_args(
+            "CommonModule.Sample.Module",
+            json!([
+                {"selector":{"anchor":"A = Старое;"},"content":"A = СовсемНовое;","expectedCount":1},
+                {"selector":{"anchor":"B = Старое;"},"content":"B = Н;","expectedCount":1}
+            ]),
+        );
+
+        let preview = patch_inner(&args, &context, PatchMode::Preview);
+        assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+        assert_eq!(fs::read_to_string(&module).unwrap(), before);
+        let preview_data = serde_json::to_value(preview.data.unwrap()).unwrap();
+        assert_eq!(preview_data["changedRanges"].as_array().unwrap().len(), 2);
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let after =
+            "\u{feff}Процедура Цель()\r\n\tA = СовсемНовое;\r\n\tB = Н;\r\nКонецПроцедуры\r\n";
+        assert_eq!(fs::read_to_string(&module).unwrap(), after);
+        let applied_data = serde_json::to_value(applied.data.unwrap()).unwrap();
+        for field in ["postHash", "diff", "changedRanges"] {
+            assert_eq!(preview_data[field], applied_data[field], "{field}");
+        }
+        let ranges = applied_data["changedRanges"].as_array().unwrap();
+        for (range, needle) in ranges.iter().zip(["A = СовсемНовое;", "B = Н;"]) {
+            let start = after.find(needle).unwrap();
+            assert_eq!(range["startByte"], start);
+            assert_eq!(range["endByte"], start + needle.len());
+        }
+
+        let repeated = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(!repeated.outcome.ok);
+        assert_eq!(fs::read_to_string(&module).unwrap(), after);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_batch_repeat_proof_is_global_and_fails_closed() {
+        let context = temp_context("replace-batch-global-repeat");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = "Procedure Run()\n    A = 1;\n    B = 2;\nEndProcedure\n";
+        fs::write(&module, before).unwrap();
+        let args = replace_batch_args(
+            "CommonModule.Sample.Module",
+            json!([
+                {"selector":{"anchor":"A = 1;"},"content":"X = 1;","expectedCount":1},
+                {"selector":{"anchor":"B = 2;"},"content":"A = 1;","expectedCount":1}
+            ]),
+        );
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let after = "Procedure Run()\n    X = 1;\n    A = 1;\nEndProcedure\n";
+        assert_eq!(fs::read_to_string(&module).unwrap(), after);
+
+        let repeated = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(!repeated.outcome.ok);
+        assert!(repeated.outcome.errors[0].starts_with("replacement_count_mismatch:"));
+        assert_eq!(fs::read_to_string(&module).unwrap(), after);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
+    fn code_patch_batch_count_mismatch_and_overlap_write_nothing() {
+        let context = temp_context("replace-batch-refusals");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        let before = "Процедура Цель()\n\tA = Старое;\nКонецПроцедуры\n";
+        fs::write(&module, before).unwrap();
+
+        let mismatch = replace_batch_args(
+            "CommonModule.Sample.Module",
+            json!([{"selector":{"anchor":"A = Старое;"},"content":"A = Новое;","expectedCount":2}]),
+        );
+        let refused = patch_inner(&mismatch, &context, PatchMode::Apply);
+        assert!(!refused.outcome.ok);
+        assert!(refused.outcome.errors[0].starts_with("replacement_count_mismatch:"));
+        assert_eq!(fs::read_to_string(&module).unwrap(), before);
+
+        let overlap = replace_batch_args(
+            "CommonModule.Sample.Module",
+            json!([
+                {"selector":{"anchor":"A = Старое;"},"content":"A = Новое;","expectedCount":1},
+                {"selector":{"anchor":"Старое"},"content":"Новое","expectedCount":1}
+            ]),
+        );
+        let refused = patch_inner(&overlap, &context, PatchMode::Apply);
+        assert!(!refused.outcome.ok);
+        assert!(refused.outcome.errors[0].starts_with("replacement_overlap:"));
+        let failure = serde_json::to_value(refused.data.unwrap()).unwrap();
+        assert_eq!(failure["code"], "replacement_overlap");
+        assert_eq!(failure["conflicts"][0]["leftReplacementIndex"], 0);
+        assert_eq!(failure["conflicts"][0]["rightReplacementIndex"], 1);
+        assert!(failure["conflicts"][0]["leftStartByte"].is_number());
+        assert!(failure["conflicts"][0]["leftEndByte"].is_number());
+        assert!(failure["conflicts"][0]["rightStartByte"].is_number());
+        assert!(failure["conflicts"][0]["rightEndByte"].is_number());
+        assert_eq!(fs::read_to_string(&module).unwrap(), before);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
     }
 
     #[test]
@@ -1838,7 +2230,7 @@ mod tests {
 
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
-        assert!(repeated.data.unwrap().no_op);
+        assert!(repeated.data.unwrap().patch_data().no_op);
         assert_eq!(fs::read_to_string(&module).unwrap(), after);
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
@@ -1929,7 +2321,7 @@ mod tests {
 
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
-        assert!(repeated.data.unwrap().no_op);
+        assert!(repeated.data.unwrap().patch_data().no_op);
         assert_eq!(fs::read_to_string(&module).unwrap(), expected);
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
@@ -1961,7 +2353,7 @@ mod tests {
 
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
-        assert!(repeated.data.unwrap().no_op);
+        assert!(repeated.data.unwrap().patch_data().no_op);
         assert_eq!(fs::read(&module).unwrap(), expected);
         fs::remove_dir_all(&context.workspace_root).unwrap();
     }
@@ -2015,7 +2407,7 @@ mod tests {
 
             let preview = patch_inner(&args, &context, PatchMode::Preview);
             assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
-            let target = preview.data.unwrap().affected_target;
+            let target = preview.data.unwrap().patch_data().affected_target;
             assert_eq!(target.owner, "Catalog.Items");
             assert_eq!(target.module_role, role);
         }
@@ -2203,7 +2595,7 @@ mod tests {
                 "{relative}: {:?}",
                 preview.outcome.errors
             );
-            let target = preview.data.unwrap().affected_target;
+            let target = preview.data.unwrap().patch_data().affected_target;
             assert_eq!(target.owner, "Catalog.Items");
             assert_eq!(target.module_role, role);
         }
@@ -2419,7 +2811,7 @@ mod tests {
 
         assert!(!result.outcome.ok);
         assert_eq!(fs::read(&module).unwrap(), before);
-        let data = result.data.unwrap();
+        let data = result.data.unwrap().patch_data();
         let serialized = serde_json::to_value(&data).unwrap();
         let validation = data.validation;
         assert_eq!(validation.status, ValidationStatus::Failed);
@@ -2495,7 +2887,7 @@ mod tests {
         let preview = patch_inner(&args, &context, PatchMode::Preview);
         assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
         assert!(!module.exists(), "preview created the module file");
-        let data = preview.data.unwrap();
+        let data = preview.data.unwrap().patch_data();
         assert_eq!(data.pre_hash, hash(b""));
         assert_eq!(data.validation.status, ValidationStatus::Passed);
 
@@ -2565,7 +2957,7 @@ mod tests {
             let preview = patch_inner(&args, &context, PatchMode::Preview);
             assert!(preview.outcome.ok, "{label}: {:?}", preview.outcome.errors);
             assert_eq!(fs::read(&module).unwrap(), before, "{label} preview wrote");
-            let data = preview.data.unwrap();
+            let data = preview.data.unwrap().patch_data();
             assert_eq!(data.pre_hash, hash(&before), "{label}");
             assert_eq!(data.post_hash, hash(&expected), "{label}");
             assert_eq!(data.validation.status, ValidationStatus::Passed, "{label}");
@@ -2675,7 +3067,7 @@ mod tests {
         assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
         assert!(preview.outcome.changes.is_empty());
         assert!(preview.outcome.stdout.is_none());
-        let data = preview.data.unwrap();
+        let data = preview.data.unwrap().patch_data();
         assert_ne!(data.pre_hash, data.post_hash);
         assert_eq!(data.validation.status, ValidationStatus::Passed);
         assert_eq!(fs::read(&module).unwrap(), before);
@@ -2707,7 +3099,7 @@ mod tests {
         assert!(result.outcome.errors[0].contains("publish BSL module"));
         assert_eq!(fs::read_to_string(&module).unwrap(), replacement);
         assert_eq!(
-            result.data.unwrap().validation.status,
+            result.data.unwrap().patch_data().validation.status,
             ValidationStatus::Passed
         );
         fs::remove_dir_all(&context.workspace_root).unwrap();

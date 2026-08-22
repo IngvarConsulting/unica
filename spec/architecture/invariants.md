@@ -1363,6 +1363,20 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/single_file_publisher.rs`
 - **Scope:** runtime
 
+### INV-SOURCE-ATOMIC-REPLACE — Пакет замен разрешается на одном снимке
+
+- **Rule:** `unica.code.patch` разрешает все элементы `replacements` на одном
+  исходном снимке одного BSL-модуля, требует точного совпадения фактической и
+  объявленной `expectedCount` для каждого селектора, отказывает при пересечении
+  исходных диапазонов и сообщает такое пересечение типизированными `data.code`
+  и `data.conflicts` с индексами элементов и байтовыми диапазонами; публикуется
+  только единый проверенный постобраз, а любой отказ до фиксации транзакции
+  оставляет исходные байты целиком нетронутыми.
+- **Decision:** ADR-0077
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/code.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
+- **Scope:** runtime
+
 ### INV-SOURCE-IDEMPOTENT-REWRITE — Повторная идентичная мутация ничего не пишет
 
 - **Rule:** Повторный идентичный вызов изменяющей операции распознаётся до

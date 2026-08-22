@@ -124,6 +124,7 @@ const CODE_PATCH_ARGS: &[&str] = &[
     "selector",
     "content",
     "position",
+    "replacements",
 ];
 /// `cf.info` answers with typed data, so the levers that existed to shrink its
 /// printed report -- `Mode`, `Section`, `Limit`, `Offset` -- select nothing any
@@ -780,19 +781,34 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         schema["oneOf"] = json!([
             {
                 "properties": {"operation": {"const": "insert"}},
-                "required": ["selector", "position"]
+                "required": ["selector", "content", "position"],
+                "not": {"required": ["replacements"]}
             },
             {
                 "properties": {"operation": {"const": "insert"}},
+                "required": ["content"],
                 "not": {"anyOf": [
                     {"required": ["selector"]},
-                    {"required": ["position"]}
+                    {"required": ["position"]},
+                    {"required": ["replacements"]}
                 ]}
             },
             {
                 "properties": {"operation": {"const": "replace"}},
-                "required": ["selector"],
-                "not": {"required": ["position"]}
+                "required": ["selector", "content"],
+                "not": {"anyOf": [
+                    {"required": ["position"]},
+                    {"required": ["replacements"]}
+                ]}
+            },
+            {
+                "properties": {"operation": {"const": "replace"}},
+                "required": ["replacements"],
+                "not": {"anyOf": [
+                    {"required": ["selector"]},
+                    {"required": ["content"]},
+                    {"required": ["position"]}
+                ]}
             }
         ]);
     }
@@ -1667,7 +1683,7 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
     if tool.name != "unica.code.patch" {
         return Ok(());
     }
-    for key in ["sourceSet", "metadataPath", "operation", "content"] {
+    for key in ["sourceSet", "metadataPath", "operation"] {
         let value = args
             .get(key)
             .and_then(Value::as_str)
@@ -1686,6 +1702,78 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
     if !matches!(operation, "insert" | "replace") {
         return Err(format!(
             "{} supports operation `insert` or `replace`",
+            tool.name
+        ));
+    }
+    let has_replacements = args.contains_key("replacements");
+    if has_replacements {
+        if operation != "replace"
+            || args.contains_key("selector")
+            || args.contains_key("content")
+            || args.contains_key("position")
+        {
+            return Err(format!(
+                "{} accepts `replacements` only as the exclusive payload of operation `replace`",
+                tool.name
+            ));
+        }
+        let replacements = args
+            .get("replacements")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("{} argument `replacements` must be an array", tool.name))?;
+        if replacements.is_empty() || replacements.len() > 50 {
+            return Err(format!(
+                "{} argument `replacements` must contain between 1 and 50 items",
+                tool.name
+            ));
+        }
+        for (index, replacement) in replacements.iter().enumerate() {
+            let replacement = replacement
+                .as_object()
+                .ok_or_else(|| format!("{} replacements[{index}] must be an object", tool.name))?;
+            if replacement.len() != 3
+                || !replacement
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "selector" | "content" | "expectedCount"))
+            {
+                return Err(format!(
+                    "{} replacements[{index}] must contain exactly selector, content, and expectedCount",
+                    tool.name
+                ));
+            }
+            validate_code_patch_selector(tool, replacement.get("selector"), Some(index))?;
+            if replacement
+                .get("content")
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(format!(
+                    "{} replacements[{index}].content must be a non-empty string",
+                    tool.name
+                ));
+            }
+            if replacement
+                .get("expectedCount")
+                .and_then(Value::as_u64)
+                .is_none_or(|count| count == 0)
+            {
+                return Err(format!(
+                    "{} replacements[{index}].expectedCount must be a positive integer",
+                    tool.name
+                ));
+            }
+        }
+        return Ok(());
+    }
+    let content = args.get("content").and_then(Value::as_str).ok_or_else(|| {
+        format!(
+            "{} argument `content` must be a non-empty string",
+            tool.name
+        )
+    })?;
+    if content.trim().is_empty() {
+        return Err(format!(
+            "{} argument `content` must be a non-empty string",
             tool.name
         ));
     }
@@ -1715,17 +1803,27 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
     if operation == "insert" && !has_selector {
         return Ok(());
     }
-    let selector = args
-        .get("selector")
+    validate_code_patch_selector(tool, args.get("selector"), None)
+}
+
+fn validate_code_patch_selector(
+    tool: ToolSpec,
+    value: Option<&Value>,
+    replacement_index: Option<usize>,
+) -> Result<(), String> {
+    let label = replacement_index
+        .map(|index| format!("replacements[{index}].selector"))
+        .unwrap_or_else(|| "selector".to_string());
+    let selector = value
         .and_then(Value::as_object)
-        .ok_or_else(|| format!("{} argument `selector` must be an object", tool.name))?;
+        .ok_or_else(|| format!("{} argument `{label}` must be an object", tool.name))?;
     if selector.len() != 1
         || !selector
             .keys()
             .all(|key| matches!(key.as_str(), "method" | "anchor"))
     {
         return Err(format!(
-            "{} selector must contain exactly one of `method` or `anchor`",
+            "{} {label} must contain exactly one of `method` or `anchor`",
             tool.name
         ));
     }
@@ -1736,7 +1834,7 @@ fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> R
         .filter(|value| !value.trim().is_empty());
     if value.is_none() {
         return Err(format!(
-            "{} selector value must be a non-empty string",
+            "{} {label} value must be a non-empty string",
             tool.name
         ));
     }
@@ -3481,12 +3579,16 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Continuation reference issued by a deferred manifest of the same tool: the call is served from the immutable stored snapshot without re-reading the source (ADR-0070)",
     ),
     (
+        "replacements",
+        "Atomic unica.code.patch replacement batch of 1–50 closed items: each item supplies selector, content, and positive expectedCount; any count mismatch, overlapping source range, invalid postimage, or support failure leaves the module unchanged",
+    ),
+    (
         "section",
         "On `unica.cf.info`: drill-down section of `Configuration.xml`, currently just `\"home-page\"`; `name` is accepted as an alias. On deferred continuations: the top-level section of the stored snapshot to slice",
     ),
     (
         "selector",
-        "Optional object naming the unica.code.patch edit point: exactly one of {\"method\": \"Name\"} for a whole procedure or function, or {\"anchor\": \"text\"} for a fragment that occurs once inside one method. Required by replace; when insert omits it the content goes to the end of the module",
+        "Optional object naming one unica.code.patch edit point: exactly one of {\"method\": \"Name\"} for a whole procedure or function, or {\"anchor\": \"text\"} for a fragment inside one method. Flat replace requires exactly one match; replacements items declare expectedCount; when insert omits selector, content goes to the module end",
     ),
     (
         "server",
@@ -3844,6 +3946,33 @@ fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
                     { "required": ["anchor"] }
                 ]
             }),
+            "replacements" => json!({
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "selector": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "method": { "type": "string", "minLength": 1 },
+                                "anchor": { "type": "string", "minLength": 1 }
+                            },
+                            "oneOf": [
+                                { "required": ["method"] },
+                                { "required": ["anchor"] }
+                            ]
+                        },
+                        "content": { "type": "string", "minLength": 1, "pattern": r"\S" },
+                        "expectedCount": { "type": "integer", "minimum": 1 }
+                    },
+                    "required": ["selector", "content", "expectedCount"]
+                },
+                "description": "Atomic replacement batch. Every selector must match expectedCount times; count mismatch or overlap leaves the module unchanged."
+            }),
             _ => property_schema(name),
         };
     }
@@ -4153,6 +4282,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
             | "scenarioFilters"
             | "sourceSets"
             | "operations"
+            | "replacements"
     ) {
         Some("array")
     } else {
@@ -6199,6 +6329,31 @@ mod tests {
         let mut invalid = base;
         invalid["selector"] = json!({"method": "A", "anchor": "B"});
         assert!(!validator.is_valid(&invalid));
+
+        let batch = json!({
+            "sourceSet": "main",
+            "metadataPath": "CommonModule.X.Module",
+            "operation": "replace",
+            "replacements": [
+                {
+                    "selector": {"anchor": "Старое"},
+                    "content": "Новое",
+                    "expectedCount": 2
+                },
+                {
+                    "selector": {"method": "Run"},
+                    "content": "Procedure Run()\nEndProcedure",
+                    "expectedCount": 1
+                }
+            ]
+        });
+        assert!(validator.is_valid(&batch), "{batch}");
+        let mut mixed = batch.clone();
+        mixed["content"] = json!("Новое");
+        assert!(!validator.is_valid(&mixed));
+        let mut zero = batch;
+        zero["replacements"][0]["expectedCount"] = json!(0);
+        assert!(!validator.is_valid(&zero));
     }
 
     #[test]
@@ -7142,7 +7297,7 @@ mod tests {
         assert_eq!(selector["properties"]["method"]["type"], "string");
         assert_eq!(selector["properties"]["anchor"]["type"], "string");
         assert_eq!(selector["oneOf"].as_array().map(Vec::len), Some(2));
-        for required in ["sourceSet", "metadataPath", "operation", "content"] {
+        for required in ["sourceSet", "metadataPath", "operation"] {
             assert!(schema["required"]
                 .as_array()
                 .is_some_and(|items| { items.iter().any(|value| value == required) }));
@@ -7154,9 +7309,13 @@ mod tests {
             serde_json::json!(["insert", "replace"])
         );
         assert!(schema["properties"]["position"].is_object());
-        assert!(schema["required"]
-            .as_array()
-            .is_some_and(|items| { items.iter().all(|value| value != "position") }));
+        assert_eq!(schema["properties"]["replacements"]["minItems"], 1);
+        assert_eq!(schema["properties"]["replacements"]["maxItems"], 50);
+        assert!(schema["required"].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .all(|value| value != "position" && value != "content")
+        }));
     }
 
     #[test]
