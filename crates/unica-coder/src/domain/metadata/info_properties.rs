@@ -360,6 +360,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
     use MetadataKind::*;
 
     match key {
+        ClientOrdinaryApplication => false,
         Synonym | Comment => true,
         ActionPeriod | BasePeriod => kind == CalculationRegister,
         ActionPeriodUse | DependenceOnCalculationTypes => kind == ChartOfCalculationTypes,
@@ -369,7 +370,6 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
             kind == Catalog
         }
         ClientManagedApplication
-        | ClientOrdinaryApplication
         | ExternalConnection
         | Global
         | Privileged

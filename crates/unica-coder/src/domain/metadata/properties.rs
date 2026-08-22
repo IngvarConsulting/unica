@@ -715,9 +715,20 @@ impl MetaPropertyChanges {
                 .filter(|spec| spec.public_name == input.name)
                 .collect::<Vec<_>>();
             if matching.is_empty() {
+                let supported = METADATA_PROPERTY_SPECS
+                    .iter()
+                    .filter(|spec| spec.allowed_kinds.contains(&kind))
+                    .map(|spec| spec.public_name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return Err(MetaDiagnostic::error(
                     MetaDiagnosticCode::InvalidArguments,
-                    format!("unknown metadata property `{}`", input.name),
+                    format!(
+                        "unknown metadata property `{}`; supported properties for {}: {}",
+                        input.name,
+                        kind.as_str(),
+                        supported
+                    ),
                 )
                 .with_field(&field));
             }
@@ -824,6 +835,24 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn unknown_common_module_property_lists_the_supported_alternatives() {
+        let diagnostic = MetaPropertyChanges::convert(
+            MetadataKind::CommonModule,
+            vec![MetaPropertyInput::new(
+                "OrdinaryClient",
+                MetaPropertyValue::Boolean(true),
+            )],
+        )
+        .expect_err("an unknown property must be rejected");
+
+        assert_eq!(
+            diagnostic.message,
+            "unknown metadata property `OrdinaryClient`; supported properties for CommonModule: Synonym, Comment, ClientManagedApplication, ClientOrdinaryApplication, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall"
+        );
+        assert_eq!(diagnostic.field.as_deref(), Some("values.OrdinaryClient"));
     }
 
     #[test]
