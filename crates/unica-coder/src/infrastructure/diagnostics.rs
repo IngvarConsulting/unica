@@ -513,11 +513,11 @@ fn parse_resident_status(
     if status.state == "failed" {
         return Ok(provider_failed(
             reply.version,
-            "provider_not_ready",
+            "provider_failed",
             status
                 .error
                 .unwrap_or_else(|| "diagnostics database failed to build".to_string()),
-            true,
+            false,
         ));
     }
     let state = match status.state.as_str() {
@@ -1052,6 +1052,10 @@ mod bsl_diagnostics_provider_tests {
                 json!({"state":"ready","generation":2,"reload":"running","files":3}),
             ),
             FakeBackend::resident(json!({
+                "state":"failed","generation":2,"reload":"failed",
+                "error":"index build failed"
+            })),
+            FakeBackend::resident(json!({
                 "action":"catalog","locale":"en","count":1,
                 "entries":[{
                     "code":"LineLength","title":"Line length","default_severity":"warning",
@@ -1081,6 +1085,11 @@ mod bsl_diagnostics_provider_tests {
             assert_eq!(status.status, DiagnosticProviderStatus::Completed);
             assert_eq!(status.readiness.unwrap().state, expected);
         }
+
+        let failed_status = execute(&provider, &fixture, DiagnosticAction::Status);
+        let failed_error = failed_status.error.unwrap();
+        assert_eq!(failed_error.code, "provider_failed");
+        assert!(!failed_error.retryable);
 
         let catalog = execute(&provider, &fixture, DiagnosticAction::Catalog);
         assert_eq!(catalog.status, DiagnosticProviderStatus::Completed);

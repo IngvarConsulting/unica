@@ -3806,6 +3806,7 @@ mod tests {
         calls: Arc<AtomicUsize>,
         observed_budget: Arc<Mutex<Option<Duration>>>,
         fail: bool,
+        pending: bool,
     }
 
     impl crate::domain::diagnostics::DiagnosticProvider for DiagnosticsBoundaryProvider {
@@ -3822,6 +3823,25 @@ mod tests {
         ) -> crate::domain::diagnostics::DiagnosticProviderOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.observed_budget.lock().unwrap() = Some(deadline.remaining());
+            if self.pending {
+                return crate::domain::diagnostics::DiagnosticProviderOutcome {
+                    status: crate::domain::diagnostics::DiagnosticProviderStatus::Unavailable,
+                    complete: false,
+                    version: Some("test".to_string()),
+                    observations: Vec::new(),
+                    rules: Vec::new(),
+                    readiness: None,
+                    error: Some(
+                        crate::domain::diagnostics::DiagnosticError::dependency_pending(
+                            "index is building",
+                            "buildingIndex",
+                            Some(1500),
+                            Some("building"),
+                            Some("status"),
+                        ),
+                    ),
+                };
+            }
             if self.fail {
                 return crate::domain::diagnostics::DiagnosticProviderOutcome {
                     status: crate::domain::diagnostics::DiagnosticProviderStatus::Failed,
@@ -3864,6 +3884,7 @@ mod tests {
         provider_calls: Arc<AtomicUsize>,
         observed_budget: Arc<Mutex<Option<Duration>>>,
         fail_provider: bool,
+        pending_provider: bool,
     }
 
     impl ports::ApplicationPorts for DiagnosticsBoundaryPorts {
@@ -3898,6 +3919,7 @@ mod tests {
                     calls: Arc::clone(&self.provider_calls),
                     observed_budget: Arc::clone(&self.observed_budget),
                     fail: self.fail_provider,
+                    pending: self.pending_provider,
                 },
             )])
             .map_err(|error| error.to_string())
@@ -4055,6 +4077,29 @@ mod tests {
         assert!(result.stdout.is_none());
         assert_eq!(ports.provider_calls.load(Ordering::SeqCst), 1);
         assert_eq!(ports.handler_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn diagnostics_application_boundary_keeps_dependency_pending_non_terminal() {
+        let ports = Arc::new(DiagnosticsBoundaryPorts {
+            pending_provider: true,
+            ..Default::default()
+        });
+        let app = UnicaApplication::with_ports(ports);
+        let args = json!({"action": "analyze", "sourceSet": "main"})
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let result = app.call_tool("unica.code.diagnostics", &args).unwrap();
+
+        assert!(!result.ok);
+        assert_eq!(result.data.as_ref().unwrap()["state"], "pending");
+        assert!(result.summary.contains("not ready"), "{}", result.summary);
+        assert_eq!(
+            result.errors,
+            vec!["dependencyPending: diagnostic providers are not ready"]
+        );
     }
 
     #[test]

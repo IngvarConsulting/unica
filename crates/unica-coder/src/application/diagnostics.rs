@@ -46,6 +46,9 @@ pub(crate) fn invoke(
         DiagnosticResultState::Partial => {
             "unica.code.diagnostics returned a partial provider-neutral result"
         }
+        DiagnosticResultState::Pending => {
+            "unica.code.diagnostics is not ready because its providers are still preparing results"
+        }
         DiagnosticResultState::Failed => {
             "unica.code.diagnostics failed because no provider produced a useful result"
         }
@@ -55,10 +58,15 @@ pub(crate) fn invoke(
         .then(|| "one or more diagnostic providers returned an incomplete result".to_string())
         .into_iter()
         .collect();
-    let errors = (!ok)
-        .then(|| "diagnostics_failed: no provider produced a useful result".to_string())
-        .into_iter()
-        .collect();
+    let errors = match result.state {
+        DiagnosticResultState::Pending => {
+            vec!["dependencyPending: diagnostic providers are not ready".to_string()]
+        }
+        DiagnosticResultState::Failed => {
+            vec!["diagnostics_failed: no provider produced a useful result".to_string()]
+        }
+        DiagnosticResultState::Completed | DiagnosticResultState::Partial => Vec::new(),
+    };
     let data = serde_json::to_value(result)
         .map_err(|error| format!("failed to serialize diagnostic result: {error}"))?;
     Ok(HandlerOutcome::with_data(
@@ -309,10 +317,19 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                     DiagnosticProviderStatus::Completed | DiagnosticProviderStatus::Empty
                 ) && section.complete
             });
+        let all_pending = !sections.is_empty()
+            && sections.iter().all(|section| {
+                section
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == "dependencyPending" && error.retryable)
+            });
         let (ok, state, complete) = if all_complete {
             (true, DiagnosticResultState::Completed, true)
         } else if any_success {
             (true, DiagnosticResultState::Partial, false)
+        } else if all_pending {
+            (false, DiagnosticResultState::Pending, false)
         } else {
             (false, DiagnosticResultState::Failed, false)
         };
@@ -564,6 +581,14 @@ fn normalize_provider_outcome(
             // means the provider has nothing to prove yet.
             if let Some(readiness) = outcome.readiness.take() {
                 if readiness.state != DiagnosticReadinessState::Ready {
+                    let (detail_code, state) = match readiness.state {
+                        DiagnosticReadinessState::NotStarted => ("indexNotStarted", "notStarted"),
+                        DiagnosticReadinessState::Building => ("buildingIndex", "building"),
+                        DiagnosticReadinessState::Stale => ("updatingIndex", "stale"),
+                        DiagnosticReadinessState::Ready => {
+                            unreachable!("ready diagnostic findings readiness was handled above")
+                        }
+                    };
                     return DiagnosticProviderOutcome {
                         status: DiagnosticProviderStatus::Unavailable,
                         complete: false,
@@ -573,9 +598,9 @@ fn normalize_provider_outcome(
                         readiness: None,
                         error: Some(DiagnosticError::dependency_pending(
                             "diagnostic provider findings are not ready",
-                            "buildingIndex",
+                            detail_code,
                             None,
-                            Some(format!("{:?}", readiness.state).to_lowercase()),
+                            Some(state),
                             Some("status"),
                         )),
                     };
@@ -2091,7 +2116,7 @@ mod tests {
 
         let (registry, _) = fake_registry([building(), building(), successful(Vec::new())]);
         let findings = run(registry, &findings_request()).unwrap();
-        assert_eq!(findings.state, DiagnosticResultState::Failed);
+        assert_eq!(findings.state, DiagnosticResultState::Pending);
         assert!(findings.providers.iter().all(|section| {
             section.status == DiagnosticProviderStatus::Unavailable
                 && section
@@ -2099,6 +2124,46 @@ mod tests {
                     .as_ref()
                     .is_some_and(|error| error.code == "dependencyPending" && error.retryable)
         }));
+    }
+
+    #[test]
+    fn findings_normalizes_each_readiness_state_to_canonical_retry_guidance() {
+        for (readiness_state, detail_code, state) in [
+            (
+                DiagnosticReadinessState::NotStarted,
+                "indexNotStarted",
+                "notStarted",
+            ),
+            (
+                DiagnosticReadinessState::Building,
+                "buildingIndex",
+                "building",
+            ),
+            (DiagnosticReadinessState::Stale, "updatingIndex", "stale"),
+        ] {
+            let outcome = DiagnosticProviderOutcome {
+                status: DiagnosticProviderStatus::Completed,
+                complete: true,
+                version: Some("test".to_string()),
+                observations: Vec::new(),
+                rules: Vec::new(),
+                readiness: Some(DiagnosticReadiness {
+                    state: readiness_state,
+                    retryable: true,
+                }),
+                error: None,
+            };
+            let result = run_with_logical_mapping(
+                &ANALYZER_DESCRIPTOR,
+                outcome,
+                &findings_request(),
+                &workspace(),
+            );
+            let error = serde_json::to_value(result.providers[0].error.as_ref().unwrap()).unwrap();
+
+            assert_eq!(error["detailCode"], detail_code);
+            assert_eq!(error["state"], state);
+        }
     }
 
     enum ProviderBehavior {

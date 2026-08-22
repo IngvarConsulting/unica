@@ -593,8 +593,9 @@ Unica. Каждая запись формулирует одно нормати�
 - **Rule:** `unica.code.search` и `unica.code.diagnostics` публикуют переходную
   неготовность поставщика как `dependencyPending` с `retryable=true`, непустым
   `detailCode` и доступными от поставщика `retryAfterMs` и `state`; срок повтора
-  не назначается внутри Unica, диагностика указывает `nextAction=status`, а
-  готовый путь не получает дополнительного ожидания.
+  не назначается внутри Unica, диагностика указывает `nextAction=status`, а её
+  верхний результат сохраняет `ok=false`, но имеет `state=pending` вместо
+  терминального `failed`; готовый путь не получает дополнительного ожидания.
 - **Decision:** ADR-0077
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/diagnostics.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`

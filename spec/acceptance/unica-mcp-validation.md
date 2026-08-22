@@ -278,7 +278,8 @@ ownership).
 - Search and diagnostics expose provider not-ready through the same
   `dependencyPending` vocabulary with `retryable`, `detailCode`, and available
   provider-supplied `retryAfterMs`/`state`; diagnostics also names
-  `nextAction=status`, while a ready response takes no extra polling path.
+  `nextAction=status` and top-level `ok=false`, `state=pending`, while a ready
+  response takes no extra polling path.
 - Analyzer-backed tools may create `.build/unica/services/<service-key>`.
 - Repeated provider calls through one matching live service reuse independent
   `bsl-analyzer` and RLM transports. RLM reuses one logical `rlm_start` session

@@ -532,6 +532,7 @@ impl DiagnosticProviderRegistry {
 pub enum DiagnosticResultState {
     Completed,
     Partial,
+    Pending,
     Failed,
 }
 
