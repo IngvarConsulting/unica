@@ -13,6 +13,7 @@ pub(crate) enum MetaPropertyKey {
     BasePeriod,
     ChoiceMode,
     ClientManagedApplication,
+    ClientOrdinaryApplication,
     CodeAllowedLength,
     CodeMask,
     CodeType,
@@ -335,6 +336,12 @@ pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
     property(
         "ClientManagedApplication",
         MetaPropertyKey::ClientManagedApplication,
+        MetaPropertyValueKind::Boolean,
+        COMMON_MODULE_KINDS,
+    ),
+    property(
+        "ClientOrdinaryApplication",
+        MetaPropertyKey::ClientOrdinaryApplication,
         MetaPropertyValueKind::Boolean,
         COMMON_MODULE_KINDS,
     ),
@@ -998,6 +1005,11 @@ mod tests {
             ),
             (
                 "ClientManagedApplication",
+                MetaPropertyValue::Boolean(true),
+                &[CommonModule],
+            ),
+            (
+                "ClientOrdinaryApplication",
                 MetaPropertyValue::Boolean(true),
                 &[CommonModule],
             ),

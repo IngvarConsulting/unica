@@ -5477,6 +5477,12 @@ mod tests {
                 &[CommonModule],
             ),
             (
+                "ClientOrdinaryApplication",
+                "ClientOrdinaryApplication",
+                MetaPropertyValue::Boolean(true),
+                &[CommonModule],
+            ),
+            (
                 "CodeAllowedLength",
                 "CodeAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),

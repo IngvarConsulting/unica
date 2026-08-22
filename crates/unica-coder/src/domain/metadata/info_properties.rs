@@ -369,6 +369,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
             kind == Catalog
         }
         ClientManagedApplication
+        | ClientOrdinaryApplication
         | ExternalConnection
         | Global
         | Privileged
