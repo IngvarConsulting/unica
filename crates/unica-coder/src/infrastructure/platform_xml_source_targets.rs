@@ -631,7 +631,7 @@ fn resolve_prefix_by_scoped_scan(
     .map_err(|error| error.to_string())?;
     let query = prefix.as_str().to_string();
     let parts = query.split('.').collect::<Vec<_>>();
-    if parts.len() > 5 {
+    if parts.len() > 7 {
         return Ok(None);
     }
     let selected = resolve_named_source_set(context, &request.source_set)
@@ -752,6 +752,84 @@ fn resolve_prefix_by_scoped_scan(
                     }
                 }
             }
+            if kind.tag == "ExternalDataSource" {
+                for (child_kind, child_directory) in [("Table", "Tables"), ("Cube", "Cubes")] {
+                    check_navigation_cancellation(cancellation)?;
+                    for child in proven_child_names(
+                        &selected.path,
+                        kind,
+                        &name,
+                        child_kind,
+                        child_directory,
+                        &mut partial,
+                        cancellation,
+                    )? {
+                        check_navigation_cancellation(cancellation)?;
+                        let nested = format!("{object}.{child_kind}.{child}");
+                        if nested.starts_with(&query) {
+                            if let Ok(address) = MetadataAddress::parse(
+                                crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                                &nested,
+                            ) {
+                                matches.push((address, TargetKind::MetadataObject, child.clone()));
+                            }
+                        }
+                        for terminal in crate::domain::source_target::module_terminals() {
+                            check_navigation_cancellation(cancellation)?;
+                            push_module_candidate(
+                                context,
+                                &selected,
+                                &format!("{nested}.{terminal}"),
+                                &query,
+                                terminal,
+                                &mut matches,
+                            )?;
+                        }
+                        if child_kind != "Cube" {
+                            continue;
+                        }
+                        let dimension_tables = selected
+                            .path
+                            .join(kind.directory)
+                            .join(&name)
+                            .join("Cubes")
+                            .join(&child)
+                            .join("DimensionTables");
+                        for dimension_table in proven_names_in_directory(
+                            &dimension_tables,
+                            "DimensionTable",
+                            &mut partial,
+                            cancellation,
+                        )? {
+                            check_navigation_cancellation(cancellation)?;
+                            let dimension = format!("{nested}.DimensionTable.{dimension_table}");
+                            if dimension.starts_with(&query) {
+                                if let Ok(address) = MetadataAddress::parse(
+                                    crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                                    &dimension,
+                                ) {
+                                    matches.push((
+                                        address,
+                                        TargetKind::MetadataObject,
+                                        dimension_table.clone(),
+                                    ));
+                                }
+                            }
+                            for terminal in crate::domain::source_target::module_terminals() {
+                                check_navigation_cancellation(cancellation)?;
+                                push_module_candidate(
+                                    context,
+                                    &selected,
+                                    &format!("{dimension}.{terminal}"),
+                                    &query,
+                                    terminal,
+                                    &mut matches,
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
         }
         if parts.len() < 2 {
             // Nested descendants were not enumerated for this query shape.
@@ -859,9 +937,29 @@ fn proven_child_names(
         .join(kind.directory)
         .join(owner)
         .join(child_directory);
-    let entries = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
+    proven_names_in_directory(&directory, child_kind, partial, cancellation)
+}
+
+fn proven_names_in_directory(
+    directory: &Path,
+    child_kind: &str,
+    partial: &mut bool,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, String> {
+    let metadata = match fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => {
+            *partial = true;
+            return Ok(Vec::new());
+        }
+    };
+    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+        *partial = true;
+        return Ok(Vec::new());
+    }
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
         Err(_) => {
             *partial = true;
             return Ok(Vec::new());
@@ -1106,6 +1204,38 @@ fn rendered_address_children(
                     }
                     children.push(collection_node(child_directory.to_string()));
                 }
+            }
+            if kind.tag == "ExternalDataSource" {
+                for child_directory in ["Tables", "Cubes"] {
+                    check_navigation_cancellation(cancellation)?;
+                    let directory = selected
+                        .path
+                        .join(kind.directory)
+                        .join(name)
+                        .join(child_directory);
+                    let Ok(metadata) = fs::symlink_metadata(&directory) else {
+                        continue;
+                    };
+                    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+                        continue;
+                    }
+                    children.push(collection_node(child_directory.to_string()));
+                }
+            }
+        }
+    }
+    if let ["ExternalDataSource", source, "Cube", cube] = parts.as_slice() {
+        check_navigation_cancellation(cancellation)?;
+        let directory = selected
+            .path
+            .join("ExternalDataSources")
+            .join(source)
+            .join("Cubes")
+            .join(cube)
+            .join("DimensionTables");
+        if let Ok(metadata) = fs::symlink_metadata(&directory) {
+            if !metadata_is_link_or_reparse_point(&metadata) && metadata.is_dir() {
+                children.push(collection_node("DimensionTables".to_string()));
             }
         }
     }
@@ -5210,6 +5340,77 @@ mod tests {
     }
 
     #[test]
+    fn source_navigation_children_exposes_external_data_source_collections() {
+        let context = fixture(
+            "navigation-external-data-source-children",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        for (path, kind, name) in [
+            (
+                "ExternalDataSources/Remote.xml",
+                "ExternalDataSource",
+                "Remote",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales.xml",
+                "Cube",
+                "Sales",
+            ),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path,
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(root.join("ExternalDataSources/Remote/Tables")).unwrap();
+        fs::create_dir_all(root.join("ExternalDataSources/Remote/Cubes/Sales/DimensionTables"))
+            .unwrap();
+
+        let children = |metadata_path: &str| {
+            children_platform_xml_source_navigation(
+                &context,
+                &SourceChildrenRequest {
+                    source_set: "main".to_string(),
+                    metadata_path: Some(
+                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path)
+                            .unwrap(),
+                    ),
+                    limit: 50,
+                    cursor: None,
+                },
+            )
+            .unwrap()
+        };
+
+        let source = children("ExternalDataSource.Remote");
+        assert_eq!(
+            source
+                .children
+                .iter()
+                .map(|child| child.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["Cubes", "Tables"]
+        );
+        assert!(source.children.iter().all(|child| {
+            child.node_kind == SourceNodeKind::Collection
+                && child.addressability == SourceNodeAddressability::Unaddressable
+        }));
+
+        let cube = children("ExternalDataSource.Remote.Cube.Sales");
+        assert_eq!(cube.children.len(), 1);
+        assert_eq!(cube.children[0].display_name, "DimensionTables");
+        assert_eq!(cube.children[0].node_kind, SourceNodeKind::Collection);
+        cleanup(&context);
+    }
+
+    #[test]
     fn source_navigation_external_virtual_roots_enumerate_two_artifacts_of_each_kind() {
         let context = fixture(
             "navigation-external-multi-root",
@@ -5533,6 +5734,94 @@ mod tests {
             resolve("Catalog").completeness,
             NavigationCompleteness::Partial
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn prefix_scan_reaches_external_data_source_descendants_without_modules() {
+        let context = fixture(
+            "navigation-prefix-external-data-source",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        for (path, kind, name) in [
+            (
+                "ExternalDataSources/Remote.xml",
+                "ExternalDataSource",
+                "Remote",
+            ),
+            (
+                "ExternalDataSources/Remote/Tables/Items.xml",
+                "Table",
+                "Items",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales.xml",
+                "Cube",
+                "Sales",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+                "DimensionTable",
+                "Calendar",
+            ),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path,
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let resolve = |query: &str| {
+            resolve_platform_xml_source_navigation(
+                &context,
+                &SourceResolveRequest {
+                    source_set: "main".to_string(),
+                    query: query.to_string(),
+                    mode: SourceNavigationMode::Prefix,
+                    target_kind: None,
+                    limit: 50,
+                    cursor: None,
+                },
+            )
+            .unwrap()
+        };
+
+        let owner = resolve("ExternalDataSource.Remote");
+        let found = owner
+            .candidates
+            .iter()
+            .map(|candidate| candidate.metadata_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            found.contains(&"ExternalDataSource.Remote.Table.Items"),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&"ExternalDataSource.Remote.Cube.Sales"),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&"ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar"),
+            "{found:?}"
+        );
+        assert_eq!(owner.completeness, NavigationCompleteness::Complete);
+
+        let deep = resolve("ExternalDataSource.Remote.Cube.Sales.DimensionTable.Cal");
+        assert_eq!(
+            deep.candidates
+                .iter()
+                .map(|candidate| candidate.metadata_path.as_str())
+                .collect::<Vec<_>>(),
+            ["ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar"]
+        );
+        assert_eq!(deep.completeness, NavigationCompleteness::Complete);
         cleanup(&context);
     }
 
