@@ -79,6 +79,7 @@ def source_smoke_oracle():
 
 
 def packaged_plugin_oracle():
+    """Load the packaging script used to generate the production MCP launcher."""
     script = Path(__file__).resolve().parents[2] / "scripts/ci/package-unica-plugin.py"
     spec = importlib.util.spec_from_file_location("package_unica_plugin_oracle", script)
     assert spec and spec.loader
@@ -199,6 +200,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         command: list[str] | None = None,
         extra_env: dict[str, str] | None = None,
     ):
+        """Run a handshaken MCP session with optional packaged-launch overrides."""
         env = os.environ.copy()
         if cache_dir is not None:
             env["UNICA_CACHE_DIR"] = str(cache_dir)

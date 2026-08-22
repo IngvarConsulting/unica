@@ -5,12 +5,14 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+/// Discovers the workspace selected by an optional caller-provided directory.
 pub(crate) fn discover_workspace(
     requested_cwd: Option<PathBuf>,
 ) -> Result<WorkspaceContext, String> {
     discover_workspace_with_current_dir(requested_cwd, env::current_dir)
 }
 
+/// Resolves the requested directory while deferring process-cwd access until needed.
 fn discover_workspace_with_current_dir(
     requested_cwd: Option<PathBuf>,
     current_dir: impl FnOnce() -> std::io::Result<PathBuf>,
@@ -151,6 +153,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies that an absolute caller path never depends on the launch directory.
     fn absolute_requested_cwd_does_not_read_process_cwd() {
         let root = temp_root("unica-workspace-absolute-cwd");
         std::fs::create_dir_all(&root).unwrap();
@@ -166,6 +169,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies the classified failure when a relative path cannot be anchored.
     fn relative_requested_cwd_reports_launch_directory_failure() {
         let error =
             discover_workspace_with_current_dir(Some(PathBuf::from("relative-workspace")), || {
@@ -185,6 +189,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies the classified failure when neither caller nor process provides a path.
     fn missing_requested_cwd_reports_launch_directory_failure() {
         let error = discover_workspace_with_current_dir(None, || {
             Err(io::Error::new(
@@ -203,6 +208,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies that relative caller paths are anchored to the launch directory.
     fn relative_requested_cwd_resolves_from_launch_directory() {
         let root = temp_root("unica-workspace-relative-cwd");
         let workspace = root.join("workspace");
