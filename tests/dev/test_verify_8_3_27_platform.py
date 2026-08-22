@@ -42,6 +42,19 @@ def write(path: Path, text: str) -> Path:
 
 
 class DocumentedContractTests(unittest.TestCase):
+    def test_current_and_completed_inventory_evidence_stay_distinct(self):
+        text = (ROOT / "spec/acceptance/format-profile-8-3-27.md").read_text(
+            encoding="utf-8"
+        )
+        completed = text.split(
+            "## Последний завершённый инвентарь доказательств по публичным операциям",
+            maxsplit=1,
+        )[1]
+
+        self.assertNotIn("второе значение остаётся `None`", completed)
+        self.assertIn("Для 23 видов", completed)
+        self.assertIn("включают 23 вида `meta.add`", completed)
+
     def test_current_case_contract_digest_is_documented(self):
         verifier = load_verifier()
         expected = f"`{verifier.EXPECTED_CASE_CONTRACT_SHA256}`"
