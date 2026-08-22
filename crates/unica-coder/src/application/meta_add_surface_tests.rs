@@ -374,70 +374,6 @@ fn add_applies_operations_atomically() {
 }
 
 #[test]
-fn common_module_ordinary_client_property_round_trips_through_add_and_edit() {
-    let workspace = create_configuration_workspace("common-module-ordinary-client");
-    let descriptor = workspace
-        .path()
-        .join("src/CommonModules/OrdinaryClient.xml");
-    let mut add = add_args(workspace.path(), "CommonModule", "OrdinaryClient", false);
-    add.insert(
-        "operations".to_string(),
-        json!([{
-            "op": "setProperties",
-            "values": {"ClientOrdinaryApplication": true}
-        }]),
-    );
-
-    let added = call_add_with_args(workspace.path(), &add);
-    assert!(added.ok, "{:?}", added.errors);
-    assert!(std::fs::read_to_string(&descriptor)
-        .unwrap()
-        .contains("<ClientOrdinaryApplication>true</ClientOrdinaryApplication>"));
-
-    let edit_args = Map::from_iter([
-        ("sourceSet".to_string(), json!("main")),
-        (
-            "metadataPath".to_string(),
-            json!("CommonModule.OrdinaryClient"),
-        ),
-        (
-            "operations".to_string(),
-            json!([{
-                "op": "setProperties",
-                "values": {"ClientOrdinaryApplication": false}
-            }]),
-        ),
-        ("dryRun".to_string(), json!(true)),
-    ]);
-    let preview = {
-        let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
-        UnicaApplication::new()
-            .call_tool("unica.meta.edit", &edit_args)
-            .expect("internal meta.edit preview call")
-    };
-    assert!(preview.ok, "{:?}", preview.errors);
-    assert!(
-        std::fs::read_to_string(&descriptor)
-            .unwrap()
-            .contains("<ClientOrdinaryApplication>true</ClientOrdinaryApplication>"),
-        "preview must not publish its post-image"
-    );
-
-    let mut apply_args = edit_args;
-    apply_args.insert("dryRun".to_string(), json!(false));
-    let applied = {
-        let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
-        UnicaApplication::new()
-            .call_tool("unica.meta.edit", &apply_args)
-            .expect("internal meta.edit apply call")
-    };
-    assert!(applied.ok, "{:?}", applied.errors);
-    assert!(std::fs::read_to_string(&descriptor)
-        .unwrap()
-        .contains("<ClientOrdinaryApplication>false</ClientOrdinaryApplication>"));
-}
-
-#[test]
 fn meta_add_predefined_items_preview_apply_noop_effects_and_cache_event() {
     let workspace = create_configuration_workspace("predefined-create");
     let source = workspace.path().join("src");
@@ -834,6 +770,66 @@ fn meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable() {
             "{kind}: duplicate changed source bytes"
         );
     }
+}
+
+#[test]
+fn meta_add_and_edit_round_trip_common_module_ordinary_client_context() {
+    let workspace = create_configuration_workspace("ordinary-client-context");
+    let name = "OrdinaryClient";
+    let mut add = add_args(workspace.path(), "CommonModule", name, false);
+    add.insert(
+        "operations".to_string(),
+        json!([{
+            "op": "setProperties",
+            "values": {"ClientOrdinaryApplication": true}
+        }]),
+    );
+
+    let added = call_add_with_args(workspace.path(), &add);
+    assert!(added.ok, "{:?}", added.errors);
+    let added_xml = std::fs::read_to_string(
+        workspace
+            .path()
+            .join("src/CommonModules/OrdinaryClient.xml"),
+    )
+    .unwrap();
+    roxmltree::Document::parse(added_xml.trim_start_matches('\u{feff}')).unwrap();
+    assert!(
+        added_xml.contains("<ClientOrdinaryApplication>true</ClientOrdinaryApplication>"),
+        "{added_xml}"
+    );
+
+    let edited_path = workspace
+        .path()
+        .join("src/CommonModules/OrdinaryClient.xml");
+    let before_preview = std::fs::read(&edited_path).unwrap();
+    let operations = json!([{
+        "op": "setProperties",
+        "values": {"ClientOrdinaryApplication": false}
+    }]);
+
+    let preview = call_edit(
+        workspace.path(),
+        &format!("CommonModule.{name}"),
+        operations.clone(),
+        true,
+    );
+    assert!(preview.ok, "{:?}", preview.errors);
+    assert_eq!(std::fs::read(&edited_path).unwrap(), before_preview);
+
+    let applied = call_edit(
+        workspace.path(),
+        &format!("CommonModule.{name}"),
+        operations,
+        false,
+    );
+    assert!(applied.ok, "{:?}", applied.errors);
+    let edited_xml = std::fs::read_to_string(&edited_path).unwrap();
+    roxmltree::Document::parse(edited_xml.trim_start_matches('\u{feff}')).unwrap();
+    assert!(
+        edited_xml.contains("<ClientOrdinaryApplication>false</ClientOrdinaryApplication>"),
+        "{edited_xml}"
+    );
 }
 
 #[test]

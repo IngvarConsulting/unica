@@ -3,11 +3,11 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
-    metadata_reference_type_kinds, metadata_relation_specs, validate_metadata_kind_collection,
-    validate_metadata_operation_capabilities, DateFractions, EventSourceClass, MetaCollection,
-    MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation, MetaEditOperationTag, MetaElementInput,
-    MetaElementUpdateInput, MetaEventSource, MetaFillValue, MetaPosition,
-    MetaPredefinedAccountType, MetaPredefinedExtDimensionType, MetaPredefinedFields,
+    metadata_reference_type_kinds, metadata_relation_specs, unknown_metadata_property_message,
+    validate_metadata_kind_collection, validate_metadata_operation_capabilities, DateFractions,
+    EventSourceClass, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
+    MetaEditOperationTag, MetaElementInput, MetaElementUpdateInput, MetaEventSource, MetaFillValue,
+    MetaPosition, MetaPredefinedAccountType, MetaPredefinedExtDimensionType, MetaPredefinedFields,
     MetaPredefinedItemAdd, MetaPredefinedItemUpdate, MetaPropertyChanges, MetaPropertyInput,
     MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
     MetaRelationTargetPolicy, MetaScope, MetaTemplateKind, MetaValidationStatus, MetadataFieldPath,
@@ -1028,7 +1028,7 @@ fn parse_property_changes(
         let spec = METADATA_PROPERTY_SPECS
             .iter()
             .find(|spec| spec.public_name == name)
-            .ok_or_else(|| invalid(&field, format!("unknown metadata property `{name}`")))?;
+            .ok_or_else(|| invalid(&field, unknown_metadata_property_message(kind, name)))?;
         let value = match spec.value_kind {
             MetaPropertyValueKind::String => value
                 .as_str()
@@ -3977,6 +3977,92 @@ mod tests {
         let properties = values["properties"].as_object().unwrap();
 
         assert!(!properties.contains_key("RegisterType"));
+    }
+
+    #[test]
+    fn common_module_ordinary_client_property_is_shared_by_add_and_edit() {
+        let calls = [
+            (
+                MetadataOperation::Add,
+                json!({
+                    "sourceSet": "main",
+                    "kind": "CommonModule",
+                    "name": "OrdinaryClient",
+                    "operations": [{
+                        "op": "setProperties",
+                        "values": {"ClientOrdinaryApplication": true},
+                    }],
+                }),
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "CommonModule.OrdinaryClient",
+                    "operations": [{
+                        "op": "setProperties",
+                        "values": {"ClientOrdinaryApplication": true},
+                    }],
+                }),
+            ),
+        ];
+
+        for (operation, call) in calls {
+            let values = published_root_property_values(operation);
+            assert_eq!(
+                values["properties"]["ClientOrdinaryApplication"],
+                json!({"type": "boolean"}),
+                "{operation:?}"
+            );
+            assert_eq!(
+                values["additionalProperties"],
+                json!(false),
+                "{operation:?}"
+            );
+            parse_metadata_request(operation, &object(call))
+                .unwrap_or_else(|failure| panic!("{operation:?}: {failure:?}"));
+        }
+    }
+
+    #[test]
+    fn add_and_edit_report_the_same_supported_common_module_properties() {
+        let calls = [
+            (
+                MetadataOperation::Add,
+                json!({
+                    "sourceSet": "main",
+                    "kind": "CommonModule",
+                    "name": "OrdinaryClient",
+                    "operations": [{
+                        "op": "setProperties",
+                        "values": {"ClientOrdinaryApplications": true},
+                    }],
+                }),
+            ),
+            (
+                MetadataOperation::Edit,
+                json!({
+                    "sourceSet": "main",
+                    "metadataPath": "CommonModule.OrdinaryClient",
+                    "operations": [{
+                        "op": "setProperties",
+                        "values": {"ClientOrdinaryApplications": true},
+                    }],
+                }),
+            ),
+        ];
+        let expected = "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: Synonym, Comment, ClientManagedApplication, ClientOrdinaryApplication, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall";
+
+        for (operation, call) in calls {
+            let error = diagnostic(operation, call);
+            assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+            assert_eq!(error.message, expected, "{operation:?}");
+            assert_eq!(
+                error.field.as_deref(),
+                Some("values.ClientOrdinaryApplications"),
+                "{operation:?}"
+            );
+        }
     }
 
     #[test]

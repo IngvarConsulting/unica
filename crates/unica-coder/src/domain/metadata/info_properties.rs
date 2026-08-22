@@ -829,6 +829,17 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_client_read_property_stays_independent_from_the_writer_registry() {
+        assert!(mutation_compatible_read_key("ClientOrdinaryApplication").is_none());
+
+        let observed = META_INFO_PROPERTY_PROFILE
+            .resolve(MetadataKind::CommonModule, "ClientOrdinaryApplication")
+            .expect("the independent read profile already observes this platform property");
+        assert_eq!(observed.key, "ClientOrdinaryApplication");
+        assert_eq!(observed.value_kind, MetaInfoPropertyValueKind::Boolean);
+    }
+
+    #[test]
     fn read_profile_keeps_register_periodicity_xml_names_kind_specific() {
         let information = META_INFO_PROPERTY_PROFILE
             .resolve(
