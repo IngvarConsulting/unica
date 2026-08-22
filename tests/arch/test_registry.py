@@ -47,7 +47,92 @@ TRACKER_REFERENCES = (
 )
 
 
-def evidence_reference_error(root: Path, reference: str, owner: str) -> str | None:
+def _python_declarations(tree: ast.AST, require_executable: bool) -> set[str]:
+    if not require_executable:
+        return {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+    declarations = {
+        node.name
+        for node in getattr(tree, "body", ())
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test")
+    }
+    for node in getattr(tree, "body", ()):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        base_names = {
+            base.id
+            if isinstance(base, ast.Name)
+            else base.attr
+            if isinstance(base, ast.Attribute)
+            else ""
+            for base in node.bases
+        }
+        if not (node.name.startswith("Test") or "TestCase" in base_names):
+            continue
+        declarations.update(
+            child.name
+            for child in node.body
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and child.name.startswith("test")
+        )
+    return declarations
+
+
+def _rust_test_attribute(source: bytes, attribute_item) -> bool:
+    attribute = next(
+        (
+            child
+            for child in attribute_item.named_children
+            if child.type == "attribute"
+        ),
+        None,
+    )
+    if attribute is None or not attribute.named_children:
+        return False
+    name = attribute.named_children[0]
+    if name.type == "identifier":
+        return source[name.start_byte : name.end_byte] == b"test"
+    if name.type == "scoped_identifier":
+        final = name.child_by_field_name("name")
+        return (
+            final is not None
+            and source[final.start_byte : final.end_byte] == b"test"
+        )
+    return False
+
+
+def _rust_has_attached_test_attribute(source: bytes, node) -> bool:
+    if node.parent is None:
+        return False
+    siblings = node.parent.children
+    index = next(
+        (position for position, sibling in enumerate(siblings) if sibling == node),
+        None,
+    )
+    if index is None:
+        return False
+    for sibling in reversed(siblings[:index]):
+        if sibling.type in {"line_comment", "block_comment"}:
+            continue
+        if sibling.type != "attribute_item":
+            break
+        if _rust_test_attribute(source, sibling):
+            return True
+    return False
+
+
+def evidence_reference_error(
+    root: Path,
+    reference: str,
+    owner: str,
+    *,
+    require_executable: bool,
+) -> str | None:
     """Resolve one `path::declaration` without accepting prose lookalikes."""
     path_text, separator, name = reference.partition("::")
     relative = Path(path_text)
@@ -55,20 +140,28 @@ def evidence_reference_error(root: Path, reference: str, owner: str) -> str | No
         return f"{owner}: evidence must name an exact path::declaration"
     if relative.is_absolute() or ".." in relative.parts:
         return f"{owner}: evidence path {path_text} escapes the repository"
-    target = root / relative
+    resolved_root = root.resolve()
+    target = (resolved_root / relative).resolve()
+    if not target.is_relative_to(resolved_root):
+        return f"{owner}: evidence path {path_text} escapes the repository"
     if not target.is_file():
         return f"{owner}: evidence file {path_text} is missing"
 
     if target.suffix == ".py":
+        if require_executable and (
+            not relative.parts
+            or relative.parts[0] != "tests"
+            or not relative.name.startswith("test")
+        ):
+            return (
+                f"{owner}: Python evidence {path_text} is not a discoverable "
+                "tests/test*.py module"
+            )
         try:
             tree = ast.parse(target.read_text(encoding="utf-8"), filename=path_text)
         except (OSError, SyntaxError, UnicodeError) as error:
             return f"{owner}: cannot parse Python evidence {path_text}: {error}"
-        declarations = {
-            node.name
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        declarations = _python_declarations(tree, require_executable)
     elif target.suffix == ".rs":
         try:
             source = target.read_bytes()
@@ -82,7 +175,15 @@ def evidence_reference_error(root: Path, reference: str, owner: str) -> str | No
             node = stack.pop()
             if node.type == "function_item":
                 identifier = node.child_by_field_name("name")
-                if identifier is not None:
+                body = node.child_by_field_name("body")
+                if (
+                    identifier is not None
+                    and body is not None
+                    and (
+                        not require_executable
+                        or _rust_has_attached_test_attribute(source, node)
+                    )
+                ):
                     declarations.add(
                         source[identifier.start_byte : identifier.end_byte].decode("utf-8")
                     )
@@ -91,7 +192,8 @@ def evidence_reference_error(root: Path, reference: str, owner: str) -> str | No
         return f"{owner}: unsupported evidence source {path_text}"
 
     if name not in declarations:
-        return f"{owner}: {path_text} does not declare {name}"
+        qualifier = " an executable test" if require_executable else ""
+        return f"{owner}: {path_text} does not declare{qualifier} {name}"
     return None
 
 
@@ -307,6 +409,22 @@ class RecordShapeTests(unittest.TestCase):
                 "missing prop `realized`" in error
                 for error in REGISTRY.validation_errors([planned_blank])
             )
+        )
+
+    def test_decision_changes_names_existing_contracts_as_a_list(self) -> None:
+        scalar = self.active_decision(changes="CTR.WIRE.EXAMPLE")
+        missing = self.active_decision(changes=["CTR.WIRE.MISSING"])
+
+        scalar_errors = REGISTRY.validation_errors([scalar])
+        missing_errors = REGISTRY.validation_errors([missing])
+
+        self.assertTrue(
+            any("`changes` must be a list" in error for error in scalar_errors),
+            scalar_errors,
+        )
+        self.assertTrue(
+            any("changes cites missing contract" in error for error in missing_errors),
+            missing_errors,
         )
 
     def test_symbol_matches_its_path(self) -> None:
@@ -527,7 +645,12 @@ class ReferenceTests(unittest.TestCase):
             if not check:
                 offenders.append(f"{record.relative}: no check named")
                 continue
-            error = evidence_reference_error(REPO_ROOT, check, record.relative)
+            error = evidence_reference_error(
+                REPO_ROOT,
+                check,
+                record.relative,
+                require_executable=True,
+            )
             if error:
                 offenders.append(error)
         self.assertEqual(offenders, [])
@@ -535,12 +658,17 @@ class ReferenceTests(unittest.TestCase):
     def test_evidence_reference_requires_an_exact_python_or_rust_declaration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            python = root / "checks.py"
+            tests = root / "tests"
+            tests.mkdir()
+            python = tests / "test_checks.py"
             rust = root / "checks.rs"
             python.write_text(
+                "import unittest\n"
                 "TEXT = 'test_only_in_a_literal'\n"
                 "# def test_only_in_a_comment(): pass\n"
-                "class Checks:\n"
+                "def helper_python():\n"
+                "    pass\n"
+                "class Checks(unittest.TestCase):\n"
                 "    def test_real_python(self):\n"
                 "        pass\n",
                 encoding="utf-8",
@@ -548,6 +676,7 @@ class ReferenceTests(unittest.TestCase):
             rust.write_text(
                 'const TEXT: &str = "test_only_in_a_literal";\n'
                 "// fn test_only_in_a_comment() {}\n"
+                "fn helper_rust() {}\n"
                 "#[test]\n"
                 "fn test_real_rust() {}\n",
                 encoding="utf-8",
@@ -555,22 +684,105 @@ class ReferenceTests(unittest.TestCase):
 
             self.assertIsNone(
                 evidence_reference_error(
-                    root, "checks.py::test_real_python", "fixture"
+                    root,
+                    "tests/test_checks.py::test_real_python",
+                    "fixture",
+                    require_executable=True,
                 )
             )
             self.assertIsNone(
-                evidence_reference_error(root, "checks.rs::test_real_rust", "fixture")
+                evidence_reference_error(
+                    root,
+                    "checks.rs::test_real_rust",
+                    "fixture",
+                    require_executable=True,
+                )
             )
             for reference in (
-                "checks.py",
-                "checks.py::test_only_in_a_literal",
-                "checks.py::test_only_in_a_comment",
+                "tests/test_checks.py",
+                "tests/test_checks.py::test_only_in_a_literal",
+                "tests/test_checks.py::test_only_in_a_comment",
                 "checks.rs::test_only_in_a_literal",
                 "checks.rs::test_only_in_a_comment",
             ):
                 with self.subTest(reference=reference):
                     self.assertIsNotNone(
-                        evidence_reference_error(root, reference, "fixture")
+                        evidence_reference_error(
+                            root,
+                            reference,
+                            "fixture",
+                            require_executable=True,
+                        )
+                    )
+            for reference in (
+                "tests/test_checks.py::helper_python",
+                "checks.rs::helper_rust",
+            ):
+                with self.subTest(non_executable=reference):
+                    self.assertIsNotNone(
+                        evidence_reference_error(
+                            root,
+                            reference,
+                            "fixture",
+                            require_executable=True,
+                        )
+                    )
+                    self.assertIsNone(
+                        evidence_reference_error(
+                            root,
+                            reference,
+                            "fixture",
+                            require_executable=False,
+                        )
+                    )
+
+    def test_executable_python_evidence_must_be_in_a_discoverable_test_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            arbitrary = root / "checks.py"
+            arbitrary.write_text("def test_looks_executable(): pass\n", encoding="utf-8")
+
+            error = evidence_reference_error(
+                root,
+                "checks.py::test_looks_executable",
+                "fixture",
+                require_executable=True,
+            )
+
+            self.assertIsNotNone(error)
+            self.assertIn("discoverable", error or "")
+            self.assertIsNone(
+                evidence_reference_error(
+                    root,
+                    "checks.py::test_looks_executable",
+                    "fixture",
+                    require_executable=False,
+                )
+            )
+
+    def test_executable_python_evidence_rejects_nested_test_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tests = root / "tests"
+            tests.mkdir()
+            nested = tests / "test_nested.py"
+            nested.write_text(
+                "def outer():\n"
+                "    def test_nested_function(): pass\n"
+                "    class TestNested:\n"
+                "        def test_nested_method(self): pass\n",
+                encoding="utf-8",
+            )
+
+            for name in ("test_nested_function", "test_nested_method"):
+                with self.subTest(name=name):
+                    self.assertIsNotNone(
+                        evidence_reference_error(
+                            root,
+                            f"tests/test_nested.py::{name}",
+                            "fixture",
+                            require_executable=True,
+                        )
                     )
 
     def test_a_realized_decision_names_evidence_that_exists(self) -> None:
@@ -588,7 +800,12 @@ class ReferenceTests(unittest.TestCase):
             evidence = record.props.get("realized")
             if evidence in (None, ""):
                 continue
-            error = evidence_reference_error(REPO_ROOT, str(evidence), record.relative)
+            error = evidence_reference_error(
+                REPO_ROOT,
+                str(evidence),
+                record.relative,
+                require_executable=False,
+            )
             if error:
                 offenders.append(error)
         self.assertEqual(offenders, [])

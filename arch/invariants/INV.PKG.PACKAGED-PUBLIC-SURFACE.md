@@ -2,14 +2,16 @@
 id: INV.PKG.PACKAGED-PUBLIC-SURFACE
 status: active
 governs: product
-decision: DEC.2026-08-18.CARRIED-RULES
-check: tests/ci/test_unica_workflow.py::test_packaged_bootstrap_is_smoked_on_every_supported_host
+decision: DEC.2026-08-22.EVIDENCE-BOUNDED-PRESERVATION
+check: crates/unica-bootstrap/tests/platform/verification_contract.rs::verify_requires_each_lifecycle_to_expose_each_public_tool
 scope: [host, pkg, product, wire]
 ---
 
-# Финальный пакет проверяет полный MCP на каждой поддерживаемой цели
+# Bootstrap проверяет два MCP lifecycle и три опорных инструмента
 
-Релизный gate запускает bootstrap из собранного тонкого пакета на Linux,
-Windows и macOS. После доставки закреплённого runtime успешная проверка
-подтверждает пакет, runtime и канонический набор инструментов MCP до
-потребительского продвижения.
+Проверка runtime требует успешный legacy `initialize` с последующим
+`tools/list`, а также direct-first `server/discover` и `tools/list`. Оба списка
+должны содержать `unica.project.status`, `unica.standards.search` и
+`unica.standards.explain`. Полный перечень инструментов, определения их
+аргументов и результатов и предметное поведение этим правилом не объявляются
+проверенными.

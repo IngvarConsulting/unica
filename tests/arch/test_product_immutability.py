@@ -84,6 +84,22 @@ establishes: []
 **Решение.** Замер показал, что прежняя формулировка не покрывала случай.
 """
 
+SURFACE_GROUND = GROUND.replace(
+    "establishes: []",
+    "changes: [CTR.WIRE.TOOL-SURFACE]\n"
+    "establishes: [INV.WIRE.SURFACE-CHANGE]",
+)
+UNRELATED_SURFACE_GROUND = SURFACE_GROUND.replace(
+    "CTR.WIRE.TOOL-SURFACE", "CTR.WIRE.UNRELATED"
+)
+SURFACE_RULE = RULE.replace(
+    "id: INV.WIRE.PROMISE",
+    "id: INV.WIRE.SURFACE-CHANGE",
+).replace(
+    "decision: DEC.2026-01-01.PROMISE",
+    "decision: DEC.2026-03-03.WHY-IT-CHANGES",
+)
+
 INVARIANT_GROUND = """---
 id: INV.WIRE.WHY-IT-CHANGES
 status: active
@@ -141,6 +157,8 @@ class Fixture:
         (self.root / "arch" / "invariants").mkdir(parents=True)
         self.rule = self.root / "arch" / "invariants" / "INV.WIRE.PROMISE.md"
         self.rule.write_text(RULE, encoding="utf-8")
+        self.surface = self.root / "arch" / "tool-surface.md"
+        self.surface.write_text("# Surface\n\nunica.old\n", encoding="utf-8")
         (self.root / "tests").mkdir()
         (self.root / "tests" / "evidence.py").write_text(
             "def test_reason(): pass\n\nclass Evidence:\n    async def test_async_reason(self): pass\n",
@@ -304,6 +322,46 @@ class ProductImmutabilityTests(unittest.TestCase):
         verdict = self.fixture.inspect()
         self.assertEqual(len(verdict.offenders), 1)
         self.assertIn("без нового решения", verdict.offenders[0])
+
+    def test_surface_ledger_change_without_new_product_ground_is_caught(self) -> None:
+        self.fixture.surface.write_text("# Surface\n\nunica.new\n", encoding="utf-8")
+
+        verdict = self.fixture.inspect()
+
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("arch/tool-surface.md", verdict.offenders[0])
+        self.assertIn("нового продуктового решения", verdict.offenders[0])
+
+    def test_surface_ledger_change_with_new_wire_ground_is_allowed(self) -> None:
+        self.fixture.surface.write_text("# Surface\n\nunica.new\n", encoding="utf-8")
+        decision = (
+            self.fixture.root
+            / "arch"
+            / "decisions"
+            / "2026-03-03-why-it-changes.md"
+        )
+        decision.write_text(SURFACE_GROUND, encoding="utf-8")
+        rule = self.fixture.root / "arch" / "invariants" / "INV.WIRE.SURFACE-CHANGE.md"
+        rule.write_text(SURFACE_RULE, encoding="utf-8")
+
+        self.assertEqual(self.fixture.inspect().offenders, ())
+
+    def test_surface_ledger_change_rejects_unrelated_wire_ground(self) -> None:
+        self.fixture.surface.write_text("# Surface\n\nunica.new\n", encoding="utf-8")
+        decision = (
+            self.fixture.root
+            / "arch"
+            / "decisions"
+            / "2026-03-03-why-it-changes.md"
+        )
+        decision.write_text(UNRELATED_SURFACE_GROUND, encoding="utf-8")
+        rule = self.fixture.root / "arch" / "invariants" / "INV.WIRE.SURFACE-CHANGE.md"
+        rule.write_text(SURFACE_RULE, encoding="utf-8")
+
+        verdict = self.fixture.inspect()
+
+        self.assertEqual(len(verdict.offenders), 1)
+        self.assertIn("arch/tool-surface.md", verdict.offenders[0])
 
     def test_a_new_invariant_is_not_a_product_ground(self) -> None:
         verdict = self.point_rule_at(

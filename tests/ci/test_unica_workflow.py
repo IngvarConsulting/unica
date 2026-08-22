@@ -496,15 +496,31 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def test_packaged_bootstrap_is_smoked_on_every_supported_host(self) -> None:
         text = self.release_text()
+        probe = job_block(text, "probe-thin-bootstrap")
+        smoke = job_block(text, "smoke-thin-plugin")
 
-        self.assertIn("probe-thin-bootstrap:", text)
-        self.assertIn("smoke-thin-plugin:", text)
-        self.assertIn("Probe packaged bootstrap through the downloader", text)
-        self.assertIn("Smoke packaged bootstrap against published runtime", text)
-        self.assertIn("scripts/ci/smoke-unica-bootstrap.py", text)
-        self.assertIn("needs: package-thin", text)
-        self.assertIn("needs: [package-thin, publish-release-assets]", text)
-        self.assertIn("--expect-download-failure", text)
+        expected_targets = {
+            "linux-x64": "ubuntu-latest",
+            "win-x64": "windows-2022",
+            "darwin-arm64": "macos-14",
+        }
+        for target, runner in expected_targets.items():
+            with self.subTest(job="probe", target=target):
+                self.assertIn(f"- target: {target}", probe)
+                self.assertIn(f"runner: {runner}", probe)
+            with self.subTest(job="smoke", target=target):
+                self.assertIn(f"- target: {target}", smoke)
+                self.assertIn(f"runner: {runner}", smoke)
+        self.assertEqual(probe.count("- target:"), len(expected_targets))
+        self.assertEqual(smoke.count("- target:"), len(expected_targets))
+        self.assertIn("Probe packaged bootstrap through the downloader", probe)
+        self.assertIn("Smoke packaged bootstrap against published runtime", smoke)
+        self.assertIn("scripts/ci/smoke-unica-bootstrap.py", smoke)
+        self.assertIn(' --plugin-root .build/thin/plugins/unica', smoke)
+        self.assertIn(' --target "${{ matrix.target }}"', smoke)
+        self.assertIn("needs: package-thin", probe)
+        self.assertIn("needs: [package-thin, publish-release-assets]", smoke)
+        self.assertIn("--expect-download-failure", probe)
 
     def test_v080_source_release_has_no_executable_legacy_migration_jobs(self) -> None:
         release = self.release_text()

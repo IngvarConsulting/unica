@@ -1,7 +1,7 @@
 ---
 id: DEC.2026-08-22.LINEAR-PUBLICATION
 status: active
-governs: process
+governs: product
 realized: tests/ci/test_unica_workflow.py::test_publication_is_one_linear_pass_ordered_by_needs
 supersedes: []
 superseded-by: null

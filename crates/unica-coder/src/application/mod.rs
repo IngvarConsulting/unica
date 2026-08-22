@@ -9594,10 +9594,7 @@ pub(crate) mod tests {
 
     #[test]
     pub(crate) fn incompatible_format_blocks_before_native_handler() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-application-format-guard-{}",
-            std::process::id()
-        ));
+        let root = test_workspace_root("unica-application-format-guard");
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(
@@ -12898,6 +12895,15 @@ pub(crate) mod tests {
             error,
             "typed_result_textual: unica.project.map returned ok with a stdout duplicate"
         );
+    }
+
+    #[test]
+    fn typed_read_result_contract_is_closed() {
+        successful_typed_reader_without_data_fails_closed();
+        successful_typed_reader_with_stdout_duplicate_fails_closed();
+        failed_typed_reader_may_omit_data();
+        successful_typed_mutation_may_omit_data();
+        successful_external_stream_reader_may_omit_data();
     }
 
     #[test]

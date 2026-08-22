@@ -177,6 +177,25 @@ def validation_errors(found: list[Record]) -> list[str]:
             if not version.isdecimal() or int(version) < 1:
                 errors.append(f"{record.relative}: version must be a positive integer")
         if record.kind == "decision":
+            if "changes" in record.props:
+                changed_contracts = record.props.get("changes")
+                if not isinstance(changed_contracts, list) or not changed_contracts:
+                    errors.append(
+                        f"{record.relative}: `changes` must be a list and not empty"
+                    )
+                else:
+                    for contract_id in changed_contracts:
+                        contract = by_id.get(contract_id)
+                        if contract is None:
+                            errors.append(
+                                f"{record.relative}: changes cites missing contract "
+                                f"{contract_id}"
+                            )
+                        elif contract.kind != "contract":
+                            errors.append(
+                                f"{record.relative}: changes cites non-contract "
+                                f"{contract_id}"
+                            )
             for rule_id in record.props.get("establishes") or []:
                 rule = by_id.get(rule_id)
                 if rule is not None and rule.props.get("decision") != record.id:

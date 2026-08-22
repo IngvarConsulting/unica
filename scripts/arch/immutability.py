@@ -284,6 +284,40 @@ def _ground_error(repo: Path, ground: IntroducedRecord) -> str | None:
     return None
 
 
+def _list_property(value: object) -> tuple[str, ...]:
+    if isinstance(value, list):
+        return tuple(str(item) for item in value)
+    if not isinstance(value, str) or not value.startswith("[") or not value.endswith("]"):
+        return ()
+    return tuple(item.strip() for item in value[1:-1].split(",") if item.strip())
+
+
+def _surface_change_has_product_ground(
+    repo: Path,
+    introduced: dict[str, IntroducedRecord],
+) -> bool:
+    """A changed generated surface needs a new implemented wire decision."""
+    for identifier, decision in introduced.items():
+        if decision.kind != "decision" or _ground_error(repo, decision) is not None:
+            continue
+        if "CTR.WIRE.TOOL-SURFACE" not in _list_property(
+            decision.props.get("changes")
+        ):
+            continue
+        for established in _list_property(decision.props.get("establishes")):
+            rule = introduced.get(established)
+            if rule is None or rule.kind not in {"invariant", "contract"}:
+                continue
+            if rule.props.get("decision") != identifier:
+                continue
+            if rule.props.get("governs") != "product":
+                continue
+            if "wire" not in _list_property(rule.props.get("scope")):
+                continue
+            return True
+    return False
+
+
 def inspect(repo: Path, base_ref: str) -> Verdict:
     """Сверить принятые продуктовые записи базы с рабочим деревом."""
     base = _records_at(repo, base_ref)
@@ -323,6 +357,21 @@ def inspect(repo: Path, base_ref: str) -> Verdict:
             continue
         if error := _ground_error(repo, introduced_ground):
             offenders.append(f"{path}: продуктовое правило изменено, но {error}")
+
+    surface_path = "arch/tool-surface.md"
+    before_surface = base.get(surface_path)
+    current_surface = repo / surface_path
+    if (
+        before_surface is not None
+        and current_surface.is_file()
+        and current_surface.read_text(encoding="utf-8") != before_surface
+        and not _surface_change_has_product_ground(repo, introduced)
+    ):
+        offenders.append(
+            f"{surface_path}: публичная поверхность изменена без нового "
+            "продуктового решения с changes: [CTR.WIRE.TOOL-SURFACE] "
+            "и wire-правила"
+        )
 
     return Verdict(tuple(offenders), compared)
 

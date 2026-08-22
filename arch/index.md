@@ -36,8 +36,10 @@
 | `DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE` | решение · product | active | да | Записываемый профиль platform XML остаётся единственным | [decisions/2026-08-21-single-writable-platform-xml-profile.md](decisions/2026-08-21-single-writable-platform-xml-profile.md) |
 | `DEC.2026-08-21.SOURCE-READ-ONLY-SURFACE` | решение · product | active | да | Ресурсная поверхность source остаётся только для чтения | [decisions/2026-08-21-source-read-only-surface.md](decisions/2026-08-21-source-read-only-surface.md) |
 | `DEC.2026-08-21.V2-PROCESS-POLICY` | решение · process | active | да | Процессная политика v2 не переносит недоказанную широту v1 | [decisions/2026-08-21-v2-process-policy.md](decisions/2026-08-21-v2-process-policy.md) |
+| `DEC.2026-08-22.EVIDENCE-BOUNDED-PRESERVATION` | решение · product | active | да | Перенесённое обещание не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-preservation.md](decisions/2026-08-22-evidence-bounded-preservation.md) |
 | `DEC.2026-08-22.EVIDENCE-BOUNDED-SAFETY` | решение · product | active | да | Safety-правило не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-safety.md](decisions/2026-08-22-evidence-bounded-safety.md) |
-| `DEC.2026-08-22.LINEAR-PUBLICATION` | решение · process | active | да | Публикация выражается зависимостями одного конвейера | [decisions/2026-08-22-linear-publication.md](decisions/2026-08-22-linear-publication.md) |
+| `DEC.2026-08-22.LINEAR-PUBLICATION` | решение · product | active | да | Публикация выражается зависимостями одного конвейера | [decisions/2026-08-22-linear-publication.md](decisions/2026-08-22-linear-publication.md) |
+| `INV.APP.CODE-DEFINITION-READINESS` | инвариант · product | active |  | Definition не публикует ложный типизированный успех | [invariants/INV.APP.CODE-DEFINITION-READINESS.md](invariants/INV.APP.CODE-DEFINITION-READINESS.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Оверлей конфигурации не меняет исходный снимок | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEFERRED-MANIFEST` | инвариант · product | active |  | Большое чтение отвечает ограниченным манифестом | [invariants/INV.APP.DEFERRED-MANIFEST.md](invariants/INV.APP.DEFERRED-MANIFEST.md) |
 | `INV.APP.DEFERRED-READ` | инвариант · product | active |  | Продолжение читает неизменяемый сохранённый снимок | [invariants/INV.APP.DEFERRED-READ.md](invariants/INV.APP.DEFERRED-READ.md) |
@@ -80,7 +82,7 @@
 | `INV.CI.EXACT-CARGO-CACHE` | инвариант · process | active |  | Кеш Cargo точен и наблюдаем | [invariants/INV.CI.EXACT-CARGO-CACHE.md](invariants/INV.CI.EXACT-CARGO-CACHE.md) |
 | `INV.CI.EXTRACTED-RUNTIME-SMOKE` | инвариант · process | active |  | Дымовая проверка исполняет извлечённый архив | [invariants/INV.CI.EXTRACTED-RUNTIME-SMOKE.md](invariants/INV.CI.EXTRACTED-RUNTIME-SMOKE.md) |
 | `INV.CI.INTERMEDIATE-RETENTION` | инвариант · process | active |  | Промежуточный отчёт оценки живёт один день | [invariants/INV.CI.INTERMEDIATE-RETENTION.md](invariants/INV.CI.INTERMEDIATE-RETENTION.md) |
-| `INV.CI.LINEAR-IDEMPOTENT-PUBLICATION` | инвариант · process | active |  | Публикация идёт одним возобновляемым проходом | [invariants/INV.CI.LINEAR-IDEMPOTENT-PUBLICATION.md](invariants/INV.CI.LINEAR-IDEMPOTENT-PUBLICATION.md) |
+| `INV.CI.LINEAR-IDEMPOTENT-PUBLICATION` | инвариант · product | active |  | Публикация идёт одним возобновляемым проходом | [invariants/INV.CI.LINEAR-IDEMPOTENT-PUBLICATION.md](invariants/INV.CI.LINEAR-IDEMPOTENT-PUBLICATION.md) |
 | `INV.CI.LOCKED-WORKSPACE-BUILD` | инвариант · process | active |  | Ядро и bootstrap собираются одним закреплённым вызовом | [invariants/INV.CI.LOCKED-WORKSPACE-BUILD.md](invariants/INV.CI.LOCKED-WORKSPACE-BUILD.md) |
 | `INV.CI.NARROW-TARGET-ARTIFACTS` | инвариант · process | active |  | Межзадачные артефакты разделены по цели и назначению | [invariants/INV.CI.NARROW-TARGET-ARTIFACTS.md](invariants/INV.CI.NARROW-TARGET-ARTIFACTS.md) |
 | `INV.CI.ONE-AGGREGATE-GATE` | инвариант · process | active |  | Каждый pull request закрывает один агрегирующий шлюз | [invariants/INV.CI.ONE-AGGREGATE-GATE.md](invariants/INV.CI.ONE-AGGREGATE-GATE.md) |
@@ -131,7 +133,7 @@
 | `INV.PKG.INSTALL-TOOL-CLOSURE` | инвариант · product | active |  | Неполный runtime не помечается готовым | [invariants/INV.PKG.INSTALL-TOOL-CLOSURE.md](invariants/INV.PKG.INSTALL-TOOL-CLOSURE.md) |
 | `INV.PKG.OLDEST-CLIENT-KEYS` | инвариант · product | active |  | Claude-контракты не используют новые необязательные ключи | [invariants/INV.PKG.OLDEST-CLIENT-KEYS.md](invariants/INV.PKG.OLDEST-CLIENT-KEYS.md) |
 | `INV.PKG.OLDEST-CLIENT-LOAD` | инвариант · product | active |  | Пакет проверяется нижней поддерживаемой версией клиента | [invariants/INV.PKG.OLDEST-CLIENT-LOAD.md](invariants/INV.PKG.OLDEST-CLIENT-LOAD.md) |
-| `INV.PKG.PACKAGED-PUBLIC-SURFACE` | инвариант · product | active |  | Финальный пакет проверяет полный MCP на каждой поддерживаемой цели | [invariants/INV.PKG.PACKAGED-PUBLIC-SURFACE.md](invariants/INV.PKG.PACKAGED-PUBLIC-SURFACE.md) |
+| `INV.PKG.PACKAGED-PUBLIC-SURFACE` | инвариант · product | active |  | Bootstrap проверяет два MCP lifecycle и три опорных инструмента | [invariants/INV.PKG.PACKAGED-PUBLIC-SURFACE.md](invariants/INV.PKG.PACKAGED-PUBLIC-SURFACE.md) |
 | `INV.PKG.PUBLIC-BINARY-NAME` | инвариант · product | active |  | Публичное ядро собирается как unica | [invariants/INV.PKG.PUBLIC-BINARY-NAME.md](invariants/INV.PKG.PUBLIC-BINARY-NAME.md) |
 | `INV.PKG.RETENTION-BY-ARTIFACT` | инвариант · product | active |  | Сборка мусора считает версии по артефакту | [invariants/INV.PKG.RETENTION-BY-ARTIFACT.md](invariants/INV.PKG.RETENTION-BY-ARTIFACT.md) |
 | `INV.PKG.RUNTIME-TOOL-CLOSURE` | инвариант · product | active |  | Пакет runtime совпадает с объявленным набором файлов | [invariants/INV.PKG.RUNTIME-TOOL-CLOSURE.md](invariants/INV.PKG.RUNTIME-TOOL-CLOSURE.md) |
@@ -142,7 +144,7 @@
 | `INV.PKG.TRACKED-BIN-REJECTED` | инвариант · product | active |  | Отслеживаемый каталог бинарников не входит в пакет | [invariants/INV.PKG.TRACKED-BIN-REJECTED.md](invariants/INV.PKG.TRACKED-BIN-REJECTED.md) |
 | `INV.PKG.TRACKED-IGNORED-REJECTED` | инвариант · product | active |  | Отслеживаемый файл в игнорируемом дереве не маскируется | [invariants/INV.PKG.TRACKED-IGNORED-REJECTED.md](invariants/INV.PKG.TRACKED-IGNORED-REJECTED.md) |
 | `INV.PKG.TWO-HOSTS-ONE-TREE` | инвариант · product | active |  | Два хоста разрешают один корень плагина | [invariants/INV.PKG.TWO-HOSTS-ONE-TREE.md](invariants/INV.PKG.TWO-HOSTS-ONE-TREE.md) |
-| `INV.PKG.VERIFIED-ATOMIC-INSTALL` | инвариант · product | active |  | Runtime становится готовым только после полной проверенной установки | [invariants/INV.PKG.VERIFIED-ATOMIC-INSTALL.md](invariants/INV.PKG.VERIFIED-ATOMIC-INSTALL.md) |
+| `INV.PKG.VERIFIED-ATOMIC-INSTALL` | инвариант · product | active |  | Runtime становится готовым после проверки ассета и файлового замыкания | [invariants/INV.PKG.VERIFIED-ATOMIC-INSTALL.md](invariants/INV.PKG.VERIFIED-ATOMIC-INSTALL.md) |
 | `INV.PKG.VERSION-LOCKSTEP` | инвариант · product | active |  | Версия поставки едина во всех контрактных местах | [invariants/INV.PKG.VERSION-LOCKSTEP.md](invariants/INV.PKG.VERSION-LOCKSTEP.md) |
 | `INV.PLATFORM.OS-BEHIND-FACADE` | инвариант · process | active |  | Зависящий от ОС код живёт за платформенными фасадами | [invariants/INV.PLATFORM.OS-BEHIND-FACADE.md](invariants/INV.PLATFORM.OS-BEHIND-FACADE.md) |
 | `INV.PLATFORM.PROCESS-TREE-LIFECYCLE` | инвариант · product | active |  | Управляемая работа владеет полным деревом процессов | [invariants/INV.PLATFORM.PROCESS-TREE-LIFECYCLE.md](invariants/INV.PLATFORM.PROCESS-TREE-LIFECYCLE.md) |
@@ -226,6 +228,7 @@
 | `INV.SOURCE.WRITE-TARGET-KIND` | инвариант · product | active |  | Писатель принимает только терминал модуля | [invariants/INV.SOURCE.WRITE-TARGET-KIND.md](invariants/INV.SOURCE.WRITE-TARGET-KIND.md) |
 | `INV.SURFACE.ACCEPTANCE-UNCHANGED` | инвариант · product | active |  | Сужение публикации не сужает приём | [invariants/INV.SURFACE.ACCEPTANCE-UNCHANGED.md](invariants/INV.SURFACE.ACCEPTANCE-UNCHANGED.md) |
 | `INV.SURFACE.ARGUMENTS-DESCRIBED` | инвариант · product | active |  | Каждый опубликованный аргумент описан | [invariants/INV.SURFACE.ARGUMENTS-DESCRIBED.md](invariants/INV.SURFACE.ARGUMENTS-DESCRIBED.md) |
+| `INV.SURFACE.CHANGESET-COHERENCE` | инвариант · process | active |  | Изменение ведомости требует нового продуктового основания | [invariants/INV.SURFACE.CHANGESET-COHERENCE.md](invariants/INV.SURFACE.CHANGESET-COHERENCE.md) |
 | `INV.SURFACE.CODE-SEARCH-ROLES` | инвариант · process | active |  | Приёмка поиска требует три ролевые секции | [invariants/INV.SURFACE.CODE-SEARCH-ROLES.md](invariants/INV.SURFACE.CODE-SEARCH-ROLES.md) |
 | `INV.SURFACE.DCS-NAMING` | инвариант · process | active |  | Provenance отделяет локальный DCS-контракт от донорских путей | [invariants/INV.SURFACE.DCS-NAMING.md](invariants/INV.SURFACE.DCS-NAMING.md) |
 | `INV.SURFACE.DIAGNOSTIC-TARGET` | инвариант · product | active |  | Схема диагностики публикует логическую цель | [invariants/INV.SURFACE.DIAGNOSTIC-TARGET.md](invariants/INV.SURFACE.DIAGNOSTIC-TARGET.md) |
@@ -235,6 +238,7 @@
 | `INV.SURFACE.NO-ADAPTER-TARGETS` | инвариант · product | active |  | Скиллы не показывают внутренние MCP-имена | [invariants/INV.SURFACE.NO-ADAPTER-TARGETS.md](invariants/INV.SURFACE.NO-ADAPTER-TARGETS.md) |
 | `INV.SURFACE.NO-RAW-ADAPTER-ARGS` | инвариант · product | active |  | Публичные схемы не показывают сырой args адаптера | [invariants/INV.SURFACE.NO-RAW-ADAPTER-ARGS.md](invariants/INV.SURFACE.NO-RAW-ADAPTER-ARGS.md) |
 | `INV.SURFACE.PACKAGED-REFERENCES` | инвариант · product | active |  | Ссылки документации переживают упаковку | [invariants/INV.SURFACE.PACKAGED-REFERENCES.md](invariants/INV.SURFACE.PACKAGED-REFERENCES.md) |
+| `INV.SURFACE.PARITY-HARNESS-COVERAGE` | инвариант · product | active |  | Каждый инструмент контура parity имеет исполняемый сценарий | [invariants/INV.SURFACE.PARITY-HARNESS-COVERAGE.md](invariants/INV.SURFACE.PARITY-HARNESS-COVERAGE.md) |
 | `INV.SURFACE.PROJECT-READINESS` | инвариант · product | active |  | Готовность проекта отделена от готовности репозитория | [invariants/INV.SURFACE.PROJECT-READINESS.md](invariants/INV.SURFACE.PROJECT-READINESS.md) |
 | `INV.SURFACE.PUBLISHED-ARGS-ARE-READ` | инвариант · product | active |  | Снятые непрочитанные аргументы не возвращаются в схему | [invariants/INV.SURFACE.PUBLISHED-ARGS-ARE-READ.md](invariants/INV.SURFACE.PUBLISHED-ARGS-ARE-READ.md) |
 | `INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW` | инвариант · product | active |  | Контракт результата совпадает с ревью поверхности | [invariants/INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW.md](invariants/INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW.md) |
@@ -246,7 +250,7 @@
 | `INV.SURFACE.SOURCE-TOOL-SPECS` | инвариант · product | active |  | ToolSpec ресурсных операций объявляет read-only и пустой cache access | [invariants/INV.SURFACE.SOURCE-TOOL-SPECS.md](invariants/INV.SURFACE.SOURCE-TOOL-SPECS.md) |
 | `INV.SURFACE.TOOL-VERSION-SOURCE` | инвариант · process | active |  | Ссылка происхождения v8-runner разрешается в lock-файл | [invariants/INV.SURFACE.TOOL-VERSION-SOURCE.md](invariants/INV.SURFACE.TOOL-VERSION-SOURCE.md) |
 | `INV.SURFACE.XDTO-LOGICAL-TARGET` | инвариант · product | active |  | XDTO-сценарий выбирает пакет логическим адресом | [invariants/INV.SURFACE.XDTO-LOGICAL-TARGET.md](invariants/INV.SURFACE.XDTO-LOGICAL-TARGET.md) |
-| `INV.TOKEN.CACHE-IMPACT-IN-RESULT` | инвариант · product | active |  | Результат мутации сразу сообщает влияние на кеш | [invariants/INV.TOKEN.CACHE-IMPACT-IN-RESULT.md](invariants/INV.TOKEN.CACHE-IMPACT-IN-RESULT.md) |
+| `INV.TOKEN.CACHE-IMPACT-IN-RESULT` | инвариант · product | active |  | Meta remove сразу сообщает влияние на кеш | [invariants/INV.TOKEN.CACHE-IMPACT-IN-RESULT.md](invariants/INV.TOKEN.CACHE-IMPACT-IN-RESULT.md) |
 | `INV.TOKEN.RUNTIME-LOG-ARTIFACTS` | инвариант · product | active |  | Снимок задания возвращает пути к файловым журналам | [invariants/INV.TOKEN.RUNTIME-LOG-ARTIFACTS.md](invariants/INV.TOKEN.RUNTIME-LOG-ARTIFACTS.md) |
 | `INV.TOKEN.RUNTIME-LOG-REQUEST-BOUND` | инвариант · product | active |  | Публичный запрос хвоста журнала ограничен | [invariants/INV.TOKEN.RUNTIME-LOG-REQUEST-BOUND.md](invariants/INV.TOKEN.RUNTIME-LOG-REQUEST-BOUND.md) |
 | `INV.TOKEN.RUNTIME-LOG-TAIL` | инвариант · product | active |  | Выдача журналов ограничивает оба хвоста | [invariants/INV.TOKEN.RUNTIME-LOG-TAIL.md](invariants/INV.TOKEN.RUNTIME-LOG-TAIL.md) |
@@ -264,3 +268,4 @@
 | `INV.WIRE.SDK-MODULE-EXPORTS` | инвариант · product | active |  | Транспортный модуль сохраняет точный legacy Rust API | [invariants/INV.WIRE.SDK-MODULE-EXPORTS.md](invariants/INV.WIRE.SDK-MODULE-EXPORTS.md) |
 | `INV.WIRE.SDK-SERVER-HANDLER` | инвариант · product | active |  | Публичный сервер реализует транспортный trait официального SDK | [invariants/INV.WIRE.SDK-SERVER-HANDLER.md](invariants/INV.WIRE.SDK-SERVER-HANDLER.md) |
 | `INV.WIRE.SDK-TRANSPORT` | инвариант · process | active |  | Ссылки на официальный SDK изолированы в транспортном модуле | [invariants/INV.WIRE.SDK-TRANSPORT.md](invariants/INV.WIRE.SDK-TRANSPORT.md) |
+| `INV.WIRE.TYPED-READ-FINALIZER` | инвариант · product | active |  | Успешное типизированное чтение завершается только с data | [invariants/INV.WIRE.TYPED-READ-FINALIZER.md](invariants/INV.WIRE.TYPED-READ-FINALIZER.md) |

@@ -824,12 +824,32 @@ class FateCoverageTests(unittest.TestCase):
             "REQ-COMPAT-FORMAT-PROFILE": {
                 "INV.PRODUCT.FULL-DUMP-PROFILE",
                 "INV.SOURCE.WRITABLE-PROFILE",
+                "DEC.2026-08-21.PLATFORM-XML-PROFILE",
             },
             "REQ-REL-COLD-INSTALL-BUDGET": {
                 "INV.PKG.COLD-INSTALL-STARTUP-BUDGET",
             },
             "REQ-REL-NO-SILENT-STALL": {
                 "INV.CI.LINEAR-IDEMPOTENT-PUBLICATION",
+            },
+            "REQ-TOKEN-NO-EXTRA-ROUNDTRIP": {
+                "INV.CACHE.MUTATION-EVENT-COVERAGE",
+                "INV.CACHE.EVENT-IMPACT-CLOSED",
+                "INV.CACHE.REPORTED-EFFECTS",
+                "INV.TOKEN.CACHE-IMPACT-IN-RESULT",
+            },
+            "INV-MCP-SURFACE-SYNC": {
+                "CTR.WIRE.TOOL-SURFACE",
+                "INV.REGISTRY.CHECK-EXISTS",
+                "INV.REGISTRY.RECIPROCAL-OWNERSHIP",
+                "INV.SURFACE.CHANGESET-COHERENCE",
+                "INV.SURFACE.PARITY-HARNESS-COVERAGE",
+            },
+            "INV-MCP-TYPED-RESULT": {
+                "INV.APP.CODE-DEFINITION-READINESS",
+                "INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW",
+                "INV.WIRE.PREVIEW-IS-MUTATION-ONLY",
+                "INV.WIRE.TYPED-READ-FINALIZER",
             },
         }
         for subject, successors in expected_successors.items():
@@ -853,8 +873,8 @@ class FateCoverageTests(unittest.TestCase):
 
         exact_checks = {
             "INV.PKG.PACKAGED-PUBLIC-SURFACE": (
-                "tests/ci/test_unica_workflow.py::"
-                "test_packaged_bootstrap_is_smoked_on_every_supported_host"
+                "crates/unica-bootstrap/tests/platform/verification_contract.rs::"
+                "verify_requires_each_lifecycle_to_expose_each_public_tool"
             ),
             "INV.RUNTIME.EXECUTE-RECEIPT": (
                 "crates/unica-coder/src/application/mod.rs::"
@@ -912,10 +932,80 @@ class FateCoverageTests(unittest.TestCase):
                 "crates/unica-coder/src/application/meta_remove_surface_tests.rs::"
                 "real_public_meta_remove_reports_typed_cache_impact_in_the_same_result"
             ),
+            "INV.SURFACE.CHANGESET-COHERENCE": (
+                "tests/arch/test_product_immutability.py::"
+                "test_surface_ledger_change_without_new_product_ground_is_caught"
+            ),
+            "INV.SURFACE.PARITY-HARNESS-COVERAGE": (
+                "tests/ci/test_unica_mcp_script_parity.py::"
+                "test_every_in_scope_tool_has_a_parity_scenario"
+            ),
+            "INV.WIRE.TYPED-READ-FINALIZER": (
+                "crates/unica-coder/src/application/mod.rs::"
+                "typed_read_result_contract_is_closed"
+            ),
+            "INV.APP.CODE-DEFINITION-READINESS": (
+                "crates/unica-coder/src/infrastructure/rlm_navigation.rs::"
+                "definition_readiness_matrix_never_reports_false_typed_success"
+            ),
         }
         for identifier, check in exact_checks.items():
             with self.subTest(identifier=identifier):
                 self.assertEqual(records.get(identifier, {}).get("check"), check)
+
+    def test_narrowed_v1_claims_are_explicit_and_product_owned(self) -> None:
+        records = {}
+        bodies = {}
+        for path in (REPO_ROOT / "arch").rglob("*.md"):
+            props = FATE_GUARD._front_matter_props(path)
+            if identifier := props.get("id"):
+                records[identifier] = props
+                bodies[identifier] = path.read_text(encoding="utf-8")
+
+        narrowing = "DEC.2026-08-22.EVIDENCE-BOUNDED-PRESERVATION"
+        self.assertEqual(records.get(narrowing, {}).get("governs"), "product")
+        self.assertEqual(
+            records.get(narrowing, {}).get("establishes"),
+            "[INV.PKG.PACKAGED-PUBLIC-SURFACE, INV.TOKEN.CACHE-IMPACT-IN-RESULT]",
+        )
+        for identifier in (
+            "INV.PKG.PACKAGED-PUBLIC-SURFACE",
+            "INV.TOKEN.CACHE-IMPACT-IN-RESULT",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(records[identifier].get("decision"), narrowing)
+                self.assertEqual(records[identifier].get("governs"), "product")
+
+        atomic = bodies["INV.PKG.VERIFIED-ATOMIC-INSTALL"].lower()
+        self.assertNotIn("размер", atomic)
+        self.assertNotIn("режим", atomic)
+        artifact_decision = bodies["DEC.2026-08-19.ARTIFACT-VERSIONED-CACHE"].lower()
+        self.assertIn("не хранит размер", artifact_decision)
+        self.assertIn("не перепроверяет режим", artifact_decision)
+
+        format_decision = bodies["DEC.2026-08-21.PLATFORM-XML-PROFILE"].lower()
+        self.assertIn("матрица отклонений", format_decision)
+        self.assertIn("историч", format_decision)
+
+        packaged = bodies["INV.PKG.PACKAGED-PUBLIC-SURFACE"]
+        self.assertIn("initialize", packaged)
+        self.assertIn("tools/list", packaged)
+        for required_tool in (
+            "unica.project.status",
+            "unica.standards.search",
+            "unica.standards.explain",
+        ):
+            with self.subTest(required_tool=required_tool):
+                self.assertIn(required_tool, packaged)
+        self.assertNotIn("канонический набор", packaged.lower())
+        self.assertNotIn("схем", packaged.lower())
+
+        for identifier in (
+            "DEC.2026-08-22.LINEAR-PUBLICATION",
+            "INV.CI.LINEAR-IDEMPOTENT-PUBLICATION",
+        ):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(records[identifier].get("governs"), "product")
 
     def test_safety_claims_are_owned_by_an_evidence_boundary_decision(self) -> None:
         records = {}

@@ -2402,8 +2402,7 @@ mod tests {
 
     #[test]
     fn supported_dump_allows_mutation_preflight() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-ok-{}", std::process::id()));
+        let root = test_root("ok");
         let path = config(&root, Some("2.20"));
         let mut args = Map::new();
         args.insert(
@@ -2419,8 +2418,7 @@ mod tests {
 
     #[test]
     fn newer_dump_warns_for_read_only_with_roadmap_copy() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-new-{}", std::process::id()));
+        let root = test_root("new");
         let path = config(&root, Some("2.21"));
         let mut args = Map::new();
         args.insert(
@@ -2442,8 +2440,7 @@ mod tests {
 
     #[test]
     fn missing_root_version_is_classified_as_1_0() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-v1-{}", std::process::id()));
+        let root = test_root("v1");
         let path = config(&root, None);
         let mut args = Map::new();
         args.insert(
@@ -2461,10 +2458,7 @@ mod tests {
 
     #[test]
     fn versionless_known_standalone_form_is_classified_as_1_0_owner() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-versionless-standalone-form-{}",
-            std::process::id()
-        ));
+        let root = test_root("versionless-standalone-form");
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("Form.xml");
         std::fs::write(
@@ -2974,10 +2968,7 @@ mod tests {
 
     #[test]
     fn dcs_edit_blocks_old_external_source_set_via_owner_descriptor() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-old-external-dcs-{}",
-            std::process::id()
-        ));
+        let root = test_root("old-external-dcs");
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(
             &root,
@@ -3085,10 +3076,7 @@ mod tests {
 
     #[test]
     fn mxl_info_warns_old_external_source_set_via_owner_descriptor() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-old-external-mxl-info-{}",
-            std::process::id()
-        ));
+        let root = test_root("old-external-mxl-info");
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(&root, "EXTERNAL_REPORTS", "erf", "Sales", "2.19");
         let target = source_root.join("Sales/Templates/Print/Ext/Template.xml");
@@ -3336,10 +3324,7 @@ mod tests {
 
     #[test]
     fn valid_standalone_mxl_without_owner_version_is_not_an_old_dump() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-valid-standalone-mxl-{}",
-            std::process::id()
-        ));
+        let root = test_root("valid-standalone-mxl");
         std::fs::create_dir_all(&root).unwrap();
         let document = root.join("standalone.xml");
         std::fs::write(
@@ -3388,10 +3373,7 @@ mod tests {
 
     #[test]
     fn unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-unknown-standalone-root-{}",
-            std::process::id()
-        ));
+        let root = test_root("unknown-standalone-root");
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("unknown.xml");
         std::fs::write(&target, r#"<garbage version="2.20"/>"#).unwrap();
@@ -3435,6 +3417,21 @@ mod tests {
         valid_standalone_mxl_without_owner_version_is_not_an_old_dump();
         unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog();
         crate::infrastructure::platform_xml_owner::tests::equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs();
+    }
+
+    #[test]
+    fn aggregated_format_evidence_is_reentrant_under_parallel_test_execution() {
+        let workers = (0..8)
+            .map(|_| {
+                std::thread::spawn(single_writable_platform_xml_profile_decision_is_fully_realized)
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            worker
+                .join()
+                .expect("aggregate format evidence must not share temporary roots");
+        }
     }
 
     #[test]
