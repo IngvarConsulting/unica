@@ -457,6 +457,10 @@ pub struct SearchTermination {
     pub retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 impl SearchTermination {
@@ -465,6 +469,8 @@ impl SearchTermination {
             code: SearchTerminationCode::LimitReached,
             retryable: false,
             detail_code: None,
+            retry_after_ms: None,
+            state: None,
         }
     }
 
@@ -473,6 +479,8 @@ impl SearchTermination {
             code: SearchTerminationCode::DeadlineExceeded,
             retryable: true,
             detail_code: None,
+            retry_after_ms: None,
+            state: None,
         }
     }
 
@@ -481,6 +489,22 @@ impl SearchTermination {
             code: SearchTerminationCode::DependencyPending,
             retryable: true,
             detail_code: Some(detail_code.into()),
+            retry_after_ms: None,
+            state: None,
+        }
+    }
+
+    pub fn dependency_pending_with_hint(
+        detail_code: impl Into<String>,
+        retry_after_ms: Option<u64>,
+        state: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            code: SearchTerminationCode::DependencyPending,
+            retryable: true,
+            detail_code: Some(detail_code.into()),
+            retry_after_ms,
+            state: state.map(Into::into),
         }
     }
 
@@ -489,6 +513,8 @@ impl SearchTermination {
             code: SearchTerminationCode::UnsupportedScope,
             retryable: false,
             detail_code: None,
+            retry_after_ms: None,
+            state: None,
         }
     }
 
@@ -497,6 +523,8 @@ impl SearchTermination {
             code: SearchTerminationCode::CapacityExhausted,
             retryable: true,
             detail_code: None,
+            retry_after_ms: None,
+            state: None,
         }
     }
 
@@ -505,6 +533,8 @@ impl SearchTermination {
             code: SearchTerminationCode::ProviderUnavailable,
             retryable: false,
             detail_code: None,
+            retry_after_ms: None,
+            state: None,
         }
     }
 
@@ -513,6 +543,8 @@ impl SearchTermination {
             code: SearchTerminationCode::ProviderFailed,
             retryable: false,
             detail_code: None,
+            retry_after_ms: None,
+            state: None,
         }
     }
 }
@@ -760,6 +792,29 @@ impl ProviderSearchSection {
         diagnostics: Vec<String>,
         detail_code: impl Into<String>,
     ) -> Result<Self, String> {
+        Self::dependency_pending_with_hint(
+            identity,
+            ranking,
+            ordering,
+            hits,
+            diagnostics,
+            detail_code,
+            None,
+            None::<String>,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn dependency_pending_with_hint(
+        identity: ProviderIdentity,
+        ranking: SearchRanking,
+        ordering: SearchOrdering,
+        hits: Vec<ProviderSearchHit>,
+        diagnostics: Vec<String>,
+        detail_code: impl Into<String>,
+        retry_after_ms: Option<u64>,
+        state: Option<impl Into<String>>,
+    ) -> Result<Self, String> {
         Self::bounded(
             identity,
             ProviderSectionStatus::TimedOut,
@@ -767,7 +822,7 @@ impl ProviderSearchSection {
             ordering,
             hits,
             diagnostics,
-            SearchTermination::dependency_pending(detail_code),
+            SearchTermination::dependency_pending_with_hint(detail_code, retry_after_ms, state),
         )
     }
 
@@ -884,7 +939,10 @@ fn validate_search_termination(
 ) -> Result<(), String> {
     let valid_shape = termination.is_none_or(|value| match value.code {
         SearchTerminationCode::DeadlineExceeded | SearchTerminationCode::CapacityExhausted => {
-            value.retryable && value.detail_code.is_none()
+            value.retryable
+                && value.detail_code.is_none()
+                && value.retry_after_ms.is_none()
+                && value.state.is_none()
         }
         SearchTerminationCode::DependencyPending => {
             value.retryable
@@ -892,11 +950,20 @@ fn validate_search_termination(
                     .detail_code
                     .as_ref()
                     .is_some_and(|detail| !detail.is_empty())
+                && value
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| !state.trim().is_empty())
         }
         SearchTerminationCode::LimitReached
         | SearchTerminationCode::UnsupportedScope
         | SearchTerminationCode::ProviderUnavailable
-        | SearchTerminationCode::ProviderFailed => !value.retryable && value.detail_code.is_none(),
+        | SearchTerminationCode::ProviderFailed => {
+            !value.retryable
+                && value.detail_code.is_none()
+                && value.retry_after_ms.is_none()
+                && value.state.is_none()
+        }
     });
     let valid_status = matches!(
         (status, termination.map(|value| value.code)),
@@ -1546,11 +1613,15 @@ mod tests {
                 code: SearchTerminationCode::ProviderFailed,
                 retryable: true,
                 detail_code: None,
+                retry_after_ms: None,
+                state: None,
             },
             SearchTermination {
                 code: SearchTerminationCode::ProviderFailed,
                 retryable: false,
                 detail_code: Some("privateProviderDetail".to_string()),
+                retry_after_ms: None,
+                state: None,
             },
         ];
 

@@ -41,6 +41,8 @@ description: "Поиск и исследование BSL-кода и точек 
   particular, `dependencyPending` with `detailCode: buildingIndex` means the
   RLM deadline ended while the index was still building; keep results from the
   other roles and retry search later only if semantic evidence is still needed.
+- When `dependencyPending` includes `retryAfterMs` or `state`, preserve that
+  provider-supplied guidance. Do not invent a polling interval from prose.
 - Reuse an `addressed` hit through its `sourceSet` and `metadataPath`.
   `unaddressable` is an observable source-relative location, not a logical
   target for a following mutation or subject reader.

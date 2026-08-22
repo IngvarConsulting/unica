@@ -416,7 +416,14 @@ fn parse_resident_findings(
         let detail = field("detail")
             .map(str::to_string)
             .unwrap_or_else(|| "diagnostics database is building".to_string());
-        return Ok(provider_not_ready(reply.version, detail));
+        let retry_after_ms = value.get("retry_after_ms").and_then(Value::as_u64);
+        let state = field("state").unwrap_or("loading").to_string();
+        return Ok(provider_not_ready(
+            reply.version,
+            detail,
+            retry_after_ms,
+            state,
+        ));
     }
     let envelope: ResidentFindingsEnvelope = serde_json::from_value(value)
         .map_err(|_| "bsl-analyzer findings reply did not match the typed protocol".to_string())?;
@@ -424,6 +431,8 @@ fn parse_resident_findings(
         return Ok(provider_not_ready(
             reply.version,
             "diagnostic findings are stale while the provider reloads",
+            None,
+            "stale",
         ));
     }
     let handle = module.display().to_string();
@@ -444,6 +453,7 @@ fn parse_resident_findings(
                             .unwrap_or_else(|| format!("bsl-analyzer resource error: {code}")),
                     ),
                     retryable: false,
+                    guidance: None,
                 },
             }],
             rules: Vec::new(),
@@ -503,11 +513,11 @@ fn parse_resident_status(
     if status.state == "failed" {
         return Ok(provider_failed(
             reply.version,
-            "provider_not_ready",
+            "provider_failed",
             status
                 .error
                 .unwrap_or_else(|| "diagnostics database failed to build".to_string()),
-            true,
+            false,
         ));
     }
     let state = match status.state.as_str() {
@@ -620,14 +630,24 @@ fn parse_common_tags(tags: &[String]) -> Vec<DiagnosticTag> {
 fn provider_not_ready(
     version: Option<String>,
     message: impl Into<String>,
+    retry_after_ms: Option<u64>,
+    state: impl Into<String>,
 ) -> DiagnosticProviderOutcome {
-    provider_failed_with_status(
-        DiagnosticProviderStatus::Unavailable,
+    DiagnosticProviderOutcome {
+        status: DiagnosticProviderStatus::Unavailable,
+        complete: false,
         version,
-        "provider_not_ready",
-        message,
-        true,
-    )
+        observations: Vec::new(),
+        rules: Vec::new(),
+        readiness: None,
+        error: Some(DiagnosticError::dependency_pending(
+            message,
+            "buildingIndex",
+            retry_after_ms,
+            Some(state),
+            Some("status"),
+        )),
+    }
 }
 
 fn provider_failed(
@@ -663,6 +683,7 @@ fn provider_failed_with_status(
             code: code.to_string(),
             message: message.into(),
             retryable,
+            guidance: None,
         }),
     }
 }
@@ -977,7 +998,8 @@ mod bsl_diagnostics_provider_tests {
                 "future_envelope": true
             })),
             FakeBackend::resident(json!({
-                "status":"loading","detail":"building","state":"loading","generation":4
+                "status":"loading","detail":"building","state":"loading","generation":4,
+                "retry_after_ms":1500
             })),
         ]);
         let provider = BslAnalyzerDiagnosticProvider::with_backend(&backend);
@@ -1008,8 +1030,13 @@ mod bsl_diagnostics_provider_tests {
         assert_eq!(loading.status, DiagnosticProviderStatus::Unavailable);
         assert!(loading.observations.is_empty());
         let error = loading.error.unwrap();
-        assert_eq!(error.code, "provider_not_ready");
+        assert_eq!(error.code, "dependencyPending");
         assert!(error.retryable);
+        let error = serde_json::to_value(error).unwrap();
+        assert_eq!(error["detailCode"], "buildingIndex");
+        assert_eq!(error["retryAfterMs"], 1500);
+        assert_eq!(error["state"], "loading");
+        assert_eq!(error["nextAction"], "status");
     }
 
     #[test]
@@ -1024,6 +1051,10 @@ mod bsl_diagnostics_provider_tests {
             FakeBackend::resident(
                 json!({"state":"ready","generation":2,"reload":"running","files":3}),
             ),
+            FakeBackend::resident(json!({
+                "state":"failed","generation":2,"reload":"failed",
+                "error":"index build failed"
+            })),
             FakeBackend::resident(json!({
                 "action":"catalog","locale":"en","count":1,
                 "entries":[{
@@ -1054,6 +1085,11 @@ mod bsl_diagnostics_provider_tests {
             assert_eq!(status.status, DiagnosticProviderStatus::Completed);
             assert_eq!(status.readiness.unwrap().state, expected);
         }
+
+        let failed_status = execute(&provider, &fixture, DiagnosticAction::Status);
+        let failed_error = failed_status.error.unwrap();
+        assert_eq!(failed_error.code, "provider_failed");
+        assert!(!failed_error.retryable);
 
         let catalog = execute(&provider, &fixture, DiagnosticAction::Catalog);
         assert_eq!(catalog.status, DiagnosticProviderStatus::Completed);

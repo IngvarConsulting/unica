@@ -5611,7 +5611,7 @@ analyze_timeout_seconds = 900
             .outcome
             .errors
             .iter()
-            .any(|error| error.starts_with("diagnostics_pending")
+            .any(|error| error.starts_with("dependencyPending")
                 && error.contains("did not report files")));
     }
 
