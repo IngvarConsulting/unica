@@ -668,7 +668,7 @@ fn resolve_prefix_by_scoped_scan(
         _ => return Ok(None),
     };
 
-    let mut partial = false;
+    let mut scan = NavigationScanState::default();
     let mut matches = Vec::new();
     for kind in kinds {
         check_navigation_cancellation(cancellation)?;
@@ -677,13 +677,8 @@ fn resolve_prefix_by_scoped_scan(
         } else {
             None
         };
-        for name in proven_object_names(
-            &selected.path,
-            kind,
-            name_filter,
-            &mut partial,
-            cancellation,
-        )? {
+        for name in proven_object_names(&selected.path, kind, name_filter, &mut scan, cancellation)?
+        {
             check_navigation_cancellation(cancellation)?;
             let object = format!("{}.{name}", kind.tag);
             if parts.len() < 3 && object.starts_with(&query) {
@@ -694,6 +689,9 @@ fn resolve_prefix_by_scoped_scan(
                     matches.push((address, TargetKind::MetadataObject, name.clone()));
                 }
             }
+            if scan.stop_if_exhausted() {
+                continue;
+            }
             for terminal in crate::domain::source_target::module_terminals() {
                 check_navigation_cancellation(cancellation)?;
                 push_module_candidate(
@@ -702,6 +700,7 @@ fn resolve_prefix_by_scoped_scan(
                     &format!("{object}.{terminal}"),
                     &query,
                     terminal,
+                    &mut scan,
                     &mut matches,
                 )?;
             }
@@ -727,7 +726,7 @@ fn resolve_prefix_by_scoped_scan(
                     &name,
                     child_kind,
                     child_directory,
-                    &mut partial,
+                    &mut scan,
                     cancellation,
                 )? {
                     check_navigation_cancellation(cancellation)?;
@@ -741,12 +740,16 @@ fn resolve_prefix_by_scoped_scan(
                         }
                     }
                     if let Some(terminal) = module_terminal {
+                        if scan.stop_if_exhausted() {
+                            continue;
+                        }
                         push_module_candidate(
                             context,
                             &selected,
                             &format!("{nested}.{terminal}"),
                             &query,
                             terminal,
+                            &mut scan,
                             &mut matches,
                         )?;
                     }
@@ -761,7 +764,7 @@ fn resolve_prefix_by_scoped_scan(
                         &name,
                         child_kind,
                         child_directory,
-                        &mut partial,
+                        &mut scan,
                         cancellation,
                     )? {
                         check_navigation_cancellation(cancellation)?;
@@ -774,6 +777,9 @@ fn resolve_prefix_by_scoped_scan(
                                 matches.push((address, TargetKind::MetadataObject, child.clone()));
                             }
                         }
+                        if scan.stop_if_exhausted() {
+                            continue;
+                        }
                         for terminal in crate::domain::source_target::module_terminals() {
                             check_navigation_cancellation(cancellation)?;
                             push_module_candidate(
@@ -782,6 +788,7 @@ fn resolve_prefix_by_scoped_scan(
                                 &format!("{nested}.{terminal}"),
                                 &query,
                                 terminal,
+                                &mut scan,
                                 &mut matches,
                             )?;
                         }
@@ -798,7 +805,7 @@ fn resolve_prefix_by_scoped_scan(
                         for dimension_table in proven_names_in_directory(
                             &dimension_tables,
                             "DimensionTable",
-                            &mut partial,
+                            &mut scan,
                             cancellation,
                         )? {
                             check_navigation_cancellation(cancellation)?;
@@ -815,6 +822,9 @@ fn resolve_prefix_by_scoped_scan(
                                     ));
                                 }
                             }
+                            if scan.stop_if_exhausted() {
+                                continue;
+                            }
                             for terminal in crate::domain::source_target::module_terminals() {
                                 check_navigation_cancellation(cancellation)?;
                                 push_module_candidate(
@@ -823,6 +833,7 @@ fn resolve_prefix_by_scoped_scan(
                                     &format!("{dimension}.{terminal}"),
                                     &query,
                                     terminal,
+                                    &mut scan,
                                     &mut matches,
                                 )?;
                             }
@@ -833,23 +844,21 @@ fn resolve_prefix_by_scoped_scan(
         }
         if parts.len() < 2 {
             // Nested descendants were not enumerated for this query shape.
-            partial = true;
+            scan.partial = true;
         }
     }
     if parts.len() == 1 {
         for terminal in crate::domain::source_target::root_module_terminals() {
             check_navigation_cancellation(cancellation)?;
-            if !terminal.starts_with(&query) {
-                continue;
-            }
-            if rendered_module_node(context, &selected, terminal)?.is_some() {
-                if let Ok(address) = MetadataAddress::parse(
-                    crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    terminal,
-                ) {
-                    matches.push((address, TargetKind::Module, (*terminal).to_string()));
-                }
-            }
+            push_module_candidate(
+                context,
+                &selected,
+                terminal,
+                &query,
+                terminal,
+                &mut scan,
+                &mut matches,
+            )?;
         }
     }
 
@@ -887,7 +896,7 @@ fn resolve_prefix_by_scoped_scan(
             },
         )
         .collect();
-    let completeness = if partial || next_cursor.is_some() {
+    let completeness = if scan.partial || next_cursor.is_some() {
         NavigationCompleteness::Partial
     } else {
         NavigationCompleteness::Complete
@@ -905,9 +914,13 @@ fn push_module_candidate(
     candidate: &str,
     query: &str,
     display_name: &str,
+    scan: &mut NavigationScanState,
     matches: &mut Vec<(MetadataAddress, TargetKind, String)>,
 ) -> Result<(), String> {
     if !candidate.starts_with(query) {
+        return Ok(());
+    }
+    if !scan.claim() {
         return Ok(());
     }
     if rendered_module_node(context, selected, candidate)?.is_none() {
@@ -930,38 +943,65 @@ fn proven_child_names(
     owner: &str,
     child_kind: &str,
     child_directory: &str,
-    partial: &mut bool,
+    scan: &mut NavigationScanState,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, String> {
     let directory = source_root
         .join(kind.directory)
         .join(owner)
         .join(child_directory);
-    proven_names_in_directory(&directory, child_kind, partial, cancellation)
+    proven_names_in_directory(&directory, child_kind, scan, cancellation)
+}
+
+#[derive(Default)]
+struct NavigationScanState {
+    inspected: usize,
+    partial: bool,
+}
+
+impl NavigationScanState {
+    fn stop_if_exhausted(&mut self) -> bool {
+        if self.inspected < MAX_NAVIGATION_INVENTORY_ENTRIES {
+            return false;
+        }
+        self.partial = true;
+        true
+    }
+
+    fn claim(&mut self) -> bool {
+        if self.stop_if_exhausted() {
+            return false;
+        }
+        self.inspected += 1;
+        true
+    }
 }
 
 fn proven_names_in_directory(
     directory: &Path,
     child_kind: &str,
-    partial: &mut bool,
+    scan: &mut NavigationScanState,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, String> {
+    if scan.stop_if_exhausted() {
+        return Ok(Vec::new());
+    }
     let metadata = match fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => {
-            *partial = true;
+            scan.partial = true;
             return Ok(Vec::new());
         }
     };
     if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
-        *partial = true;
+        scan.partial = true;
         return Ok(Vec::new());
     }
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(_) => {
-            *partial = true;
+            scan.partial = true;
             return Ok(Vec::new());
         }
     };
@@ -969,7 +1009,7 @@ fn proven_names_in_directory(
     for entry in entries {
         check_navigation_cancellation(cancellation)?;
         let Ok(entry) = entry else {
-            *partial = true;
+            scan.partial = true;
             continue;
         };
         let path = entry.path();
@@ -977,13 +1017,16 @@ fn proven_names_in_directory(
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-            *partial = true;
+            scan.partial = true;
             continue;
         };
+        if !scan.claim() {
+            break;
+        }
         match descriptor_name(&path, child_kind) {
             Ok(name) if name == stem => names.push(name),
-            Ok(_) => *partial = true,
-            Err(()) => *partial = true,
+            Ok(_) => scan.partial = true,
+            Err(()) => scan.partial = true,
         }
     }
     Ok(names)
@@ -996,35 +1039,37 @@ fn proven_object_names(
     source_root: &Path,
     kind: &MetadataLayout,
     name_prefix: Option<&str>,
-    partial: &mut bool,
+    scan: &mut NavigationScanState,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, String> {
+    if scan.stop_if_exhausted() {
+        return Ok(Vec::new());
+    }
     let directory = source_root.join(kind.directory);
     let metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => {
-            *partial = true;
+            scan.partial = true;
             return Ok(Vec::new());
         }
     };
     if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
-        *partial = true;
+        scan.partial = true;
         return Ok(Vec::new());
     }
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(_) => {
-            *partial = true;
+            scan.partial = true;
             return Ok(Vec::new());
         }
     };
     let mut names = Vec::new();
-    let mut inspected = 0_usize;
     for entry in entries {
         check_navigation_cancellation(cancellation)?;
         let Ok(entry) = entry else {
-            *partial = true;
+            scan.partial = true;
             continue;
         };
         let path = entry.path();
@@ -1032,7 +1077,7 @@ fn proven_object_names(
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-            *partial = true;
+            scan.partial = true;
             continue;
         };
         if name_prefix.is_some_and(|prefix| !stem.starts_with(prefix)) {
@@ -1041,15 +1086,13 @@ fn proven_object_names(
         // Only a candidate that survives the cheap filters counts against the
         // bound: skipping a sibling directory costs nothing and must not make
         // the provider claim its answer is truncated.
-        if inspected >= MAX_NAVIGATION_INVENTORY_ENTRIES {
-            *partial = true;
+        if !scan.claim() {
             break;
         }
-        inspected += 1;
         match descriptor_name(&path, kind.tag) {
             Ok(name) if name == stem => names.push(name),
-            Ok(_) => *partial = true,
-            Err(()) => *partial = true,
+            Ok(_) => scan.partial = true,
+            Err(()) => scan.partial = true,
         }
     }
     Ok(names)
@@ -2071,6 +2114,14 @@ fn descriptor_version_and_name_from_bytes(
     let text = std::str::from_utf8(raw).map_err(|_| ())?;
     let source = text.trim_start_matches('\u{feff}');
     let document = roxmltree::Document::parse(source).map_err(|_| ())?;
+    descriptor_version_and_name_from_document(source, &document, expected_kind)
+}
+
+fn descriptor_version_and_name_from_document(
+    source: &str,
+    document: &roxmltree::Document<'_>,
+    expected_kind: &str,
+) -> Result<(Option<String>, String), ()> {
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
@@ -2917,8 +2968,13 @@ fn descriptor_registers_child(
     let owner_path = selected.path.join(&owner.path);
     let owner_raw = read_navigation_descriptor(&owner_path)
         .map_err(|_| metadata_owner_evidence_error(logical_target))?;
+    let owner_xml = std::str::from_utf8(&owner_raw)
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?
+        .trim_start_matches('\u{feff}');
+    let document = roxmltree::Document::parse(owner_xml)
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?;
     let (owner_version, actual_name) =
-        descriptor_version_and_name_from_bytes(&owner_raw, &owner.kind)
+        descriptor_version_and_name_from_document(owner_xml, &document, &owner.kind)
             .map_err(|_| metadata_owner_evidence_error(logical_target))?;
     if actual_name != owner.name {
         return Err(metadata_owner_evidence_error(logical_target));
@@ -2929,11 +2985,6 @@ fn descriptor_registers_child(
             owner.kind, owner.name, selected.source_set.name
         )));
     }
-    let owner_xml = std::str::from_utf8(&owner_raw)
-        .map_err(|_| metadata_owner_evidence_error(logical_target))?
-        .trim_start_matches('\u{feff}');
-    let document = roxmltree::Document::parse(owner_xml)
-        .map_err(|_| metadata_owner_evidence_error(logical_target))?;
     let owner_node = document
         .root_element()
         .children()
@@ -5867,6 +5918,46 @@ mod tests {
         );
         assert_eq!(deep.completeness, NavigationCompleteness::Complete);
         cleanup(&context);
+    }
+
+    #[test]
+    fn nested_prefix_scan_shares_one_descriptor_inventory_budget() {
+        let root = temp_root("navigation-nested-inventory-bound");
+        for (directory, kind, name) in [("Tables", "Table", "Items"), ("Cubes", "Cube", "Sales")] {
+            let directory = root.join(directory);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                directory.join(format!("{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let mut scan = super::NavigationScanState {
+            inspected: super::MAX_NAVIGATION_INVENTORY_ENTRIES - 1,
+            partial: false,
+        };
+        let tables = super::proven_names_in_directory(
+            &root.join("Tables"),
+            "Table",
+            &mut scan,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let cubes = super::proven_names_in_directory(
+            &root.join("Cubes"),
+            "Cube",
+            &mut scan,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert_eq!(tables, ["Items"]);
+        assert!(cubes.is_empty());
+        assert!(scan.partial);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
