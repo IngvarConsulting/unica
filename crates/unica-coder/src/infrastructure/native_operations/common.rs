@@ -593,14 +593,16 @@ pub(crate) fn emit_subsystem_edit_model(model: &SubsystemEditModel) -> String {
         escape_xml(&model.use_one_command)
     ));
     emit_subsystem_edit_ml(&mut lines, "\t\t\t", "Explanation", &model.explanation);
-    if model.picture.is_empty() {
+    if model.picture.is_empty() && model.picture_load_transparent.is_none() {
         lines.push("\t\t\t<Picture/>".to_string());
     } else {
         lines.push("\t\t\t<Picture>".to_string());
-        lines.push(format!(
-            "\t\t\t\t<xr:Ref>{}</xr:Ref>",
-            escape_xml(&model.picture)
-        ));
+        if !model.picture.is_empty() {
+            lines.push(format!(
+                "\t\t\t\t<xr:Ref>{}</xr:Ref>",
+                escape_xml(&model.picture)
+            ));
+        }
         if let Some(load_transparent) = &model.picture_load_transparent {
             lines.push(format!(
                 "\t\t\t\t<xr:LoadTransparent>{}</xr:LoadTransparent>",

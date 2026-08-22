@@ -4881,6 +4881,42 @@ mod tests {
     }
 
     #[test]
+    fn content_only_edit_preserves_picture_load_transparent_without_reference() {
+        let context = temp_context("edit-preserve-picture-transparency-only");
+        let subsystem_path = create_edit_fixture(&context, "EditableSubsystem");
+        let original = fs::read_to_string(&subsystem_path).unwrap();
+        let with_transparency = original.replace(
+            "\t\t\t<Picture/>",
+            concat!(
+                "\t\t\t<Picture>\n",
+                "\t\t\t\t<xr:LoadTransparent>true</xr:LoadTransparent>\n",
+                "\t\t\t</Picture>"
+            ),
+        );
+        fs::write(&subsystem_path, with_transparency).unwrap();
+        let args = edit_definition_args(
+            &context,
+            &subsystem_path,
+            json!({
+                "operation": "add-content",
+                "value": "Catalog.Items"
+            }),
+        );
+
+        let outcome = edit_subsystem(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let edited = fs::read_to_string(&subsystem_path).unwrap();
+        assert!(edited.contains("<Picture>"), "{edited}");
+        assert!(
+            edited.contains("<xr:LoadTransparent>true</xr:LoadTransparent>"),
+            "{edited}"
+        );
+        assert!(!edited.contains("<xr:Ref>"), "{edited}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
     fn subsystem_edit_public_property_argument_is_rejected_in_every_mode() {
         let context = temp_context("edit-preview-property-parity");
         let subsystem_path = create_edit_fixture(&context, "EditableSubsystem");
