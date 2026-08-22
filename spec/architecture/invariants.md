@@ -188,10 +188,13 @@ Unica. Каждая запись формулирует одно нормати�
   из канонизированного корня `metadataPath`; конкретный вид ограничивает
   свойства, коллекции, `scope` и поля элемента в закрытом доменном
   преобразовании с `unsupported_kind` и точным полем.
+  По ADR-0077 закрытый домен `CommonModule` включает boolean-свойство
+  `ClientOrdinaryApplication`, а неизвестное имя свойства перечисляет
+  поддержанные для вида владельца альтернативы из того же реестра writer.
   `unica.meta.info` без `sections` или с пустым массивом остаётся локальным и не
   вызывает индексное обогащение; связанные секции выбираются только явно, а их
   `limit` допускается от одного до пятидесяти включительно.
-- **Decision:** ADR-0025
+- **Decision:** ADR-0025, ADR-0077
 - **Check:** `ci-test` — `tests/ci/test_meta_surface_contract.py`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/metadata.rs`
 - **Scope:** source, packaged, runtime

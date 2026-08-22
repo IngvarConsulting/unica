@@ -773,6 +773,66 @@ fn meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable() {
 }
 
 #[test]
+fn meta_add_and_edit_round_trip_common_module_ordinary_client_context() {
+    let workspace = create_configuration_workspace("ordinary-client-context");
+    let name = "OrdinaryClient";
+    let mut add = add_args(workspace.path(), "CommonModule", name, false);
+    add.insert(
+        "operations".to_string(),
+        json!([{
+            "op": "setProperties",
+            "values": {"ClientOrdinaryApplication": true}
+        }]),
+    );
+
+    let added = call_add_with_args(workspace.path(), &add);
+    assert!(added.ok, "{:?}", added.errors);
+    let added_xml = std::fs::read_to_string(
+        workspace
+            .path()
+            .join("src/CommonModules/OrdinaryClient.xml"),
+    )
+    .unwrap();
+    roxmltree::Document::parse(added_xml.trim_start_matches('\u{feff}')).unwrap();
+    assert!(
+        added_xml.contains("<ClientOrdinaryApplication>true</ClientOrdinaryApplication>"),
+        "{added_xml}"
+    );
+
+    let edited_path = workspace
+        .path()
+        .join("src/CommonModules/OrdinaryClient.xml");
+    let before_preview = std::fs::read(&edited_path).unwrap();
+    let operations = json!([{
+        "op": "setProperties",
+        "values": {"ClientOrdinaryApplication": false}
+    }]);
+
+    let preview = call_edit(
+        workspace.path(),
+        &format!("CommonModule.{name}"),
+        operations.clone(),
+        true,
+    );
+    assert!(preview.ok, "{:?}", preview.errors);
+    assert_eq!(std::fs::read(&edited_path).unwrap(), before_preview);
+
+    let applied = call_edit(
+        workspace.path(),
+        &format!("CommonModule.{name}"),
+        operations,
+        false,
+    );
+    assert!(applied.ok, "{:?}", applied.errors);
+    let edited_xml = std::fs::read_to_string(&edited_path).unwrap();
+    roxmltree::Document::parse(edited_xml.trim_start_matches('\u{feff}')).unwrap();
+    assert!(
+        edited_xml.contains("<ClientOrdinaryApplication>false</ClientOrdinaryApplication>"),
+        "{edited_xml}"
+    );
+}
+
+#[test]
 fn meta_add_apply_rejects_partial_descriptor_module_and_registration_without_writes() {
     let workspace = create_configuration_workspace("partial-footprints");
     let source = workspace.path().join("src");

@@ -179,11 +179,12 @@
   "unica.meta.add": {
     "result": {
       "contract": "typed",
-      "now": "`structuredContent.data`: логический адрес, валидация, семантические `effects` и план атомарной публикации одного объекта из типизированного шаблона с необязательными ordered operations",
+      "now": "`structuredContent.data`: логический адрес, валидация, семантические `effects` и план атомарной публикации одного объекта из типизированного шаблона с необязательными ordered operations; закрытые свойства CommonModule включают boolean `ClientOrdinaryApplication` (ADR-0077)",
       "target": "достигнут"
     },
     "scenarios": [
       "Создать минимальный справочник по логическому sourceSet",
+      "Создать общий модуль с флагом обычного клиентского приложения без ручной правки XML",
       "Одним вызовом создать и настроить объект через общий типизированный `operations` union",
       "Создать подписку и атомарно задать совместимые `Source`, `Event` и `Handler`",
       "Создать поддерживаемый объект вместе с корневым предопределённым элементом",
@@ -194,11 +195,12 @@
   "unica.meta.edit": {
     "result": {
       "contract": "typed",
-      "now": "`structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая проверку единой связки `EventSubscription.Source`/`Event`/`Handler` через `editRelations.source` и `setProperties` и коллекцию `predefinedItems` в `add`, `update`, `remove`",
+      "now": "`structuredContent.data`: логический адрес, валидация, семантические `effects` по `operationIndex` и план атомарной публикации пяти вариантов typed-операций, включая проверку единой связки `EventSubscription.Source`/`Event`/`Handler` через `editRelations.source` и `setProperties`, коллекцию `predefinedItems` в `add`, `update`, `remove` и boolean-свойство CommonModule `ClientOrdinaryApplication` (ADR-0077)",
       "target": "достигнут"
     },
     "scenarios": [
       "Добавить реквизит существующему документу",
+      "Изменить флаг обычного клиентского приложения общего модуля",
       "Назначить владельцев подчинённому справочнику",
       "Атомарно заменить источник, событие и обработчик существующей подписки",
       "Добавить, изменить или удалить предопределённый элемент по UUID"
