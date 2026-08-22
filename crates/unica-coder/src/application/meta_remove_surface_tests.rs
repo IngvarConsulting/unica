@@ -94,7 +94,7 @@ fn call_remove(workspace: &Path, dry_run: bool) -> OperationResult {
 }
 
 #[test]
-fn meta_remove_private_coordinator_preview_and_apply_publish_events_cache_and_files() {
+fn real_public_meta_remove_reports_typed_cache_impact_in_the_same_result() {
     let preview_workspace = create_remove_workspace("preview");
     let descriptor = preview_workspace.path().join("src/Catalogs/Removable.xml");
     let owner = preview_workspace.path().join("src/Configuration.xml");
@@ -121,6 +121,24 @@ fn meta_remove_private_coordinator_preview_and_apply_publish_events_cache_and_fi
     assert_eq!(preview.data.as_ref().unwrap()["effects"], expected_effects);
     assert_eq!(preview.cache.mode, "dry-run");
     assert_eq!(preview.cache.events, ["MetadataChanged"]);
+    assert_eq!(
+        preview.cache.invalidated,
+        ["bsl_diagnostics", "metadata_graph", "workspace_graph"]
+    );
+    assert!(preview.cache.refreshed.is_empty());
+    let preview_wire = serde_json::to_value(&preview).unwrap();
+    assert_eq!(preview_wire["cache"]["mode"], "dry-run");
+    assert_eq!(
+        preview_wire["cache"]["events"],
+        serde_json::json!(["MetadataChanged"])
+    );
+    assert_eq!(
+        preview_wire["cache"]["invalidated"],
+        serde_json::json!(["bsl_diagnostics", "metadata_graph", "workspace_graph"])
+    );
+    for field in ["events", "invalidated", "refreshed"] {
+        assert!(preview_wire["cache"][field].is_array(), "cache.{field}");
+    }
     assert_eq!(std::fs::read(&descriptor).unwrap(), descriptor_before);
     assert_eq!(std::fs::read(&owner).unwrap(), owner_before);
 

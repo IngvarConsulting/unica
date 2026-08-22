@@ -351,3 +351,152 @@ fn support_guard_blocked_outcome(
         command: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{support_guard_mode, support_guard_mode_value, SupportGuardMode};
+    use crate::domain::workspace::WorkspaceContext;
+
+    #[test]
+    fn project_editing_policy_is_the_closed_support_guard_downgrade_source() {
+        assert_eq!(support_guard_mode_value("warn"), SupportGuardMode::Warn);
+        assert_eq!(support_guard_mode_value("off"), SupportGuardMode::Off);
+        for value in ["deny", "", "WARN", "unsupported"] {
+            assert_eq!(
+                support_guard_mode_value(value),
+                SupportGuardMode::Deny,
+                "{value}"
+            );
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        let cwd = root.join("caller/deep");
+        let config = root.join("config/src");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let context = WorkspaceContext {
+            cwd: cwd.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        assert_eq!(
+            support_guard_mode(&config, &context),
+            SupportGuardMode::Deny
+        );
+
+        let policy_paths = [
+            cwd.parent().unwrap().join(".v8-project.json"),
+            config.parent().unwrap().join(".v8-project.json"),
+            workspace.join(".v8-project.json"),
+        ];
+        let values = [
+            ("deny", SupportGuardMode::Deny),
+            ("warn", SupportGuardMode::Warn),
+            ("off", SupportGuardMode::Off),
+        ];
+        for (cwd_value, cwd_expected) in values {
+            for (config_value, _) in values {
+                for (workspace_value, _) in values {
+                    for (path, value) in
+                        policy_paths
+                            .iter()
+                            .zip([cwd_value, config_value, workspace_value])
+                    {
+                        std::fs::write(path, format!(r#"{{"editingAllowedCheck":"{value}"}}"#))
+                            .unwrap();
+                    }
+                    assert_eq!(
+                        support_guard_mode(&config, &context),
+                        cwd_expected,
+                        "cwd={cwd_value}, config={config_value}, workspace={workspace_value}"
+                    );
+                }
+            }
+        }
+
+        std::fs::remove_file(&policy_paths[0]).unwrap();
+        for (config_value, config_expected) in values {
+            for (workspace_value, _) in values {
+                std::fs::write(
+                    &policy_paths[1],
+                    format!(r#"{{"editingAllowedCheck":"{config_value}"}}"#),
+                )
+                .unwrap();
+                std::fs::write(
+                    &policy_paths[2],
+                    format!(r#"{{"editingAllowedCheck":"{workspace_value}"}}"#),
+                )
+                .unwrap();
+                assert_eq!(
+                    support_guard_mode(&config, &context),
+                    config_expected,
+                    "config={config_value}, workspace={workspace_value}"
+                );
+            }
+        }
+
+        std::fs::remove_file(&policy_paths[1]).unwrap();
+        for (workspace_value, expected) in values {
+            std::fs::write(
+                &policy_paths[2],
+                format!(r#"{{"editingAllowedCheck":"{workspace_value}"}}"#),
+            )
+            .unwrap();
+            assert_eq!(
+                support_guard_mode(&config, &context),
+                expected,
+                "workspace={workspace_value}"
+            );
+        }
+
+        std::fs::write(
+            &policy_paths[2],
+            serde_json::to_vec(&serde_json::json!({
+                "editingAllowedCheck": "off",
+                "databases": [{
+                    "configSrc": config.to_string_lossy(),
+                    "editingAllowedCheck": "warn"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            support_guard_mode(&config, &context),
+            SupportGuardMode::Warn
+        );
+
+        for document in [
+            "not json",
+            r#"{}"#,
+            r#"{"editingAllowedCheck":"WARN"}"#,
+            r#"{"editingAllowedCheck":"unsupported"}"#,
+        ] {
+            std::fs::write(&policy_paths[2], document).unwrap();
+            assert_eq!(
+                support_guard_mode(&config, &context),
+                SupportGuardMode::Deny,
+                "{document}"
+            );
+        }
+        std::fs::remove_file(&policy_paths[2]).unwrap();
+        assert_eq!(
+            support_guard_mode(&config, &context),
+            SupportGuardMode::Deny
+        );
+    }
+
+    #[test]
+    fn public_support_guard_resolver_matrix_runs_real_handlers() {
+        crate::application::tests::mutating_native_support_guard_coverage_is_explicit();
+        crate::application::tests::code_patch_locked_support_blocks_preview_and_apply_before_handler();
+        crate::application::tests::form_remove_locked_support_blocks_preview_and_apply_before_handler();
+        crate::application::tests::subsystem_compile_guards_locked_parent_before_both_planners();
+        crate::application::tests::cf_init_support_exemption_reaches_preview_and_apply_handlers();
+        project_editing_policy_is_the_closed_support_guard_downgrade_source();
+    }
+}
