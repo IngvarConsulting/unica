@@ -455,10 +455,14 @@ mod tests {
 
         std::fs::write(
             &policy_paths[2],
-            format!(
-                r#"{{"editingAllowedCheck":"off","databases":[{{"configSrc":"{}","editingAllowedCheck":"warn"}}]}}"#,
-                config.display()
-            ),
+            serde_json::to_vec(&serde_json::json!({
+                "editingAllowedCheck": "off",
+                "databases": [{
+                    "configSrc": config.to_string_lossy(),
+                    "editingAllowedCheck": "warn"
+                }]
+            }))
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(

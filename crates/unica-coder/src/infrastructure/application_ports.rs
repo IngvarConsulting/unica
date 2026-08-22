@@ -1472,7 +1472,7 @@ mod tests {
             let identity = if file_type.is_symlink() {
                 None
             } else {
-                crate::infrastructure::platform::testing::file_identity_for_test(path)
+                crate::infrastructure::platform::testing::path_identity_for_test(path)
                     .expect("snapshot identity")
             };
             let bytes = if file_type.is_file() {
