@@ -588,6 +588,19 @@ Unica. Каждая запись формулирует одно нормати�
 - **Check:** `ci-test` — `tests/ci/test_release_assessment.py`
 - **Scope:** runtime, packaged
 
+### INV-MCP-PROVIDER-NOT-READY — Неготовность поставщика имеет общий словарь
+
+- **Rule:** `unica.code.search` и `unica.code.diagnostics` публикуют переходную
+  неготовность поставщика как `dependencyPending` с `retryable=true`, непустым
+  `detailCode` и доступными от поставщика `retryAfterMs` и `state`; срок повтора
+  не назначается внутри Unica, диагностика указывает `nextAction=status`, а
+  готовый путь не получает дополнительного ожидания.
+- **Decision:** ADR-0077
+- **Check:** `ci-test` — `crates/unica-coder/src/domain/diagnostics.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/diagnostics.rs`
+- **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/code_intelligence.rs`
+- **Scope:** runtime, packaged
+
 ### INV-MCP-DOCUMENTATION-SECTIONS — Поиск по документации сохраняет независимые секции поставщиков
 
 - **Rule:** `unica.documentation.search` публикует секции поставщиков в порядке

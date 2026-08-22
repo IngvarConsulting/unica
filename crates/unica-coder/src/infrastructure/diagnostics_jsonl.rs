@@ -128,10 +128,7 @@ impl DiagnosticsJsonlParser {
         }
         if !self.done {
             if self.files_seen.is_empty() {
-                return self.failure(
-                    DiagnosticProviderStatus::Unavailable,
-                    "diagnostics_pending",
-                    true,
+                return self.pending(
                     "bsl-analyzer emitted start but did not report files or a terminal event"
                         .to_string(),
                 );
@@ -214,6 +211,7 @@ impl DiagnosticsJsonlParser {
                                 code: "source_analysis_failed".to_string(),
                                 message: redactor(&error),
                                 retryable: false,
+                                guidance: None,
                             },
                         });
                     return Ok(());
@@ -301,7 +299,35 @@ impl DiagnosticsJsonlParser {
                     code: code.to_string(),
                     message,
                     retryable,
+                    guidance: None,
                 }),
+            },
+            files: AnalyzerDiagnosticsFileTotals {
+                discovered: self.discovered,
+                processed: None,
+                failed: None,
+            },
+            diagnostics_reported: None,
+            elapsed_seconds: None,
+        }
+    }
+
+    fn pending(self, message: String) -> AnalyzerDiagnosticsBatch {
+        AnalyzerDiagnosticsBatch {
+            outcome: DiagnosticProviderOutcome {
+                status: DiagnosticProviderStatus::Unavailable,
+                complete: false,
+                version: self.version,
+                observations: Vec::new(),
+                rules: Vec::new(),
+                readiness: None,
+                error: Some(DiagnosticError::dependency_pending(
+                    message,
+                    "buildingIndex",
+                    None,
+                    Some("building"),
+                    Some("status"),
+                )),
             },
             files: AnalyzerDiagnosticsFileTotals {
                 discovered: self.discovered,
@@ -632,7 +658,7 @@ mod tests {
         );
         assert_eq!(
             pending.outcome.error.as_ref().unwrap().code,
-            "diagnostics_pending"
+            "dependencyPending"
         );
         assert!(pending.outcome.error.as_ref().unwrap().retryable);
         assert!(pending.outcome.observations.is_empty());

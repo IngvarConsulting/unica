@@ -591,10 +591,12 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
         match attempt {
             RlmSearchAttempt::Output(result) => parse_rlm_search(&result, context, cancellation),
             RlmSearchAttempt::Unready(readiness) => {
-                let dependency_detail = match &readiness {
-                    IndexReadiness::Missing | IndexReadiness::Building => Some("buildingIndex"),
+                let dependency = match &readiness {
+                    IndexReadiness::Missing | IndexReadiness::Building => {
+                        Some(("buildingIndex", "building"))
+                    }
                     IndexReadiness::Stale { .. } | IndexReadiness::Incomplete => {
-                        Some("updatingIndex")
+                        Some(("updatingIndex", "updating"))
                     }
                     IndexReadiness::Ready { .. }
                     | IndexReadiness::Failed(_)
@@ -608,14 +610,16 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                         results_found: 0,
                     });
                 }
-                if let Some(detail_code) = dependency_detail {
-                    ProviderSearchSection::dependency_pending(
+                if let Some((detail_code, state)) = dependency {
+                    ProviderSearchSection::dependency_pending_with_hint(
                         ProviderId::Rlm.identity(),
                         SearchRanking::None,
                         SearchOrdering::Provider,
                         Vec::new(),
                         vec![diagnostic],
                         detail_code,
+                        None,
+                        Some(state),
                     )
                     .expect("dependency-pending RLM section is valid")
                 } else {
@@ -793,13 +797,16 @@ fn parse_bsl_analyzer_search(
                 .get("detail")
                 .and_then(Value::as_str)
                 .unwrap_or("bsl-analyzer search index is not ready");
-            return ProviderSearchSection::dependency_pending(
+            let retry_after_ms = envelope.get("retry_after_ms").and_then(Value::as_u64);
+            return ProviderSearchSection::dependency_pending_with_hint(
                 ProviderId::BslAnalyzer.identity(),
                 SearchRanking::Provider,
                 SearchOrdering::Provider,
                 Vec::new(),
                 vec![detail.to_string()],
                 "buildingIndex",
+                retry_after_ms,
+                Some("building"),
             )
             .expect("dependency-pending bsl-analyzer section is valid");
         }
@@ -2004,6 +2011,9 @@ mod tests {
         );
         assert!(termination.retryable);
         assert_eq!(termination.detail_code.as_deref(), Some("buildingIndex"));
+        let termination = serde_json::to_value(termination).unwrap();
+        assert_eq!(termination["retryAfterMs"], 1500);
+        assert_eq!(termination["state"], "building");
         assert_eq!(section.diagnostics, vec!["indexing 40%".to_string()]);
     }
 
@@ -2820,7 +2830,8 @@ mod tests {
             json!({
                 "code": "dependencyPending",
                 "retryable": true,
-                "detailCode": "buildingIndex"
+                "detailCode": "buildingIndex",
+                "state": "building"
             })
         );
         assert_eq!(client.calls.lock().unwrap().len(), 1);
@@ -2852,7 +2863,8 @@ mod tests {
             json!({
                 "code": "dependencyPending",
                 "retryable": true,
-                "detailCode": "updatingIndex"
+                "detailCode": "updatingIndex",
+                "state": "updating"
             })
         );
     }
@@ -2886,7 +2898,8 @@ mod tests {
             json!({
                 "code": "dependencyPending",
                 "retryable": true,
-                "detailCode": "updatingIndex"
+                "detailCode": "updatingIndex",
+                "state": "updating"
             })
         );
     }

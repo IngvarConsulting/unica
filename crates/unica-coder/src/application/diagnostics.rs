@@ -246,6 +246,7 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                         code: error.code.to_string(),
                         message: error.message.clone(),
                         retryable: false,
+                        guidance: None,
                     };
                     // The mapper is inside the boundary; its wording is
                     // published under the same guard as a provider error.
@@ -570,11 +571,13 @@ fn normalize_provider_outcome(
                         observations: Vec::new(),
                         rules: Vec::new(),
                         readiness: None,
-                        error: Some(DiagnosticError {
-                            code: "provider_not_ready".to_string(),
-                            message: "diagnostic provider findings are not ready".to_string(),
-                            retryable: true,
-                        }),
+                        error: Some(DiagnosticError::dependency_pending(
+                            "diagnostic provider findings are not ready",
+                            "buildingIndex",
+                            None,
+                            Some(format!("{:?}", readiness.state).to_lowercase()),
+                            Some("status"),
+                        )),
                     };
                 }
             }
@@ -608,6 +611,7 @@ fn provider_failure_outcome(
             code: code.to_string(),
             message: message.into(),
             retryable,
+            guidance: None,
         }),
     }
 }
@@ -656,7 +660,7 @@ fn sanitize_public_diagnostic_error(error: &mut DiagnosticError) {
     error.message = match error.code.as_str() {
         "source_analysis_failed" => "diagnostic provider could not analyze the selected resource",
         "source_decode_failed" => "source is not valid in the detected encoding",
-        "provider_not_ready" => "diagnostic provider is not ready",
+        "provider_not_ready" | "dependencyPending" => "diagnostic provider is not ready",
         "target_not_supported" => "diagnostic provider does not support the selected target",
         "action_not_supported" => "diagnostic provider does not support the selected action",
         "location_outside_source_set" => "provider resource is outside the selected sourceSet",
@@ -1851,6 +1855,7 @@ mod tests {
                     code: "source_decode_failed".to_string(),
                     message: "decode failed".to_string(),
                     retryable: false,
+                    guidance: None,
                 },
             },
         ]);
@@ -2006,6 +2011,7 @@ mod tests {
                 code: code.to_string(),
                 message: "provider failed".to_string(),
                 retryable: true,
+                guidance: None,
             }),
         }
     }
@@ -2091,7 +2097,7 @@ mod tests {
                 && section
                     .error
                     .as_ref()
-                    .is_some_and(|error| error.code == "provider_not_ready" && error.retryable)
+                    .is_some_and(|error| error.code == "dependencyPending" && error.retryable)
         }));
     }
 
@@ -2441,6 +2447,7 @@ mod tests {
                     code: "provider_failed".to_string(),
                     message: "provider failed".to_string(),
                     retryable: false,
+                    guidance: None,
                 }),
             };
             let (registry, _) =
@@ -2502,6 +2509,7 @@ mod tests {
                             private_path.display()
                         ),
                         retryable: false,
+                        guidance: None,
                     },
                 },
             ],
@@ -2520,6 +2528,7 @@ mod tests {
                 code: "provider_failed".to_string(),
                 message: format!("provider failed below {}", private_root.display()),
                 retryable: false,
+                guidance: None,
             }),
         };
         let (registry, _) = fake_registry([completed, failed, successful(Vec::new())]);

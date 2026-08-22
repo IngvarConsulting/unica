@@ -369,6 +369,43 @@ pub struct DiagnosticError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    #[serde(flatten)]
+    pub guidance: Option<Box<DiagnosticRetryGuidance>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticRetryGuidance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
+}
+
+impl DiagnosticError {
+    pub fn dependency_pending(
+        message: impl Into<String>,
+        detail_code: impl Into<String>,
+        retry_after_ms: Option<u64>,
+        state: Option<impl Into<String>>,
+        next_action: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            code: "dependencyPending".to_string(),
+            message: message.into(),
+            retryable: true,
+            guidance: Some(Box::new(DiagnosticRetryGuidance {
+                detail_code: Some(detail_code.into()),
+                retry_after_ms,
+                state: state.map(Into::into),
+                next_action: next_action.map(Into::into),
+            })),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -630,6 +667,31 @@ mod tests {
         findings_target_kinds: &[TargetKind::MetadataObject],
         emits_focus_kinds: &[DiagnosticFocusKind::Metadata],
     };
+
+    #[test]
+    fn diagnostics_and_search_publish_one_retryable_not_ready_vocabulary() {
+        let diagnostics = serde_json::to_value(DiagnosticError::dependency_pending(
+            "building",
+            "buildingIndex",
+            Some(1500),
+            Some("building"),
+            Some("status"),
+        ))
+        .unwrap();
+        let search = serde_json::to_value(
+            crate::domain::code_intelligence::SearchTermination::dependency_pending_with_hint(
+                "buildingIndex",
+                Some(1500),
+                Some("building"),
+            ),
+        )
+        .unwrap();
+
+        for field in ["code", "retryable", "detailCode", "retryAfterMs", "state"] {
+            assert_eq!(diagnostics[field], search[field], "field {field}");
+        }
+        assert_eq!(diagnostics["nextAction"], "status");
+    }
 
     struct StubProvider(&'static DiagnosticProviderDescriptor);
 

@@ -89,7 +89,7 @@
   "unica.code.search": {
     "result": {
       "contract": "typed",
-      "now": "`data`: три ролевые секции с логическими местоположениями, полнотой, машинной причиной завершения и retryability, ранжированием, счётом и происхождением; ход приходит через typed MCP progress (ADR-0056)",
+      "now": "`data`: три ролевые секции с логическими местоположениями, полнотой, машинной причиной завершения и retryability, ранжированием, счётом и происхождением; `dependencyPending` сохраняет доступные `retryAfterMs` и `state` поставщика по общему с диагностикой словарю (ADR-0077), а ход приходит через typed MCP progress (ADR-0056)",
       "target": "достигнут"
     },
     "scenarios": [
@@ -137,7 +137,7 @@
   "unica.code.diagnostics": {
     "result": {
       "contract": "typed",
-      "now": "`data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; физические пути и формат одного анализатора наружу не выходят",
+      "now": "`data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; переходная неготовность использует общий с поиском `dependencyPending` и сохраняет подсказку поставщика о повторе (ADR-0077); физические пути и формат одного анализатора наружу не выходят",
       "target": "достигнут"
     },
     "scenarios": [

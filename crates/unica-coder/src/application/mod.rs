@@ -459,7 +459,9 @@ pub fn code_search_output_schema() -> Value {
                                 ]
                             },
                             "retryable": {"type": "boolean"},
-                            "detailCode": {"type": "string", "minLength": 1}
+                            "detailCode": {"type": "string", "minLength": 1},
+                            "retryAfterMs": {"type": "integer", "minimum": 0},
+                            "state": {"type": "string", "minLength": 1}
                         },
                         "required": ["code", "retryable"]
                     }
@@ -3682,6 +3684,15 @@ mod tests {
             section["properties"]["termination"]["oneOf"][1]["properties"]["retryable"]["type"],
             "boolean"
         );
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["retryAfterMs"]
+                ["minimum"],
+            0
+        );
+        assert_eq!(
+            section["properties"]["termination"]["oneOf"][1]["properties"]["state"]["minLength"],
+            1
+        );
     }
 
     #[derive(Default)]
@@ -3823,6 +3834,7 @@ mod tests {
                         code: "provider_unavailable".to_string(),
                         message: "test provider is unavailable".to_string(),
                         retryable: true,
+                        guidance: None,
                     }),
                 };
             }

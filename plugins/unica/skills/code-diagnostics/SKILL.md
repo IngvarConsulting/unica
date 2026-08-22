@@ -19,6 +19,9 @@ description: "Диагностика BSL и объяснение отключе�
 `unica.build.*`.
 - Every diagnostics call names an exact `sourceSet`; `cwd` selects the workspace only and never identifies the target. Use `unica.project.map` when the source-set name is unknown.
 - Use `action=status` before resident `findings` when readiness is uncertain. A completed status request is not proof that a provider is ready: read each `providers[].readiness.state` and call `findings` only for `ready`; `building`, `notStarted`, and `stale` are not clean results.
+- If a provider error has `code=dependencyPending`, treat it as a transition,
+  not a permanent failure. Honor provider-supplied `retryAfterMs`, preserve its
+  `state`, and follow `nextAction=status`; do not infer a delay from the message.
 - Use `action=findings` with a logical `metadataPath` for one module or metadata object, `action=analyze` for a complete one-shot source-set scan, and `action=catalog` to discover provider-qualified rules. Provider execution is routed internally; do not pass a provider selector. The current live provider `bsl-analyzer` supports module findings only. Until a metadata provider is registered, a metadata-object request fails at request level with `no_applicable_provider`; this means neither clean metadata nor a bad logical address.
 - `action=analyze` may set `timeoutSeconds` from 30 to 3600. Without it the call uses `operational.code_diagnostics.analyze_timeout_seconds` from `<workspaceRoot>/unica.local.toml`, then `unica.toml`, then the compiled 120-second fallback. `findings`, `status`, and `catalog` do not read this operational config, do not accept `timeoutSeconds`, and run on that same compiled 120-second budget.
 - Put severity and exact case-sensitive codes under `filter`. Every code is `{provider, code}`; obtain provider ids and codes from `catalog`. `limit` is global across providers after normalization and deterministic ordering.
