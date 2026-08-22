@@ -3376,6 +3376,19 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertIn("sourceSet", text)
         self.assertIn("metadataPath", text)
 
+    def test_code_patch_skill_routes_through_namespaced_host_invocations(self) -> None:
+        path = self.skill_root() / "code-patch" / "SKILL.md"
+        text = path.read_text(encoding="utf-8")
+        routing = text.split("## Parameters", 1)[0]
+
+        for invocation in (
+            "mcp__plugin_unica_unica__unica_code_patch",
+            "mcp__plugin_unica_unica__unica_source_resources",
+            "mcp__plugin_unica_unica__unica_source_read",
+            "/unica:source-access",
+        ):
+            self.assertIn(invocation, routing)
+
     def test_code_patch_prompt_metadata_covers_every_public_operation(self) -> None:
         """Prompt metadata names the published operations and only those.
 

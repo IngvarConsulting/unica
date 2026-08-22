@@ -11,16 +11,17 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.code.patch`; `unica` validates the source set, supported-object state, selector, and exact in-memory BSL postimage before staging and atomic publication.
+- Preferred path: use MCP `unica` tool `mcp__plugin_unica_unica__unica_code_patch`; `unica` validates the source set, supported-object state, selector, and exact in-memory BSL postimage before staging and atomic publication.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
-- Always call `unica.code.patch` with `dryRun: true` first. Call it with `dryRun: false` only after the user explicitly asked to apply this exact change.
+- Always call `mcp__plugin_unica_unica__unica_code_patch` with `dryRun: true` first. Call it with `dryRun: false` only after the user explicitly asked to apply this exact change.
 
-`unica.code.patch` edits only one module of an existing metadata object in a supported canonical layout, with its descriptors present, inside the selected Platform XML Configuration or Extension source set. The physical `*Module.bsl` path is resolved privately from `sourceSet + metadataPath`; the removed `path` and `sourceDir` selector fields fail with `legacy_target_removed`. The tool performs one `insert`, one flat `replace`, or one atomic `replacements` batch — `insert` places `content` before or after the selected method or anchor, flat `replace` overwrites one selected span, and every batch item declares `{selector, content, expectedCount}`. Batch count mismatch or overlapping source ranges refuses the whole call before writing. `selector` is optional for `insert`: without it the content goes to the end of the module, `position` is refused, and a module that holds no method yet is served by that same path. A module file the platform never exported is created on apply, never on preview, and only when the role is one the metadata kind owns and the owner descriptor is proven. The tool cannot create a metadata object, batch-edit files, delete a whole module, edit EDT/external files, or synchronize source with an infobase.
+`mcp__plugin_unica_unica__unica_code_patch` edits only one module of an existing metadata object in a supported canonical layout, with its descriptors present, inside the selected Platform XML Configuration or Extension source set. The physical `*Module.bsl` path is resolved privately from `sourceSet + metadataPath`; the removed `path` and `sourceDir` selector fields fail with `legacy_target_removed`. The tool performs one `insert`, one flat `replace`, or one atomic `replacements` batch — `insert` places `content` before or after the selected method or anchor, flat `replace` overwrites one selected span, and every batch item declares `{selector, content, expectedCount}`. Batch count mismatch or overlapping source ranges refuses the whole call before writing. `selector` is optional for `insert`: without it the content goes to the end of the module, `position` is refused, and a module that holds no method yet is served by that same path. A module file the platform never exported is created on apply, never on preview, and only when the role is one the metadata kind owns and the owner descriptor is proven. The tool cannot create a metadata object, batch-edit files, delete a whole module, edit EDT/external files, or synchronize source with an infobase.
 
 If the requested BSL change cannot be expressed as one safe insertion or an
 atomic replacement batch within one module and needs a full existing-module replacement, stop this route and use the
-`source-access` skill to inspect the target through the read-only
-`unica.source.resources` and `unica.source.read`, then come back with a
+`/unica:source-access` skill to inspect the target through the read-only
+`mcp__plugin_unica_unica__unica_source_resources` and
+`mcp__plugin_unica_unica__unica_source_read`, then come back with a
 narrower `insert` or `replace`.
 
 ## Parameters
