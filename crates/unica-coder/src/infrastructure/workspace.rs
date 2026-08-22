@@ -152,8 +152,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
     /// Verifies that an absolute caller path never depends on the launch directory.
+    #[test]
     fn absolute_requested_cwd_does_not_read_process_cwd() {
         let root = temp_root("unica-workspace-absolute-cwd");
         std::fs::create_dir_all(&root).unwrap();
@@ -168,8 +168,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(context.cwd);
     }
 
-    #[test]
     /// Verifies the classified failure when a relative path cannot be anchored.
+    #[test]
     fn relative_requested_cwd_reports_launch_directory_failure() {
         let error =
             discover_workspace_with_current_dir(Some(PathBuf::from("relative-workspace")), || {
@@ -188,8 +188,8 @@ mod tests {
         );
     }
 
-    #[test]
     /// Verifies the classified failure when neither caller nor process provides a path.
+    #[test]
     fn missing_requested_cwd_reports_launch_directory_failure() {
         let error = discover_workspace_with_current_dir(None, || {
             Err(io::Error::new(
@@ -207,8 +207,8 @@ mod tests {
         );
     }
 
-    #[test]
     /// Verifies that relative caller paths are anchored to the launch directory.
+    #[test]
     fn relative_requested_cwd_resolves_from_launch_directory() {
         let root = temp_root("unica-workspace-relative-cwd");
         let workspace = root.join("workspace");
