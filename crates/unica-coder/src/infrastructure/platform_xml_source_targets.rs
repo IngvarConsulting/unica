@@ -2842,74 +2842,118 @@ fn object_registration_evidence(
     let source_owner_version = source_owner_evidence.version().map(str::to_owned);
 
     let parts = address.segments().collect::<Vec<_>>();
-    let [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command" | "Recalculation"), child_name] =
-        parts.as_slice()
-    else {
-        return match parts.as_slice() {
-            [kind, name] if source_owner_evidence.registers(kind, name) => Ok(Some(
-                ObjectOwnerVersionEvidence::Exact(source_owner_version),
-            )),
-            [_, _] => Ok(None),
-            _ => Ok(None),
-        };
+    let registered = match parts.as_slice() {
+        [kind, name] => source_owner_evidence.registers(kind, name),
+        [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command" | "Recalculation"), child_name] =>
+        {
+            let owner = object_descriptor_evidence(&[*owner_kind, *owner_name])
+                .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
+            source_owner_evidence.registers(&owner.kind, &owner.name)
+                && descriptor_registers_child(
+                    context,
+                    selected,
+                    &logical_target,
+                    &[*owner_kind, *owner_name],
+                    child_kind,
+                    child_name,
+                    &source_owner_version,
+                )?
+        }
+        ["ExternalDataSource", source_name, child_kind @ ("Table" | "Cube"), child_name] => {
+            source_owner_evidence.registers("ExternalDataSource", source_name)
+                && descriptor_registers_child(
+                    context,
+                    selected,
+                    &logical_target,
+                    &["ExternalDataSource", source_name],
+                    child_kind,
+                    child_name,
+                    &source_owner_version,
+                )?
+        }
+        ["ExternalDataSource", source_name, "Cube", cube_name, "DimensionTable", table_name] => {
+            source_owner_evidence.registers("ExternalDataSource", source_name)
+                && descriptor_registers_child(
+                    context,
+                    selected,
+                    &logical_target,
+                    &["ExternalDataSource", source_name],
+                    "Cube",
+                    cube_name,
+                    &source_owner_version,
+                )?
+                && descriptor_registers_child(
+                    context,
+                    selected,
+                    &logical_target,
+                    &["ExternalDataSource", source_name, "Cube", cube_name],
+                    "DimensionTable",
+                    table_name,
+                    &source_owner_version,
+                )?
+        }
+        _ => false,
     };
-    let owner = object_descriptor_evidence(&[*owner_kind, *owner_name])
-        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
-    if !source_owner_evidence.registers(&owner.kind, &owner.name) {
-        return Ok(None);
-    }
+    Ok(registered.then_some(ObjectOwnerVersionEvidence::Exact(source_owner_version)))
+}
+
+fn descriptor_registers_child(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    logical_target: &SourceTarget,
+    owner_parts: &[&str],
+    child_kind: &str,
+    child_name: &str,
+    source_owner_version: &Option<String>,
+) -> Result<bool, SourceTargetError> {
+    let owner = object_descriptor_evidence(owner_parts)
+        .ok_or_else(|| metadata_owner_evidence_error(logical_target))?;
     validate_platform_xml_module_descriptors(
         context,
         &selected.path,
         std::slice::from_ref(&owner.path),
     )
-    .map_err(|error| public_evidence_error(&logical_target, error))?;
+    .map_err(|error| public_evidence_error(logical_target, error))?;
     let owner_path = selected.path.join(&owner.path);
-    let owner = read_navigation_descriptor(&owner_path)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let owner_raw = read_navigation_descriptor(&owner_path)
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?;
     let (owner_version, actual_name) =
-        descriptor_version_and_name_from_bytes(&owner, owner_kind)
-            .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
-    if actual_name != *owner_name {
-        return Err(metadata_owner_evidence_error(&logical_target));
+        descriptor_version_and_name_from_bytes(&owner_raw, &owner.kind)
+            .map_err(|_| metadata_owner_evidence_error(logical_target))?;
+    if actual_name != owner.name {
+        return Err(metadata_owner_evidence_error(logical_target));
     }
-    if owner_version != source_owner_version {
+    if &owner_version != source_owner_version {
         return Err(SourceTargetError::source_format_unsupported(format!(
             "metadata owner `{}.{}` format does not match sourceSet `{}` owner",
-            owner_kind, owner_name, selected.source_set.name
+            owner.kind, owner.name, selected.source_set.name
         )));
     }
-    let owner = std::str::from_utf8(&owner)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?
+    let owner_xml = std::str::from_utf8(&owner_raw)
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?
         .trim_start_matches('\u{feff}');
-    let document = roxmltree::Document::parse(owner)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let document = roxmltree::Document::parse(owner_xml)
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?;
     let owner_node = document
         .root_element()
         .children()
         .find(|node| {
             node.is_element()
                 && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == *owner_kind
+                && node.tag_name().name() == owner.kind
         })
-        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
-    if owner_node.children().any(|child_objects| {
+        .ok_or_else(|| metadata_owner_evidence_error(logical_target))?;
+    Ok(owner_node.children().any(|child_objects| {
         child_objects.is_element()
             && child_objects.tag_name().namespace() == Some(MD_CLASSES_NS)
             && child_objects.tag_name().name() == "ChildObjects"
             && child_objects.children().any(|node| {
                 node.is_element()
                     && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                    && node.tag_name().name() == *child_kind
-                    && node.text().is_some_and(|text| text.trim() == *child_name)
+                    && node.tag_name().name() == child_kind
+                    && node.text().is_some_and(|text| text.trim() == child_name)
             })
-    }) {
-        Ok(Some(ObjectOwnerVersionEvidence::Exact(
-            source_owner_version,
-        )))
-    } else {
-        Ok(None)
-    }
+    }))
 }
 
 fn resolve_platform_xml_root(
@@ -6502,6 +6546,123 @@ mod tests {
     }
 
     #[test]
+    fn platform_xml_external_data_source_objects_require_the_full_registration_chain() {
+        let context = fixture(
+            "object-target-external-data-source",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(
+            &root,
+            "ExternalDataSources",
+            "ExternalDataSource",
+            "Remote",
+            "Remote",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Tables/Items.xml",
+            "ExternalDataSources/Remote/Tables/Items/Ext/ManagerModule.bsl",
+            "Table",
+            "Items",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Cubes/Sales.xml",
+            "ExternalDataSources/Remote/Cubes/Sales/Ext/ManagerModule.bsl",
+            "Cube",
+            "Sales",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+            "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ObjectModule.bsl",
+            "DimensionTable",
+            "Calendar",
+        );
+        register_fixture_item(
+            &root.join("ExternalDataSources/Remote.xml"),
+            "ExternalDataSource",
+            "Table",
+            "Items",
+        );
+        register_fixture_item(
+            &root.join("ExternalDataSources/Remote.xml"),
+            "ExternalDataSource",
+            "Cube",
+            "Sales",
+        );
+        register_fixture_item(
+            &root.join("ExternalDataSources/Remote/Cubes/Sales.xml"),
+            "Cube",
+            "DimensionTable",
+            "Calendar",
+        );
+
+        for (address, descriptor) in [
+            (
+                "ExternalDataSource.Remote.Table.Items",
+                "ExternalDataSources/Remote/Tables/Items.xml",
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales",
+                "ExternalDataSources/Remote/Cubes/Sales.xml",
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar",
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+            ),
+        ] {
+            let resolution =
+                resolve_platform_xml_object_target(&context, &target("main", address)).unwrap();
+            assert_eq!(
+                resolution.handle.target_path,
+                normalize_path_identity(&root.join(descriptor)).unwrap()
+            );
+        }
+
+        unregister_fixture_item(
+            &root.join("ExternalDataSources/Remote.xml"),
+            "Table",
+            "Items",
+        );
+        let error = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "ExternalDataSource.Remote.Table.Items"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+
+        unregister_fixture_item(
+            &root.join("ExternalDataSources/Remote/Cubes/Sales.xml"),
+            "DimensionTable",
+            "Calendar",
+        );
+        let error = resolve_platform_xml_object_target(
+            &context,
+            &target(
+                "main",
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar",
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+
+        unregister_fixture_item(
+            &root.join("ExternalDataSources/Remote.xml"),
+            "Cube",
+            "Sales",
+        );
+        let error = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "ExternalDataSource.Remote.Cube.Sales"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
+    }
+
+    #[test]
     fn platform_xml_nested_object_target_requires_a_proven_owner() {
         let context = fixture(
             "object-target-nested-owner",
@@ -7068,6 +7229,13 @@ mod tests {
             }
             fs::write(owner, image).unwrap();
         }
+    }
+
+    fn unregister_fixture_item(owner: &Path, kind: &str, name: &str) {
+        let registration = format!("<{kind}>{name}</{kind}>");
+        let image = fs::read_to_string(owner).unwrap();
+        assert!(image.contains(&registration));
+        fs::write(owner, image.replace(&registration, "")).unwrap();
     }
 
     fn write_nested_module_fixture(
