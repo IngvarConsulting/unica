@@ -4382,7 +4382,8 @@ mod tests {
                 "EventSubscription",
                 "HTTPService",
                 "WebService",
-                "DefinedType"
+                "DefinedType",
+                "ExternalDataSource"
             ])
         );
 

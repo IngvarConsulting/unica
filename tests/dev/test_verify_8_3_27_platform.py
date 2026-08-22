@@ -42,14 +42,23 @@ def write(path: Path, text: str) -> Path:
 
 
 class DocumentedContractTests(unittest.TestCase):
+    def test_current_and_completed_inventory_evidence_stay_distinct(self):
+        text = (ROOT / "spec/acceptance/format-profile-8-3-27.md").read_text(
+            encoding="utf-8"
+        )
+        completed = text.split(
+            "## Последний завершённый инвентарь доказательств по публичным операциям",
+            maxsplit=1,
+        )[1]
+
+        self.assertNotIn("второе значение остаётся `None`", completed)
+        self.assertIn("Для 23 видов", completed)
+        self.assertIn("включают 23 вида `meta.add`", completed)
+
     def test_current_case_contract_digest_is_documented(self):
         verifier = load_verifier()
         expected = f"`{verifier.EXPECTED_CASE_CONTRACT_SHA256}`"
-        documents = (
-            ROOT / "spec/acceptance/format-profile-8-3-27.md",
-            ROOT
-            / "docs/design/2026-08-07-typed-predefined-items-and-role-edit-design.md",
-        )
+        documents = (ROOT / "spec/acceptance/format-profile-8-3-27.md",)
 
         for path in documents:
             with self.subTest(path=path.relative_to(ROOT).as_posix()):
@@ -1027,7 +1036,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 69)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 70)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -1051,9 +1060,13 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual(
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf",
+            "5a5ae6f07ff1b420aaf6c89447eee1f07797c9a0e9898b47147219939803b404",
         )
         self.assertEqual(
+            verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
+            "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf",
+        )
+        self.assertNotEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
         )

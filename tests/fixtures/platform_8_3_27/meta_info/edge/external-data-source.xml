@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <ExternalDataSource uuid="66666666-6666-4666-8666-666666666666">
+    <Properties>
+      <Name>Remote</Name>
+      <DataLockControlMode>Automatic</DataLockControlMode>
+    </Properties>
+    <ChildObjects>
+      <Table>Items</Table>
+      <Cube>Sales</Cube>
+    </ChildObjects>
+  </ExternalDataSource>
+</MetaDataObject>

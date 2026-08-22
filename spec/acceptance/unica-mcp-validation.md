@@ -60,10 +60,10 @@ registry and schema projection is owned by its named contract test.
 
 The `unica.meta.info` response additionally satisfies
 `INV-MCP-META-INFO-COVERAGE`: `kind` is paired with a mandatory typed `details`
-variant for all 23 metadata kinds, read properties do not grant writer rights,
+variant for all 24 metadata kinds, read properties do not grant writer rights,
 and malformed nested HTTP/WebService or newly routed child collections are
 `null` with a diagnostic instead of looking complete. The tracked manifest
-contains 11 edge fixtures plus independent property/collection route matrices;
+contains 12 edge fixtures plus independent property/collection route matrices;
 multilingual declarations preserve `{language, content}` pairs. The
 fixture/profile guard is exercised by:
 

@@ -220,15 +220,16 @@ Unica. Каждая запись формулирует одно нормати�
 ### INV-MCP-META-INFO-COVERAGE — `meta.info` имеет отдельный полный профиль чтения
 
 - **Rule:** `unica.meta.info` возвращает обязательный `details`, вариант которого
-  связан с одним из всех 23 значений `kind`; общие свойства и наблюдаемые типы
+  связан с одним из всех 24 значений `kind`, включая `ExternalDataSource`;
+  общие свойства и наблюдаемые типы
   читаются профилями, не расширяющими право записи. Отслеживаемый манифест
   совпадает с `MetadataKind::ALL` и связывает основной профиль 8.3.27/2.20 с
-  одиннадцатью граничными примерами и независимыми матрицами маршрутов свойств
+  двенадцатью граничными примерами и независимыми матрицами маршрутов свойств
   и коллекций; неизвестное свойство или дочерний объект не пропускается молча,
   а даёт `provider_unavailable`. Недоказанная вложенная
   коллекция равна `null` с диагностикой, доказанно пустая равна `[]`,
   расширенное имя типа публикуется без префикса XML.
-- **Decision:** ADR-0047
+- **Decision:** ADR-0047, ADR-0077
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/meta/info_projection_tests.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/meta_info_surface_tests.rs`
 - **Scope:** source, packaged, runtime
@@ -290,7 +291,9 @@ Unica. Каждая запись формулирует одно нормати�
   верхнеуровневые `RightsPath`, `Path`, `ObjectName`, `Name` и `Value`, а
   записывающий компонент сохраняет невыбранные права, ограничения на уровне
   записей, шаблоны и глобальные флаги в одной атомарной транзакции.
-- **Decision:** ADR-0043
+  Профиль `ExternalDataSource` принимает только доказанные формы прав источника,
+  таблицы и поля таблицы из ADR-0077.
+- **Decision:** ADR-0043, ADR-0077
 - **Check:** `ci-test` — `crates/unica-coder/src/application/tool_contracts.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/application/mod.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/native_operations/role.rs`
@@ -1227,7 +1230,11 @@ Unica. Каждая запись формулирует одно нормати�
   необязательным каноническим `metadataPath`: английские и русские виды
   нормализуются в английские токены, прикладные имена сохраняются, а физический
   путь не принимается и не возвращается как идентичность цели.
-- **Decision:** ADR-0021
+  Адрес `ExternalDataSource` продолжает пары «вид — имя» через `Table` или
+  `Cube` и, только для куба, через `DimensionTable`; роль модуля допустима лишь
+  после полного адреса объекта, а физическая раскладка преобразуется обратно в
+  тот же адрес с доказательством всех дескрипторов предков.
+- **Decision:** ADR-0021, ADR-0077
 - **Check:** `ci-test` — `crates/unica-coder/src/domain/source_target.rs`
 - **Check:** `ci-test` — `crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs`
 - **Scope:** source, runtime

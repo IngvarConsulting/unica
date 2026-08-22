@@ -111,6 +111,39 @@ fn typed_minimal_templates_cover_all_public_add_kinds() {
 }
 
 #[test]
+fn typed_minimal_external_data_source_matches_platform_8_3_27_shape() {
+    let (xml, _) = minimal_metadata_xml_for_tests(MetadataKind::ExternalDataSource, "Remote")
+        .expect("typed ExternalDataSource template");
+    let document = Document::parse(&xml).unwrap();
+    let source = document
+        .descendants()
+        .find(|node| node.tag_name().name() == "ExternalDataSource")
+        .expect("ExternalDataSource descriptor");
+    let properties = meta_info_child(source, "Properties").unwrap();
+
+    assert_eq!(
+        direct_child_names(properties),
+        ["Name", "Synonym", "Comment", "DataLockControlMode"],
+        "{xml}"
+    );
+    assert_eq!(
+        meta_info_child_text(properties, "DataLockControlMode").as_deref(),
+        Some("Automatic")
+    );
+    assert!(meta_info_child(source, "ChildObjects").is_some(), "{xml}");
+    assert_eq!(
+        metadata_generated_types_8_3_27("ExternalDataSource"),
+        Some(
+            &[
+                ("ExternalDataSourceManager", "Manager"),
+                ("ExternalDataSourceTablesManager", "TablesManager"),
+                ("ExternalDataSourceCubesManager", "CubesManager"),
+            ][..]
+        )
+    );
+}
+
+#[test]
 fn minimal_templates_emit_child_objects_only_where_the_kind_declares_them() {
     // 8.3.27 refuses to import a descriptor carrying `ChildObjects` for a kind
     // that has no child collection: `document format error: unexpected read

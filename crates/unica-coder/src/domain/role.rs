@@ -359,6 +359,8 @@ pub fn nested_right_shape_is_modelled(object_name: &str) -> bool {
         return true;
     }
     match parts.as_slice() {
+        ["ExternalDataSource", _, "Table", _]
+        | ["ExternalDataSource", _, "Table", _, "Field", _] => true,
         [parent, _, "Command", _] => supports_commands(parent),
         ["WebService", _, "Operation", _]
         | ["HTTPService", _, "URLTemplate", _, "Method", _]
@@ -403,6 +405,25 @@ mod nested_shape_tests {
         assert!(validate_nested_right("Catalog.Goods.Attribute.Price", "View").is_ok());
         assert!(validate_nested_right("Catalog.Goods.Attribute.Price", "Delete").is_err());
     }
+
+    #[test]
+    fn external_data_source_right_shapes_are_modelled() {
+        assert_eq!(known_role_rights("ExternalDataSource"), &["Use"]);
+        for (object_name, right) in [
+            ("ExternalDataSource.Remote.Table.Items", "Read"),
+            ("ExternalDataSource.Remote.Table.Items", "View"),
+            ("ExternalDataSource.Remote.Table.Items.Field.Code", "Edit"),
+        ] {
+            assert!(nested_right_shape_is_modelled(object_name), "{object_name}");
+            validate_nested_right(object_name, right).unwrap();
+        }
+        for unsupported in ["Delete", "Edit"] {
+            assert!(
+                validate_nested_right("ExternalDataSource.Remote.Table.Items", unsupported)
+                    .is_err()
+            );
+        }
+    }
 }
 
 pub fn validate_nested_right(object_name: &str, right: &str) -> Result<(), String> {
@@ -418,6 +439,13 @@ pub fn validate_nested_right(object_name: &str, right: &str) -> Result<(), Strin
         right == "View"
     } else {
         match parts.as_slice() {
+            ["ExternalDataSource", _, "Table", _] => matches!(
+                right,
+                "Read" | "Insert" | "Update" | "View" | "InputByString"
+            ),
+            ["ExternalDataSource", _, "Table", _, "Field", _] => {
+                matches!(right, "View" | "Edit")
+            }
             [parent, _, "Command", _] if supports_commands(parent) => right == "View",
             ["WebService", _, "Operation", _] => right == "Use",
             ["HTTPService", _, "URLTemplate", _, "Method", _] => right == "Use",
@@ -577,6 +605,7 @@ const KNOWN_ROLE_OBJECT_TYPES: &[&str] = &[
     "IntegrationService",
     "SessionParameter",
     "CommonAttribute",
+    "ExternalDataSource",
 ];
 
 pub fn known_role_rights(object_type: &str) -> &'static [&'static str] {
@@ -826,6 +855,7 @@ pub fn known_role_rights(object_type: &str) -> &'static [&'static str] {
         "WebService" | "HTTPService" | "IntegrationService" => &["Use"],
         "SessionParameter" => &["Get", "Set"],
         "CommonAttribute" => &["View", "Edit"],
+        "ExternalDataSource" => &["Use"],
         _ => &[],
     }
 }

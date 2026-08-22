@@ -517,6 +517,53 @@ fn locate_platform_xml_source_path_in_with_policy(
         }
     }
 
+    let external_nested = if kind.tag == "ExternalDataSource" {
+        match parts.as_slice() {
+            [_, source, directory @ ("Tables" | "Cubes"), child] => {
+                let child_kind = if *directory == "Tables" {
+                    "Table"
+                } else {
+                    "Cube"
+                };
+                Some(format!(
+                    "ExternalDataSource.{source}.{child_kind}.{}",
+                    child.trim_end_matches(".xml")
+                ))
+            }
+            [_, source, "Cubes", cube, "DimensionTables", dimension_table] => Some(format!(
+                "ExternalDataSource.{source}.Cube.{cube}.DimensionTable.{}",
+                dimension_table.trim_end_matches(".xml")
+            )),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some(nested) = external_nested {
+        if let Ok(nested_address) = MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &nested,
+        ) {
+            if exact_object_outcome_with_policy(
+                source_root,
+                &nested_address,
+                cancellation,
+                version_policy,
+            )? == ExactCandidate::Proven
+            {
+                let is_own_descriptor = parts.last().is_some_and(|part| part.ends_with(".xml"));
+                return Ok(SourceLocateResult {
+                    source_set: source_set.name.clone(),
+                    relative_path: relative_text,
+                    metadata_path: is_own_descriptor.then(|| nested_address.clone()),
+                    target_kind: is_own_descriptor.then_some(TargetKind::MetadataObject),
+                    owner_metadata_path: Some(nested_address),
+                    rejection: (!is_own_descriptor).then_some(LocateRejection::NotAddressable),
+                });
+            }
+        }
+    }
+
     let is_object_descriptor = parts.len() == 2 && parts[1].ends_with(".xml");
     Ok(SourceLocateResult {
         source_set: source_set.name.clone(),
@@ -584,7 +631,7 @@ fn resolve_prefix_by_scoped_scan(
     .map_err(|error| error.to_string())?;
     let query = prefix.as_str().to_string();
     let parts = query.split('.').collect::<Vec<_>>();
-    if parts.len() > 5 {
+    if parts.len() > 7 {
         return Ok(None);
     }
     let selected = resolve_named_source_set(context, &request.source_set)
@@ -621,7 +668,7 @@ fn resolve_prefix_by_scoped_scan(
         _ => return Ok(None),
     };
 
-    let mut partial = false;
+    let mut scan = NavigationScanState::default();
     let mut matches = Vec::new();
     for kind in kinds {
         check_navigation_cancellation(cancellation)?;
@@ -630,13 +677,8 @@ fn resolve_prefix_by_scoped_scan(
         } else {
             None
         };
-        for name in proven_object_names(
-            &selected.path,
-            kind,
-            name_filter,
-            &mut partial,
-            cancellation,
-        )? {
+        for name in proven_object_names(&selected.path, kind, name_filter, &mut scan, cancellation)?
+        {
             check_navigation_cancellation(cancellation)?;
             let object = format!("{}.{name}", kind.tag);
             if parts.len() < 3 && object.starts_with(&query) {
@@ -647,6 +689,9 @@ fn resolve_prefix_by_scoped_scan(
                     matches.push((address, TargetKind::MetadataObject, name.clone()));
                 }
             }
+            if scan.stop_if_exhausted() {
+                continue;
+            }
             for terminal in crate::domain::source_target::module_terminals() {
                 check_navigation_cancellation(cancellation)?;
                 push_module_candidate(
@@ -655,6 +700,7 @@ fn resolve_prefix_by_scoped_scan(
                     &format!("{object}.{terminal}"),
                     &query,
                     terminal,
+                    &mut scan,
                     &mut matches,
                 )?;
             }
@@ -680,7 +726,7 @@ fn resolve_prefix_by_scoped_scan(
                     &name,
                     child_kind,
                     child_directory,
-                    &mut partial,
+                    &mut scan,
                     cancellation,
                 )? {
                     check_navigation_cancellation(cancellation)?;
@@ -694,37 +740,125 @@ fn resolve_prefix_by_scoped_scan(
                         }
                     }
                     if let Some(terminal) = module_terminal {
+                        if scan.stop_if_exhausted() {
+                            continue;
+                        }
                         push_module_candidate(
                             context,
                             &selected,
                             &format!("{nested}.{terminal}"),
                             &query,
                             terminal,
+                            &mut scan,
                             &mut matches,
                         )?;
+                    }
+                }
+            }
+            if kind.tag == "ExternalDataSource" {
+                for (child_kind, child_directory) in [("Table", "Tables"), ("Cube", "Cubes")] {
+                    check_navigation_cancellation(cancellation)?;
+                    for child in proven_child_names(
+                        &selected.path,
+                        kind,
+                        &name,
+                        child_kind,
+                        child_directory,
+                        &mut scan,
+                        cancellation,
+                    )? {
+                        check_navigation_cancellation(cancellation)?;
+                        let nested = format!("{object}.{child_kind}.{child}");
+                        if nested.starts_with(&query) {
+                            if let Ok(address) = MetadataAddress::parse(
+                                crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                                &nested,
+                            ) {
+                                matches.push((address, TargetKind::MetadataObject, child.clone()));
+                            }
+                        }
+                        if scan.stop_if_exhausted() {
+                            continue;
+                        }
+                        for terminal in crate::domain::source_target::module_terminals() {
+                            check_navigation_cancellation(cancellation)?;
+                            push_module_candidate(
+                                context,
+                                &selected,
+                                &format!("{nested}.{terminal}"),
+                                &query,
+                                terminal,
+                                &mut scan,
+                                &mut matches,
+                            )?;
+                        }
+                        if child_kind != "Cube" {
+                            continue;
+                        }
+                        let dimension_tables = selected
+                            .path
+                            .join(kind.directory)
+                            .join(&name)
+                            .join("Cubes")
+                            .join(&child)
+                            .join("DimensionTables");
+                        for dimension_table in proven_names_in_directory(
+                            &dimension_tables,
+                            "DimensionTable",
+                            &mut scan,
+                            cancellation,
+                        )? {
+                            check_navigation_cancellation(cancellation)?;
+                            let dimension = format!("{nested}.DimensionTable.{dimension_table}");
+                            if dimension.starts_with(&query) {
+                                if let Ok(address) = MetadataAddress::parse(
+                                    crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                                    &dimension,
+                                ) {
+                                    matches.push((
+                                        address,
+                                        TargetKind::MetadataObject,
+                                        dimension_table.clone(),
+                                    ));
+                                }
+                            }
+                            if scan.stop_if_exhausted() {
+                                continue;
+                            }
+                            for terminal in crate::domain::source_target::module_terminals() {
+                                check_navigation_cancellation(cancellation)?;
+                                push_module_candidate(
+                                    context,
+                                    &selected,
+                                    &format!("{dimension}.{terminal}"),
+                                    &query,
+                                    terminal,
+                                    &mut scan,
+                                    &mut matches,
+                                )?;
+                            }
+                        }
                     }
                 }
             }
         }
         if parts.len() < 2 {
             // Nested descendants were not enumerated for this query shape.
-            partial = true;
+            scan.partial = true;
         }
     }
     if parts.len() == 1 {
         for terminal in crate::domain::source_target::root_module_terminals() {
             check_navigation_cancellation(cancellation)?;
-            if !terminal.starts_with(&query) {
-                continue;
-            }
-            if rendered_module_node(context, &selected, terminal)?.is_some() {
-                if let Ok(address) = MetadataAddress::parse(
-                    crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    terminal,
-                ) {
-                    matches.push((address, TargetKind::Module, (*terminal).to_string()));
-                }
-            }
+            push_module_candidate(
+                context,
+                &selected,
+                terminal,
+                &query,
+                terminal,
+                &mut scan,
+                &mut matches,
+            )?;
         }
     }
 
@@ -762,7 +896,7 @@ fn resolve_prefix_by_scoped_scan(
             },
         )
         .collect();
-    let completeness = if partial || next_cursor.is_some() {
+    let completeness = if scan.partial || next_cursor.is_some() {
         NavigationCompleteness::Partial
     } else {
         NavigationCompleteness::Complete
@@ -780,9 +914,13 @@ fn push_module_candidate(
     candidate: &str,
     query: &str,
     display_name: &str,
+    scan: &mut NavigationScanState,
     matches: &mut Vec<(MetadataAddress, TargetKind, String)>,
 ) -> Result<(), String> {
     if !candidate.starts_with(query) {
+        return Ok(());
+    }
+    if !scan.claim() {
         return Ok(());
     }
     if rendered_module_node(context, selected, candidate)?.is_none() {
@@ -805,18 +943,65 @@ fn proven_child_names(
     owner: &str,
     child_kind: &str,
     child_directory: &str,
-    partial: &mut bool,
+    scan: &mut NavigationScanState,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, String> {
     let directory = source_root
         .join(kind.directory)
         .join(owner)
         .join(child_directory);
-    let entries = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
+    proven_names_in_directory(&directory, child_kind, scan, cancellation)
+}
+
+#[derive(Default)]
+struct NavigationScanState {
+    inspected: usize,
+    partial: bool,
+}
+
+impl NavigationScanState {
+    fn stop_if_exhausted(&mut self) -> bool {
+        if self.inspected < MAX_NAVIGATION_INVENTORY_ENTRIES {
+            return false;
+        }
+        self.partial = true;
+        true
+    }
+
+    fn claim(&mut self) -> bool {
+        if self.stop_if_exhausted() {
+            return false;
+        }
+        self.inspected += 1;
+        true
+    }
+}
+
+fn proven_names_in_directory(
+    directory: &Path,
+    child_kind: &str,
+    scan: &mut NavigationScanState,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, String> {
+    if scan.stop_if_exhausted() {
+        return Ok(Vec::new());
+    }
+    let metadata = match fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => {
-            *partial = true;
+            scan.partial = true;
+            return Ok(Vec::new());
+        }
+    };
+    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+        scan.partial = true;
+        return Ok(Vec::new());
+    }
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(_) => {
+            scan.partial = true;
             return Ok(Vec::new());
         }
     };
@@ -824,7 +1009,7 @@ fn proven_child_names(
     for entry in entries {
         check_navigation_cancellation(cancellation)?;
         let Ok(entry) = entry else {
-            *partial = true;
+            scan.partial = true;
             continue;
         };
         let path = entry.path();
@@ -832,13 +1017,16 @@ fn proven_child_names(
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-            *partial = true;
+            scan.partial = true;
             continue;
         };
+        if !scan.claim() {
+            break;
+        }
         match descriptor_name(&path, child_kind) {
             Ok(name) if name == stem => names.push(name),
-            Ok(_) => *partial = true,
-            Err(()) => *partial = true,
+            Ok(_) => scan.partial = true,
+            Err(()) => scan.partial = true,
         }
     }
     Ok(names)
@@ -851,35 +1039,37 @@ fn proven_object_names(
     source_root: &Path,
     kind: &MetadataLayout,
     name_prefix: Option<&str>,
-    partial: &mut bool,
+    scan: &mut NavigationScanState,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, String> {
+    if scan.stop_if_exhausted() {
+        return Ok(Vec::new());
+    }
     let directory = source_root.join(kind.directory);
     let metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => {
-            *partial = true;
+            scan.partial = true;
             return Ok(Vec::new());
         }
     };
     if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
-        *partial = true;
+        scan.partial = true;
         return Ok(Vec::new());
     }
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(_) => {
-            *partial = true;
+            scan.partial = true;
             return Ok(Vec::new());
         }
     };
     let mut names = Vec::new();
-    let mut inspected = 0_usize;
     for entry in entries {
         check_navigation_cancellation(cancellation)?;
         let Ok(entry) = entry else {
-            *partial = true;
+            scan.partial = true;
             continue;
         };
         let path = entry.path();
@@ -887,7 +1077,7 @@ fn proven_object_names(
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
-            *partial = true;
+            scan.partial = true;
             continue;
         };
         if name_prefix.is_some_and(|prefix| !stem.starts_with(prefix)) {
@@ -896,15 +1086,13 @@ fn proven_object_names(
         // Only a candidate that survives the cheap filters counts against the
         // bound: skipping a sibling directory costs nothing and must not make
         // the provider claim its answer is truncated.
-        if inspected >= MAX_NAVIGATION_INVENTORY_ENTRIES {
-            *partial = true;
+        if !scan.claim() {
             break;
         }
-        inspected += 1;
         match descriptor_name(&path, kind.tag) {
             Ok(name) if name == stem => names.push(name),
-            Ok(_) => *partial = true,
-            Err(()) => *partial = true,
+            Ok(_) => scan.partial = true,
+            Err(()) => scan.partial = true,
         }
     }
     Ok(names)
@@ -1060,6 +1248,38 @@ fn rendered_address_children(
                     children.push(collection_node(child_directory.to_string()));
                 }
             }
+            if kind.tag == "ExternalDataSource" {
+                for child_directory in ["Tables", "Cubes"] {
+                    check_navigation_cancellation(cancellation)?;
+                    let directory = selected
+                        .path
+                        .join(kind.directory)
+                        .join(name)
+                        .join(child_directory);
+                    let Ok(metadata) = fs::symlink_metadata(&directory) else {
+                        continue;
+                    };
+                    if metadata_is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+                        continue;
+                    }
+                    children.push(collection_node(child_directory.to_string()));
+                }
+            }
+        }
+    }
+    if let ["ExternalDataSource", source, "Cube", cube] = parts.as_slice() {
+        check_navigation_cancellation(cancellation)?;
+        let directory = selected
+            .path
+            .join("ExternalDataSources")
+            .join(source)
+            .join("Cubes")
+            .join(cube)
+            .join("DimensionTables");
+        if let Ok(metadata) = fs::symlink_metadata(&directory) {
+            if !metadata_is_link_or_reparse_point(&metadata) && metadata.is_dir() {
+                children.push(collection_node("DimensionTables".to_string()));
+            }
         }
     }
     Ok(children)
@@ -1198,10 +1418,11 @@ fn exact_object_outcome_with_policy(
 ) -> Result<ExactCandidate, String> {
     check_navigation_cancellation(cancellation)?;
     let parts = address.segments().collect::<Vec<_>>();
-    // A nested child is only as real as the owner that declares it, so the
-    // owner descriptor is proven first and its verdict wins when it fails.
-    if parts.len() == 4 {
-        let Some(owner) = object_descriptor_evidence(&parts[..2]) else {
+    // A nested child is only as real as every ancestor that declares it, so
+    // ancestor descriptors are proven from the root down and the first failed
+    // verdict wins.
+    for ancestor_len in (2..parts.len()).step_by(2) {
+        let Some(owner) = object_descriptor_evidence(&parts[..ancestor_len]) else {
             return Ok(ExactCandidate::Absent);
         };
         let outcome = descriptor_outcome_with_policy(
@@ -1290,6 +1511,33 @@ fn object_descriptor_evidence(parts: &[&str]) -> Option<ObjectDescriptorEvidence
                     .join(format!("{child_name}.xml")),
                 kind: (*child_kind).to_string(),
                 name: (*child_name).to_string(),
+            })
+        }
+        ["ExternalDataSource", source_name, child_kind @ ("Table" | "Cube"), child_name] => {
+            let child_directory = if *child_kind == "Table" {
+                "Tables"
+            } else {
+                "Cubes"
+            };
+            Some(ObjectDescriptorEvidence {
+                path: PathBuf::from("ExternalDataSources")
+                    .join(source_name)
+                    .join(child_directory)
+                    .join(format!("{child_name}.xml")),
+                kind: (*child_kind).to_string(),
+                name: (*child_name).to_string(),
+            })
+        }
+        ["ExternalDataSource", source_name, "Cube", cube_name, "DimensionTable", table_name] => {
+            Some(ObjectDescriptorEvidence {
+                path: PathBuf::from("ExternalDataSources")
+                    .join(source_name)
+                    .join("Cubes")
+                    .join(cube_name)
+                    .join("DimensionTables")
+                    .join(format!("{table_name}.xml")),
+                kind: "DimensionTable".to_string(),
+                name: (*table_name).to_string(),
             })
         }
         _ => None,
@@ -1564,7 +1812,7 @@ fn collect_configuration_navigation(
             .next_back()
             .unwrap_or(module_address.as_str())
             .to_string();
-        if module_address.as_str().split('.').count() == 5 {
+        if module_address.as_str().split('.').count() >= 5 {
             if let Some((object, _)) = module_address.as_str().rsplit_once('.') {
                 add_address(
                     inventory,
@@ -1637,6 +1885,48 @@ fn module_descriptor_identity_is_proven(
                 child_descriptor,
                 child_kind,
                 child_name,
+                cancellation,
+            )?
+        }
+        (
+            ["ExternalDataSource", source_name, child_kind @ ("Table" | "Cube"), child_name, _],
+            [source_descriptor, child_descriptor],
+        ) => {
+            descriptor_identity_matches(
+                source_root,
+                source_descriptor,
+                "ExternalDataSource",
+                source_name,
+                cancellation,
+            )? && descriptor_identity_matches(
+                source_root,
+                child_descriptor,
+                child_kind,
+                child_name,
+                cancellation,
+            )?
+        }
+        (
+            ["ExternalDataSource", source_name, "Cube", cube_name, "DimensionTable", table_name, _],
+            [source_descriptor, cube_descriptor, table_descriptor],
+        ) => {
+            descriptor_identity_matches(
+                source_root,
+                source_descriptor,
+                "ExternalDataSource",
+                source_name,
+                cancellation,
+            )? && descriptor_identity_matches(
+                source_root,
+                cube_descriptor,
+                "Cube",
+                cube_name,
+                cancellation,
+            )? && descriptor_identity_matches(
+                source_root,
+                table_descriptor,
+                "DimensionTable",
+                table_name,
                 cancellation,
             )?
         }
@@ -1824,6 +2114,14 @@ fn descriptor_version_and_name_from_bytes(
     let text = std::str::from_utf8(raw).map_err(|_| ())?;
     let source = text.trim_start_matches('\u{feff}');
     let document = roxmltree::Document::parse(source).map_err(|_| ())?;
+    descriptor_version_and_name_from_document(source, &document, expected_kind)
+}
+
+fn descriptor_version_and_name_from_document(
+    source: &str,
+    document: &roxmltree::Document<'_>,
+    expected_kind: &str,
+) -> Result<(Option<String>, String), ()> {
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
@@ -2595,74 +2893,118 @@ fn object_registration_evidence(
     let source_owner_version = source_owner_evidence.version().map(str::to_owned);
 
     let parts = address.segments().collect::<Vec<_>>();
-    let [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command" | "Recalculation"), child_name] =
-        parts.as_slice()
-    else {
-        return match parts.as_slice() {
-            [kind, name] if source_owner_evidence.registers(kind, name) => Ok(Some(
-                ObjectOwnerVersionEvidence::Exact(source_owner_version),
-            )),
-            [_, _] => Ok(None),
-            _ => Ok(None),
-        };
+    let registered = match parts.as_slice() {
+        [kind, name] => source_owner_evidence.registers(kind, name),
+        [owner_kind, owner_name, child_kind @ ("Form" | "Template" | "Command" | "Recalculation"), child_name] =>
+        {
+            let owner = object_descriptor_evidence(&[*owner_kind, *owner_name])
+                .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
+            source_owner_evidence.registers(&owner.kind, &owner.name)
+                && descriptor_registers_child(
+                    context,
+                    selected,
+                    &logical_target,
+                    &[*owner_kind, *owner_name],
+                    child_kind,
+                    child_name,
+                    &source_owner_version,
+                )?
+        }
+        ["ExternalDataSource", source_name, child_kind @ ("Table" | "Cube"), child_name] => {
+            source_owner_evidence.registers("ExternalDataSource", source_name)
+                && descriptor_registers_child(
+                    context,
+                    selected,
+                    &logical_target,
+                    &["ExternalDataSource", source_name],
+                    child_kind,
+                    child_name,
+                    &source_owner_version,
+                )?
+        }
+        ["ExternalDataSource", source_name, "Cube", cube_name, "DimensionTable", table_name] => {
+            source_owner_evidence.registers("ExternalDataSource", source_name)
+                && descriptor_registers_child(
+                    context,
+                    selected,
+                    &logical_target,
+                    &["ExternalDataSource", source_name],
+                    "Cube",
+                    cube_name,
+                    &source_owner_version,
+                )?
+                && descriptor_registers_child(
+                    context,
+                    selected,
+                    &logical_target,
+                    &["ExternalDataSource", source_name, "Cube", cube_name],
+                    "DimensionTable",
+                    table_name,
+                    &source_owner_version,
+                )?
+        }
+        _ => false,
     };
-    let owner = object_descriptor_evidence(&[*owner_kind, *owner_name])
-        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
-    if !source_owner_evidence.registers(&owner.kind, &owner.name) {
-        return Ok(None);
-    }
+    Ok(registered.then_some(ObjectOwnerVersionEvidence::Exact(source_owner_version)))
+}
+
+fn descriptor_registers_child(
+    context: &WorkspaceContext,
+    selected: &ResolvedNamedSourceSet,
+    logical_target: &SourceTarget,
+    owner_parts: &[&str],
+    child_kind: &str,
+    child_name: &str,
+    source_owner_version: &Option<String>,
+) -> Result<bool, SourceTargetError> {
+    let owner = object_descriptor_evidence(owner_parts)
+        .ok_or_else(|| metadata_owner_evidence_error(logical_target))?;
     validate_platform_xml_module_descriptors(
         context,
         &selected.path,
         std::slice::from_ref(&owner.path),
     )
-    .map_err(|error| public_evidence_error(&logical_target, error))?;
+    .map_err(|error| public_evidence_error(logical_target, error))?;
     let owner_path = selected.path.join(&owner.path);
-    let owner = read_navigation_descriptor(&owner_path)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let owner_raw = read_navigation_descriptor(&owner_path)
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?;
+    let owner_xml = std::str::from_utf8(&owner_raw)
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?
+        .trim_start_matches('\u{feff}');
+    let document = roxmltree::Document::parse(owner_xml)
+        .map_err(|_| metadata_owner_evidence_error(logical_target))?;
     let (owner_version, actual_name) =
-        descriptor_version_and_name_from_bytes(&owner, owner_kind)
-            .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
-    if actual_name != *owner_name {
-        return Err(metadata_owner_evidence_error(&logical_target));
+        descriptor_version_and_name_from_document(owner_xml, &document, &owner.kind)
+            .map_err(|_| metadata_owner_evidence_error(logical_target))?;
+    if actual_name != owner.name {
+        return Err(metadata_owner_evidence_error(logical_target));
     }
-    if owner_version != source_owner_version {
+    if &owner_version != source_owner_version {
         return Err(SourceTargetError::source_format_unsupported(format!(
             "metadata owner `{}.{}` format does not match sourceSet `{}` owner",
-            owner_kind, owner_name, selected.source_set.name
+            owner.kind, owner.name, selected.source_set.name
         )));
     }
-    let owner = std::str::from_utf8(&owner)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?
-        .trim_start_matches('\u{feff}');
-    let document = roxmltree::Document::parse(owner)
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
     let owner_node = document
         .root_element()
         .children()
         .find(|node| {
             node.is_element()
                 && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == *owner_kind
+                && node.tag_name().name() == owner.kind
         })
-        .ok_or_else(|| metadata_owner_evidence_error(&logical_target))?;
-    if owner_node.children().any(|child_objects| {
+        .ok_or_else(|| metadata_owner_evidence_error(logical_target))?;
+    Ok(owner_node.children().any(|child_objects| {
         child_objects.is_element()
             && child_objects.tag_name().namespace() == Some(MD_CLASSES_NS)
             && child_objects.tag_name().name() == "ChildObjects"
             && child_objects.children().any(|node| {
                 node.is_element()
                     && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                    && node.tag_name().name() == *child_kind
-                    && node.text().is_some_and(|text| text.trim() == *child_name)
+                    && node.tag_name().name() == child_kind
+                    && node.text().is_some_and(|text| text.trim() == child_name)
             })
-    }) {
-        Ok(Some(ObjectOwnerVersionEvidence::Exact(
-            source_owner_version,
-        )))
-    } else {
-        Ok(None)
-    }
+    }))
 }
 
 fn resolve_platform_xml_root(
@@ -2972,6 +3314,9 @@ enum PlatformXmlModuleLayoutFamily {
     DirectMetadata,
     NestedForm,
     NestedCommand,
+    ExternalDataSourceTable,
+    ExternalDataSourceCube,
+    ExternalDataSourceDimensionTable,
 }
 
 const OWNER_MODULE_KINDS: &[&str] = &[
@@ -2988,6 +3333,7 @@ enum ModuleLayoutToken {
     MetadataDirectory,
     OwnerName,
     ChildName,
+    GrandchildName,
     Role(ModuleRoleClass),
     RoleFile(ModuleRoleClass),
 }
@@ -3004,6 +3350,9 @@ enum ModuleLayoutCapability {
     OwnerModule,
     DirectModule,
     NestedFormOrCommand,
+    ExternalDataSourceTable,
+    ExternalDataSourceCube,
+    ExternalDataSourceDimensionTable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3019,6 +3368,11 @@ enum ModuleDescriptorRule {
         /// from the logical address, so it is not repeated here.
         child_directory: &'static str,
     },
+    ExternalDataSourceChild {
+        child_kind: &'static str,
+        child_directory: &'static str,
+    },
+    ExternalDataSourceDimensionTable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3165,6 +3519,79 @@ const PLATFORM_XML_MODULE_LAYOUT_FAMILIES: &[PlatformXmlModuleLayoutDescriptor] 
             child_directory: "Commands",
         },
     },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::ExternalDataSourceTable,
+        physical: &[
+            ModuleLayoutToken::Literal("ExternalDataSources"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Tables"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::RoleFile(ModuleRoleClass::Direct),
+        ],
+        logical: &[
+            ModuleLayoutToken::Literal("ExternalDataSource"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Table"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Role(ModuleRoleClass::Direct),
+        ],
+        capability: ModuleLayoutCapability::ExternalDataSourceTable,
+        fixed_role: None,
+        descriptor_rule: ModuleDescriptorRule::ExternalDataSourceChild {
+            child_kind: "Table",
+            child_directory: "Tables",
+        },
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::ExternalDataSourceCube,
+        physical: &[
+            ModuleLayoutToken::Literal("ExternalDataSources"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Cubes"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::RoleFile(ModuleRoleClass::Direct),
+        ],
+        logical: &[
+            ModuleLayoutToken::Literal("ExternalDataSource"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Cube"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Role(ModuleRoleClass::Direct),
+        ],
+        capability: ModuleLayoutCapability::ExternalDataSourceCube,
+        fixed_role: None,
+        descriptor_rule: ModuleDescriptorRule::ExternalDataSourceChild {
+            child_kind: "Cube",
+            child_directory: "Cubes",
+        },
+    },
+    PlatformXmlModuleLayoutDescriptor {
+        family: PlatformXmlModuleLayoutFamily::ExternalDataSourceDimensionTable,
+        physical: &[
+            ModuleLayoutToken::Literal("ExternalDataSources"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Cubes"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("DimensionTables"),
+            ModuleLayoutToken::GrandchildName,
+            ModuleLayoutToken::Literal("Ext"),
+            ModuleLayoutToken::RoleFile(ModuleRoleClass::Direct),
+        ],
+        logical: &[
+            ModuleLayoutToken::Literal("ExternalDataSource"),
+            ModuleLayoutToken::OwnerName,
+            ModuleLayoutToken::Literal("Cube"),
+            ModuleLayoutToken::ChildName,
+            ModuleLayoutToken::Literal("DimensionTable"),
+            ModuleLayoutToken::GrandchildName,
+            ModuleLayoutToken::Role(ModuleRoleClass::Direct),
+        ],
+        capability: ModuleLayoutCapability::ExternalDataSourceDimensionTable,
+        fixed_role: None,
+        descriptor_rule: ModuleDescriptorRule::ExternalDataSourceDimensionTable,
+    },
 ];
 
 impl PlatformXmlModuleLayoutDescriptor {
@@ -3207,6 +3634,7 @@ impl PlatformXmlModuleLayoutDescriptor {
                 }
                 ModuleLayoutToken::OwnerName => captures.owner_name = Some(value),
                 ModuleLayoutToken::ChildName => captures.child_name = Some(value),
+                ModuleLayoutToken::GrandchildName => captures.grandchild_name = Some(value),
                 ModuleLayoutToken::Role(class) => {
                     captures.role = Some(class.parse(value)?);
                 }
@@ -3231,6 +3659,15 @@ impl PlatformXmlModuleLayoutDescriptor {
             ModuleLayoutCapability::NestedFormOrCommand => captures
                 .kind
                 .is_some_and(|kind| supports_nested_form_or_command(kind.tag)),
+            ModuleLayoutCapability::ExternalDataSourceTable
+            | ModuleLayoutCapability::ExternalDataSourceCube => matches!(
+                captures.role,
+                Some(PlatformXmlModuleRole::ManagerModule | PlatformXmlModuleRole::RecordSetModule)
+            ),
+            ModuleLayoutCapability::ExternalDataSourceDimensionTable => matches!(
+                captures.role,
+                Some(PlatformXmlModuleRole::ObjectModule | PlatformXmlModuleRole::ManagerModule)
+            ),
         }
     }
 
@@ -3260,6 +3697,10 @@ impl PlatformXmlModuleLayoutDescriptor {
                 ModuleLayoutToken::ChildName => captures
                     .child_name
                     .expect("accepted layout must capture child name")
+                    .to_string(),
+                ModuleLayoutToken::GrandchildName => captures
+                    .grandchild_name
+                    .expect("accepted layout must capture grandchild name")
                     .to_string(),
                 ModuleLayoutToken::Role(_) => captures
                     .role
@@ -3325,6 +3766,46 @@ impl PlatformXmlModuleLayoutDescriptor {
                     ],
                 )
             }
+            ModuleDescriptorRule::ExternalDataSourceChild {
+                child_kind,
+                child_directory,
+            } => {
+                let source = captures.owner_name.ok_or_else(unsupported_module_layout)?;
+                let child = captures.child_name.ok_or_else(unsupported_module_layout)?;
+                (
+                    format!("ExternalDataSource.{source}.{child_kind}.{child}"),
+                    vec![
+                        metadata_descriptor("ExternalDataSources", source),
+                        PathBuf::from("ExternalDataSources")
+                            .join(source)
+                            .join(child_directory)
+                            .join(format!("{child}.xml")),
+                    ],
+                )
+            }
+            ModuleDescriptorRule::ExternalDataSourceDimensionTable => {
+                let source = captures.owner_name.ok_or_else(unsupported_module_layout)?;
+                let cube = captures.child_name.ok_or_else(unsupported_module_layout)?;
+                let table = captures
+                    .grandchild_name
+                    .ok_or_else(unsupported_module_layout)?;
+                (
+                    format!("ExternalDataSource.{source}.Cube.{cube}.DimensionTable.{table}"),
+                    vec![
+                        metadata_descriptor("ExternalDataSources", source),
+                        PathBuf::from("ExternalDataSources")
+                            .join(source)
+                            .join("Cubes")
+                            .join(format!("{cube}.xml")),
+                        PathBuf::from("ExternalDataSources")
+                            .join(source)
+                            .join("Cubes")
+                            .join(cube)
+                            .join("DimensionTables")
+                            .join(format!("{table}.xml")),
+                    ],
+                )
+            }
         };
         module_identity(address, owner, role, descriptors)
     }
@@ -3356,6 +3837,7 @@ struct ModuleLayoutCaptures<'a> {
     kind: Option<&'static MetadataLayout>,
     owner_name: Option<&'a str>,
     child_name: Option<&'a str>,
+    grandchild_name: Option<&'a str>,
     role: Option<PlatformXmlModuleRole>,
 }
 
@@ -4071,6 +4553,21 @@ mod tests {
                 "Catalog.Items.Command.Open.CommandModule",
                 "Catalogs/Items/Commands/Open/Ext/CommandModule.bsl",
             ),
+            (
+                super::PlatformXmlModuleLayoutFamily::ExternalDataSourceTable,
+                "ExternalDataSource.Remote.Table.Items.ManagerModule",
+                "ExternalDataSources/Remote/Tables/Items/Ext/ManagerModule.bsl",
+            ),
+            (
+                super::PlatformXmlModuleLayoutFamily::ExternalDataSourceCube,
+                "ExternalDataSource.Remote.Cube.Sales.RecordSetModule",
+                "ExternalDataSources/Remote/Cubes/Sales/Ext/RecordSetModule.bsl",
+            ),
+            (
+                super::PlatformXmlModuleLayoutFamily::ExternalDataSourceDimensionTable,
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar.ObjectModule",
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ObjectModule.bsl",
+            ),
         ];
 
         let descriptors = super::module_layout_descriptors_for_test();
@@ -4087,6 +4584,70 @@ mod tests {
             assert_eq!(
                 descriptor.parse_physical(Path::new(relative)).unwrap(),
                 address
+            );
+        }
+    }
+
+    #[test]
+    fn external_data_source_module_layouts_round_trip_in_both_directions() {
+        let cases = [
+            (
+                "ExternalDataSource.Remote.Table.Items.ManagerModule",
+                "ExternalDataSources/Remote/Tables/Items/Ext/ManagerModule.bsl",
+                &["ExternalDataSources/Remote.xml", "ExternalDataSources/Remote/Tables/Items.xml"][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Table.Items.RecordSetModule",
+                "ExternalDataSources/Remote/Tables/Items/Ext/RecordSetModule.bsl",
+                &["ExternalDataSources/Remote.xml", "ExternalDataSources/Remote/Tables/Items.xml"][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.ManagerModule",
+                "ExternalDataSources/Remote/Cubes/Sales/Ext/ManagerModule.bsl",
+                &["ExternalDataSources/Remote.xml", "ExternalDataSources/Remote/Cubes/Sales.xml"][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.RecordSetModule",
+                "ExternalDataSources/Remote/Cubes/Sales/Ext/RecordSetModule.bsl",
+                &["ExternalDataSources/Remote.xml", "ExternalDataSources/Remote/Cubes/Sales.xml"][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar.ObjectModule",
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ObjectModule.bsl",
+                &[
+                    "ExternalDataSources/Remote.xml",
+                    "ExternalDataSources/Remote/Cubes/Sales.xml",
+                    "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+                ][..],
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar.ManagerModule",
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ManagerModule.bsl",
+                &[
+                    "ExternalDataSources/Remote.xml",
+                    "ExternalDataSources/Remote/Cubes/Sales.xml",
+                    "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+                ][..],
+            ),
+        ];
+
+        for (raw_address, raw_path, expected_descriptors) in cases {
+            let address =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_address).unwrap();
+            assert_eq!(
+                super::module_path_for_address(&address).unwrap(),
+                Path::new(raw_path),
+                "{raw_address}"
+            );
+            let identity = super::platform_xml_module_identity(Path::new(raw_path)).unwrap();
+            assert_eq!(identity.address, address, "{raw_path}");
+            assert_eq!(
+                identity.descriptors,
+                expected_descriptors
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>(),
+                "{raw_path}"
             );
         }
     }
@@ -4874,6 +5435,77 @@ mod tests {
     }
 
     #[test]
+    fn source_navigation_children_exposes_external_data_source_collections() {
+        let context = fixture(
+            "navigation-external-data-source-children",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        for (path, kind, name) in [
+            (
+                "ExternalDataSources/Remote.xml",
+                "ExternalDataSource",
+                "Remote",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales.xml",
+                "Cube",
+                "Sales",
+            ),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path,
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(root.join("ExternalDataSources/Remote/Tables")).unwrap();
+        fs::create_dir_all(root.join("ExternalDataSources/Remote/Cubes/Sales/DimensionTables"))
+            .unwrap();
+
+        let children = |metadata_path: &str| {
+            children_platform_xml_source_navigation(
+                &context,
+                &SourceChildrenRequest {
+                    source_set: "main".to_string(),
+                    metadata_path: Some(
+                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path)
+                            .unwrap(),
+                    ),
+                    limit: 50,
+                    cursor: None,
+                },
+            )
+            .unwrap()
+        };
+
+        let source = children("ExternalDataSource.Remote");
+        assert_eq!(
+            source
+                .children
+                .iter()
+                .map(|child| child.display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["Cubes", "Tables"]
+        );
+        assert!(source.children.iter().all(|child| {
+            child.node_kind == SourceNodeKind::Collection
+                && child.addressability == SourceNodeAddressability::Unaddressable
+        }));
+
+        let cube = children("ExternalDataSource.Remote.Cube.Sales");
+        assert_eq!(cube.children.len(), 1);
+        assert_eq!(cube.children[0].display_name, "DimensionTables");
+        assert_eq!(cube.children[0].node_kind, SourceNodeKind::Collection);
+        cleanup(&context);
+    }
+
+    #[test]
     fn source_navigation_external_virtual_roots_enumerate_two_artifacts_of_each_kind() {
         let context = fixture(
             "navigation-external-multi-root",
@@ -5201,6 +5833,134 @@ mod tests {
     }
 
     #[test]
+    fn prefix_scan_reaches_external_data_source_descendants_without_modules() {
+        let context = fixture(
+            "navigation-prefix-external-data-source",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        for (path, kind, name) in [
+            (
+                "ExternalDataSources/Remote.xml",
+                "ExternalDataSource",
+                "Remote",
+            ),
+            (
+                "ExternalDataSources/Remote/Tables/Items.xml",
+                "Table",
+                "Items",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales.xml",
+                "Cube",
+                "Sales",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+                "DimensionTable",
+                "Calendar",
+            ),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path,
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let resolve = |query: &str| {
+            resolve_platform_xml_source_navigation(
+                &context,
+                &SourceResolveRequest {
+                    source_set: "main".to_string(),
+                    query: query.to_string(),
+                    mode: SourceNavigationMode::Prefix,
+                    target_kind: None,
+                    limit: 50,
+                    cursor: None,
+                },
+            )
+            .unwrap()
+        };
+
+        let owner = resolve("ExternalDataSource.Remote");
+        let found = owner
+            .candidates
+            .iter()
+            .map(|candidate| candidate.metadata_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            found.contains(&"ExternalDataSource.Remote.Table.Items"),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&"ExternalDataSource.Remote.Cube.Sales"),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&"ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar"),
+            "{found:?}"
+        );
+        assert_eq!(owner.completeness, NavigationCompleteness::Complete);
+
+        let deep = resolve("ExternalDataSource.Remote.Cube.Sales.DimensionTable.Cal");
+        assert_eq!(
+            deep.candidates
+                .iter()
+                .map(|candidate| candidate.metadata_path.as_str())
+                .collect::<Vec<_>>(),
+            ["ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar"]
+        );
+        assert_eq!(deep.completeness, NavigationCompleteness::Complete);
+        cleanup(&context);
+    }
+
+    #[test]
+    fn nested_prefix_scan_shares_one_descriptor_inventory_budget() {
+        let root = temp_root("navigation-nested-inventory-bound");
+        for (directory, kind, name) in [("Tables", "Table", "Items"), ("Cubes", "Cube", "Sales")] {
+            let directory = root.join(directory);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                directory.join(format!("{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind}><Properties><Name>{name}</Name></Properties></{kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let mut scan = super::NavigationScanState {
+            inspected: super::MAX_NAVIGATION_INVENTORY_ENTRIES - 1,
+            partial: false,
+        };
+        let tables = super::proven_names_in_directory(
+            &root.join("Tables"),
+            "Table",
+            &mut scan,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let cubes = super::proven_names_in_directory(
+            &root.join("Cubes"),
+            "Cube",
+            &mut scan,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert_eq!(tables, ["Items"]);
+        assert!(cubes.is_empty());
+        assert!(scan.partial);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn locate_recovers_the_address_that_owns_a_source_path() {
         let context = fixture(
             "navigation-locate",
@@ -5261,6 +6021,76 @@ mod tests {
             outside.relative_path, "",
             "a path outside the source set has no relative form to echo"
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn locate_external_data_source_descriptors_recovers_full_nested_addresses() {
+        let context = fixture(
+            "external-data-source-locate",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_configuration_descriptor(&root, false);
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote.xml",
+            "ExternalDataSources/Remote/Tables/Items/Ext/ManagerModule.bsl",
+            "ExternalDataSource",
+            "Remote",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Tables/Items.xml",
+            "ExternalDataSources/Remote/Tables/Items/Ext/RecordSetModule.bsl",
+            "Table",
+            "Items",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Cubes/Sales.xml",
+            "ExternalDataSources/Remote/Cubes/Sales/Ext/ManagerModule.bsl",
+            "Cube",
+            "Sales",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+            "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ObjectModule.bsl",
+            "DimensionTable",
+            "Calendar",
+        );
+
+        for (path, expected) in [
+            (
+                "ExternalDataSources/Remote/Tables/Items.xml",
+                "ExternalDataSource.Remote.Table.Items",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales.xml",
+                "ExternalDataSource.Remote.Cube.Sales",
+            ),
+            (
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar",
+            ),
+        ] {
+            let result = super::locate_platform_xml_source_path(
+                &context,
+                &crate::application::source_navigation::SourceLocateRequest {
+                    source_set: "main".to_string(),
+                    path: path.to_string(),
+                },
+                &CancellationToken::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                result.metadata_path.as_ref().map(MetadataAddress::as_str),
+                Some(expected),
+                "{path}"
+            );
+            assert!(result.rejection.is_none(), "{path}: {:?}", result.rejection);
+        }
         cleanup(&context);
     }
 
@@ -5804,6 +6634,123 @@ mod tests {
             );
             cleanup(&context);
         }
+    }
+
+    #[test]
+    fn platform_xml_external_data_source_objects_require_the_full_registration_chain() {
+        let context = fixture(
+            "object-target-external-data-source",
+            project_yaml("main", "CONFIGURATION", "src"),
+        );
+        let root = context.workspace_root.join("src");
+        write_metadata_descriptor(
+            &root,
+            "ExternalDataSources",
+            "ExternalDataSource",
+            "Remote",
+            "Remote",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Tables/Items.xml",
+            "ExternalDataSources/Remote/Tables/Items/Ext/ManagerModule.bsl",
+            "Table",
+            "Items",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Cubes/Sales.xml",
+            "ExternalDataSources/Remote/Cubes/Sales/Ext/ManagerModule.bsl",
+            "Cube",
+            "Sales",
+        );
+        write_module_fixture(
+            &root,
+            "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+            "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar/Ext/ObjectModule.bsl",
+            "DimensionTable",
+            "Calendar",
+        );
+        register_fixture_item(
+            &root.join("ExternalDataSources/Remote.xml"),
+            "ExternalDataSource",
+            "Table",
+            "Items",
+        );
+        register_fixture_item(
+            &root.join("ExternalDataSources/Remote.xml"),
+            "ExternalDataSource",
+            "Cube",
+            "Sales",
+        );
+        register_fixture_item(
+            &root.join("ExternalDataSources/Remote/Cubes/Sales.xml"),
+            "Cube",
+            "DimensionTable",
+            "Calendar",
+        );
+
+        for (address, descriptor) in [
+            (
+                "ExternalDataSource.Remote.Table.Items",
+                "ExternalDataSources/Remote/Tables/Items.xml",
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales",
+                "ExternalDataSources/Remote/Cubes/Sales.xml",
+            ),
+            (
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar",
+                "ExternalDataSources/Remote/Cubes/Sales/DimensionTables/Calendar.xml",
+            ),
+        ] {
+            let resolution =
+                resolve_platform_xml_object_target(&context, &target("main", address)).unwrap();
+            assert_eq!(
+                resolution.handle.target_path,
+                normalize_path_identity(&root.join(descriptor)).unwrap()
+            );
+        }
+
+        unregister_fixture_item(
+            &root.join("ExternalDataSources/Remote.xml"),
+            "Table",
+            "Items",
+        );
+        let error = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "ExternalDataSource.Remote.Table.Items"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+
+        unregister_fixture_item(
+            &root.join("ExternalDataSources/Remote/Cubes/Sales.xml"),
+            "DimensionTable",
+            "Calendar",
+        );
+        let error = resolve_platform_xml_object_target(
+            &context,
+            &target(
+                "main",
+                "ExternalDataSource.Remote.Cube.Sales.DimensionTable.Calendar",
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+
+        unregister_fixture_item(
+            &root.join("ExternalDataSources/Remote.xml"),
+            "Cube",
+            "Sales",
+        );
+        let error = resolve_platform_xml_object_target(
+            &context,
+            &target("main", "ExternalDataSource.Remote.Cube.Sales"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressNotFound);
+        cleanup(&context);
     }
 
     #[test]
@@ -6373,6 +7320,13 @@ mod tests {
             }
             fs::write(owner, image).unwrap();
         }
+    }
+
+    fn unregister_fixture_item(owner: &Path, kind: &str, name: &str) {
+        let registration = format!("<{kind}>{name}</{kind}>");
+        let image = fs::read_to_string(owner).unwrap();
+        assert!(image.contains(&registration));
+        fs::write(owner, image.replace(&registration, "")).unwrap();
     }
 
     fn write_nested_module_fixture(

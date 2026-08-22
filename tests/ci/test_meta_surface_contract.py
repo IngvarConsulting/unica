@@ -60,6 +60,7 @@ DONOR_METADATA_KINDS = {
     "ChartOfCalculationTypes",
     "HTTPService",
     "WebService",
+    "ExternalDataSource",
 }
 
 
@@ -338,6 +339,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
                     "edge/catalog-child-kinds.xml",
                     "edge/document-journal-child-kinds.xml",
                     "edge/enum-child-kinds.xml",
+                    "edge/external-data-source.xml",
                 ]
             ),
         )
