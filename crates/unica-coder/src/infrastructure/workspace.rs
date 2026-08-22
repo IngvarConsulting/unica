@@ -8,15 +8,28 @@ use std::time::UNIX_EPOCH;
 pub(crate) fn discover_workspace(
     requested_cwd: Option<PathBuf>,
 ) -> Result<WorkspaceContext, String> {
-    let cwd = requested_cwd.unwrap_or(
-        env::current_dir().map_err(|err| format!("failed to read current directory: {err}"))?,
-    );
-    let cwd = if cwd.is_absolute() {
-        cwd
-    } else {
-        env::current_dir()
-            .map_err(|err| format!("failed to read current directory: {err}"))?
-            .join(cwd)
+    discover_workspace_with_current_dir(requested_cwd, env::current_dir)
+}
+
+fn discover_workspace_with_current_dir(
+    requested_cwd: Option<PathBuf>,
+    current_dir: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> Result<WorkspaceContext, String> {
+    let cwd = match requested_cwd {
+        Some(cwd) if cwd.is_absolute() => cwd,
+        Some(cwd) => current_dir()
+            .map_err(|err| {
+                format!(
+                    "failed to resolve relative requested workspace `{}`: launch current directory is unavailable: {err}",
+                    cwd.display()
+                )
+            })?
+            .join(cwd),
+        None => current_dir().map_err(|err| {
+            format!(
+                "failed to resolve requested workspace: no `cwd` was provided and launch current directory is unavailable: {err}"
+            )
+        })?,
     };
     let workspace_root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let cache_root = env::var("UNICA_CACHE_DIR")
@@ -116,7 +129,8 @@ fn hash_path(hasher: &mut DefaultHasher, root: &Path, rel: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::discover_workspace;
+    use super::{discover_workspace, discover_workspace_with_current_dir};
+    use std::io;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -133,6 +147,73 @@ mod tests {
         assert_eq!(context.workspace_root, nested);
         assert_ne!(context.workspace_root, root);
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn absolute_requested_cwd_does_not_read_process_cwd() {
+        let root = temp_root("unica-workspace-absolute-cwd");
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(root.is_absolute());
+
+        let context = discover_workspace_with_current_dir(Some(root.clone()), || {
+            panic!("absolute requested cwd must not read the process cwd")
+        })
+        .unwrap();
+
+        assert_eq!(context.cwd, root);
+        let _ = std::fs::remove_dir_all(context.cwd);
+    }
+
+    #[test]
+    fn relative_requested_cwd_reports_launch_directory_failure() {
+        let error =
+            discover_workspace_with_current_dir(Some(PathBuf::from("relative-workspace")), || {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "launch cwd missing",
+                ))
+            })
+            .unwrap_err();
+
+        assert!(
+            error.starts_with(
+                "failed to resolve relative requested workspace `relative-workspace`: launch current directory is unavailable:"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn missing_requested_cwd_reports_launch_directory_failure() {
+        let error = discover_workspace_with_current_dir(None, || {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "launch cwd missing",
+            ))
+        })
+        .unwrap_err();
+
+        assert!(
+            error.starts_with(
+                "failed to resolve requested workspace: no `cwd` was provided and launch current directory is unavailable:"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn relative_requested_cwd_resolves_from_launch_directory() {
+        let root = temp_root("unica-workspace-relative-cwd");
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let context = discover_workspace_with_current_dir(Some(PathBuf::from("workspace")), || {
+            Ok(root.clone())
+        })
+        .unwrap();
+
+        assert_eq!(context.cwd, workspace);
         let _ = std::fs::remove_dir_all(root);
     }
 

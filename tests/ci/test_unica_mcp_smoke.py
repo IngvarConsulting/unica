@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import queue
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -71,6 +72,15 @@ MUTATION_TOOL_NAMES = frozenset(
 def source_smoke_oracle():
     script = Path(__file__).resolve().parents[2] / "scripts/ci/smoke-unica-mcp.py"
     spec = importlib.util.spec_from_file_location("smoke_unica_mcp_oracle", script)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def packaged_plugin_oracle():
+    script = Path(__file__).resolve().parents[2] / "scripts/ci/package-unica-plugin.py"
+    spec = importlib.util.spec_from_file_location("package_unica_plugin_oracle", script)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -186,12 +196,17 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         *,
         cache_dir: Path | None = None,
         workdir: Path | None = None,
+        command: list[str] | None = None,
+        extra_env: dict[str, str] | None = None,
     ):
         env = os.environ.copy()
         if cache_dir is not None:
             env["UNICA_CACHE_DIR"] = str(cache_dir)
+        if extra_env is not None:
+            env.update(extra_env)
         process = subprocess.Popen(
-            [
+            command
+            or [
                 "cargo",
                 "run",
                 "--quiet",
@@ -414,6 +429,170 @@ class UnicaMcpSmokeTests(unittest.TestCase):
                 {item["code"] for item in payload["data"]["diagnostics"]},
             )
             self.assertEqual(snapshot_workspace_files(root), before)
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows does not allow removing a process current directory",
+    )
+    def test_absolute_workspace_survives_deleted_packaged_plugin_cwd(self) -> None:
+        """A long-lived packaged MCP must outlive its replaced plugin directory.
+
+        Marketplace ``.mcp.json`` starts the server with ``cwd: \".\"``. Plugin
+        updates replace that directory while the already-running process keeps
+        serving calls, so every explicit absolute workspace selector must remain
+        independent from the launch directory.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            marketplace = temp / "marketplace"
+            launch_dir = marketplace / "plugins/unica"
+            workspace = temp / "workspace"
+            launch_dir.mkdir(parents=True)
+            self.source_fixture(workspace)
+            (workspace / "src/CommonModules/Shared.xml").write_bytes(
+                (workspace / "src/CommonModules/Shared.xml")
+                .read_bytes()
+                .replace(
+                    b"<CommonModule>",
+                    b'<CommonModule uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">',
+                )
+            )
+            subprocess.run(
+                ["git", "init", "--quiet"], cwd=workspace, check=True
+            )
+            subprocess.run(
+                ["git", "add", "v8project.yaml", "src"],
+                cwd=workspace,
+                check=True,
+            )
+            workspace = workspace.resolve()
+
+            source_plugin = self.repo_root() / "plugins/unica"
+            shutil.copy2(source_plugin / ".mcp.json", launch_dir / ".mcp.json")
+            module = packaged_plugin_oracle()
+            module.write_packaged_mcp_launcher(launch_dir, {})
+            server = json.loads(
+                (launch_dir / ".mcp.json").read_text(encoding="utf-8")
+            )["mcpServers"]["unica"]
+            self.assertEqual(server["cwd"], ".")
+
+            launcher = launch_dir / "bootstrap/launch.sh"
+            launcher.parent.mkdir(parents=True)
+            shutil.copy2(source_plugin / "bootstrap/launch.sh", launcher)
+            bootstrap = launch_dir / "bootstrap/bin/linux-x64/unica-bootstrap"
+            bootstrap.parent.mkdir(parents=True)
+            bootstrap.write_text(
+                "#!/bin/sh\n"
+                "set -eu\n"
+                "[ \"$1\" = run ]\n"
+                "[ \"$2\" = --plugin-root ]\n"
+                "exec \"$UNICA_TEST_CORE\"\n",
+                encoding="utf-8",
+            )
+            bootstrap.chmod(0o755)
+            subprocess.run(["git", "init", "--quiet"], cwd=launch_dir, check=True)
+            build = subprocess.run(
+                [
+                    "cargo",
+                    "build",
+                    "--quiet",
+                    "--bin",
+                    "unica",
+                    "--message-format=json-render-diagnostics",
+                ],
+                cwd=self.repo_root(),
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+            )
+            core = next(
+                Path(message["executable"])
+                for line in build.stdout.splitlines()
+                if (message := json.loads(line)).get("reason") == "compiler-artifact"
+                and message["target"]["name"] == "unica"
+                and message.get("executable")
+            )
+            command = [server["command"], *server["args"]]
+            entry_env = {
+                **server.get("env", {}),
+                "CLAUDE_PLUGIN_ROOT": "",
+                "UNICA_BOOTSTRAP_UNAME_S": "Linux",
+                "UNICA_BOOTSTRAP_UNAME_M": "x86_64",
+                "UNICA_TEST_CORE": str(core),
+            }
+
+            with self.mcp_session(
+                cache_dir=temp / "cache",
+                workdir=launch_dir / server["cwd"],
+                command=command,
+                extra_env=entry_env,
+            ) as request:
+                shutil.rmtree(launch_dir)
+
+                calls = [
+                    ("unica.project.map", {"cwd": str(workspace)}),
+                    (
+                        "unica.meta.info",
+                        {
+                            "cwd": str(workspace),
+                            "sourceSet": "main",
+                            "metadataPath": "CommonModule.Shared",
+                        },
+                    ),
+                    (
+                        "unica.code.search",
+                        {
+                            "cwd": str(workspace),
+                            "sourceSet": "main",
+                            "query": "Run",
+                            "limit": 10,
+                        },
+                    ),
+                ]
+                for request_id, (name, arguments) in enumerate(calls, start=2):
+                    with self.subTest(tool=name):
+                        response = request(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "method": "tools/call",
+                                "params": {"name": name, "arguments": arguments},
+                            }
+                        )
+                        self.assertNotIn("error", response, response)
+                        payload = json.loads(
+                            response["result"]["content"][0]["text"]
+                        )
+                        self.assertTrue(payload["ok"], payload)
+
+                for request_id, arguments in [
+                    (5, {}),
+                    (6, {"cwd": "relative-workspace"}),
+                ]:
+                    response = request(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "unica.project.map",
+                                "arguments": arguments,
+                            },
+                        }
+                    )
+                    self.assertEqual(response["error"]["code"], -32000, response)
+                    self.assertIn(
+                        "launch current directory is unavailable",
+                        response["error"]["message"],
+                    )
+                    if arguments:
+                        self.assertIn(
+                            "relative requested workspace",
+                            response["error"]["message"],
+                        )
+                    else:
+                        self.assertIn("no `cwd` was provided", response["error"]["message"])
 
     def test_reader_dry_run_rejection_precedes_workspace_and_target_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
