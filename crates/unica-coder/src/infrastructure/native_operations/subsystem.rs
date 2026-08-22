@@ -158,6 +158,7 @@ pub(crate) struct SubsystemEditModel {
     pub(crate) use_one_command: String,
     pub(crate) explanation: String,
     pub(crate) picture: String,
+    pub(crate) picture_load_transparent: Option<String>,
     pub(crate) content: Vec<String>,
     pub(crate) children: Vec<String>,
 }
@@ -467,50 +468,16 @@ pub(crate) fn edit_subsystem_with_data(
         let mut child_stubs = BTreeMap::<PathBuf, String>::new();
         let mut reused_child_subsystems = BTreeMap::<PathBuf, Vec<u8>>::new();
 
-        for (op_name, value) in operations {
-            match op_name.as_str() {
-                "add-content" => {
-                    subsystem_edit_add_content(&mut model, &value, &mut counters, &mut log)?;
-                }
-                "remove-content" => {
-                    subsystem_edit_remove_content(&mut model, &value, &mut counters, &mut log)?;
-                }
-                "add-child" => subsystem_edit_add_child(
-                    &mut model,
-                    &resolved_path,
-                    &value,
-                    &mut counters,
-                    &mut log,
-                    &mut child_stubs,
-                    &mut reused_child_subsystems,
-                )?,
-                "remove-child" => {
-                    subsystem_edit_remove_child(&mut model, &value, &mut counters, &mut log)?
-                }
-                "set-property" => {
-                    subsystem_edit_set_property(&mut model, &value, &mut counters, &mut log)?
-                }
-                _ => return Err(format!("Unknown operation: {op_name}")),
-            }
-        }
-
-        validate_subsystem_metadata_name("Name", &model.name)?;
-        if !is_valid_uuid(&model.uuid) {
-            return Err(format!(
-                "Subsystem UUID must be a valid UUID: {:?}",
-                model.uuid
-            ));
-        }
-        for (property, value) in [
-            ("IncludeHelpInContents", &model.include_help),
-            ("IncludeInCommandInterface", &model.include_ci),
-            ("UseOneCommand", &model.use_one_command),
-        ] {
-            canonical_subsystem_boolean(&Value::String(value.clone()), property)?;
-        }
-        for child in &model.children {
-            validate_subsystem_metadata_name("Child subsystem name", child)?;
-        }
+        apply_subsystem_edit_operations(
+            &mut model,
+            &resolved_path,
+            operations,
+            &mut counters,
+            &mut log,
+            &mut child_stubs,
+            &mut reused_child_subsystems,
+        )?;
+        validate_subsystem_edit_model(&model)?;
         {
             let final_child_names = model
                 .children
@@ -651,6 +618,85 @@ pub(crate) fn edit_subsystem_with_data(
             data: None,
         },
     }
+}
+
+fn apply_subsystem_edit_operations(
+    model: &mut SubsystemEditModel,
+    resolved_path: &Path,
+    operations: Vec<(String, Value)>,
+    counters: &mut SubsystemEditCounters,
+    log: &mut SubsystemEditLog,
+    child_stubs: &mut BTreeMap<PathBuf, String>,
+    reused_child_subsystems: &mut BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<(), String> {
+    for (op_name, value) in operations {
+        match op_name.as_str() {
+            "add-content" => subsystem_edit_add_content(model, &value, counters, log)?,
+            "remove-content" => subsystem_edit_remove_content(model, &value, counters, log)?,
+            "add-child" => subsystem_edit_add_child(
+                model,
+                resolved_path,
+                &value,
+                counters,
+                log,
+                child_stubs,
+                reused_child_subsystems,
+            )?,
+            "remove-child" => subsystem_edit_remove_child(model, &value, counters, log)?,
+            "set-property" => subsystem_edit_set_property(model, &value, counters, log)?,
+            _ => return Err(format!("Unknown operation: {op_name}")),
+        }
+    }
+    Ok(())
+}
+
+fn validate_subsystem_edit_model(model: &SubsystemEditModel) -> Result<(), String> {
+    validate_subsystem_metadata_name("Name", &model.name)?;
+    if !is_valid_uuid(&model.uuid) {
+        return Err(format!(
+            "Subsystem UUID must be a valid UUID: {:?}",
+            model.uuid
+        ));
+    }
+    for (property, value) in [
+        ("IncludeHelpInContents", &model.include_help),
+        ("IncludeInCommandInterface", &model.include_ci),
+        ("UseOneCommand", &model.use_one_command),
+    ] {
+        canonical_subsystem_boolean(&Value::String(value.clone()), property)?;
+    }
+    for child in &model.children {
+        validate_subsystem_metadata_name("Child subsystem name", child)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_subsystem_edit_preview(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+) -> Result<(), String> {
+    let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
+    let operation = string_arg(args, &["operation", "Operation"]);
+    if definition_file.is_some() && operation.is_some() {
+        return Err("Cannot use both -DefinitionFile and -Operation".to_string());
+    }
+    if definition_file.is_none() && operation.is_none() {
+        return Err("Either -DefinitionFile or -Operation is required".to_string());
+    }
+    let raw_path = required_path(args, SUBSYSTEM_PATH, "SubsystemPath")?;
+    let resolved_path = resolve_subsystem_edit_xml(absolutize(raw_path, &context.cwd))?;
+    let mut model = load_subsystem_edit_model(&resolved_path)?;
+    let operations = subsystem_edit_operations(args, &context.cwd, operation, definition_file)?;
+    apply_subsystem_edit_operations(
+        &mut model,
+        &resolved_path,
+        operations,
+        &mut SubsystemEditCounters::default(),
+        &mut SubsystemEditLog::new(),
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+    )?;
+    validate_subsystem_edit_model(&model)
 }
 
 pub(crate) fn subsystem_edit_operations(
@@ -4784,6 +4830,168 @@ mod tests {
             assert_eq!(fs::read(&subsystem_path).unwrap(), parent_before);
             let _ = fs::remove_dir_all(&context.cwd);
         }
+    }
+
+    #[test]
+    fn content_only_edit_preserves_picture_load_transparent_without_entity_churn() {
+        let context = temp_context("edit-preserve-picture-details");
+        let subsystem_path = create_edit_fixture(&context, "EditableSubsystem");
+        let original = fs::read_to_string(&subsystem_path).unwrap();
+        let with_picture = original
+            .replace(
+                "\t\t\t<Synonym/>",
+                concat!(
+                    "\t\t\t<Synonym>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Редактируемая подсистема</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</Synonym>"
+                ),
+            )
+            .replace(
+                "\t\t\t<Picture/>",
+                concat!(
+                    "\t\t\t<Picture>\n",
+                    "\t\t\t\t<xr:Ref>CommonPicture.Sample</xr:Ref>\n",
+                    "\t\t\t\t<xr:LoadTransparent>true</xr:LoadTransparent>\n",
+                    "\t\t\t</Picture>"
+                ),
+            );
+        fs::write(&subsystem_path, with_picture).unwrap();
+        let args = edit_definition_args(
+            &context,
+            &subsystem_path,
+            json!({
+                "operation": "add-content",
+                "value": "Catalog.Items"
+            }),
+        );
+
+        let outcome = edit_subsystem(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let edited = fs::read_to_string(&subsystem_path).unwrap();
+        assert!(
+            edited.contains("<xr:LoadTransparent>true</xr:LoadTransparent>"),
+            "{edited}"
+        );
+        assert!(!edited.contains("&#13;"), "{edited}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn content_only_edit_preserves_picture_load_transparent_without_reference() {
+        let context = temp_context("edit-preserve-picture-transparency-only");
+        let subsystem_path = create_edit_fixture(&context, "EditableSubsystem");
+        let original = fs::read_to_string(&subsystem_path).unwrap();
+        let with_transparency = original.replace(
+            "\t\t\t<Picture/>",
+            concat!(
+                "\t\t\t<Picture>\n",
+                "\t\t\t\t<xr:LoadTransparent>true</xr:LoadTransparent>\n",
+                "\t\t\t</Picture>"
+            ),
+        );
+        fs::write(&subsystem_path, with_transparency).unwrap();
+        let args = edit_definition_args(
+            &context,
+            &subsystem_path,
+            json!({
+                "operation": "add-content",
+                "value": "Catalog.Items"
+            }),
+        );
+
+        let outcome = edit_subsystem(&args, &context);
+
+        assert!(outcome.ok, "{outcome:?}");
+        let edited = fs::read_to_string(&subsystem_path).unwrap();
+        assert!(edited.contains("<Picture>"), "{edited}");
+        assert!(
+            edited.contains("<xr:LoadTransparent>true</xr:LoadTransparent>"),
+            "{edited}"
+        );
+        assert!(!edited.contains("<xr:Ref>"), "{edited}");
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn subsystem_edit_public_property_argument_is_rejected_in_every_mode() {
+        let context = temp_context("edit-preview-property-parity");
+        let subsystem_path = create_edit_fixture(&context, "EditableSubsystem");
+        let before = fs::read(&subsystem_path).unwrap();
+        for property in ["LoadTransparent", "Picture.LoadTransparent"] {
+            let mut args = Map::from_iter([
+                (
+                    "cwd".to_string(),
+                    Value::String(context.cwd.display().to_string()),
+                ),
+                (
+                    "SubsystemPath".to_string(),
+                    Value::String(subsystem_path.display().to_string()),
+                ),
+                ("operation".to_string(), json!("set-property")),
+                ("property".to_string(), json!(property)),
+                ("value".to_string(), json!(true)),
+            ]);
+
+            let preview = UnicaApplication::new()
+                .call_tool("unica.subsystem.edit", &args)
+                .unwrap_err();
+            args.insert("dryRun".to_string(), Value::Bool(false));
+            let applied = UnicaApplication::new()
+                .call_tool("unica.subsystem.edit", &args)
+                .unwrap_err();
+
+            assert!(preview.contains("does not accept argument `property`"));
+            assert_eq!(preview, applied, "{property}");
+        }
+        assert_eq!(fs::read(&subsystem_path).unwrap(), before);
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn subsystem_edit_preview_and_apply_reject_the_same_unknown_picture_property() {
+        let context = temp_context("edit-preview-definition-property-parity");
+        let subsystem_path = create_edit_fixture(&context, "EditableSubsystem");
+        let before = fs::read(&subsystem_path).unwrap();
+        let mut args = edit_definition_args(
+            &context,
+            &subsystem_path,
+            json!({
+                "operation": "set-property",
+                "value": {
+                    "name": "Picture.LoadTransparent",
+                    "value": true
+                }
+            }),
+        );
+        args.insert(
+            "cwd".to_string(),
+            Value::String(context.cwd.display().to_string()),
+        );
+
+        let preview = UnicaApplication::new()
+            .call_tool("unica.subsystem.edit", &args)
+            .unwrap();
+        args.insert("dryRun".to_string(), Value::Bool(false));
+        let applied = UnicaApplication::new()
+            .call_tool("unica.subsystem.edit", &args)
+            .unwrap();
+
+        assert!(!preview.ok, "{preview:?}");
+        assert!(!applied.ok, "{applied:?}");
+        assert!(
+            preview
+                .errors
+                .join("\n")
+                .contains("Picture.LoadTransparent"),
+            "{preview:?}"
+        );
+        assert_eq!(preview.errors, applied.errors);
+        assert_eq!(fs::read(&subsystem_path).unwrap(), before);
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 
     #[test]
