@@ -17,7 +17,7 @@ allowed-tools:
 - Execution path: call MCP `unica` tool `unica.cfe.validate`; skill-local operation scripts are not part of the workflow.
 - For mutating operations, pass `dryRun: false` only when the user explicitly requested the change; otherwise keep the default dry run.
 
-Проверяет структурную корректность расширения: XML-формат, свойства, состав, заимствованные объекты, семантику сервисов (`HTTPService`, `WebService`) — включая соответствие `HTTPMethod` перечислению платформы 8.3.27 (`Any`, `GET`, `PROPFIND`, …). Аналог `/cf-validate`, но для расширений.
+Проверяет структурную корректность расширения: XML-формат, свойства, состав, заимствованные объекты, обязательный `ChildObjects`, согласованность файлов прямых модулей с `xr:PropertyState=Extended`, семантику сервисов (`HTTPService`, `WebService`) — включая соответствие `HTTPMethod` перечислению платформы 8.3.27 (`Any`, `GET`, `PROPFIND`, …). Аналог `/cf-validate`, но для расширений.
 
 ## Параметры
 
