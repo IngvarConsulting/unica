@@ -6499,7 +6499,7 @@ pub(crate) mod tests {
             ),
             (
                 "unica.code.patch",
-                entry("code-patch", "2893:4855cf0424173695"),
+                entry("code-patch", "3888:da594c1f207ae5df"),
             ),
             (
                 "unica.dcs.compile",
@@ -6632,6 +6632,7 @@ pub(crate) mod tests {
                     "metadataPath",
                     "operation",
                     "position",
+                    "replacements",
                     "selector",
                     "sourceSet",
                 ]),
