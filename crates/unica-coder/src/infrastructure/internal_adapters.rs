@@ -6596,9 +6596,12 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn standards_explain_does_not_retry_a_non_numeric_miss() {
-        struct AlwaysMisses;
+        struct AlwaysMisses {
+            calls: RefCell<usize>,
+        }
         impl HttpClient for AlwaysMisses {
             fn post_json(&self, _endpoint: &str, _payload: &Value) -> Result<String, String> {
+                *self.calls.borrow_mut() += 1;
                 Ok(r#"{"jsonrpc":"2.0","id":1,"result":{
                     "content":[{"type":"text","text":"{\"found\":false}"}],
                     "structuredContent":{"found":false}
@@ -6606,6 +6609,9 @@ analyze_timeout_seconds = 900
                 .to_string())
             }
         }
+        let client = AlwaysMisses {
+            calls: RefCell::new(0),
+        };
         let mut args = Map::new();
         args.insert("idOrAliasOrUrl".to_string(), json!("modal-windows"));
 
@@ -6613,11 +6619,17 @@ analyze_timeout_seconds = 900
             "explain",
             &args,
             "https://ai.v8std.ru/mcp",
-            &AlwaysMisses,
+            &client,
         );
 
         // A name that was never a bare number has no `std<N>` form to retry
-        // with; the honest miss must reach the caller unchanged.
+        // with; the honest miss must reach the caller unchanged, in exactly
+        // one call.
+        assert_eq!(
+            *client.calls.borrow(),
+            1,
+            "a non-numeric miss must not be retried"
+        );
         assert!(outcome.outcome.ok);
         assert_eq!(
             outcome.data.unwrap()["structuredContent"]["found"],
@@ -6708,6 +6720,35 @@ analyze_timeout_seconds = 900
             .errors
             .iter()
             .any(|error| error.contains("bad id")));
+    }
+
+    #[test]
+    fn standards_explain_does_not_retry_an_unparseable_response() {
+        let client = CountingFailureHttpClient {
+            calls: RefCell::new(0),
+            response: Ok("not json at all".to_string()),
+        };
+        let mut args = Map::new();
+        args.insert("idOrAliasOrUrl".to_string(), json!("647"));
+
+        let outcome = StandardsAdapter::invoke_with_client(
+            "explain",
+            &args,
+            "https://ai.v8std.ru/mcp",
+            &client,
+        );
+
+        // A body that never parsed carries no `found` verdict at all; the
+        // parse failure must reach the caller as itself, not as a hidden
+        // second call.
+        assert_eq!(
+            *client.calls.borrow(),
+            1,
+            "an unparseable body must not be retried as if it were a miss"
+        );
+        assert!(!outcome.outcome.ok);
+        assert!(outcome.outcome.summary.contains("invalid v8std MCP JSON"));
+        assert!(outcome.data.is_none());
     }
 
     struct FakeProcessRunner {
