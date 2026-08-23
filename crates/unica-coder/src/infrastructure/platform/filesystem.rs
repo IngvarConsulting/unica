@@ -3,6 +3,7 @@ use std::fs;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Returns a short, private directory suitable as a child process' Unix runtime
 /// directory.  It deliberately lives below `/tmp`: macOS's `TMPDIR` and a
@@ -187,10 +188,116 @@ pub(crate) struct PortablePermissions {
     key: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FileIdentity {
     volume: u64,
     file: u64,
+}
+
+/// Retained, no-follow capability for one named absolute directory.
+///
+/// The descriptor keeps the originally admitted directory available for
+/// descriptor-relative reads. `validate_named_identity` separately proves
+/// that the current namespace entry still names that same physical object;
+/// callers must check it both before and after ambient path-based work.
+#[derive(Clone)]
+pub(crate) struct RetainedDirectoryCapability {
+    path: PathBuf,
+    retained: Arc<RetainedDirectoryCapabilityInner>,
+}
+
+struct RetainedDirectoryCapabilityInner {
+    directory: fs::File,
+    identity: FileIdentity,
+}
+
+impl std::fmt::Debug for RetainedDirectoryCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RetainedDirectoryCapability")
+            .field("path", &self.path)
+            .field("identity", &self.retained.identity)
+            .finish()
+    }
+}
+
+impl RetainedDirectoryCapability {
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+        let directory = open_absolute_directory_path_nofollow(path)?;
+        let identity = file_identity(&directory)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            retained: Arc::new(RetainedDirectoryCapabilityInner {
+                directory,
+                identity,
+            }),
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn identity(&self) -> FileIdentity {
+        self.retained.identity
+    }
+
+    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+        let rebound = open_absolute_directory_path_nofollow(&self.path)?;
+        let rebound_identity = file_identity(&rebound)?;
+        if rebound_identity != self.retained.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "named directory identity changed after capability admission",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read_relative_regular_bounded(
+        &self,
+        relative: &Path,
+        max_bytes: usize,
+    ) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::path::Component;
+
+        let mut components = relative.components().peekable();
+        if components.peek().is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relative file path must not be empty",
+            ));
+        }
+        let mut directory = self.retained.directory.try_clone()?;
+        let mut file = None;
+        while let Some(component) = components.next() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "relative file path contains a non-normal component",
+                ));
+            };
+            if components.peek().is_some() {
+                directory = open_directory_child_nofollow(&directory, name)?;
+            } else {
+                file = Some(open_regular_child_nofollow(&directory, name)?);
+            }
+        }
+        let mut file = file.expect("non-empty relative path has a final component");
+        let limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut bytes = Vec::new();
+        file.by_ref().take(limit).read_to_end(&mut bytes)?;
+        if bytes.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("relative file exceeds the {max_bytes}-byte read limit"),
+            ));
+        }
+        Ok(bytes)
+    }
 }
 
 impl PortablePermissions {

@@ -70,6 +70,7 @@
 | `INV.APP.SKILL-SCRIPT-FIXTURES` | инвариант · process | active |  | Каталог reference models имеет закрытую тестовую форму | [invariants/INV.APP.SKILL-SCRIPT-FIXTURES.md](invariants/INV.APP.SKILL-SCRIPT-FIXTURES.md) |
 | `INV.APP.SUPPORT-STATE` | инвариант · product | active |  | Типизированные читатели запрашивают поддержку по логической цели | [invariants/INV.APP.SUPPORT-STATE.md](invariants/INV.APP.SUPPORT-STATE.md) |
 | `INV.APP.THIN-TRANSPORT` | инвариант · process | active |  | Транспорт только отображает протокол на вызовы application | [invariants/INV.APP.THIN-TRANSPORT.md](invariants/INV.APP.THIN-TRANSPORT.md) |
+| `INV.APP.WORKSPACE-ACTOR-CAPABILITIES` | инвариант · product | active |  | Binding и fence принадлежат экземпляру и физическому корню актора | [invariants/INV.APP.WORKSPACE-ACTOR-CAPABILITIES.md](invariants/INV.APP.WORKSPACE-ACTOR-CAPABILITIES.md) |
 | `INV.APP.WORKSPACE-ACTOR-IDENTITY` | инвариант · product | active |  | Актор сохраняет точную логическую идентичность рабочего пространства | [invariants/INV.APP.WORKSPACE-ACTOR-IDENTITY.md](invariants/INV.APP.WORKSPACE-ACTOR-IDENTITY.md) |
 | `INV.CACHE.EVENT-IMPACT-CLOSED` | инвариант · product | active |  | Каждое типизированное событие имеет замкнутое влияние на кеш | [invariants/INV.CACHE.EVENT-IMPACT-CLOSED.md](invariants/INV.CACHE.EVENT-IMPACT-CLOSED.md) |
 | `INV.CACHE.GENERATION-CUTOVER` | инвариант · product | active |  | Builder 15 использует отдельное поколение индекса | [invariants/INV.CACHE.GENERATION-CUTOVER.md](invariants/INV.CACHE.GENERATION-CUTOVER.md) |
@@ -81,6 +82,7 @@
 | `INV.CACHE.REPORTED-EFFECTS` | инвариант · product | active |  | Публичная мутация возвращает событие и влияние в своём результате | [invariants/INV.CACHE.REPORTED-EFFECTS.md](invariants/INV.CACHE.REPORTED-EFFECTS.md) |
 | `INV.CACHE.RLM-REVISION` | инвариант · product | active |  | RLM не публикует результат устаревшей ревизии | [invariants/INV.CACHE.RLM-REVISION.md](invariants/INV.CACHE.RLM-REVISION.md) |
 | `INV.CACHE.STATE-OUTSIDE-SOURCE` | инвариант · product | active |  | Кеш анализатора не попадает в индексируемый источник | [invariants/INV.CACHE.STATE-OUTSIDE-SOURCE.md](invariants/INV.CACHE.STATE-OUTSIDE-SOURCE.md) |
+| `INV.CACHE.WORKSPACE-ACTOR-STATE-SCOPE` | инвариант · product | active |  | Generic actor разделяет состояние по полной структурной identity | [invariants/INV.CACHE.WORKSPACE-ACTOR-STATE-SCOPE.md](invariants/INV.CACHE.WORKSPACE-ACTOR-STATE-SCOPE.md) |
 | `INV.CACHE.WORKSPACE-ROOT` | инвариант · product | active |  | Кеш рабочего пространства по умолчанию лежит под его корнем | [invariants/INV.CACHE.WORKSPACE-ROOT.md](invariants/INV.CACHE.WORKSPACE-ROOT.md) |
 | `INV.CACHE.WORKTREE-ISOLATION` | инвариант · product | active |  | Связанное worktree не наследует корень родительской копии | [invariants/INV.CACHE.WORKTREE-ISOLATION.md](invariants/INV.CACHE.WORKTREE-ISOLATION.md) |
 | `INV.CI.ALL-TARGETS-GREEN` | инвариант · process | active |  | Поставка закрывает все поддерживаемые цели | [invariants/INV.CI.ALL-TARGETS-GREEN.md](invariants/INV.CI.ALL-TARGETS-GREEN.md) |

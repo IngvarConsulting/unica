@@ -25,6 +25,45 @@ use std::sync::{Arc, Mutex};
 const MAX_SOURCE_DEPTH: usize = 64;
 const REVISION_RECORD_SCHEMA_VERSION: u32 = 2;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkspaceStateScope {
+    /// v0.12 compatibility namespace: only canonical workspace/source paths
+    /// participate in persisted state identity.
+    LegacyPhysical,
+    /// v0.13 actor namespace: the digest covers the complete structural actor
+    /// identity and is bounded to lowercase SHA-256 text.
+    Scoped(ScopedStateDigest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopedStateDigest(String);
+
+impl WorkspaceStateScope {
+    fn record_value(&self) -> Option<&str> {
+        match self {
+            Self::LegacyPhysical => None,
+            Self::Scoped(digest) => Some(&digest.0),
+        }
+    }
+
+    pub(crate) fn scoped_sha256(digest: String) -> Result<Self, String> {
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(
+                "workspace actor state scope must be a lowercase SHA-256 digest".to_string(),
+            );
+        }
+        Ok(Self::Scoped(ScopedStateDigest(digest)))
+    }
+
+    pub(crate) fn scoped_digest(&self) -> Option<&str> {
+        self.record_value()
+    }
+}
+
 #[derive(Clone)]
 struct SourceEntryDigest {
     kind: u8,
@@ -67,6 +106,7 @@ pub(crate) struct SourceRevisionService {
     workspace_root: PathBuf,
     source_root: PathBuf,
     record_path: PathBuf,
+    state_scope: WorkspaceStateScope,
     machine: Mutex<SourceRevisionMachine>,
     manifest: Mutex<Option<SourceManifest>>,
     operation: Mutex<()>,
@@ -82,6 +122,7 @@ impl fmt::Debug for SourceRevisionService {
             .field("workspace_root", &self.workspace_root)
             .field("source_root", &self.source_root)
             .field("record_path", &self.record_path)
+            .field("state_scope", &self.state_scope)
             .field("fence", &self.fence.capability())
             .finish_non_exhaustive()
     }
@@ -93,6 +134,8 @@ struct SourceRevisionRecord {
     schema_version: u32,
     workspace_root: String,
     source_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state_scope: Option<String>,
     revision: SourceRevision,
 }
 
@@ -101,7 +144,26 @@ impl SourceRevisionService {
         let canonical_source_root = fs::canonicalize(source_root)
             .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
         let fence = platform_fence(&canonical_source_root, &context.cache_root)?;
-        Self::with_fence(context, &canonical_source_root, fence)
+        Self::with_fence(
+            context,
+            &canonical_source_root,
+            WorkspaceStateScope::LegacyPhysical,
+            fence,
+        )
+    }
+
+    pub(crate) fn new_scoped(
+        context: &WorkspaceContext,
+        source_root: &Path,
+        state_scope: WorkspaceStateScope,
+    ) -> Result<Self, String> {
+        if state_scope.scoped_digest().is_none() {
+            return Err("scoped source revision service requires an actor scope".to_string());
+        }
+        let canonical_source_root = fs::canonicalize(source_root)
+            .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
+        let fence = platform_fence(&canonical_source_root, &context.cache_root)?;
+        Self::with_fence(context, &canonical_source_root, state_scope, fence)
     }
 
     #[cfg(test)]
@@ -112,6 +174,7 @@ impl SourceRevisionService {
         Self::with_fence(
             context,
             source_root,
+            WorkspaceStateScope::LegacyPhysical,
             Arc::new(ReconcileEverySnapshotFence::default()),
         )
     }
@@ -119,6 +182,7 @@ impl SourceRevisionService {
     fn with_fence(
         context: &WorkspaceContext,
         source_root: &Path,
+        state_scope: WorkspaceStateScope,
         fence: Arc<dyn SourceRevisionFence>,
     ) -> Result<Self, String> {
         let workspace_root = fs::canonicalize(&context.workspace_root)
@@ -126,6 +190,11 @@ impl SourceRevisionService {
         let source_root = fs::canonicalize(source_root)
             .map_err(|error| format!("source revision root cannot be normalized: {error}"))?;
         let mut identity = Sha256::new();
+        if let WorkspaceStateScope::Scoped(digest) = &state_scope {
+            identity.update(b"unica-source-revision-state-v1\0");
+            identity.update((digest.0.len() as u64).to_le_bytes());
+            identity.update(digest.0.as_bytes());
+        }
         update_identity_path(&mut identity, &workspace_root);
         identity.update([0]);
         update_identity_path(&mut identity, &source_root);
@@ -134,13 +203,19 @@ impl SourceRevisionService {
             .cache_root
             .join("source-revisions")
             .join(format!("{identity}.json"));
-        let machine = load_revision_record(&record_path, &workspace_root, &source_root)
-            .and_then(|revision| SourceRevisionMachine::from_revision(revision).ok())
-            .unwrap_or_default();
+        let machine = load_revision_record(
+            &record_path,
+            &workspace_root,
+            &source_root,
+            state_scope.record_value(),
+        )
+        .and_then(|revision| SourceRevisionMachine::from_revision(revision).ok())
+        .unwrap_or_default();
         Ok(Self {
             workspace_root,
             source_root,
             record_path,
+            state_scope,
             machine: Mutex::new(machine),
             manifest: Mutex::new(None),
             operation: Mutex::new(()),
@@ -447,6 +522,7 @@ impl SourceRevisionService {
             &self.record_path,
             &self.workspace_root,
             &self.source_root,
+            self.state_scope.record_value(),
             &revision,
         )
         .inspect_err(|_| {
@@ -473,11 +549,13 @@ fn load_revision_record(
     path: &Path,
     workspace_root: &Path,
     source_root: &Path,
+    state_scope: Option<&str>,
 ) -> Option<SourceRevision> {
     let record: SourceRevisionRecord = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
     (record.schema_version == REVISION_RECORD_SCHEMA_VERSION
         && Path::new(&record.workspace_root) == workspace_root
-        && Path::new(&record.source_root) == source_root)
+        && Path::new(&record.source_root) == source_root
+        && record.state_scope.as_deref() == state_scope)
         .then_some(record.revision)
 }
 
@@ -485,6 +563,7 @@ fn persist_revision_record(
     path: &Path,
     workspace_root: &Path,
     source_root: &Path,
+    state_scope: Option<&str>,
     revision: &SourceRevision,
 ) -> Result<(), String> {
     let parent = path
@@ -496,6 +575,7 @@ fn persist_revision_record(
         schema_version: REVISION_RECORD_SCHEMA_VERSION,
         workspace_root: workspace_root.to_string_lossy().into_owned(),
         source_root: source_root.to_string_lossy().into_owned(),
+        state_scope: state_scope.map(str::to_string),
         revision: revision.clone(),
     };
     let bytes = serde_json::to_vec(&record)
@@ -724,6 +804,7 @@ mod tests {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
+            state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
             operation: Mutex::new(()),
@@ -787,6 +868,7 @@ mod tests {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: record_parent.join("revision.json"),
+            state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
             operation: Mutex::new(()),
@@ -822,6 +904,7 @@ mod tests {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
+            state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(machine),
             manifest: Mutex::new(None),
             operation: Mutex::new(()),
@@ -868,6 +951,7 @@ mod tests {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
+            state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
             operation: Mutex::new(()),
@@ -943,6 +1027,7 @@ mod tests {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
+            state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
             operation: Mutex::new(()),
@@ -1052,6 +1137,7 @@ mod tests {
             workspace_root: fs::canonicalize(workspace.path()).unwrap(),
             source_root: fs::canonicalize(&source_root).unwrap(),
             record_path: workspace.path().join("revision.json"),
+            state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
             operation: Mutex::new(()),
