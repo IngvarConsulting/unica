@@ -1,7 +1,7 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol::{
-    parse_response, read_bounded_json_line, ClientRequest, DaemonErrorCode, EndpointRecord,
-    ServerResponse, DAEMON_PROTOCOL_VERSION,
+    parse_response, read_bounded_json_line, ClientRequest, DaemonErrorCode, DaemonTaskSnapshot,
+    EndpointRecord, InvocationRequest, InvocationResponse, ServerResponse, DAEMON_PROTOCOL_VERSION,
 };
 use crate::infrastructure::platform::ManagedStartupChild;
 use std::io::{self, BufReader, Write};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const INVOCATION_RESPONSE_MARGIN: Duration = Duration::from_millis(125);
 
 trait DaemonClientClock: Send + Sync {
     fn elapsed(&self) -> Duration;
@@ -413,6 +414,96 @@ impl DaemonOwner {
                 || "daemon ping returned an unexpected response".to_string(),
                 |code| format!("daemon ping rejected: {code}"),
             )),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn submit_invocation(
+        &mut self,
+        request: InvocationRequest,
+    ) -> Result<InvocationResponse, String> {
+        let budget = Duration::from_millis(request.response_budget_ms())
+            .saturating_add(INVOCATION_RESPONSE_MARGIN);
+        self.submit_invocation_with_transport_budget(request, budget)
+    }
+
+    pub(crate) fn connect_peer(&self, budget: Duration) -> Result<Self, String> {
+        let deadline = DaemonDeadline::new(budget, Arc::clone(&self.clock))?;
+        Self::connect(&self.record, &deadline, budget, Arc::clone(&self.clock)).map_err(|failure| {
+            match failure {
+                ConnectFailure::Absent => "daemon endpoint is unavailable".to_string(),
+                ConnectFailure::RetryLater(code) => retry_later_diagnostic(code),
+                ConnectFailure::Rejected(error) => error,
+            }
+        })
+    }
+
+    pub(crate) fn submit_invocation_with_transport_budget(
+        &mut self,
+        request: InvocationRequest,
+        transport_budget: Duration,
+    ) -> Result<InvocationResponse, String> {
+        let deadline = DaemonDeadline::new(transport_budget, Arc::clone(&self.clock))?;
+        write_request(
+            &mut self.writer,
+            &ClientRequest::submit_invocation(request),
+            &deadline,
+            "invocation submit request",
+        )?;
+        match read_response(&mut self.reader, &deadline, "invocation submit response")? {
+            ServerResponse::Invocation { outcome } => Ok(outcome),
+            ServerResponse::Error { code } => {
+                Err(format!("daemon invocation submission rejected: {code}"))
+            }
+            _ => Err("daemon invocation submission returned an unexpected response".into()),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_task(
+        &mut self,
+        task_id: crate::domain::invocation::TaskId,
+    ) -> Result<DaemonTaskSnapshot, String> {
+        self.task_exchange(ClientRequest::get_task(task_id), Duration::from_millis(125))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn wait_task(
+        &mut self,
+        task_id: crate::domain::invocation::TaskId,
+        wait_ms: u64,
+    ) -> Result<DaemonTaskSnapshot, String> {
+        self.task_exchange(
+            ClientRequest::wait_task(task_id, wait_ms),
+            Duration::from_millis(wait_ms).saturating_add(INVOCATION_RESPONSE_MARGIN),
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn cancel_task(
+        &mut self,
+        task_id: crate::domain::invocation::TaskId,
+    ) -> Result<DaemonTaskSnapshot, String> {
+        self.task_exchange(
+            ClientRequest::cancel_task(task_id),
+            Duration::from_millis(125),
+        )
+    }
+
+    fn task_exchange(
+        &mut self,
+        request: ClientRequest,
+        budget: Duration,
+    ) -> Result<DaemonTaskSnapshot, String> {
+        let deadline = DaemonDeadline::new(
+            budget.max(Duration::from_millis(1)),
+            Arc::clone(&self.clock),
+        )?;
+        write_request(&mut self.writer, &request, &deadline, "task request")?;
+        match read_response(&mut self.reader, &deadline, "task response")? {
+            ServerResponse::Task { snapshot } => Ok(snapshot),
+            ServerResponse::Error { code } => Err(format!("daemon task request rejected: {code}")),
+            _ => Err("daemon task request returned an unexpected response".into()),
         }
     }
 

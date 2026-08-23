@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const CORE_ABI_IDENTITY: &str = "unica-v0.13-core-abi-1";
-const DAEMON_PROTOCOL_IDENTITY: &str = "unica-daemon-jsonl-1";
+const DAEMON_PROTOCOL_IDENTITY: &str = "unica-daemon-jsonl-2";
 const ENDPOINT_FILE_NAME: &str = "endpoint.json";
 const SPAWN_LOCK_NAME: &str = ".daemon-spawn.lock";
 

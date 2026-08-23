@@ -188,6 +188,13 @@ SEP-2663 не содержит метода `tasks/result`: итоговый п�
 
 ## Invocation как единая внутренняя форма
 
+Промежуточная граница миграции: до атомарного переключения Task 22 слово
+«каждый» ниже относится только к явно выбранному скрытому canonical V13 profile.
+Входной main-профиль из 71 production-v0.12 инструмента сохраняет legacy
+dispatch и не отображается в восемь identities; опубликованный v0.12.3 baseline
+из 74 имён остаётся самостоятельной миграционной приёмкой. Внутренние срезы не
+публикуются как частичная v0.13.
+
 Каждый `tools/call` после синтаксической проверки становится внутренней
 Invocation со следующей идентичностью:
 
@@ -533,8 +540,9 @@ preimage или предметного recovery-протокола.
 1. Снять воспроизводимый baseline v0.12.3: surface, wire, package и cold install.
 2. Ввести Invocation/TaskStore и одинаковый предметный результат без изменения
    текущего списка инструментов.
-3. Вынести выполнение в версионированный daemon и доказать WorkspaceActor
-   isolation, recovery и lifecycle.
+3. Вынести выполнение скрытого canonical V13 profile в версионированный daemon
+   и доказать WorkspaceActor isolation, recovery и lifecycle; V12 оставить
+   неизменённым до шага 7.
 4. Подключить SEP-2663 и три compatibility-инструмента к одному TaskStore.
 5. Перевести delivery, index readiness, provider startup и runtime на
    SharedWork и семисекундный handoff.

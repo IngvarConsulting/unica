@@ -1,5 +1,27 @@
 use crate::domain::diagnostics::DiagnosticAction;
 
+/// Evidence established after cheap validation and before an expensive
+/// wait/start. It is deliberately not a list of tool names.
+/// Prepared-boundary classification consumed by the daemon executor. The
+/// dormant pre-cutover service only produces `InlineCandidate`; canonical
+/// handlers wired at Task 22 will produce the closed known-long reasons.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExecutionClass {
+    InlineCandidate,
+    KnownLong(KnownLongReason),
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KnownLongReason {
+    MissingEngine,
+    ColdIndex,
+    ProviderStartup,
+    OccupiedWriteLease,
+    ExternalProcess,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SupportGuardRequirement {
     Editable,

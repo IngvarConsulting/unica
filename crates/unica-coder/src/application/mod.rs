@@ -39,7 +39,9 @@ pub(crate) mod runtime_admission;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
-#[cfg(test)]
+// The catalog is compiled for hidden canonical routing, while most semantic
+// descriptors remain unused until the atomic Task 22 public cutover.
+#[allow(dead_code)]
 pub(crate) mod v13;
 pub use tool_contracts::{input_schema_for_tool, strip_schema_descriptions};
 

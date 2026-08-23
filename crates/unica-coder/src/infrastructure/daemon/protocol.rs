@@ -1,14 +1,129 @@
 use super::identity::CoreIdentity;
+use crate::application::invocation_store::ToolIdentity;
+use crate::domain::invocation::{
+    DomainResult, InvocationFailure, InvocationId, InvocationStatus, TaskId,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::io::{self, BufRead};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use uuid::Uuid;
 
-pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 2;
 pub(crate) const ENDPOINT_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_JSON_LINE_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One canonical v0.13 call submitted to the daemon. Raw arguments exist only
+/// on this authenticated live connection; durable state receives their digest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct InvocationRequest {
+    tool: ToolIdentity,
+    arguments: Map<String, Value>,
+    workspace_hint: String,
+    response_budget_ms: u64,
+}
+
+impl InvocationRequest {
+    pub(crate) fn new(
+        tool: ToolIdentity,
+        arguments: Value,
+        workspace_hint: impl Into<String>,
+        response_budget_ms: u64,
+    ) -> Result<Self, String> {
+        let arguments = arguments
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "canonical invocation arguments must be an object".to_string())?;
+        let request = Self {
+            tool,
+            arguments,
+            workspace_hint: workspace_hint.into(),
+            response_budget_ms,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub(crate) fn tool(&self) -> ToolIdentity {
+        self.tool
+    }
+
+    pub(crate) fn arguments(&self) -> &Map<String, Value> {
+        &self.arguments
+    }
+
+    pub(crate) fn workspace_hint(&self) -> &str {
+        &self.workspace_hint
+    }
+
+    pub(crate) fn response_budget_ms(&self) -> u64 {
+        self.response_budget_ms
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.response_budget_ms > MAX_TASK_WAIT_MS {
+            return Err("canonical invocation response budget must be within 0..=7000 ms".into());
+        }
+        if self.workspace_hint.is_empty() || self.workspace_hint.chars().any(char::is_control) {
+            return Err("canonical invocation workspace hint must be non-empty text".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DaemonTaskSnapshot {
+    pub(crate) task_id: TaskId,
+    pub(crate) invocation_id: InvocationId,
+    pub(crate) status: InvocationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) result: Option<DomainResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failure: Option<InvocationFailure>,
+    pub(crate) poll_interval_ms: u64,
+}
+
+impl DaemonTaskSnapshot {
+    pub(crate) fn from_domain(snapshot: crate::domain::invocation::TaskSnapshot) -> Self {
+        Self {
+            task_id: snapshot.task_id,
+            invocation_id: snapshot.invocation_id,
+            status: snapshot.status,
+            result: snapshot.result,
+            failure: snapshot.failure,
+            poll_interval_ms: 250,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn working_for_test(task_id: TaskId) -> Self {
+        Self {
+            task_id,
+            invocation_id: InvocationId::new(),
+            status: InvocationStatus::Working,
+            result: None,
+            failure: None,
+            poll_interval_ms: 250,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "resultType",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub(crate) enum InvocationResponse {
+    Direct(DomainResult),
+    Task(DaemonTaskSnapshot),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct EndpointRecord {
     schema_version: u32,
@@ -96,7 +211,7 @@ fn validate_uuid_v4(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ClientRequest {
     Hello {
@@ -110,6 +225,23 @@ pub(crate) enum ClientRequest {
     },
     Ping {},
     Release {},
+    SubmitInvocation {
+        invocation: InvocationRequest,
+    },
+    GetTask {
+        #[serde(rename = "taskId")]
+        task_id: TaskId,
+    },
+    WaitTask {
+        #[serde(rename = "taskId")]
+        task_id: TaskId,
+        #[serde(rename = "waitMs")]
+        wait_ms: u64,
+    },
+    CancelTask {
+        #[serde(rename = "taskId")]
+        task_id: TaskId,
+    },
 }
 
 impl ClientRequest {
@@ -152,8 +284,35 @@ impl ClientRequest {
                 validate_uuid_v4(token, "daemon handshake token")?;
                 validate_uuid_v4(owner_lease, "daemon owner lease")
             }
-            Self::Ping {} | Self::Release {} => Ok(()),
+            Self::SubmitInvocation { invocation } => invocation.validate(),
+            Self::WaitTask { wait_ms, .. } if *wait_ms > MAX_TASK_WAIT_MS => {
+                Err("daemon task wait exceeds the 7000 ms request bound".to_string())
+            }
+            Self::Ping {}
+            | Self::Release {}
+            | Self::GetTask { .. }
+            | Self::WaitTask { .. }
+            | Self::CancelTask { .. } => Ok(()),
         }
+    }
+
+    pub(crate) fn submit_invocation(invocation: InvocationRequest) -> Self {
+        Self::SubmitInvocation { invocation }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_task(task_id: TaskId) -> Self {
+        Self::GetTask { task_id }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn wait_task(task_id: TaskId, wait_ms: u64) -> Self {
+        Self::WaitTask { task_id, wait_ms }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn cancel_task(task_id: TaskId) -> Self {
+        Self::CancelTask { task_id }
     }
 }
 
@@ -168,6 +327,10 @@ pub(crate) enum DaemonErrorCode {
     DuplicateLease,
     Overloaded,
     OwnerCapacity,
+    TaskNotFound,
+    TaskExpired,
+    InvocationFailed,
+    StoreFailed,
 }
 
 impl std::fmt::Display for DaemonErrorCode {
@@ -181,12 +344,16 @@ impl std::fmt::Display for DaemonErrorCode {
             Self::DuplicateLease => "duplicate_lease",
             Self::Overloaded => "overloaded",
             Self::OwnerCapacity => "owner_capacity",
+            Self::TaskNotFound => "task_not_found",
+            Self::TaskExpired => "task_expired",
+            Self::InvocationFailed => "invocation_failed",
+            Self::StoreFailed => "store_failed",
         };
         formatter.write_str(code)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ServerResponse {
     Ready {
@@ -201,6 +368,12 @@ pub(crate) enum ServerResponse {
     },
     Pong,
     Released,
+    Invocation {
+        outcome: InvocationResponse,
+    },
+    Task {
+        snapshot: DaemonTaskSnapshot,
+    },
     Error {
         code: DaemonErrorCode,
     },
@@ -218,6 +391,14 @@ impl ServerResponse {
 
     pub(crate) fn error(code: DaemonErrorCode) -> Self {
         Self::Error { code }
+    }
+
+    pub(crate) fn invocation(outcome: InvocationResponse) -> Self {
+        Self::Invocation { outcome }
+    }
+
+    pub(crate) fn task(snapshot: DaemonTaskSnapshot) -> Self {
+        Self::Task { snapshot }
     }
 
     pub(crate) fn error_code(&self) -> Option<DaemonErrorCode> {

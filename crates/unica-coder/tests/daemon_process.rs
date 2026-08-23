@@ -208,9 +208,7 @@ fn read_pid(path: PathBuf) -> u64 {
 }
 
 fn endpoint_path(state_root: &Path, identity: &str) -> PathBuf {
-    state_root
-        .join(format!("daemon-p1-{identity}"))
-        .join("endpoint.json")
+    unica_coder::interfaces::daemon::endpoint_path_for_protocol_test(state_root, identity)
 }
 
 fn read_endpoint(state_root: &Path, identity: &str) -> Value {

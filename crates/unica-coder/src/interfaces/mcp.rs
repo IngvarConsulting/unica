@@ -6,6 +6,11 @@
 //! application layer (ADR-0002) and keeps the tool contract data-driven from
 //! operation descriptors (ADR-0001) instead of SDK macros.
 
+use crate::application::invocation::{
+    handoff_budget, INVOCATION_HANDOFF_WINDOW, RESPONSE_SERIALIZATION_MARGIN,
+};
+use crate::application::invocation_store::ToolIdentity;
+use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::{
     code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
     operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
@@ -28,6 +33,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::infrastructure::daemon::protocol::{InvocationRequest, InvocationResponse};
+
 pub const MCP_MAX_TOOL_WORKERS: usize = 32;
 const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
@@ -43,6 +50,51 @@ type ToolCallHandler = dyn Fn(
     ) -> Result<OperationResult, (i32, String)>
     + Send
     + Sync;
+
+type CanonicalToolCallHandler = dyn Fn(
+        ToolIdentity,
+        &Map<String, Value>,
+        FrontendInvocationDeadline,
+        CancellationToken,
+    ) -> Result<InvocationResponse, (i32, String)>
+    + Send
+    + Sync;
+
+#[derive(Clone)]
+enum SurfaceToolRouter {
+    LegacyV12(Arc<ToolCallHandler>),
+    CanonicalV13(Arc<CanonicalToolCallHandler>),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FrontendInvocationDeadline {
+    received_at: Instant,
+    host_remaining_at_receipt: Option<Duration>,
+}
+
+impl FrontendInvocationDeadline {
+    fn new(received_at: Instant, host_remaining_at_receipt: Option<Duration>) -> Self {
+        Self {
+            received_at,
+            host_remaining_at_receipt,
+        }
+    }
+
+    fn remaining_at(self, now: Instant) -> Duration {
+        remaining_invocation_budget(self.received_at, now, self.host_remaining_at_receipt)
+    }
+
+    fn remaining_transport_at(self, now: Instant) -> Duration {
+        let elapsed = now.saturating_duration_since(self.received_at);
+        let own_remaining = INVOCATION_HANDOFF_WINDOW
+            .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
+            .saturating_sub(elapsed);
+        let host_remaining = self
+            .host_remaining_at_receipt
+            .map(|remaining| remaining.saturating_sub(elapsed));
+        host_remaining.map_or(own_remaining, |remaining| own_remaining.min(remaining))
+    }
+}
 
 pub fn run_stdio() {
     let app = Arc::new(UnicaApplication::new());
@@ -115,7 +167,7 @@ fn drain_mcp_shutdown_with(
 const STARTUP_NOTICE_ENV: &str = "UNICA_STARTUP_NOTICE";
 
 pub struct UnicaServer {
-    handler: Arc<ToolCallHandler>,
+    router: SurfaceToolRouter,
     in_flight: Arc<InFlightRegistry>,
     structured_tools: HashSet<&'static str>,
     /// О чём рассказать вызывающему при рукопожатии. Обычная сессия платит за
@@ -138,13 +190,14 @@ fn startup_notice_from(value: Option<String>) -> Option<String> {
 
 impl UnicaServer {
     fn new(handler: Arc<ToolCallHandler>) -> Self {
+        debug_assert_eq!(SurfaceRelease::from_package_version(), SurfaceRelease::V12);
         let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
         Self::with_startup_notice(handler, notice)
     }
 
     fn with_startup_notice(handler: Arc<ToolCallHandler>, startup_notice: Option<String>) -> Self {
         Self {
-            handler,
+            router: SurfaceToolRouter::LegacyV12(handler),
             in_flight: Arc::new(InFlightRegistry::default()),
             structured_tools: crate::application::tools()
                 .into_iter()
@@ -154,9 +207,122 @@ impl UnicaServer {
         }
     }
 
+    #[cfg(test)]
+    fn with_canonical_v13(handler: Arc<CanonicalToolCallHandler>) -> Self {
+        Self {
+            router: SurfaceToolRouter::CanonicalV13(handler),
+            in_flight: Arc::new(InFlightRegistry::default()),
+            structured_tools: HashSet::new(),
+            startup_notice: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn with_canonical_daemon(
+        owner: crate::infrastructure::daemon::client::DaemonOwner,
+        workspace_hint: String,
+    ) -> Self {
+        Self {
+            router: SurfaceToolRouter::CanonicalV13(canonical_daemon_handler(
+                owner,
+                workspace_hint,
+            )),
+            in_flight: Arc::new(InFlightRegistry::default()),
+            structured_tools: HashSet::new(),
+            startup_notice: None,
+        }
+    }
+
     fn in_flight(&self) -> Arc<InFlightRegistry> {
         Arc::clone(&self.in_flight)
     }
+}
+
+fn remaining_invocation_budget(
+    received_at: Instant,
+    now: Instant,
+    host_remaining_at_receipt: Option<Duration>,
+) -> Duration {
+    let elapsed = now.saturating_duration_since(received_at);
+    let own_remaining = INVOCATION_HANDOFF_WINDOW.saturating_sub(elapsed);
+    let host_remaining =
+        host_remaining_at_receipt.map(|remaining| remaining.saturating_sub(elapsed));
+    own_remaining.min(handoff_budget(host_remaining))
+}
+
+fn execute_surface_tool(
+    router: &SurfaceToolRouter,
+    name: &str,
+    arguments: &Map<String, Value>,
+    cancellation: CancellationToken,
+    progress: Arc<dyn ProgressSink>,
+    deadline: FrontendInvocationDeadline,
+) -> Result<OperationResult, (i32, String)> {
+    match router {
+        SurfaceToolRouter::LegacyV12(handler) => handler(name, arguments, cancellation, progress),
+        SurfaceToolRouter::CanonicalV13(handler) => {
+            let tool = ToolIdentity::from_wire_name(name).ok_or_else(|| {
+                (
+                    ErrorCode::INVALID_PARAMS.0,
+                    "tool is not in the canonical v0.13 profile".to_string(),
+                )
+            })?;
+            match handler(tool, arguments, deadline, cancellation)? {
+                InvocationResponse::Direct(result) => Ok(result.into()),
+                InvocationResponse::Task(snapshot) => Ok(legacy_working_projection(snapshot)),
+            }
+        }
+    }
+}
+
+fn legacy_working_projection(
+    snapshot: crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
+) -> OperationResult {
+    use crate::domain::long_work::{WorkState, WorkStatus};
+
+    let mut result: OperationResult = crate::domain::invocation::DomainResult::success(
+        "canonical invocation continues in daemon",
+    )
+    .into();
+    result.work = Some(WorkState {
+        status: WorkStatus::Working,
+        status_message: "canonical invocation continues in daemon".to_string(),
+        poll_interval_ms: Some(snapshot.poll_interval_ms),
+    });
+    result
+}
+
+/// Hidden bridge used only by explicitly selected canonical-v0.13 frontends.
+/// The released stdio constructor remains on `SurfaceRelease::V12` until the
+/// atomic Task 22 cutover.
+#[allow(dead_code)]
+fn canonical_daemon_handler(
+    owner: crate::infrastructure::daemon::client::DaemonOwner,
+    workspace_hint: String,
+) -> Arc<CanonicalToolCallHandler> {
+    // Retain one owner lease for the frontend lifetime, but give each Invocation its own protocol
+    // session. A slow direct response therefore cannot serialize another call ahead of its
+    // seven-second handoff boundary.
+    let anchor = Arc::new(owner);
+    Arc::new(move |tool, arguments, deadline, _cancellation| {
+        let mut owner = anchor
+            .connect_peer(deadline.remaining_transport_at(Instant::now()))
+            .map_err(|message| (TOOL_EXECUTION_ERROR, message))?;
+        let response_budget = deadline.remaining_at(Instant::now());
+        let request = InvocationRequest::new(
+            tool,
+            Value::Object(arguments.clone()),
+            workspace_hint.clone(),
+            response_budget.as_millis().min(7_000) as u64,
+        )
+        .map_err(|message| (ErrorCode::INVALID_PARAMS.0, message))?;
+        owner
+            .submit_invocation_with_transport_budget(
+                request,
+                deadline.remaining_transport_at(Instant::now()),
+            )
+            .map_err(|message| (TOOL_EXECUTION_ERROR, message))
+    })
 }
 
 fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
@@ -332,6 +498,7 @@ impl ServerHandler for UnicaServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let received_at = Instant::now();
         let admission = self
             .in_flight
             .admit()
@@ -347,7 +514,7 @@ impl ServerHandler for UnicaServer {
             bridged.cancel();
         });
 
-        let handler = Arc::clone(&self.handler);
+        let router = self.router.clone();
         let name = request.name.to_string();
         let handler_name = name.clone();
         let progress_token = request
@@ -390,7 +557,15 @@ impl ServerHandler for UnicaServer {
             stop: progress_stop,
         } = progress_forwarding;
         let result = tokio::task::spawn_blocking(move || {
-            handler(&handler_name, &arguments, cancellation, progress)
+            let deadline = FrontendInvocationDeadline::new(received_at, None);
+            execute_surface_tool(
+                &router,
+                &handler_name,
+                &arguments,
+                cancellation,
+                progress,
+                deadline,
+            )
         })
         .await;
         if let Some(stop) = progress_stop {
@@ -663,6 +838,89 @@ mod tests {
     #[test]
     fn unica_server_implements_official_rmcp_server_handler() {
         super::assert_unica_server_implements_official_rmcp_server_handler();
+    }
+
+    #[test]
+    fn surface_release_structurally_gates_v12_legacy_dispatch_from_v13_daemon_dispatch() {
+        use std::sync::atomic::AtomicUsize;
+
+        let legacy_count = Arc::new(AtomicUsize::new(0));
+        let legacy_observed = Arc::clone(&legacy_count);
+        let legacy: Arc<ToolCallHandler> = Arc::new(move |_, _, _, _| {
+            legacy_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(successful_test_result("legacy"))
+        });
+        let v12 = UnicaServer::new(legacy);
+        let received = Instant::now();
+        let deadline = FrontendInvocationDeadline::new(received, None);
+        let result = execute_surface_tool(
+            &v12.router,
+            "unica.check",
+            &Map::new(),
+            CancellationToken::new(),
+            Arc::new(NoopProgressSink),
+            deadline,
+        )
+        .unwrap();
+        assert_eq!(result.summary, "legacy");
+        assert_eq!(legacy_count.load(Ordering::SeqCst), 1);
+
+        let daemon_count = Arc::new(AtomicUsize::new(0));
+        let daemon_observed = Arc::clone(&daemon_count);
+        let canonical: Arc<CanonicalToolCallHandler> = Arc::new(move |tool, _, deadline, _| {
+            assert_eq!(tool, ToolIdentity::Check);
+            assert_eq!(deadline.remaining_at(received), Duration::from_secs(7));
+            daemon_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(InvocationResponse::Direct(
+                crate::domain::invocation::DomainResult::success("canonical"),
+            ))
+        });
+        let v13 = UnicaServer::with_canonical_v13(canonical);
+        let result = execute_surface_tool(
+            &v13.router,
+            "unica.check",
+            &Map::new(),
+            CancellationToken::new(),
+            Arc::new(NoopProgressSink),
+            deadline,
+        )
+        .unwrap();
+        assert_eq!(result.summary, "canonical");
+        assert_eq!(daemon_count.load(Ordering::SeqCst), 1);
+        assert_eq!(legacy_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn frontend_receipt_deadline_transmits_zero_or_earlier_host_budget_without_reexecution() {
+        let received = Instant::now();
+        let deadline = FrontendInvocationDeadline::new(received, None);
+        assert_eq!(
+            deadline.remaining_at(received + Duration::from_secs(7)),
+            Duration::ZERO,
+            "queueing before daemon submission must not replenish the frontend budget",
+        );
+        assert_eq!(
+            deadline.remaining_transport_at(received + Duration::from_secs(7)),
+            Duration::from_millis(125),
+            "the bounded serialization margin covers connection and submit together",
+        );
+        assert_eq!(
+            remaining_invocation_budget(received, received, None),
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            remaining_invocation_budget(received, received + Duration::from_secs(7), None,),
+            Duration::ZERO
+        );
+        assert_eq!(
+            remaining_invocation_budget(
+                received,
+                received + Duration::from_millis(250),
+                Some(Duration::from_secs(2)),
+            ),
+            Duration::from_millis(1_625),
+            "host budget reserves the 125 ms response margin after elapsed frontend time",
+        );
     }
 
     fn object_schema_property_maps(

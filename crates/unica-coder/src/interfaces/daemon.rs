@@ -61,6 +61,18 @@ pub fn connect_owner_for_protocol_test(
     .map(|inner| DaemonOwnerLease { inner })
 }
 
+/// Resolve the versioned daemon endpoint used by process-level protocol fixtures without
+/// duplicating the protocol generation in integration tests.
+#[doc(hidden)]
+pub fn endpoint_path_for_protocol_test(state_root: &Path, core_identity: &str) -> PathBuf {
+    state_root
+        .join(format!(
+            "daemon-p{}-{core_identity}",
+            crate::infrastructure::daemon::protocol::DAEMON_PROTOCOL_VERSION
+        ))
+        .join("endpoint.json")
+}
+
 #[doc(hidden)]
 pub struct DaemonOwnerLease {
     inner: DaemonOwner,

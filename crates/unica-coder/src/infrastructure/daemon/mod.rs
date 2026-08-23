@@ -11,12 +11,17 @@ mod tests {
     use super::identity::{CoreIdentity, DaemonStateDirectory};
     use super::protocol::{
         parse_response, read_bounded_json_line, ClientRequest, DaemonErrorCode, EndpointRecord,
-        ServerResponse, DAEMON_PROTOCOL_VERSION, MAX_JSON_LINE_BYTES,
+        InvocationRequest, InvocationResponse, ServerResponse, DAEMON_PROTOCOL_VERSION,
+        MAX_JSON_LINE_BYTES,
     };
     use super::server::{
-        install_handshake_pause, run_daemon, DaemonServerConfig, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
+        install_handshake_pause, run_daemon, CanonicalInvocationService, DaemonServerConfig,
+        MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
     };
-    use crate::application::invocation_store::InvocationStoreError;
+    use crate::application::invocation_store::{InvocationStoreError, ToolIdentity};
+    use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::invocation::{DomainResult, InvocationFailure, InvocationStatus, TaskId};
     use crate::infrastructure::platform::testing::{
         create_directory_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,
         FileLinkFixtureOutcome,
@@ -26,6 +31,7 @@ mod tests {
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
     use std::path::PathBuf;
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -87,6 +93,33 @@ mod tests {
         )
         .unwrap();
         (stream, response)
+    }
+
+    struct BlockingCanonicalService {
+        executions: Arc<AtomicUsize>,
+        entered: mpsc::Sender<()>,
+    }
+
+    impl CanonicalInvocationService for BlockingCanonicalService {
+        fn prepare(
+            &self,
+            _request: &InvocationRequest,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+        }
+
+        fn execute(
+            &self,
+            _request: InvocationRequest,
+            cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            self.entered.send(()).unwrap();
+            while !cancellation.is_cancelled() {
+                thread::yield_now();
+            }
+            Err(InvocationFailure::new("cancelled", "test cancellation"))
+        }
     }
 
     #[test]
@@ -168,6 +201,294 @@ mod tests {
         );
         let error = serde_json::from_slice::<ClientRequest>(unknown.as_bytes()).unwrap_err();
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn invocation_protocol_round_trips_all_four_strict_requests_and_closed_responses() {
+        let submit = ClientRequest::submit_invocation(
+            InvocationRequest::new(
+                ToolIdentity::Check,
+                serde_json::json!({"cwd": "/workspace"}),
+                "/workspace",
+                6_875,
+            )
+            .unwrap(),
+        );
+        let task_id = TaskId::new();
+        let requests = [
+            submit,
+            ClientRequest::get_task(task_id),
+            ClientRequest::wait_task(task_id, 250),
+            ClientRequest::cancel_task(task_id),
+        ];
+        for request in requests {
+            let wire = serde_json::to_vec(&request).unwrap();
+            assert_eq!(super::protocol::parse_request(&wire).unwrap(), request);
+        }
+
+        let direct =
+            ServerResponse::invocation(InvocationResponse::Direct(DomainResult::success("ready")));
+        let task = ServerResponse::invocation(InvocationResponse::Task(
+            super::protocol::DaemonTaskSnapshot::working_for_test(task_id),
+        ));
+        for response in [direct, task] {
+            let wire = serde_json::to_vec(&response).unwrap();
+            assert_eq!(parse_response(&wire).unwrap(), response);
+        }
+
+        let mut noncanonical_response = serde_json::to_value(ServerResponse::invocation(
+            InvocationResponse::Direct(DomainResult::success("ready")),
+        ))
+        .unwrap();
+        noncanonical_response["outcome"]
+            .as_object_mut()
+            .unwrap()
+            .insert("extra".to_string(), serde_json::json!(true));
+        assert!(parse_response(&serde_json::to_vec(&noncanonical_response).unwrap()).is_err());
+
+        for invalid in [
+            br#"{"kind":"get_task","taskId":"not-a-task"}"#.as_slice(),
+            br#"{"kind":"wait_task","taskId":"00000000-0000-0000-0000-000000000000","waitMs":1}"#.as_slice(),
+            br#"{"kind":"cancel_task","taskId":"ffffffff-ffff-4fff-8fff-ffffffffffff","extra":true}"#.as_slice(),
+            br#"{"kind":"unknown_future_message"}"#.as_slice(),
+        ] {
+            assert!(super::protocol::parse_request(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let workspace_hint = physical.to_string_lossy().into_owned();
+        let identity = CoreIdentity::production();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (entered, entered_wait) = mpsc::channel();
+        let service = Arc::new(BlockingCanonicalService {
+            executions: Arc::clone(&executions),
+            entered,
+        });
+        let config = server_config(root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(service);
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let outcome = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    workspace_hint,
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let task_id = match outcome {
+            InvocationResponse::Task(task) => task.task_id,
+            other => panic!("known-long request did not return a task: {other:?}"),
+        };
+        entered_wait.recv().unwrap();
+        assert_eq!(
+            owner.get_task(task_id).unwrap().status,
+            InvocationStatus::Working
+        );
+        assert_eq!(
+            owner.wait_task(task_id, 0).unwrap().status,
+            InvocationStatus::Working
+        );
+        assert_eq!(
+            owner.cancel_task(task_id).unwrap().status,
+            InvocationStatus::Cancelled
+        );
+        assert_eq!(
+            owner.cancel_task(task_id).unwrap().status,
+            InvocationStatus::Cancelled
+        );
+        assert_eq!(
+            owner.get_task(task_id).unwrap().status,
+            InvocationStatus::Cancelled
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn canonical_frontend_opens_an_independent_owner_session_per_invocation() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let mut anchor = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let mut invocation_session = anchor.connect_peer(Duration::from_secs(1)).unwrap();
+        assert_eq!(anchor.daemon_pid(), invocation_session.daemon_pid());
+        anchor.ping().unwrap();
+        invocation_session.ping().unwrap();
+
+        drop(invocation_session);
+        drop(anchor);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn invalid_canonical_arguments_are_direct_before_workspace_or_domain_execution() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let outcome = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::View,
+                    serde_json::json!({"at": ""}),
+                    "/workspace/does-not-exist",
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let result = match outcome {
+            InvocationResponse::Direct(result) => result,
+            other => panic!("invalid arguments must not materialize a task: {other:?}"),
+        };
+        assert!(!result.ok);
+        assert!(result.summary.contains("address argument `at` is invalid"));
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn durable_handoff_persists_only_closed_hashes_not_arguments_paths_or_failure_text() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let workspace_hint = physical.to_string_lossy().into_owned();
+        let identity = CoreIdentity::production();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let (entered, entered_wait) = mpsc::channel();
+        let service = Arc::new(BlockingCanonicalService {
+            executions,
+            entered,
+        });
+        let config = server_config(root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(service);
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical.clone(),
+            identity.clone(),
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+        let secret = "task7-secret-never-persist";
+        let raw_path = "/private/caller/path/never-persist";
+        let outcome = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({"args": {"secret": secret, "path": raw_path}}),
+                    workspace_hint.clone(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let task_id = match outcome {
+            InvocationResponse::Task(snapshot) => snapshot.task_id,
+            other => panic!("known-long invocation must be durable: {other:?}"),
+        };
+        entered_wait.recv().unwrap();
+
+        let record_path = DaemonStateDirectory::path_for(&physical, &identity)
+            .join("tasks")
+            .join(format!("{task_id}.json"));
+        let bytes = std::fs::read(&record_path).unwrap();
+        let wire = String::from_utf8(bytes.clone()).unwrap();
+        for forbidden in [
+            secret,
+            raw_path,
+            workspace_hint.as_str(),
+            "test cancellation",
+        ] {
+            assert!(
+                !wire.contains(forbidden),
+                "persisted forbidden text: {forbidden}"
+            );
+        }
+        let record: crate::application::invocation_store::StoredInvocationRecord =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(record.tool, ToolIdentity::Run);
+        assert_eq!(record.status, InvocationStatus::Working);
+
+        owner.cancel_task(task_id).unwrap();
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn canonical_submit_disconnect_is_a_transport_error_without_frontend_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let workspace_hint = physical.to_string_lossy().into_owned();
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let peer_record = record.clone();
+        let fake_peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let _hello = read_bounded_json_line(&mut reader).unwrap();
+            write_json_line(&mut stream, &ServerResponse::ready(&peer_record));
+            let submit = read_bounded_json_line(&mut reader).unwrap();
+            assert!(matches!(
+                super::protocol::parse_request(&submit).unwrap(),
+                ClientRequest::SubmitInvocation { .. }
+            ));
+        });
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake endpoint must connect"),
+        };
+        let error = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Check,
+                    serde_json::json!({}),
+                    workspace_hint,
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+        fake_peer.join().unwrap();
+        assert!(error.starts_with("read daemon response:"), "{error}");
     }
 
     #[test]

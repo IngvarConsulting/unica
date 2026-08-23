@@ -1,5 +1,6 @@
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
+use crate::domain::invocation::SafeIdentityHash;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::deadline_lock::{DeadlineLock, FailClosed};
@@ -121,7 +122,7 @@ impl WorkspaceIdentity {
         &self.provider_profile
     }
 
-    fn state_scope_digest(&self) -> Result<String, String> {
+    fn state_scope_hash(&self) -> Result<[u8; 32], String> {
         let mut digest = Sha256::new();
         digest.update(b"unica-workspace-actor-state-v1\0");
         update_digest_path(&mut digest, &self.workspace_root)?;
@@ -131,7 +132,17 @@ impl WorkspaceIdentity {
             update_digest_path(&mut digest, &source_set.root)?;
         }
         update_digest_text(&mut digest, &self.provider_profile);
-        Ok(format!("{:x}", digest.finalize()))
+        Ok(digest.finalize().into())
+    }
+
+    fn state_scope_digest(&self) -> Result<String, String> {
+        use std::fmt::Write as _;
+
+        let mut encoded = String::with_capacity(64);
+        for byte in self.state_scope_hash()? {
+            write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        Ok(encoded)
     }
 }
 
@@ -364,6 +375,15 @@ impl<R> WorkspaceActor<R> {
 
     pub(crate) fn workspace_identity(&self) -> &WorkspaceIdentity {
         &self.identity
+    }
+
+    /// Closed daemon-safe identity for task persistence. It is derived from
+    /// the actor's complete structural identity; no caller-provided path or
+    /// repository label can forge it.
+    pub(crate) fn safe_identity_hash(&self) -> Result<SafeIdentityHash, String> {
+        self.identity
+            .state_scope_hash()
+            .map(SafeIdentityHash::from_sha256)
     }
 
     pub(super) fn runtime_projection(&self) -> R::Projection<'_>

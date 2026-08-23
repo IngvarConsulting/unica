@@ -49,6 +49,33 @@ impl ToolIdentity {
         Self::Run,
         Self::Docs,
     ];
+
+    pub(crate) const fn catalog_name(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Apply => "apply",
+            Self::Find => "find",
+            Self::Search => "search",
+            Self::Check => "check",
+            Self::Diff => "diff",
+            Self::Run => "run",
+            Self::Docs => "docs",
+        }
+    }
+
+    pub(crate) fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "unica.view" => Some(Self::View),
+            "unica.apply" => Some(Self::Apply),
+            "unica.find" => Some(Self::Find),
+            "unica.search" => Some(Self::Search),
+            "unica.check" => Some(Self::Check),
+            "unica.diff" => Some(Self::Diff),
+            "unica.run" => Some(Self::Run),
+            "unica.docs" => Some(Self::Docs),
+            _ => None,
+        }
+    }
 }
 
 /// Closed status code which cannot be populated from caller-owned runtime strings.
