@@ -250,12 +250,26 @@ fn legacy_string(value: Value) -> String {
     }
 }
 
+const LEGACY_UNOBSERVED_CACHE_MODE: &str = "unobserved";
+const LEGACY_UNOBSERVED_CACHE_ROOT: &str = "<unobserved-cache-root>";
+
+/// Compatibility-only v0.12 projection of the canonical v0.13 result.
+///
+/// The outer shape is deliberately legacy and therefore lossy, but its `data`
+/// slot retains the complete canonical result so the conversion loses no
+/// domain information. A v0.13 transport must serialize [`DomainResult`]
+/// directly and must not treat this [`OperationResult`] as its wire envelope.
+///
+/// `OperationResult` requires a cache report while `DomainResult` intentionally
+/// carries none. `unobserved` plus the non-path root sentinel makes epoch zero
+/// mean "not observed" here; it must not be read as an observed workspace epoch.
 impl From<DomainResult> for OperationResult {
     fn from(result: DomainResult) -> Self {
+        let canonical_data =
+            serde_json::to_value(&result).expect("DomainResult serialization is infallible");
         let DomainResult {
             ok,
             summary,
-            data,
             changed,
             warnings,
             diagnostics,
@@ -275,8 +289,8 @@ impl From<DomainResult> for OperationResult {
             errors,
             artifacts: artifacts.into_iter().map(legacy_string).collect(),
             cache: CacheReport {
-                mode: "none".to_string(),
-                root: String::new(),
+                mode: LEGACY_UNOBSERVED_CACHE_MODE.to_string(),
+                root: LEGACY_UNOBSERVED_CACHE_ROOT.to_string(),
                 workspace_epoch: 0,
                 events: Vec::new(),
                 invalidated: Vec::new(),
@@ -290,7 +304,7 @@ impl From<DomainResult> for OperationResult {
             stderr: None,
             command: None,
             diagnostics: (!diagnostics.is_empty()).then_some(Value::Array(diagnostics)),
-            data,
+            data: Some(canonical_data),
             job: None,
             work: None,
         }
@@ -306,7 +320,7 @@ mod tests {
         DomainResult, InvocationFailure, InvocationId, InvocationOutcome, InvocationStatus,
         NormalizedArgumentsHash, TaskId,
     };
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -336,12 +350,12 @@ mod tests {
             summary: summary.to_string(),
             data: Some(json!({"kind": "catalog", "name": "Items"})),
             changed: vec![json!({"at": "source://main/Catalog.Items"})],
-            warnings: Vec::new(),
+            warnings: vec![json!({"code": "support_warning"})],
             diagnostics: vec![json!({"severity": "info", "code": "checked"})],
             artifacts: vec![json!({"kind": "cf", "sha256": "ab"})],
             next: vec![json!({"op": "view"})],
             rev: Some("rev-2".to_string()),
-            cursor: None,
+            cursor: Some("cursor-2".to_string()),
         }
     }
 
@@ -501,25 +515,74 @@ mod tests {
     }
 
     #[test]
-    fn domain_result_adapts_only_one_way_into_the_legacy_operation_result() {
-        let legacy: OperationResult = result("legacy adapter").into();
-        let serialized = serde_json::to_value(&legacy).expect("serialize legacy result");
+    fn legacy_adapter_changes_shape_but_preserves_the_entire_canonical_result_as_data() {
+        let domain = result("legacy adapter");
+        let canonical = serde_json::to_value(&domain).expect("serialize canonical result");
+        let legacy: OperationResult = domain.into();
+        let projected = serde_json::to_value(&legacy).expect("serialize legacy projection");
 
-        assert_eq!(legacy.summary, "legacy adapter");
-        assert!(legacy.job.is_none());
-        assert!(legacy.work.is_none());
-        assert_eq!(serialized["diagnostics"][0]["code"], "checked");
-        assert_eq!(serialized.get("job"), None);
-        assert_eq!(serialized.get("work"), None);
-        assert_ne!(serialized["data"], Value::Null);
+        assert_ne!(
+            projected, canonical,
+            "OperationResult is a v0.12 projection, not the v0.13 wire shape"
+        );
+        assert_eq!(projected["data"], canonical);
+        assert_eq!(projected["data"]["at"], "source://main/Catalog.Items");
+        assert_eq!(projected["data"]["next"][0]["op"], "view");
+        assert_eq!(projected["data"]["rev"], "rev-2");
+        assert_eq!(projected["data"]["cursor"], "cursor-2");
+        assert_eq!(projected["data"]["data"]["kind"], "catalog");
     }
 
     #[test]
-    fn production_clock_returns_a_monotonic_instant() {
-        let before = Instant::now();
-        let now = TokioClock.now();
-        let after = Instant::now();
+    fn legacy_adapter_marks_cache_as_explicitly_unobserved() {
+        let legacy: OperationResult = result("legacy adapter").into();
+        let projected = serde_json::to_value(legacy).expect("serialize legacy projection");
 
-        assert!(before <= now && now <= after);
+        assert_eq!(
+            projected["cache"],
+            json!({
+                "mode": "unobserved",
+                "root": "<unobserved-cache-root>",
+                "workspace_epoch": 0,
+                "events": [],
+                "invalidated": [],
+                "refreshed": [],
+                "lazy_rebuilt": [],
+                "stale": [],
+                "fresh": []
+            }),
+            "epoch zero means non-observation only when mode is unobserved"
+        );
+    }
+
+    #[test]
+    fn legacy_adapter_mirrors_supported_fields_without_job_or_work() {
+        let domain = result("legacy adapter");
+        let legacy: OperationResult = domain.clone().into();
+        let projected = serde_json::to_value(&legacy).expect("serialize legacy projection");
+
+        assert_eq!(legacy.summary, "legacy adapter");
+        assert_eq!(legacy.changes, [r#"{"at":"source://main/Catalog.Items"}"#]);
+        assert_eq!(legacy.warnings, [r#"{"code":"support_warning"}"#]);
+        assert_eq!(legacy.artifacts, [r#"{"kind":"cf","sha256":"ab"}"#]);
+        assert!(legacy.errors.is_empty());
+        assert_eq!(projected["diagnostics"][0]["code"], "checked");
+        assert!(legacy.job.is_none());
+        assert!(legacy.work.is_none());
+        assert_eq!(projected.get("job"), None);
+        assert_eq!(projected.get("work"), None);
+
+        let mut failed = domain;
+        failed.ok = false;
+        let failed: OperationResult = failed.into();
+        assert_eq!(failed.errors, [r#"{"severity":"info","code":"checked"}"#]);
+    }
+
+    #[test]
+    fn production_clock_returns_non_decreasing_successive_samples() {
+        let first = TokioClock.now();
+        let second = TokioClock.now();
+
+        assert!(first <= second);
     }
 }
