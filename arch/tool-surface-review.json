@@ -89,7 +89,7 @@
   "unica.code.search": {
     "result": {
       "contract": "typed",
-      "now": "`data`: три ролевые секции с логическими местоположениями, полнотой, машинной причиной завершения и retryability, ранжированием, счётом и происхождением; ход приходит через typed MCP progress",
+      "now": "`data`: три ролевые секции с логическими местоположениями, полнотой, машинной причиной завершения и retryability, ранжированием, счётом и происхождением; `dependencyPending` сохраняет доступные `retryAfterMs` и `state` поставщика по общему с диагностикой словарю (DEC.2026-08-22.PROVIDER-NOT-READY-VOCABULARY), а ход приходит через typed MCP progress",
       "target": "достигнут"
     },
     "scenarios": [
@@ -137,7 +137,7 @@
   "unica.code.diagnostics": {
     "result": {
       "contract": "typed",
-      "now": "`data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; физические пути и формат одного анализатора наружу не выходят",
+      "now": "`data`: provider-neutral результат с `sourceSet`/`metadataPath`, секциями `providers`, логическими `location`, внутренним `focus` и плоскими элементами; переходная неготовность использует общий с поиском `dependencyPending`, сохраняет подсказку поставщика о повторе и публикует верхний `state=pending` при `ok=false` (DEC.2026-08-22.PROVIDER-NOT-READY-VOCABULARY); физические пути и формат одного анализатора наружу не выходят",
       "target": "достигнут"
     },
     "scenarios": [
