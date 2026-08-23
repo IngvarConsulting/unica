@@ -32,6 +32,7 @@ pub(crate) struct CatalogSemantics {
     pub(crate) docs_filters_source_kinds_not_provider_identities: bool,
     pub(crate) apply_operations_come_from_node_can_data: bool,
     pub(crate) run_dictionary_is_data_not_command_lines: bool,
+    pub(crate) empty_optional_result_slots_are_omitted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +209,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 docs_filters_source_kinds_not_provider_identities: true,
                 apply_operations_come_from_node_can_data: true,
                 run_dictionary_is_data_not_command_lines: true,
+                empty_optional_result_slots_are_omitted: true,
             },
             run_dictionary: run_dictionary(),
             result_envelope_schema: result_envelope_schema(),
@@ -364,6 +366,14 @@ mod tests {
         );
     }
 
+    fn assert_data_object(value: &Value, location: &str) {
+        assert_eq!(
+            value,
+            &json!({"type": "object"}),
+            "{location} must remain an unconstrained shallow data object"
+        );
+    }
+
     #[test]
     fn v13_catalog_locks_the_eight_domain_contracts_without_publishing_them() {
         let catalog =
@@ -462,6 +472,19 @@ mod tests {
             assert_eq!(limit["minimum"], 1);
         }
         assert_field_type(&catalog.tools, "view", "cursor", "string");
+        assert_data_object(
+            input_field(&catalog.tools, "view", "filter"),
+            "unica.view.filter",
+        );
+        assert_data_object(
+            input_field(&catalog.tools, "check", "filter"),
+            "unica.check.filter",
+        );
+        assert_data_object(
+            input_field(&catalog.tools, "diff", "filter"),
+            "unica.diff.filter",
+        );
+        assert_data_object(input_field(&catalog.tools, "run", "args"), "unica.run.args");
         assert_eq!(
             input_field(&catalog.tools, "apply", "dryRun")["type"],
             "boolean"
@@ -499,18 +522,24 @@ mod tests {
             apply.input_schema["properties"]["ops"]["items"]["properties"]["op"]["type"],
             "string"
         );
-        assert_eq!(
-            apply.input_schema["properties"]["ops"]["items"]["properties"]["args"]["type"],
-            "object"
+        assert_data_object(
+            &apply.input_schema["properties"]["ops"]["items"]["properties"]["args"],
+            "unica.apply.ops[].args",
         );
-        assert!(
-            apply.input_schema["properties"]["ops"]["items"]["properties"]["op"]
-                .get("enum")
-                .is_none()
-        );
-        assert!(apply.input_schema["properties"]["ops"]["items"]
-            .get("oneOf")
-            .is_none());
+        for keyword in ["enum", "oneOf", "anyOf", "allOf"] {
+            assert!(
+                apply.input_schema["properties"]["ops"]["items"]["properties"]["op"]
+                    .get(keyword)
+                    .is_none(),
+                "unica.apply.ops[].op must not publish a deep operation union"
+            );
+            assert!(
+                apply.input_schema["properties"]["ops"]["items"]
+                    .get(keyword)
+                    .is_none(),
+                "unica.apply.ops[] must not publish a deep operation union"
+            );
+        }
         assert_eq!(
             contract(&catalog.tools, "run").input_schema["properties"]["args"]["type"],
             "object"
@@ -541,6 +570,7 @@ mod tests {
         );
         assert!(catalog.semantics.apply_operations_come_from_node_can_data);
         assert!(catalog.semantics.run_dictionary_is_data_not_command_lines);
+        assert!(catalog.semantics.empty_optional_result_slots_are_omitted);
         assert!(catalog.semantics.search_scope_is_logical_subtree_address);
         assert_eq!(
             input_field(&catalog.tools, "search", "scope")["description"],
