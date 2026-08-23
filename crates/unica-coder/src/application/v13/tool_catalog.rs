@@ -28,6 +28,7 @@ pub(crate) struct CatalogSemantics {
     pub(crate) diff_is_read_only: bool,
     pub(crate) diff_cursor_carries_both_source_revisions: bool,
     pub(crate) diff_rejects_incomparable_node_kinds: bool,
+    pub(crate) search_scope_is_logical_subtree_address: bool,
     pub(crate) docs_filters_source_kinds_not_provider_identities: bool,
     pub(crate) apply_operations_come_from_node_can_data: bool,
     pub(crate) run_dictionary_is_data_not_command_lines: bool,
@@ -144,7 +145,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     input_schema: schema(
                         json!({
                             "query": {"type": "string"},
-                            "scope": logical_address(),
+                            "scope": logical_subtree_address(),
                             "regex": {"type": "boolean", "default": false},
                             "limit": limit(),
                         }),
@@ -203,6 +204,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 diff_is_read_only: true,
                 diff_cursor_carries_both_source_revisions: true,
                 diff_rejects_incomparable_node_kinds: true,
+                search_scope_is_logical_subtree_address: true,
                 docs_filters_source_kinds_not_provider_identities: true,
                 apply_operations_come_from_node_can_data: true,
                 run_dictionary_is_data_not_command_lines: true,
@@ -224,6 +226,10 @@ fn schema(properties: Value, required: Value) -> Value {
 
 fn logical_address() -> Value {
     json!({"type": "string", "description": "qualified logical address"})
+}
+
+fn logical_subtree_address() -> Value {
+    json!({"type": "string", "description": "logical subtree address"})
 }
 
 fn data_object() -> Value {
@@ -272,11 +278,11 @@ fn result_envelope_schema() -> Value {
             "at": logical_address(),
             "summary": {"type": "string"},
             "data": {},
-            "changed": {"type": "array", "items": {}},
-            "warnings": {"type": "array", "items": {}},
-            "diagnostics": {"type": "array", "items": {}},
-            "artifacts": {"type": "array", "items": {}},
-            "next": {"type": "array", "items": {}},
+            "changed": {"type": "array", "minItems": 1, "items": {}},
+            "warnings": {"type": "array", "minItems": 1, "items": {}},
+            "diagnostics": {"type": "array", "minItems": 1, "items": {}},
+            "artifacts": {"type": "array", "minItems": 1, "items": {}},
+            "next": {"type": "array", "minItems": 1, "items": {}},
             "rev": {"type": "string"},
             "cursor": cursor(),
         },
@@ -337,6 +343,27 @@ mod tests {
         }
     }
 
+    fn input_field<'a>(
+        catalog: &'a [super::V13ToolContract],
+        tool: &str,
+        field: &str,
+    ) -> &'a Value {
+        &contract(catalog, tool).input_schema["properties"][field]
+    }
+
+    fn assert_field_type(
+        catalog: &[super::V13ToolContract],
+        tool: &str,
+        field: &str,
+        expected: &str,
+    ) {
+        assert_eq!(
+            input_field(catalog, tool, field)["type"],
+            expected,
+            "unica.{tool}.{field} type drifted"
+        );
+    }
+
     #[test]
     fn v13_catalog_locks_the_eight_domain_contracts_without_publishing_them() {
         let catalog =
@@ -392,6 +419,66 @@ mod tests {
             &["query", "source"],
         );
 
+        for (tool, field) in [
+            ("view", "at"),
+            ("apply", "at"),
+            ("apply", "ifRev"),
+            ("find", "query"),
+            ("find", "kind"),
+            ("search", "query"),
+            ("search", "scope"),
+            ("check", "at"),
+            ("diff", "left"),
+            ("diff", "right"),
+            ("diff", "cursor"),
+            ("run", "op"),
+            ("docs", "query"),
+            ("docs", "source"),
+        ] {
+            assert_field_type(&catalog.tools, tool, field, "string");
+        }
+        for (tool, field) in [
+            ("view", "filter"),
+            ("apply", "ops"),
+            ("check", "filter"),
+            ("diff", "filter"),
+            ("run", "args"),
+        ] {
+            assert_field_type(
+                &catalog.tools,
+                tool,
+                field,
+                if field == "ops" { "array" } else { "object" },
+            );
+        }
+        for (tool, field) in [
+            ("view", "limit"),
+            ("find", "limit"),
+            ("search", "limit"),
+            ("diff", "limit"),
+        ] {
+            let limit = input_field(&catalog.tools, tool, field);
+            assert_eq!(limit["type"], "integer");
+            assert_eq!(limit["minimum"], 1);
+        }
+        assert_field_type(&catalog.tools, "view", "cursor", "string");
+        assert_eq!(
+            input_field(&catalog.tools, "apply", "dryRun")["type"],
+            "boolean"
+        );
+        assert_eq!(
+            input_field(&catalog.tools, "apply", "dryRun")["default"],
+            false
+        );
+        assert_eq!(
+            input_field(&catalog.tools, "search", "regex")["type"],
+            "boolean"
+        );
+        assert_eq!(
+            input_field(&catalog.tools, "search", "regex")["default"],
+            false
+        );
+
         let apply = contract(&catalog.tools, "apply");
         assert_eq!(apply.input_schema["properties"]["ops"]["type"], "array");
         assert_eq!(apply.input_schema["properties"]["ops"]["minItems"], 1);
@@ -399,6 +486,27 @@ mod tests {
         assert_eq!(
             apply.input_schema["properties"]["ops"]["items"]["type"],
             "object"
+        );
+        assert_eq!(
+            apply.input_schema["properties"]["ops"]["items"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            apply.input_schema["properties"]["ops"]["items"]["required"],
+            json!(["op"])
+        );
+        assert_eq!(
+            apply.input_schema["properties"]["ops"]["items"]["properties"]["op"]["type"],
+            "string"
+        );
+        assert_eq!(
+            apply.input_schema["properties"]["ops"]["items"]["properties"]["args"]["type"],
+            "object"
+        );
+        assert!(
+            apply.input_schema["properties"]["ops"]["items"]["properties"]["op"]
+                .get("enum")
+                .is_none()
         );
         assert!(apply.input_schema["properties"]["ops"]["items"]
             .get("oneOf")
@@ -433,6 +541,11 @@ mod tests {
         );
         assert!(catalog.semantics.apply_operations_come_from_node_can_data);
         assert!(catalog.semantics.run_dictionary_is_data_not_command_lines);
+        assert!(catalog.semantics.search_scope_is_logical_subtree_address);
+        assert_eq!(
+            input_field(&catalog.tools, "search", "scope")["description"],
+            "logical subtree address"
+        );
 
         assert_eq!(
             catalog
@@ -495,6 +608,13 @@ mod tests {
         );
         for forbidden in ["set", "sourceState", "fileExists", "job", "work"] {
             assert!(output["properties"].get(forbidden).is_none());
+        }
+        for slot in ["changed", "warnings", "diagnostics", "artifacts", "next"] {
+            assert_eq!(output["properties"][slot]["type"], "array");
+            assert_eq!(
+                output["properties"][slot]["minItems"], 1,
+                "empty `{slot}` must be omitted rather than serialized"
+            );
         }
     }
 }
