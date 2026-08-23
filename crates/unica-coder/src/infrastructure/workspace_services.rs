@@ -10,6 +10,9 @@ use crate::infrastructure::platform::{
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
+use crate::infrastructure::workspace_actor::{
+    ProviderRootBinding, WorkspaceActor, WorkspaceIdentity,
+};
 use crate::infrastructure::workspace_index::{
     ready_index_for_source_revision, rlm_generation_root, rlm_process_environment,
     IndexBackgroundTaskTracker, IndexReadiness, SystemIndexRunner, WorkspaceIndexService,
@@ -57,6 +60,8 @@ const SERVICE_STARTUP_STDERR_TAIL_LIMIT: u64 = 16 * 1024;
 const BSL_STDERR_TAIL_LIMIT: usize = 64 * 1024;
 const SERVICE_RECORD_LOCK_FILE: &str = "service.record.lock";
 const PROVIDER_STATE_KEY_DOMAIN: &[u8] = b"unica-provider-state-v1\0";
+const LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE: &str = "legacy-bsl-rlm";
+const LEGACY_WORKSPACE_SERVICE_SOURCE_SET: &str = "compat";
 
 static SYSTEM_SERVICE_CONNECTOR: SystemServiceConnector = SystemServiceConnector;
 static SYSTEM_SERVICE_SPAWNER: SystemServiceSpawner = SystemServiceSpawner;
@@ -1463,11 +1468,10 @@ impl Drop for AnalyzerLanePermit<'_> {
     }
 }
 
-struct WorkspaceServiceRuntime {
+struct WorkspaceServiceRuntimeState {
     identity: WorkspaceServiceIdentity,
     token: String,
     record_owner: WorkspaceServiceRecord,
-    context: WorkspaceContext,
     analyzer_lane: AnalyzerLane,
     analyzer: Mutex<Option<PersistentMcpSession>>,
     analyzer_starter: Arc<BslSessionStarter>,
@@ -1485,6 +1489,7 @@ struct WorkspaceServiceRuntime {
     session_teardowns: SessionTeardownLifecycle,
     analyzer_source_generation: Mutex<Option<u64>>,
     rlm_source_generation: Mutex<Option<u64>>,
+    #[cfg(test)]
     rlm_source_revisions: Mutex<Option<Arc<SourceRevisionService>>>,
     analyzer_invalidated: AtomicBool,
     rlm_invalidated: AtomicBool,
@@ -1497,6 +1502,25 @@ struct WorkspaceServiceRuntime {
     handler_started_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     provider_sessions_drained_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+struct WorkspaceServiceRuntime {
+    actor: WorkspaceActor<WorkspaceServiceRuntimeState>,
+}
+
+impl std::ops::Deref for WorkspaceServiceRuntime {
+    type Target = WorkspaceServiceRuntimeState;
+
+    fn deref(&self) -> &Self::Target {
+        self.actor.runtime()
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for WorkspaceServiceRuntime {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.actor.runtime_mut()
+    }
 }
 
 type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<PersistentMcpSession, String>
@@ -1541,11 +1565,16 @@ impl WorkspaceServiceRuntime {
         };
         let rlm_maintenance_tasks = Arc::new(SessionTeardownLifecycle::default());
         let requester_tasks = Arc::clone(&rlm_maintenance_tasks);
-        Self {
+        let actor_identity = WorkspaceIdentity::new(
+            &context,
+            [(LEGACY_WORKSPACE_SERVICE_SOURCE_SET, &identity.source_root)],
+            LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE,
+        )
+        .expect("legacy workspace service identity is already canonical and contained");
+        let runtime = WorkspaceServiceRuntimeState {
             identity,
             token: record_owner.token.clone(),
             record_owner: record_owner.clone(),
-            context,
             analyzer_lane: AnalyzerLane::default(),
             analyzer: Mutex::new(None),
             analyzer_starter: Arc::new(PersistentMcpSession::start),
@@ -1571,6 +1600,7 @@ impl WorkspaceServiceRuntime {
                     let runner = SystemIndexRunner::tracked(requester_tasks.clone());
                     let _ = WorkspaceIndexService::with_runner(&runner)
                         .with_source_revision_service(revision_service)
+                        .with_bound_source_root(source_root.clone())
                         .start_for_workspace_cancellable(&context, &args, false, &cancellation);
                 },
             ),
@@ -1580,6 +1610,7 @@ impl WorkspaceServiceRuntime {
             session_teardowns: SessionTeardownLifecycle::default(),
             analyzer_source_generation: Mutex::new(None),
             rlm_source_generation: Mutex::new(None),
+            #[cfg(test)]
             rlm_source_revisions: Mutex::new(None),
             analyzer_invalidated: AtomicBool::new(false),
             rlm_invalidated: AtomicBool::new(false),
@@ -1592,7 +1623,47 @@ impl WorkspaceServiceRuntime {
             handler_started_hook: Mutex::new(None),
             #[cfg(test)]
             provider_sessions_drained_hook: Mutex::new(None),
+        };
+        Self {
+            actor: WorkspaceActor::with_runtime(actor_identity, context, runtime)
+                .expect("legacy workspace service actor context matches its canonical identity"),
         }
+    }
+
+    #[cfg(test)]
+    fn workspace_identity(&self) -> &WorkspaceIdentity {
+        self.actor.workspace_identity()
+    }
+
+    fn context(&self) -> &WorkspaceContext {
+        self.actor.context()
+    }
+
+    fn mark_source_revisions_dirty(&self) {
+        self.actor.mark_source_revisions_dirty();
+    }
+
+    fn index_service<'a>(
+        &self,
+        binding: &ProviderRootBinding,
+        runner: &'a dyn crate::infrastructure::workspace_index::IndexRunner,
+    ) -> Result<WorkspaceIndexService<'a>, String> {
+        self.actor.index_service(binding, runner)
+    }
+
+    fn source_revision_service(
+        &self,
+        binding: &ProviderRootBinding,
+    ) -> Result<Arc<SourceRevisionService>, String> {
+        self.actor.source_revision_service(binding)
+    }
+
+    fn bind_provider_root(
+        &self,
+        source_set_name: &str,
+        source_root: &Path,
+    ) -> Result<ProviderRootBinding, String> {
+        self.actor.bind_provider_root(source_set_name, source_root)
     }
 
     #[cfg(test)]
@@ -1737,6 +1808,7 @@ impl WorkspaceServiceRuntime {
         if events.iter().any(|event| invalidates_analyzer(event.kind)) {
             self.analyzer_invalidated.store(true, Ordering::Release);
             self.rlm_invalidated.store(true, Ordering::Release);
+            #[cfg(test)]
             if let Some(revisions) = self
                 .rlm_source_revisions
                 .lock()
@@ -1745,6 +1817,7 @@ impl WorkspaceServiceRuntime {
             {
                 revisions.mark_dirty();
             }
+            self.mark_source_revisions_dirty();
         }
         ServiceResponse {
             ok: true,
@@ -1808,19 +1881,20 @@ impl WorkspaceServiceRuntime {
         if let Err(error) = deadline.remaining_cancellable(cancellation) {
             return ServiceResponse::error(error);
         }
+        let binding = match self.provider_binding() {
+            Ok(binding) => binding,
+            Err(error) => return ServiceResponse::error(error),
+        };
         let mut analyzer = self
             .analyzer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
-        let current_generation = match source_generation_with_deadline(
-            Path::new(&self.identity.source_root),
-            &deadline,
-            cancellation,
-        ) {
-            Ok(generation) => generation,
-            Err(error) => return ServiceResponse::error(error),
-        };
+        let current_generation =
+            match source_generation_with_deadline(binding.source_root(), &deadline, cancellation) {
+                Ok(generation) => generation,
+                Err(error) => return ServiceResponse::error(error),
+            };
         if observe_source_generation(
             &self.analyzer_source_generation,
             &self.analyzer_invalidated,
@@ -1847,8 +1921,8 @@ impl WorkspaceServiceRuntime {
             deadline.remaining_cancellable(cancellation)?;
             if analyzer.is_none() {
                 *analyzer = Some((self.analyzer_starter)(
-                    &self.context,
-                    Path::new(&self.identity.source_root),
+                    self.context(),
+                    binding.source_root(),
                     cancellation,
                 )?);
             }
@@ -1914,37 +1988,52 @@ impl WorkspaceServiceRuntime {
             SOURCE_REVISION_ARG.to_string(),
             serde_json::to_value(&revision).expect("source revision is always serializable"),
         );
+        let binding = match self.provider_binding() {
+            Ok(binding) => binding,
+            Err(error) => return ServiceResponse::error(error),
+        };
         let runner = SystemIndexRunner::tracked(self.rlm_maintenance_tasks.clone());
-        let service = WorkspaceIndexService::with_runner(&runner)
-            .with_source_revision_service(Arc::clone(&revisions));
+        let service = match self.index_service(&binding, &runner) {
+            Ok(service) => service,
+            Err(error) => return ServiceResponse::error(error),
+        };
         let start_report = service.start_for_workspace_cancellable(
-            &self.context,
+            self.context(),
             &args,
             false,
             &self.rlm_maintenance_cancellation,
         );
-        let readiness = service.ready_index_cancellable(&self.context, &args, cancellation);
+        let readiness = service.ready_index_cancellable(self.context(), &args, cancellation);
         ServiceResponse::from_readiness(readiness, start_report.warnings)
     }
 
     fn rlm_source_revision_service(&self) -> Result<Arc<SourceRevisionService>, String> {
-        let mut revisions = self
-            .rlm_source_revisions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(service) = revisions.as_ref() {
-            return Ok(Arc::clone(service));
+        #[cfg(test)]
+        {
+            let revisions = self
+                .rlm_source_revisions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(service) = revisions.as_ref() {
+                let binding = self.provider_binding()?;
+                self.actor
+                    .install_source_revision_service_for_test(&binding, Arc::clone(service))?;
+                return Ok(Arc::clone(service));
+            }
         }
-        let service = Arc::new(SourceRevisionService::new(
-            &self.context,
+        self.source_revision_service(&self.provider_binding()?)
+    }
+
+    fn provider_binding(&self) -> Result<ProviderRootBinding, String> {
+        self.bind_provider_root(
+            LEGACY_WORKSPACE_SERVICE_SOURCE_SET,
             Path::new(&self.identity.source_root),
-        )?);
-        *revisions = Some(Arc::clone(&service));
-        Ok(service)
+        )
     }
 
     fn request_rlm_index_maintenance(
         &self,
+        binding: &ProviderRootBinding,
         revision: SourceRevision,
         revision_service: Arc<SourceRevisionService>,
         cancellation: &CancellationToken,
@@ -1960,8 +2049,8 @@ impl WorkspaceServiceRuntime {
             return Vec::new();
         }
         let requester = Arc::clone(&self.rlm_maintenance_requester);
-        let context = self.context.clone();
-        let source_root = PathBuf::from(&self.identity.source_root);
+        let context = self.context().clone();
+        let source_root = binding.source_root().to_path_buf();
         let cancellation = self.rlm_maintenance_cancellation.clone();
         let pending = Arc::clone(&self.rlm_maintenance_pending);
         match thread::Builder::new()
@@ -2011,9 +2100,13 @@ impl WorkspaceServiceRuntime {
         if let Err(error) = deadline.remaining_cancellable(cancellation) {
             return ServiceResponse::error(error);
         }
+        let binding = match self.provider_binding() {
+            Ok(binding) => binding,
+            Err(error) => return ServiceResponse::error(error),
+        };
         let mut rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
-        let source_root = Path::new(&self.identity.source_root);
+        let source_root = binding.source_root();
         let revisions = match self.rlm_source_revision_service() {
             Ok(revisions) => revisions,
             Err(error) => return ServiceResponse::error(error),
@@ -2044,7 +2137,7 @@ impl WorkspaceServiceRuntime {
             rlm = self.rlm.lock().unwrap_or_else(|error| error.into_inner());
         }
         let pre_execution_readiness =
-            ready_index_for_source_revision(&self.context, source_root, &pre_execution_revision);
+            ready_index_for_source_revision(self.context(), source_root, &pre_execution_revision);
         if !matches!(pre_execution_readiness, IndexReadiness::Ready { .. }) {
             let stale_session = rlm.take();
             drop(rlm);
@@ -2052,6 +2145,7 @@ impl WorkspaceServiceRuntime {
                 self.retire_session(stale_session);
             }
             let warnings = self.request_rlm_index_maintenance(
+                &binding,
                 pre_execution_revision.clone(),
                 Arc::clone(&revisions),
                 cancellation,
@@ -2062,8 +2156,8 @@ impl WorkspaceServiceRuntime {
             deadline.remaining_cancellable(cancellation)?;
             if rlm.is_none() {
                 *rlm = Some((self.rlm_starter)(
-                    &self.context,
-                    Path::new(&self.identity.source_root),
+                    self.context(),
+                    source_root,
                     cancellation,
                 )?);
             }
@@ -2088,7 +2182,7 @@ impl WorkspaceServiceRuntime {
                 // output rather than blessing it. That costs a repeated read
                 // and never returns an answer built on sources RLM did not see.
                 let boundary_readiness = ready_index_for_source_revision(
-                    &self.context,
+                    self.context(),
                     source_root,
                     &pre_execution_revision,
                 );
@@ -2108,6 +2202,7 @@ impl WorkspaceServiceRuntime {
                         self.retire_session(stale_session);
                     }
                     let warnings = self.request_rlm_index_maintenance(
+                        &binding,
                         post_execution_revision,
                         Arc::clone(&revisions),
                         cancellation,
@@ -4338,6 +4433,29 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn legacy_workspace_service_runtime_is_owned_by_the_workspace_actor_adapter() {
+        fn actor_owned(
+            _runtime: &crate::infrastructure::workspace_actor::WorkspaceActor<
+                WorkspaceServiceRuntimeState,
+            >,
+        ) {
+        }
+
+        let context = test_context("legacy-runtime-actor-owner");
+        let source_root = context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
+        let record = test_record(&identity, 1, env!("CARGO_PKG_VERSION"));
+        let runtime = WorkspaceServiceRuntime::new(identity, &record);
+
+        actor_owned(&runtime.actor);
+        assert_eq!(
+            runtime.workspace_identity().provider_profile(),
+            LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE
+        );
+        cleanup(&context);
+    }
+
+    #[test]
     fn rlm_start_uses_remaining_caller_deadline_for_execution_timeout() {
         let args = rlm_start_arguments(
             Path::new("/workspace/src"),
@@ -6080,10 +6198,16 @@ mod tests {
             digest: "0".repeat(64),
             algorithm: crate::domain::source_revision::SOURCE_REVISION_ALGORITHM.to_string(),
         };
+        let binding = runtime.provider_binding().unwrap();
         let runtime = Arc::new(runtime);
 
         assert!(runtime
-            .request_rlm_index_maintenance(revision, revision_service, &CancellationToken::new(),)
+            .request_rlm_index_maintenance(
+                &binding,
+                revision,
+                revision_service,
+                &CancellationToken::new(),
+            )
             .is_empty());
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         runtime.begin_shutdown();

@@ -333,6 +333,7 @@ pub static SYSTEM_INDEX_RUNNER: SystemIndexRunner = SystemIndexRunner { tracker:
 pub struct WorkspaceIndexService<'a> {
     runner: &'a dyn IndexRunner,
     source_revision_service: Option<Arc<SourceRevisionService>>,
+    bound_source_root: Option<PathBuf>,
     /// Memoises the source-generation walk for the lifetime of one service
     /// instance. Walking a vendor-class configuration costs hundreds of
     /// milliseconds, and `handle_rlm_ready` asks this service to start indexing
@@ -347,6 +348,7 @@ impl<'a> WorkspaceIndexService<'a> {
         Self {
             runner: &SYSTEM_INDEX_RUNNER,
             source_revision_service: None,
+            bound_source_root: None,
             generation: RefCell::new(None),
         }
     }
@@ -355,6 +357,7 @@ impl<'a> WorkspaceIndexService<'a> {
         Self {
             runner,
             source_revision_service: None,
+            bound_source_root: None,
             generation: RefCell::new(None),
         }
     }
@@ -364,6 +367,11 @@ impl<'a> WorkspaceIndexService<'a> {
         service: Arc<SourceRevisionService>,
     ) -> Self {
         self.source_revision_service = Some(service);
+        self
+    }
+
+    pub(crate) fn with_bound_source_root(mut self, source_root: PathBuf) -> Self {
+        self.bound_source_root = Some(source_root);
         self
     }
 
@@ -410,6 +418,9 @@ impl<'a> WorkspaceIndexService<'a> {
                 Ok(resolved) => resolved.path,
                 Err(_) => return IndexStartReport::default(),
             };
+        if let Err(error) = self.validate_bound_source_root(&source_root) {
+            return unavailable_start_report(error);
+        }
         // Observed before `info` runs: a change during the probe leaves the
         // generation older than the sources, which only ever reads as stale.
         // The execution boundary in `handle_rlm_mcp` is what gates actual reads.
@@ -588,6 +599,9 @@ impl<'a> WorkspaceIndexService<'a> {
                 Ok(resolved) => resolved.path,
                 Err(error) => return IndexReadiness::Unavailable(error),
             };
+        if let Err(error) = self.validate_bound_source_root(&source_root) {
+            return IndexReadiness::Unavailable(error);
+        }
         let source_revision = revision_from_args(args);
         let generation = source_revision
             .as_ref()
@@ -679,6 +693,20 @@ impl<'a> WorkspaceIndexService<'a> {
                 cancellation: cancellation.clone(),
             },
         })
+    }
+
+    fn validate_bound_source_root(&self, source_root: &Path) -> Result<(), String> {
+        if self
+            .bound_source_root
+            .as_ref()
+            .is_some_and(|bound| bound != source_root)
+        {
+            return Err(format!(
+                "workspace index request escaped its actor-bound source root: {}",
+                source_root.display()
+            ));
+        }
+        Ok(())
     }
 
     fn start_background(

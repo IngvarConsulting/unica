@@ -49,6 +49,9 @@ pub(crate) mod task_store;
 pub(crate) mod support_state;
 pub(crate) mod tool_context;
 pub(crate) mod workspace;
+// Publication and Invocation routing consume the remaining actor seams in Task 7.
+#[allow(dead_code)]
+pub(crate) mod workspace_actor;
 pub(crate) mod workspace_config;
 pub mod workspace_index;
 pub mod workspace_services;

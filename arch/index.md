@@ -42,6 +42,7 @@
 | `DEC.2026-08-23.MODULE-CONTRACT` | решение · product | planned | нет | Модули v0.13 являются адресуемыми семантическими узлами | [decisions/2026-08-23-module-contract.md](decisions/2026-08-23-module-contract.md) |
 | `DEC.2026-08-23.USER-CORE-DAEMON-SLICE` | решение · product | active | да | Версионированный пользовательский daemon становится владельцем execution state | [decisions/2026-08-23-user-core-daemon-slice.md](decisions/2026-08-23-user-core-daemon-slice.md) |
 | `DEC.2026-08-23.V0-13-EXECUTION-SURFACE` | решение · product | planned | нет | v0.13 отделяет восемь предметных входов от управления долгой работой | [decisions/2026-08-23-v0-13-execution-surface.md](decisions/2026-08-23-v0-13-execution-surface.md) |
+| `DEC.2026-08-23.WORKSPACE-ACTOR-SLICE` | решение · product | active | да | Daemon изолирует рабочие пространства акторами | [decisions/2026-08-23-workspace-actor-slice.md](decisions/2026-08-23-workspace-actor-slice.md) |
 | `INV.APP.CODE-DEFINITION-READINESS` | инвариант · product | active |  | Definition не публикует ложный типизированный успех | [invariants/INV.APP.CODE-DEFINITION-READINESS.md](invariants/INV.APP.CODE-DEFINITION-READINESS.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Оверлей конфигурации не меняет исходный снимок | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEFERRED-MANIFEST` | инвариант · product | active |  | Большое чтение отвечает ограниченным манифестом | [invariants/INV.APP.DEFERRED-MANIFEST.md](invariants/INV.APP.DEFERRED-MANIFEST.md) |
@@ -69,6 +70,7 @@
 | `INV.APP.SKILL-SCRIPT-FIXTURES` | инвариант · process | active |  | Каталог reference models имеет закрытую тестовую форму | [invariants/INV.APP.SKILL-SCRIPT-FIXTURES.md](invariants/INV.APP.SKILL-SCRIPT-FIXTURES.md) |
 | `INV.APP.SUPPORT-STATE` | инвариант · product | active |  | Типизированные читатели запрашивают поддержку по логической цели | [invariants/INV.APP.SUPPORT-STATE.md](invariants/INV.APP.SUPPORT-STATE.md) |
 | `INV.APP.THIN-TRANSPORT` | инвариант · process | active |  | Транспорт только отображает протокол на вызовы application | [invariants/INV.APP.THIN-TRANSPORT.md](invariants/INV.APP.THIN-TRANSPORT.md) |
+| `INV.APP.WORKSPACE-ACTOR-IDENTITY` | инвариант · product | active |  | Актор сохраняет точную логическую идентичность рабочего пространства | [invariants/INV.APP.WORKSPACE-ACTOR-IDENTITY.md](invariants/INV.APP.WORKSPACE-ACTOR-IDENTITY.md) |
 | `INV.CACHE.EVENT-IMPACT-CLOSED` | инвариант · product | active |  | Каждое типизированное событие имеет замкнутое влияние на кеш | [invariants/INV.CACHE.EVENT-IMPACT-CLOSED.md](invariants/INV.CACHE.EVENT-IMPACT-CLOSED.md) |
 | `INV.CACHE.GENERATION-CUTOVER` | инвариант · product | active |  | Builder 15 использует отдельное поколение индекса | [invariants/INV.CACHE.GENERATION-CUTOVER.md](invariants/INV.CACHE.GENERATION-CUTOVER.md) |
 | `INV.CACHE.INDEX-PREVIEW-WRITE-FREE` | инвариант · product | active |  | Предпросмотр индекса не оставляет состояния | [invariants/INV.CACHE.INDEX-PREVIEW-WRITE-FREE.md](invariants/INV.CACHE.INDEX-PREVIEW-WRITE-FREE.md) |

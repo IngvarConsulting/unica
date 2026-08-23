@@ -4,6 +4,7 @@ use super::protocol::{
     ServerResponse, DAEMON_PROTOCOL_VERSION,
 };
 use crate::composition::open_daemon_invocation_store_from_directory;
+use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
 use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -76,6 +77,10 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
     // the sole-writer store makes it impossible for the stdio frontend to consume it early.
     let _recovery_classifications = opened_store.recovery.classifications.len();
     let _store = opened_store.store;
+    // Task 7 routes invocations into this registry. Creating it at the daemon
+    // boundary now makes the daemon, rather than either stdio frontend, the
+    // sole owner of canonical workspace actors without changing v0.12 calls.
+    let _workspace_actors = WorkspaceActorRegistry::default();
 
     let record = EndpointRecord::new(config.core_identity.clone(), port);
     let published = state.publish_endpoint_record(&record)?;
