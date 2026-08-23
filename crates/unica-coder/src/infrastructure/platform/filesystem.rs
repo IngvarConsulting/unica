@@ -1689,12 +1689,37 @@ fn open_relative_child(
     create_options: u32,
     security_descriptor: Option<windows_sys::Win32::Security::PSECURITY_DESCRIPTOR>,
 ) -> io::Result<fs::File> {
-    use std::mem::size_of;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
-    use std::ptr;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     };
+
+    open_relative_child_with_share_access(
+        parent,
+        name,
+        desired_access,
+        file_attributes,
+        create_disposition,
+        create_options,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        security_descriptor,
+    )
+}
+
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+fn open_relative_child_with_share_access(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    file_attributes: u32,
+    create_disposition: u32,
+    create_options: u32,
+    share_access: u32,
+    security_descriptor: Option<windows_sys::Win32::Security::PSECURITY_DESCRIPTOR>,
+) -> io::Result<fs::File> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::ptr;
 
     let create_options = nt_create_options_for_std_file(desired_access, create_options)?;
     let object_attributes = relative_child_object_attributes(parent)?;
@@ -1733,7 +1758,7 @@ fn open_relative_child(
             &mut status,
             ptr::null_mut(),
             file_attributes,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            share_access,
             create_disposition,
             create_options,
             ptr::null_mut(),
@@ -2380,6 +2405,72 @@ pub(crate) fn create_new_regular_child(
         FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
         None,
     )
+}
+
+/// Returns the stable object on which a store can hold its lifetime ownership
+/// lock without rediscovering ownership through a replaceable name.
+///
+/// Unix locks the retained physical directory object itself. Windows uses a
+/// descriptor-relative child opened without delete sharing, so its directory
+/// entry cannot be renamed, unlinked, or replaced while the handle is live.
+#[cfg(unix)]
+pub(crate) fn open_directory_ownership_lock(
+    directory: &fs::File,
+    _lock_name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    directory.try_clone()
+}
+
+#[cfg(windows)]
+pub(crate) fn open_directory_ownership_lock(
+    directory: &fs::File,
+    lock_name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN_IF: u32 = 0x0000_0003;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+
+    let security = OwnerOnlySecurityAttributes::current_user()?;
+    let file = open_relative_child_with_share_access(
+        directory,
+        lock_name,
+        GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_OPEN_IF,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        Some(security.security_descriptor()),
+    )?;
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory ownership lock resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "directory ownership lock is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn open_directory_ownership_lock(
+    _directory: &fs::File,
+    _lock_name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "stable directory ownership locking is unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -4580,6 +4671,35 @@ mod tests {
             assert_eq!(fs::read(root.join(target_name)).unwrap(), b"new");
             drop(stage);
             drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn ownership_lock_child_cannot_be_replaced_or_deleted_while_locked() {
+            use crate::infrastructure::platform::filesystem::{
+                open_directory_ownership_lock, replace_file_atomically,
+            };
+            use fs2::FileExt;
+
+            let root = unique_temp_root("directory-ownership-lock-sharing");
+            fs::create_dir_all(&root).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+            let lock_name = std::ffi::OsStr::new(".owner.lock");
+            let owner = open_directory_ownership_lock(&parent, lock_name).unwrap();
+            owner.try_lock_exclusive().unwrap();
+
+            assert!(fs::rename(root.join(lock_name), root.join("displaced.lock")).is_err());
+            assert!(fs::remove_file(root.join(lock_name)).is_err());
+            let replacement = root.join("replacement.lock");
+            fs::write(&replacement, b"replacement").unwrap();
+            assert!(replace_file_atomically(&replacement, &root.join(lock_name)).is_err());
+            let contender = open_directory_ownership_lock(&parent, lock_name).unwrap();
+            assert!(contender.try_lock_exclusive().is_err());
+
+            drop(contender);
+            drop(owner);
+            drop(parent);
+            fs::remove_file(replacement).unwrap();
             fs::remove_dir_all(root).unwrap();
         }
 

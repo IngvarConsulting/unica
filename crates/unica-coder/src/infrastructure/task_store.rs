@@ -7,9 +7,9 @@ use crate::application::invocation_store::{
 use crate::domain::invocation::{InvocationStatus, TaskId};
 use crate::infrastructure::platform::filesystem::{
     create_new_regular_child, file_identity, metadata_is_link_or_reparse_point,
-    open_directory_nofollow, open_regular_child_nofollow, read_directory_names_bounded,
-    remove_identity_bound_regular_child, replace_identity_bound_regular_child,
-    restrict_stage_to_owner, sync_directory, FileIdentity,
+    open_directory_nofollow, open_directory_ownership_lock, open_regular_child_nofollow,
+    read_directory_names_bounded, remove_identity_bound_regular_child,
+    replace_identity_bound_regular_child, restrict_stage_to_owner, sync_directory, FileIdentity,
 };
 use fs2::FileExt;
 use std::ffi::OsStr;
@@ -480,18 +480,8 @@ impl InvocationStore for FileInvocationStore {
 
 fn acquire_root_lock(root: &File) -> Result<File, InvocationStoreError> {
     let lock_name = OsStr::new(STORE_LOCK_FILE);
-    let lock = match create_new_regular_child(root, lock_name) {
-        Ok(file) => {
-            restrict_stage_to_owner(&file)
-                .map_err(|error| storage_error("restrict task store lock", error))?;
-            file
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            open_regular_child_nofollow(root, lock_name)
-                .map_err(|error| storage_error("open task store lock", error))?
-        }
-        Err(error) => return Err(storage_error("create task store lock", error)),
-    };
+    let lock = open_directory_ownership_lock(root, lock_name)
+        .map_err(|error| storage_error("open stable task store ownership lock", error))?;
     match FileExt::try_lock_exclusive(&lock) {
         Ok(()) => Ok(lock),
         Err(error) if lock_is_contended(&error) => Err(InvocationStoreError::AlreadyOwned),
@@ -556,7 +546,10 @@ fn storage_error(operation: &'static str, error: std::io::Error) -> InvocationSt
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_record, FileInvocationStore, PublicationFailure, RecoveryClassification};
+    use super::{
+        validate_record, FileInvocationStore, PublicationFailure, RecoveryClassification,
+        STORE_LOCK_FILE,
+    };
     use crate::application::invocation_store::{
         CommitOperation, EpochMillisClock, InvocationStore, InvocationStoreError,
         NewInvocationRecord, SafeStatusMessage, TaskTransition, ToolIdentity,
@@ -755,6 +748,44 @@ mod tests {
             &RecoveryClassification::InterruptedNonResumable {
                 task_id: created.task_id,
             }
+        ));
+    }
+
+    #[test]
+    fn replacing_the_conventional_lock_name_cannot_create_a_second_unix_owner() {
+        use crate::infrastructure::platform::testing::can_rename_parent_with_retained_cleanup_child_for_test;
+
+        if !can_rename_parent_with_retained_cleanup_child_for_test() {
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let lock_path = root.path().join(STORE_LOCK_FILE);
+        fs::write(&lock_path, b"initial lock identity").unwrap();
+        let clock = Arc::new(ManualEpochClock::at(1_900));
+        let (store, _) = open_store(root.path(), clock.clone());
+        let created = store.create(new_record(10_000, None)).unwrap();
+        store
+            .update(
+                created.task_id,
+                TaskTransition::StartWorking {
+                    status_message: SafeStatusMessage::Working,
+                },
+            )
+            .unwrap();
+
+        fs::rename(&lock_path, root.path().join("displaced-lock")).unwrap();
+        fs::write(&lock_path, b"replacement lock identity").unwrap();
+        let second_open = FileInvocationStore::open(root.path(), clock);
+
+        assert_eq!(
+            store.get(created.task_id).unwrap().status,
+            InvocationStatus::Working,
+            "a rejected second owner must not run recovery through a replacement lock name"
+        );
+        assert!(matches!(
+            second_open,
+            Err(InvocationStoreError::AlreadyOwned)
         ));
     }
 
