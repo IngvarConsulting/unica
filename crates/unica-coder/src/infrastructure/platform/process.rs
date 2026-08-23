@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -138,6 +139,153 @@ pub struct ManagedChild {
 pub(crate) struct ManagedStartupChild {
     child: Option<Child>,
     process_tree: ProcessTree,
+    termination_attempted: bool,
+    termination_clock: Arc<dyn StartupTerminationClock>,
+    #[cfg(test)]
+    termination_probe: Option<ManualStartupTerminationProbe>,
+}
+
+trait StartupTerminationClock: Send + Sync {
+    fn elapsed(&self) -> Duration;
+    fn sleep(&self, duration: Duration);
+}
+
+struct SystemStartupTerminationClock(Instant);
+
+impl SystemStartupTerminationClock {
+    fn new() -> Self {
+        Self(Instant::now())
+    }
+}
+
+impl StartupTerminationClock for SystemStartupTerminationClock {
+    fn elapsed(&self) -> Duration {
+        self.0.elapsed()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        thread::sleep(duration);
+    }
+}
+
+struct StartupTerminationDeadline {
+    started: Duration,
+    budget: Duration,
+    clock: Arc<dyn StartupTerminationClock>,
+}
+
+impl StartupTerminationDeadline {
+    fn new(budget: Duration, clock: Arc<dyn StartupTerminationClock>) -> Self {
+        let started = clock.elapsed();
+        Self {
+            started,
+            budget,
+            clock,
+        }
+    }
+
+    fn system(budget: Duration) -> Self {
+        Self::new(budget, Arc::new(SystemStartupTerminationClock::new()))
+    }
+
+    fn remaining(&self) -> Duration {
+        self.budget
+            .saturating_sub(self.clock.elapsed().saturating_sub(self.started))
+    }
+
+    fn is_expired(&self) -> bool {
+        self.remaining().is_zero()
+    }
+
+    fn sleep_poll_interval(&self) {
+        let duration = PROCESS_POLL_INTERVAL.min(self.remaining());
+        if !duration.is_zero() {
+            self.clock.sleep(duration);
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct ManualStartupTerminationState {
+    elapsed: Duration,
+    attempt_count: usize,
+    cleanup_remaining_budgets: Vec<Duration>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct ManualStartupTerminationProbe {
+    leader_visible_after: Duration,
+    state: Arc<std::sync::Mutex<ManualStartupTerminationState>>,
+}
+
+#[cfg(test)]
+impl ManualStartupTerminationProbe {
+    pub(crate) fn new(leader_visible_after: Duration) -> Self {
+        Self {
+            leader_visible_after,
+            state: Arc::new(std::sync::Mutex::new(
+                ManualStartupTerminationState::default(),
+            )),
+        }
+    }
+
+    fn record_attempt(&self) {
+        self.state
+            .lock()
+            .expect("startup termination probe")
+            .attempt_count += 1;
+    }
+
+    fn record_cleanup_remaining(&self, remaining: Duration) {
+        self.state
+            .lock()
+            .expect("startup termination probe")
+            .cleanup_remaining_budgets
+            .push(remaining);
+    }
+
+    fn leader_is_visible(&self) -> bool {
+        self.elapsed() >= self.leader_visible_after
+    }
+
+    pub(crate) fn elapsed(&self) -> Duration {
+        self.state
+            .lock()
+            .expect("startup termination probe")
+            .elapsed
+    }
+
+    pub(crate) fn attempt_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("startup termination probe")
+            .attempt_count
+    }
+
+    pub(crate) fn cleanup_remaining_budgets(&self) -> Vec<Duration> {
+        self.state
+            .lock()
+            .expect("startup termination probe")
+            .cleanup_remaining_budgets
+            .clone()
+    }
+}
+
+#[cfg(test)]
+impl StartupTerminationClock for ManualStartupTerminationProbe {
+    fn elapsed(&self) -> Duration {
+        self.elapsed()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        self.state
+            .lock()
+            .expect("startup termination probe")
+            .elapsed += duration;
+        thread::yield_now();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -548,6 +696,10 @@ impl ManagedStartupChild {
         let mut managed = Self {
             child: Some(child),
             process_tree,
+            termination_attempted: false,
+            termination_clock: Arc::new(SystemStartupTerminationClock::new()),
+            #[cfg(test)]
+            termination_probe: None,
         };
         if let Err(error) = managed
             .process_tree
@@ -579,29 +731,40 @@ impl ManagedStartupChild {
         self.try_wait_status().map(|status| status.is_none())
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_termination_probe_for_test(
+        &mut self,
+        probe: &ManualStartupTerminationProbe,
+    ) {
+        self.termination_clock = Arc::new(probe.clone());
+        self.termination_probe = Some(probe.clone());
+    }
+
     pub(crate) fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String> {
-        let Some(child) = self.child.as_mut() else {
+        self.termination_attempted = true;
+        #[cfg(test)]
+        if let Some(probe) = &self.termination_probe {
+            probe.record_attempt();
+        }
+        let deadline =
+            StartupTerminationDeadline::new(wait_limit, Arc::clone(&self.termination_clock));
+        if self.child.is_none() {
             return Ok(());
-        };
-        if child.try_wait().map_err(process_error)?.is_some() {
-            self.process_tree.cleanup_after_leader_exit(child);
+        }
+        if self.try_wait_during_termination()?.is_some() {
+            self.cleanup_after_startup_leader_exit(&deadline);
             self.child.take();
             return Ok(());
         }
 
-        let tree_error = self.process_tree.terminate(child).err();
-        // Also target the leader directly. This is required when Windows Job Object
-        // attachment itself failed, and is harmless after a successful tree kill.
-        let child_error = child.kill().err();
-        let started = Instant::now();
-        while started.elapsed() < wait_limit {
-            let child = self.child.as_mut().expect("startup child exists");
-            if child.try_wait().map_err(process_error)?.is_some() {
-                self.process_tree.cleanup_after_leader_exit(child);
+        let (tree_error, child_error) = self.signal_termination_best_effort();
+        while !deadline.is_expired() {
+            if self.try_wait_during_termination()?.is_some() {
+                self.cleanup_after_startup_leader_exit(&deadline);
                 self.child.take();
                 return Ok(());
             }
-            thread::sleep(PROCESS_POLL_INTERVAL);
+            deadline.sleep_poll_interval();
         }
 
         let pid = self.id();
@@ -623,6 +786,49 @@ impl ManagedStartupChild {
         }
     }
 
+    fn try_wait_during_termination(&mut self) -> Result<Option<ExitStatus>, String> {
+        #[cfg(test)]
+        if let Some(probe) = &self.termination_probe {
+            if !probe.leader_is_visible() {
+                return Ok(None);
+            }
+            return self
+                .child
+                .as_mut()
+                .expect("startup child exists")
+                .wait()
+                .map(Some)
+                .map_err(process_error);
+        }
+        self.child
+            .as_mut()
+            .expect("startup child exists")
+            .try_wait()
+            .map_err(process_error)
+    }
+
+    fn signal_termination_best_effort(&mut self) -> (Option<io::Error>, Option<io::Error>) {
+        let Some(child) = self.child.as_mut() else {
+            return (None, None);
+        };
+        let tree_error = self.process_tree.terminate(child).err();
+        // Also target the leader directly. This is required when Windows Job Object
+        // attachment itself failed, and is harmless after a successful tree kill.
+        let child_error = child.kill().err();
+        (tree_error, child_error)
+    }
+
+    fn cleanup_after_startup_leader_exit(&mut self, deadline: &StartupTerminationDeadline) {
+        #[cfg(test)]
+        if let Some(probe) = &self.termination_probe {
+            probe.record_cleanup_remaining(deadline.remaining());
+        }
+        self.process_tree.cleanup_after_leader_exit_until(
+            self.child.as_mut().expect("startup child exists"),
+            deadline,
+        );
+    }
+
     pub(crate) fn detach(&mut self) -> Result<(), String> {
         let child = self.child.as_mut().expect("startup child exists");
         if child.try_wait().map_err(process_error)?.is_some() {
@@ -637,7 +843,13 @@ impl ManagedStartupChild {
 
 impl Drop for ManagedStartupChild {
     fn drop(&mut self) {
-        let _ = self.terminate_bounded(TERMINATION_WAIT_LIMIT);
+        if self.termination_attempted {
+            // An explicit bounded attempt already owned its one deadline. Preserve best-effort
+            // signalling for an early wait error, but never start a second Drop wait window.
+            let _ = self.signal_termination_best_effort();
+        } else {
+            let _ = self.terminate_bounded(TERMINATION_WAIT_LIMIT);
+        }
     }
 }
 
@@ -719,10 +931,18 @@ impl ProcessTree {
     }
 
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
-        let deadline = Instant::now() + TERMINATION_WAIT_LIMIT;
+        let deadline = StartupTerminationDeadline::system(TERMINATION_WAIT_LIMIT);
+        self.cleanup_after_leader_exit_until(child, &deadline);
+    }
+
+    fn cleanup_after_leader_exit_until(
+        &mut self,
+        child: &mut Child,
+        deadline: &StartupTerminationDeadline,
+    ) {
         let _ = self.terminate(child);
         while let Some(pgid) = self.process_group {
-            if Instant::now() >= deadline {
+            if deadline.is_expired() {
                 // SIGKILL was already delivered to the owned group. Forget the numeric PGID
                 // rather than risk targeting an unrelated group after identifier reuse.
                 self.process_group = None;
@@ -735,7 +955,7 @@ impl ProcessTree {
                 self.process_group = None;
                 break;
             }
-            thread::sleep(PROCESS_POLL_INTERVAL);
+            deadline.sleep_poll_interval();
         }
     }
 
@@ -849,6 +1069,15 @@ impl ProcessTree {
     }
 
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
+        let deadline = StartupTerminationDeadline::system(TERMINATION_WAIT_LIMIT);
+        self.cleanup_after_leader_exit_until(child, &deadline);
+    }
+
+    fn cleanup_after_leader_exit_until(
+        &mut self,
+        child: &mut Child,
+        _deadline: &StartupTerminationDeadline,
+    ) {
         let _ = self.terminate(child);
     }
 
@@ -967,6 +1196,15 @@ impl ProcessTree {
     }
 
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
+        let deadline = StartupTerminationDeadline::system(TERMINATION_WAIT_LIMIT);
+        self.cleanup_after_leader_exit_until(child, &deadline);
+    }
+
+    fn cleanup_after_leader_exit_until(
+        &mut self,
+        child: &mut Child,
+        _deadline: &StartupTerminationDeadline,
+    ) {
         let _ = self.terminate(child);
     }
 
@@ -1239,7 +1477,8 @@ mod tests {
     #[cfg(windows)]
     use super::ProcessTree;
     use super::{
-        ChildState, ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild, StreamControl,
+        ChildState, ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild,
+        ManualStartupTerminationProbe, StreamControl,
     };
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
@@ -2314,6 +2553,92 @@ mod tests {
         assert!(wait_until_dead(pids[0], Duration::from_secs(2)));
         assert!(wait_until_dead(pids[1], Duration::from_secs(2)));
         cleanup.disarm();
+    }
+
+    #[test]
+    fn startup_child_tree_cleanup_uses_only_the_remaining_absolute_budget() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "success")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
+        let probe = ManualStartupTerminationProbe::new(Duration::from_millis(450));
+        startup.install_termination_probe_for_test(&probe);
+
+        startup
+            .terminate_bounded(Duration::from_millis(500))
+            .unwrap();
+
+        assert_eq!(probe.attempt_count(), 1);
+        assert_eq!(probe.elapsed(), Duration::from_millis(450));
+        assert_eq!(
+            probe.cleanup_remaining_budgets(),
+            vec![Duration::from_millis(50)]
+        );
+    }
+
+    #[test]
+    fn startup_child_explicit_timeout_is_not_retried_by_drop() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "sleep")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
+        let pid = startup.id();
+        let _cleanup = ProcessCleanupGuard(vec![pid]);
+        let probe = ManualStartupTerminationProbe::new(Duration::from_secs(1));
+        startup.install_termination_probe_for_test(&probe);
+
+        let error = startup
+            .terminate_bounded(Duration::from_millis(100))
+            .unwrap_err();
+        assert!(error.contains("did not exit within 100 ms"), "{error}");
+        assert_eq!(probe.elapsed(), Duration::from_millis(100));
+        drop(startup);
+
+        assert_eq!(probe.attempt_count(), 1);
+        assert_eq!(probe.elapsed(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn startup_child_drop_without_explicit_attempt_keeps_bounded_cleanup() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "sleep")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
+        let probe = ManualStartupTerminationProbe::new(Duration::from_millis(25));
+        startup.install_termination_probe_for_test(&probe);
+
+        drop(startup);
+
+        assert_eq!(probe.attempt_count(), 1);
+        assert_eq!(probe.elapsed(), Duration::from_millis(25));
+        assert_eq!(
+            probe.cleanup_remaining_budgets(),
+            vec![Duration::from_millis(475)]
+        );
     }
 
     #[test]
