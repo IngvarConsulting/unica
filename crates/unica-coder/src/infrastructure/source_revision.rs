@@ -4,6 +4,7 @@ use crate::domain::source_revision::{
     SourceRevision, SourceRevisionMachine, SourceRevisionState, SourceRevisionTrustLoss,
 };
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::deadline_lock::DeadlineLock;
 use crate::infrastructure::platform::source_revision_fence::{
     platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
 };
@@ -109,7 +110,7 @@ pub(crate) struct SourceRevisionService {
     state_scope: WorkspaceStateScope,
     machine: Mutex<SourceRevisionMachine>,
     manifest: Mutex<Option<SourceManifest>>,
-    operation: Mutex<()>,
+    operation: DeadlineLock,
     fence: Arc<dyn SourceRevisionFence>,
     scanner: Arc<SourceManifestScanner>,
     file_reader: Arc<SourceFileReader>,
@@ -218,7 +219,7 @@ impl SourceRevisionService {
             state_scope,
             machine: Mutex::new(machine),
             manifest: Mutex::new(None),
-            operation: Mutex::new(()),
+            operation: DeadlineLock::default(),
             fence,
             scanner: Arc::new(scan_source_manifest),
             file_reader: Arc::new(read_source_file),
@@ -230,10 +231,11 @@ impl SourceRevisionService {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<SourceRevision, String> {
-        let _operation = self
-            .operation
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _operation = self.operation.acquire_before(
+            deadline,
+            cancellation,
+            "source revision operation wait",
+        )?;
         if self.fence.capability() == FenceCapability::Unsupported {
             self.machine
                 .lock()
@@ -303,6 +305,11 @@ impl SourceRevisionService {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .lose_trust(SourceRevisionTrustLoss::WatcherGap);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_operation_for_test(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.operation.hold_for_test()
     }
 
     fn apply_incremental(
@@ -744,6 +751,185 @@ mod tests {
         }
     }
 
+    struct CountingProvenFence {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SourceRevisionFence for CountingProvenFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::ProvenFast
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, String> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Ok(FenceOutcome::Proven {
+                changed_paths: Vec::new(),
+            })
+        }
+    }
+
+    fn counting_legacy_service() -> (
+        tempfile::TempDir,
+        Arc<SourceRevisionService>,
+        Arc<AtomicUsize>,
+    ) {
+        let workspace = tempdir().unwrap();
+        let source_root = workspace.path().join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(source_root.join("Module.bsl"), "Процедура A()\n").unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let service = Arc::new(SourceRevisionService {
+            workspace_root: fs::canonicalize(workspace.path()).unwrap(),
+            source_root: fs::canonicalize(&source_root).unwrap(),
+            record_path: workspace.path().join("revision.json"),
+            state_scope: WorkspaceStateScope::LegacyPhysical,
+            machine: Mutex::new(SourceRevisionMachine::default()),
+            manifest: Mutex::new(None),
+            operation: DeadlineLock::default(),
+            fence: Arc::new(CountingProvenFence {
+                calls: Arc::clone(&calls),
+            }),
+            scanner: Arc::new(scan_source_manifest),
+            file_reader: Arc::new(read_source_file),
+        });
+        (workspace, service, calls)
+    }
+
+    #[test]
+    fn source_revision_cancellation_bounds_contended_operation_lane() {
+        let (_workspace, service, calls) = counting_legacy_service();
+        let owner = service.operation.hold_for_test();
+        let cancellation = CancellationToken::new();
+        let waiter_cancellation = cancellation.clone();
+        let waiter_service = Arc::clone(&service);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(waiter_service.snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &waiter_cancellation,
+                ))
+                .unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(
+            result_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "snapshot unexpectedly crossed the held operation lane"
+        );
+        cancellation.cancel();
+
+        let result_before_release = result_rx.recv_timeout(std::time::Duration::from_millis(250));
+        let returned_before_release = result_before_release.is_ok();
+        drop(owner);
+        let result = result_before_release.unwrap_or_else(|_| {
+            result_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("snapshot must finish after the operation lane is released")
+        });
+        waiter.join().unwrap();
+
+        assert!(
+            returned_before_release,
+            "cancellation did not stop the held source-revision operation wait"
+        );
+        assert!(result.unwrap_err().starts_with("cancelled:"));
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            0,
+            "cancelled operation executed the revision fence"
+        );
+    }
+
+    #[test]
+    fn source_revision_deadline_bounds_contended_operation_without_execution() {
+        for (label, budget) in [
+            ("expired", std::time::Duration::ZERO),
+            ("elapsed", std::time::Duration::from_millis(40)),
+        ] {
+            let (_workspace, service, calls) = counting_legacy_service();
+            let owner = service.operation.hold_for_test();
+            let waiter_service = Arc::clone(&service);
+            let (result_tx, result_rx) = mpsc::channel();
+            let waiter = thread::spawn(move || {
+                result_tx
+                    .send(waiter_service.snapshot(
+                        ProviderDeadline::from_budget(budget),
+                        &CancellationToken::new(),
+                    ))
+                    .unwrap();
+            });
+
+            let result_before_release =
+                result_rx.recv_timeout(std::time::Duration::from_millis(250));
+            let returned_before_release = result_before_release.is_ok();
+            drop(owner);
+            let result = result_before_release.unwrap_or_else(|_| {
+                result_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("snapshot must finish after the operation lane is released")
+            });
+            waiter.join().unwrap();
+
+            assert!(
+                returned_before_release,
+                "{label} deadline did not bound the source-revision operation wait"
+            );
+            assert!(result.unwrap_err().contains("deadline exceeded"));
+            assert_eq!(
+                calls.load(Ordering::Acquire),
+                0,
+                "timed-out operation executed the revision fence"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_source_revision_wait_succeeds_when_released_before_deadline() {
+        let (_workspace, service, calls) = counting_legacy_service();
+        let owner = service.operation.hold_for_test();
+        let waiter_service = Arc::clone(&service);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(waiter_service.snapshot(
+                    ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                ))
+                .unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(
+            result_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "snapshot unexpectedly crossed the held operation lane"
+        );
+        drop(owner);
+
+        let revision = result_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        waiter.join().unwrap();
+
+        assert_eq!(revision.generation, 1);
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+    }
+
     struct FailOnceFence {
         calls: AtomicUsize,
     }
@@ -807,7 +993,7 @@ mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            operation: Mutex::new(()),
+            operation: DeadlineLock::default(),
             fence: Arc::new(UnsupportedFence),
             scanner: Arc::new({
                 let full_scans = Arc::clone(&full_scans);
@@ -871,7 +1057,7 @@ mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            operation: Mutex::new(()),
+            operation: DeadlineLock::default(),
             fence: Arc::new(ProvenCleanFence),
             scanner: Arc::new(scan_source_manifest),
             file_reader: Arc::new(read_source_file),
@@ -907,7 +1093,7 @@ mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(machine),
             manifest: Mutex::new(None),
-            operation: Mutex::new(()),
+            operation: DeadlineLock::default(),
             fence: Arc::new(FailOnceFence {
                 calls: AtomicUsize::new(0),
             }),
@@ -954,7 +1140,7 @@ mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            operation: Mutex::new(()),
+            operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
                     FenceOutcome::Proven {
@@ -1030,7 +1216,7 @@ mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            operation: Mutex::new(()),
+            operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
                     FenceOutcome::Proven {
@@ -1140,7 +1326,7 @@ mod tests {
             state_scope: WorkspaceStateScope::LegacyPhysical,
             machine: Mutex::new(SourceRevisionMachine::default()),
             manifest: Mutex::new(None),
-            operation: Mutex::new(()),
+            operation: DeadlineLock::default(),
             fence: Arc::new(ScriptedFence {
                 outcomes: Mutex::new(VecDeque::from([
                     FenceOutcome::Proven {

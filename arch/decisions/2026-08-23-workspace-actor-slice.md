@@ -31,9 +31,10 @@ registry, provider-root/index binding и эксклюзивной границе
 Публикационная аренда не раскрывает ambient root или unchecked callback и
 проверяет source revision до выдачи, а затем под той же эксклюзивной арендой
 повторно валидирует actor/root и revision по явному deadline/cancellation перед
-возвратом staged result. Descriptor-relative writer появится вместе с
-маршрутизацией writers, не в этом срезе; его post-write proof заменит или
-расширит эту read-only publication confirmation.
+возвратом staged result. Ожидание mutation lane и конкурентной операции
+source-revision входит в тот же монотонный абсолютный deadline; cancellation
+прерывает оба ожидания, не ослабляя единственную эксклюзивную аренду.
+Descriptor-relative writer появится с маршрутизацией writers; его post-write proof заменит или расширит эту read-only publication confirmation.
 
 Generic daemon actor выводит ограниченный domain-separated state scope из всего
 структурного ключа и разделяет revision, index, provider cache, coordination и

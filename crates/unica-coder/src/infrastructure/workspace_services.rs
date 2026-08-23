@@ -40,6 +40,20 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+macro_rules! assert_not_impl_production {
+    ($type:ty: $trait:path) => {
+        const _: fn() = || {
+            trait AmbiguousIfImpl<Marker> {
+                fn check() {}
+            }
+            struct ImplementsTrait;
+            impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+            impl<T: ?Sized + $trait> AmbiguousIfImpl<ImplementsTrait> for T {}
+            let _ = <$type as AmbiguousIfImpl<_>>::check;
+        };
+    };
+}
+
 const SERVICE_SCHEMA_VERSION: u32 = 4;
 const DEFAULT_IDLE_SECS: u64 = 7200;
 const DEFAULT_MAX_AGE_SECS: u64 = 28800;
@@ -1531,6 +1545,11 @@ impl WorkspaceActorRuntimeTestProjection for WorkspaceServiceRuntimeState {
 struct WorkspaceServiceRuntime {
     actor: WorkspaceActor<WorkspaceServiceRuntimeState>,
 }
+
+assert_not_impl_production!(WorkspaceServiceRuntime: std::ops::Deref);
+assert_not_impl_production!(WorkspaceServiceRuntime: std::ops::DerefMut);
+assert_not_impl_production!(WorkspaceActor<WorkspaceServiceRuntimeState>: std::ops::Deref);
+assert_not_impl_production!(WorkspaceActor<WorkspaceServiceRuntimeState>: std::ops::DerefMut);
 
 type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<PersistentMcpSession, String>
     + Send
@@ -4591,25 +4610,6 @@ mod tests {
     use std::path::Path;
     use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    macro_rules! assert_not_impl {
-        ($type:ty: $trait:path) => {
-            const _: fn() = || {
-                trait AmbiguousIfImpl<Marker> {
-                    fn check() {}
-                }
-                struct ImplementsTrait;
-                impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
-                impl<T: ?Sized + $trait> AmbiguousIfImpl<ImplementsTrait> for T {}
-                let _ = <$type as AmbiguousIfImpl<_>>::check;
-            };
-        };
-    }
-
-    assert_not_impl!(WorkspaceServiceRuntime: std::ops::Deref);
-    assert_not_impl!(WorkspaceServiceRuntime: std::ops::DerefMut);
-    assert_not_impl!(WorkspaceActor<WorkspaceServiceRuntimeState>: std::ops::Deref);
-    assert_not_impl!(WorkspaceActor<WorkspaceServiceRuntimeState>: std::ops::DerefMut);
 
     #[test]
     fn legacy_workspace_service_runtime_is_owned_by_the_workspace_actor_adapter() {

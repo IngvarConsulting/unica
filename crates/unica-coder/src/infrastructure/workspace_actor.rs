@@ -2,6 +2,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::deadline_lock::DeadlineLock;
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedDirectoryCapability,
 };
@@ -12,6 +13,20 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+macro_rules! assert_not_impl_production {
+    ($type:ty: $trait:path) => {
+        const _: fn() = || {
+            trait AmbiguousIfImpl<Marker> {
+                fn check() {}
+            }
+            struct ImplementsTrait;
+            impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+            impl<T: ?Sized + $trait> AmbiguousIfImpl<ImplementsTrait> for T {}
+            let _ = <$type as AmbiguousIfImpl<_>>::check;
+        };
+    };
+}
 
 /// Exact daemon-local ownership key for mutable workspace state.
 ///
@@ -251,10 +266,13 @@ pub(crate) struct WorkspaceActor<R = ()> {
     context: WorkspaceContext,
     source_roots: HashMap<WorkspaceSourceSetIdentity, Arc<RetainedDirectoryCapability>>,
     state_scope: WorkspaceStateScope,
-    mutation_lane: Mutex<()>,
+    mutation_lane: DeadlineLock,
     source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
     runtime: R,
 }
+
+assert_not_impl_production!(WorkspaceActor<()>: std::ops::Deref);
+assert_not_impl_production!(WorkspaceActor<()>: std::ops::DerefMut);
 
 impl<R> std::fmt::Debug for WorkspaceActor<R> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -334,7 +352,7 @@ impl<R> WorkspaceActor<R> {
             context,
             source_roots,
             state_scope,
-            mutation_lane: Mutex::new(()),
+            mutation_lane: DeadlineLock::default(),
             source_revisions: Mutex::new(HashMap::new()),
             runtime,
         })
@@ -453,10 +471,11 @@ impl<R> WorkspaceActor<R> {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<WorkspacePublicationLease<'_, R>, String> {
-        let publication = self
-            .mutation_lane
-            .lock()
-            .map_err(|_| "workspace actor mutation lane is poisoned".to_string())?;
+        let publication = self.mutation_lane.acquire_before(
+            deadline,
+            cancellation,
+            "workspace actor mutation lane wait",
+        )?;
         if fence.actor_identity != self.identity
             || fence.actor_instance != self.instance_id
             || !self.identity.source_sets.contains(&fence.source_set)
@@ -615,27 +634,11 @@ mod tests {
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-    macro_rules! assert_not_impl {
-        ($type:ty: $trait:path) => {
-            const _: fn() = || {
-                trait AmbiguousIfImpl<Marker> {
-                    fn check() {}
-                }
-                struct ImplementsTrait;
-                impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
-                impl<T: ?Sized + $trait> AmbiguousIfImpl<ImplementsTrait> for T {}
-                let _ = <$type as AmbiguousIfImpl<_>>::check;
-            };
-        };
-    }
-
-    assert_not_impl!(super::WorkspaceActor<()>: std::ops::Deref);
-    assert_not_impl!(super::WorkspaceActor<()>: std::ops::DerefMut);
 
     #[test]
     fn workspace_actor_serializes_mutation_publication() {
@@ -709,6 +712,188 @@ mod tests {
         first.join().unwrap().unwrap();
         second.join().unwrap().unwrap();
         fixture.cleanup();
+    }
+
+    #[test]
+    fn workspace_actor_pre_cancelled_publication_does_not_wait_for_mutation_lane() {
+        let fixture = actor_fixture("pre-cancelled-mutation-lane", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let fence = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let owner = fixture
+            .actor
+            .begin_publication(
+                &fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let waiter_cancellation = CancellationToken::new();
+        waiter_cancellation.cancel();
+        let waiter_actor = Arc::clone(&fixture.actor);
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let result = waiter_actor
+                .begin_publication(
+                    &fence,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &waiter_cancellation,
+                )
+                .map(drop);
+            result_tx.send(result).unwrap();
+        });
+
+        let result_before_release = result_rx.recv_timeout(Duration::from_millis(250));
+        let returned_before_release = result_before_release.is_ok();
+        drop(owner);
+        let result = result_before_release.unwrap_or_else(|_| {
+            result_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("waiter must finish after the owner releases the lane")
+        });
+        waiter.join().unwrap();
+
+        assert!(
+            returned_before_release,
+            "pre-cancelled publication waited for the held mutation lane"
+        );
+        assert!(result.unwrap_err().starts_with("cancelled:"));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn workspace_actor_late_cancellation_stops_mutation_lane_wait() {
+        let fixture = actor_fixture("late-cancelled-mutation-lane", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let fence = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let owner = fixture
+            .actor
+            .begin_publication(
+                &fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let waiter_cancellation = CancellationToken::new();
+        let waiter_signal = waiter_cancellation.clone();
+        let waiter_actor = Arc::clone(&fixture.actor);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = waiter_actor
+                .begin_publication(
+                    &fence,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &waiter_cancellation,
+                )
+                .map(drop);
+            result_tx.send(result).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            result_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "waiter unexpectedly crossed the held mutation lane"
+        );
+        waiter_signal.cancel();
+
+        let result_before_release = result_rx.recv_timeout(Duration::from_millis(250));
+        let returned_before_release = result_before_release.is_ok();
+        drop(owner);
+        let result = result_before_release.unwrap_or_else(|_| {
+            result_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("waiter must finish after the owner releases the lane")
+        });
+        waiter.join().unwrap();
+
+        assert!(
+            returned_before_release,
+            "late cancellation did not stop the held mutation-lane wait"
+        );
+        assert!(result.unwrap_err().starts_with("cancelled:"));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn workspace_actor_deadline_bounds_mutation_lane_wait() {
+        for (label, budget) in [
+            ("expired", Duration::ZERO),
+            ("elapsed", Duration::from_millis(40)),
+        ] {
+            let fixture = actor_fixture(&format!("{label}-mutation-lane"), &["src"]);
+            let binding = fixture
+                .actor
+                .bind_provider_root("src", &fixture.roots[0])
+                .unwrap();
+            let cancellation = CancellationToken::new();
+            let fence = fixture
+                .actor
+                .capture_revision(
+                    &binding,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancellation,
+                )
+                .unwrap();
+            let owner = fixture
+                .actor
+                .begin_publication(
+                    &fence,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancellation,
+                )
+                .unwrap();
+            let waiter_actor = Arc::clone(&fixture.actor);
+            let (result_tx, result_rx) = mpsc::channel();
+            let waiter = thread::spawn(move || {
+                let result = waiter_actor
+                    .begin_publication(
+                        &fence,
+                        ProviderDeadline::from_budget(budget),
+                        &CancellationToken::new(),
+                    )
+                    .map(drop);
+                result_tx.send(result).unwrap();
+            });
+
+            let result_before_release = result_rx.recv_timeout(Duration::from_millis(250));
+            let returned_before_release = result_before_release.is_ok();
+            drop(owner);
+            let result = result_before_release.unwrap_or_else(|_| {
+                result_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("waiter must finish after the owner releases the lane")
+            });
+            waiter.join().unwrap();
+
+            assert!(
+                returned_before_release,
+                "{label} deadline did not bound the held mutation-lane wait"
+            );
+            assert!(result.unwrap_err().contains("deadline exceeded"));
+            fixture.cleanup();
+        }
     }
 
     #[test]
@@ -912,6 +1097,96 @@ mod tests {
         assert!(error.starts_with("cancelled:"), "{error}");
         assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
         fixture.cleanup();
+    }
+
+    #[test]
+    fn workspace_actor_publish_cancellation_bounds_revision_lane_contention() {
+        let (error, returned_before_owner_release) =
+            publish_while_revision_operation_is_held(Duration::from_secs(5), true);
+
+        assert!(returned_before_owner_release);
+        assert!(error.starts_with("cancelled:"), "{error}");
+        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
+    }
+
+    #[test]
+    fn workspace_actor_publish_deadline_bounds_revision_lane_contention() {
+        let (error, returned_before_owner_release) =
+            publish_while_revision_operation_is_held(Duration::from_millis(40), false);
+
+        assert!(returned_before_owner_release);
+        assert!(error.contains("deadline exceeded"), "{error}");
+        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
+    }
+
+    fn publish_while_revision_operation_is_held(
+        budget: Duration,
+        cancel_before_publish: bool,
+    ) -> (String, bool) {
+        let fixture = actor_fixture("contended-publish-revision", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
+        let cancellation = CancellationToken::new();
+        let fence = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let lease = fixture
+            .actor
+            .begin_publication(
+                &fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let revision_service = fixture.actor.source_revision_service(&binding).unwrap();
+        let owner_released = Arc::new(AtomicBool::new(false));
+        let owner_released_signal = Arc::clone(&owner_released);
+        let (owner_held_tx, owner_held_rx) = mpsc::channel();
+        let (owner_release_tx, owner_release_rx) = mpsc::channel();
+        let owner = thread::spawn(move || {
+            let guard = revision_service.hold_operation_for_test();
+            owner_held_tx.send(()).unwrap();
+            owner_release_rx.recv().unwrap();
+            owner_released_signal.store(true, Ordering::Release);
+            drop(guard);
+        });
+        owner_held_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (watchdog_done_tx, watchdog_done_rx) = mpsc::channel();
+        let emergency_release = owner_release_tx.clone();
+        let watchdog = thread::spawn(move || {
+            if watchdog_done_rx
+                .recv_timeout(Duration::from_millis(500))
+                .is_err()
+            {
+                let _ = emergency_release.send(());
+            }
+        });
+        if cancel_before_publish {
+            cancellation.cancel();
+        }
+
+        let error = lease
+            .publish(
+                "FOREIGN-STAGED-PROVIDER-TEXT",
+                ProviderDeadline::from_budget(budget),
+                &cancellation,
+            )
+            .unwrap_err();
+        let returned_before_owner_release = !owner_released.load(Ordering::Acquire);
+        let _ = watchdog_done_tx.send(());
+        let _ = owner_release_tx.send(());
+        watchdog.join().unwrap();
+        owner.join().unwrap();
+        fixture.cleanup();
+        (error, returned_before_owner_release)
     }
 
     #[test]
@@ -1146,6 +1421,16 @@ mod tests {
             )
             .is_err());
         let _ = std::fs::remove_dir_all(root);
+
+        for (budget, cancel_before_publish) in [
+            (Duration::from_secs(5), true),
+            (Duration::from_millis(40), false),
+        ] {
+            let (error, returned_before_owner_release) =
+                publish_while_revision_operation_is_held(budget, cancel_before_publish);
+            assert!(returned_before_owner_release, "{error}");
+            assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
+        }
     }
 
     #[test]

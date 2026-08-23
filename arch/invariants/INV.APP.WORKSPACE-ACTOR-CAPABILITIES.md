@@ -17,4 +17,6 @@ no-follow capability канонического source root: descriptor-relative
 канонический или физический root нельзя объявить под двумя именами актора.
 Публикационная аренда под тем же mutation lane повторно валидирует экземпляр,
 физический root и выданную revision непосредственно перед тем, как staged
-result становится наблюдаемым.
+result становится наблюдаемым. Её deadline и cancellation ограничивают как
+ожидание mutation lane, так и конкурентную операцию source revision; после
+истечения срока или отмены staged result не публикуется.
