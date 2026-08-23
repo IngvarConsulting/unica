@@ -538,6 +538,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             next(identity for identity in identities if identity.pid == 99),
             None,
         )
+        session._service_identities = {
+            identity.pid: identity
+            for identity in identities
+            if identity.pid in {41, 42}
+        }
         calls: list[int] = []
 
         def taskkill(command, **kwargs):
@@ -599,6 +604,94 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             ownership.signal(identities, signal.SIGTERM)
 
         self.assertEqual(calls, [99, 42, 41])
+
+    def test_workspace_service_observation_preserves_the_first_identity(self) -> None:
+        module = load_module()
+        original = module.ProcessIdentity(41, 1, 99, "original-start")
+        replacement = module.ProcessIdentity(41, 1, 99, "replacement-start")
+
+        class Process:
+            pid = 99
+
+        session = module.McpSession.__new__(module.McpSession)
+        session.process = Process()
+        session.process_ownership = module.ProcessOwnership(
+            session.process, None, None
+        )
+        session._service_identities = {}
+        self.assertTrue(
+            hasattr(session, "observe_workspace_services"),
+            "smoke session does not capture a service identity when first observed",
+        )
+
+        with mock.patch.object(
+            module, "_workspace_service_pids", return_value={41}
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=original,
+        ):
+            session.observe_workspace_services(Path("cache"))
+        with mock.patch.object(
+            module, "_workspace_service_pids", return_value={41}
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=replacement,
+        ):
+            session.observe_workspace_services(Path("cache"))
+
+        self.assertEqual(session.observed_service_identities(), {original})
+
+    def test_stale_recorded_service_pid_is_not_promoted_at_cleanup(self) -> None:
+        module = load_module()
+        original = module.ProcessIdentity(41, 1, 99, "original-start")
+        replacement = module.ProcessIdentity(41, 1, 99, "replacement-start")
+
+        class Process:
+            pid = 99
+            stdin = None
+            stdout = None
+            stderr = None
+
+            @staticmethod
+            def wait(timeout):
+                return 0
+
+        session = module.McpSession.__new__(module.McpSession)
+        session.process = Process()
+        session.process_ownership = module.ProcessOwnership(
+            session.process, None, None
+        )
+        session._service_identities = {41: original}
+        signalled: list[int] = []
+
+        with mock.patch.object(
+            module, "_workspace_service_pids", return_value={41}
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_posix_process_snapshot",
+            return_value={41: replacement},
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            return_value=replacement,
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_process_is_running",
+            return_value=True,
+        ), mock.patch.object(
+            module._WIRE_PROBE.os,
+            "kill",
+            side_effect=lambda pid, signal_number: signalled.append(pid),
+        ):
+            session.terminate_tree(Path("cache"))
+
+        self.assertNotIn(
+            41,
+            signalled,
+            "cleanup promoted a stale recorded PID into a replacement identity",
+        )
 
     def test_requires_all_logical_source_tools(self) -> None:
         expected = self.expected_tools()
@@ -724,9 +817,9 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 raise SystemExit("MCP close failed")
 
             def terminate_tree(
-                self, root: Path, known_service_pids: set[int]
+                self, root: Path, known_service_identities: set[object]
             ) -> None:
-                events.append(("terminate", root, known_service_pids))
+                events.append(("terminate", root, known_service_identities))
 
         cache_root = Path("cache")
         module._shutdown_workspace_services = lambda root, timeout: (
@@ -747,7 +840,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 ("shutdown", cache_root, 7.0),
                 "close",
                 ("wait", cache_root, 7.0, {41}),
-                ("terminate", cache_root, {41}),
+                ("terminate", cache_root, set()),
             ],
         )
 
@@ -819,6 +912,12 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             def close() -> None:
                 events.append("close")
 
+            @staticmethod
+            def observed_service_identities():
+                return {
+                    identity for identity in identities if identity.pid == 41
+                }
+
         cache_root = Path("cache")
 
         with mock.patch.object(
@@ -841,13 +940,16 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 Session(), cache_root, 7.0
             )
 
-        self.assertEqual(events[0], ("capture", {41}))
+        self.assertEqual(
+            events[0],
+            ("capture", {identity for identity in identities if identity.pid == 41}),
+        )
         self.assertEqual(
             events[-1],
             ("quiesce", identities, module._WIRE_PROBE._CLEANUP_GRACE_SECONDS),
         )
 
-    def test_shutdown_failure_emergency_cleanup_kills_recorded_service_pid(self) -> None:
+    def test_shutdown_failure_does_not_claim_unobserved_recorded_service_pid(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as directory:
             cache_root = Path(directory) / "cache"
@@ -878,9 +980,9 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "wait failed"):
                     module._close_session_and_workspace_services(
                         session, cache_root, 0.1
-                    )
+                )
                 self.assertFalse(module._process_is_running(public.pid))
-                self.assertFalse(module._process_is_running(service.pid))
+                self.assertTrue(module._process_is_running(service.pid))
             finally:
                 for process in (service, public):
                     if process.poll() is None:

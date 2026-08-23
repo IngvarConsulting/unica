@@ -58,7 +58,13 @@ class ProcessIdentity:
 
 
 class ProcessOwnership:
-    """Tracks the process session created for one JSON-RPC subprocess."""
+    """Tracks one spawned session and identities registered before escape.
+
+    An unregistered process that calls ``setsid()`` has intentionally left the
+    only ownership boundary available to an unprivileged POSIX parent. It is
+    never rediscovered from a late bare PID. Callers that intentionally create
+    such a daemon must register its exact identity before the session escape.
+    """
 
     def __init__(
         self,
@@ -80,9 +86,9 @@ class ProcessOwnership:
         return cls(process, identity, session_id)
 
     def snapshot(
-        self, additional_pids: set[int] | None = None
+        self, additional_identities: set[ProcessIdentity] | None = None
     ) -> set[ProcessIdentity]:
-        additional_pids = set(additional_pids or ())
+        additional_identities = set(additional_identities or ())
         if os.name == "posix":
             processes = _posix_process_snapshot()
             owned = {
@@ -92,9 +98,9 @@ class ProcessOwnership:
                 and identity.session_id == self.session_id
             }
             roots = {
-                processes[pid]
-                for pid in additional_pids
-                if pid in processes
+                identity
+                for identity in additional_identities
+                if identity.identifies(processes.get(identity.pid))
             }
             owned.update(roots)
             while True:
@@ -110,12 +116,19 @@ class ProcessOwnership:
                 owned = expanded
         identities = {
             identity
-            for pid in additional_pids
-            if (identity := _current_process_identity(pid)) is not None
+            for identity in additional_identities
+            if identity.identifies(_current_process_identity(identity.pid))
         }
         if self.public_identity is not None:
             identities.add(self.public_identity)
         return identities
+
+    def capture_identities(self, pids: set[int]) -> set[ProcessIdentity]:
+        return {
+            identity
+            for pid in pids
+            if (identity := _current_process_identity(pid)) is not None
+        }
 
     def signal(
         self, identities: set[ProcessIdentity], signal_number: int
@@ -180,10 +193,12 @@ class ProcessOwnership:
 
     def terminate(
         self,
-        additional_pids: set[int] | None = None,
+        additional_identities: set[ProcessIdentity] | None = None,
         timeout_seconds: float = _CLEANUP_GRACE_SECONDS,
     ) -> set[ProcessIdentity]:
-        return self.quiesce(self.snapshot(additional_pids), timeout_seconds)
+        return self.quiesce(
+            self.snapshot(additional_identities), timeout_seconds
+        )
 
 
 def _response_kind(response: dict) -> str:
@@ -358,15 +373,25 @@ class JsonRpcSession:
         if result != 0:
             raise SystemExit(f"{self.error_label} exited with {result}: {detail}")
 
-    def terminate_tree(self, additional_pids: set[int] | None = None) -> None:
-        self._terminate_owned(additional_pids)
+    def terminate_tree(
+        self, additional_identities: set[ProcessIdentity] | None = None
+    ) -> None:
+        self._terminate_owned(additional_identities)
 
-    def _terminate_owned(self, additional_pids: set[int] | None = None) -> None:
-        self._process_ownership().terminate(additional_pids)
+    def _terminate_owned(
+        self, additional_identities: set[ProcessIdentity] | None = None
+    ) -> None:
+        cleanup_deadline = time.monotonic() + _CLEANUP_GRACE_SECONDS
+        self._process_ownership().terminate(
+            additional_identities,
+            max(0.0, cleanup_deadline - time.monotonic()),
+        )
         for reader_name in ("reader", "error_reader"):
             reader = getattr(self, reader_name, None)
             if reader is not None:
-                reader.join(timeout=_CLEANUP_GRACE_SECONDS)
+                reader.join(
+                    timeout=max(0.0, cleanup_deadline - time.monotonic())
+                )
         self._close_streams()
 
     def _process_ownership(self) -> ProcessOwnership:

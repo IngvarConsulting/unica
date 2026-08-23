@@ -535,6 +535,111 @@ class WireProbeTests(unittest.TestCase):
                 process.kill()
             process.wait(timeout=1.0)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX session escape boundary")
+    def test_unregistered_setsid_child_does_not_block_or_get_claimed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_path = root / "pids.txt"
+            ready_path = root / "escaped-ready"
+            signal_path = root / "escaped-signalled"
+            server = root / "unregistered-session-escape.py"
+            server.write_text(
+                textwrap.dedent(
+                    f"""
+                    import os
+                    import subprocess
+                    import sys
+                    import time
+                    from pathlib import Path
+
+                    child = subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import os,signal,time; from pathlib import Path; "
+                            "os.setsid(); "
+                            "signal.signal(signal.SIGTERM, lambda *_: "
+                            "Path({str(signal_path)!r}).write_text('term', encoding='utf-8')); "
+                            "Path({str(ready_path)!r}).write_text('ready', encoding='utf-8'); "
+                            "time.sleep(60)",
+                        ]
+                    )
+                    while not Path({str(ready_path)!r}).exists():
+                        time.sleep(0.005)
+                    Path({str(pid_path)!r}).write_text(
+                        f"{{os.getpid()}} {{child.pid}}", encoding="utf-8"
+                    )
+                    """
+                ),
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable,
+                str(PROBE_SCRIPT),
+                "--binary",
+                sys.executable,
+                "--binary-arg",
+                str(server),
+                "--protocol-version",
+                "2025-06-18",
+                "--tasks-capability",
+                "off",
+                "--output",
+                str(root / "wire.json"),
+                "--timeout-seconds",
+                "0.15",
+            ]
+            started = time.monotonic()
+            probe = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            child_pid = None
+            bounded = True
+            try:
+                try:
+                    stdout, stderr = probe.communicate(timeout=0.8)
+                except subprocess.TimeoutExpired:
+                    bounded = False
+                    probe.kill()
+                    stdout, stderr = probe.communicate(timeout=1.0)
+                elapsed = time.monotonic() - started
+                _, child_pid = [
+                    int(value)
+                    for value in pid_path.read_text(encoding="utf-8").split()
+                ]
+                module = load_module()
+                child_was_not_claimed = module._process_is_running(child_pid)
+            finally:
+                if probe.poll() is None:
+                    probe.kill()
+                    probe.wait(timeout=1.0)
+                if child_pid is None and pid_path.exists():
+                    _, child_pid = [
+                        int(value)
+                        for value in pid_path.read_text(encoding="utf-8").split()
+                    ]
+                if child_pid is not None:
+                    module = load_module()
+                    if module._process_is_running(child_pid):
+                        os.kill(child_pid, signal.SIGKILL)
+                        module._wait_for_process_pids({child_pid}, 1.0)
+
+        self.assertTrue(bounded, "escaped child kept probe cleanup blocked")
+        self.assertLess(elapsed, 0.8)
+        self.assertNotEqual(probe.returncode, 0, stdout)
+        self.assertIn("aggregate deadline", stderr)
+        self.assertTrue(
+            child_was_not_claimed,
+            "an unregistered process that escaped the owned session was signalled",
+        )
+        self.assertFalse(
+            signal_path.exists(),
+            "cleanup sent SIGTERM to an unregistered escaped process",
+        )
+
     def test_release_baseline_fixture_is_pinned_to_observed_v0123_evidence(self) -> None:
         self.assertTrue(BASELINE_FIXTURE.is_file(), "release baseline fixture is missing")
         self.assertEqual(

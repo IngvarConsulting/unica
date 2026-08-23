@@ -1302,7 +1302,10 @@ class McpSession(_WIRE_PROBE.JsonRpcSession):
         *,
         cwd: Path,
         deadline: float | None = None,
+        service_cache_root: Path | None = None,
     ) -> None:
+        self._service_cache_root = service_cache_root
+        self._service_identities: dict[int, ProcessIdentity] = {}
         super().__init__(
             command,
             environment,
@@ -1311,14 +1314,36 @@ class McpSession(_WIRE_PROBE.JsonRpcSession):
             timeout_seconds=timeout_seconds,
         )
 
+    def request(self, message: dict) -> dict:
+        try:
+            return super().request(message)
+        finally:
+            cache_root = getattr(self, "_service_cache_root", None)
+            if cache_root is not None:
+                self.observe_workspace_services(cache_root)
+
+    def observe_workspace_services(self, cache_root: Path) -> None:
+        observed = getattr(self, "_service_identities", {})
+        unobserved_pids = _workspace_service_pids(cache_root) - set(observed)
+        identities = self._process_ownership().capture_identities(
+            unobserved_pids
+        )
+        for identity in identities:
+            observed.setdefault(identity.pid, identity)
+        self._service_identities = observed
+
+    def observed_service_identities(self) -> set[ProcessIdentity]:
+        return set(getattr(self, "_service_identities", {}).values())
+
     def terminate_tree(
         self,
         cache_root: Path,
-        known_service_pids: set[int] | None = None,
+        known_service_identities: set[ProcessIdentity] | None = None,
     ) -> None:
-        service_pids = set(known_service_pids or ())
-        service_pids.update(_workspace_service_pids(cache_root))
-        self._terminate_owned(service_pids)
+        del cache_root
+        service_identities = self.observed_service_identities()
+        service_identities.update(known_service_identities or ())
+        self._terminate_owned(service_identities)
 
 
 def _workspace_service_pids(cache_root: Path) -> set[int]:
@@ -1556,13 +1581,18 @@ def _wait_for_process_pids(pids: set[int], timeout_seconds: float) -> None:
 
 
 def _capture_owned_processes(
-    session: McpSession, service_pids: set[int]
+    session: McpSession, service_identities: set[ProcessIdentity]
 ) -> tuple[ProcessOwnership | None, set[ProcessIdentity]]:
     ownership_getter = getattr(session, "_process_ownership", None)
     if ownership_getter is None:
         return None, set()
     ownership = ownership_getter()
-    return ownership, ownership.snapshot(service_pids)
+    return ownership, ownership.snapshot(service_identities)
+
+
+def _observed_service_identities(session: McpSession) -> set[ProcessIdentity]:
+    identity_getter = getattr(session, "observed_service_identities", None)
+    return identity_getter() if identity_getter is not None else set()
 
 
 def _quiesce_owned_processes(
@@ -1699,11 +1729,14 @@ def _close_session_and_workspace_services(
     timeout_seconds: float,
     deadline: float | None = None,
 ) -> None:
-    # Capture PID roots before authenticated shutdown: a failed shutdown or
-    # TemporaryDirectory cleanup may remove the record that makes an orphan
-    # reachable for emergency cleanup.
+    # Reuse only identities captured when the fresh smoke first observed the
+    # service. A record available only at cleanup is a bare PID and cannot
+    # prove that the current process is the service that wrote it.
     service_pids = _workspace_service_pids(cache_root)
-    ownership, owned_processes = _capture_owned_processes(session, service_pids)
+    service_identities = _observed_service_identities(session)
+    ownership, owned_processes = _capture_owned_processes(
+        session, service_identities
+    )
     try:
         try:
             # On Windows, a detached workspace service may inherit extra copies of
@@ -1732,7 +1765,7 @@ def _close_session_and_workspace_services(
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                 )
     except BaseException:
-        session.terminate_tree(cache_root, service_pids)
+        session.terminate_tree(cache_root, service_identities)
         raise
 
 
@@ -1996,6 +2029,7 @@ def smoke(
                 timeout_seconds,
                 cwd=workspace,
                 deadline=deadline,
+                service_cache_root=cache_root,
             )
             if session_started is not None:
                 session_started(session, cache_root)
