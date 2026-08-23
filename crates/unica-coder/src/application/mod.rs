@@ -22,6 +22,9 @@ pub(crate) mod code_intelligence;
 pub(crate) mod deferred_delivery;
 pub(crate) mod diagnostics;
 pub(crate) mod documentation;
+// This seam is intentionally dormant while production remains on v0.12.
+#[allow(dead_code)]
+pub(crate) mod invocation;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
 pub(crate) mod operational_config;

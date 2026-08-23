@@ -7,6 +7,9 @@ pub mod engine;
 pub mod events;
 pub mod form_edit;
 pub mod format_profile;
+// This seam is intentionally dormant while production remains on v0.12.
+#[allow(dead_code)]
+pub(crate) mod invocation;
 pub mod long_work;
 pub(crate) mod metadata;
 pub mod operational_config;
