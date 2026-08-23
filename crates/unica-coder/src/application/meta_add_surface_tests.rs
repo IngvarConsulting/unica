@@ -830,6 +830,22 @@ fn meta_add_and_edit_round_trip_common_module_ordinary_client_context() {
         edited_xml.contains("<ClientOrdinaryApplication>false</ClientOrdinaryApplication>"),
         "{edited_xml}"
     );
+
+    let applied = call_edit(
+        workspace.path(),
+        &format!("CommonModule.{name}"),
+        json!([{
+            "op": "setProperties",
+            "values": {"ClientOrdinaryApplication": true}
+        }]),
+        false,
+    );
+    assert!(applied.ok, "{:?}", applied.errors);
+    let edited_xml = std::fs::read_to_string(&edited_path).unwrap();
+    assert!(
+        edited_xml.contains("<ClientOrdinaryApplication>true</ClientOrdinaryApplication>"),
+        "{edited_xml}"
+    );
 }
 
 #[test]
