@@ -6135,6 +6135,36 @@ analyze_timeout_seconds = 900
     }
 
     #[test]
+    fn production_secret_redaction_surfaces_are_closed() {
+        assert_eq!(
+            crate::infrastructure::redaction::production_secret_key_matrix(),
+            ["connection", "pwd", "password", "token", "secret"]
+        );
+        assert_eq!(
+            crate::infrastructure::runtime_jobs::production_runtime_secret_flags(),
+            ["password", "pwd", "token", "secret", "connection", "c"]
+        );
+        assert_eq!(
+            crate::infrastructure::runtime_jobs::production_runtime_connection_markers(),
+            ["file=", "srvr=", "ref=", "usr=", "pwd=", "dbsrvr=", "dbname="]
+        );
+
+        cli_adapter_redacts_secret_values_from_reported_command();
+        runtime_adapter_redacts_connection_string_from_reported_command();
+        runtime_adapter_redacts_non_zero_process_output();
+        runtime_adapter_returns_failure_outcome_for_spawn_failure();
+        crate::infrastructure::redaction::tests::stream_redactor_covers_production_secret_keys_at_every_chunk_boundary();
+        crate::infrastructure::runtime_jobs::tests::production_secret_key_matrix_is_redacted_from_runtime_surfaces();
+        crate::infrastructure::runtime_jobs::tests::terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts();
+        crate::infrastructure::runtime_jobs::tests::persisted_command_redacts_a_launch_connection_string_completely();
+        crate::infrastructure::runtime_jobs::tests::worker_handoff_never_persists_actual_argv_or_output_secrets();
+        crate::infrastructure::runtime_jobs::tests::direct_status_rejects_corrupt_unknown_schema_and_non_uuid_without_touching_active_lock();
+        crate::infrastructure::runtime_jobs::tests::list_skips_a_corrupt_record_and_redacts_its_warning();
+        crate::infrastructure::operational_config::tests::diagnostics_never_expose_absolute_paths_raw_toml_or_values();
+        crate::infrastructure::operational_config::tests::read_errors_are_redacted_to_the_fixed_basename();
+    }
+
+    #[test]
     #[ignore = "helper process invoked by system_process_runner_drains_large_stderr_while_running"]
     fn system_process_runner_large_stderr_helper() {
         let chunk = [b'e'; 64 * 1024];

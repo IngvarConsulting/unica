@@ -3,10 +3,9 @@
 CI runs the suites through `unittest discover`, but a developer debugging one
 file runs that file directly, and the two must collect the same tests. When
 they do not, the direct run is quietly a subset: the file looks green while a
-whole class never executes. That happened here -- `unittest.main()` sat above
-the last class in `test_architecture_sync_guard.py`, so running the file
-directly collected 16 tests where discovery collected 26, and the ten missing
-ones were the immutability suite for accepted decision records.
+whole class never executes. That happened once when `unittest.main()` sat above
+the last test class and a direct run quietly skipped the immutability suite for
+accepted records.
 """
 
 from __future__ import annotations

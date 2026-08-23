@@ -600,7 +600,7 @@ mod tests {
     /// Владельца находит первый не-`None` в порядке реестра, и его документ
     /// доходит до публичного результата всеми полями происхождения.
     #[test]
-    fn the_first_provider_owning_the_locator_answers_the_get() {
+    fn get_skips_a_non_owner_and_projects_the_owners_document() {
         let registry = DocumentationRegistry::new(vec![
             Arc::new(GetStub {
                 id: "stranger",

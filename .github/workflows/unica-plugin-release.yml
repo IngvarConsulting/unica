@@ -67,18 +67,22 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
       - run: python -m unittest discover -s tests/ci --durations 20
+      - run: python -m unittest discover -s tests/arch
       - run: python -m unittest discover -s tests/dev --durations 20
       - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
+      - run: python -m py_compile scripts/arch/*.py tests/arch/*.py
       - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
       - run: python scripts/ci/check-version-contract.py
-      - name: Check architecture sync
+      - name: Check accepted architecture records
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin "$BASE_REF"
-          python scripts/ci/check-architecture-sync.py --base FETCH_HEAD --strict
+          python scripts/arch/registry.py --check
+          python scripts/arch/fate.py
+          python scripts/arch/immutability.py --base FETCH_HEAD
 
   test-rust-primary:
     name: Rust tests (macos-14 primary)

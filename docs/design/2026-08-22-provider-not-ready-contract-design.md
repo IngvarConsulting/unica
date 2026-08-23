@@ -1,6 +1,6 @@
 - Date: `2026-08-22`
 - Status: `approved`
-- Decision: `ADR-0077`
+- Decision: `DEC.2026-08-22.PROVIDER-NOT-READY-VOCABULARY`
 
 # Единый контракт неготовности поставщика
 

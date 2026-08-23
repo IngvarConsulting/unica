@@ -1011,11 +1011,12 @@ mod tests {
         evaluate_prepared_subsystem_info_format_guard,
     };
     use crate::application::operation_descriptors::native_operation_descriptor;
-    use crate::application::ports::{FormatGuardCheck, XdtoPublicErrorCode};
-    use crate::application::tools;
+    use crate::application::ports::{ApplicationPorts, FormatGuardCheck, XdtoPublicErrorCode};
+    use crate::application::{tools, InvocationMode, ToolHandler};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use crate::infrastructure::native_operations::cfe::cfe_borrow_format_dependency_inspection;
     use crate::infrastructure::native_operations::dcs::analyze_dcs_info;
     use crate::infrastructure::native_operations::subsystem::prepare_subsystem_info;
@@ -1457,11 +1458,9 @@ mod tests {
         let root = test_root("cf-init-home-page");
         let home_page = root.join("src/Ext/HomePageWorkArea.xml");
         std::fs::create_dir_all(home_page.parent().unwrap()).unwrap();
-        std::fs::write(
-            &home_page,
-            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#,
-        )
-        .unwrap();
+        let original =
+            r#"<HomePageWorkArea xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#;
+        std::fs::write(&home_page, original).unwrap();
         let args = Map::from_iter([
             ("Name".to_string(), Value::String("Demo".to_string())),
             ("OutputDir".to_string(), Value::String("src".to_string())),
@@ -1479,6 +1478,7 @@ mod tests {
             normalized_path(&home_page).display().to_string()
         );
         assert!(!root.join("src/Configuration.xml").exists());
+        assert_eq!(std::fs::read_to_string(&home_page).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2402,8 +2402,7 @@ mod tests {
 
     #[test]
     fn supported_dump_allows_mutation_preflight() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-ok-{}", std::process::id()));
+        let root = test_root("ok");
         let path = config(&root, Some("2.20"));
         let mut args = Map::new();
         args.insert(
@@ -2419,8 +2418,7 @@ mod tests {
 
     #[test]
     fn newer_dump_warns_for_read_only_with_roadmap_copy() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-new-{}", std::process::id()));
+        let root = test_root("new");
         let path = config(&root, Some("2.21"));
         let mut args = Map::new();
         args.insert(
@@ -2442,8 +2440,7 @@ mod tests {
 
     #[test]
     fn missing_root_version_is_classified_as_1_0() {
-        let root =
-            std::env::temp_dir().join(format!("unica-format-guard-v1-{}", std::process::id()));
+        let root = test_root("v1");
         let path = config(&root, None);
         let mut args = Map::new();
         args.insert(
@@ -2461,10 +2458,7 @@ mod tests {
 
     #[test]
     fn versionless_known_standalone_form_is_classified_as_1_0_owner() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-versionless-standalone-form-{}",
-            std::process::id()
-        ));
+        let root = test_root("versionless-standalone-form");
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("Form.xml");
         std::fs::write(
@@ -2974,10 +2968,7 @@ mod tests {
 
     #[test]
     fn dcs_edit_blocks_old_external_source_set_via_owner_descriptor() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-old-external-dcs-{}",
-            std::process::id()
-        ));
+        let root = test_root("old-external-dcs");
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(
             &root,
@@ -2988,7 +2979,8 @@ mod tests {
         );
         let target = source_root.join("PriceLoader/Templates/Main/Ext/Template.xml");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(&target, "<DataCompositionSchema/>").unwrap();
+        let original = "<DataCompositionSchema/>";
+        std::fs::write(&target, original).unwrap();
         let mut args = Map::new();
         args.insert(
             "TemplatePath".into(),
@@ -3005,6 +2997,7 @@ mod tests {
         };
         assert_eq!(diagnostic["actualFormat"], "2.19");
         assert_platform_reexport_warning(&outcome.warnings.join("\n"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -3083,10 +3076,7 @@ mod tests {
 
     #[test]
     fn mxl_info_warns_old_external_source_set_via_owner_descriptor() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-old-external-mxl-info-{}",
-            std::process::id()
-        ));
+        let root = test_root("old-external-mxl-info");
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(&root, "EXTERNAL_REPORTS", "erf", "Sales", "2.19");
         let target = source_root.join("Sales/Templates/Print/Ext/Template.xml");
@@ -3334,10 +3324,7 @@ mod tests {
 
     #[test]
     fn valid_standalone_mxl_without_owner_version_is_not_an_old_dump() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-valid-standalone-mxl-{}",
-            std::process::id()
-        ));
+        let root = test_root("valid-standalone-mxl");
         std::fs::create_dir_all(&root).unwrap();
         let document = root.join("standalone.xml");
         std::fs::write(
@@ -3385,11 +3372,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_version_bearing_standalone_root_is_invalid() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-unknown-standalone-root-{}",
-            std::process::id()
-        ));
+    fn unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog() {
+        let root = test_root("unknown-standalone-root");
         std::fs::create_dir_all(&root).unwrap();
         let target = root.join("unknown.xml");
         std::fs::write(&target, r#"<garbage version="2.20"/>"#).unwrap();
@@ -3405,6 +3389,170 @@ mod tests {
         };
         assert_eq!(diagnostic["code"], "formatVersionInvalid");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn single_writable_platform_xml_profile_is_exact() {
+        assert_eq!(
+            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.platform_line,
+            "8.3.27"
+        );
+        assert_eq!(
+            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+            "2.20"
+        );
+        older_dump_blocks_mutation_and_recommends_platform_reexport();
+        supported_dump_allows_mutation_preflight();
+    }
+
+    #[test]
+    fn owner_version_read_write_gate_is_complete() {
+        newer_dump_warns_for_read_only_with_roadmap_copy();
+        mxl_info_warns_old_external_source_set_via_owner_descriptor();
+        missing_root_version_is_classified_as_1_0();
+        versionless_known_standalone_form_is_classified_as_1_0_owner();
+        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
+        version_owning_target_cannot_hide_behind_supported_source_set_owner();
+        xdto_guard_empty_handler_resolution_is_a_contract_error();
+        valid_standalone_mxl_without_owner_version_is_not_an_old_dump();
+        unknown_version_bearing_roots_are_rejected_by_the_closed_policy_catalog();
+        crate::infrastructure::platform_xml_owner::tests::equal_depth_source_set_owners_are_ambiguous_for_existing_and_new_outputs();
+    }
+
+    #[test]
+    fn aggregated_format_evidence_is_reentrant_under_parallel_test_execution() {
+        let workers = (0..8)
+            .map(|_| {
+                std::thread::spawn(single_writable_platform_xml_profile_decision_is_fully_realized)
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            worker
+                .join()
+                .expect("aggregate format evidence must not share temporary roots");
+        }
+    }
+
+    #[test]
+    fn public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal() {
+        let expected = std::collections::BTreeSet::from([
+            "unica.cf.edit",
+            "unica.cf.init",
+            "unica.cfe.borrow",
+            "unica.cfe.init",
+            "unica.cfe.patch_method",
+            "unica.code.patch",
+            "unica.dcs.compile",
+            "unica.dcs.edit",
+            "unica.epf.init",
+            "unica.erf.init",
+            "unica.form.add",
+            "unica.form.compile",
+            "unica.form.edit",
+            "unica.form.remove",
+            "unica.interface.edit",
+            "unica.meta.add",
+            "unica.meta.edit",
+            "unica.meta.remove",
+            "unica.mxl.compile",
+            "unica.role.compile",
+            "unica.role.edit",
+            "unica.subsystem.compile",
+            "unica.subsystem.edit",
+            "unica.support.edit",
+            "unica.xdto.edit",
+        ]);
+        let actual = tools()
+            .into_iter()
+            .filter(|tool| tool.execution.is_mutating())
+            .filter(|tool| {
+                matches!(
+                    tool.handler,
+                    ToolHandler::NativeOperation { .. } | ToolHandler::Metadata { .. }
+                )
+            })
+            .map(|tool| tool.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual, expected);
+
+        let concrete_ports = InfrastructureApplicationPorts::new();
+        let workspace_root = test_root("native-common-format-route");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            workspace_root: workspace_root.clone(),
+            cache_root: workspace_root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let mut metadata_tools = std::collections::BTreeSet::new();
+        for tool in tools()
+            .into_iter()
+            .filter(|tool| expected.contains(tool.name))
+        {
+            match tool.handler {
+                ToolHandler::NativeOperation { operation, .. } => {
+                    assert!(
+                        native_operation_descriptor(operation).is_some(),
+                        "{} could bypass the common format gate because {operation} has no descriptor",
+                        tool.name
+                    );
+                    let prepared = concrete_ports
+                        .prepare_tool_invocation(
+                            tool,
+                            &Map::new(),
+                            &context,
+                            InvocationMode::Apply,
+                            &CancellationToken::new(),
+                            ProviderDeadline::from_budget(Duration::from_secs(1)),
+                        )
+                        .expect("native mutator preparation succeeds without preempting its gate");
+                    assert!(
+                        prepared.format_guard.is_none() && prepared.handler.is_none(),
+                        "{} could replace the common pre-handler format gate during preparation",
+                        tool.name
+                    );
+                }
+                ToolHandler::Metadata { .. } => {
+                    metadata_tools.insert(tool.name);
+                }
+                _ => panic!("{} left the closed XML mutation handlers", tool.name),
+            }
+        }
+        assert_eq!(
+            metadata_tools,
+            std::collections::BTreeSet::from([
+                "unica.meta.add",
+                "unica.meta.edit",
+                "unica.meta.remove"
+            ])
+        );
+
+        // Every native descriptor enters the unconditional application
+        // format-guard branch before its handler match: the concrete production
+        // preparation port above proves that no native mutator substitutes a
+        // prepared guard or handler. Typed metadata keeps its provider-neutral
+        // diagnostic route, so exercise all three of those public calls
+        // separately. Together these close the exact two handler variants
+        // without pretending their public diagnostics match.
+        crate::application::tests::incompatible_format_blocks_before_native_handler();
+        crate::application::tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
+        std::fs::remove_dir_all(workspace_root).unwrap();
+    }
+
+    #[test]
+    fn native_mutation_surface_and_format_refusal_are_exact() {
+        crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
+        public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
+        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
+        cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
+    }
+
+    #[test]
+    fn single_writable_platform_xml_profile_decision_is_fully_realized() {
+        single_writable_platform_xml_profile_is_exact();
+        owner_version_read_write_gate_is_complete();
+        native_mutation_surface_and_format_refusal_are_exact();
     }
 
     #[test]
