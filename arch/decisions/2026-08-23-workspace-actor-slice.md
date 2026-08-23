@@ -29,13 +29,19 @@ provider и index операции проверяют физическую ident
 WorkspaceActor владеет прежним workspace runtime state, source revision
 registry, provider-root/index binding и эксклюзивной границей публикации.
 Публикационная аренда не раскрывает ambient root или unchecked callback и
-проверяет source revision до выдачи. Descriptor-relative writer появится вместе
-с маршрутизацией writers, не в этом срезе.
+проверяет source revision до выдачи, а затем под той же эксклюзивной арендой
+повторно валидирует actor/root и revision по явному deadline/cancellation перед
+возвратом staged result. Descriptor-relative writer появится вместе с
+маршрутизацией writers, не в этом срезе; его post-write proof заменит или
+расширит эту read-only publication confirmation.
 
 Generic daemon actor выводит ограниченный domain-separated state scope из всего
 структурного ключа и разделяет revision, index, provider cache, coordination и
-background state. Старый workspace-service adapter до Task 22 явно использует
-`LegacyPhysical`: его v0.12 пути состояния и wire-поведение не меняются.
+background state. Канонические пути входят в scope в стабильном native encoding
+без provider-cache case folding; если host не умеет стабильно представить
+non-Unicode path, создание generic actor завершается ошибкой. Старый
+workspace-service adapter до Task 22 явно использует `LegacyPhysical`: его
+v0.12 пути состояния и wire-поведение не меняются.
 
 Существующий workspace-service CLI остаётся compatibility adapter, чей runtime
 state вложен в WorkspaceActor. Обычный v0.12 stdio ещё не направляется через

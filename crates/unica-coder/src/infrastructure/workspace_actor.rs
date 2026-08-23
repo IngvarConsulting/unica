@@ -3,7 +3,7 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::filesystem::{
-    path_starts_with_host_root, provider_state_path_identity, RetainedDirectoryCapability,
+    path_starts_with_host_root, stable_path_identity_bytes, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_revision::{SourceRevisionService, WorkspaceStateScope};
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -106,17 +106,17 @@ impl WorkspaceIdentity {
         &self.provider_profile
     }
 
-    fn state_scope_digest(&self) -> String {
+    fn state_scope_digest(&self) -> Result<String, String> {
         let mut digest = Sha256::new();
         digest.update(b"unica-workspace-actor-state-v1\0");
-        update_digest_path(&mut digest, &self.workspace_root);
+        update_digest_path(&mut digest, &self.workspace_root)?;
         digest.update((self.source_sets.len() as u64).to_le_bytes());
         for source_set in &self.source_sets {
             update_digest_text(&mut digest, &source_set.name);
-            update_digest_path(&mut digest, &source_set.root);
+            update_digest_path(&mut digest, &source_set.root)?;
         }
         update_digest_text(&mut digest, &self.provider_profile);
-        format!("{:x}", digest.finalize())
+        Ok(format!("{:x}", digest.finalize()))
     }
 }
 
@@ -125,10 +125,11 @@ fn update_digest_text(digest: &mut Sha256, value: &str) {
     digest.update(value.as_bytes());
 }
 
-fn update_digest_path(digest: &mut Sha256, value: &Path) {
-    let bytes = provider_state_path_identity(value);
+fn update_digest_path(digest: &mut Sha256, value: &Path) -> Result<(), String> {
+    let bytes = stable_path_identity_bytes(value)?;
     digest.update((bytes.len() as u64).to_le_bytes());
     digest.update(bytes);
+    Ok(())
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -185,6 +186,8 @@ pub(crate) struct WorkspaceRevisionFence {
 pub(crate) struct WorkspacePublicationLease<'actor, R> {
     actor: &'actor WorkspaceActor<R>,
     binding: ProviderRootBinding,
+    issued_revision: SourceRevision,
+    revision_service: Arc<SourceRevisionService>,
     _lane: MutexGuard<'actor, ()>,
 }
 
@@ -201,6 +204,15 @@ pub(super) trait WorkspaceActorRuntimeProjection {
     fn project_for_actor(&self) -> Self::Projection<'_>;
 }
 
+#[cfg(test)]
+pub(super) trait WorkspaceActorRuntimeTestProjection {
+    type ProjectionMut<'a>
+    where
+        Self: 'a;
+
+    fn project_mut_for_actor_test(&mut self) -> Self::ProjectionMut<'_>;
+}
+
 impl<R> std::fmt::Debug for WorkspacePublicationLease<'_, R> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -211,17 +223,28 @@ impl<R> std::fmt::Debug for WorkspacePublicationLease<'_, R> {
 }
 
 impl<R> WorkspacePublicationLease<'_, R> {
-    pub(crate) fn publish<T>(self, staged_result: T) -> Result<T, String> {
+    pub(crate) fn publish<T>(
+        self,
+        staged_result: T,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<T, String> {
         self.actor.validate_binding(&self.binding)?;
+        let current = self.revision_service.snapshot(deadline, cancellation);
+        self.actor.validate_binding(&self.binding)?;
+        let current = current?;
+        if current != self.issued_revision {
+            return Err("source revision changed before staged result publication".to_string());
+        }
         Ok(staged_result)
     }
 }
 
 /// One daemon-owned coordination boundary for a canonical worktree.
 ///
-/// Reads do not take the mutation lane. Publication is exclusive and checks
-/// the actor-owned source revision immediately before the caller is allowed to
-/// commit staged bytes.
+/// Reads do not take the mutation lane. Read-only staged-result confirmation
+/// is exclusive and rechecks the actor-owned source revision immediately
+/// before that result is returned. Task 15 adds the writer boundary.
 pub(crate) struct WorkspaceActor<R = ()> {
     identity: WorkspaceIdentity,
     instance_id: ActorInstanceId,
@@ -257,7 +280,7 @@ impl<R> WorkspaceActor<R> {
         context: WorkspaceContext,
         runtime: R,
     ) -> Result<Self, String> {
-        let state_scope = WorkspaceStateScope::scoped_sha256(identity.state_scope_digest())?;
+        let state_scope = WorkspaceStateScope::scoped_sha256(identity.state_scope_digest()?)?;
         Self::with_runtime_scope(identity, context, runtime, state_scope)
     }
 
@@ -333,8 +356,11 @@ impl<R> WorkspaceActor<R> {
     }
 
     #[cfg(test)]
-    pub(crate) fn runtime_mut_for_test(&mut self) -> &mut R {
-        &mut self.runtime
+    pub(super) fn runtime_projection_mut_for_test(&mut self) -> R::ProjectionMut<'_>
+    where
+        R: WorkspaceActorRuntimeTestProjection,
+    {
+        self.runtime.project_mut_for_actor_test()
     }
 
     pub(crate) fn context(&self) -> &WorkspaceContext {
@@ -448,9 +474,8 @@ impl<R> WorkspaceActor<R> {
             source_set: fence.source_set.clone(),
         };
         self.validate_binding(&binding)?;
-        let current = self
-            .source_revision_service(&binding)
-            .and_then(|service| service.snapshot(deadline, cancellation));
+        let revision_service = self.source_revision_service(&binding)?;
+        let current = revision_service.snapshot(deadline, cancellation);
         self.validate_binding(&binding)?;
         let current = current?;
         if current != fence.revision {
@@ -459,6 +484,8 @@ impl<R> WorkspaceActor<R> {
         Ok(WorkspacePublicationLease {
             actor: self,
             binding,
+            issued_revision: fence.revision.clone(),
+            revision_service,
             _lane: publication,
         })
     }
@@ -593,6 +620,23 @@ mod tests {
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    macro_rules! assert_not_impl {
+        ($type:ty: $trait:path) => {
+            const _: fn() = || {
+                trait AmbiguousIfImpl<Marker> {
+                    fn check() {}
+                }
+                struct ImplementsTrait;
+                impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+                impl<T: ?Sized + $trait> AmbiguousIfImpl<ImplementsTrait> for T {}
+                let _ = <$type as AmbiguousIfImpl<_>>::check;
+            };
+        };
+    }
+
+    assert_not_impl!(super::WorkspaceActor<()>: std::ops::Deref);
+    assert_not_impl!(super::WorkspaceActor<()>: std::ops::DerefMut);
+
     #[test]
     fn workspace_actor_serializes_mutation_publication() {
         let fixture = actor_fixture("serialized-mutations", &["src"]);
@@ -624,7 +668,11 @@ mod tests {
             )?;
             first_entered.send("first").unwrap();
             first_release_rx.recv().unwrap();
-            lease.publish(())
+            lease.publish(
+                (),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
         });
         assert_eq!(
             entered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
@@ -641,7 +689,11 @@ mod tests {
             )?;
             entered_tx.send("second").unwrap();
             second_release_rx.recv().unwrap();
-            lease.publish(())
+            lease.publish(
+                (),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
         });
         attempted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(
@@ -736,6 +788,129 @@ mod tests {
             error.contains("source revision changed before publication"),
             "{error}"
         );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn workspace_actor_rejects_a_revision_changed_after_lease_before_publish() {
+        let fixture = actor_fixture("revision-after-lease", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let module = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&module, "Процедура До()\nКонецПроцедуры\n").unwrap();
+        let cancellation = CancellationToken::new();
+        let fence = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let lease = fixture
+            .actor
+            .begin_publication(
+                &fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        std::fs::write(&module, "Процедура После()\nКонецПроцедуры\n").unwrap();
+
+        let error = lease
+            .publish(
+                "FOREIGN-STAGED-PROVIDER-TEXT",
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert!(error.contains("source revision changed"), "{error}");
+        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn workspace_actor_rejects_root_replacement_after_lease_before_publish() {
+        let fixture = actor_fixture("root-after-lease", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
+        let cancellation = CancellationToken::new();
+        let fence = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let lease = fixture
+            .actor
+            .begin_publication(
+                &fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let displaced = fixture.root.join("src-displaced-after-lease");
+        std::fs::rename(&fixture.roots[0], &displaced).unwrap();
+        std::fs::create_dir_all(&fixture.roots[0]).unwrap();
+
+        let error = lease
+            .publish(
+                "FOREIGN-STAGED-PROVIDER-TEXT",
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert!(error.contains("physical identity changed"), "{error}");
+        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn workspace_actor_publish_honors_cancellation_and_masks_staged_text() {
+        let fixture = actor_fixture("cancelled-publish", &["src"]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
+        let cancellation = CancellationToken::new();
+        let fence = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        let lease = fixture
+            .actor
+            .begin_publication(
+                &fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap();
+        cancellation.cancel();
+
+        let error = lease
+            .publish(
+                "FOREIGN-STAGED-PROVIDER-TEXT",
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &cancellation,
+            )
+            .unwrap_err();
+
+        assert!(error.starts_with("cancelled:"), "{error}");
+        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
         fixture.cleanup();
     }
 
@@ -927,6 +1102,22 @@ mod tests {
             )
             .is_err());
 
+        let publication = first
+            .begin_publication(
+                &fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        std::fs::write(source.join("Module.bsl"), "changed after lease").unwrap();
+        assert!(publication
+            .publish(
+                "must not escape",
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .is_err());
+
         let nested = source.join("Nested");
         if matches!(
             create_directory_link_fixture_for_test(&outside, &nested).unwrap(),
@@ -1052,34 +1243,83 @@ mod tests {
             direct_index, actor_index,
             "legacy adapter moved the v0.12 index/provider namespace"
         );
+        if let Some((first, second)) =
+            crate::infrastructure::platform::filesystem::distinct_non_unicode_paths_for_test()
+        {
+            let identity = |source_root| WorkspaceIdentity {
+                workspace_root: PathBuf::from("/workspace"),
+                source_sets: vec![super::WorkspaceSourceSetIdentity {
+                    name: "main".to_string(),
+                    root: source_root,
+                }],
+                provider_profile: "profile".to_string(),
+            };
+            assert_ne!(
+                identity(first).state_scope_digest().unwrap(),
+                identity(second).state_scope_digest().unwrap(),
+                "distinct native path identities collapsed actor state"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn actor_and_compatibility_adapter_have_no_production_deref_escape() {
-        let deref = ["impl std::ops::", "Deref for"].concat();
-        let deref_mut = ["impl std::ops::", "DerefMut for"].concat();
-        let raw_runtime_accessor = ["runtime_for_", "compat_adapter"].concat();
-        for (name, source) in [
-            ("workspace_actor.rs", include_str!("workspace_actor.rs")),
-            (
-                "workspace_services.rs",
-                include_str!("workspace_services.rs"),
-            ),
-        ] {
-            assert!(
-                !source.contains(&deref),
-                "production Deref escape in {name}"
-            );
-            assert!(
-                !source.contains(&deref_mut),
-                "production DerefMut escape in {name}"
-            );
-            assert!(
-                !source.contains(&raw_runtime_accessor),
-                "production raw runtime-payload escape in {name}"
-            );
+    fn workspace_actor_exposes_no_raw_generic_runtime_payload() {
+        let immutable_return = ["-> ", "&R"].concat();
+        let mutable_return = ["-> ", "&mut R"].concat();
+        let source = include_str!("workspace_actor.rs");
+
+        assert!(
+            !source.lines().any(|line| line.contains(&immutable_return)),
+            "workspace actor exposes a raw immutable runtime payload"
+        );
+        assert!(
+            !source.lines().any(|line| line.contains(&mutable_return)),
+            "workspace actor exposes a raw mutable runtime payload"
+        );
+    }
+
+    #[test]
+    fn actor_state_scope_digest_is_fallible_and_bounded() {
+        fn digest(identity: &WorkspaceIdentity) -> Result<String, String> {
+            identity.state_scope_digest()
         }
+
+        let identity = WorkspaceIdentity {
+            workspace_root: PathBuf::from("/workspace"),
+            source_sets: vec![super::WorkspaceSourceSetIdentity {
+                name: "main".to_string(),
+                root: PathBuf::from("/workspace/source"),
+            }],
+            provider_profile: "profile".to_string(),
+        };
+        let digest = digest(&identity).unwrap();
+
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn actor_state_scope_distinguishes_native_non_unicode_paths() {
+        let Some((first, second)) =
+            crate::infrastructure::platform::filesystem::distinct_non_unicode_paths_for_test()
+        else {
+            return;
+        };
+        let identity = |root| WorkspaceIdentity {
+            workspace_root: PathBuf::from("/workspace"),
+            source_sets: vec![super::WorkspaceSourceSetIdentity {
+                name: "main".to_string(),
+                root,
+            }],
+            provider_profile: "profile".to_string(),
+        };
+
+        assert_ne!(
+            identity(first).state_scope_digest().unwrap(),
+            identity(second).state_scope_digest().unwrap(),
+            "distinct native non-Unicode roots collapsed to one actor scope"
+        );
     }
 
     #[test]
@@ -1190,7 +1430,11 @@ mod tests {
             .get_or_create(&first_context, [("main", &source)], "legacy-bsl-rlm")
             .unwrap();
         let second = registry
-            .get_or_create(&second_context, [("main", &source)], "legacy-bsl-rlm")
+            .get_or_create(
+                &second_context,
+                [("main", root.join("frontend/../src"))],
+                "legacy-bsl-rlm",
+            )
             .unwrap();
 
         assert!(Arc::ptr_eq(&first, &second));

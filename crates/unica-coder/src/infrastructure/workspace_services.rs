@@ -10,6 +10,8 @@ use crate::infrastructure::platform::{
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::source_roots::{normalize_path_identity, source_generation_until};
+#[cfg(test)]
+use crate::infrastructure::workspace_actor::WorkspaceActorRuntimeTestProjection;
 use crate::infrastructure::workspace_actor::{
     ProviderRootBinding, WorkspaceActor, WorkspaceActorRuntimeProjection, WorkspaceIdentity,
 };
@@ -1506,11 +1508,23 @@ struct WorkspaceServiceRuntimeState {
 
 pub(super) struct WorkspaceServiceRuntimeProjection<'a>(&'a WorkspaceServiceRuntimeState);
 
+#[cfg(test)]
+pub(super) struct WorkspaceServiceRuntimeProjectionMut<'a>(&'a mut WorkspaceServiceRuntimeState);
+
 impl WorkspaceActorRuntimeProjection for WorkspaceServiceRuntimeState {
     type Projection<'a> = WorkspaceServiceRuntimeProjection<'a>;
 
     fn project_for_actor(&self) -> Self::Projection<'_> {
         WorkspaceServiceRuntimeProjection(self)
+    }
+}
+
+#[cfg(test)]
+impl WorkspaceActorRuntimeTestProjection for WorkspaceServiceRuntimeState {
+    type ProjectionMut<'a> = WorkspaceServiceRuntimeProjectionMut<'a>;
+
+    fn project_mut_for_actor_test(&mut self) -> Self::ProjectionMut<'_> {
+        WorkspaceServiceRuntimeProjectionMut(self)
     }
 }
 
@@ -1734,7 +1748,7 @@ impl WorkspaceServiceRuntime {
 
     #[cfg(test)]
     fn runtime_mut_for_test(&mut self) -> &mut WorkspaceServiceRuntimeState {
-        self.actor.runtime_mut_for_test()
+        self.actor.runtime_projection_mut_for_test().0
     }
 
     #[cfg(test)]
@@ -4577,6 +4591,25 @@ mod tests {
     use std::path::Path;
     use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    macro_rules! assert_not_impl {
+        ($type:ty: $trait:path) => {
+            const _: fn() = || {
+                trait AmbiguousIfImpl<Marker> {
+                    fn check() {}
+                }
+                struct ImplementsTrait;
+                impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+                impl<T: ?Sized + $trait> AmbiguousIfImpl<ImplementsTrait> for T {}
+                let _ = <$type as AmbiguousIfImpl<_>>::check;
+            };
+        };
+    }
+
+    assert_not_impl!(WorkspaceServiceRuntime: std::ops::Deref);
+    assert_not_impl!(WorkspaceServiceRuntime: std::ops::DerefMut);
+    assert_not_impl!(WorkspaceActor<WorkspaceServiceRuntimeState>: std::ops::Deref);
+    assert_not_impl!(WorkspaceActor<WorkspaceServiceRuntimeState>: std::ops::DerefMut);
 
     #[test]
     fn legacy_workspace_service_runtime_is_owned_by_the_workspace_actor_adapter() {

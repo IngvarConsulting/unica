@@ -11,7 +11,9 @@ scope: [app, cache]
 
 Ограниченный domain-separated state scope включает канонический workspace,
 упорядоченные пары имени и канонического root каждого source set и точный
-provider profile. Разные scope не делят persisted source revision, index,
-provider cache, coordination или background state. Только v0.12
-workspace-service compatibility adapter до Task 22 использует прежний явный
-namespace `LegacyPhysical`.
+provider profile. Канонические пути кодируются стабильными native bytes без
+lossy Unicode conversion и без provider-cache case folding; невозможность
+стабильного кодирования закрывает создание generic actor ошибкой. Разные scope
+не делят persisted source revision, index, provider cache, coordination или
+background state. Только v0.12 workspace-service compatibility adapter до Task
+22 использует прежний явный namespace `LegacyPhysical`.
