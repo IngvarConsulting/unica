@@ -2,7 +2,7 @@
 id: DEC.2026-08-22.COMMON-MODULE-ORDINARY-CLIENT
 status: active
 governs: product
-realized: crates/unica-coder/src/application/metadata.rs::common_module_ordinary_client_property_is_shared_by_add_and_edit
+realized: crates/unica-coder/src/application/meta_add_surface_tests.rs::meta_add_and_edit_round_trip_common_module_ordinary_client_context
 changes: [CTR.WIRE.TOOL-SURFACE]
 establishes: [INV.WIRE.COMMON-MODULE-ORDINARY-CLIENT]
 design: docs/design/2026-08-22-common-module-ordinary-client-property-design.md
