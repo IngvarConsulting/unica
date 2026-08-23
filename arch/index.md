@@ -39,6 +39,7 @@
 | `DEC.2026-08-22.EVIDENCE-BOUNDED-PRESERVATION` | решение · product | active | да | Перенесённое обещание не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-preservation.md](decisions/2026-08-22-evidence-bounded-preservation.md) |
 | `DEC.2026-08-22.EVIDENCE-BOUNDED-SAFETY` | решение · product | active | да | Safety-правило не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-safety.md](decisions/2026-08-22-evidence-bounded-safety.md) |
 | `DEC.2026-08-22.LINEAR-PUBLICATION` | решение · product | active | да | Публикация выражается зависимостями одного конвейера | [decisions/2026-08-22-linear-publication.md](decisions/2026-08-22-linear-publication.md) |
+| `DEC.2026-08-23.PRIVATE-COMPILE-RECOVERY` | решение · product | active | да | Recovery compile-транзакции остаётся вне дерева исходников | [decisions/2026-08-23-private-compile-recovery.md](decisions/2026-08-23-private-compile-recovery.md) |
 | `INV.APP.CODE-DEFINITION-READINESS` | инвариант · product | active |  | Definition не публикует ложный типизированный успех | [invariants/INV.APP.CODE-DEFINITION-READINESS.md](invariants/INV.APP.CODE-DEFINITION-READINESS.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Оверлей конфигурации не меняет исходный снимок | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
 | `INV.APP.DEFERRED-MANIFEST` | инвариант · product | active |  | Большое чтение отвечает ограниченным манифестом | [invariants/INV.APP.DEFERRED-MANIFEST.md](invariants/INV.APP.DEFERRED-MANIFEST.md) |
@@ -202,6 +203,7 @@
 | `INV.SOURCE.PLATFORM-XML-ONLY` | инвариант · product | active |  | Физически адресованный нативный гейт не принимает EDT | [invariants/INV.SOURCE.PLATFORM-XML-ONLY.md](invariants/INV.SOURCE.PLATFORM-XML-ONLY.md) |
 | `INV.SOURCE.PORTABLE-GIT` | инвариант · product | active |  | Переносимость Git доказывается содержимым репозитория | [invariants/INV.SOURCE.PORTABLE-GIT.md](invariants/INV.SOURCE.PORTABLE-GIT.md) |
 | `INV.SOURCE.PORTABLE-LFS-ADVISORY` | инвариант · product | active |  | LFS остаётся необязательной подсказкой | [invariants/INV.SOURCE.PORTABLE-LFS-ADVISORY.md](invariants/INV.SOURCE.PORTABLE-LFS-ADVISORY.md) |
+| `INV.SOURCE.PRIVATE-COMPILE-RECOVERY` | инвариант · product | active |  | Recovery compile-транзакции не публикуется в source-set | [invariants/INV.SOURCE.PRIVATE-COMPILE-RECOVERY.md](invariants/INV.SOURCE.PRIVATE-COMPILE-RECOVERY.md) |
 | `INV.SOURCE.READER-MIGRATION` | инвариант · product | active |  | Режим миграции читателя объявлен явно | [invariants/INV.SOURCE.READER-MIGRATION.md](invariants/INV.SOURCE.READER-MIGRATION.md) |
 | `INV.SOURCE.READER-OUTPUT-PARITY` | инвариант · product | active |  | Мост читателя не меняет типизированный ответ | [invariants/INV.SOURCE.READER-OUTPUT-PARITY.md](invariants/INV.SOURCE.READER-OUTPUT-PARITY.md) |
 | `INV.SOURCE.READER-SELECTOR` | инвариант · product | active |  | Предметный читатель принимает ровно один селектор цели | [invariants/INV.SOURCE.READER-SELECTOR.md](invariants/INV.SOURCE.READER-SELECTOR.md) |
