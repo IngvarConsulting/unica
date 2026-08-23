@@ -417,12 +417,12 @@ fn parse_resident_findings(
             .map(str::to_string)
             .unwrap_or_else(|| "diagnostics database is building".to_string());
         let retry_after_ms = value.get("retry_after_ms").and_then(Value::as_u64);
-        let state = field("state").unwrap_or("loading").to_string();
         return Ok(provider_not_ready(
             reply.version,
             detail,
+            "buildingIndex",
             retry_after_ms,
-            state,
+            "building",
         ));
     }
     let envelope: ResidentFindingsEnvelope = serde_json::from_value(value)
@@ -431,6 +431,7 @@ fn parse_resident_findings(
         return Ok(provider_not_ready(
             reply.version,
             "diagnostic findings are stale while the provider reloads",
+            "updatingIndex",
             None,
             "stale",
         ));
@@ -630,6 +631,7 @@ fn parse_common_tags(tags: &[String]) -> Vec<DiagnosticTag> {
 fn provider_not_ready(
     version: Option<String>,
     message: impl Into<String>,
+    detail_code: impl Into<String>,
     retry_after_ms: Option<u64>,
     state: impl Into<String>,
 ) -> DiagnosticProviderOutcome {
@@ -642,7 +644,7 @@ fn provider_not_ready(
         readiness: None,
         error: Some(DiagnosticError::dependency_pending(
             message,
-            "buildingIndex",
+            detail_code,
             retry_after_ms,
             Some(state),
             Some("status"),
@@ -1001,6 +1003,12 @@ mod bsl_diagnostics_provider_tests {
                 "status":"loading","detail":"building","state":"loading","generation":4,
                 "retry_after_ms":1500
             })),
+            FakeBackend::resident(json!({
+                "revision": 4,
+                "stale": true,
+                "reload": "running",
+                "result": {"kind": "full", "truncated": false, "findings": []}
+            })),
         ]);
         let provider = BslAnalyzerDiagnosticProvider::with_backend(&backend);
 
@@ -1035,8 +1043,14 @@ mod bsl_diagnostics_provider_tests {
         let error = serde_json::to_value(error).unwrap();
         assert_eq!(error["detailCode"], "buildingIndex");
         assert_eq!(error["retryAfterMs"], 1500);
-        assert_eq!(error["state"], "loading");
+        assert_eq!(error["state"], "building");
         assert_eq!(error["nextAction"], "status");
+
+        let stale = execute(&provider, &fixture, DiagnosticAction::Findings);
+        assert_eq!(stale.status, DiagnosticProviderStatus::Unavailable);
+        let error = serde_json::to_value(stale.error.unwrap()).unwrap();
+        assert_eq!(error["detailCode"], "updatingIndex");
+        assert_eq!(error["state"], "stale");
     }
 
     #[test]

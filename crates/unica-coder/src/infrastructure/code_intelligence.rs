@@ -596,7 +596,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                         Some(("buildingIndex", "building"))
                     }
                     IndexReadiness::Stale { .. } | IndexReadiness::Incomplete => {
-                        Some(("updatingIndex", "updating"))
+                        Some(("updatingIndex", "stale"))
                     }
                     IndexReadiness::Ready { .. }
                     | IndexReadiness::Failed(_)
@@ -2864,7 +2864,7 @@ mod tests {
                 "code": "dependencyPending",
                 "retryable": true,
                 "detailCode": "updatingIndex",
-                "state": "updating"
+                "state": "stale"
             })
         );
     }
@@ -2899,7 +2899,7 @@ mod tests {
                 "code": "dependencyPending",
                 "retryable": true,
                 "detailCode": "updatingIndex",
-                "state": "updating"
+                "state": "stale"
             })
         );
     }

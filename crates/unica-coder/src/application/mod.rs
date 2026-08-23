@@ -463,7 +463,14 @@ pub fn code_search_output_schema() -> Value {
                             "retryAfterMs": {"type": "integer", "minimum": 0},
                             "state": {"type": "string", "minLength": 1}
                         },
-                        "required": ["code", "retryable"]
+                        "required": ["code", "retryable"],
+                        "allOf": [{
+                            "if": {
+                                "properties": {"code": {"const": "dependencyPending"}},
+                                "required": ["code"]
+                            },
+                            "then": {"required": ["detailCode", "state"]}
+                        }]
                     }
                 ]
             },
@@ -3664,6 +3671,7 @@ pub(crate) mod tests {
     fn code_search_schema_requires_a_machine_readable_section_termination() {
         let schema = code_search_output_schema();
         let section = &schema["properties"]["data"]["properties"]["sections"]["items"];
+        let termination = &section["properties"]["termination"]["oneOf"][1];
 
         assert!(section["required"]
             .as_array()
@@ -3693,6 +3701,21 @@ pub(crate) mod tests {
             section["properties"]["termination"]["oneOf"][1]["properties"]["state"]["minLength"],
             1
         );
+        let validator = jsonschema::validator_for(termination).unwrap();
+        assert!(!validator.is_valid(&json!({
+            "code": "dependencyPending",
+            "retryable": true
+        })));
+        assert!(validator.is_valid(&json!({
+            "code": "dependencyPending",
+            "retryable": true,
+            "detailCode": "buildingIndex",
+            "state": "building"
+        })));
+        assert!(validator.is_valid(&json!({
+            "code": "deadlineExceeded",
+            "retryable": true
+        })));
     }
 
     #[derive(Default)]

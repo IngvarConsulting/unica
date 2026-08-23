@@ -953,7 +953,7 @@ fn validate_search_termination(
                 && value
                     .state
                     .as_ref()
-                    .is_none_or(|state| !state.trim().is_empty())
+                    .is_some_and(|state| !state.trim().is_empty())
         }
         SearchTerminationCode::LimitReached
         | SearchTerminationCode::UnsupportedScope
