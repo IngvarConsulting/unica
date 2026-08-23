@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import json
 import os
 import queue
@@ -16,6 +17,19 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
+
+
+def _load_wire_probe_module():
+    script = Path(__file__).with_name("probe-unica-wire.py")
+    spec = importlib.util.spec_from_file_location("unica_wire_probe", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load shared Unica wire probe module: {script}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_WIRE_PROBE = _load_wire_probe_module()
 
 
 TOOL_SURFACE_REVIEW_RELATIVE = Path("arch/tool-surface-review.json")
@@ -1276,7 +1290,9 @@ def expected_source_flow_projection(source_set: str) -> dict:
     return EXPECTED_SOURCE_FLOW_PROJECTIONS[source_set]
 
 
-class McpSession:
+class McpSession(_WIRE_PROBE.JsonRpcSession):
+    error_label = "Unica MCP smoke"
+
     def __init__(
         self,
         command: list[str],
@@ -1286,69 +1302,13 @@ class McpSession:
         cwd: Path,
         deadline: float | None = None,
     ) -> None:
-        popen_options = {}
-        if os.name == "posix":
-            popen_options["start_new_session"] = True
-        elif os.name == "nt" and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            popen_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        self.process = subprocess.Popen(
+        super().__init__(
             command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            env=environment,
+            environment,
             cwd=cwd,
-            **popen_options,
+            deadline=deadline or time.monotonic() + timeout_seconds,
+            timeout_seconds=timeout_seconds,
         )
-        assert self.process.stdin is not None
-        assert self.process.stdout is not None
-        assert self.process.stderr is not None
-        self.timeout_seconds = timeout_seconds
-        self.deadline = deadline
-        self.lines: queue.Queue[str] = queue.Queue()
-        self.diagnostics: list[str] = []
-        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
-        self.error_reader = threading.Thread(target=self._read_stderr, daemon=True)
-        started_readers: list[threading.Thread] = []
-        try:
-            self.reader.start()
-            started_readers.append(self.reader)
-            # The server stays open across the whole flow and writes diagnostics to
-            # stderr, so an undrained pipe buffer would block it mid-request and
-            # surface as a bare timeout.
-            self.error_reader.start()
-            started_readers.append(self.error_reader)
-        except BaseException:
-            # The constructor has not returned, so neither the admission owner
-            # nor the watchdog can see this process yet. Reap it here before
-            # exposing the original thread-start failure.
-            _terminate_unregistered_process_tree(self.process)
-            for reader in started_readers:
-                reader.join(timeout=5)
-            for stream in (
-                self.process.stdin,
-                self.process.stdout,
-                self.process.stderr,
-            ):
-                if stream is not None and not stream.closed:
-                    stream.close()
-            raise
-
-    def _read_stdout(self) -> None:
-        assert self.process.stdout is not None
-        for line in self.process.stdout:
-            self.lines.put(line)
-        self.lines.put("")
-
-    def _read_stderr(self) -> None:
-        assert self.process.stderr is not None
-        for line in self.process.stderr:
-            self.diagnostics.append(line)
-
-    def _detail(self) -> str:
-        return "".join(self.diagnostics).strip() or "no process output"
 
     def terminate_tree(
         self,
@@ -1409,78 +1369,6 @@ class McpSession:
         except subprocess.TimeoutExpired:
             pass
         _wait_for_process_pids(service_pids, 5)
-
-    def request(self, message: dict) -> dict:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
-        self.process.stdin.flush()
-        deadline = min(
-            time.monotonic() + self.timeout_seconds,
-            getattr(self, "deadline", None) or float("inf"),
-        )
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise SystemExit(
-                    f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
-                )
-            try:
-                line = self.lines.get(timeout=remaining)
-            except queue.Empty as error:
-                raise SystemExit(
-                    f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
-                ) from error
-            if not line:
-                raise SystemExit(
-                    f"Unica MCP exited before the expected response: {self._detail()}"
-                )
-            try:
-                response = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise SystemExit(f"Unica MCP emitted invalid JSON: {error}: {line}") from error
-            if response.get("id") == message.get("id"):
-                return response
-
-    def notify(self, message: dict) -> None:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
-        self.process.stdin.flush()
-
-    def close(self) -> None:
-        if self.process.stdin is not None and not self.process.stdin.closed:
-            self.process.stdin.close()
-        try:
-            result = self.process.wait(timeout=self._remaining_timeout())
-        except subprocess.TimeoutExpired as error:
-            self.process.kill()
-            raise SystemExit(
-                f"Unica MCP smoke timed out after {self.timeout_seconds:g}s: {self._detail()}"
-            ) from error
-        self.reader.join(timeout=self._remaining_timeout())
-        self.error_reader.join(timeout=self._remaining_timeout())
-        if self.reader.is_alive() or self.error_reader.is_alive():
-            raise SystemExit(
-                "Unica MCP reader threads did not stop before the aggregate deadline: "
-                f"{self._detail()}"
-            )
-        detail = self._detail()
-        for stream in (self.process.stdout, self.process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
-        if result != 0:
-            raise SystemExit(f"Unica MCP exited with {result}: {detail}")
-
-    def _remaining_timeout(self) -> float:
-        deadline = getattr(self, "deadline", None)
-        if deadline is None:
-            return self.timeout_seconds
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise SystemExit(
-                "Unica MCP smoke exceeded its aggregate deadline: "
-                f"{self._detail()}"
-            )
-        return min(self.timeout_seconds, remaining)
 
 
 def _workspace_service_pids(cache_root: Path) -> set[int]:

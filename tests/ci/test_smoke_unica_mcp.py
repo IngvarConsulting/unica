@@ -63,6 +63,31 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         self.assertLess(elapsed, 0.15, "notifications restarted the request deadline")
 
+    def test_request_records_the_response_kind_for_shared_wire_diagnostics(self) -> None:
+        module = load_module()
+
+        class Process:
+            stdin = io.StringIO()
+
+        session = module.McpSession.__new__(module.McpSession)
+        session.process = Process()
+        session.timeout_seconds = 0.05
+        session.deadline = time.monotonic() + 0.05
+        session.lines = module.queue.Queue()
+        session.diagnostics = []
+        session.response_kinds = []
+        session.lines.put('{"jsonrpc":"2.0","id":41,"result":{"tools":[]}}\n')
+
+        response = session.request(
+            {"jsonrpc": "2.0", "id": 41, "method": "tools/list", "params": {}}
+        )
+
+        self.assertEqual(response["result"], {"tools": []})
+        self.assertEqual(
+            session.response_kinds,
+            [{"kind": "result", "method": "tools/list"}],
+        )
+
     def test_whole_smoke_has_a_hard_aggregate_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             child_pid_path = Path(directory) / "child.pid"
