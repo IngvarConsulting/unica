@@ -181,6 +181,10 @@ claude plugin marketplace remove unica
 
 ## Разработка
 
+Рекомендуемое окружение разработчика, настройка `rust-analyzer` для кодовых
+агентов и установка навыков MCP Server Dev описаны в
+[руководстве для контрибьюторов](CONTRIBUTING.md).
+
 Для разработки под Codex используется отдельный marketplace `unica-dev`:
 
 ```sh
