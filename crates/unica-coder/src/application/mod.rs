@@ -33,6 +33,8 @@ pub(crate) mod runtime_admission;
 pub(crate) mod source_navigation;
 pub(crate) mod source_resources;
 pub(crate) mod tool_contracts;
+#[cfg(test)]
+pub(crate) mod v13;
 pub use tool_contracts::{input_schema_for_tool, strip_schema_descriptions};
 
 const PUBLIC_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
