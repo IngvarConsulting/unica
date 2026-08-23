@@ -336,10 +336,10 @@ fn open_unix_child(
 ) -> io::Result<fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
 
-    let name = unix_child_name(name)?;
+    let encoded_name = unix_child_name(name)?;
     // SAFETY: parent owns a live descriptor, name is a NUL-terminated single component, and a
     // successful openat result transfers one newly owned descriptor to this function.
-    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    let descriptor = unsafe { libc::openat(parent.as_raw_fd(), encoded_name.as_ptr(), flags) };
     if descriptor < 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -355,7 +355,7 @@ pub(crate) fn create_new_regular_child(
 ) -> io::Result<fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
 
-    let name = unix_child_name(name)?;
+    let encoded_name = unix_child_name(name)?;
     // SAFETY: parent owns a live descriptor, name is one NUL-terminated child component, and a
     // successful openat result transfers one newly owned descriptor to this function. Mode 0666
     // preserves the process-umask default captured by the publication protocol before the file is
@@ -363,7 +363,7 @@ pub(crate) fn create_new_regular_child(
     let descriptor = unsafe {
         libc::openat(
             parent.as_raw_fd(),
-            name.as_ptr(),
+            encoded_name.as_ptr(),
             libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
             0o666,
         )
@@ -440,6 +440,52 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
             Component::RootDir | Component::CurDir => {}
             Component::Normal(name) => {
                 current = open_directory_child_nofollow(&current, name)?;
+            }
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secure directory path contains a non-normal component",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
+/// Opens an absolute directory path component-by-component and creates only absent directory
+/// components relative to an already-retained parent. Existing links are never followed and no
+/// ambient write occurs before the parent descriptor is verified.
+#[cfg(unix)]
+pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path must be absolute",
+        ));
+    }
+    let mut current = open_directory_nofollow(Path::new("/"))?;
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(name) => {
+                current = match open_directory_child_nofollow(&current, name) {
+                    Ok(directory) => directory,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        match create_new_directory_child(&current, name) {
+                            Ok(directory) => {
+                                sync_directory(&current)?;
+                                directory
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                                open_directory_child_nofollow(&current, name)?
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Err(error) => return Err(error),
+                };
             }
             Component::ParentDir | Component::Prefix(_) => {
                 return Err(io::Error::new(
@@ -602,6 +648,22 @@ fn windows_api_path(path: &Path) -> io::Result<Vec<u16>> {
         ));
     }
     Ok(windows_api_path_from_utf16(encoded, true))
+}
+
+#[cfg(unix)]
+pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let metadata = file.metadata()?;
+    // SAFETY: geteuid has no preconditions and reads only process credentials.
+    let current_uid = unsafe { libc::geteuid() };
+    if metadata.uid() != current_uid || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "state object must be owned by the current user and owner-only",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1361,11 +1423,77 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
     Ok(current)
 }
 
+#[cfg(windows)]
+pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path must be absolute",
+        ));
+    }
+    let absolute = std::path::absolute(path)?;
+    let mut components = absolute.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure Windows directory path has no prefix",
+        ));
+    };
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure Windows directory path has no root component",
+        ));
+    }
+    let mut anchor = PathBuf::from(prefix.as_os_str());
+    anchor.push(r"\");
+    let mut current = open_directory_nofollow(&anchor)?;
+    for component in components {
+        match component {
+            Component::Normal(name) => {
+                current = match open_directory_child_nofollow(&current, name) {
+                    Ok(directory) => directory,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        match create_new_directory_child(&current, name) {
+                            Ok(directory) => directory,
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                                open_directory_child_nofollow(&current, name)?
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    Err(error) => return Err(error),
+                };
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "secure directory path contains a non-normal component",
+                ));
+            }
+        }
+    }
+    Ok(current)
+}
+
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn open_absolute_directory_path_nofollow(_path: &Path) -> io::Result<fs::File> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "secure no-follow directory paths are unavailable on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn open_or_create_absolute_directory_path_nofollow(
+    _path: &Path,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "secure no-follow directory creation is unavailable on this host",
     ))
 }
 
@@ -2277,6 +2405,56 @@ fn rename_open_child(
     }
 }
 
+#[cfg(unix)]
+pub(crate) fn create_owner_only_directory_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
+
+    let encoded_name = unix_child_name(name)?;
+    // SAFETY: the retained parent descriptor and validated child name remain live. 0700 is
+    // owner-only even before the process umask is applied, so there is no permissive creation
+    // window before the retained handle is normalized below.
+    let status = unsafe { libc::mkdirat(parent.as_raw_fd(), encoded_name.as_ptr(), 0o700) };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let directory = open_directory_child_nofollow(parent, name)?;
+    directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+    verify_owner_only_acl(&directory)?;
+    Ok(directory)
+}
+
+#[cfg(unix)]
+pub(crate) fn create_owner_only_file_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let name = unix_child_name(name)?;
+    // SAFETY: parent and name remain live, and a successful result transfers one newly owned
+    // descriptor. Mode 0600 is private before umask filtering and O_NOFOLLOW rejects links.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: descriptor is a newly owned successful openat result.
+    let file = unsafe { fs::File::from_raw_fd(descriptor) };
+    restrict_stage_to_owner(&file)?;
+    verify_owner_only_acl(&file)?;
+    Ok(file)
+}
+
 #[cfg(windows)]
 pub(crate) fn create_owner_only_directory_child(
     parent: &fs::File,
@@ -2383,6 +2561,28 @@ pub(crate) fn create_owner_only_file_child(
         FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
         Some(security.security_descriptor()),
     )
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn create_owner_only_directory_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "owner-only directory creation is unavailable on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn create_owner_only_file_child(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "owner-only file creation is unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -2733,6 +2933,14 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
     }
     let descriptor = LocalSecurityDescriptor(descriptor);
     verify_owner_only_security_descriptor(descriptor.0)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn verify_owner_only_acl(_file: &fs::File) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "owner-only ACL verification is unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -4038,6 +4246,55 @@ mod tests {
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_absolute_directory_creation_builds_missing_components_from_anchors() {
+        use super::{
+            file_identity, open_directory_nofollow, open_or_create_absolute_directory_path_nofollow,
+        };
+
+        let root = unique_temp_root("secure-open-or-create");
+        fs::create_dir_all(&root).unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let requested = physical_root.join("provider").join("state");
+
+        let opened = open_or_create_absolute_directory_path_nofollow(&requested).unwrap();
+
+        assert_eq!(
+            file_identity(&opened).unwrap(),
+            file_identity(&open_directory_nofollow(&requested).unwrap()).unwrap()
+        );
+        drop(opened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_absolute_directory_creation_rejects_link_ancestor_without_writing_through_it() {
+        use super::{create_test_directory_link, open_or_create_absolute_directory_path_nofollow};
+
+        #[cfg(windows)]
+        const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+        let root = unique_temp_root("secure-open-or-create-link");
+        fs::create_dir_all(&root).unwrap();
+        let physical_root = fs::canonicalize(&root).unwrap();
+        let redirected = physical_root.join("redirected");
+        fs::create_dir(&redirected).unwrap();
+        let link = physical_root.join("link");
+        if let Err(error) = create_test_directory_link(&redirected, &link) {
+            #[cfg(windows)]
+            if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) {
+                fs::remove_dir_all(root).unwrap();
+                return;
+            }
+            panic!("failed to create directory link fixture: {error}");
+        }
+
+        assert!(open_or_create_absolute_directory_path_nofollow(&link.join("state")).is_err());
+        assert!(!redirected.join("state").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(windows)]
     mod windows {

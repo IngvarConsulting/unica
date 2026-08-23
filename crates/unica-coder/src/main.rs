@@ -4,6 +4,13 @@ fn main() {
 
 fn run() {
     let args = std::env::args().collect::<Vec<_>>();
+    if args.iter().any(|arg| arg == "--daemon") {
+        if let Err(error) = unica_coder::interfaces::daemon::run_from_args(&args) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|arg| arg == "--workspace-service") {
         if let Err(error) = unica_coder::interfaces::workspace_service::run_from_args(&args) {
             eprintln!("{error}");

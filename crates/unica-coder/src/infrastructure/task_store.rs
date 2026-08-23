@@ -80,6 +80,13 @@ impl FileInvocationStore {
         }
         let root = open_directory_nofollow(&root)
             .map_err(|error| storage_error("open task store root", error))?;
+        Self::open_retained_directory(root, clock)
+    }
+
+    pub(crate) fn open_retained_directory(
+        root: File,
+        clock: Arc<dyn EpochMillisClock>,
+    ) -> Result<(Self, RecoveryReport), InvocationStoreError> {
         let root_identity = file_identity(&root)
             .map_err(|error| storage_error("capture task store root identity", error))?;
         let root_lock = acquire_root_lock(&root)?;

@@ -40,6 +40,7 @@
 | `DEC.2026-08-22.EVIDENCE-BOUNDED-SAFETY` | решение · product | active | да | Safety-правило не шире исполняемого доказательства | [decisions/2026-08-22-evidence-bounded-safety.md](decisions/2026-08-22-evidence-bounded-safety.md) |
 | `DEC.2026-08-22.LINEAR-PUBLICATION` | решение · product | active | да | Публикация выражается зависимостями одного конвейера | [decisions/2026-08-22-linear-publication.md](decisions/2026-08-22-linear-publication.md) |
 | `DEC.2026-08-23.MODULE-CONTRACT` | решение · product | planned | нет | Модули v0.13 являются адресуемыми семантическими узлами | [decisions/2026-08-23-module-contract.md](decisions/2026-08-23-module-contract.md) |
+| `DEC.2026-08-23.USER-CORE-DAEMON-SLICE` | решение · product | active | да | Версионированный пользовательский daemon становится владельцем execution state | [decisions/2026-08-23-user-core-daemon-slice.md](decisions/2026-08-23-user-core-daemon-slice.md) |
 | `DEC.2026-08-23.V0-13-EXECUTION-SURFACE` | решение · product | planned | нет | v0.13 отделяет восемь предметных входов от управления долгой работой | [decisions/2026-08-23-v0-13-execution-surface.md](decisions/2026-08-23-v0-13-execution-surface.md) |
 | `INV.APP.CODE-DEFINITION-READINESS` | инвариант · product | active |  | Definition не публикует ложный типизированный успех | [invariants/INV.APP.CODE-DEFINITION-READINESS.md](invariants/INV.APP.CODE-DEFINITION-READINESS.md) |
 | `INV.APP.CONFIG-SNAPSHOT` | инвариант · product | active |  | Оверлей конфигурации не меняет исходный снимок | [invariants/INV.APP.CONFIG-SNAPSHOT.md](invariants/INV.APP.CONFIG-SNAPSHOT.md) |
@@ -53,7 +54,7 @@
 | `INV.APP.DOCUMENTATION-SECTIONS` | инвариант · product | active |  | Секции документации следуют порядку поставщиков | [invariants/INV.APP.DOCUMENTATION-SECTIONS.md](invariants/INV.APP.DOCUMENTATION-SECTIONS.md) |
 | `INV.APP.EVENT-BINDING` | инвариант · product | active |  | Обработчик подписки требует явный признак неглобального модуля | [invariants/INV.APP.EVENT-BINDING.md](invariants/INV.APP.EVENT-BINDING.md) |
 | `INV.APP.EVENT-SOURCE` | инвариант · product | active |  | Логический источник подписки проходит обратное чтение | [invariants/INV.APP.EVENT-SOURCE.md](invariants/INV.APP.EVENT-SOURCE.md) |
-| `INV.APP.HIDDEN-SERVICES` | инвариант · product | active |  | Внутренние сервисы привязаны к рабочему пространству | [invariants/INV.APP.HIDDEN-SERVICES.md](invariants/INV.APP.HIDDEN-SERVICES.md) |
+| `INV.APP.HIDDEN-SERVICES` | инвариант · product | active |  | Служебная топология отделяет пользовательский executor от workspace helpers | [invariants/INV.APP.HIDDEN-SERVICES.md](invariants/INV.APP.HIDDEN-SERVICES.md) |
 | `INV.APP.META-FINDINGS` | инвариант · product | active |  | Находка метаданных несёт код, поле и язык | [invariants/INV.APP.META-FINDINGS.md](invariants/INV.APP.META-FINDINGS.md) |
 | `INV.APP.META-INFO-COVERAGE` | инвариант · product | active |  | Профиль чтения покрывает каждый вид метаданных | [invariants/INV.APP.META-INFO-COVERAGE.md](invariants/INV.APP.META-INFO-COVERAGE.md) |
 | `INV.APP.META-OBSERVATION` | инвариант · product | active |  | Ошибка дочернего ресурса не стирает исправное наблюдение | [invariants/INV.APP.META-OBSERVATION.md](invariants/INV.APP.META-OBSERVATION.md) |

@@ -8599,6 +8599,37 @@ fn main() {
     }
 
     #[test]
+    fn hidden_service_identity_distinguishes_user_core_daemon_from_workspace_helpers() {
+        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+
+        let first = test_context("hidden-topology-first");
+        let second = test_context("hidden-topology-second");
+        let first_helper =
+            WorkspaceServiceIdentity::new(&first, &first.workspace_root.join("src")).unwrap();
+        let second_helper =
+            WorkspaceServiceIdentity::new(&second, &second.workspace_root.join("src")).unwrap();
+        let daemon_fixture = tempfile::tempdir().unwrap();
+        let provider_state = std::fs::canonicalize(daemon_fixture.path()).unwrap();
+        let core = CoreIdentity::production();
+        let incompatible = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            .parse::<CoreIdentity>()
+            .unwrap();
+        let daemon = DaemonStateDirectory::open(&provider_state, &core).unwrap();
+        let incompatible_daemon =
+            DaemonStateDirectory::open(&provider_state, &incompatible).unwrap();
+
+        assert_ne!(first_helper.key, second_helper.key);
+        assert_ne!(daemon.path(), incompatible_daemon.path());
+        let daemon_name = daemon.path().file_name().unwrap().to_string_lossy();
+        assert!(daemon_name.contains(core.as_str()));
+        assert!(!daemon_name.contains(&first_helper.key));
+        assert!(!daemon_name.contains(&second_helper.key));
+
+        cleanup(&first);
+        cleanup(&second);
+    }
+
+    #[test]
     fn service_identity_reuses_normalized_paths() {
         let context = test_context("normalized-identity");
         let plain =
