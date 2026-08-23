@@ -382,9 +382,11 @@ impl DaemonOwner {
             .map_err(ConnectFailure::Rejected)?;
         if !response.matches_record(record) {
             return Err(match response.error_code() {
-                Some(code @ (DaemonErrorCode::Overloaded | DaemonErrorCode::OwnerCapacity)) => {
-                    ConnectFailure::RetryLater(code)
-                }
+                Some(
+                    code @ (DaemonErrorCode::Overloaded
+                    | DaemonErrorCode::OwnerCapacity
+                    | DaemonErrorCode::WorkspaceCapacity),
+                ) => ConnectFailure::RetryLater(code),
                 Some(code) => {
                     ConnectFailure::Rejected(format!("daemon handshake rejected: {code}"))
                 }
@@ -522,6 +524,9 @@ fn retry_later_diagnostic(code: DaemonErrorCode) -> String {
     match code {
         DaemonErrorCode::Overloaded => "daemon handshake capacity reached; retry later".to_string(),
         DaemonErrorCode::OwnerCapacity => "daemon owner capacity reached; retry later".to_string(),
+        DaemonErrorCode::WorkspaceCapacity => {
+            "daemon workspace capacity reached; retry later".to_string()
+        }
         _ => "daemon temporarily unavailable; retry later".to_string(),
     }
 }

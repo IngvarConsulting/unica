@@ -4,19 +4,24 @@ use super::protocol::{
     EndpointRecord, InvocationRequest, InvocationResponse, ServerResponse, DAEMON_PROTOCOL_VERSION,
 };
 use crate::application::invocation::{
-    normalized_arguments_hash, InvocationExecutor, PreparedDaemonInvocation,
+    normalized_arguments_hash, InvocationExecutor, InvocationExecutorError,
+    PreparedDaemonInvocation,
 };
-use crate::application::invocation_store::InvocationStore;
+use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::ports::{Clock, TokioClock};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::composition::open_daemon_invocation_store_from_directory;
 use crate::domain::cancellation::CancellationToken;
+use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{
     DomainResult, InvocationFailure, InvocationOutcome, SafeIdentityHash,
 };
 use crate::infrastructure::workspace::discover_workspace;
-use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
+use crate::infrastructure::workspace_actor::{
+    ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry, WorkspaceActorRegistryError,
+    WorkspaceRevisionFence,
+};
 use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -30,13 +35,109 @@ const CONNECTION_READ_TIMEOUT: Duration = Duration::from_millis(100);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
+const ACTOR_OPERATION_BUDGET: Duration = Duration::from_secs(7);
+
+#[derive(Clone)]
+pub(crate) struct ActorBoundInvocation {
+    tool: crate::application::invocation_store::ToolIdentity,
+    arguments: serde_json::Map<String, serde_json::Value>,
+    response_budget: Duration,
+    actor: Arc<WorkspaceActor>,
+    provider_root: ProviderRootBinding,
+    workspace_identity_hash: SafeIdentityHash,
+}
+
+impl ActorBoundInvocation {
+    pub(crate) fn tool(&self) -> crate::application::invocation_store::ToolIdentity {
+        self.tool
+    }
+
+    pub(crate) fn arguments(&self) -> &serde_json::Map<String, serde_json::Value> {
+        &self.arguments
+    }
+
+    pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
+        &self.workspace_identity_hash
+    }
+
+    fn begin_execution(
+        self,
+        cancellation: &CancellationToken,
+    ) -> Result<ActorBoundExecution, String> {
+        let revision = self.actor.capture_revision(
+            &self.provider_root,
+            ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+            cancellation,
+        )?;
+        Ok(ActorBoundExecution {
+            invocation: self,
+            revision,
+        })
+    }
+}
+
+pub(crate) struct ActorBoundExecution {
+    invocation: ActorBoundInvocation,
+    revision: WorkspaceRevisionFence,
+}
+
+impl ActorBoundExecution {
+    // The hidden V13 profile installs real consumers in Tasks 10-21. Until the
+    // Task 22 cutover, only injected canonical services exercise this narrow
+    // capability surface.
+    #[allow(dead_code)]
+    pub(crate) fn tool(&self) -> crate::application::invocation_store::ToolIdentity {
+        self.invocation.tool()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn arguments(&self) -> &serde_json::Map<String, serde_json::Value> {
+        self.invocation.arguments()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn workspace_identity_hash(&self) -> &SafeIdentityHash {
+        self.invocation.workspace_identity_hash()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn read_relative_file(
+        &self,
+        relative: &std::path::Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, String> {
+        self.invocation.actor.read_relative_file(
+            &self.invocation.provider_root,
+            relative,
+            max_bytes,
+        )
+    }
+
+    fn publish<T>(self, staged: T, cancellation: &CancellationToken) -> Result<T, String> {
+        self.invocation
+            .actor
+            .begin_publication(
+                &self.revision,
+                ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+                cancellation,
+            )?
+            .publish(
+                staged,
+                ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+                cancellation,
+            )
+    }
+}
 
 pub(crate) trait CanonicalInvocationService: Send + Sync {
-    fn prepare(&self, request: &InvocationRequest) -> Result<ExecutionClass, Box<DomainResult>>;
+    fn prepare(
+        &self,
+        invocation: &ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>>;
 
     fn execute(
         &self,
-        request: InvocationRequest,
+        invocation: &ActorBoundExecution,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure>;
 }
@@ -44,15 +145,16 @@ pub(crate) trait CanonicalInvocationService: Send + Sync {
 struct DormantCanonicalV13Service;
 
 impl CanonicalInvocationService for DormantCanonicalV13Service {
-    fn prepare(&self, request: &InvocationRequest) -> Result<ExecutionClass, Box<DomainResult>> {
-        validate_hidden_v13_request(request)
-            .map(|()| ExecutionClass::InlineCandidate)
-            .map_err(|summary| Box::new(failed_domain_result(&summary)))
+    fn prepare(
+        &self,
+        _invocation: &ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        Ok(ExecutionClass::InlineCandidate)
     }
 
     fn execute(
         &self,
-        _request: InvocationRequest,
+        _invocation: &ActorBoundExecution,
         _cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
         Ok(failed_domain_result(
@@ -61,14 +163,78 @@ impl CanonicalInvocationService for DormantCanonicalV13Service {
     }
 }
 
-fn prepare_workspace_identity(
+fn bind_workspace_invocation(
     request: &InvocationRequest,
     actors: &WorkspaceActorRegistry,
-) -> Result<SafeIdentityHash, String> {
-    let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))?;
+) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
+    let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
+        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
     let source_root = context.workspace_root.clone();
-    let actor = actors.get_or_create(&context, [("main", source_root)], "canonical-v0.13")?;
-    actor.safe_identity_hash()
+    let actor = actors
+        .get_or_create(&context, [("main", &source_root)], "canonical-v0.13")
+        .map_err(|error| match error {
+            WorkspaceActorRegistryError::Capacity { .. } => WorkspaceAdmissionError::Capacity,
+            WorkspaceActorRegistryError::InvalidIdentity(_)
+            | WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::Invalid,
+        })?;
+    let provider_root = actor
+        .bind_provider_root("main", &source_root)
+        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+    let workspace_identity_hash = actor
+        .safe_identity_hash()
+        .map_err(|_| WorkspaceAdmissionError::Invalid)?;
+    Ok(ActorBoundInvocation {
+        tool: request.tool(),
+        arguments: request.arguments().clone(),
+        response_budget: Duration::from_millis(request.response_budget_ms()),
+        actor,
+        provider_root,
+        workspace_identity_hash,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceAdmissionError {
+    Capacity,
+    Invalid,
+}
+
+#[derive(Debug)]
+enum DaemonInvocationError {
+    WorkspaceCapacity,
+    Executor(InvocationExecutorError),
+}
+
+impl From<InvocationExecutorError> for DaemonInvocationError {
+    fn from(error: InvocationExecutorError) -> Self {
+        Self::Executor(error)
+    }
+}
+
+impl DaemonInvocationError {
+    fn protocol_code(&self) -> DaemonErrorCode {
+        match self {
+            Self::WorkspaceCapacity => DaemonErrorCode::WorkspaceCapacity,
+            Self::Executor(InvocationExecutorError::Store(InvocationStoreError::NotFound)) => {
+                DaemonErrorCode::TaskNotFound
+            }
+            Self::Executor(InvocationExecutorError::Store(InvocationStoreError::Expired)) => {
+                DaemonErrorCode::TaskExpired
+            }
+            Self::Executor(InvocationExecutorError::Store(_)) => DaemonErrorCode::StoreFailed,
+            Self::Executor(InvocationExecutorError::ExecutionFailed) => {
+                DaemonErrorCode::InvocationFailed
+            }
+            Self::Executor(InvocationExecutorError::StatePoisoned) => {
+                DaemonErrorCode::InvocationFailed
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn workspace_capacity_protocol_code_for_test() -> DaemonErrorCode {
+    DaemonInvocationError::WorkspaceCapacity.protocol_code()
 }
 
 fn failed_domain_result(summary: &str) -> DomainResult {
@@ -231,30 +397,62 @@ impl DaemonInvocationRuntime {
         }
     }
 
-    fn submit(&self, request: InvocationRequest) -> Result<InvocationResponse, String> {
-        let prepared = self
-            .service
-            .prepare(&request)
-            .and_then(|class| {
-                prepare_workspace_identity(&request, &self.workspace_actors)
-                    .map(|workspace_identity_hash| (class, workspace_identity_hash))
-                    .map_err(|summary| Box::new(failed_domain_result(&summary)))
-            })
-            .map(|(class, workspace_identity_hash)| {
-                PreparedDaemonInvocation::new(
-                    request.tool(),
-                    normalized_arguments_hash(request.arguments()),
-                    workspace_identity_hash,
-                    class,
-                    Duration::from_millis(request.response_budget_ms()),
-                )
-            })
-            .map_err(|result| *result);
+    fn submit(
+        &self,
+        request: InvocationRequest,
+    ) -> Result<InvocationResponse, DaemonInvocationError> {
+        let actor_bound = match validate_hidden_v13_request(&request) {
+            Ok(()) => match bind_workspace_invocation(&request, &self.workspace_actors) {
+                Ok(bound) => Ok(bound),
+                Err(WorkspaceAdmissionError::Capacity) => {
+                    return Err(DaemonInvocationError::WorkspaceCapacity)
+                }
+                Err(WorkspaceAdmissionError::Invalid) => {
+                    Err(failed_domain_result("workspace actor admission failed"))
+                }
+            },
+            Err(summary) => Err(failed_domain_result(&summary)),
+        };
+        let prepared = match &actor_bound {
+            Ok(invocation) => self.service.prepare(invocation).map_err(|result| *result),
+            Err(result) => Err(result.clone()),
+        }
+        .map(|class| {
+            let invocation = actor_bound
+                .as_ref()
+                .expect("successful preparation retains actor-bound invocation");
+            PreparedDaemonInvocation::new(
+                invocation.tool(),
+                normalized_arguments_hash(invocation.arguments()),
+                invocation.workspace_identity_hash().clone(),
+                class,
+                invocation.response_budget,
+            )
+            .with_resource_lease(Arc::new(invocation.clone()))
+        });
         let service = Arc::clone(&self.service);
-        let execute_request = request.clone();
+        let execute_invocation = actor_bound.ok();
         self.executor
             .submit_prepared(prepared, move |cancellation| {
-                service.execute(execute_request, cancellation)
+                let invocation = execute_invocation.ok_or_else(|| {
+                    InvocationFailure::new(
+                        "workspace_admission_failed",
+                        "workspace actor admission failed",
+                    )
+                })?;
+                let execution = invocation.begin_execution(&cancellation).map_err(|_| {
+                    InvocationFailure::new(
+                        "workspace_changed",
+                        "workspace actor capability changed before execution",
+                    )
+                })?;
+                let outcome = service.execute(&execution, cancellation.clone());
+                execution.publish(outcome, &cancellation).map_err(|_| {
+                    InvocationFailure::new(
+                        "workspace_changed",
+                        "workspace actor capability changed before publication",
+                    )
+                })?
             })
             .map(|outcome| match outcome {
                 InvocationOutcome::Direct(result) => InvocationResponse::Direct(result),
@@ -262,34 +460,38 @@ impl DaemonInvocationRuntime {
                     InvocationResponse::Task(DaemonTaskSnapshot::from_domain(task))
                 }
             })
+            .map_err(DaemonInvocationError::from)
     }
 
     fn get(
         &self,
         task_id: crate::domain::invocation::TaskId,
-    ) -> Result<DaemonTaskSnapshot, String> {
+    ) -> Result<DaemonTaskSnapshot, DaemonInvocationError> {
         self.executor
             .get_task(task_id)
             .map(DaemonTaskSnapshot::from_domain)
+            .map_err(DaemonInvocationError::from)
     }
 
     fn wait(
         &self,
         task_id: crate::domain::invocation::TaskId,
         wait_ms: u64,
-    ) -> Result<DaemonTaskSnapshot, String> {
+    ) -> Result<DaemonTaskSnapshot, DaemonInvocationError> {
         self.executor
             .wait_task(task_id, Duration::from_millis(wait_ms))
             .map(DaemonTaskSnapshot::from_domain)
+            .map_err(DaemonInvocationError::from)
     }
 
     fn cancel(
         &self,
         task_id: crate::domain::invocation::TaskId,
-    ) -> Result<DaemonTaskSnapshot, String> {
+    ) -> Result<DaemonTaskSnapshot, DaemonInvocationError> {
         self.executor
             .cancel_task(task_id)
             .map(DaemonTaskSnapshot::from_domain)
+            .map_err(DaemonInvocationError::from)
     }
 
     fn has_active_invocations(&self) -> bool {
@@ -579,10 +781,9 @@ fn handle_connection(
                 .submit(invocation)
             {
                 Ok(outcome) => write_response(&mut stream, &ServerResponse::invocation(outcome))?,
-                Err(_) => write_response(
-                    &mut stream,
-                    &ServerResponse::error(DaemonErrorCode::InvocationFailed),
-                )?,
+                Err(error) => {
+                    write_response(&mut stream, &ServerResponse::error(error.protocol_code()))?
+                }
             },
             ClientRequest::GetTask { task_id } => {
                 write_task_response(&mut stream, invocation_runtime.get(task_id))?
@@ -600,18 +801,11 @@ fn handle_connection(
 
 fn write_task_response(
     stream: &mut TcpStream,
-    result: Result<DaemonTaskSnapshot, String>,
+    result: Result<DaemonTaskSnapshot, DaemonInvocationError>,
 ) -> Result<(), String> {
     match result {
         Ok(snapshot) => write_response(stream, &ServerResponse::task(snapshot)),
-        Err(error) if error == "task record not found" => write_response(
-            stream,
-            &ServerResponse::error(DaemonErrorCode::TaskNotFound),
-        ),
-        Err(error) if error == "task record expired" => {
-            write_response(stream, &ServerResponse::error(DaemonErrorCode::TaskExpired))
-        }
-        Err(_) => write_response(stream, &ServerResponse::error(DaemonErrorCode::StoreFailed)),
+        Err(error) => write_response(stream, &ServerResponse::error(error.protocol_code())),
     }
 }
 
@@ -623,6 +817,125 @@ fn write_response(stream: &mut TcpStream, response: &ServerResponse) -> Result<(
         .write_all(&bytes)
         .and_then(|_| stream.flush())
         .map_err(|error| daemon_io_error("write daemon response", error))
+}
+
+#[cfg(test)]
+mod actor_capacity_tests {
+    use super::*;
+    use crate::application::invocation_store::ToolIdentity;
+    use crate::application::operation_descriptors::KnownLongReason;
+    use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
+    use std::sync::mpsc;
+
+    struct BlockingService {
+        entered: mpsc::Sender<()>,
+    }
+
+    impl CanonicalInvocationService for BlockingService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            self.entered.send(()).unwrap();
+            while !cancellation.is_cancelled() {
+                std::thread::yield_now();
+            }
+            Err(InvocationFailure::new("cancelled", "test cancellation"))
+        }
+    }
+
+    fn task_id(response: InvocationResponse) -> crate::domain::invocation::TaskId {
+        match response {
+            InvocationResponse::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected durable task: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace_parent = tempfile::tempdir().unwrap();
+        let roots = (0..3)
+            .map(|index| {
+                let root = workspace_parent.path().join(format!("workspace-{index}"));
+                std::fs::create_dir(&root).unwrap();
+                std::fs::canonicalize(root).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let (entered, entered_wait) = mpsc::channel();
+        let runtime = DaemonInvocationRuntime {
+            executor: Arc::new(InvocationExecutor::new(
+                Arc::new(store),
+                Arc::new(TokioClock),
+            )),
+            service: Arc::new(BlockingService { entered }),
+            workspace_actors: WorkspaceActorRegistry::with_capacity_for_test(2),
+        };
+        let request = |root: &std::path::Path| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({}),
+                root.to_string_lossy(),
+                0,
+            )
+            .unwrap()
+        };
+
+        let first = task_id(runtime.submit(request(&roots[0])).unwrap());
+        let second = task_id(runtime.submit(request(&roots[1])).unwrap());
+        let alias = task_id(runtime.submit(request(&roots[0].join("."))).unwrap());
+        for _ in 0..3 {
+            entered_wait.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let rejected = runtime.submit(request(&roots[2])).unwrap_err();
+        assert_eq!(rejected.protocol_code(), DaemonErrorCode::WorkspaceCapacity);
+
+        for task_id in [first, second, alias] {
+            assert_eq!(
+                runtime.cancel(task_id).unwrap().status,
+                crate::domain::invocation::InvocationStatus::Cancelled
+            );
+        }
+    }
+
+    #[test]
+    fn typed_executor_errors_map_to_closed_protocol_codes_without_text_matching() {
+        let storage = DaemonInvocationError::Executor(InvocationExecutorError::Store(
+            InvocationStoreError::Storage(
+                "SECRET runtime prose /private/path must not classify".into(),
+            ),
+        ));
+        assert_eq!(storage.protocol_code(), DaemonErrorCode::StoreFailed);
+        assert_eq!(
+            DaemonInvocationError::Executor(InvocationExecutorError::Store(
+                InvocationStoreError::NotFound,
+            ))
+            .protocol_code(),
+            DaemonErrorCode::TaskNotFound
+        );
+        assert_eq!(
+            DaemonInvocationError::Executor(InvocationExecutorError::Store(
+                InvocationStoreError::Expired,
+            ))
+            .protocol_code(),
+            DaemonErrorCode::TaskExpired
+        );
+        assert_eq!(
+            DaemonInvocationError::Executor(InvocationExecutorError::ExecutionFailed)
+                .protocol_code(),
+            DaemonErrorCode::InvocationFailed
+        );
+    }
 }
 
 fn tokens_equal(left: &str, right: &str) -> bool {

@@ -9,7 +9,8 @@ scope: [app, cache]
 
 # Durable handoff сохраняет только закрытый Task allowlist
 
-Task record содержит закрытый ToolIdentity, нормализованный digest arguments,
-daemon-derived workspace identity, закрытые status и допустимый DomainResult.
-Raw arguments, caller paths, stdout, stderr и свободный runtime failure text в
-record не попадают. Ошибка Task строится из закрытого status при чтении.
+Task record schema v2 содержит закрытый ToolIdentity, нормализованный digest
+arguments, actor-derived workspace identity, закрытые status,
+`SafeFailureReason` и допустимый DomainResult. Raw arguments, caller/runtime
+text, stdout, stderr и свободный failure text в record не попадают. Ошибка Task
+строится только из закрытой причины при чтении.

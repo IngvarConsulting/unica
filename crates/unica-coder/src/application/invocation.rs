@@ -1,6 +1,6 @@
 use crate::application::invocation_store::{
-    InvocationStore, NewInvocationRecord, SafeStatusMessage, StoredInvocationRecord,
-    TaskTransition, ToolIdentity,
+    InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
+    SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
 };
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::ports::Clock;
@@ -53,13 +53,28 @@ pub(crate) fn normalized_arguments_hash(
     NormalizedArgumentsHash::from_sha256(Sha256::digest(bytes).into())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct PreparedDaemonInvocation {
     tool: ToolIdentity,
     normalized_arguments_hash: NormalizedArgumentsHash,
     workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     class: ExecutionClass,
     response_budget: Duration,
+    resource_lease: Option<Arc<dyn Send + Sync>>,
+}
+
+impl std::fmt::Debug for PreparedDaemonInvocation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedDaemonInvocation")
+            .field("tool", &self.tool)
+            .field("normalized_arguments_hash", &self.normalized_arguments_hash)
+            .field("workspace_identity_hash", &self.workspace_identity_hash)
+            .field("class", &self.class)
+            .field("response_budget", &self.response_budget)
+            .field("has_resource_lease", &self.resource_lease.is_some())
+            .finish()
+    }
 }
 
 impl PreparedDaemonInvocation {
@@ -76,7 +91,26 @@ impl PreparedDaemonInvocation {
             workspace_identity_hash,
             class,
             response_budget,
+            resource_lease: None,
         }
+    }
+
+    pub(crate) fn with_resource_lease(mut self, lease: Arc<dyn Send + Sync>) -> Self {
+        self.resource_lease = Some(lease);
+        self
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum InvocationExecutorError {
+    Store(InvocationStoreError),
+    ExecutionFailed,
+    StatePoisoned,
+}
+
+impl From<InvocationStoreError> for InvocationExecutorError {
+    fn from(error: InvocationStoreError) -> Self {
+        Self::Store(error)
     }
 }
 
@@ -90,14 +124,22 @@ struct LiveInvocation {
     state: Mutex<LiveInvocationState>,
     changed: Condvar,
     cancellation: crate::domain::cancellation::CancellationToken,
+    resource_lease: Mutex<Option<Arc<dyn Send + Sync>>>,
 }
 
 impl LiveInvocation {
-    fn new(task_id: Option<TaskId>) -> Self {
+    fn new(task_id: Option<TaskId>, resource_lease: Option<Arc<dyn Send + Sync>>) -> Self {
         Self {
             state: Mutex::new(LiveInvocationState::Running { task_id }),
             changed: Condvar::new(),
             cancellation: crate::domain::cancellation::CancellationToken::new(),
+            resource_lease: Mutex::new(resource_lease),
+        }
+    }
+
+    fn release_resource_lease(&self) {
+        if let Ok(mut lease) = self.resource_lease.lock() {
+            lease.take();
         }
     }
 }
@@ -125,7 +167,7 @@ impl InvocationExecutor {
         self: &Arc<Self>,
         prepared: Result<PreparedDaemonInvocation, DomainResult>,
         execute: F,
-    ) -> Result<InvocationOutcome, String>
+    ) -> Result<InvocationOutcome, InvocationExecutorError>
     where
         F: FnOnce(
                 crate::domain::cancellation::CancellationToken,
@@ -143,7 +185,7 @@ impl InvocationExecutor {
         self: &Arc<Self>,
         prepared: PreparedDaemonInvocation,
         execute: F,
-    ) -> Result<InvocationOutcome, String>
+    ) -> Result<InvocationOutcome, InvocationExecutorError>
     where
         F: FnOnce(
                 crate::domain::cancellation::CancellationToken,
@@ -157,16 +199,19 @@ impl InvocationExecutor {
         {
             let record = self.materialize(&prepared, invocation_id)?;
             let snapshot = snapshot_from_record(record.clone(), self.clock.now());
-            let live = Arc::new(LiveInvocation::new(Some(record.task_id)));
+            let live = Arc::new(LiveInvocation::new(
+                Some(record.task_id),
+                prepared.resource_lease.clone(),
+            ));
             self.insert_live(record.task_id, Arc::clone(&live))?;
             self.spawn_execution(live, execute);
             return Ok(InvocationOutcome::Task(snapshot));
         }
 
-        let live = Arc::new(LiveInvocation::new(None));
+        let live = Arc::new(LiveInvocation::new(None, prepared.resource_lease.clone()));
         self.inline_waiters
             .lock()
-            .map_err(|_| "daemon inline waiter registry is poisoned".to_string())?
+            .map_err(|_| InvocationExecutorError::StatePoisoned)?
             .push(Arc::downgrade(&live));
         // The transmitted response budget is already shrinking when the daemon receives the
         // request. Capture its local boundary before scheduling execution so thread startup can
@@ -176,7 +221,7 @@ impl InvocationExecutor {
         let mut state = live
             .state
             .lock()
-            .map_err(|_| "daemon invocation state is poisoned".to_string())?;
+            .map_err(|_| InvocationExecutorError::StatePoisoned)?;
         loop {
             match &*state {
                 LiveInvocationState::Direct(result) => {
@@ -184,21 +229,25 @@ impl InvocationExecutor {
                     if self.clock.now() < deadline {
                         return result
                             .map(InvocationOutcome::Direct)
-                            .map_err(|failure| format!("{}: {}", failure.code, failure.message));
+                            .map_err(|_| InvocationExecutorError::ExecutionFailed);
                     }
                     let working = self.materialize(&prepared, invocation_id)?;
-                    let terminal = self.persist_terminal(working.task_id, result)?;
-                    *state = LiveInvocationState::DurableTerminal;
+                    *state = LiveInvocationState::Running {
+                        task_id: Some(working.task_id),
+                    };
+                    self.insert_live(working.task_id, Arc::clone(&live))?;
+                    drop(state);
+                    self.spawn_terminal_reconciliation(Arc::clone(&live), working.task_id, result);
                     return Ok(InvocationOutcome::Task(snapshot_from_record(
-                        terminal,
+                        working,
                         self.clock.now(),
                     )));
                 }
                 LiveInvocationState::DurableTerminal => {
-                    return Err("durable invocation terminated before task publication".into());
+                    return Err(InvocationExecutorError::StatePoisoned);
                 }
                 LiveInvocationState::Running { task_id: Some(_) } => {
-                    return Err("inline invocation was materialized twice".into());
+                    return Err(InvocationExecutorError::StatePoisoned);
                 }
                 LiveInvocationState::Running { task_id: None } => {}
             }
@@ -217,7 +266,7 @@ impl InvocationExecutor {
             let (next, _) = live
                 .changed
                 .wait_timeout(state, remaining.min(Duration::from_millis(10)))
-                .map_err(|_| "daemon invocation state is poisoned".to_string())?;
+                .map_err(|_| InvocationExecutorError::StatePoisoned)?;
             state = next;
         }
     }
@@ -226,55 +275,122 @@ impl InvocationExecutor {
         &self,
         prepared: &PreparedDaemonInvocation,
         invocation_id: InvocationId,
-    ) -> Result<StoredInvocationRecord, String> {
-        let queued = self
-            .store
-            .create(NewInvocationRecord::new(
-                invocation_id,
-                prepared.tool,
-                prepared.normalized_arguments_hash.clone(),
-                prepared.workspace_identity_hash.clone(),
-                SafeStatusMessage::Queued,
-                INVOCATION_POLL_INTERVAL_MS,
-                INVOCATION_TTL_MS,
-                None,
-            ))
-            .map_err(|error| error.to_string())?;
-        self.store
-            .update(
-                queued.task_id,
-                TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::Working,
-                },
-            )
-            .map_err(|error| error.to_string())
+    ) -> Result<StoredInvocationRecord, InvocationExecutorError> {
+        let intended = NewInvocationRecord::new(
+            invocation_id,
+            prepared.tool,
+            prepared.normalized_arguments_hash.clone(),
+            prepared.workspace_identity_hash.clone(),
+            SafeStatusMessage::Queued,
+            INVOCATION_POLL_INTERVAL_MS,
+            INVOCATION_TTL_MS,
+            None,
+        );
+        match self.store.create_working(intended) {
+            Ok(record) => Ok(record),
+            Err(InvocationStoreError::CommitUncertain {
+                task_id,
+                operation: crate::application::invocation_store::CommitOperation::Create,
+            }) => {
+                let record = self.store.get(task_id)?;
+                if initial_working_matches(&record, prepared, invocation_id) {
+                    Ok(record)
+                } else {
+                    Err(InvocationStoreError::CommitUncertain {
+                        task_id,
+                        operation: crate::application::invocation_store::CommitOperation::Create,
+                    }
+                    .into())
+                }
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
-    fn insert_live(&self, task_id: TaskId, live: Arc<LiveInvocation>) -> Result<(), String> {
+    fn insert_live(
+        &self,
+        task_id: TaskId,
+        live: Arc<LiveInvocation>,
+    ) -> Result<(), InvocationExecutorError> {
         self.live_tasks
             .lock()
-            .map_err(|_| "daemon live-task registry is poisoned".to_string())?
+            .map_err(|_| InvocationExecutorError::StatePoisoned)?
             .insert(task_id, live);
         Ok(())
     }
 
-    fn persist_terminal(
+    fn persist_terminal_once(
         &self,
         task_id: TaskId,
         outcome: Result<DomainResult, InvocationFailure>,
-    ) -> Result<StoredInvocationRecord, String> {
-        let transition = match outcome {
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        let before = self.store.get(task_id)?;
+        let transition = match &outcome {
             Ok(result) => TaskTransition::Complete {
                 status_message: SafeStatusMessage::Completed,
-                result: Box::new(result),
+                result: Box::new(result.clone()),
             },
             Err(_) => TaskTransition::Fail {
                 status_message: SafeStatusMessage::Failed,
+                reason: SafeFailureReason::InvocationFailed,
             },
         };
-        self.store
-            .update(task_id, transition)
-            .map_err(|error| error.to_string())
+        match self.store.update(task_id, transition) {
+            Ok(record)
+                if same_record_identity(&before, &record)
+                    && terminal_matches(&record, &outcome) =>
+            {
+                Ok(record)
+            }
+            Ok(_) => Err(InvocationStoreError::CommitUncertain {
+                task_id,
+                operation: crate::application::invocation_store::CommitOperation::Update,
+            }),
+            Err(
+                error @ InvocationStoreError::CommitUncertain {
+                    operation: crate::application::invocation_store::CommitOperation::Update,
+                    ..
+                },
+            )
+            | Err(error @ InvocationStoreError::InvalidTransition { .. }) => {
+                match self.store.get(task_id) {
+                    Ok(record)
+                        if same_record_identity(&before, &record)
+                            && (terminal_matches(&record, &outcome)
+                                || record.status == InvocationStatus::Cancelled) =>
+                    {
+                        Ok(record)
+                    }
+                    _ => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn spawn_terminal_reconciliation(
+        self: &Arc<Self>,
+        live: Arc<LiveInvocation>,
+        task_id: TaskId,
+        outcome: Result<DomainResult, InvocationFailure>,
+    ) {
+        let executor = Arc::clone(self);
+        std::thread::spawn(move || loop {
+            match executor.persist_terminal_once(task_id, outcome.clone()) {
+                Ok(_) => {
+                    if let Ok(mut state) = live.state.lock() {
+                        *state = LiveInvocationState::DurableTerminal;
+                        live.changed.notify_all();
+                    }
+                    live.release_resource_lease();
+                    if let Ok(mut tasks) = executor.live_tasks.lock() {
+                        tasks.remove(&task_id);
+                    }
+                    return;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        });
     }
 
     fn spawn_execution<F>(self: &Arc<Self>, live: Arc<LiveInvocation>, execute: F)
@@ -300,12 +416,8 @@ impl InvocationExecutor {
             if let Some(task_id) = task_id {
                 // A committed cancellation wins over late completion. The
                 // failed transition is deliberately not retried or published.
-                let _ = executor.persist_terminal(task_id, outcome);
-                *state = LiveInvocationState::DurableTerminal;
-                live.changed.notify_all();
-                if let Ok(mut tasks) = executor.live_tasks.lock() {
-                    tasks.remove(&task_id);
-                }
+                drop(state);
+                executor.spawn_terminal_reconciliation(live, task_id, outcome);
             } else {
                 *state = LiveInvocationState::Direct(Box::new(outcome));
                 live.changed.notify_all();
@@ -313,18 +425,21 @@ impl InvocationExecutor {
         });
     }
 
-    pub(crate) fn get_task(&self, task_id: TaskId) -> Result<TaskSnapshot, String> {
+    pub(crate) fn get_task(
+        &self,
+        task_id: TaskId,
+    ) -> Result<TaskSnapshot, InvocationExecutorError> {
         self.store
             .get(task_id)
             .map(|record| snapshot_from_record(record, self.clock.now()))
-            .map_err(|error| error.to_string())
+            .map_err(InvocationExecutorError::from)
     }
 
     pub(crate) fn wait_task(
         &self,
         task_id: TaskId,
         wait: Duration,
-    ) -> Result<TaskSnapshot, String> {
+    ) -> Result<TaskSnapshot, InvocationExecutorError> {
         let current = self.get_task(task_id)?;
         if current.status != InvocationStatus::Working || wait.is_zero() {
             return Ok(current);
@@ -332,31 +447,61 @@ impl InvocationExecutor {
         let live = self
             .live_tasks
             .lock()
-            .map_err(|_| "daemon live-task registry is poisoned".to_string())?
+            .map_err(|_| InvocationExecutorError::StatePoisoned)?
             .get(&task_id)
             .cloned();
         if let Some(live) = live {
             let state = live
                 .state
                 .lock()
-                .map_err(|_| "daemon invocation state is poisoned".to_string())?;
+                .map_err(|_| InvocationExecutorError::StatePoisoned)?;
             let _ = live
                 .changed
                 .wait_timeout(state, wait)
-                .map_err(|_| "daemon invocation state is poisoned".to_string())?;
+                .map_err(|_| InvocationExecutorError::StatePoisoned)?;
         }
         self.get_task(task_id)
     }
 
-    pub(crate) fn cancel_task(&self, task_id: TaskId) -> Result<TaskSnapshot, String> {
-        let record = self
-            .store
-            .cancel(task_id, SafeStatusMessage::Cancelled)
-            .map_err(|error| error.to_string())?;
+    pub(crate) fn cancel_task(
+        &self,
+        task_id: TaskId,
+    ) -> Result<TaskSnapshot, InvocationExecutorError> {
+        let before = self.store.get(task_id)?;
+        let record = match self.store.cancel(task_id, SafeStatusMessage::Cancelled) {
+            Ok(record)
+                if same_record_identity(&before, &record)
+                    && record.status == InvocationStatus::Cancelled =>
+            {
+                record
+            }
+            Ok(_) => {
+                return Err(InvocationStoreError::CommitUncertain {
+                    task_id,
+                    operation: crate::application::invocation_store::CommitOperation::Cancel,
+                }
+                .into())
+            }
+            Err(
+                error @ InvocationStoreError::CommitUncertain {
+                    operation: crate::application::invocation_store::CommitOperation::Cancel,
+                    ..
+                },
+            ) => match self.store.get(task_id) {
+                Ok(record)
+                    if same_record_identity(&before, &record)
+                        && record.status == InvocationStatus::Cancelled =>
+                {
+                    record
+                }
+                _ => return Err(error.into()),
+            },
+            Err(error) => return Err(error.into()),
+        };
         if let Some(live) = self
             .live_tasks
             .lock()
-            .map_err(|_| "daemon live-task registry is poisoned".to_string())?
+            .map_err(|_| InvocationExecutorError::StatePoisoned)?
             .get(&task_id)
             .cloned()
         {
@@ -367,13 +512,18 @@ impl InvocationExecutor {
     }
 
     pub(crate) fn has_active_invocations(&self) -> bool {
-        if self.live_tasks.lock().is_ok_and(|tasks| !tasks.is_empty()) {
-            return true;
+        match self.live_tasks.lock() {
+            Ok(tasks) if !tasks.is_empty() => return true,
+            Err(_) => return true,
+            Ok(_) => {}
         }
-        self.inline_waiters.lock().is_ok_and(|mut waiters| {
-            waiters.retain(|waiter| waiter.strong_count() > 0);
-            !waiters.is_empty()
-        })
+        match self.inline_waiters.lock() {
+            Ok(mut waiters) => {
+                waiters.retain(|waiter| waiter.strong_count() > 0);
+                !waiters.is_empty()
+            }
+            Err(_) => true,
+        }
     }
 
     #[cfg(test)]
@@ -389,13 +539,75 @@ impl InvocationExecutor {
     }
 }
 
+fn initial_working_matches(
+    record: &StoredInvocationRecord,
+    prepared: &PreparedDaemonInvocation,
+    invocation_id: InvocationId,
+) -> bool {
+    record.schema_version == crate::application::invocation_store::INVOCATION_RECORD_SCHEMA_VERSION
+        && record.invocation_id == invocation_id
+        && record.tool == prepared.tool
+        && record.normalized_arguments_hash == prepared.normalized_arguments_hash
+        && record.workspace_identity_hash == prepared.workspace_identity_hash
+        && record.status == InvocationStatus::Working
+        && record.status_message == SafeStatusMessage::Working
+        && record.poll_interval_ms == INVOCATION_POLL_INTERVAL_MS
+        && record.ttl_ms == INVOCATION_TTL_MS
+        && record.result.is_none()
+        && record.failure_reason.is_none()
+        && record.resume.is_none()
+}
+
+fn terminal_matches(
+    record: &StoredInvocationRecord,
+    outcome: &Result<DomainResult, InvocationFailure>,
+) -> bool {
+    match outcome {
+        Ok(result) => {
+            record.status == InvocationStatus::Completed
+                && record.status_message == SafeStatusMessage::Completed
+                && record.result.as_ref() == Some(result)
+                && record.failure_reason.is_none()
+                && record.resume.is_none()
+        }
+        Err(_) => {
+            record.status == InvocationStatus::Failed
+                && record.status_message == SafeStatusMessage::Failed
+                && record.result.is_none()
+                && record.failure_reason == Some(SafeFailureReason::InvocationFailed)
+                && record.resume.is_none()
+        }
+    }
+}
+
+fn same_record_identity(left: &StoredInvocationRecord, right: &StoredInvocationRecord) -> bool {
+    left.schema_version == right.schema_version
+        && left.task_id == right.task_id
+        && left.invocation_id == right.invocation_id
+        && left.tool == right.tool
+        && left.normalized_arguments_hash == right.normalized_arguments_hash
+        && left.workspace_identity_hash == right.workspace_identity_hash
+        && left.created_at_epoch_ms == right.created_at_epoch_ms
+        && left.poll_interval_ms == right.poll_interval_ms
+        && left.ttl_ms == right.ttl_ms
+}
+
 fn snapshot_from_record(record: StoredInvocationRecord, observed_at: Instant) -> TaskSnapshot {
-    let failure = (record.status == InvocationStatus::Failed).then(|| {
-        if record.status_message == SafeStatusMessage::Interrupted {
-            InvocationFailure::new("interrupted", "daemon invocation was interrupted")
-        } else {
+    let failure = record.failure_reason.map(|reason| match reason {
+        SafeFailureReason::InvocationFailed => {
             InvocationFailure::new("invocation_failed", "daemon invocation failed")
         }
+        SafeFailureReason::Interrupted => {
+            InvocationFailure::new("interrupted", "daemon invocation was interrupted")
+        }
+        SafeFailureReason::ResumeUnsupported => InvocationFailure::new(
+            "resume_unsupported",
+            "daemon invocation cannot be resumed after restart",
+        ),
+        SafeFailureReason::PersistenceFailed => InvocationFailure::new(
+            "persistence_failed",
+            "daemon invocation terminal state could not be persisted",
+        ),
     });
     TaskSnapshot {
         task_id: record.task_id,
@@ -727,8 +939,8 @@ impl From<DomainResult> for OperationResult {
 mod tests {
     use super::{handoff_budget, Invocation, InvocationExecutor, PreparedDaemonInvocation};
     use crate::application::invocation_store::{
-        InvocationStore, InvocationStoreError, NewInvocationRecord, SafeStatusMessage,
-        StoredInvocationRecord, TaskTransition, ToolIdentity,
+        InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
+        SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
     };
     use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
     use crate::application::ports::{Clock, TokioClock};
@@ -790,6 +1002,50 @@ mod tests {
     #[derive(Default)]
     struct MemoryStore {
         records: Mutex<HashMap<TaskId, StoredInvocationRecord>>,
+        queued_creates: AtomicUsize,
+        working_creates: AtomicUsize,
+        create_working_fault: Mutex<Option<Arc<CommitFault>>>,
+        update_fault: Mutex<Option<Arc<CommitFault>>>,
+        cancel_fault: Mutex<Option<Arc<CommitFault>>>,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum CommitFaultTiming {
+        Before,
+        After,
+    }
+
+    struct CommitFault {
+        timing: CommitFaultTiming,
+        entered: Mutex<Option<mpsc::Sender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl CommitFault {
+        fn new(timing: CommitFaultTiming) -> (Arc<Self>, mpsc::Receiver<()>, mpsc::Sender<()>) {
+            let (entered_send, entered_wait) = mpsc::channel();
+            let (release_send, release_wait) = mpsc::channel();
+            (
+                Arc::new(Self {
+                    timing,
+                    entered: Mutex::new(Some(entered_send)),
+                    release: Mutex::new(release_wait),
+                }),
+                entered_wait,
+                release_send,
+            )
+        }
+
+        fn checkpoint(&self, timing: CommitFaultTiming) -> bool {
+            if self.timing != timing {
+                return false;
+            }
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            self.release.lock().unwrap().recv().unwrap();
+            true
+        }
     }
 
     impl InvocationStore for MemoryStore {
@@ -797,6 +1053,7 @@ mod tests {
             &self,
             record: NewInvocationRecord,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.queued_creates.fetch_add(1, Ordering::SeqCst);
             let stored = record.into_stored(TaskId::new(), 1);
             self.records
                 .lock()
@@ -814,15 +1071,61 @@ mod tests {
                 .ok_or(InvocationStoreError::NotFound)
         }
 
+        fn create_working(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.working_creates.fetch_add(1, Ordering::SeqCst);
+            let stored = record.into_working_stored(TaskId::new(), 1);
+            let fault = self.create_working_fault.lock().unwrap().take();
+            if fault
+                .as_ref()
+                .is_some_and(|fault| fault.checkpoint(CommitFaultTiming::Before))
+            {
+                return Err(InvocationStoreError::Storage(
+                    "injected pre-commit create failure".into(),
+                ));
+            }
+            self.records
+                .lock()
+                .unwrap()
+                .insert(stored.task_id, stored.clone());
+            if fault
+                .as_ref()
+                .is_some_and(|fault| fault.checkpoint(CommitFaultTiming::After))
+            {
+                return Err(InvocationStoreError::CommitUncertain {
+                    task_id: stored.task_id,
+                    operation: crate::application::invocation_store::CommitOperation::Create,
+                });
+            }
+            Ok(stored)
+        }
+
         fn update(
             &self,
             task_id: TaskId,
             transition: TaskTransition,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            let fault = self.update_fault.lock().unwrap().take();
+            if fault
+                .as_ref()
+                .is_some_and(|fault| fault.checkpoint(CommitFaultTiming::Before))
+            {
+                return Err(InvocationStoreError::Storage(
+                    "injected pre-commit update failure".into(),
+                ));
+            }
             let mut records = self.records.lock().unwrap();
             let record = records
                 .get_mut(&task_id)
                 .ok_or(InvocationStoreError::NotFound)?;
+            if record.is_terminal() {
+                return Err(InvocationStoreError::InvalidTransition {
+                    from: record.status,
+                    attempted: "update",
+                });
+            }
             match transition {
                 TaskTransition::StartWorking { status_message } => {
                     record.status = InvocationStatus::Working;
@@ -836,12 +1139,27 @@ mod tests {
                     record.status_message = status_message;
                     record.result = Some(*result);
                 }
-                TaskTransition::Fail { status_message } => {
+                TaskTransition::Fail {
+                    status_message,
+                    reason,
+                } => {
                     record.status = InvocationStatus::Failed;
                     record.status_message = status_message;
+                    record.failure_reason = Some(reason);
                 }
             }
-            Ok(record.clone())
+            let stored = record.clone();
+            drop(records);
+            if fault
+                .as_ref()
+                .is_some_and(|fault| fault.checkpoint(CommitFaultTiming::After))
+            {
+                return Err(InvocationStoreError::CommitUncertain {
+                    task_id,
+                    operation: crate::application::invocation_store::CommitOperation::Update,
+                });
+            }
+            Ok(stored)
         }
 
         fn cancel(
@@ -849,6 +1167,15 @@ mod tests {
             task_id: TaskId,
             status_message: SafeStatusMessage,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            let fault = self.cancel_fault.lock().unwrap().take();
+            if fault
+                .as_ref()
+                .is_some_and(|fault| fault.checkpoint(CommitFaultTiming::Before))
+            {
+                return Err(InvocationStoreError::Storage(
+                    "injected pre-commit cancel failure".into(),
+                ));
+            }
             let mut records = self.records.lock().unwrap();
             let record = records
                 .get_mut(&task_id)
@@ -858,7 +1185,18 @@ mod tests {
                 record.status_message = status_message;
                 record.result = None;
             }
-            Ok(record.clone())
+            let stored = record.clone();
+            drop(records);
+            if fault
+                .as_ref()
+                .is_some_and(|fault| fault.checkpoint(CommitFaultTiming::After))
+            {
+                return Err(InvocationStoreError::CommitUncertain {
+                    task_id,
+                    operation: crate::application::invocation_store::CommitOperation::Cancel,
+                });
+            }
+            Ok(stored)
         }
     }
 
@@ -972,6 +1310,289 @@ mod tests {
                 .status,
             InvocationStatus::Completed
         );
+    }
+
+    #[test]
+    fn materialization_atomically_creates_the_initial_working_record() {
+        let store = Arc::new(MemoryStore::default());
+        let executor = Arc::new(InvocationExecutor::new(
+            store.clone(),
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let outcome = executor
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::ColdIndex),
+                    Duration::ZERO,
+                ),
+                |_| Ok(result("atomic working")),
+            )
+            .unwrap();
+        assert!(matches!(outcome, InvocationOutcome::Task(_)));
+        assert_eq!(store.queued_creates.load(Ordering::SeqCst), 0);
+        assert_eq!(store.working_creates.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn create_working_faults_are_resolved_by_exact_identity_bound_readback() {
+        for timing in [CommitFaultTiming::Before, CommitFaultTiming::After] {
+            let store = Arc::new(MemoryStore::default());
+            let (fault, entered, release) = CommitFault::new(timing);
+            *store.create_working_fault.lock().unwrap() = Some(fault);
+            let executor = Arc::new(InvocationExecutor::new(
+                store.clone(),
+                Arc::new(ManualClock::new(Instant::now())),
+            ));
+            let run = {
+                let executor = Arc::clone(&executor);
+                std::thread::spawn(move || {
+                    executor.submit(
+                        prepared(
+                            ExecutionClass::KnownLong(KnownLongReason::ColdIndex),
+                            Duration::ZERO,
+                        ),
+                        |_| Ok(result("created exactly once")),
+                    )
+                })
+            };
+            entered.recv().unwrap();
+            assert_eq!(
+                store.records.lock().unwrap().len(),
+                usize::from(timing == CommitFaultTiming::After)
+            );
+            release.send(()).unwrap();
+            let outcome = run.join().unwrap();
+            match timing {
+                CommitFaultTiming::Before => assert!(matches!(
+                    outcome,
+                    Err(super::InvocationExecutorError::Store(
+                        InvocationStoreError::Storage(_)
+                    ))
+                )),
+                CommitFaultTiming::After => {
+                    let task_id = match outcome.unwrap() {
+                        InvocationOutcome::Task(snapshot) => snapshot.task_id,
+                        other => panic!("expected task after confirmed create: {other:?}"),
+                    };
+                    assert_eq!(
+                        executor
+                            .wait_task(task_id, Duration::from_secs(1))
+                            .unwrap()
+                            .status,
+                        InvocationStatus::Completed
+                    );
+                }
+            }
+        }
+    }
+
+    fn wait_until_inactive(executor: &InvocationExecutor) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while executor.has_active_invocations() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(!executor.has_active_invocations());
+    }
+
+    #[test]
+    fn terminal_complete_and_fail_faults_reconcile_without_reexecution_or_early_idle() {
+        for timing in [CommitFaultTiming::Before, CommitFaultTiming::After] {
+            for should_fail in [false, true] {
+                let store = Arc::new(MemoryStore::default());
+                let (fault, entered, release) = CommitFault::new(timing);
+                *store.update_fault.lock().unwrap() = Some(fault);
+                let executor = Arc::new(InvocationExecutor::new(
+                    store.clone(),
+                    Arc::new(ManualClock::new(Instant::now())),
+                ));
+                let executions = Arc::new(AtomicUsize::new(0));
+                let run_count = Arc::clone(&executions);
+                let outcome = executor
+                    .submit(
+                        prepared(
+                            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                            Duration::ZERO,
+                        ),
+                        move |_| {
+                            run_count.fetch_add(1, Ordering::SeqCst);
+                            if should_fail {
+                                Err(InvocationFailure::new(
+                                    "SECRET_RUNTIME_CODE",
+                                    "/private/runtime/error SECRET",
+                                ))
+                            } else {
+                                Ok(result("terminal result"))
+                            }
+                        },
+                    )
+                    .unwrap();
+                let task_id = match outcome {
+                    InvocationOutcome::Task(snapshot) => snapshot.task_id,
+                    other => panic!("expected materialized task: {other:?}"),
+                };
+                entered.recv().unwrap();
+                assert!(executor.has_active_invocations());
+                let observed = store.get(task_id).unwrap();
+                assert_eq!(
+                    observed.status,
+                    if timing == CommitFaultTiming::Before {
+                        InvocationStatus::Working
+                    } else if should_fail {
+                        InvocationStatus::Failed
+                    } else {
+                        InvocationStatus::Completed
+                    }
+                );
+                release.send(()).unwrap();
+                let terminal = executor.wait_task(task_id, Duration::from_secs(1)).unwrap();
+                assert_eq!(
+                    terminal.status,
+                    if should_fail {
+                        InvocationStatus::Failed
+                    } else {
+                        InvocationStatus::Completed
+                    }
+                );
+                if should_fail {
+                    assert_eq!(
+                        terminal.failure,
+                        Some(InvocationFailure::new(
+                            "invocation_failed",
+                            "daemon invocation failed",
+                        ))
+                    );
+                    let persisted = serde_json::to_string(&store.get(task_id).unwrap()).unwrap();
+                    assert!(!persisted.contains("SECRET"));
+                    assert!(!persisted.contains("/private/runtime/error"));
+                }
+                assert_eq!(executions.load(Ordering::SeqCst), 1);
+                wait_until_inactive(&executor);
+            }
+        }
+    }
+
+    #[test]
+    fn actor_resource_capability_is_retained_through_terminal_reconciliation() {
+        struct LeaseDrop(Arc<AtomicUsize>);
+        impl Drop for LeaseDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let store = Arc::new(MemoryStore::default());
+        let (fault, entered, release) = CommitFault::new(CommitFaultTiming::After);
+        *store.update_fault.lock().unwrap() = Some(fault);
+        let executor = Arc::new(InvocationExecutor::new(
+            store,
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let lease: Arc<dyn Send + Sync> = Arc::new(LeaseDrop(Arc::clone(&drops)));
+        let outcome = executor
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                    Duration::ZERO,
+                )
+                .with_resource_lease(lease),
+                |_| Ok(result("retained actor capability")),
+            )
+            .unwrap();
+        let task_id = match outcome {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected task: {other:?}"),
+        };
+        entered.recv().unwrap();
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert!(executor.has_active_invocations());
+        release.send(()).unwrap();
+        assert_eq!(
+            executor
+                .wait_task(task_id, Duration::from_secs(1))
+                .unwrap()
+                .status,
+            InvocationStatus::Completed
+        );
+        wait_until_inactive(&executor);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancel_faults_keep_the_live_owner_until_cancellation_is_durable() {
+        for timing in [CommitFaultTiming::Before, CommitFaultTiming::After] {
+            let store = Arc::new(MemoryStore::default());
+            let executor = Arc::new(InvocationExecutor::new(
+                store.clone(),
+                Arc::new(ManualClock::new(Instant::now())),
+            ));
+            let (started_send, started_wait) = mpsc::channel();
+            let outcome = executor
+                .submit(
+                    prepared(
+                        ExecutionClass::KnownLong(KnownLongReason::OccupiedWriteLease),
+                        Duration::ZERO,
+                    ),
+                    move |cancellation| {
+                        started_send.send(()).unwrap();
+                        while !cancellation.is_cancelled() {
+                            std::thread::yield_now();
+                        }
+                        Err(InvocationFailure::new("cancelled", "caller cancelled"))
+                    },
+                )
+                .unwrap();
+            let task_id = match outcome {
+                InvocationOutcome::Task(snapshot) => snapshot.task_id,
+                other => panic!("expected task: {other:?}"),
+            };
+            started_wait.recv().unwrap();
+            let (fault, entered, release) = CommitFault::new(timing);
+            *store.cancel_fault.lock().unwrap() = Some(fault);
+            let cancel = {
+                let executor = Arc::clone(&executor);
+                std::thread::spawn(move || executor.cancel_task(task_id))
+            };
+            entered.recv().unwrap();
+            assert!(executor.has_active_invocations());
+            assert_eq!(
+                store.get(task_id).unwrap().status,
+                if timing == CommitFaultTiming::Before {
+                    InvocationStatus::Working
+                } else {
+                    InvocationStatus::Cancelled
+                }
+            );
+            release.send(()).unwrap();
+            let cancelled = cancel.join().unwrap();
+            if timing == CommitFaultTiming::Before {
+                assert!(matches!(
+                    cancelled,
+                    Err(super::InvocationExecutorError::Store(
+                        InvocationStoreError::Storage(_)
+                    ))
+                ));
+                executor.cancel_task(task_id).unwrap();
+            } else {
+                assert_eq!(cancelled.unwrap().status, InvocationStatus::Cancelled);
+            }
+            assert_eq!(
+                executor
+                    .wait_task(task_id, Duration::from_secs(1))
+                    .unwrap()
+                    .status,
+                InvocationStatus::Cancelled
+            );
+            wait_until_inactive(&executor);
+        }
+    }
+
+    #[test]
+    fn terminal_publication_faults_reconcile_without_reexecution_or_false_idle() {
+        create_working_faults_are_resolved_by_exact_identity_bound_readback();
+        terminal_complete_and_fail_faults_reconcile_without_reexecution_or_early_idle();
+        cancel_faults_keep_the_live_owner_until_cancellation_is_durable();
+        actor_resource_capability_is_retained_through_terminal_reconciliation();
     }
 
     #[test]
@@ -1217,6 +1838,7 @@ mod tests {
                 working.task_id,
                 TaskTransition::Fail {
                     status_message: SafeStatusMessage::Interrupted,
+                    reason: SafeFailureReason::Interrupted,
                 },
             )
             .unwrap();

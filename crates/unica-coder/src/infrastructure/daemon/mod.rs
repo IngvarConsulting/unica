@@ -15,7 +15,8 @@ mod tests {
         MAX_JSON_LINE_BYTES,
     };
     use super::server::{
-        install_handshake_pause, run_daemon, CanonicalInvocationService, DaemonServerConfig,
+        install_handshake_pause, run_daemon, workspace_capacity_protocol_code_for_test,
+        ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService, DaemonServerConfig,
         MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
     };
     use crate::application::invocation_store::{InvocationStoreError, ToolIdentity};
@@ -32,7 +33,7 @@ mod tests {
     use std::path::PathBuf;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Arc};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -100,17 +101,54 @@ mod tests {
         entered: mpsc::Sender<()>,
     }
 
+    struct BoundReadingService {
+        observed: mpsc::Sender<(crate::domain::invocation::SafeIdentityHash, Vec<u8>)>,
+    }
+
+    struct StagedActorService {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        staged_summary: &'static str,
+    }
+
+    impl CanonicalInvocationService for BoundReadingService {
+        fn prepare(
+            &self,
+            invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            assert_eq!(invocation.tool(), ToolIdentity::Run);
+            assert!(invocation.arguments().is_empty());
+            Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+        }
+
+        fn execute(
+            &self,
+            invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            assert_eq!(invocation.tool(), ToolIdentity::Run);
+            assert!(invocation.arguments().is_empty());
+            let bytes = invocation
+                .read_relative_file(std::path::Path::new("Module.bsl"), 1_024)
+                .map_err(|_| InvocationFailure::new("workspace_changed", "bound read failed"))?;
+            self.observed
+                .send((invocation.workspace_identity_hash().clone(), bytes))
+                .unwrap();
+            Ok(DomainResult::success("actor-bound read"))
+        }
+    }
+
     impl CanonicalInvocationService for BlockingCanonicalService {
         fn prepare(
             &self,
-            _request: &InvocationRequest,
+            _request: &ActorBoundInvocation,
         ) -> Result<ExecutionClass, Box<DomainResult>> {
             Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
         }
 
         fn execute(
             &self,
-            _request: InvocationRequest,
+            _request: &ActorBoundExecution,
             cancellation: CancellationToken,
         ) -> Result<DomainResult, InvocationFailure> {
             self.executions.fetch_add(1, Ordering::SeqCst);
@@ -119,6 +157,28 @@ mod tests {
                 thread::yield_now();
             }
             Err(InvocationFailure::new("cancelled", "test cancellation"))
+        }
+    }
+
+    impl CanonicalInvocationService for StagedActorService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+        }
+
+        fn execute(
+            &self,
+            invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            let _ = invocation
+                .read_relative_file(std::path::Path::new("Module.bsl"), 1_024)
+                .map_err(|_| InvocationFailure::new("workspace_changed", "bound read failed"))?;
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(DomainResult::success(self.staged_summary))
         }
     }
 
@@ -231,7 +291,8 @@ mod tests {
         let task = ServerResponse::invocation(InvocationResponse::Task(
             super::protocol::DaemonTaskSnapshot::working_for_test(task_id),
         ));
-        for response in [direct, task] {
+        let capacity = ServerResponse::error(DaemonErrorCode::WorkspaceCapacity);
+        for response in [direct, task, capacity] {
             let wire = serde_json::to_vec(&response).unwrap();
             assert_eq!(parse_response(&wire).unwrap(), response);
         }
@@ -315,6 +376,218 @@ mod tests {
             InvocationStatus::Cancelled
         );
         assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity() {
+        let daemon_root = tempfile::tempdir().unwrap();
+        let workspace_a = tempfile::tempdir().unwrap();
+        let workspace_b = tempfile::tempdir().unwrap();
+        std::fs::write(workspace_a.path().join("Module.bsl"), b"workspace A").unwrap();
+        std::fs::write(workspace_b.path().join("Module.bsl"), b"workspace B").unwrap();
+        let identity = CoreIdentity::production();
+        let (observed, observed_wait) = mpsc::channel();
+        let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(Arc::new(BoundReadingService { observed }));
+        let server = thread::spawn(move || run_daemon(config));
+        let (directory, _record) = wait_for_record(daemon_root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical_root(daemon_root.path()),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        for (workspace, expected) in [
+            (workspace_a.path(), b"workspace A".as_slice()),
+            (workspace_b.path(), b"workspace B".as_slice()),
+        ] {
+            let response = owner
+                .submit_invocation(
+                    InvocationRequest::new(
+                        ToolIdentity::Run,
+                        serde_json::json!({}),
+                        physical_root(workspace).to_string_lossy(),
+                        0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let task_id = match response {
+                InvocationResponse::Task(snapshot) => snapshot.task_id,
+                other => panic!("zero-budget actor-bound request was not durable: {other:?}"),
+            };
+            let (actor_hash, bytes) = observed_wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(bytes, expected);
+            let terminal = owner.wait_task(task_id, 2_000).unwrap();
+            assert_eq!(terminal.status, InvocationStatus::Completed);
+            let record_bytes = std::fs::read(
+                directory
+                    .path()
+                    .join("tasks")
+                    .join(format!("{task_id}.json")),
+            )
+            .unwrap();
+            let record: crate::application::invocation_store::StoredInvocationRecord =
+                serde_json::from_slice(&record_bytes).unwrap();
+            assert_eq!(record.workspace_identity_hash, actor_hash);
+        }
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    fn run_actor_swap_case(replace_root: bool) {
+        let daemon_root = tempfile::tempdir().unwrap();
+        let workspace_parent = tempfile::tempdir().unwrap();
+        let workspace = workspace_parent.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("Module.bsl"), b"initial").unwrap();
+        let identity = CoreIdentity::production();
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let staged = "STAGED_BYTES_MUST_NOT_ESCAPE_AFTER_SWAP";
+        let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(Arc::new(StagedActorService {
+                entered,
+                release: Mutex::new(release_wait),
+                staged_summary: staged,
+            }));
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical_root(daemon_root.path()),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+        let response = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({"args": {"ambientRoot": "/tmp/foreign"}}),
+                    physical_root(&workspace).to_string_lossy(),
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let task_id = match response {
+            InvocationResponse::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected task: {other:?}"),
+        };
+        entered_wait.recv_timeout(Duration::from_secs(2)).unwrap();
+        if replace_root {
+            let retained = workspace_parent.path().join("retained-old-workspace");
+            std::fs::rename(&workspace, &retained).unwrap();
+            std::fs::create_dir(&workspace).unwrap();
+            std::fs::write(workspace.join("Module.bsl"), b"foreign replacement").unwrap();
+        } else {
+            std::fs::write(workspace.join("Module.bsl"), b"changed revision").unwrap();
+        }
+        release.send(()).unwrap();
+        let terminal = owner.wait_task(task_id, 2_000).unwrap();
+        assert_eq!(terminal.status, InvocationStatus::Failed);
+        assert!(terminal.result.is_none());
+        assert_eq!(
+            terminal.failure,
+            Some(InvocationFailure::new(
+                "invocation_failed",
+                "daemon invocation failed",
+            ))
+        );
+        assert!(!serde_json::to_string(&terminal).unwrap().contains(staged));
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn actor_bound_publication_rejects_root_replacement_and_hides_staged_bytes() {
+        run_actor_swap_case(true);
+    }
+
+    #[test]
+    fn actor_bound_publication_rejects_revision_swap_and_hides_staged_bytes() {
+        run_actor_swap_case(false);
+    }
+
+    #[test]
+    fn canonical_service_boundary_exposes_no_raw_request_or_workspace_hint() {
+        let source = include_str!("server.rs");
+        let trait_start = source
+            .find("pub(crate) trait CanonicalInvocationService")
+            .expect("canonical service trait");
+        let trait_end = source[trait_start..]
+            .find("\n}\n\nstruct DormantCanonicalV13Service")
+            .expect("canonical service trait end")
+            + trait_start;
+        let boundary = &source[trait_start..trait_end];
+        assert!(boundary.contains("&ActorBoundInvocation"));
+        assert!(boundary.contains("&ActorBoundExecution"));
+        assert!(!boundary.contains("InvocationRequest"));
+        assert!(!boundary.contains("workspace_hint"));
+    }
+
+    #[test]
+    fn canonical_invocation_authority_is_actor_bound_and_revision_fenced() {
+        canonical_service_boundary_exposes_no_raw_request_or_workspace_hint();
+        canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity();
+        actor_bound_publication_rejects_root_replacement_and_hides_staged_bytes();
+        actor_bound_publication_rejects_revision_swap_and_hides_staged_bytes();
+    }
+
+    #[test]
+    fn workspace_actor_capacity_has_a_closed_retryable_protocol_code() {
+        assert_eq!(
+            workspace_capacity_protocol_code_for_test(),
+            DaemonErrorCode::WorkspaceCapacity
+        );
+        let wire = serde_json::to_value(ServerResponse::error(DaemonErrorCode::WorkspaceCapacity))
+            .unwrap();
+        assert_eq!(wire["code"], "workspace_capacity");
+    }
+
+    #[test]
+    fn daemon_prunes_sequential_workspace_actor_capabilities_beyond_the_live_cap() {
+        let daemon_root = tempfile::tempdir().unwrap();
+        let workspaces = tempfile::tempdir().unwrap();
+        let identity = CoreIdentity::production();
+        let config = server_config(daemon_root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical_root(daemon_root.path()),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        for index in 0..80 {
+            let workspace = workspaces.path().join(format!("workspace-{index}"));
+            std::fs::create_dir(&workspace).unwrap();
+            let response = owner
+                .submit_invocation(
+                    InvocationRequest::new(
+                        ToolIdentity::Run,
+                        serde_json::json!({}),
+                        physical_root(&workspace).to_string_lossy(),
+                        7_000,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            assert!(matches!(response, InvocationResponse::Direct(_)));
+        }
 
         drop(owner);
         server.join().unwrap().unwrap();

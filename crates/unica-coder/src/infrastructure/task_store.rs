@@ -2,9 +2,13 @@
 
 use crate::application::invocation_store::{
     CommitOperation, EpochMillisClock, InvocationStore, InvocationStoreError, NewInvocationRecord,
-    SafeStatusMessage, StoredInvocationRecord, TaskTransition, INVOCATION_RECORD_SCHEMA_VERSION,
+    SafeFailureReason, SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
+    INVOCATION_RECORD_SCHEMA_VERSION, LEGACY_INVOCATION_RECORD_SCHEMA_VERSION,
 };
-use crate::domain::invocation::{InvocationStatus, TaskId};
+use crate::domain::invocation::{
+    DomainResult, InvocationId, InvocationStatus, NormalizedArgumentsHash, ResumeDescriptor,
+    SafeIdentityHash, TaskId,
+};
 use crate::infrastructure::platform::filesystem::{
     create_new_regular_child, file_identity, metadata_is_link_or_reparse_point,
     open_directory_nofollow, open_directory_ownership_lock, open_regular_child_nofollow,
@@ -36,7 +40,8 @@ impl EpochMillisClock for SystemEpochMillisClock {
 pub(crate) enum RecoveryClassification {
     DiscardedTemporary { file_name: String },
     InterruptedNonResumable { task_id: TaskId },
-    ResumableWorking { task_id: TaskId },
+    UnsupportedResume { task_id: TaskId },
+    MigratedV1Record { task_id: TaskId },
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -45,6 +50,74 @@ pub(crate) struct RecoveryReport {
 }
 
 const STORE_LOCK_FILE: &str = ".invocation-store.lock";
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyStoredInvocationRecordV1 {
+    schema_version: u32,
+    task_id: TaskId,
+    invocation_id: InvocationId,
+    tool: ToolIdentity,
+    normalized_arguments_hash: NormalizedArgumentsHash,
+    workspace_identity_hash: SafeIdentityHash,
+    created_at_epoch_ms: u64,
+    updated_at_epoch_ms: u64,
+    status: InvocationStatus,
+    status_message: SafeStatusMessage,
+    poll_interval_ms: u64,
+    ttl_ms: u64,
+    #[serde(default)]
+    result: Option<DomainResult>,
+    #[serde(default)]
+    resume: Option<ResumeDescriptor>,
+}
+
+impl LegacyStoredInvocationRecordV1 {
+    fn migrate(self) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        if self.schema_version != LEGACY_INVOCATION_RECORD_SCHEMA_VERSION {
+            return Err(corrupt_error(
+                "legacy task record schema version is invalid",
+            ));
+        }
+        let failure_reason = (self.status == InvocationStatus::Failed).then_some(
+            if self.status_message == SafeStatusMessage::Interrupted {
+                SafeFailureReason::Interrupted
+            } else {
+                SafeFailureReason::InvocationFailed
+            },
+        );
+        let record = StoredInvocationRecord {
+            schema_version: INVOCATION_RECORD_SCHEMA_VERSION,
+            task_id: self.task_id,
+            invocation_id: self.invocation_id,
+            tool: self.tool,
+            normalized_arguments_hash: self.normalized_arguments_hash,
+            workspace_identity_hash: self.workspace_identity_hash,
+            created_at_epoch_ms: self.created_at_epoch_ms,
+            updated_at_epoch_ms: self.updated_at_epoch_ms,
+            status: self.status,
+            status_message: self.status_message,
+            poll_interval_ms: self.poll_interval_ms,
+            ttl_ms: self.ttl_ms,
+            result: self.result,
+            failure_reason,
+            resume: self.resume,
+        };
+        validate_record(&record)?;
+        Ok(record)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecodedSchema {
+    V1,
+    V2,
+}
+
+struct DecodedRecord {
+    record: StoredInvocationRecord,
+    schema: DecodedSchema,
+}
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,25 +216,37 @@ impl FileInvocationStore {
             let task_id = encoded_task_id
                 .parse::<TaskId>()
                 .map_err(|_| corrupt_error("task record file name is not a canonical TaskId"))?;
-            let record = self.read_record(task_id)?;
-            if record.status != InvocationStatus::Working {
-                continue;
-            }
-            if record.resume.is_some() {
-                report
-                    .classifications
-                    .push(RecoveryClassification::ResumableWorking { task_id });
-            } else {
+            let decoded = Self::read_decoded_from(&self.root, task_id)?;
+            let mut record = decoded.record;
+            if record.status == InvocationStatus::Working {
+                let (reason, status_message, classification) = if record.resume.is_some() {
+                    (
+                        SafeFailureReason::ResumeUnsupported,
+                        SafeStatusMessage::Failed,
+                        RecoveryClassification::UnsupportedResume { task_id },
+                    )
+                } else {
+                    (
+                        SafeFailureReason::Interrupted,
+                        SafeStatusMessage::Interrupted,
+                        RecoveryClassification::InterruptedNonResumable { task_id },
+                    )
+                };
+                record.status = InvocationStatus::Working;
                 let recovered = self.transition_record(
                     record,
                     TaskTransition::Fail {
-                        status_message: SafeStatusMessage::Interrupted,
+                        status_message,
+                        reason,
                     },
                 )?;
                 self.publish_record(&recovered, CommitOperation::Recovery, || {})?;
+                report.classifications.push(classification);
+            } else if decoded.schema == DecodedSchema::V1 {
+                self.publish_record(&record, CommitOperation::Recovery, || {})?;
                 report
                     .classifications
-                    .push(RecoveryClassification::InterruptedNonResumable { task_id });
+                    .push(RecoveryClassification::MigratedV1Record { task_id });
             }
         }
         Ok(report)
@@ -204,15 +289,66 @@ impl FileInvocationStore {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|error| storage_error("read committed task record", error))?;
-        let record: StoredInvocationRecord = serde_json::from_slice(&bytes)
-            .map_err(|_| corrupt_error("committed task record is not valid versioned JSON"))?;
-        validate_record(&record)?;
+        let record = Self::decode_record(&bytes)?.record;
         if record.task_id != task_id {
             return Err(corrupt_error(
                 "task record identity does not match its file name",
             ));
         }
         Ok(record)
+    }
+
+    fn read_decoded_from(
+        root: &File,
+        task_id: TaskId,
+    ) -> Result<DecodedRecord, InvocationStoreError> {
+        let file_name = format!("{task_id}.json");
+        let mut file = match open_regular_child_nofollow(root, OsStr::new(&file_name)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(InvocationStoreError::NotFound)
+            }
+            Err(error) => return Err(storage_error("open committed task record", error)),
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|error| storage_error("read committed task record", error))?;
+        let decoded = Self::decode_record(&bytes)?;
+        if decoded.record.task_id != task_id {
+            return Err(corrupt_error(
+                "task record identity does not match its file name",
+            ));
+        }
+        Ok(decoded)
+    }
+
+    fn decode_record(bytes: &[u8]) -> Result<DecodedRecord, InvocationStoreError> {
+        let envelope: serde_json::Value = serde_json::from_slice(bytes)
+            .map_err(|_| corrupt_error("committed task record is not valid versioned JSON"))?;
+        let schema_version = envelope
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| corrupt_error("task record schema version is missing"))?;
+        match schema_version {
+            value if value == u64::from(LEGACY_INVOCATION_RECORD_SCHEMA_VERSION) => {
+                let legacy: LegacyStoredInvocationRecordV1 = serde_json::from_slice(bytes)
+                    .map_err(|_| corrupt_error("schema-v1 task record is not strict JSON"))?;
+                Ok(DecodedRecord {
+                    record: legacy.migrate()?,
+                    schema: DecodedSchema::V1,
+                })
+            }
+            value if value == u64::from(INVOCATION_RECORD_SCHEMA_VERSION) => {
+                let record: StoredInvocationRecord = serde_json::from_slice(bytes)
+                    .map_err(|_| corrupt_error("schema-v2 task record is not strict JSON"))?;
+                validate_record(&record)?;
+                Ok(DecodedRecord {
+                    record,
+                    schema: DecodedSchema::V2,
+                })
+            }
+            _ => Err(corrupt_error("unsupported task record schema version")),
+        }
     }
 
     #[cfg(test)]
@@ -358,6 +494,31 @@ impl FileInvocationStore {
         Ok(record)
     }
 
+    fn create_working_with_after_publish_hook<F>(
+        &self,
+        new_record: NewInvocationRecord,
+        after_publish: F,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError>
+    where
+        F: FnOnce(TaskId),
+    {
+        let _writer = self.lock_writer()?;
+        let task_id = loop {
+            let candidate = TaskId::new();
+            let candidate_name = format!("{candidate}.json");
+            let names = read_directory_names_bounded(&self.root, usize::MAX, || Ok(())).map_err(
+                |error| storage_error("inspect task identity before durable creation", error),
+            )?;
+            if !names.iter().any(|name| name == OsStr::new(&candidate_name)) {
+                break candidate;
+            }
+        };
+        let record = new_record.into_working_stored(task_id, self.clock.now_epoch_millis());
+        self.publish_record(&record, CommitOperation::Create, || {})?;
+        after_publish(task_id);
+        Ok(record)
+    }
+
     fn update_with_before_publish_hook<F>(
         &self,
         task_id: TaskId,
@@ -393,6 +554,7 @@ impl FileInvocationStore {
             {
                 record.status = InvocationStatus::Working;
                 record.status_message = status_message;
+                record.failure_reason = None;
             }
             TaskTransition::Complete {
                 status_message,
@@ -401,14 +563,17 @@ impl FileInvocationStore {
                 record.status = InvocationStatus::Completed;
                 record.status_message = status_message;
                 record.result = Some(*result);
+                record.failure_reason = None;
                 record.resume = None;
             }
-            TaskTransition::Fail { status_message }
-                if record.status == InvocationStatus::Working =>
-            {
+            TaskTransition::Fail {
+                status_message,
+                reason,
+            } if record.status == InvocationStatus::Working => {
                 record.status = InvocationStatus::Failed;
                 record.status_message = status_message;
                 record.result = None;
+                record.failure_reason = Some(reason);
                 record.resume = None;
             }
             _ => {
@@ -452,6 +617,13 @@ impl InvocationStore for FileInvocationStore {
         }
     }
 
+    fn create_working(
+        &self,
+        new_record: NewInvocationRecord,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        self.create_working_with_after_publish_hook(new_record, |_| {})
+    }
+
     fn update(
         &self,
         task_id: TaskId,
@@ -479,6 +651,7 @@ impl InvocationStore for FileInvocationStore {
             .updated_at_epoch_ms
             .max(self.clock.now_epoch_millis());
         record.result = None;
+        record.failure_reason = None;
         record.resume = None;
         self.publish_record(&record, CommitOperation::Cancel, || {})?;
         Ok(record)
@@ -513,10 +686,17 @@ fn validate_record(record: &StoredInvocationRecord) -> Result<(), InvocationStor
         return Err(corrupt_error("task record timestamp moved backwards"));
     }
     let shape_is_valid = match record.status {
-        InvocationStatus::Queued | InvocationStatus::Working => record.result.is_none(),
-        InvocationStatus::Completed => record.result.is_some() && record.resume.is_none(),
-        InvocationStatus::Failed | InvocationStatus::Cancelled => {
-            record.result.is_none() && record.resume.is_none()
+        InvocationStatus::Queued | InvocationStatus::Working => {
+            record.result.is_none() && record.failure_reason.is_none()
+        }
+        InvocationStatus::Completed => {
+            record.result.is_some() && record.failure_reason.is_none() && record.resume.is_none()
+        }
+        InvocationStatus::Failed => {
+            record.result.is_none() && record.failure_reason.is_some() && record.resume.is_none()
+        }
+        InvocationStatus::Cancelled => {
+            record.result.is_none() && record.failure_reason.is_none() && record.resume.is_none()
         }
     };
     if !shape_is_valid {
@@ -559,7 +739,7 @@ mod tests {
     };
     use crate::application::invocation_store::{
         CommitOperation, EpochMillisClock, InvocationStore, InvocationStoreError,
-        NewInvocationRecord, SafeStatusMessage, TaskTransition, ToolIdentity,
+        NewInvocationRecord, SafeFailureReason, SafeStatusMessage, TaskTransition, ToolIdentity,
     };
     use crate::domain::invocation::{
         DeliveryResume, DomainResult, InvocationId, InvocationStatus, NormalizedArgumentsHash,
@@ -676,6 +856,114 @@ mod tests {
     }
 
     #[test]
+    fn atomic_working_create_has_distinct_before_and_after_commit_faults() {
+        let before_root = tempfile::tempdir().unwrap();
+        let (before, _) = open_store(before_root.path(), Arc::new(ManualEpochClock::at(1_625)));
+        before.inject_next_publication_failure(PublicationFailure::BeforeRename);
+        assert!(matches!(
+            before.create_working(new_record(10_000, None)),
+            Err(InvocationStoreError::Storage(_))
+        ));
+        assert_eq!(
+            fs::read_dir(before_root.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+                .count(),
+            0
+        );
+
+        let after_root = tempfile::tempdir().unwrap();
+        let (after, _) = open_store(after_root.path(), Arc::new(ManualEpochClock::at(1_650)));
+        after.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+        let task_id = match after.create_working(new_record(10_000, None)).unwrap_err() {
+            InvocationStoreError::CommitUncertain {
+                task_id,
+                operation: CommitOperation::Create,
+            } => task_id,
+            other => panic!("unexpected create outcome: {other:?}"),
+        };
+        assert_eq!(
+            after.get(task_id).unwrap().status,
+            InvocationStatus::Working
+        );
+    }
+
+    #[test]
+    fn complete_fail_and_cancel_have_exact_before_and_after_commit_fault_states() {
+        for (transition, expected_status, expected_reason) in [
+            (
+                TaskTransition::Complete {
+                    status_message: SafeStatusMessage::Completed,
+                    result: Box::new(DomainResult::success("committed completion")),
+                },
+                InvocationStatus::Completed,
+                None,
+            ),
+            (
+                TaskTransition::Fail {
+                    status_message: SafeStatusMessage::Failed,
+                    reason: SafeFailureReason::InvocationFailed,
+                },
+                InvocationStatus::Failed,
+                Some(SafeFailureReason::InvocationFailed),
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (store, _) = open_store(root.path(), Arc::new(ManualEpochClock::at(1_675)));
+            let working = store.create_working(new_record(10_000, None)).unwrap();
+            store.inject_next_publication_failure(PublicationFailure::BeforeRename);
+            assert!(matches!(
+                store.update(working.task_id, transition.clone()),
+                Err(InvocationStoreError::Storage(_))
+            ));
+            assert_eq!(
+                store.get(working.task_id).unwrap().status,
+                InvocationStatus::Working
+            );
+
+            store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+            assert_eq!(
+                store.update(working.task_id, transition).unwrap_err(),
+                InvocationStoreError::CommitUncertain {
+                    task_id: working.task_id,
+                    operation: CommitOperation::Update,
+                }
+            );
+            let committed = store.get(working.task_id).unwrap();
+            assert_eq!(committed.status, expected_status);
+            assert_eq!(committed.failure_reason, expected_reason);
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let (store, _) = open_store(root.path(), Arc::new(ManualEpochClock::at(1_690)));
+        let working = store.create_working(new_record(10_000, None)).unwrap();
+        store.inject_next_publication_failure(PublicationFailure::BeforeRename);
+        assert!(matches!(
+            store.cancel(working.task_id, SafeStatusMessage::Cancelled),
+            Err(InvocationStoreError::Storage(_))
+        ));
+        assert_eq!(
+            store.get(working.task_id).unwrap().status,
+            InvocationStatus::Working
+        );
+        store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+        assert_eq!(
+            store
+                .cancel(working.task_id, SafeStatusMessage::Cancelled)
+                .unwrap_err(),
+            InvocationStoreError::CommitUncertain {
+                task_id: working.task_id,
+                operation: CommitOperation::Cancel,
+            }
+        );
+        assert_eq!(
+            store.get(working.task_id).unwrap().status,
+            InvocationStatus::Cancelled
+        );
+    }
+
+    #[test]
     fn update_sync_failure_reports_commit_uncertain_and_reopens_new_state() {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualEpochClock::at(1_700));
@@ -708,13 +996,16 @@ mod tests {
         let (reopened, report) = open_store(root.path(), clock);
         let visible = reopened.get(created.task_id).unwrap();
         assert_eq!(visible.task_id, created.task_id);
-        assert_eq!(visible.status, InvocationStatus::Working);
-        assert_eq!(visible.status_message, SafeStatusMessage::Working);
-        assert_eq!(visible.updated_at_epoch_ms, 1_750);
-        assert_eq!(visible.resume, Some(resume));
+        assert_eq!(visible.status, InvocationStatus::Failed);
+        assert_eq!(
+            visible.failure_reason,
+            Some(SafeFailureReason::ResumeUnsupported)
+        );
+        assert!(visible.updated_at_epoch_ms >= 1_750);
+        assert!(visible.resume.is_none());
         assert!(report
             .classifications
-            .contains(&RecoveryClassification::ResumableWorking {
+            .contains(&RecoveryClassification::UnsupportedResume {
                 task_id: created.task_id,
             }));
     }
@@ -961,66 +1252,250 @@ mod tests {
     }
 
     #[test]
-    fn nonresumable_working_record_recovers_as_interrupted_failure() {
+    fn v1_nonresumable_working_record_recovers_as_interrupted_failure() {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualEpochClock::at(9_000));
-        let (store, _) = open_store(root.path(), clock.clone());
-        let created = store.create(new_record(10_000, None)).unwrap();
-        store
-            .update(
-                created.task_id,
-                TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::Working,
-                },
-            )
-            .unwrap();
-        drop(store);
+        let mut legacy =
+            new_record(10_000, None).into_stored(crate::domain::invocation::TaskId::new(), 9_000);
+        legacy.status = InvocationStatus::Working;
+        legacy.status_message = SafeStatusMessage::Working;
+        write_legacy_v1_record(root.path(), &legacy);
         clock.set(9_100);
 
         let (reopened, report) = open_store(root.path(), clock);
-        let recovered = reopened.get(created.task_id).unwrap();
+        let recovered = reopened.get(legacy.task_id).unwrap();
 
         assert_eq!(recovered.status, InvocationStatus::Failed);
         assert_eq!(recovered.status_message, SafeStatusMessage::Interrupted);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::Interrupted)
+        );
         assert!(report.classifications.contains(
             &RecoveryClassification::InterruptedNonResumable {
-                task_id: created.task_id,
+                task_id: legacy.task_id,
             }
         ));
     }
 
     #[test]
-    fn resumable_delivery_keeps_its_task_identity_after_recovery() {
+    fn v2_working_without_a_live_owner_recovers_as_interrupted() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(9_500));
+        let (store, _) = open_store(root.path(), clock.clone());
+        let working = store.create_working(new_record(10_000, None)).unwrap();
+        drop(store);
+
+        let (reopened, report) = open_store(root.path(), clock);
+        let recovered = reopened.get(working.task_id).unwrap();
+        assert_eq!(recovered.status, InvocationStatus::Failed);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::Interrupted)
+        );
+        assert!(report.classifications.contains(
+            &RecoveryClassification::InterruptedNonResumable {
+                task_id: working.task_id,
+            }
+        ));
+    }
+
+    #[test]
+    fn v2_working_resume_descriptor_without_registered_owner_is_unsupported() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(9_750));
+        let resume = ResumeDescriptor::Delivery(DeliveryResume::new(
+            SafeIdentityHash::from_sha256([0x48; 32]),
+        ));
+        let (store, _) = open_store(root.path(), clock.clone());
+        let working = store
+            .create_working(new_record(10_000, Some(resume)))
+            .unwrap();
+        drop(store);
+
+        let (reopened, report) = open_store(root.path(), clock);
+        let recovered = reopened.get(working.task_id).unwrap();
+        assert_eq!(recovered.status, InvocationStatus::Failed);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::ResumeUnsupported)
+        );
+        assert!(recovered.resume.is_none());
+        assert!(report
+            .classifications
+            .contains(&RecoveryClassification::UnsupportedResume {
+                task_id: working.task_id,
+            }));
+    }
+
+    #[test]
+    fn v1_resumable_working_without_a_registered_owner_recovers_as_unsupported() {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualEpochClock::at(10_000));
         let resume = ResumeDescriptor::Delivery(DeliveryResume::new(
             SafeIdentityHash::from_sha256([0x44; 32]),
         ));
-        let (store, _) = open_store(root.path(), clock.clone());
-        let created = store
-            .create(new_record(10_000, Some(resume.clone())))
-            .unwrap();
-        store
+        let mut legacy = new_record(10_000, Some(resume))
+            .into_stored(crate::domain::invocation::TaskId::new(), 10_000);
+        legacy.status = InvocationStatus::Working;
+        legacy.status_message = SafeStatusMessage::Delivering;
+        write_legacy_v1_record(root.path(), &legacy);
+
+        let (reopened, report) = open_store(root.path(), clock);
+        let recovered = reopened.get(legacy.task_id).unwrap();
+
+        assert_eq!(recovered.task_id, legacy.task_id);
+        assert_eq!(recovered.schema_version, 2);
+        assert_eq!(recovered.status, InvocationStatus::Failed);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::ResumeUnsupported)
+        );
+        assert!(recovered.resume.is_none());
+        assert!(report
+            .classifications
+            .contains(&RecoveryClassification::UnsupportedResume {
+                task_id: legacy.task_id,
+            }));
+    }
+
+    #[test]
+    fn v1_terminal_record_migrates_to_v2_without_changing_its_domain_result() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(10_500));
+        let expected = DomainResult::success("legacy terminal");
+        let mut legacy =
+            new_record(10_000, None).into_stored(crate::domain::invocation::TaskId::new(), 10_000);
+        legacy.status = InvocationStatus::Completed;
+        legacy.status_message = SafeStatusMessage::Completed;
+        legacy.result = Some(expected.clone());
+        write_legacy_v1_record(root.path(), &legacy);
+
+        let (store, report) = open_store(root.path(), clock);
+        let migrated = store.get(legacy.task_id).unwrap();
+
+        assert_eq!(migrated.schema_version, 2);
+        assert_eq!(migrated.status, InvocationStatus::Completed);
+        assert_eq!(migrated.result, Some(expected));
+        assert!(report
+            .classifications
+            .contains(&RecoveryClassification::MigratedV1Record {
+                task_id: legacy.task_id,
+            }));
+        let persisted: Value = serde_json::from_slice(
+            &fs::read(root.path().join(format!("{}.json", legacy.task_id))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted["schemaVersion"], 2);
+    }
+
+    #[test]
+    fn v1_failed_and_cancelled_terminal_records_migrate_deterministically() {
+        for (status, message, expected_reason) in [
+            (
+                InvocationStatus::Failed,
+                SafeStatusMessage::Failed,
+                Some(SafeFailureReason::InvocationFailed),
+            ),
+            (
+                InvocationStatus::Cancelled,
+                SafeStatusMessage::Cancelled,
+                None,
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let clock = Arc::new(ManualEpochClock::at(10_625));
+            let mut legacy = new_record(10_000, None)
+                .into_stored(crate::domain::invocation::TaskId::new(), 10_500);
+            legacy.status = status;
+            legacy.status_message = message;
+            write_legacy_v1_record(root.path(), &legacy);
+
+            let (store, report) = open_store(root.path(), clock);
+            let migrated = store.get(legacy.task_id).unwrap();
+            assert_eq!(migrated.schema_version, 2);
+            assert_eq!(migrated.status, status);
+            assert_eq!(migrated.failure_reason, expected_reason);
+            assert!(report
+                .classifications
+                .contains(&RecoveryClassification::MigratedV1Record {
+                    task_id: legacy.task_id,
+                }));
+        }
+    }
+
+    #[test]
+    fn v2_failed_record_persists_only_a_closed_failure_reason() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(10_750));
+        let (store, _) = open_store(root.path(), clock);
+        let working = store.create_working(new_record(10_000, None)).unwrap();
+        let failed = store
             .update(
-                created.task_id,
-                TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::Delivering,
+                working.task_id,
+                TaskTransition::Fail {
+                    status_message: SafeStatusMessage::Failed,
+                    reason: SafeFailureReason::PersistenceFailed,
                 },
             )
             .unwrap();
-        drop(store);
+        assert_eq!(failed.schema_version, 2);
+        assert_eq!(
+            failed.failure_reason,
+            Some(SafeFailureReason::PersistenceFailed)
+        );
 
-        let (reopened, report) = open_store(root.path(), clock);
-        let recovered = reopened.get(created.task_id).unwrap();
+        let bytes = fs::read(root.path().join(format!("{}.json", failed.task_id))).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("persistenceFailed"));
+        for forbidden in ["permission denied", "/private/store", "runtime stderr"] {
+            assert!(!text.contains(forbidden));
+        }
+    }
 
-        assert_eq!(recovered.task_id, created.task_id);
-        assert_eq!(recovered.status, InvocationStatus::Working);
-        assert_eq!(recovered.resume, Some(resume));
-        assert!(report
-            .classifications
-            .contains(&RecoveryClassification::ResumableWorking {
-                task_id: created.task_id,
-            }));
+    #[test]
+    fn unknown_record_schema_fails_closed_instead_of_reinterpreting_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let record = new_record(10_000, None)
+            .into_working_stored(crate::domain::invocation::TaskId::new(), 10_000);
+        let mut value = serde_json::to_value(&record).unwrap();
+        value["schemaVersion"] = json!(99);
+        fs::write(
+            root.path().join(format!("{}.json", record.task_id)),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+
+        let error = FileInvocationStore::open(root.path(), Arc::new(ManualEpochClock::at(11_000)))
+            .err()
+            .expect("unknown schema must reject store admission");
+        assert!(matches!(error, InvocationStoreError::Corrupt(_)));
+    }
+
+    #[test]
+    fn schema_v2_recovery_never_false_resumes_and_persists_only_closed_failure_reasons() {
+        v1_nonresumable_working_record_recovers_as_interrupted_failure();
+        v1_resumable_working_without_a_registered_owner_recovers_as_unsupported();
+        v1_terminal_record_migrates_to_v2_without_changing_its_domain_result();
+        v1_failed_and_cancelled_terminal_records_migrate_deterministically();
+        v2_working_without_a_live_owner_recovers_as_interrupted();
+        v2_working_resume_descriptor_without_registered_owner_is_unsupported();
+        v2_failed_record_persists_only_a_closed_failure_reason();
+        unknown_record_schema_fails_closed_instead_of_reinterpreting_bytes();
+    }
+
+    fn write_legacy_v1_record(
+        root: &Path,
+        record: &crate::application::invocation_store::StoredInvocationRecord,
+    ) {
+        let mut value = serde_json::to_value(record).unwrap();
+        value["schemaVersion"] = json!(1);
+        value.as_object_mut().unwrap().remove("failureReason");
+        fs::write(
+            root.join(format!("{}.json", record.task_id)),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]

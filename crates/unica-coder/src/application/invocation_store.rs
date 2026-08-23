@@ -7,7 +7,8 @@ use crate::domain::invocation::{
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-pub(crate) const INVOCATION_RECORD_SCHEMA_VERSION: u32 = 1;
+pub(crate) const LEGACY_INVOCATION_RECORD_SCHEMA_VERSION: u32 = 1;
+pub(crate) const INVOCATION_RECORD_SCHEMA_VERSION: u32 = 2;
 
 /// Restart-stable time used only for durable timestamps and retention.
 ///
@@ -91,6 +92,17 @@ pub(crate) enum SafeStatusMessage {
     Cancelled,
 }
 
+/// Closed reason persisted only for failed schema-v2 records. Runtime/store
+/// diagnostics are deliberately not representable here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SafeFailureReason {
+    InvocationFailed,
+    Interrupted,
+    ResumeUnsupported,
+    PersistenceFailed,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct NewInvocationRecord {
     invocation_id: InvocationId,
@@ -142,8 +154,20 @@ impl NewInvocationRecord {
             poll_interval_ms: self.poll_interval_ms,
             ttl_ms: self.ttl_ms,
             result: None,
+            failure_reason: None,
             resume: self.resume,
         }
+    }
+
+    pub(crate) fn into_working_stored(
+        self,
+        task_id: TaskId,
+        now_epoch_ms: u64,
+    ) -> StoredInvocationRecord {
+        let mut stored = self.into_stored(task_id, now_epoch_ms);
+        stored.status = InvocationStatus::Working;
+        stored.status_message = SafeStatusMessage::Working;
+        stored
     }
 }
 
@@ -165,6 +189,8 @@ pub(crate) struct StoredInvocationRecord {
     pub(crate) ttl_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) result: Option<DomainResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failure_reason: Option<SafeFailureReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) resume: Option<ResumeDescriptor>,
 }
@@ -189,6 +215,7 @@ pub(crate) enum TaskTransition {
     },
     Fail {
         status_message: SafeStatusMessage,
+        reason: SafeFailureReason,
     },
 }
 
@@ -249,6 +276,11 @@ pub(crate) trait InvocationStore: Send + Sync {
         new_record: NewInvocationRecord,
     ) -> Result<StoredInvocationRecord, InvocationStoreError>;
 
+    fn create_working(
+        &self,
+        new_record: NewInvocationRecord,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError>;
+
     fn get(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError>;
 
     fn update(
@@ -266,7 +298,7 @@ pub(crate) trait InvocationStore: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::{SafeStatusMessage, ToolIdentity};
+    use super::{SafeFailureReason, SafeStatusMessage, ToolIdentity};
     use crate::application::tool_contracts::SurfaceRelease;
     use crate::application::v13::tool_catalog::catalog_for;
 
@@ -312,5 +344,20 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<SafeStatusMessage>(rejected).is_err());
         }
+    }
+
+    #[test]
+    fn safe_failure_reason_rejects_runtime_prose_paths_and_secrets() {
+        for rejected in [
+            r#""process exited with /private/tmp/secret""#,
+            r#""TASK_STORE_SECRET_SENTINEL""#,
+            r#""resumeOwner-vendor-extension""#,
+        ] {
+            assert!(serde_json::from_str::<SafeFailureReason>(rejected).is_err());
+        }
+        assert_eq!(
+            serde_json::to_string(&SafeFailureReason::PersistenceFailed).unwrap(),
+            r#""persistenceFailed""#
+        );
     }
 }

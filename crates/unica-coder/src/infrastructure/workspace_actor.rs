@@ -13,7 +13,9 @@ use crate::infrastructure::workspace_index::{IndexRunner, WorkspaceIndexService}
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
+
+pub(crate) const MAX_ACTIVE_WORKSPACE_ACTORS: usize = 64;
 
 macro_rules! assert_not_impl_production {
     ($type:ty: $trait:path) => {
@@ -608,9 +610,43 @@ fn validate_physical_root(root: &RetainedDirectoryCapability) -> Result<(), Stri
     })
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkspaceActorRegistryError {
+    Capacity { limit: usize },
+    InvalidIdentity(String),
+    Poisoned,
+}
+
+impl std::fmt::Display for WorkspaceActorRegistryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Capacity { limit } => {
+                write!(
+                    formatter,
+                    "workspace actor capacity {limit} is fully leased"
+                )
+            }
+            Self::InvalidIdentity(message) => formatter.write_str(message),
+            Self::Poisoned => formatter.write_str("workspace actor registry is poisoned"),
+        }
+    }
+}
+
+impl std::error::Error for WorkspaceActorRegistryError {}
+
+#[derive(Debug)]
 pub(crate) struct WorkspaceActorRegistry {
-    actors: Mutex<HashMap<WorkspaceIdentity, Arc<WorkspaceActor>>>,
+    actors: Mutex<HashMap<WorkspaceIdentity, Weak<WorkspaceActor>>>,
+    max_active: usize,
+}
+
+impl Default for WorkspaceActorRegistry {
+    fn default() -> Self {
+        Self {
+            actors: Mutex::new(HashMap::new()),
+            max_active: MAX_ACTIVE_WORKSPACE_ACTORS,
+        }
+    }
 }
 
 impl WorkspaceActorRegistry {
@@ -619,22 +655,32 @@ impl WorkspaceActorRegistry {
         context: &WorkspaceContext,
         source_sets: I,
         provider_profile: &str,
-    ) -> Result<Arc<WorkspaceActor>, String>
+    ) -> Result<Arc<WorkspaceActor>, WorkspaceActorRegistryError>
     where
         I: IntoIterator<Item = (N, P)>,
         N: AsRef<str>,
         P: AsRef<Path>,
     {
-        let identity = WorkspaceIdentity::new(context, source_sets, provider_profile)?;
+        let identity = WorkspaceIdentity::new(context, source_sets, provider_profile)
+            .map_err(WorkspaceActorRegistryError::InvalidIdentity)?;
         let mut actors = self
             .actors
             .lock()
-            .map_err(|_| "workspace actor registry is poisoned".to_string())?;
-        if let Some(actor) = actors.get(&identity) {
-            return Ok(Arc::clone(actor));
+            .map_err(|_| WorkspaceActorRegistryError::Poisoned)?;
+        actors.retain(|_, actor| actor.strong_count() > 0);
+        if let Some(actor) = actors.get(&identity).and_then(Weak::upgrade) {
+            return Ok(actor);
         }
-        let actor = Arc::new(WorkspaceActor::new(identity.clone(), context.clone())?);
-        actors.insert(identity, Arc::clone(&actor));
+        if actors.len() >= self.max_active {
+            return Err(WorkspaceActorRegistryError::Capacity {
+                limit: self.max_active,
+            });
+        }
+        let actor = Arc::new(
+            WorkspaceActor::new(identity.clone(), context.clone())
+                .map_err(WorkspaceActorRegistryError::InvalidIdentity)?,
+        );
+        actors.insert(identity, Arc::downgrade(&actor));
         Ok(actor)
     }
 
@@ -642,14 +688,49 @@ impl WorkspaceActorRegistry {
     fn len(&self) -> Result<usize, String> {
         self.actors
             .lock()
+            .map(|actors| {
+                actors
+                    .values()
+                    .filter(|actor| actor.strong_count() > 0)
+                    .count()
+            })
+            .map_err(|_| "workspace actor registry is poisoned".to_string())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_capacity_for_test(max_active: usize) -> Self {
+        assert!(max_active > 0);
+        Self {
+            actors: Mutex::new(HashMap::new()),
+            max_active,
+        }
+    }
+
+    #[cfg(test)]
+    fn live_len_for_test(&self) -> Result<usize, String> {
+        self.len()
+    }
+
+    #[cfg(test)]
+    fn entry_len_for_test(&self) -> Result<usize, String> {
+        self.actors
+            .lock()
             .map(|actors| actors.len())
+            .map_err(|_| "workspace actor registry is poisoned".to_string())
+    }
+
+    #[cfg(test)]
+    fn prune_dead_for_test(&self) -> Result<(), String> {
+        self.actors
+            .lock()
+            .map(|mut actors| actors.retain(|_, actor| actor.strong_count() > 0))
             .map_err(|_| "workspace actor registry is poisoned".to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{WorkspaceActorRegistry, WorkspaceIdentity};
+    use super::{WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceIdentity};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
@@ -1847,6 +1928,108 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(registry.len().unwrap(), 1);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn daemon_actor_registry_prunes_dead_entries_and_bounds_sequential_roots() {
+        let parent = temp_root("bounded-sequential");
+        let registry = WorkspaceActorRegistry::with_capacity_for_test(2);
+
+        for index in 0..12 {
+            let root = parent.join(format!("workspace-{index}"));
+            let source = root.join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            let actor = registry
+                .get_or_create(&context(&root), [("main", &source)], "canonical-v0.13")
+                .unwrap();
+            assert_eq!(registry.live_len_for_test().unwrap(), 1);
+            drop(actor);
+        }
+
+        registry.prune_dead_for_test().unwrap();
+        assert_eq!(registry.entry_len_for_test().unwrap(), 0);
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn daemon_actor_registry_rejects_only_when_all_capacity_entries_are_live() {
+        let parent = temp_root("bounded-live");
+        let registry = WorkspaceActorRegistry::with_capacity_for_test(2);
+        let mut actors = Vec::new();
+        for index in 0..2 {
+            let root = parent.join(format!("workspace-{index}"));
+            let source = root.join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            actors.push(
+                registry
+                    .get_or_create(&context(&root), [("main", &source)], "canonical-v0.13")
+                    .unwrap(),
+            );
+        }
+
+        let rejected_root = parent.join("workspace-rejected");
+        let rejected_source = rejected_root.join("src");
+        std::fs::create_dir_all(&rejected_source).unwrap();
+        assert_eq!(
+            registry
+                .get_or_create(
+                    &context(&rejected_root),
+                    [("main", &rejected_source)],
+                    "canonical-v0.13",
+                )
+                .unwrap_err(),
+            WorkspaceActorRegistryError::Capacity { limit: 2 }
+        );
+        assert_eq!(registry.live_len_for_test().unwrap(), 2);
+
+        drop(actors.pop());
+        let admitted = registry
+            .get_or_create(
+                &context(&rejected_root),
+                [("main", &rejected_source)],
+                "canonical-v0.13",
+            )
+            .unwrap();
+        assert_eq!(registry.live_len_for_test().unwrap(), 2);
+        drop(admitted);
+        drop(actors);
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn active_alias_reuses_actor_and_dropped_actor_recreates_a_new_instance() {
+        let root = temp_root("weak-alias-recreate");
+        let source = root.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let registry = WorkspaceActorRegistry::with_capacity_for_test(1);
+        let first = registry
+            .get_or_create(&context(&root), [("main", &source)], "canonical-v0.13")
+            .unwrap();
+        let stale_binding = first.bind_provider_root("main", &source).unwrap();
+        let alias = registry
+            .get_or_create(
+                &context(&root.join("nested/..")),
+                [("main", root.join("nested/../src"))],
+                "canonical-v0.13",
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &alias));
+
+        drop(alias);
+        drop(first);
+        let replacement = registry
+            .get_or_create(&context(&root), [("main", &source)], "canonical-v0.13")
+            .unwrap();
+        assert!(replacement.validate_binding(&stale_binding).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn daemon_actor_registry_is_bounded_weak_and_alias_safe() {
+        daemon_actor_registry_prunes_dead_entries_and_bounds_sequential_roots();
+        daemon_actor_registry_rejects_only_when_all_capacity_entries_are_live();
+        active_alias_reuses_actor_and_dropped_actor_recreates_a_new_instance();
     }
 
     #[test]
