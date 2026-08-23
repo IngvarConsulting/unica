@@ -17,8 +17,345 @@ import warnings
 from pathlib import Path
 from unittest.mock import patch
 
+from tree_sitter import Language, Parser
+import tree_sitter_rust
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+RMCP_OWNER = "crates/unica-coder/src/interfaces/mcp.rs"
+RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
+RMCP_ALLOWED_FEATURES = ["server", "transport-io"]
+
+
+def cfg_test_item_ranges(source: bytes, tree) -> list[tuple[int, int]]:
+    ranges = []
+
+    def collect(parent) -> None:
+        children = parent.named_children
+        index = 0
+        while index < len(children):
+            child = children[index]
+            compact = re.sub(
+                r"\s+",
+                "",
+                source[child.start_byte : child.end_byte].decode(),
+            )
+            if child.type == "attribute_item" and compact == "#[cfg(test)]":
+                end = index + 1
+                while end < len(children) and children[end].type == "attribute_item":
+                    end += 1
+                if end < len(children):
+                    ranges.append((child.start_byte, children[end].end_byte))
+                    index = end + 1
+                    continue
+            collect(child)
+            index += 1
+
+    collect(tree.root_node)
+    return ranges
+
+
+def productive_rust_code(source: bytes) -> bytes:
+    parser = Parser(Language(tree_sitter_rust.language()))
+    tree = parser.parse(source)
+    ignored = {
+        "block_comment",
+        "char_literal",
+        "line_comment",
+        "raw_string_literal",
+        "string_literal",
+    }
+    code = bytearray(source)
+    for start, end in cfg_test_item_ranges(source, tree):
+        code[start:end] = b" " * (end - start)
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in ignored:
+            code[node.start_byte : node.end_byte] = b" " * (node.end_byte - node.start_byte)
+            continue
+        stack.extend(node.children)
+    return bytes(code)
+
+
+def direct_git_command_calls(source: bytes) -> list[int]:
+    """Return productive direct std::process git spawn offsets."""
+    parser = Parser(Language(tree_sitter_rust.language()))
+    tree = parser.parse(source)
+    test_ranges = cfg_test_item_ranges(source, tree)
+
+    def is_test_only(node) -> bool:
+        return any(
+            node.start_byte >= start and node.end_byte <= end
+            for start, end in test_ranges
+        )
+
+    def is_git_literal(node) -> bool:
+        literal = source[node.start_byte : node.end_byte]
+        if node.type == "string_literal":
+            return literal == b'"git"'
+        if node.type != "raw_string_literal":
+            return False
+        match = re.fullmatch(rb'r(?P<hashes>#{0,255})"git"(?P=hashes)', literal)
+        return match is not None
+
+    calls = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if is_test_only(node):
+            continue
+        if node.type == "call_expression":
+            function = node.child_by_field_name("function")
+            arguments = node.child_by_field_name("arguments")
+            if (
+                function is not None
+                and source[function.start_byte : function.end_byte]
+                == b"std::process::Command::new"
+                and arguments is not None
+                and arguments.named_child_count == 1
+                and is_git_literal(arguments.named_child(0))
+            ):
+                calls.append(node.start_byte)
+        stack.extend(node.named_children)
+    return sorted(calls)
+
+
+def cargo_workspace_metadata(repo_root: Path) -> dict:
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def tracked_workspace_production_rust_sources(repo_root: Path) -> dict[str, bytes]:
+    metadata = cargo_workspace_metadata(repo_root)
+    workspace_members = set(metadata["workspace_members"])
+    root = repo_root.resolve()
+    source_roots = []
+    for package in metadata["packages"]:
+        if package["id"] not in workspace_members:
+            continue
+        package_root = Path(package["manifest_path"]).resolve().parent
+        source_root = package_root / "src"
+        source_roots.append(source_root.relative_to(root))
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    sources = {}
+    for raw_path in tracked:
+        if not raw_path:
+            continue
+        path = raw_path.decode()
+        if not path.endswith(".rs"):
+            continue
+        tracked_path = Path(path)
+        if any(
+            tracked_path == source_root or tracked_path.is_relative_to(source_root)
+            for source_root in source_roots
+        ):
+            sources[path] = (repo_root / path).read_bytes()
+    return sources
+
+
+def rmcp_reference_confinement_errors(
+    sources: dict[str, bytes], owner: str
+) -> list[str]:
+    productive = {
+        path: productive_rust_code(source) for path, source in sources.items()
+    }
+    return [
+        f"{path}: productive rmcp reference outside transport owner"
+        for path, code in sorted(productive.items())
+        if path != owner and re.search(rb"\brmcp\b", code)
+    ]
+
+
+def workspace_rmcp_reference_confinement_errors(repo_root: Path) -> list[str]:
+    return rmcp_reference_confinement_errors(
+        tracked_workspace_production_rust_sources(repo_root),
+        RMCP_OWNER,
+    )
+
+
+def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
+    parser = Parser(Language(tree_sitter_rust.language()))
+    tree = parser.parse(source)
+    if tree.root_node.has_error:
+        return [f"{owner}: Rust parser could not resolve the export boundary"]
+    test_ranges = cfg_test_item_ranges(source, tree)
+
+    def is_test_only(node) -> bool:
+        return any(
+            node.start_byte >= start and node.end_byte <= end
+            for start, end in test_ranges
+        )
+
+    def node_text(node) -> bytes:
+        return source[node.start_byte : node.end_byte]
+
+    errors = []
+    root_run_stdio_count = 0
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if is_test_only(node):
+            continue
+        if node.type == "attribute_item":
+            attribute = next(
+                (child for child in node.named_children if child.type == "attribute"),
+                None,
+            )
+            attribute_nodes = [attribute] if attribute is not None else []
+            exports_macro = False
+            while attribute_nodes:
+                attribute_node = attribute_nodes.pop()
+                if (
+                    attribute_node.type == "identifier"
+                    and node_text(attribute_node) == b"macro_export"
+                ):
+                    exports_macro = True
+                    break
+                attribute_nodes.extend(attribute_node.named_children)
+            if exports_macro:
+                errors.append(f"{owner}: macro_export leaves the transport module")
+
+        visibility = next(
+            (child for child in node.named_children if child.type == "visibility_modifier"),
+            None,
+        )
+        if visibility is not None:
+            name = node.child_by_field_name("name")
+            public_name = node_text(name) if name is not None else b""
+            legacy_export = (
+                node.parent is not None
+                and node.parent.type == "source_file"
+                and node_text(visibility) == b"pub"
+                and (node.type, public_name)
+                in {
+                    ("const_item", b"MCP_MAX_TOOL_WORKERS"),
+                    ("struct_item", b"UnicaServer"),
+                    ("function_item", b"tool_definitions"),
+                    ("function_item", b"run_stdio"),
+                }
+            )
+            root_run_stdio = (
+                legacy_export
+                and node.type == "function_item"
+                and public_name == b"run_stdio"
+            )
+            if root_run_stdio:
+                root_run_stdio_count += 1
+                parameters = node.child_by_field_name("parameters")
+                return_type = node.child_by_field_name("return_type")
+                type_parameters = node.child_by_field_name("type_parameters")
+                where_clause = next(
+                    (
+                        child
+                        for child in node.named_children
+                        if child.type == "where_clause"
+                    ),
+                    None,
+                )
+                if (
+                    parameters is None
+                    or parameters.named_child_count != 0
+                    or return_type is not None
+                    or type_parameters is not None
+                    or where_clause is not None
+                ):
+                    errors.append(
+                        f"{owner}: run_stdio must be non-generic, take no parameters, "
+                        "and return unit"
+                    )
+            elif not legacy_export:
+                nested = (
+                    "nested "
+                    if node.type == "function_item"
+                    and node.parent is not None
+                    and node.parent.type != "source_file"
+                    else ""
+                )
+                errors.append(
+                    f"{owner}: {nested}public {node.type} is outside run_stdio"
+                )
+        stack.extend(reversed(node.named_children))
+    if root_run_stdio_count != 1:
+        errors.append(
+            f"{owner}: expected exactly one root pub fn run_stdio(), "
+            f"found {root_run_stdio_count}"
+        )
+    return errors
+
+
+def workspace_rmcp_owner_export_boundary_errors(repo_root: Path) -> list[str]:
+    sources = tracked_workspace_production_rust_sources(repo_root)
+    if RMCP_OWNER not in sources:
+        return [f"{RMCP_OWNER}: owner is not a tracked workspace production source"]
+    return rmcp_owner_export_boundary_errors(sources[RMCP_OWNER], RMCP_OWNER)
+
+
+def rmcp_dependency_contract_errors(metadata: dict) -> list[str]:
+    workspace_members = set(metadata["workspace_members"])
+    packages = sorted(
+        (
+            package
+            for package in metadata["packages"]
+            if package["id"] in workspace_members
+        ),
+        key=lambda package: package["name"],
+    )
+    errors = []
+    coder_dependencies = []
+    for package in packages:
+        dependencies = [
+            dependency
+            for dependency in package["dependencies"]
+            if dependency["name"] == "rmcp"
+        ]
+        if package["name"] == "unica-coder":
+            coder_dependencies.extend(dependencies)
+            continue
+        for dependency in dependencies:
+            alias = dependency.get("rename") or "rmcp"
+            errors.append(
+                f"{package['name']}: rmcp dependency is outside unica-coder "
+                f"(alias {alias})"
+            )
+
+    if len(coder_dependencies) != 1:
+        errors.append(
+            "unica-coder: expected exactly one direct rmcp dependency, "
+            f"found {len(coder_dependencies)}"
+        )
+        return errors
+
+    dependency = coder_dependencies[0]
+    if dependency.get("rename") is not None:
+        errors.append("unica-coder: rmcp dependency must use its canonical name")
+    if dependency.get("source") != RMCP_CRATES_IO_SOURCE:
+        errors.append("unica-coder: rmcp dependency must come from crates.io")
+    if dependency.get("uses_default_features") is not False:
+        errors.append("unica-coder: rmcp default features must be disabled")
+    features = sorted(dependency.get("features", []))
+    if features != RMCP_ALLOWED_FEATURES:
+        errors.append(
+            f"unica-coder: rmcp features {features!r} differ from "
+            f"{RMCP_ALLOWED_FEATURES!r}"
+        )
+    return errors
+
+
+def workspace_rmcp_dependency_errors(repo_root: Path) -> list[str]:
+    return rmcp_dependency_contract_errors(cargo_workspace_metadata(repo_root))
 
 
 def load_contract_module():
@@ -32,6 +369,409 @@ def load_contract_module():
 
 
 class ProductContractTests(unittest.TestCase):
+    def test_rmcp_confinement_scans_other_tracked_workspace_crates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            owner = root / "crates" / "unica-coder" / "src" / "interfaces" / "mcp.rs"
+            sibling = root / "crates" / "unica-bootstrap" / "src" / "lib.rs"
+            owner.parent.mkdir(parents=True)
+            sibling.parent.mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-coder"]\n',
+                encoding="utf-8",
+            )
+            for package_name in ("unica-bootstrap", "unica-coder"):
+                (root / "crates" / package_name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{package_name}"\nversion = "0.1.0"\n'
+                    'edition = "2021"\n',
+                    encoding="utf-8",
+                )
+            owner.write_text(
+                "use rmcp::ServerHandler;\n"
+                "struct UnicaServer;\n"
+                "impl ServerHandler for UnicaServer {}\n",
+                encoding="utf-8",
+            )
+            (owner.parents[1] / "lib.rs").write_text("", encoding="utf-8")
+            sibling.write_text("use rmcp::model::ProtocolVersion;\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                workspace_rmcp_reference_confinement_errors(root),
+                [
+                    "crates/unica-bootstrap/src/lib.rs: productive rmcp "
+                    "reference outside transport owner"
+                ],
+            )
+
+    def test_tracked_workspace_sources_include_root_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "src" / "lib.rs"
+            source.parent.mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[package]\nname = "root-package"\nversion = "0.1.0"\n'
+                '[workspace]\nmembers = []\n',
+                encoding="utf-8",
+            )
+            source.write_text("use rmcp::model::ProtocolVersion;\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                set(tracked_workspace_production_rust_sources(root)),
+                {"src/lib.rs"},
+            )
+
+    def test_tracked_workspace_sources_expand_member_globs_and_excludes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            included = root / "crates" / "included" / "src" / "lib.rs"
+            excluded = root / "crates" / "excluded" / "src" / "lib.rs"
+            included.parent.mkdir(parents=True)
+            excluded.parent.mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["crates/*"]\n'
+                'exclude = ["crates/excluded"]\n',
+                encoding="utf-8",
+            )
+            for package_name in ("included", "excluded"):
+                (root / "crates" / package_name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{package_name}"\nversion = "0.1.0"\n'
+                    'edition = "2021"\n',
+                    encoding="utf-8",
+                )
+            included.write_text("pub struct Included;\n", encoding="utf-8")
+            excluded.write_text("pub struct Excluded;\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                set(tracked_workspace_production_rust_sources(root)),
+                {"crates/included/src/lib.rs"},
+            )
+
+    def test_tracked_workspace_sources_include_implicit_path_dependency_member(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = root / "app"
+            shared = root / "shared"
+            (app / "src").mkdir(parents=True)
+            (shared / "src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nresolver = "2"\nmembers = ["app"]\n',
+                encoding="utf-8",
+            )
+            (app / "Cargo.toml").write_text(
+                '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n'
+                '[dependencies]\nshared = { path = "../shared" }\n',
+                encoding="utf-8",
+            )
+            (shared / "Cargo.toml").write_text(
+                '[package]\nname = "shared"\nversion = "0.1.0"\nedition = "2021"\n',
+                encoding="utf-8",
+            )
+            (app / "src" / "lib.rs").write_text(
+                "pub fn app() {}\n", encoding="utf-8"
+            )
+            (shared / "src" / "lib.rs").write_text(
+                "pub fn shared() {}\n", encoding="utf-8"
+            )
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                set(tracked_workspace_production_rust_sources(root)),
+                {"app/src/lib.rs", "shared/src/lib.rs"},
+            )
+
+    def test_rmcp_dependency_contract_rejects_alias_in_sibling_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coder = root / "unica-coder"
+            sibling = root / "sibling"
+            vendor = root / "vendor" / "rmcp"
+            for package in (coder, sibling, vendor):
+                (package / "src").mkdir(parents=True)
+                (package / "src" / "lib.rs").write_text("", encoding="utf-8")
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nresolver = "2"\n'
+                'members = ["unica-coder", "sibling"]\n'
+                '[workspace.dependencies]\n'
+                'rmcp = { version = "3.1.2", default-features = false, '
+                'features = ["server", "transport-io"] }\n'
+                'sdk_alias = { package = "rmcp", version = "3.1.2", '
+                'default-features = false, features = ["server", "transport-io"] }\n'
+                '[patch.crates-io]\nrmcp = { path = "vendor/rmcp" }\n',
+                encoding="utf-8",
+            )
+            (coder / "Cargo.toml").write_text(
+                '[package]\nname = "unica-coder"\nversion = "0.1.0"\n'
+                'edition = "2021"\n[dependencies]\nrmcp.workspace = true\n',
+                encoding="utf-8",
+            )
+            (sibling / "Cargo.toml").write_text(
+                '[package]\nname = "sibling"\nversion = "0.1.0"\n'
+                'edition = "2021"\n[dependencies]\nsdk_alias.workspace = true\n',
+                encoding="utf-8",
+            )
+            (vendor / "Cargo.toml").write_text(
+                '[package]\nname = "rmcp"\nversion = "3.1.2"\nedition = "2021"\n'
+                '[features]\ndefault = []\nserver = []\ntransport-io = []\n',
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                workspace_rmcp_dependency_errors(root),
+                ["sibling: rmcp dependency is outside unica-coder (alias sdk_alias)"],
+            )
+
+    def test_rmcp_dependency_contract_rejects_renamed_local_macro_dependency(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            coder = root / "unica-coder"
+            vendor = root / "vendor" / "rmcp"
+            for package in (coder, vendor):
+                (package / "src").mkdir(parents=True)
+                (package / "src" / "lib.rs").write_text("", encoding="utf-8")
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nresolver = "2"\nmembers = ["unica-coder"]\n',
+                encoding="utf-8",
+            )
+            (coder / "Cargo.toml").write_text(
+                '[package]\nname = "unica-coder"\nversion = "0.1.0"\n'
+                'edition = "2021"\n[dependencies]\n'
+                'sdk_alias = { package = "rmcp", path = "../vendor/rmcp", '
+                'features = ["server", "transport-io", "macros"] }\n',
+                encoding="utf-8",
+            )
+            (vendor / "Cargo.toml").write_text(
+                '[package]\nname = "rmcp"\nversion = "3.1.2"\nedition = "2021"\n'
+                '[features]\ndefault = []\nserver = []\ntransport-io = []\nmacros = []\n',
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            self.assertEqual(
+                workspace_rmcp_dependency_errors(root),
+                [
+                    "unica-coder: rmcp dependency must use its canonical name",
+                    "unica-coder: rmcp dependency must come from crates.io",
+                    "unica-coder: rmcp default features must be disabled",
+                    "unica-coder: rmcp features ['macros', 'server', "
+                    "'transport-io'] differ from ['server', 'transport-io']",
+                ],
+            )
+
+    def test_rmcp_owner_rejects_public_reexport_and_type_alias(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub fn run_stdio() {}
+                pub use rmcp::model::Tool as ExportedTool;
+                pub type SdkTool = rmcp::model::Tool;
+            """,
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                f"{owner}: public use_declaration is outside run_stdio",
+                f"{owner}: public type_item is outside run_stdio",
+            ],
+        )
+
+    def test_rmcp_owner_rejects_other_public_items_members_and_macros(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub(crate) const LIMIT: usize = 1;
+                struct Internal { pub value: usize }
+                pub struct Exported;
+                #[macro_export]
+                macro_rules! exported { () => {}; }
+                mod nested { pub fn run_stdio() {} }
+                pub fn run_stdio(_: rmcp::model::Tool) -> rmcp::model::Tool {
+                    unreachable!()
+                }
+            """,
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                f"{owner}: public const_item is outside run_stdio",
+                f"{owner}: public field_declaration is outside run_stdio",
+                f"{owner}: public struct_item is outside run_stdio",
+                f"{owner}: macro_export leaves the transport module",
+                f"{owner}: nested public function_item is outside run_stdio",
+                f"{owner}: run_stdio must be non-generic, take no parameters, "
+                "and return unit",
+            ],
+        )
+
+    def test_rmcp_owner_ignores_exports_inside_exact_cfg_test_item(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub fn run_stdio() {}
+                #[cfg(test)]
+                mod tests {
+                    pub use rmcp::model::Tool;
+                    pub type SdkTool = rmcp::model::Tool;
+                }
+            """,
+            owner,
+        )
+
+        self.assertEqual(errors, [])
+
+    def test_rmcp_owner_export_guard_fails_closed_on_invalid_rust(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+
+        self.assertEqual(
+            rmcp_owner_export_boundary_errors(b"pub fn run_stdio(", owner),
+            [f"{owner}: Rust parser could not resolve the export boundary"],
+        )
+
+    def test_rmcp_owner_rejects_parameterized_macro_export(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+
+        self.assertEqual(
+            rmcp_owner_export_boundary_errors(
+                b"""
+                    pub fn run_stdio() {}
+                    #[macro_export(local_inner_macros)]
+                    macro_rules! exported { () => {}; }
+                """,
+                owner,
+            ),
+            [f"{owner}: macro_export leaves the transport module"],
+        )
+
+    def test_rmcp_owner_rejects_conditional_macro_export(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+
+        self.assertEqual(
+            rmcp_owner_export_boundary_errors(
+                b"""
+                    pub fn run_stdio() {}
+                    #[cfg_attr(not(test), macro_export)]
+                    macro_rules! exported { () => {}; }
+                """,
+                owner,
+            ),
+            [f"{owner}: macro_export leaves the transport module"],
+        )
+
+    def test_rmcp_owner_requires_exactly_one_root_run_stdio(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        fixtures = {
+            "missing": (
+                b"struct Internal;",
+                [f"{owner}: expected exactly one root pub fn run_stdio(), found 0"],
+            ),
+            "duplicate": (
+                b"pub fn run_stdio() {} pub fn run_stdio() {}",
+                [f"{owner}: expected exactly one root pub fn run_stdio(), found 2"],
+            ),
+            "nested-only": (
+                b"mod nested { pub fn run_stdio() {} }",
+                [
+                    f"{owner}: nested public function_item is outside run_stdio",
+                    f"{owner}: expected exactly one root pub fn run_stdio(), found 0",
+                ],
+            ),
+        }
+
+        for name, (source, expected) in fixtures.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    rmcp_owner_export_boundary_errors(source, owner), expected
+                )
+
+    def test_rmcp_owner_rejects_sdk_bound_on_generic_run_stdio(self) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+
+        self.assertEqual(
+            rmcp_owner_export_boundary_errors(
+                b"pub fn run_stdio<T: rmcp::ServerHandler>() {}",
+                owner,
+            ),
+            [
+                f"{owner}: run_stdio must be non-generic, take no parameters, "
+                "and return unit"
+            ],
+        )
+
+    def test_rmcp_dependency_is_owned_by_unica_coder_without_macro_features(
+        self,
+    ) -> None:
+        self.assertEqual(workspace_rmcp_dependency_errors(REPO_ROOT), [])
+
+    def test_unica_coder_production_library_satisfies_rmcp_handler_bound(
+        self,
+    ) -> None:
+        result = subprocess.run(
+            ["cargo", "check", "-q", "-p", "unica-coder", "--lib"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
+        source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
+        for declaration in (
+            b"pub const MCP_MAX_TOOL_WORKERS:",
+            b"pub struct UnicaServer",
+            b"pub fn tool_definitions(",
+            b"pub fn run_stdio()",
+        ):
+            with self.subTest(declaration=declaration):
+                self.assertIn(declaration, source)
+        self.assertEqual(workspace_rmcp_owner_export_boundary_errors(REPO_ROOT), [])
+
+    def test_rmcp_confinement_ignores_comments_literals_and_exact_cfg_test(
+        self,
+    ) -> None:
+        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        outside = "crates/other/src/lib.rs"
+        errors = rmcp_reference_confinement_errors(
+            {
+                owner: b"use rmcp::ServerHandler;",
+                outside: b'''
+                    // use rmcp::ServerHandler;
+                    const TEXT: &str = "rmcp::ServerHandler";
+                    const RAW: &str = r#"rmcp::ServerHandler"#;
+                    #[cfg(test)]
+                    mod tests { use rmcp::ServerHandler; }
+                ''',
+            },
+            owner,
+        )
+
+        self.assertEqual(errors, [])
+
+    def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
+        self.assertEqual(
+            workspace_rmcp_reference_confinement_errors(REPO_ROOT),
+            [],
+            "productive rmcp references must stay in interfaces/mcp.rs",
+        )
+
     def test_native_validators_do_not_expose_internal_local_owner_only_switch(
         self,
     ) -> None:
@@ -493,9 +1233,6 @@ class ProductContractTests(unittest.TestCase):
         ]
         self.assertGreater(len(rows), 5, "таблица маршрутизации не разобрана")
 
-        # Только два префикса читаются от `spec/`, и оба названы в шапке
-        # таблицы; всё остальное — от корня репозитория.
-        spec_relative = ("architecture/", "acceptance/")
         extensions = (".md", ".rs", ".py", ".yml", ".yaml", ".json", ".toml")
         offenders = []
         checked = 0
@@ -510,9 +1247,8 @@ class ProductContractTests(unittest.TestCase):
                     probe = probe.rsplit("/", 1)[0] if "/" in probe else probe
                     if "<" in probe:
                         continue
-                base = repo_root / "spec" if probe.startswith(spec_relative) else repo_root
                 checked += 1
-                if not (base / probe).exists():
+                if not (repo_root / probe).exists():
                     offenders.append(token)
 
         self.assertGreater(checked, 15, "пути таблицы не разобраны")
@@ -533,17 +1269,16 @@ class ProductContractTests(unittest.TestCase):
         self.assertNotIn("download-1ci-guides.py", agents)
         self.assertNotIn("docs-local/1ci/8.3.27/en/", agents)
         self.assertNotIn("kb.1ci.com/bin/download", agents)
-        # Активный слой spec/ — не только AGENTS.md: указание на локальный
-        # корпус в нём отправляет читателя к пути, который больше ничем не
-        # создаётся. Исторические docs/design и docs/plans сюда не входят.
-        for spec_path in sorted((REPO_ROOT / "spec").rglob("*")):
-            if not spec_path.is_file():
+        # Действующий нормативный слой не отправляет читателя к снятому корпусу.
+        # Замороженный `docs/arch-v1/` сюда намеренно не входит.
+        for arch_path in sorted((REPO_ROOT / "arch").rglob("*")):
+            if not arch_path.is_file():
                 continue
-            with self.subTest(path=spec_path.relative_to(REPO_ROOT).as_posix()):
+            with self.subTest(path=arch_path.relative_to(REPO_ROOT).as_posix()):
                 self.assertNotIn(
                     "docs-local/1ci",
-                    spec_path.read_text(encoding="utf-8"),
-                    "активный слой spec не должен ссылаться на снятый корпус",
+                    arch_path.read_text(encoding="utf-8"),
+                    "активный слой arch не должен ссылаться на снятый корпус",
                 )
 
     def test_local_corpus_directory_stays_ignored(self) -> None:
@@ -772,29 +1507,52 @@ class ProductContractTests(unittest.TestCase):
 
     def test_claude_version_floor_stays_recorded_outside_the_root_readme(self) -> None:
         # The floor is load-bearing: clients before 2.1.69 cannot parse the
-        # catalog's git-subdir source. The root README deliberately omits it,
-        # so the plugin README and the decision record must keep it.
+        # catalog's git-subdir source. The package contract and its user-facing
+        # README, not the frozen v1 decision, keep it.
         repo_root = Path(__file__).resolve().parents[2]
         plugin_readme = (repo_root / "plugins/unica/README.md").read_text(encoding="utf-8")
-        decision = (
-            repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md"
-        ).read_text(encoding="utf-8")
+        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("2.1.69", plugin_readme)
-        self.assertIn("2.1.69", decision)
+        self.assertIn("CLAUDE_CLI_VERSION: 2.1.69", release)
+
+    def test_release_gate_pins_the_oldest_supported_client(self) -> None:
+        from tests.ci.test_unica_workflow import parse_workflow_jobs
+
+        release = (REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text(
+            encoding="utf-8"
+        )
+        package = parse_workflow_jobs(release)["package-thin"].body
+        pins = re.findall(r"(?m)^          CLAUDE_CLI_VERSION: ([0-9.]+)$", package)
+        self.assertEqual(pins, ["2.1.69"])
+        ordered = (
+            'npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"',
+            'test "$(claude --version | cut -d\' \' -f1)" = "$CLAUDE_CLI_VERSION"',
+            "claude plugin validate dist/thin/marketplace/plugins/unica",
+            "claude plugin validate dist/thin/marketplace",
+        )
+        positions = [package.index(command) for command in ordered]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("python scripts/ci/package-unica-plugin.py", package)
+        self.assertLess(
+            package.index("python scripts/ci/package-unica-plugin.py"),
+            positions[0],
+        )
 
     def test_claude_host_contract_is_recorded_for_agents(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         agents = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
         claude_md = (repo_root / "CLAUDE.md").read_text(encoding="utf-8")
-        decisions = (repo_root / "spec/decisions/README.md").read_text(encoding="utf-8")
+        host_invariant = (
+            repo_root / "arch/invariants/INV.PKG.TWO-HOSTS-ONE-TREE.md"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("plugins/unica/.claude-plugin/plugin.json", agents)
         self.assertIn("AGENTS.md", claude_md)
-        self.assertIn("0012-one-plugin-directory-for-two-hosts.md", decisions)
-        self.assertTrue(
-            (repo_root / "spec/decisions/0012-one-plugin-directory-for-two-hosts.md").is_file()
-        )
+        self.assertIn("Codex", host_invariant)
+        self.assertIn("Claude Code", host_invariant)
 
     def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -848,9 +1606,9 @@ class ProductContractTests(unittest.TestCase):
         paths = [
             repo_root / "README.md",
             repo_root / "plugins/unica/README.md",
-            repo_root / "spec/acceptance/unica-mcp-validation.md",
-            repo_root / "spec/architecture/runtime.md",
-            repo_root / "spec/architecture/deployment.md",
+            repo_root / "docs/release-runbook.md",
+            repo_root / "arch/decisions/2026-08-19-core-first-acquisition.md",
+            repo_root / "arch/decisions/2026-08-20-engines-come-from-the-toolchain.md",
         ]
         forbidden = ("unica-local", "unica-codex-marketplace-")
         matches = [
@@ -907,7 +1665,7 @@ class ProductContractTests(unittest.TestCase):
 
     def test_removed_script_backed_skills_do_not_leave_architecture_records(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        decisions = repo_root / "spec" / "decisions"
+        decisions = repo_root / "docs" / "arch-v1" / "decisions"
         index = (decisions / "README.md").read_text(encoding="utf-8")
 
         self.assertFalse((decisions / "0007-script-backed-utility-skill-exceptions.md").exists())
@@ -921,13 +1679,23 @@ class ProductContractTests(unittest.TestCase):
         )
         offenders = []
         for path in application_root.rglob("*.rs"):
-            production = path.read_text(encoding="utf-8").split(
-                "#[cfg(test)]\nmod tests", maxsplit=1
-            )[0]
-            if 'std::process::Command::new("git")' in production:
+            if direct_git_command_calls(path.read_bytes()):
                 offenders.append(str(path.relative_to(repo_root)))
 
         self.assertEqual(offenders, [])
+
+    def test_direct_git_command_guard_matches_calls_before_masking_literals(self) -> None:
+        source = br'''
+fn productive() { std::process::Command::new("git"); }
+fn harmless() {
+    let mention = "std::process::Command::new(\"git\")";
+    // std::process::Command::new("git");
+}
+#[cfg(test)]
+fn test_only() { std::process::Command::new("git"); }
+'''
+
+        self.assertEqual(len(direct_git_command_calls(source)), 1)
 
     def write_executable(self, tools_dir: Path, name: str, body: str) -> None:
         commands = {
@@ -1281,109 +2049,6 @@ class ProductContractTests(unittest.TestCase):
             errors,
         )
 
-    def test_runtime_docs_define_workspace_service_deadlines_exactly(self) -> None:
-        """Three documents must quote the budgets the runtime actually enforces.
-
-        The contract is the numbers, not the wording. Asserting exact English
-        prose broke the moment the architecture layer was translated, while the
-        thing worth protecting is language-independent.
-
-        The budgets are read from the constants that enforce them rather than
-        written down here a second time. A literal set inside the test made the
-        check circular in two ways: changing `SERVICE_REQUEST_TIMEOUT` in the
-        runtime left every document and this test green, and the two former
-        "documents agree" assertions could not fail at all -- the loop above
-        them already established `required <= found` for every document, so
-        `found & required` was `required` on both sides of each comparison.
-        Anchoring the set to the source makes the loop the real check: drift in
-        the runtime now fails against all three documents at once.
-        """
-        repo_root = Path(__file__).resolve().parents[2]
-        sources = {
-            "runtime": repo_root / "spec/architecture/runtime.md",
-            "acceptance": repo_root / "spec/acceptance/unica-mcp-validation.md",
-            "adr-0006": repo_root
-            / "spec/decisions/0006-workspace-scoped-internal-services.md",
-        }
-
-        # Quantity plus unit, in either language: "120 seconds", "500 мс", "8 MiB".
-        quantity = re.compile(
-            r"(?<![\w.])(\d+)[\s-]*"
-            r"(seconds?|секунд\w*|ms\b|мс\b|MiB|КиБ|KiB|МиБ)",
-            re.IGNORECASE,
-        )
-
-        budgets = {}
-        for label, path in sources.items():
-            text = " ".join(path.read_text(encoding="utf-8").split())
-            found = set()
-            for value, unit in quantity.findall(text):
-                unit = unit.lower()
-                if unit.startswith(("second", "секунд")):
-                    canonical = "s"
-                elif unit in {"ms", "мс"}:
-                    canonical = "ms"
-                else:
-                    canonical = "bytes"
-                found.add(f"{value}{canonical}")
-            budgets[label] = found
-
-        required = self.enforced_workspace_service_budgets()
-        for label, found in budgets.items():
-            missing = sorted(required - found)
-            self.assertEqual(
-                missing, [], f"{label} no longer states the budgets {missing}"
-            )
-
-    def enforced_workspace_service_budgets(self) -> set:
-        """The deadlines the workspace service enforces, read from its source.
-
-        Two are named constants; the read-poll slice is a literal repeated at
-        every polling call site, so it is taken from those call sites and must
-        be a single value -- several different slices would mean the documented
-        one describes only part of the behaviour.
-
-        The unit is captured rather than assumed. Matching only `from_millis`
-        would let a call site move to `from_secs` and simply drop out of the
-        set, leaving the remaining site to agree with the documents on its own
-        while the runtime had stopped behaving as documented. Test code is cut
-        away first: the fixtures set their own read timeouts, and those are not
-        budgets anyone documents.
-        """
-        repo_root = Path(__file__).resolve().parents[2]
-        source = (
-            repo_root / "crates/unica-coder/src/infrastructure/workspace_services.rs"
-        ).read_text(encoding="utf-8")
-        source = re.split(r"^#\[cfg\(test\)\]", source, maxsplit=1, flags=re.MULTILINE)[0]
-
-        constants = {
-            match.group("name"): (match.group("unit"), match.group("value"))
-            for match in re.finditer(
-                r"^const (?P<name>[A-Z_]+): Duration = "
-                r"Duration::from_(?P<unit>secs|millis)\((?P<value>\d+)\);",
-                source,
-                re.MULTILINE,
-            )
-        }
-        budgets = set()
-        for name in ("SERVICE_REQUEST_TIMEOUT", "SERVICE_CONTROL_CONNECT_TIMEOUT"):
-            self.assertIn(name, constants, f"{name} no longer names a duration")
-            unit, value = constants[name]
-            budgets.add(f"{value}{'s' if unit == 'secs' else 'ms'}")
-
-        slices = {
-            f"{value}{'s' if unit == 'secs' else 'ms'}"
-            for unit, value in re.findall(
-                r"set_read_timeout\(\s*Some\((?:remaining\.min\()?"
-                r"Duration::from_(secs|millis)\((\d+)\)",
-                source,
-            )
-        }
-        self.assertEqual(
-            len(slices), 1, f"read polling uses several slice lengths: {sorted(slices)}"
-        )
-        budgets.add(slices.pop())
-        return budgets
 
     def test_tool_help_contracts_report_missing_rlm_server_transport_surface(self) -> None:
         module = load_contract_module()

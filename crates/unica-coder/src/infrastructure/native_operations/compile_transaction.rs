@@ -4379,7 +4379,7 @@ fn failpoint_post_write_validation() -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::infrastructure::platform::testing;
@@ -5289,7 +5289,7 @@ mod tests {
     }
 
     #[test]
-    fn already_present_registration_commits_as_a_byte_for_byte_noop() {
+    pub(crate) fn already_present_registration_commits_as_a_byte_for_byte_noop() {
         let root = temp_root("registration-noop");
         let config = root.join("Configuration.xml");
         let original = concat!(
@@ -5317,6 +5317,26 @@ mod tests {
         assert_eq!(fs::read(&config).unwrap(), original);
         assert!(transaction_debris(&root).is_empty());
         fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    pub(crate) fn identical_replacement_commits_as_a_byte_for_byte_noop() {
+        let root = temp_root("replacement-noop");
+        let target = root.join("Configuration.xml");
+        let original = b"<MetaDataObject><Configuration/></MetaDataObject>".to_vec();
+        fs::write(&target, &original).unwrap();
+        let mut transaction = CompileTransaction::new();
+        transaction
+            .replace_bytes(&target, &original, original.clone())
+            .expect("an identical replacement remains a bound transaction input");
+
+        let report = transaction.commit().expect("no-op replacement must commit");
+
+        assert!(report.created.is_empty());
+        assert!(report.updated.is_empty());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(transaction_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6826,6 +6846,18 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// Registry-facing rollback diagnostic falsifier built only from real
+    /// publication failures.  It executes restore, removal, quarantine and
+    /// post-commit cleanup races instead of formatting invented messages.
+    #[test]
+    fn fault_injected_rollback_and_cleanup_paths_keep_distinct_diagnostics() {
+        registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap();
+        registration_rollback_validation_reports_preserved_quarantine();
+        removal_rollback_preserves_concurrent_file_and_recovery_artifact();
+        removal_rollback_preserves_concurrent_empty_directory_and_recovery_tree();
+        successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap();
+    }
+
     #[test]
     fn after_registration_backup_failure_restores_exact_bytes_and_removes_debris() {
         let root = temp_root("rollback-registration-backup");
@@ -7016,7 +7048,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_read_guard_serializes_with_owner_writer_and_rejects_stale_plan() {
+    pub(crate) fn exact_read_guard_serializes_with_owner_writer_and_rejects_stale_plan() {
         let root = temp_root("read-guard-concurrent-owner-writer");
         let owner = root.join("Owner.xml");
         let owner_before = b"<Owner><State>before</State></Owner>\n".to_vec();

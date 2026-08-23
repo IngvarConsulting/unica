@@ -116,5 +116,8 @@ impl NativeOperationAdapter {
         Ok(common::analyze_xml(operation, tool_name, &target, &text))
     }
 }
+
+#[cfg(test)]
+mod source_invariant_tests;
 #[cfg(test)]
 mod tests;

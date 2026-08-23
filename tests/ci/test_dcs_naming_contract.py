@@ -97,7 +97,7 @@ class DcsNamingContractTests(unittest.TestCase):
         self.assertEqual(violations, [])
 
     def test_provenance_names_local_dcs_contract_but_preserves_donor_paths(self) -> None:
-        path = REPO_ROOT / "spec" / "provenance" / "skill-upstreams.json"
+        path = REPO_ROOT / "docs" / "provenance" / "skill-upstreams.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         entries = {
             entry["skill"]: entry
@@ -145,12 +145,11 @@ class DcsNamingContractTests(unittest.TestCase):
             REPO_ROOT / "crates" / "unica-coder" / "src",
             REPO_ROOT / "plugins" / "unica",
             REPO_ROOT / "scripts",
-            REPO_ROOT / "spec",
+            REPO_ROOT / "arch",
             REPO_ROOT / "tests" / "ci",
         ]
         excluded = {
-            "spec/provenance/skill-upstreams.json",
-            "spec/decisions/0011-canonical-dcs-domain.md",
+            "docs/provenance/skill-upstreams.json",
             "tests/ci/test_dcs_naming_contract.py",
         }
         paths: list[Path] = []

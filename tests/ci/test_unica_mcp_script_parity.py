@@ -116,7 +116,7 @@ DOCUMENTED_READER_TOOL_NAMES = {
 TYPED_CONTRACT_TOOL_NAMES = {
     name
     for name, review in json.loads(
-        (REPO_ROOT / "spec/architecture/tool-surface-review.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "arch/tool-surface-review.json").read_text(encoding="utf-8")
     ).items()
     if review["result"]["contract"] == "typed"
 }
@@ -2088,6 +2088,12 @@ network = "allow"
         for case in iter_cc_1c_skill_cases():
             with self.subTest(case=case.case_id, tool=cc_case_tool(case)):
                 self.assert_cc_1c_case_parity(case)
+
+    def test_donor_inventory_relations_preview_and_snapshot_are_closed(self) -> None:
+        self.test_every_donor_case_has_one_reviewed_relation()
+        self.test_retired_donor_cases_are_not_compared()
+        self.test_donor_snapshot_integrity_and_provenance()
+        self.test_donor_cases_match_reviewed_relations()
 
     def assert_parity(self, scenario: ParityScenario) -> None:
         with tempfile.TemporaryDirectory(prefix=f"unica-parity-{scenario.name}-") as temp:

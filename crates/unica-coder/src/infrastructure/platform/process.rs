@@ -2317,6 +2317,19 @@ mod tests {
     }
 
     #[test]
+    fn managed_process_tree_lifecycle_is_bounded() {
+        managed_child_timeout_returns_within_a_bounded_interval();
+        managed_child_cancellation_returns_within_a_bounded_interval();
+        managed_child_drop_terminates_and_reaps_running_process();
+        managed_child_kills_descendants();
+        startup_child_cleanup_kills_descendants();
+        #[cfg(unix)]
+        system_runtime_job_cancellation_reaps_the_process_group();
+        #[cfg(windows)]
+        process_tree_keeps_child_suspended_until_attach();
+    }
+
+    #[test]
     fn startup_child_detach_leaves_process_running() {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command

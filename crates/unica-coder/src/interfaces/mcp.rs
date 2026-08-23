@@ -123,6 +123,13 @@ pub struct UnicaServer {
     startup_notice: Option<String>,
 }
 
+#[allow(dead_code)]
+fn assert_unica_server_implements_official_rmcp_server_handler()
+where
+    UnicaServer: ::rmcp::ServerHandler,
+{
+}
+
 /// Пустое значение — это «нечего рассказывать», а не пустой рассказ.
 fn startup_notice_from(value: Option<String>) -> Option<String> {
     let notice = value?.trim().to_owned();
@@ -653,27 +660,47 @@ mod tests {
 
     const TEST_STEP: Duration = Duration::from_secs(10);
 
+    #[test]
+    fn unica_server_implements_official_rmcp_server_handler() {
+        super::assert_unica_server_implements_official_rmcp_server_handler();
+    }
+
     fn object_schema_property_maps(
         schema: &serde_json::Map<String, serde_json::Value>,
     ) -> Vec<&serde_json::Map<String, serde_json::Value>> {
-        if let Some(properties) = schema
-            .get("properties")
-            .and_then(serde_json::Value::as_object)
-        {
-            return vec![properties];
+        fn visit_value<'a>(
+            value: &'a serde_json::Value,
+            property_maps: &mut Vec<&'a serde_json::Map<String, serde_json::Value>>,
+        ) {
+            match value {
+                serde_json::Value::Object(object) => visit_object(object, property_maps),
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        visit_value(item, property_maps);
+                    }
+                }
+                _ => {}
+            }
         }
-        schema
-            .get("oneOf")
-            .expect("tool schema publishes properties or closed object oneOf branches")
-            .as_array()
-            .expect("tool schema publishes properties or closed object oneOf branches")
-            .iter()
-            .map(|branch| {
-                branch["properties"]
-                    .as_object()
-                    .expect("oneOf branch properties are an object")
-            })
-            .collect()
+
+        fn visit_object<'a>(
+            object: &'a serde_json::Map<String, serde_json::Value>,
+            property_maps: &mut Vec<&'a serde_json::Map<String, serde_json::Value>>,
+        ) {
+            if let Some(properties) = object
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+            {
+                property_maps.push(properties);
+            }
+            for value in object.values() {
+                visit_value(value, property_maps);
+            }
+        }
+
+        let mut property_maps = Vec::new();
+        visit_object(schema, &mut property_maps);
+        property_maps
     }
 
     fn successful_test_result(summary: &str) -> OperationResult {
@@ -979,6 +1006,57 @@ mod tests {
             "tools/list result consumes {compact_result_bytes} compact JSON bytes"
         );
         client.shutdown().await;
+    }
+
+    #[test]
+    fn application_registry_owns_tool_names_descriptions_and_wire_schemas() {
+        let specs = crate::application::tools();
+        let listed = tool_definitions(&specs);
+
+        assert_eq!(listed.len(), specs.len());
+        let unique_names: HashSet<&str> = specs.iter().map(|spec| spec.name).collect();
+        assert_eq!(
+            unique_names.len(),
+            specs.len(),
+            "ToolSpec names must be unique"
+        );
+
+        for (spec, tool) in specs.iter().zip(&listed) {
+            assert_eq!(tool.name, spec.name);
+            assert!(
+                !spec.description.trim().is_empty(),
+                "{} must retain its application-owned description",
+                spec.name
+            );
+            assert_eq!(
+                tool.description, None,
+                "{} must keep application prose off the schema-only wire",
+                spec.name
+            );
+
+            let mut expected_input = input_schema_for_tool(spec);
+            strip_schema_descriptions(&mut expected_input);
+            assert_eq!(
+                Value::Object(tool.input_schema.as_ref().clone()),
+                expected_input,
+                "{} input schema must be projected from the application contract",
+                spec.name
+            );
+
+            let mut expected_output = structured_output_schema(spec);
+            if let Some(schema) = &mut expected_output {
+                strip_schema_descriptions(schema);
+            }
+            let actual_output = tool
+                .output_schema
+                .as_ref()
+                .map(|schema| Value::Object(schema.as_ref().clone()));
+            assert_eq!(
+                actual_output, expected_output,
+                "{} output schema must follow its application handler contract",
+                spec.name
+            );
+        }
     }
 
     #[tokio::test]
@@ -2251,6 +2329,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn object_schema_property_maps_visit_nested_schema_nodes() {
+        let schema = json!({
+            "properties": {
+                "object": {"properties": {"args": {"type": "string"}}},
+                "array": {"items": {"properties": {"args": {"type": "string"}}}},
+                "map": {"additionalProperties": {"properties": {"args": {"type": "string"}}}},
+                "combinators": {
+                    "allOf": [{"properties": {"args": {"type": "string"}}}],
+                    "anyOf": [{"properties": {"args": {"type": "string"}}}],
+                    "oneOf": [{"properties": {"args": {"type": "string"}}}],
+                    "not": {"properties": {"args": {"type": "string"}}},
+                    "if": {"properties": {"args": {"type": "string"}}},
+                    "then": {"properties": {"args": {"type": "string"}}},
+                    "else": {"properties": {"args": {"type": "string"}}},
+                    "dependentSchemas": {
+                        "mode": {"properties": {"args": {"type": "string"}}}
+                    },
+                    "definitions": {
+                        "legacy": {"properties": {"args": {"type": "string"}}}
+                    },
+                    "$defs": {
+                        "modern": {"properties": {"args": {"type": "string"}}}
+                    }
+                }
+            }
+        });
+        let maps = object_schema_property_maps(schema.as_object().unwrap());
+
+        assert_eq!(maps.len(), 14);
+        assert_eq!(
+            maps.into_iter()
+                .filter(|properties| properties.contains_key("args"))
+                .count(),
+            13
+        );
     }
 
     #[test]

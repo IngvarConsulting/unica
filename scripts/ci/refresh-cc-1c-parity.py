@@ -39,7 +39,7 @@ FIXTURES_RELATIVE = Path("tests/fixtures/unica_mcp_script_parity")
 SNAPSHOT_NAME = "cc-1c-skills"
 BASELINE_NAME = "donor-baseline.json"
 RELATIONS_NAME = "donor-relations.json"
-PROVENANCE_RELATIVE = Path("spec/provenance/skill-upstreams.json")
+PROVENANCE_RELATIVE = Path("docs/provenance/skill-upstreams.json")
 REVIEWS_RELATIVE = Path("docs/provenance/reviews")
 
 
