@@ -10,7 +10,6 @@ from __future__ import annotations
 import collections
 import importlib.util
 import json
-import re
 import subprocess
 import sys
 import unittest
@@ -18,9 +17,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
-LEDGER = REPO_ROOT / "spec/architecture/tool-surface.md"
-REVIEW = REPO_ROOT / "spec/architecture/tool-surface-review.json"
-INVARIANTS = REPO_ROOT / "spec/architecture/invariants.md"
+LEDGER = REPO_ROOT / "arch/tool-surface.md"
+REVIEW = REPO_ROOT / "arch/tool-surface-review.json"
+RESULT_CONTRACT_INVARIANT = (
+    REPO_ROOT / "arch/invariants/INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW.md"
+)
 BINARY = REPO_ROOT / "target/debug/unica"
 
 
@@ -204,7 +205,10 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         }
 
         self.assertEqual(owners, {"unica.code.patch"})
-        self.assertIn("ADR-0077", self.review["unica.code.patch"]["result"]["now"])
+        self.assertIn(
+            "DEC.2026-08-22.ATOMIC-CODE-REPLACEMENT-BATCH",
+            self.review["unica.code.patch"]["result"]["now"],
+        )
 
     def test_xdto_surface_is_exactly_the_typed_info_edit_pair(self) -> None:
         expected = {"unica.xdto.info", "unica.xdto.edit"}
@@ -587,25 +591,12 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         )
 
     def test_typed_result_invariant_names_the_registry_contract_check(self) -> None:
-        text = INVARIANTS.read_text(encoding="utf-8")
-        section = text.split("### INV-MCP-TYPED-RESULT", 1)[1].split("\n### ", 1)[0]
-        fields: dict[str, list[str]] = collections.defaultdict(list)
-        current_field: str | None = None
-        for line in section.splitlines():
-            match = re.match(r"- \*\*(Rule|Decision|Check):\*\*\s*(.*)", line)
-            if match:
-                current_field = match.group(1)
-                fields[current_field].append(match.group(2))
-            elif current_field is not None and line.startswith("  "):
-                fields[current_field][-1] += " " + line.strip()
-            else:
-                current_field = None
-
-        self.assertIn("typed_result_missing", " ".join(fields["Rule"]))
-        self.assertIn("ADR-0044", " ".join(fields["Decision"]))
+        text = RESULT_CONTRACT_INVARIANT.read_text(encoding="utf-8")
+        self.assertIn("id: INV.SURFACE.RESULT-CONTRACTS-MATCH-REVIEW", text)
+        self.assertIn("decision: DEC.2026-08-18.CARRIED-RULES", text)
         self.assertIn(
-            "`crates/unica-coder/src/application/mod.rs`",
-            " ".join(fields["Check"]),
+            "check: crates/unica-coder/src/application/mod.rs::tool_specs_match_reviewed_result_contracts",
+            text,
         )
         application_tests = (
             REPO_ROOT / "crates/unica-coder/src/application/mod.rs"

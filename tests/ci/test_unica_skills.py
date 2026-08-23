@@ -3114,7 +3114,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             / "metadata-modeling.md",
             "v8project": self.reference_root() / "tooling" / "v8project.md",
             "format-index": self.reference_root() / "specs" / "format-index.md",
-            "invariants": self.repo_root() / "spec" / "architecture" / "invariants.md",
+            "invariants": self.repo_root() / "docs" / "arch-v1" / "architecture" / "invariants.md",
         }
         joined = "\n".join(path.read_text(encoding="utf-8") for path in docs.values())
 
@@ -3729,7 +3729,7 @@ Use `.claude/commands/xdto.md` as the execution route.
 class ExecutableSkillExampleInvariantTests(unittest.TestCase):
     def test_invariant_distinguishes_reader_execution_from_preview(self) -> None:
         invariants = (
-            REPO_ROOT / "spec" / "architecture" / "invariants.md"
+            REPO_ROOT / "docs" / "arch-v1" / "architecture" / "invariants.md"
         ).read_text(encoding="utf-8")
         section = invariants.split(
             "### INV-SKILL-EXECUTABLE-EXAMPLES", 1

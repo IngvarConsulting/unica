@@ -3200,7 +3200,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
     use crate::infrastructure::native_operations::compile_transaction::{
@@ -3631,6 +3631,44 @@ mod tests {
     }
 
     #[test]
+    pub(crate) fn repeated_mxl_compile_preserves_identity_but_reports_attempted_update() {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
+        let context = test_context("compile-repeat-noop");
+        let definition_path = context.cwd.join("definition.json");
+        let output_path = context.cwd.join("Template.xml");
+        fs::write(
+            &definition_path,
+            serde_json::to_vec(&json!({
+                "columns": 1,
+                "areas": [{
+                    "name": "Area",
+                    "rows": [{"cells": [{"col": 1, "text": "value"}]}]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let args = Map::from_iter([
+            ("JsonPath".to_string(), json!(definition_path)),
+            ("OutputPath".to_string(), json!(output_path)),
+        ]);
+
+        let first = compile_mxl(&args, &context);
+        assert!(first.ok, "{first:?}");
+        let after = fs::read(&output_path).unwrap();
+        let identity = file_identity_for_test(&output_path).unwrap();
+
+        let repeated = compile_mxl(&args, &context);
+        assert!(repeated.ok, "{repeated:?}");
+        assert_eq!(repeated.changes.len(), 1, "{repeated:?}");
+        assert!(repeated.changes[0].contains("updated"), "{repeated:?}");
+        assert_eq!(fs::read(&output_path).unwrap(), after);
+        assert_eq!(file_identity_for_test(&output_path).unwrap(), identity);
+        fs::remove_dir_all(context.cwd).unwrap();
+    }
+
+    #[test]
     fn mxl_compile_escapes_all_user_xml_text_and_attributes() {
         let context = test_context("compile-xml-escaping");
         let definition_path = context.cwd.join("definition.json");
@@ -3761,7 +3799,7 @@ mod tests {
     }
 
     #[test]
-    fn mxl_compile_rolls_back_if_format_owner_changes_during_publication() {
+    pub(crate) fn mxl_compile_rolls_back_if_format_owner_changes_during_publication() {
         let context = test_context("compile-format-owner-race");
         let source = context.cwd.join("src");
         let output_path = source.join("Templates/Guarded/Ext/Template.xml");
@@ -4274,7 +4312,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod mxl_read_selector_bridge_tests {
+pub(super) mod mxl_read_selector_bridge_tests {
     use super::*;
     use crate::infrastructure::native_operations::dcs::{analyze_dcs_info_with_data, validate_dcs};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -4363,7 +4401,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-info");
 
         let support_reader = WorkspaceSupportStateReader::new(&context);
@@ -4379,7 +4417,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-validate");
 
         let physical = validate_mxl(&physical_args(), &context);
@@ -4391,7 +4429,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn mxl_decompile_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("mxl-decompile");
 
         let physical = decompile_mxl(&physical_args(), &context);
@@ -4420,7 +4458,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn dcs_info_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-info");
 
         let support_reader = WorkspaceSupportStateReader::new(&context);
@@ -4443,7 +4481,7 @@ mod mxl_read_selector_bridge_tests {
     }
 
     #[test]
-    fn dcs_validate_answers_identically_for_a_logical_and_a_physical_selector() {
+    pub(crate) fn dcs_validate_answers_identically_for_a_logical_and_a_physical_selector() {
         let context = workspace("dcs-validate");
 
         let physical = validate_dcs(&dcs_physical_args(), &context);

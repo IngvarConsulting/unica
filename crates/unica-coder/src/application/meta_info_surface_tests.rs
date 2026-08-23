@@ -2329,6 +2329,19 @@ fn subsystem_evidence_cancellation_after_empty_topology_is_unavailable() {
         .contains(COMMAND_INTERFACE_RULE));
 }
 
+/// Registry-facing falsifier for membership typing and fail-closed incomplete
+/// evidence. Focused tests retain the individual diagnostics.
+#[test]
+fn subsystem_membership_evidence_contract_is_complete() {
+    info_matches_subsystem_memberships_by_address_or_root_descriptor_uuid();
+    info_omits_memberships_when_registered_content_reference_is_malformed();
+    info_does_not_treat_an_unregistered_subsystem_file_as_membership();
+    info_reports_unavailable_when_a_registered_subsystem_descriptor_is_missing();
+    info_reports_unavailable_for_missing_or_noncanonical_subsystem_boolean();
+    subsystem_evidence_cancellation_after_registered_topology_is_unavailable();
+    subsystem_evidence_cancellation_after_empty_topology_is_unavailable();
+}
+
 #[test]
 fn info_warns_when_an_included_subsystem_sits_under_an_excluded_ancestor() {
     let workspace = create_info_workspace("included-under-excluded");

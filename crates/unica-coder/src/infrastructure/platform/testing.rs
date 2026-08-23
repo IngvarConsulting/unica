@@ -2,6 +2,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(windows)]
+use super::filesystem::open_directory_nofollow;
 pub(crate) use super::filesystem::{
     create_dir_symlink_for_test, create_file_symlink_for_test, remove_dir_symlink_for_test,
 };
@@ -106,12 +108,35 @@ pub(crate) fn create_directory_link_fixture_for_test(
 
 pub(crate) fn file_identity_for_test(path: &Path) -> io::Result<Option<String>> {
     let file = std::fs::File::open(path)?;
-    let identity = match file_identity(&file) {
+    identity_for_open_path_for_test(&file)
+}
+
+pub(crate) fn path_identity_for_test(path: &Path) -> io::Result<Option<String>> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path identity fixture does not follow symbolic links",
+        ));
+    }
+    #[cfg(windows)]
+    let file = if metadata.is_dir() {
+        open_directory_nofollow(path)?
+    } else {
+        std::fs::File::open(path)?
+    };
+    #[cfg(not(windows))]
+    let file = std::fs::File::open(path)?;
+    identity_for_open_path_for_test(&file)
+}
+
+fn identity_for_open_path_for_test(file: &std::fs::File) -> io::Result<Option<String>> {
+    let identity = match file_identity(file) {
         Ok(identity) => identity,
         Err(error) if error.kind() == io::ErrorKind::Unsupported => return Ok(None),
         Err(error) => return Err(error),
     };
-    let links = match hard_link_count(&file) {
+    let links = match hard_link_count(file) {
         Ok(links) => links,
         Err(error) if error.kind() == io::ErrorKind::Unsupported => return Ok(None),
         Err(error) => return Err(error),
@@ -307,7 +332,8 @@ pub(crate) fn wait_for_process_exit(_pid: u32, _timeout: Duration) -> bool {
 mod tests {
     use super::{
         classify_file_link_fixture_result, create_file_link_fixture_for_test,
-        file_identity_for_test, set_unix_mode_for_test, unix_mode_for_test, FileLinkFixtureOutcome,
+        file_identity_for_test, path_identity_for_test, set_unix_mode_for_test, unix_mode_for_test,
+        FileLinkFixtureOutcome,
     };
     use std::fs;
     use std::io;
@@ -374,6 +400,19 @@ mod tests {
         if let Some(identity) = source_identity {
             assert!(identity.contains("links=2"), "{identity}");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn path_identity_fixture_reads_directory_identity() {
+        let root = unique_temp_root("path-identity-directory");
+
+        let first = path_identity_for_test(&root).unwrap();
+        let second = path_identity_for_test(&root).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.is_some(), "directory identity must be available");
         fs::remove_dir_all(root).unwrap();
     }
 

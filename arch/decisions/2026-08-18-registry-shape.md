@@ -1,0 +1,28 @@
+---
+id: DEC.2026-08-18.REGISTRY-SHAPE
+status: active
+governs: process
+realized: tests/arch/test_registry.py::test_symbol_matches_its_path
+supersedes: []
+superseded-by: null
+establishes: [INV.DOC.GENERATED-INDEX-SYNC, INV.DOC.GLOBAL-ID-NONREUSE, INV.DOC.RECORD-SHAPE, INV.DOC.SUPERPOWERS-BOUNDARY, INV.REGISTRY.CHECK-EXISTS, INV.REGISTRY.RECIPROCAL-OWNERSHIP, INV.REGISTRY.SYMBOL-MATCHES-PATH, INV.SURFACE.CHANGESET-COHERENCE]
+---
+
+# Три символических реестра, одна запись — один файл
+
+**Решение.** Нормативный слой — `arch/` из трёх реестров: `decisions/`,
+`invariants/`, `contracts/`. Одна запись — один файл, открывающийся блоком
+props. Символы: `DEC.<дата>.<ИМЯ>`, `INV.<ОБЛАСТЬ>.<ИМЯ>`, `CTR.<ОБЛАСТЬ>.<ИМЯ>`;
+символ и путь выводятся друг из друга. Тело решения ограничено сорока строками,
+и в нём ровно один блок «Решение». `arch/index.md` порождается.
+
+**Почему.** Замена решения не должна требовать правки соседей: поэтому чужое
+решение упоминается символом, а не пересказывается, и поэтому длинное
+рассуждение остаётся в `docs/design/`. Дата в символе делает возраст записи
+видимым до открытия файла.
+
+**Цена.** Сорок строк — потолок, назначенный по опыту чтения v1, а не
+измеренный. Открытый перечень областей допускает дрейф; он виден в индексе.
+
+**Различие.** Инвариант — правило с проверкой и без версии. Контракт — форма
+наблюдаемого, с производителем, потребителями и версией.

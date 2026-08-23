@@ -1269,7 +1269,7 @@ pub(crate) fn fresh_metadata_uuid() -> String {
 }
 
 #[cfg(test)]
-mod typed_add_publication_tests {
+pub(crate) mod typed_add_publication_tests {
     use super::*;
     use crate::application::metadata::MetaAddRequest;
     use crate::domain::metadata::{
@@ -1430,7 +1430,7 @@ mod typed_add_publication_tests {
     }
 
     #[test]
-    fn meta_add_detects_concurrent_owner_change_without_overwriting_it() {
+    pub(crate) fn meta_add_detects_concurrent_owner_change_without_overwriting_it() {
         let fixture = Fixture::new("concurrent-owner");
         let cancellation = CancellationToken::new();
         let prepared = prepare_meta_add(

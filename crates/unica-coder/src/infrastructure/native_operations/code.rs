@@ -1408,7 +1408,7 @@ fn unified_diff(path: &str, before: &str, after: &str) -> Result<String, String>
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::{
         analyze_module, hash, insertion_is_present, line_column, local_line_ending_at,
         locate_insertion, module_identity, normalized_content, patch_inner, unified_diff,
@@ -1708,7 +1708,10 @@ mod tests {
     }
 
     #[test]
-    fn applied_patch_returns_typed_data_and_repeated_apply_is_noop() {
+    pub(crate) fn applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity()
+    {
+        use crate::infrastructure::platform::testing::file_identity_for_test;
+
         let context = temp_context("applied-patch");
         let module = context
             .workspace_root
@@ -1740,10 +1743,12 @@ mod tests {
         assert_eq!(data.validation.validated_post_hash, data.post_hash);
         assert_eq!(data.changed_ranges[0].start_line, 3);
         assert!(data.diff.starts_with("--- a/"));
+        let identity = file_identity_for_test(&module).unwrap();
 
         let repeated = patch_inner(&args, &context, PatchMode::Apply);
         assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
         assert_eq!(fs::read(&module).unwrap(), expected);
+        assert_eq!(file_identity_for_test(&module).unwrap(), identity);
         assert!(repeated.outcome.changes.is_empty());
         let data = repeated.data.unwrap().patch_data();
         assert_eq!(data.pre_hash, data.post_hash);
@@ -2385,6 +2390,14 @@ mod tests {
     }
 
     #[test]
+    fn code_patch_observed_eol_policy_is_closed() {
+        code_patch_rejects_lone_cr_instead_of_inventing_or_gaining_an_eol_policy();
+        code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop();
+        mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol();
+        unified_diff_round_trips_crlf_and_missing_terminal_eol();
+    }
+
+    #[test]
     fn object_and_manager_modules_report_owner_and_role() {
         let context = temp_context("module-roles");
         fs::create_dir_all(context.workspace_root.join("src/Catalogs")).unwrap();
@@ -2838,7 +2851,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
+    pub(crate) fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
         let context = temp_context("tail-append");
         let module = context
             .workspace_root
@@ -2871,7 +2884,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_creates_a_module_file_the_platform_never_exported() {
+    pub(crate) fn code_patch_creates_a_module_file_the_platform_never_exported() {
         let context = temp_context("tail-absent");
         let module = context
             .workspace_root
@@ -2910,7 +2923,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_refuses_a_module_role_the_metadata_kind_never_owns() {
+    pub(crate) fn code_patch_refuses_a_module_role_the_metadata_kind_never_owns() {
         let context = temp_context("tail-absent-role");
         // A common module owns `Module`; it never owns an object module, so the
         // absent file is not an omitted empty one and must stay unaddressable.
@@ -2929,7 +2942,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() {
+    pub(crate) fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() {
         for (label, before, expected) in [
             (
                 "bom-only",
@@ -3147,7 +3160,7 @@ mod tests {
     }
 
     #[test]
-    fn code_patch_rolls_back_if_owner_descriptor_changes_before_commit() {
+    pub(crate) fn code_patch_rolls_back_if_owner_descriptor_changes_before_commit() {
         let context = temp_context("owner-descriptor-race");
         let module = context
             .workspace_root
