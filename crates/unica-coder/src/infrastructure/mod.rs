@@ -40,6 +40,9 @@ pub(crate) mod source_roots;
 #[allow(dead_code)]
 pub(crate) mod subsystem_topology;
 pub(crate) mod support_guard;
+// The daemon becomes this store's sole writer in the following migration slice.
+#[allow(dead_code)]
+pub(crate) mod task_store;
 // The provider is introduced before the seven subject readers migrate to it.
 #[allow(dead_code)]
 pub(crate) mod support_state;

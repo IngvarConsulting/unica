@@ -1,6 +1,32 @@
+use crate::application::invocation_store::InvocationStore;
 use crate::application::UnicaApplication;
 use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
+use crate::infrastructure::task_store::{
+    FileInvocationStore, RecoveryReport, SystemEpochMillisClock,
+};
+use std::path::Path;
 use std::sync::Arc;
+
+/// Dormant daemon composition seam. v0.12 application construction does not
+/// create or own durable execution state; Task 5 wires this into one daemon.
+#[allow(dead_code)]
+pub(crate) struct OpenedDaemonInvocationStore {
+    pub(crate) store: Arc<dyn InvocationStore>,
+    pub(crate) recovery: RecoveryReport,
+}
+
+#[allow(dead_code)]
+pub(crate) fn open_daemon_invocation_store(
+    private_store_root: &Path,
+) -> Result<OpenedDaemonInvocationStore, String> {
+    let (store, recovery) =
+        FileInvocationStore::open(private_store_root, Arc::new(SystemEpochMillisClock))
+            .map_err(|error| error.to_string())?;
+    Ok(OpenedDaemonInvocationStore {
+        store: Arc::new(store),
+        recovery,
+    })
+}
 
 impl UnicaApplication {
     pub fn new() -> Self {

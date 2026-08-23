@@ -1,7 +1,9 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use std::fmt;
+use std::str::FromStr;
 use std::time::Instant;
-use uuid::Uuid;
+use uuid::{Uuid, Variant, Version};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct InvocationId(Uuid);
@@ -20,6 +22,69 @@ impl TaskId {
         Self(Uuid::new_v4())
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DurableIdParseError;
+
+impl fmt::Display for DurableIdParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("expected a canonical RFC4122 UUIDv4 identity")
+    }
+}
+
+impl std::error::Error for DurableIdParseError {}
+
+fn parse_durable_uuid(encoded: &str) -> Result<Uuid, DurableIdParseError> {
+    let uuid = Uuid::parse_str(encoded).map_err(|_| DurableIdParseError)?;
+    if encoded.len() != 36
+        || uuid.hyphenated().to_string() != encoded
+        || uuid.get_variant() != Variant::RFC4122
+        || uuid.get_version() != Some(Version::Random)
+    {
+        return Err(DurableIdParseError);
+    }
+    Ok(uuid)
+}
+
+macro_rules! durable_uuid_identity {
+    ($identity:ty) => {
+        impl fmt::Display for $identity {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(&self.0.hyphenated(), formatter)
+            }
+        }
+
+        impl FromStr for $identity {
+            type Err = DurableIdParseError;
+
+            fn from_str(encoded: &str) -> Result<Self, Self::Err> {
+                parse_durable_uuid(encoded).map(Self)
+            }
+        }
+
+        impl Serialize for $identity {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.collect_str(self)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $identity {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let encoded = String::deserialize(deserializer)?;
+                encoded.parse().map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+durable_uuid_identity!(InvocationId);
+durable_uuid_identity!(TaskId);
 
 fn encode_sha256(bytes: [u8; 32]) -> String {
     let mut encoded = String::with_capacity(64);
@@ -255,8 +320,8 @@ impl InvocationOutcome {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeliveryResume, DomainResult, IndexResume, NormalizedArgumentsHash, ProviderResume,
-        ResumeDescriptor, RuntimeResume, SafeIdentityHash,
+        DeliveryResume, DomainResult, IndexResume, InvocationId, NormalizedArgumentsHash,
+        ProviderResume, ResumeDescriptor, RuntimeResume, SafeIdentityHash, TaskId,
     };
     use serde_json::{json, Value};
 
@@ -389,5 +454,50 @@ mod tests {
         });
 
         assert!(serde_json::from_value::<ResumeDescriptor>(with_command).is_err());
+    }
+
+    #[test]
+    fn durable_ids_round_trip_as_canonical_uuid_v4_strings() {
+        let invocation_id = InvocationId::new();
+        let invocation_json = serde_json::to_value(invocation_id).unwrap();
+        let invocation_text = invocation_json.as_str().unwrap().to_string();
+        assert_eq!(invocation_text.len(), 36);
+        assert_eq!(invocation_text, invocation_text.to_ascii_lowercase());
+        assert_eq!(
+            serde_json::from_value::<InvocationId>(invocation_json).unwrap(),
+            invocation_id
+        );
+        assert_eq!(invocation_id.to_string(), invocation_text);
+
+        let task_id = TaskId::new();
+        let task_json = serde_json::to_value(task_id).unwrap();
+        let task_text = task_json.as_str().unwrap().to_string();
+        assert_eq!(task_text.len(), 36);
+        assert_eq!(task_text, task_text.to_ascii_lowercase());
+        assert_eq!(
+            serde_json::from_value::<TaskId>(task_json).unwrap(),
+            task_id
+        );
+        assert_eq!(task_id.to_string(), task_text);
+    }
+
+    #[test]
+    fn durable_ids_reject_noncanonical_non_v4_and_malformed_values() {
+        for encoded in [
+            "00000000-0000-0000-0000-000000000000",
+            "550e8400-e29b-11d4-a716-446655440000",
+            "6ba7b810-9dad-31d1-80b4-00c04fd430c8",
+            "550E8400-E29B-41D4-A716-446655440000",
+            "550e8400e29b41d4a716446655440000",
+            "not-a-uuid",
+        ] {
+            assert!(
+                encoded.parse::<InvocationId>().is_err(),
+                "accepted {encoded}"
+            );
+            assert!(encoded.parse::<TaskId>().is_err(), "accepted {encoded}");
+            assert!(serde_json::from_value::<InvocationId>(json!(encoded)).is_err());
+            assert!(serde_json::from_value::<TaskId>(json!(encoded)).is_err());
+        }
     }
 }
