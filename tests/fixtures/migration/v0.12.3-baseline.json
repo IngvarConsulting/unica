@@ -8,6 +8,13 @@
   "source": {
     "assetName": "unica-runtime-darwin-arm64.tar.gz",
     "assetSha256": "f257a154fe45fa9fe76a4f8ae456e3ddbfb8b0567fd88b5e67e55b1838171c9b",
+    "assetSize": 103410270,
+    "descriptorEntrypoint": "bin/darwin-arm64/unica",
+    "descriptorFileCount": 83,
+    "descriptorName": "unica-runtime-darwin-arm64.json",
+    "descriptorSha256": "5c29681a784f44175e45605560f2debea2d7e60643eb8fd0ae0972224b936b45",
+    "descriptorSize": 15489,
+    "releasePublishedAt": "2026-08-19T14:54:10Z",
     "releaseUrl": "https://github.com/IngvarConsulting/unica/releases/tag/v0.12.3",
     "tag": "v0.12.3",
     "tagCommit": "f6d23068c397cd85c540812de7627b2c3f434d68"

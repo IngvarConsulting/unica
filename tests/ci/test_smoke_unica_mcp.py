@@ -509,21 +509,11 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         self.assertFalse(module._process_is_running(public.pid))
         self.assertFalse(module._process_is_running(child_pid))
 
-    def test_posix_timeout_tree_does_not_claim_a_reused_public_pid(self) -> None:
+    def test_smoke_uses_the_shared_wire_process_ownership_boundary(self) -> None:
         module = load_module()
-        snapshot = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="999 1\n1001 1\n",
-            stderr="",
-        )
 
-        with mock.patch.object(module.subprocess, "run", return_value=snapshot):
-            owned = module._posix_owned_process_pids(
-                999, set(), public_running=False
-            )
-
-        self.assertEqual(owned, set())
+        self.assertIs(module.ProcessOwnership, module._WIRE_PROBE.ProcessOwnership)
+        self.assertTrue(issubclass(module.McpSession, module._WIRE_PROBE.JsonRpcSession))
 
     def test_windows_tree_cleanup_continues_after_one_taskkill_timeout(self) -> None:
         module = load_module()
@@ -539,6 +529,15 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         session = module.McpSession.__new__(module.McpSession)
         session.process = Process()
+        identities = {
+            module.ProcessIdentity(pid, None, None, f"start-{pid}")
+            for pid in (41, 42, 99)
+        }
+        session.process_ownership = module.ProcessOwnership(
+            session.process,
+            next(identity for identity in identities if identity.pid == 99),
+            None,
+        )
         calls: list[int] = []
 
         def taskkill(command, **kwargs):
@@ -547,10 +546,24 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 raise subprocess.TimeoutExpired(command, kwargs["timeout"])
             return subprocess.CompletedProcess(command, 0)
 
-        with mock.patch.object(module.os, "name", "nt"), mock.patch.object(
+        with mock.patch.object(module._WIRE_PROBE.os, "name", "nt"), mock.patch.object(
             module, "_workspace_service_pids", return_value={41, 42}
-        ), mock.patch.object(module.subprocess, "run", side_effect=taskkill), mock.patch.object(
-            module, "_wait_for_process_pids"
+        ), mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            side_effect=lambda pid: next(
+                identity for identity in identities if identity.pid == pid
+            ),
+        ), mock.patch.object(
+            module._WIRE_PROBE.subprocess, "run", side_effect=taskkill
+        ), mock.patch.object(
+            session.process_ownership,
+            "survivors",
+            return_value=identities,
+        ), mock.patch.object(
+            session.process_ownership,
+            "wait",
+            return_value=set(),
         ):
             session.terminate_tree(Path("cache"))
 
@@ -559,14 +572,31 @@ class SmokeUnicaMcpTests(unittest.TestCase):
     def test_posix_tree_cleanup_continues_after_one_signal_error(self) -> None:
         module = load_module()
         calls: list[int] = []
+        identities = {
+            module.ProcessIdentity(pid, 1, 99, f"start-{pid}")
+            for pid in (41, 42, 99)
+        }
+
+        class Process:
+            pid = 99
+
+        ownership = module.ProcessOwnership(Process(), None, 99)
 
         def signal_process(pid, signal_number):
             calls.append(pid)
             if len(calls) == 1:
                 raise PermissionError("signal denied")
 
-        with mock.patch.object(module.os, "kill", side_effect=signal_process):
-            module._signal_processes({41, 42, 99}, module.signal.SIGTERM)
+        with mock.patch.object(
+            module._WIRE_PROBE,
+            "_current_process_identity",
+            side_effect=lambda pid: next(
+                identity for identity in identities if identity.pid == pid
+            ),
+        ), mock.patch.object(
+            module._WIRE_PROBE.os, "kill", side_effect=signal_process
+        ):
+            ownership.signal(identities, signal.SIGTERM)
 
         self.assertEqual(calls, [99, 42, 41])
 
@@ -764,17 +794,26 @@ class SmokeUnicaMcpTests(unittest.TestCase):
     def test_successful_close_reaps_captured_provider_descendants(self) -> None:
         module = load_module()
         events: list[object] = []
-        running = {42}
+        identities = {
+            module.ProcessIdentity(pid, 1, 99, f"start-{pid}")
+            for pid in (41, 42, 99)
+        }
 
-        class Process:
-            pid = 99
+        class Ownership:
+            def snapshot(self, service_pids: set[int]):
+                events.append(("capture", service_pids))
+                return identities
 
-            @staticmethod
-            def poll() -> None:
-                return None
+            def quiesce(self, owned, timeout):
+                events.append(("quiesce", owned, timeout))
+                return set()
+
+        ownership = Ownership()
 
         class Session:
-            process = Process()
+            @staticmethod
+            def _process_ownership():
+                return ownership
 
             @staticmethod
             def close() -> None:
@@ -782,18 +821,8 @@ class SmokeUnicaMcpTests(unittest.TestCase):
 
         cache_root = Path("cache")
 
-        def capture(public_pid: int, service_pids: set[int], *, public_running: bool):
-            events.append(("capture", public_pid, service_pids, public_running))
-            return {99, 41, 42}
-
-        def signal_processes(pids: set[int], signal_number: int) -> None:
-            events.append(("signal", pids, signal_number))
-            running.difference_update(pids)
-
-        with mock.patch.object(module.os, "name", "posix"), mock.patch.object(
+        with mock.patch.object(
             module, "_workspace_service_pids", return_value={41}
-        ), mock.patch.object(
-            module, "_posix_owned_process_pids", side_effect=capture
         ), mock.patch.object(
             module,
             "_shutdown_workspace_services",
@@ -807,24 +836,16 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             side_effect=lambda root, timeout, pids: events.append(
                 ("wait-services", root, timeout, pids)
             ),
-        ), mock.patch.object(
-            module,
-            "_wait_for_process_pids",
-            side_effect=lambda pids, timeout: events.append(
-                ("wait-owned", pids, timeout)
-            ),
-        ), mock.patch.object(
-            module, "_process_is_running", side_effect=lambda pid: pid in running
-        ), mock.patch.object(
-            module, "_signal_processes", side_effect=signal_processes
         ):
             module._close_session_and_workspace_services(
                 Session(), cache_root, 7.0
             )
 
-        self.assertEqual(events[0], ("capture", 99, {41}, True))
-        self.assertIn(("signal", {42}, module.signal.SIGTERM), events)
-        self.assertEqual(events[-1], ("wait-owned", {42}, 1.0))
+        self.assertEqual(events[0], ("capture", {41}))
+        self.assertEqual(
+            events[-1],
+            ("quiesce", identities, module._WIRE_PROBE._CLEANUP_GRACE_SECONDS),
+        )
 
     def test_shutdown_failure_emergency_cleanup_kills_recorded_service_pid(self) -> None:
         module = load_module()

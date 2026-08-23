@@ -17,6 +17,175 @@ from pathlib import Path
 _CLEANUP_GRACE_SECONDS = 0.5
 
 
+class ProcessIdentity:
+    """A PID plus the immutable evidence needed to reject PID reuse."""
+
+    __slots__ = ("pid", "parent_pid", "session_id", "start_identity")
+
+    def __init__(
+        self,
+        pid: int,
+        parent_pid: int | None,
+        session_id: int | None,
+        start_identity: str,
+    ) -> None:
+        self.pid = pid
+        self.parent_pid = parent_pid
+        self.session_id = session_id
+        self.start_identity = start_identity
+
+    def __hash__(self) -> int:
+        return hash(
+            (self.pid, self.parent_pid, self.session_id, self.start_identity)
+        )
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, ProcessIdentity)
+            and self.pid == other.pid
+            and self.parent_pid == other.parent_pid
+            and self.session_id == other.session_id
+            and self.start_identity == other.start_identity
+        )
+
+    def identifies(self, other: ProcessIdentity | None) -> bool:
+        return (
+            other is not None
+            and self.pid == other.pid
+            and self.session_id == other.session_id
+            and self.start_identity == other.start_identity
+        )
+
+
+class ProcessOwnership:
+    """Tracks the process session created for one JSON-RPC subprocess."""
+
+    def __init__(
+        self,
+        process: subprocess.Popen[str],
+        public_identity: ProcessIdentity | None,
+        session_id: int | None,
+    ) -> None:
+        self.process = process
+        self.public_identity = public_identity
+        self.session_id = session_id
+
+    @classmethod
+    def capture(cls, process: subprocess.Popen[str]) -> ProcessOwnership:
+        pid = getattr(process, "pid", 0)
+        identity = _current_process_identity(pid)
+        session_id = pid if os.name == "posix" and pid > 0 else None
+        if identity is not None and identity.session_id is not None:
+            session_id = identity.session_id
+        return cls(process, identity, session_id)
+
+    def snapshot(
+        self, additional_pids: set[int] | None = None
+    ) -> set[ProcessIdentity]:
+        additional_pids = set(additional_pids or ())
+        if os.name == "posix":
+            processes = _posix_process_snapshot()
+            owned = {
+                identity
+                for identity in processes.values()
+                if self.session_id is not None
+                and identity.session_id == self.session_id
+            }
+            roots = {
+                processes[pid]
+                for pid in additional_pids
+                if pid in processes
+            }
+            owned.update(roots)
+            while True:
+                owned_pids = {identity.pid for identity in owned}
+                descendants = {
+                    identity
+                    for identity in processes.values()
+                    if identity.parent_pid in owned_pids
+                }
+                expanded = owned | descendants
+                if expanded == owned:
+                    return owned
+                owned = expanded
+        identities = {
+            identity
+            for pid in additional_pids
+            if (identity := _current_process_identity(pid)) is not None
+        }
+        if self.public_identity is not None:
+            identities.add(self.public_identity)
+        return identities
+
+    def signal(
+        self, identities: set[ProcessIdentity], signal_number: int
+    ) -> None:
+        for identity in sorted(identities, key=lambda item: item.pid, reverse=True):
+            if not identity.identifies(_current_process_identity(identity.pid)):
+                continue
+            try:
+                os.kill(identity.pid, signal_number)
+            except OSError:
+                pass
+
+    def survivors(
+        self, identities: set[ProcessIdentity]
+    ) -> set[ProcessIdentity]:
+        return {
+            identity
+            for identity in identities
+            if identity.identifies(_current_process_identity(identity.pid))
+            and _process_is_running(identity.pid)
+        }
+
+    def wait(
+        self, identities: set[ProcessIdentity], timeout_seconds: float
+    ) -> set[ProcessIdentity]:
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        survivors = self.survivors(identities)
+        while survivors and time.monotonic() < deadline:
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+            survivors = self.survivors(survivors)
+        return survivors
+
+    def quiesce(
+        self,
+        identities: set[ProcessIdentity],
+        timeout_seconds: float = _CLEANUP_GRACE_SECONDS,
+    ) -> set[ProcessIdentity]:
+        cleanup_deadline = time.monotonic() + max(0.0, timeout_seconds)
+        survivors = self.survivors(identities)
+        if survivors:
+            if os.name == "nt":
+                for identity in sorted(survivors, key=lambda item: item.pid):
+                    if identity.identifies(_current_process_identity(identity.pid)):
+                        _taskkill_process_tree(identity.pid)
+            else:
+                self.signal(survivors, signal.SIGTERM)
+                survivors = self.wait(
+                    survivors,
+                    min(0.1, max(0.0, cleanup_deadline - time.monotonic())),
+                )
+                if survivors:
+                    self.signal(survivors, signal.SIGKILL)
+        try:
+            self.process.wait(
+                timeout=max(0.0, cleanup_deadline - time.monotonic())
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return self.wait(
+            survivors, max(0.0, cleanup_deadline - time.monotonic())
+        )
+
+    def terminate(
+        self,
+        additional_pids: set[int] | None = None,
+        timeout_seconds: float = _CLEANUP_GRACE_SECONDS,
+    ) -> set[ProcessIdentity]:
+        return self.quiesce(self.snapshot(additional_pids), timeout_seconds)
+
+
 def _response_kind(response: dict) -> str:
     if "error" in response:
         return "error"
@@ -55,6 +224,7 @@ class JsonRpcSession:
             cwd=cwd,
             **popen_options,
         )
+        self.process_ownership = ProcessOwnership.capture(self.process)
         assert self.process.stdin is not None
         assert self.process.stdout is not None
         assert self.process.stderr is not None
@@ -72,7 +242,7 @@ class JsonRpcSession:
             self.error_reader.start()
             started_readers.append(self.error_reader)
         except BaseException:
-            _terminate_unregistered_process_tree(self.process)
+            self.process_ownership.terminate()
             for reader in started_readers:
                 reader.join(timeout=_CLEANUP_GRACE_SECONDS)
             self._close_streams()
@@ -164,16 +334,21 @@ class JsonRpcSession:
         if self.process.stdin is not None and not self.process.stdin.closed:
             self.process.stdin.close()
         try:
-            result = self.process.wait(timeout=self._remaining_timeout())
+            remaining = self._remaining_timeout()
+            result = self.process.wait(timeout=remaining)
         except subprocess.TimeoutExpired as error:
-            self.terminate_tree()
+            self._terminate_owned()
             raise SystemExit(
                 f"{self.error_label} exceeded its aggregate deadline: {self._detail()}"
             ) from error
+        except BaseException:
+            self._terminate_owned()
+            raise
         remaining = max(0.0, self.deadline - time.monotonic())
         self.reader.join(timeout=remaining)
         self.error_reader.join(timeout=remaining)
         if self.reader.is_alive() or self.error_reader.is_alive():
+            self._terminate_owned()
             raise SystemExit(
                 f"{self.error_label} reader threads did not stop before the aggregate deadline: "
                 f"{self._detail()}"
@@ -183,20 +358,38 @@ class JsonRpcSession:
         if result != 0:
             raise SystemExit(f"{self.error_label} exited with {result}: {detail}")
 
-    def terminate_tree(self) -> None:
-        _terminate_unregistered_process_tree(self.process)
-        for reader in (self.reader, self.error_reader):
-            reader.join(timeout=_CLEANUP_GRACE_SECONDS)
+    def terminate_tree(self, additional_pids: set[int] | None = None) -> None:
+        self._terminate_owned(additional_pids)
+
+    def _terminate_owned(self, additional_pids: set[int] | None = None) -> None:
+        self._process_ownership().terminate(additional_pids)
+        for reader_name in ("reader", "error_reader"):
+            reader = getattr(self, reader_name, None)
+            if reader is not None:
+                reader.join(timeout=_CLEANUP_GRACE_SECONDS)
         self._close_streams()
 
+    def _process_ownership(self) -> ProcessOwnership:
+        ownership = getattr(self, "process_ownership", None)
+        if ownership is None:
+            ownership = ProcessOwnership.capture(self.process)
+            self.process_ownership = ownership
+        return ownership
+
     def _close_streams(self) -> None:
-        for stream in (
-            self.process.stdin,
-            self.process.stdout,
-            self.process.stderr,
-        ):
+        streams = (
+            (getattr(self.process, "stdin", None), None),
+            (getattr(self.process, "stdout", None), getattr(self, "reader", None)),
+            (getattr(self.process, "stderr", None), getattr(self, "error_reader", None)),
+        )
+        for stream, reader in streams:
+            if reader is not None and reader.is_alive():
+                continue
             if stream is not None and not stream.closed:
-                stream.close()
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
 
 
 class WireProbe:
@@ -372,46 +565,6 @@ def _require_result(response: dict, method: str) -> dict:
     return result
 
 
-def _terminate_unregistered_process_tree(process: subprocess.Popen[str]) -> None:
-    if os.name == "posix":
-        owned_pids = _posix_owned_process_pids(
-            process.pid,
-            set(),
-            public_running=process.poll() is None,
-        )
-        _signal_processes(owned_pids, signal.SIGTERM)
-        try:
-            process.wait(timeout=_CLEANUP_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
-        survivors = {pid for pid in owned_pids if _process_is_running(pid)}
-        _signal_processes(survivors, signal.SIGKILL)
-        try:
-            process.wait(timeout=_CLEANUP_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
-        _wait_for_process_pids(owned_pids, _CLEANUP_GRACE_SECONDS)
-        return
-    if os.name == "nt":
-        _taskkill_process_tree(process.pid)
-    elif process.poll() is None:
-        try:
-            process.terminate()
-        except OSError:
-            pass
-    try:
-        process.wait(timeout=_CLEANUP_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=_CLEANUP_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
-
-
 def _taskkill_process_tree(pid: int) -> None:
     try:
         subprocess.run(
@@ -426,23 +579,10 @@ def _taskkill_process_tree(pid: int) -> None:
         pass
 
 
-def _signal_processes(pids: set[int], signal_number: int) -> None:
-    for pid in sorted(pids, reverse=True):
-        try:
-            os.kill(pid, signal_number)
-        except OSError:
-            pass
-
-
-def _posix_owned_process_pids(
-    public_pid: int,
-    service_pids: set[int],
-    *,
-    public_running: bool,
-) -> set[int]:
+def _posix_process_snapshot() -> dict[int, ProcessIdentity]:
     try:
         snapshot = subprocess.run(
-            ["ps", "-axo", "pid=,ppid="],
+            ["ps", "-axo", "pid=,ppid=,lstart="],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -450,31 +590,83 @@ def _posix_owned_process_pids(
             check=True,
         ).stdout
     except (OSError, subprocess.SubprocessError):
-        roots = set(service_pids)
-        if public_running:
-            roots.add(public_pid)
-        return roots
-    processes: dict[int, int] = {}
+        return {}
+    processes: dict[int, ProcessIdentity] = {}
     for line in snapshot.splitlines():
-        fields = line.split()
-        if len(fields) != 2:
+        fields = line.split(None, 2)
+        if len(fields) != 3:
             continue
         try:
-            pid, parent_pid = map(int, fields)
-        except ValueError:
+            pid, parent_pid = map(int, fields[:2])
+            session_id = os.getsid(pid)
+        except (OSError, ValueError):
             continue
-        processes[pid] = parent_pid
-    owned = {pid for pid in service_pids if pid in processes}
-    if public_running and public_pid in processes:
-        owned.add(public_pid)
-    while True:
-        descendants = {
-            pid for pid, parent_pid in processes.items() if parent_pid in owned
-        }
-        expanded = owned | descendants
-        if expanded == owned:
-            return owned
-        owned = expanded
+        processes[pid] = ProcessIdentity(
+            pid=pid,
+            parent_pid=parent_pid,
+            session_id=session_id,
+            start_identity=fields[2].strip(),
+        )
+    return processes
+
+
+def _windows_process_identity(pid: int) -> ProcessIdentity | None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        get_process_times = kernel32.GetProcessTimes
+        get_process_times.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        get_process_times.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        handle = open_process(0x1000, False, pid)
+        if not handle:
+            return None
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel_time = wintypes.FILETIME()
+        user_time = wintypes.FILETIME()
+        try:
+            if not get_process_times(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel_time),
+                ctypes.byref(user_time),
+            ):
+                return None
+        finally:
+            close_handle(handle)
+        return ProcessIdentity(
+            pid=pid,
+            parent_pid=None,
+            session_id=None,
+            start_identity=f"{creation.dwHighDateTime:08x}{creation.dwLowDateTime:08x}",
+        )
+    except (AttributeError, ImportError, OSError):
+        return None
+
+
+def _current_process_identity(pid: int) -> ProcessIdentity | None:
+    if pid <= 0:
+        return None
+    if os.name == "posix":
+        return _posix_process_snapshot().get(pid)
+    if os.name == "nt":
+        return _windows_process_identity(pid)
+    return None
 
 
 def _process_is_running(pid: int) -> bool:

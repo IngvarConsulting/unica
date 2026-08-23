@@ -284,6 +284,51 @@ class WireProbeTests(unittest.TestCase):
         self.assertIn("duplicate tool name", result.stderr)
         self.assertIn("unica.alpha", result.stderr)
 
+    def test_repeated_next_cursor_is_rejected_before_a_third_list_request(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "requests.json"
+            server = root / "repeated-cursor-server.py"
+            server.write_text(
+                textwrap.dedent(
+                    f"""
+                    import json
+                    import sys
+                    from pathlib import Path
+
+                    captured = []
+                    capture = Path({str(capture)!r})
+                    for line in sys.stdin:
+                        message = json.loads(line)
+                        captured.append(message)
+                        capture.write_text(json.dumps(captured) + "\\n", encoding="utf-8")
+                        if message.get("method") == "initialize":
+                            result = {{
+                                "protocolVersion": "2025-06-18",
+                                "capabilities": {{}},
+                                "serverInfo": {{"name": "unica", "version": "test"}},
+                            }}
+                        elif message.get("method") == "tools/list":
+                            result = {{"tools": [], "nextCursor": "same-cursor"}}
+                        else:
+                            continue
+                        print(json.dumps({{
+                            "jsonrpc": "2.0", "id": message["id"], "result": result
+                        }}), flush=True)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            result = self.run_probe(server, root / "wire.json")
+            requests = json.loads(capture.read_text(encoding="utf-8"))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("repeated cursor", result.stderr)
+        self.assertEqual(
+            [request["method"] for request in requests].count("tools/list"),
+            2,
+        )
+
     def test_notifications_do_not_restart_the_aggregate_deadline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -375,11 +420,126 @@ class WireProbeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("aggregate deadline", result.stderr)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX session ownership regression")
+    def test_parent_exit_before_snapshot_has_bounded_cleanup_and_reaps_orphan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_path = root / "pids.txt"
+            server = root / "parent-exits-first.py"
+            server.write_text(
+                textwrap.dedent(
+                    f"""
+                    import os
+                    import signal
+                    import subprocess
+                    import sys
+                    from pathlib import Path
+
+                    child = subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+                        ],
+                        process_group=0,
+                    )
+                    Path({str(pid_path)!r}).write_text(
+                        f"{{os.getpid()}} {{child.pid}}", encoding="utf-8"
+                    )
+                    """
+                ),
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable,
+                str(PROBE_SCRIPT),
+                "--binary",
+                sys.executable,
+                "--binary-arg",
+                str(server),
+                "--protocol-version",
+                "2025-06-18",
+                "--tasks-capability",
+                "off",
+                "--output",
+                str(root / "wire.json"),
+                "--timeout-seconds",
+                "0.15",
+            ]
+            started = time.monotonic()
+            probe = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            bounded = True
+            try:
+                try:
+                    stdout, stderr = probe.communicate(timeout=0.8)
+                except subprocess.TimeoutExpired:
+                    bounded = False
+                    probe.kill()
+                    stdout, stderr = probe.communicate(timeout=1.0)
+                elapsed = time.monotonic() - started
+                pids = [
+                    int(value)
+                    for value in pid_path.read_text(encoding="utf-8").split()
+                ]
+                module = load_module()
+                running = [pid for pid in pids if module._process_is_running(pid)]
+            finally:
+                if probe.poll() is None:
+                    probe.kill()
+                    probe.wait(timeout=1.0)
+                if pid_path.exists():
+                    module = load_module()
+                    for value in pid_path.read_text(encoding="utf-8").split():
+                        pid = int(value)
+                        if module._process_is_running(pid):
+                            os.kill(pid, signal.SIGKILL)
+
+        self.assertTrue(bounded, "cleanup blocked on pipes inherited by an orphan")
+        self.assertLess(elapsed, 0.8)
+        self.assertNotEqual(probe.returncode, 0, stdout)
+        self.assertIn("aggregate deadline", stderr)
+        self.assertEqual(running, [], f"orphaned probe processes survived: {running}")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process identity regression")
+    def test_identity_mismatch_is_not_signalled_during_escalation(self) -> None:
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            module = load_module()
+            self.assertTrue(
+                hasattr(module, "ProcessOwnership"),
+                "shared process ownership abstraction is missing",
+            )
+            ownership = module.ProcessOwnership.capture(process)
+            identity = ownership.public_identity
+            self.assertIsNotNone(identity)
+            mismatched = module.ProcessIdentity(
+                pid=identity.pid,
+                parent_pid=identity.parent_pid,
+                session_id=identity.session_id,
+                start_identity=identity.start_identity + "-reused",
+            )
+
+            ownership.signal({mismatched}, signal.SIGKILL)
+
+            self.assertIsNone(
+                process.poll(),
+                "a reused PID identity was signalled during escalation",
+            )
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=1.0)
+
     def test_release_baseline_fixture_is_pinned_to_observed_v0123_evidence(self) -> None:
         self.assertTrue(BASELINE_FIXTURE.is_file(), "release baseline fixture is missing")
         self.assertEqual(
             hashlib.sha256(BASELINE_FIXTURE.read_bytes()).hexdigest(),
-            "3a210085c48b0133eeb6d079ce4e5fbc441fccf68821a8fd5e36a12e6a411591",
+            "8e330877888f7760ee6b44eec001b86c2b0c81b246b34db28104082bb1d39fab",
             "the published baseline is immutable; capture a new versioned fixture instead",
         )
         fixture = json.loads(BASELINE_FIXTURE.read_text(encoding="utf-8"))
@@ -389,7 +549,14 @@ class WireProbeTests(unittest.TestCase):
             fixture["source"],
             {
                 "assetName": "unica-runtime-darwin-arm64.tar.gz",
+                "assetSize": 103410270,
                 "assetSha256": "f257a154fe45fa9fe76a4f8ae456e3ddbfb8b0567fd88b5e67e55b1838171c9b",
+                "descriptorEntrypoint": "bin/darwin-arm64/unica",
+                "descriptorFileCount": 83,
+                "descriptorName": "unica-runtime-darwin-arm64.json",
+                "descriptorSha256": "5c29681a784f44175e45605560f2debea2d7e60643eb8fd0ae0972224b936b45",
+                "descriptorSize": 15489,
+                "releasePublishedAt": "2026-08-19T14:54:10Z",
                 "releaseUrl": "https://github.com/IngvarConsulting/unica/releases/tag/v0.12.3",
                 "tag": "v0.12.3",
                 "tagCommit": "f6d23068c397cd85c540812de7627b2c3f434d68",

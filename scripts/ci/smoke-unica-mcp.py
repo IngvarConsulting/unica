@@ -9,7 +9,6 @@ import importlib.util
 import json
 import os
 import queue
-import signal
 import socket
 import subprocess
 import tempfile
@@ -30,6 +29,8 @@ def _load_wire_probe_module():
 
 
 _WIRE_PROBE = _load_wire_probe_module()
+ProcessIdentity = _WIRE_PROBE.ProcessIdentity
+ProcessOwnership = _WIRE_PROBE.ProcessOwnership
 
 
 TOOL_SURFACE_REVIEW_RELATIVE = Path("arch/tool-surface-review.json")
@@ -1317,58 +1318,7 @@ class McpSession(_WIRE_PROBE.JsonRpcSession):
     ) -> None:
         service_pids = set(known_service_pids or ())
         service_pids.update(_workspace_service_pids(cache_root))
-        owned_pids: set[int] = set()
-        try:
-            if os.name == "posix":
-                # The public Unica process starts a new session. Detached
-                # workspace services create their own process groups inside
-                # that session, so killing only the public process group would
-                # leak those services and their provider descendants.
-                owned_pids = _posix_owned_process_pids(
-                    self.process.pid,
-                    service_pids,
-                    public_running=self.process.poll() is None,
-                )
-                _signal_processes(owned_pids, signal.SIGTERM)
-            elif os.name == "nt":
-                # The public process may already have exited while a detached
-                # service keeps inherited pipe handles open. Kill recorded
-                # service trees independently before targeting the parent PID.
-                for pid in sorted(service_pids):
-                    _taskkill_process_tree(pid)
-                _taskkill_process_tree(self.process.pid)
-            else:
-                if self.process.poll() is None:
-                    self.process.terminate()
-        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-            pass
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        if os.name == "posix":
-            survivors = {
-                pid
-                for pid in owned_pids
-                if _process_is_running(pid)
-            }
-            _signal_processes(survivors, signal.SIGKILL)
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            _wait_for_process_pids(owned_pids, 5)
-            return
-        try:
-            if self.process.poll() is None:
-                self.process.kill()
-        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-            pass
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        _wait_for_process_pids(service_pids, 5)
+        self._terminate_owned(service_pids)
 
 
 def _workspace_service_pids(cache_root: Path) -> set[int]:
@@ -1386,108 +1336,6 @@ def _workspace_service_pids(cache_root: Path) -> set[int]:
         ):
             pids.add(pid)
     return pids
-
-
-def _terminate_unregistered_process_tree(process: subprocess.Popen[str]) -> None:
-    if os.name == "posix":
-        owned_pids = _posix_owned_process_pids(
-            process.pid,
-            set(),
-            public_running=process.poll() is None,
-        )
-        _signal_processes(owned_pids, signal.SIGTERM)
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        survivors = {pid for pid in owned_pids if _process_is_running(pid)}
-        _signal_processes(survivors, signal.SIGKILL)
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        _wait_for_process_pids(owned_pids, 5)
-        return
-    if os.name == "nt":
-        _taskkill_process_tree(process.pid)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-
-
-def _taskkill_process_tree(pid: int) -> None:
-    try:
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-
-def _signal_processes(pids: set[int], signal_number: int) -> None:
-    for pid in sorted(pids, reverse=True):
-        try:
-            os.kill(pid, signal_number)
-        except OSError:
-            pass
-
-
-def _posix_owned_process_pids(
-    public_pid: int,
-    service_pids: set[int],
-    *,
-    public_running: bool,
-) -> set[int]:
-    try:
-        snapshot = subprocess.run(
-            ["ps", "-axo", "pid=,ppid="],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=5,
-            check=True,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        roots = set(service_pids)
-        if public_running:
-            roots.add(public_pid)
-        return roots
-    processes: dict[int, int] = {}
-    for line in snapshot.splitlines():
-        fields = line.split()
-        if len(fields) != 2:
-            continue
-        try:
-            pid, parent_pid = map(int, fields)
-        except ValueError:
-            continue
-        processes[pid] = parent_pid
-    owned = {pid for pid in service_pids if pid in processes}
-    if public_running and public_pid in processes:
-        owned.add(public_pid)
-    while True:
-        descendants = {
-            pid
-            for pid, parent_pid in processes.items()
-            if parent_pid in owned
-        }
-        expanded = owned | descendants
-        if expanded == owned:
-            return owned
-        owned = expanded
 
 
 def _tool_payload(response: dict) -> dict:
@@ -1707,40 +1555,31 @@ def _wait_for_process_pids(pids: set[int], timeout_seconds: float) -> None:
         time.sleep(min(0.05, remaining))
 
 
-def _capture_posix_owned_process_pids(
+def _capture_owned_processes(
     session: McpSession, service_pids: set[int]
-) -> set[int]:
-    if os.name != "posix":
-        return set()
-    process = getattr(session, "process", None)
-    if process is None:
-        return set()
-    return _posix_owned_process_pids(
-        process.pid,
-        service_pids,
-        public_running=process.poll() is None,
-    )
+) -> tuple[ProcessOwnership | None, set[ProcessIdentity]]:
+    ownership_getter = getattr(session, "_process_ownership", None)
+    if ownership_getter is None:
+        return None, set()
+    ownership = ownership_getter()
+    return ownership, ownership.snapshot(service_pids)
 
 
-def _quiesce_posix_owned_process_pids(
-    owned_pids: set[int], timeout_seconds: float
+def _quiesce_owned_processes(
+    ownership: ProcessOwnership | None,
+    owned_processes: set[ProcessIdentity],
+    timeout_seconds: float,
 ) -> None:
-    if not owned_pids:
+    if ownership is None or not owned_processes:
         return
-    wait_limit = min(1.0, timeout_seconds)
-    _wait_for_process_pids(owned_pids, wait_limit)
-    survivors = {pid for pid in owned_pids if _process_is_running(pid)}
-    if not survivors:
-        return
-    _signal_processes(survivors, signal.SIGTERM)
-    _wait_for_process_pids(survivors, wait_limit)
-    survivors = {pid for pid in survivors if _process_is_running(pid)}
+    survivors = ownership.quiesce(
+        owned_processes, min(_WIRE_PROBE._CLEANUP_GRACE_SECONDS, timeout_seconds)
+    )
     if survivors:
-        _signal_processes(survivors, signal.SIGKILL)
-        _wait_for_process_pids(survivors, wait_limit)
-    survivors = {pid for pid in survivors if _process_is_running(pid)}
-    if survivors:
-        rendered = ", ".join(str(pid) for pid in sorted(survivors))
+        rendered = ", ".join(
+            str(identity.pid)
+            for identity in sorted(survivors, key=lambda item: item.pid)
+        )
         raise SystemExit(
             "Unica MCP owned provider processes survived smoke cleanup: "
             f"{rendered}"
@@ -1864,7 +1703,7 @@ def _close_session_and_workspace_services(
     # TemporaryDirectory cleanup may remove the record that makes an orphan
     # reachable for emergency cleanup.
     service_pids = _workspace_service_pids(cache_root)
-    owned_pids = _capture_posix_owned_process_pids(session, service_pids)
+    ownership, owned_processes = _capture_owned_processes(session, service_pids)
     try:
         try:
             # On Windows, a detached workspace service may inherit extra copies of
@@ -1887,8 +1726,9 @@ def _close_session_and_workspace_services(
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                     service_pids,
                 )
-                _quiesce_posix_owned_process_pids(
-                    owned_pids,
+                _quiesce_owned_processes(
+                    ownership,
+                    owned_processes,
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                 )
     except BaseException:
