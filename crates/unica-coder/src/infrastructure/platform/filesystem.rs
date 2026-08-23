@@ -2174,6 +2174,16 @@ fn rename_open_child_no_replace(
     destination_parent: &fs::File,
     destination_name: &std::ffi::OsStr,
 ) -> io::Result<()> {
+    rename_open_child(source, destination_parent, destination_name, false)
+}
+
+#[cfg(windows)]
+fn rename_open_child(
+    source: &fs::File,
+    destination_parent: &fs::File,
+    destination_name: &std::ffi::OsStr,
+    replace_if_exists: bool,
+) -> io::Result<()> {
     use std::mem::{offset_of, size_of};
     use std::os::windows::io::AsRawHandle;
     use std::ptr;
@@ -2210,7 +2220,7 @@ fn rename_open_child_no_replace(
     // UTF-16 name. All fields are initialized before NtSetInformationFile reads the buffer.
     unsafe {
         ptr::addr_of_mut!((*information).anonymous).write(RenameFlags {
-            replace_if_exists: 0,
+            replace_if_exists: u8::from(replace_if_exists),
         });
         ptr::addr_of_mut!((*information).root_directory).write(destination_parent.as_raw_handle());
         ptr::addr_of_mut!((*information).file_name_length).write(name_bytes as u32);
@@ -3411,6 +3421,18 @@ pub(crate) fn sync_parent_directory(_parent: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Flushes mutations made through a retained directory handle where the host
+/// supports durable directory synchronization.
+#[cfg(unix)]
+pub(crate) fn sync_directory(directory: &fs::File) -> io::Result<()> {
+    directory.sync_all()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_directory(_directory: &fs::File) -> io::Result<()> {
+    Ok(())
+}
+
 #[cfg(not(windows))]
 pub(crate) fn prepare_file_for_removal(_path: &Path) -> io::Result<()> {
     Ok(())
@@ -3508,6 +3530,92 @@ pub(crate) fn rename_identity_bound_regular_child_no_replace(
         destination_parent,
         destination_name,
     )
+}
+
+/// Atomically replaces a child in one retained directory with an
+/// identity-bound staged regular file from that same directory.
+///
+/// Both source lookup and destination resolution stay relative to the retained
+/// parent handle, so replacing the lexical route to the directory cannot
+/// redirect publication.
+#[cfg(unix)]
+pub(crate) fn replace_identity_bound_regular_child(
+    parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    if file_identity(retained)? != expected_identity {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    let named = open_regular_child_nofollow(parent, source_name)?;
+    if file_identity(&named)? != expected_identity {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    let source_name = unix_child_name(source_name)?;
+    let destination_name = unix_child_name(destination_name)?;
+    // SAFETY: the retained directory descriptor and both validated,
+    // NUL-terminated child names remain live for the atomic same-directory call.
+    let status = unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            source_name.as_ptr(),
+            parent.as_raw_fd(),
+            destination_name.as_ptr(),
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn replace_identity_bound_regular_child(
+    parent: &fs::File,
+    source_name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    let named = open_any_child_for_delete(parent, source_name)?;
+    if opened_child_kind(&named)? != OpenedChildKind::RegularFile
+        || file_identity(&named)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "regular child identity changed; replacement left untouched",
+        ));
+    }
+    if opened_child_kind(retained)? != OpenedChildKind::RegularFile
+        || file_identity(retained)? != expected_identity
+    {
+        return Err(io::Error::other(
+            "retained regular child identity changed; replacement left untouched",
+        ));
+    }
+    rename_open_child(&named, parent, destination_name, true)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn replace_identity_bound_regular_child(
+    _parent: &fs::File,
+    _source_name: &std::ffi::OsStr,
+    _expected_identity: FileIdentity,
+    _retained: &fs::File,
+    _destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "identity-bound regular-file replacement is unavailable on this host",
+    ))
 }
 
 #[cfg(windows)]
@@ -4443,6 +4551,39 @@ mod tests {
         }
 
         #[test]
+        fn identity_bound_regular_child_atomically_replaces_in_retained_parent() {
+            use crate::infrastructure::platform::filesystem::{
+                create_new_regular_child, replace_identity_bound_regular_child,
+            };
+            use std::io::Write;
+
+            let root = unique_temp_root("identity-bound-file-replace");
+            fs::create_dir_all(&root).unwrap();
+            let parent = open_directory_nofollow(&root).unwrap();
+            let stage_name = std::ffi::OsStr::new("stage.bin");
+            let target_name = std::ffi::OsStr::new("record.bin");
+            fs::write(root.join(target_name), b"old").unwrap();
+            let mut stage = create_new_regular_child(&parent, stage_name).unwrap();
+            stage.write_all(b"new").unwrap();
+            stage.sync_all().unwrap();
+            let identity = file_identity(&stage).unwrap();
+
+            replace_identity_bound_regular_child(
+                &parent,
+                stage_name,
+                identity,
+                &stage,
+                target_name,
+            )
+            .unwrap();
+
+            assert_eq!(fs::read(root.join(target_name)).unwrap(), b"new");
+            drop(stage);
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
         fn generic_delete_child_open_does_not_require_attribute_write_access() {
             use std::os::windows::ffi::OsStrExt;
             use windows_sys::Win32::Security::{
@@ -4863,6 +5004,54 @@ mod tests {
         drop(retained);
         drop(parent);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_bound_replace_stays_with_retained_parent_after_symlink_swap() {
+        use crate::infrastructure::platform::filesystem::{
+            create_new_regular_child, file_identity, open_directory_nofollow,
+            replace_identity_bound_regular_child,
+        };
+        use std::ffi::OsStr;
+        use std::io::Write;
+        use std::os::unix::fs::symlink;
+
+        let parent_path = unique_temp_root("identity-bound-replace-parent-swap");
+        let root_path = parent_path.join("root");
+        let retained_path = parent_path.join("retained");
+        let attacker_path = parent_path.join("attacker");
+        fs::create_dir_all(&root_path).unwrap();
+        fs::create_dir(&attacker_path).unwrap();
+        fs::write(root_path.join("record.json"), b"old").unwrap();
+        fs::write(attacker_path.join("record.json"), b"attacker").unwrap();
+        let root = open_directory_nofollow(&root_path).unwrap();
+        let stage_name = OsStr::new("stage.tmp");
+        let mut stage = create_new_regular_child(&root, stage_name).unwrap();
+        stage.write_all(b"new").unwrap();
+        stage.sync_all().unwrap();
+        let identity = file_identity(&stage).unwrap();
+        fs::rename(&root_path, &retained_path).unwrap();
+        symlink(&attacker_path, &root_path).unwrap();
+
+        replace_identity_bound_regular_child(
+            &root,
+            stage_name,
+            identity,
+            &stage,
+            OsStr::new("record.json"),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(retained_path.join("record.json")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(attacker_path.join("record.json")).unwrap(),
+            b"attacker"
+        );
+        drop(stage);
+        drop(root);
+        fs::remove_file(&root_path).unwrap();
+        fs::remove_dir_all(parent_path).unwrap();
     }
 
     #[cfg(windows)]

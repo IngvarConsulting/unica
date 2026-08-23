@@ -1,19 +1,21 @@
 //! Sole-writer durable Task and Invocation store used by the versioned daemon.
 
 use crate::application::invocation_store::{
-    EpochMillisClock, InvocationStore, InvocationStoreError, NewInvocationRecord,
+    CommitOperation, EpochMillisClock, InvocationStore, InvocationStoreError, NewInvocationRecord,
     SafeStatusMessage, StoredInvocationRecord, TaskTransition, INVOCATION_RECORD_SCHEMA_VERSION,
 };
 use crate::domain::invocation::{InvocationStatus, TaskId};
 use crate::infrastructure::platform::filesystem::{
-    create_new_regular_child, metadata_is_link_or_reparse_point, open_directory_nofollow,
-    open_regular_child_nofollow, replace_file_atomically, restrict_stage_to_owner,
-    sync_parent_directory,
+    create_new_regular_child, file_identity, metadata_is_link_or_reparse_point,
+    open_directory_nofollow, open_regular_child_nofollow, read_directory_names_bounded,
+    remove_identity_bound_regular_child, replace_identity_bound_regular_child,
+    restrict_stage_to_owner, sync_directory, FileIdentity,
 };
+use fs2::FileExt;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -42,12 +44,25 @@ pub(crate) struct RecoveryReport {
     pub(crate) classifications: Vec<RecoveryClassification>,
 }
 
+const STORE_LOCK_FILE: &str = ".invocation-store.lock";
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicationFailure {
+    BeforeRename,
+    AfterRenameBeforeSync,
+}
+
 /// One daemon owns one instance. The mutex serializes that daemon's writes;
 /// readers observe either the previous committed file or its complete replacement.
 pub(crate) struct FileInvocationStore {
-    root: PathBuf,
+    root: File,
+    root_identity: FileIdentity,
+    _root_lock: File,
     clock: Arc<dyn EpochMillisClock>,
     writer: Mutex<()>,
+    #[cfg(test)]
+    next_publication_failure: Mutex<Option<PublicationFailure>>,
 }
 
 impl FileInvocationStore {
@@ -63,13 +78,20 @@ impl FileInvocationStore {
                 "task store root must be a private physical directory".to_string(),
             ));
         }
-        open_directory_nofollow(&root)
+        let root = open_directory_nofollow(&root)
             .map_err(|error| storage_error("open task store root", error))?;
+        let root_identity = file_identity(&root)
+            .map_err(|error| storage_error("capture task store root identity", error))?;
+        let root_lock = acquire_root_lock(&root)?;
 
         let store = Self {
             root,
+            root_identity,
+            _root_lock: root_lock,
             clock,
             writer: Mutex::new(()),
+            #[cfg(test)]
+            next_publication_failure: Mutex::new(None),
         };
         let report = store.recover()?;
         Ok((store, report))
@@ -77,35 +99,34 @@ impl FileInvocationStore {
 
     fn recover(&self) -> Result<RecoveryReport, InvocationStoreError> {
         let _writer = self.lock_writer()?;
-        let mut entries = fs::read_dir(&self.root)
-            .map_err(|error| storage_error("enumerate task store", error))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| storage_error("read task store entry", error))?;
-        entries.sort_by_key(|entry| entry.file_name());
+        self.verify_root_identity()?;
+        let entries = read_directory_names_bounded(&self.root, usize::MAX, || Ok(()))
+            .map_err(|error| storage_error("enumerate task store", error))?;
         let mut report = RecoveryReport::default();
 
-        for entry in entries {
-            let file_name = entry
-                .file_name()
+        for entry_name in entries {
+            let file_name = entry_name
+                .clone()
                 .into_string()
                 .map_err(|_| corrupt_error("task store entry name is not UTF-8"))?;
-            let file_type = entry
-                .file_type()
-                .map_err(|error| storage_error("classify task store entry", error))?;
+            if file_name == STORE_LOCK_FILE {
+                continue;
+            }
             if file_name.starts_with('.') && file_name.ends_with(".tmp") {
-                if !file_type.is_file() {
-                    return Err(corrupt_error("temporary task entry is not a regular file"));
-                }
-                fs::remove_file(entry.path())
+                let retained = open_regular_child_nofollow(&self.root, &entry_name)
+                    .map_err(|_| corrupt_error("temporary task entry is not a regular file"))?;
+                let identity = file_identity(&retained)
+                    .map_err(|error| storage_error("identify temporary task record", error))?;
+                remove_identity_bound_regular_child(&self.root, &entry_name, identity, &retained)
                     .map_err(|error| storage_error("discard temporary task record", error))?;
-                sync_parent_directory(&self.root)
+                sync_directory(&self.root)
                     .map_err(|error| storage_error("sync task store cleanup", error))?;
                 report
                     .classifications
                     .push(RecoveryClassification::DiscardedTemporary { file_name });
                 continue;
             }
-            if !file_name.ends_with(".json") || !file_type.is_file() {
+            if !file_name.ends_with(".json") {
                 return Err(corrupt_error("unexpected task store entry"));
             }
 
@@ -127,10 +148,10 @@ impl FileInvocationStore {
                 let recovered = self.transition_record(
                     record,
                     TaskTransition::Fail {
-                        status_message: SafeStatusMessage::from_static("interrupted"),
+                        status_message: SafeStatusMessage::Interrupted,
                     },
                 )?;
-                self.publish_record(&recovered, || {})?;
+                self.publish_record(&recovered, CommitOperation::Recovery, || {})?;
                 report
                     .classifications
                     .push(RecoveryClassification::InterruptedNonResumable { task_id });
@@ -145,22 +166,28 @@ impl FileInvocationStore {
             .map_err(|_| InvocationStoreError::Storage("task store writer lock poisoned".into()))
     }
 
-    fn record_path(&self, task_id: TaskId) -> PathBuf {
-        self.root.join(format!("{task_id}.json"))
+    fn verify_root_identity(&self) -> Result<(), InvocationStoreError> {
+        let current = file_identity(&self.root)
+            .map_err(|error| storage_error("verify task store root identity", error))?;
+        if current != self.root_identity {
+            return Err(InvocationStoreError::Storage(
+                "retained task store root identity changed".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn read_record(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
-        Self::read_committed(&self.root, task_id)
+        self.verify_root_identity()?;
+        Self::read_committed_from(&self.root, task_id)
     }
 
-    fn read_committed(
-        root: &Path,
+    fn read_committed_from(
+        root: &File,
         task_id: TaskId,
     ) -> Result<StoredInvocationRecord, InvocationStoreError> {
         let file_name = format!("{task_id}.json");
-        let directory = open_directory_nofollow(root)
-            .map_err(|error| storage_error("open task store for reading", error))?;
-        let mut file = match open_regular_child_nofollow(&directory, OsStr::new(&file_name)) {
+        let mut file = match open_regular_child_nofollow(root, OsStr::new(&file_name)) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Err(InvocationStoreError::NotFound)
@@ -181,42 +208,122 @@ impl FileInvocationStore {
         Ok(record)
     }
 
+    #[cfg(test)]
+    fn read_committed(
+        root: &Path,
+        task_id: TaskId,
+    ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        let directory = open_directory_nofollow(root)
+            .map_err(|error| storage_error("open task store for test reading", error))?;
+        Self::read_committed_from(&directory, task_id)
+    }
+
     fn publish_record<F>(
         &self,
         record: &StoredInvocationRecord,
+        operation: CommitOperation,
         before_replace: F,
     ) -> Result<(), InvocationStoreError>
     where
         F: FnOnce(),
     {
         validate_record(record)?;
-        let target = self.record_path(record.task_id);
+        self.verify_root_identity()?;
+        let target_name = format!("{}.json", record.task_id);
         let temporary_name = format!(".{}.{}.tmp", record.task_id, Uuid::new_v4());
-        let temporary = self.root.join(&temporary_name);
-        let directory = open_directory_nofollow(&self.root)
-            .map_err(|error| storage_error("open task store for publication", error))?;
-        let mut file = create_new_regular_child(&directory, OsStr::new(&temporary_name))
+        let temporary_name = OsStr::new(&temporary_name);
+        let mut file = create_new_regular_child(&self.root, temporary_name)
             .map_err(|error| storage_error("create private task staging file", error))?;
+        let temporary_identity = file_identity(&file)
+            .map_err(|error| storage_error("identify private task staging file", error))?;
         if let Err(error) = restrict_stage_to_owner(&file) {
-            let _ = fs::remove_file(&temporary);
+            let _ = remove_identity_bound_regular_child(
+                &self.root,
+                temporary_name,
+                temporary_identity,
+                &file,
+            );
             return Err(storage_error("restrict task staging file", error));
         }
-        let bytes = serde_json::to_vec(record)
-            .map_err(|_| corrupt_error("task record could not be serialized"))?;
+        let bytes = match serde_json::to_vec(record) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let _ = remove_identity_bound_regular_child(
+                    &self.root,
+                    temporary_name,
+                    temporary_identity,
+                    &file,
+                );
+                return Err(corrupt_error("task record could not be serialized"));
+            }
+        };
         if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
-            drop(file);
-            let _ = fs::remove_file(&temporary);
+            let _ = remove_identity_bound_regular_child(
+                &self.root,
+                temporary_name,
+                temporary_identity,
+                &file,
+            );
             return Err(storage_error("flush task staging file", error));
         }
-        drop(file);
 
         before_replace();
-        if let Err(error) = replace_file_atomically(&temporary, &target) {
-            let _ = fs::remove_file(&temporary);
+        #[cfg(test)]
+        let injected_failure = self.take_publication_failure()?;
+        #[cfg(test)]
+        if injected_failure == Some(PublicationFailure::BeforeRename) {
+            let _ = remove_identity_bound_regular_child(
+                &self.root,
+                temporary_name,
+                temporary_identity,
+                &file,
+            );
+            return Err(InvocationStoreError::Storage(
+                "atomically publish task record: injected pre-commit rename failure".to_string(),
+            ));
+        }
+        if let Err(error) = replace_identity_bound_regular_child(
+            &self.root,
+            temporary_name,
+            temporary_identity,
+            &file,
+            OsStr::new(&target_name),
+        ) {
+            let _ = remove_identity_bound_regular_child(
+                &self.root,
+                temporary_name,
+                temporary_identity,
+                &file,
+            );
             return Err(storage_error("atomically publish task record", error));
         }
-        sync_parent_directory(&self.root)
-            .map_err(|error| storage_error("sync committed task directory", error))
+        #[cfg(test)]
+        if injected_failure == Some(PublicationFailure::AfterRenameBeforeSync) {
+            return Err(InvocationStoreError::CommitUncertain {
+                task_id: record.task_id,
+                operation,
+            });
+        }
+        sync_directory(&self.root).map_err(|_| InvocationStoreError::CommitUncertain {
+            task_id: record.task_id,
+            operation,
+        })
+    }
+
+    #[cfg(test)]
+    fn inject_next_publication_failure(&self, failure: PublicationFailure) {
+        *self
+            .next_publication_failure
+            .lock()
+            .expect("publication failure lock") = Some(failure);
+    }
+
+    #[cfg(test)]
+    fn take_publication_failure(&self) -> Result<Option<PublicationFailure>, InvocationStoreError> {
+        self.next_publication_failure
+            .lock()
+            .map(|mut failure| failure.take())
+            .map_err(|_| InvocationStoreError::Storage("publication failure lock poisoned".into()))
     }
 
     fn create_with_after_publish_hook<F>(
@@ -230,14 +337,16 @@ impl FileInvocationStore {
         let _writer = self.lock_writer()?;
         let task_id = loop {
             let candidate = TaskId::new();
-            if !self.record_path(candidate).try_exists().map_err(|error| {
-                storage_error("inspect task identity before durable creation", error)
-            })? {
+            let candidate_name = format!("{candidate}.json");
+            let names = read_directory_names_bounded(&self.root, usize::MAX, || Ok(())).map_err(
+                |error| storage_error("inspect task identity before durable creation", error),
+            )?;
+            if !names.iter().any(|name| name == OsStr::new(&candidate_name)) {
                 break candidate;
             }
         };
         let record = new_record.into_stored(task_id, self.clock.now_epoch_millis());
-        self.publish_record(&record, || {})?;
+        self.publish_record(&record, CommitOperation::Create, || {})?;
         after_publish(task_id);
         Ok(record)
     }
@@ -257,7 +366,7 @@ impl FileInvocationStore {
             return Err(InvocationStoreError::Expired);
         }
         let updated = self.transition_record(record, transition)?;
-        self.publish_record(&updated, before_publish)?;
+        self.publish_record(&updated, CommitOperation::Update, before_publish)?;
         Ok(updated)
     }
 
@@ -364,17 +473,44 @@ impl InvocationStore for FileInvocationStore {
             .max(self.clock.now_epoch_millis());
         record.result = None;
         record.resume = None;
-        self.publish_record(&record, || {})?;
+        self.publish_record(&record, CommitOperation::Cancel, || {})?;
         Ok(record)
     }
+}
+
+fn acquire_root_lock(root: &File) -> Result<File, InvocationStoreError> {
+    let lock_name = OsStr::new(STORE_LOCK_FILE);
+    let lock = match create_new_regular_child(root, lock_name) {
+        Ok(file) => {
+            restrict_stage_to_owner(&file)
+                .map_err(|error| storage_error("restrict task store lock", error))?;
+            file
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            open_regular_child_nofollow(root, lock_name)
+                .map_err(|error| storage_error("open task store lock", error))?
+        }
+        Err(error) => return Err(storage_error("create task store lock", error)),
+    };
+    match FileExt::try_lock_exclusive(&lock) {
+        Ok(()) => Ok(lock),
+        Err(error) if lock_is_contended(&error) => Err(InvocationStoreError::AlreadyOwned),
+        Err(error) => Err(storage_error("acquire task store lock", error)),
+    }
+}
+
+fn lock_is_contended(error: &std::io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error
+            .raw_os_error()
+            .zip(expected.raw_os_error())
+            .is_some_and(|(actual, expected)| actual == expected)
 }
 
 fn validate_record(record: &StoredInvocationRecord) -> Result<(), InvocationStoreError> {
     if record.schema_version != INVOCATION_RECORD_SCHEMA_VERSION {
         return Err(corrupt_error("unsupported task record schema version"));
-    }
-    if !record.tool.starts_with("unica.") {
-        return Err(corrupt_error("task record tool identity is not canonical"));
     }
     if record.updated_at_epoch_ms < record.created_at_epoch_ms {
         return Err(corrupt_error("task record timestamp moved backwards"));
@@ -389,6 +525,24 @@ fn validate_record(record: &StoredInvocationRecord) -> Result<(), InvocationStor
     if !shape_is_valid {
         return Err(corrupt_error("task record status payload is inconsistent"));
     }
+    let status_message_is_valid = match record.status {
+        InvocationStatus::Queued => record.status_message == SafeStatusMessage::Queued,
+        InvocationStatus::Working => matches!(
+            record.status_message,
+            SafeStatusMessage::Working | SafeStatusMessage::Delivering
+        ),
+        InvocationStatus::Completed => record.status_message == SafeStatusMessage::Completed,
+        InvocationStatus::Failed => matches!(
+            record.status_message,
+            SafeStatusMessage::Failed | SafeStatusMessage::Interrupted
+        ),
+        InvocationStatus::Cancelled => record.status_message == SafeStatusMessage::Cancelled,
+    };
+    if !status_message_is_valid {
+        return Err(corrupt_error(
+            "task record status message is inconsistent with lifecycle state",
+        ));
+    }
     Ok(())
 }
 
@@ -402,10 +556,10 @@ fn storage_error(operation: &'static str, error: std::io::Error) -> InvocationSt
 
 #[cfg(test)]
 mod tests {
-    use super::{FileInvocationStore, RecoveryClassification};
+    use super::{validate_record, FileInvocationStore, PublicationFailure, RecoveryClassification};
     use crate::application::invocation_store::{
-        EpochMillisClock, InvocationStore, InvocationStoreError, NewInvocationRecord,
-        SafeStatusMessage, TaskTransition,
+        CommitOperation, EpochMillisClock, InvocationStore, InvocationStoreError,
+        NewInvocationRecord, SafeStatusMessage, TaskTransition, ToolIdentity,
     };
     use crate::domain::invocation::{
         DeliveryResume, DomainResult, InvocationId, InvocationStatus, NormalizedArgumentsHash,
@@ -440,10 +594,10 @@ mod tests {
     fn new_record(ttl_ms: u64, resume: Option<ResumeDescriptor>) -> NewInvocationRecord {
         NewInvocationRecord::new(
             InvocationId::new(),
-            "unica.view",
+            ToolIdentity::View,
             NormalizedArgumentsHash::from_sha256([0x22; 32]),
             SafeIdentityHash::from_sha256([0x33; 32]),
-            SafeStatusMessage::from_static("queued"),
+            SafeStatusMessage::Queued,
             250,
             ttl_ms,
             resume,
@@ -476,6 +630,135 @@ mod tests {
     }
 
     #[test]
+    fn failed_rename_preserves_the_previous_committed_record_after_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(1_500));
+        let (store, _) = open_store(root.path(), clock.clone());
+        let created = store.create(new_record(10_000, None)).unwrap();
+        store.inject_next_publication_failure(PublicationFailure::BeforeRename);
+
+        let error = store
+            .update(
+                created.task_id,
+                TaskTransition::StartWorking {
+                    status_message: SafeStatusMessage::Working,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, InvocationStoreError::Storage(_)));
+        drop(store);
+
+        let (reopened, _) = open_store(root.path(), clock);
+        assert_eq!(reopened.get(created.task_id).unwrap(), created);
+    }
+
+    #[test]
+    fn create_sync_failure_reports_commit_uncertain_with_visible_task_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(1_600));
+        let (store, _) = open_store(root.path(), clock.clone());
+        store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+
+        let error = store.create(new_record(10_000, None)).unwrap_err();
+        let task_id = match error {
+            InvocationStoreError::CommitUncertain {
+                task_id,
+                operation: CommitOperation::Create,
+            } => task_id,
+            other => panic!("unexpected create outcome: {other:?}"),
+        };
+        drop(store);
+
+        let (reopened, _) = open_store(root.path(), clock);
+        let visible = reopened.get(task_id).unwrap();
+        assert_eq!(visible.task_id, task_id);
+        assert_eq!(visible.status, InvocationStatus::Queued);
+    }
+
+    #[test]
+    fn update_sync_failure_reports_commit_uncertain_and_reopens_new_state() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(1_700));
+        let (store, _) = open_store(root.path(), clock.clone());
+        let resume = ResumeDescriptor::Delivery(DeliveryResume::new(
+            SafeIdentityHash::from_sha256([0x77; 32]),
+        ));
+        let created = store
+            .create(new_record(10_000, Some(resume.clone())))
+            .unwrap();
+        clock.set(1_750);
+        store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+
+        assert_eq!(
+            store
+                .update(
+                    created.task_id,
+                    TaskTransition::StartWorking {
+                        status_message: SafeStatusMessage::Working,
+                    },
+                )
+                .unwrap_err(),
+            InvocationStoreError::CommitUncertain {
+                task_id: created.task_id,
+                operation: CommitOperation::Update,
+            }
+        );
+        drop(store);
+
+        let (reopened, report) = open_store(root.path(), clock);
+        let visible = reopened.get(created.task_id).unwrap();
+        assert_eq!(visible.task_id, created.task_id);
+        assert_eq!(visible.status, InvocationStatus::Working);
+        assert_eq!(visible.status_message, SafeStatusMessage::Working);
+        assert_eq!(visible.updated_at_epoch_ms, 1_750);
+        assert_eq!(visible.resume, Some(resume));
+        assert!(report
+            .classifications
+            .contains(&RecoveryClassification::ResumableWorking {
+                task_id: created.task_id,
+            }));
+    }
+
+    #[test]
+    fn exclusive_root_lock_prevents_recovery_until_the_owner_drops() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(1_800));
+        let (store, _) = open_store(root.path(), clock.clone());
+        let created = store.create(new_record(10_000, None)).unwrap();
+        store
+            .update(
+                created.task_id,
+                TaskTransition::StartWorking {
+                    status_message: SafeStatusMessage::Working,
+                },
+            )
+            .unwrap();
+
+        let second_open = FileInvocationStore::open(root.path(), clock.clone());
+        assert!(matches!(
+            second_open,
+            Err(InvocationStoreError::AlreadyOwned)
+        ));
+        assert_eq!(
+            store.get(created.task_id).unwrap().status,
+            InvocationStatus::Working,
+            "a rejected second owner must not run recovery"
+        );
+        drop(store);
+
+        let (reopened, report) = open_store(root.path(), clock);
+        assert_eq!(
+            reopened.get(created.task_id).unwrap().status,
+            InvocationStatus::Failed
+        );
+        assert!(report.classifications.contains(
+            &RecoveryClassification::InterruptedNonResumable {
+                task_id: created.task_id,
+            }
+        ));
+    }
+
+    #[test]
     fn status_update_never_exposes_a_partially_written_record() {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualEpochClock::at(2_000));
@@ -487,7 +770,7 @@ mod tests {
             .update_with_before_publish_hook(
                 created.task_id,
                 TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::from_static("working"),
+                    status_message: SafeStatusMessage::Working,
                 },
                 || {
                     let visible =
@@ -513,7 +796,7 @@ mod tests {
             .update(
                 created.task_id,
                 TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::from_static("working"),
+                    status_message: SafeStatusMessage::Working,
                 },
             )
             .unwrap();
@@ -522,7 +805,7 @@ mod tests {
             .update(
                 created.task_id,
                 TaskTransition::Complete {
-                    status_message: SafeStatusMessage::from_static("completed"),
+                    status_message: SafeStatusMessage::Completed,
                     result: Box::new(result.clone()),
                 },
             )
@@ -544,7 +827,7 @@ mod tests {
             .update(
                 created.task_id,
                 TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::from_static("working"),
+                    status_message: SafeStatusMessage::Working,
                 },
             )
             .unwrap();
@@ -552,7 +835,7 @@ mod tests {
             .update(
                 created.task_id,
                 TaskTransition::Complete {
-                    status_message: SafeStatusMessage::from_static("completed"),
+                    status_message: SafeStatusMessage::Completed,
                     result: Box::new(DomainResult::success("complete")),
                 },
             )
@@ -579,7 +862,7 @@ mod tests {
             .update(
                 created.task_id,
                 TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::from_static("working"),
+                    status_message: SafeStatusMessage::Working,
                 },
             )
             .unwrap();
@@ -596,14 +879,11 @@ mod tests {
         let created = store.create(new_record(10_000, None)).unwrap();
 
         let first = store
-            .cancel(created.task_id, SafeStatusMessage::from_static("cancelled"))
+            .cancel(created.task_id, SafeStatusMessage::Cancelled)
             .unwrap();
         clock.set(6_500);
         let second = store
-            .cancel(
-                created.task_id,
-                SafeStatusMessage::from_static("cancelled again"),
-            )
+            .cancel(created.task_id, SafeStatusMessage::Cancelled)
             .unwrap();
 
         assert_eq!(first, second);
@@ -652,7 +932,7 @@ mod tests {
             .update(
                 created.task_id,
                 TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::from_static("working"),
+                    status_message: SafeStatusMessage::Working,
                 },
             )
             .unwrap();
@@ -663,7 +943,7 @@ mod tests {
         let recovered = reopened.get(created.task_id).unwrap();
 
         assert_eq!(recovered.status, InvocationStatus::Failed);
-        assert_eq!(recovered.status_message.as_str(), "interrupted");
+        assert_eq!(recovered.status_message, SafeStatusMessage::Interrupted);
         assert!(report.classifications.contains(
             &RecoveryClassification::InterruptedNonResumable {
                 task_id: created.task_id,
@@ -686,7 +966,7 @@ mod tests {
             .update(
                 created.task_id,
                 TaskTransition::StartWorking {
-                    status_message: SafeStatusMessage::from_static("delivering"),
+                    status_message: SafeStatusMessage::Delivering,
                 },
             )
             .unwrap();
@@ -727,10 +1007,10 @@ mod tests {
         let (store, _) = open_store(root.path(), clock);
         let record = NewInvocationRecord::new(
             InvocationId::new(),
-            "unica.run",
+            ToolIdentity::Run,
             NormalizedArgumentsHash::from_sha256(digest),
             SafeIdentityHash::from_sha256([0x55; 32]),
-            SafeStatusMessage::from_static("queued"),
+            SafeStatusMessage::Queued,
             250,
             10_000,
             None,
@@ -754,6 +1034,8 @@ mod tests {
             .find(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
             .unwrap();
         let value: Value = serde_json::from_slice(&fs::read(json_file.path()).unwrap()).unwrap();
+        assert_eq!(value["tool"], "unica.run");
+        assert_eq!(value["statusMessage"], "queued");
         assert_eq!(
             value
                 .as_object()
@@ -776,6 +1058,61 @@ mod tests {
                 "ttlMs",
             ]
         );
+    }
+
+    #[test]
+    fn record_validation_rejects_status_codes_inconsistent_with_lifecycle_state() {
+        let record =
+            new_record(10_000, None).into_stored(crate::domain::invocation::TaskId::new(), 12_000);
+        let mut inconsistent = record;
+        inconsistent.status_message = SafeStatusMessage::Completed;
+
+        assert!(matches!(
+            validate_record(&inconsistent),
+            Err(InvocationStoreError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn retained_root_handle_prevents_symlink_swap_from_redirecting_updates() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+
+        let parent = tempfile::tempdir().unwrap();
+        let root_path = parent.path().join("store");
+        let displaced_path = parent.path().join("retained-store");
+        let attacker_path = parent.path().join("attacker");
+        fs::create_dir(&root_path).unwrap();
+        fs::create_dir(&attacker_path).unwrap();
+        let clock = Arc::new(ManualEpochClock::at(13_000));
+        let (store, _) = open_store(&root_path, clock);
+        let created = store.create(new_record(10_000, None)).unwrap();
+        fs::rename(&root_path, &displaced_path).unwrap();
+        let link_outcome =
+            create_directory_link_fixture_for_test(&attacker_path, &root_path).unwrap();
+        if link_outcome != FileLinkFixtureOutcome::Created {
+            return;
+        }
+
+        let updated = store
+            .update(
+                created.task_id,
+                TaskTransition::StartWorking {
+                    status_message: SafeStatusMessage::Working,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(store.get(created.task_id).unwrap(), updated);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                &fs::read(displaced_path.join(format!("{}.json", created.task_id))).unwrap()
+            )
+            .unwrap()["status"],
+            "working"
+        );
+        assert!(fs::read_dir(&attacker_path).unwrap().next().is_none());
     }
 
     fn collect_recursive_bytes(path: &Path, output: &mut Vec<u8>) {

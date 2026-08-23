@@ -17,25 +17,57 @@ pub(crate) trait EpochMillisClock: Send + Sync {
     fn now_epoch_millis(&self) -> u64;
 }
 
-/// Status text which cannot be populated from caller-owned runtime strings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(crate) struct SafeStatusMessage(String);
+/// Canonical invocation identity which cannot be populated with caller text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ToolIdentity {
+    #[serde(rename = "unica.view")]
+    View,
+    #[serde(rename = "unica.apply")]
+    Apply,
+    #[serde(rename = "unica.find")]
+    Find,
+    #[serde(rename = "unica.search")]
+    Search,
+    #[serde(rename = "unica.check")]
+    Check,
+    #[serde(rename = "unica.diff")]
+    Diff,
+    #[serde(rename = "unica.run")]
+    Run,
+    #[serde(rename = "unica.docs")]
+    Docs,
+}
 
-impl SafeStatusMessage {
-    pub(crate) fn from_static(message: &'static str) -> Self {
-        Self(message.to_string())
-    }
+impl ToolIdentity {
+    pub(crate) const ALL: [Self; 8] = [
+        Self::View,
+        Self::Apply,
+        Self::Find,
+        Self::Search,
+        Self::Check,
+        Self::Diff,
+        Self::Run,
+        Self::Docs,
+    ];
+}
 
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
+/// Closed status code which cannot be populated from caller-owned runtime strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SafeStatusMessage {
+    Queued,
+    Working,
+    Delivering,
+    Completed,
+    Failed,
+    Interrupted,
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct NewInvocationRecord {
     invocation_id: InvocationId,
-    tool: &'static str,
+    tool: ToolIdentity,
     normalized_arguments_hash: NormalizedArgumentsHash,
     workspace_identity_hash: SafeIdentityHash,
     status_message: SafeStatusMessage,
@@ -48,7 +80,7 @@ impl NewInvocationRecord {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         invocation_id: InvocationId,
-        tool: &'static str,
+        tool: ToolIdentity,
         normalized_arguments_hash: NormalizedArgumentsHash,
         workspace_identity_hash: SafeIdentityHash,
         status_message: SafeStatusMessage,
@@ -73,7 +105,7 @@ impl NewInvocationRecord {
             schema_version: INVOCATION_RECORD_SCHEMA_VERSION,
             task_id,
             invocation_id: self.invocation_id,
-            tool: self.tool.to_string(),
+            tool: self.tool,
             normalized_arguments_hash: self.normalized_arguments_hash,
             workspace_identity_hash: self.workspace_identity_hash,
             created_at_epoch_ms: now_epoch_ms,
@@ -95,7 +127,7 @@ pub(crate) struct StoredInvocationRecord {
     pub(crate) schema_version: u32,
     pub(crate) task_id: TaskId,
     pub(crate) invocation_id: InvocationId,
-    pub(crate) tool: String,
+    pub(crate) tool: ToolIdentity,
     pub(crate) normalized_arguments_hash: NormalizedArgumentsHash,
     pub(crate) workspace_identity_hash: SafeIdentityHash,
     pub(crate) created_at_epoch_ms: u64,
@@ -133,10 +165,23 @@ pub(crate) enum TaskTransition {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitOperation {
+    Create,
+    Update,
+    Cancel,
+    Recovery,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InvocationStoreError {
     NotFound,
     Expired,
+    AlreadyOwned,
+    CommitUncertain {
+        task_id: TaskId,
+        operation: CommitOperation,
+    },
     InvalidTransition {
         from: InvocationStatus,
         attempted: &'static str,
@@ -150,6 +195,12 @@ impl fmt::Display for InvocationStoreError {
         match self {
             Self::NotFound => formatter.write_str("task record not found"),
             Self::Expired => formatter.write_str("task record expired"),
+            Self::AlreadyOwned => formatter.write_str("task store already has an active owner"),
+            Self::CommitUncertain { task_id, operation } => write!(
+                formatter,
+                "task store {:?} commit durability is uncertain for {task_id}",
+                operation
+            ),
             Self::InvalidTransition { from, attempted } => {
                 write!(
                     formatter,
@@ -184,4 +235,55 @@ pub(crate) trait InvocationStore: Send + Sync {
         task_id: TaskId,
         status_message: SafeStatusMessage,
     ) -> Result<StoredInvocationRecord, InvocationStoreError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SafeStatusMessage, ToolIdentity};
+    use crate::application::tool_contracts::SurfaceRelease;
+    use crate::application::v13::tool_catalog::catalog_for;
+
+    #[test]
+    fn persisted_tool_identity_matches_the_eight_invocation_catalog_entries() {
+        let catalog = catalog_for(SurfaceRelease::V13).expect("hidden v0.13 catalog");
+        let expected = catalog
+            .tools
+            .iter()
+            .map(|tool| format!("unica.{}", tool.name))
+            .collect::<Vec<_>>();
+        let actual = ToolIdentity::ALL
+            .iter()
+            .map(|tool| {
+                serde_json::to_value(tool)
+                    .expect("tool serializes")
+                    .as_str()
+                    .expect("tool identity is a string")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn persisted_tool_identity_rejects_arbitrary_and_secret_bearing_values() {
+        for rejected in [
+            r#""unica.task.get""#,
+            r#""unica.run?token=TASK_STORE_SECRET_SENTINEL""#,
+            r#""https://user:password@example.invalid""#,
+        ] {
+            assert!(serde_json::from_str::<ToolIdentity>(rejected).is_err());
+        }
+    }
+
+    #[test]
+    fn safe_status_message_rejects_arbitrary_and_secret_bearing_values() {
+        for rejected in [
+            r#""cancelled again""#,
+            r#""https://user:password@example.invalid/private""#,
+            r#""TASK_STORE_SECRET_SENTINEL""#,
+        ] {
+            assert!(serde_json::from_str::<SafeStatusMessage>(rejected).is_err());
+        }
+    }
 }
