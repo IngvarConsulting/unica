@@ -4,7 +4,7 @@ pub(crate) mod bundled_tools;
 pub(crate) mod code_intelligence;
 pub(crate) mod configuration_help;
 pub(crate) mod daemon;
-pub(crate) mod deadline_lock;
+mod deadline_lock;
 pub(crate) mod diagnostics;
 pub(crate) mod diagnostics_jsonl;
 pub(crate) mod documentation_policy;

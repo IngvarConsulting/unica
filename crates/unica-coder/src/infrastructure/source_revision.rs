@@ -4,7 +4,7 @@ use crate::domain::source_revision::{
     SourceRevision, SourceRevisionMachine, SourceRevisionState, SourceRevisionTrustLoss,
 };
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::deadline_lock::DeadlineLock;
+use crate::infrastructure::deadline_lock::{DeadlineLock, Recover};
 use crate::infrastructure::platform::source_revision_fence::{
     platform_fence, FenceCapability, FenceOutcome, SourceRevisionFence,
 };
@@ -110,7 +110,7 @@ pub(crate) struct SourceRevisionService {
     state_scope: WorkspaceStateScope,
     machine: Mutex<SourceRevisionMachine>,
     manifest: Mutex<Option<SourceManifest>>,
-    operation: DeadlineLock,
+    operation: DeadlineLock<Recover>,
     fence: Arc<dyn SourceRevisionFence>,
     scanner: Arc<SourceManifestScanner>,
     file_reader: Arc<SourceFileReader>,
@@ -178,6 +178,16 @@ impl SourceRevisionService {
             WorkspaceStateScope::LegacyPhysical,
             Arc::new(ReconcileEverySnapshotFence::default()),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_fence_for_test(
+        context: &WorkspaceContext,
+        source_root: &Path,
+        state_scope: WorkspaceStateScope,
+        fence: Arc<dyn SourceRevisionFence>,
+    ) -> Result<Self, String> {
+        Self::with_fence(context, source_root, state_scope, fence)
     }
 
     fn with_fence(
@@ -928,6 +938,33 @@ mod tests {
 
         assert_eq!(revision.generation, 1);
         assert_eq!(calls.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn legacy_source_revision_recovers_a_poisoned_operation_lane() {
+        let (_workspace, service, calls) = counting_legacy_service();
+        let legacy_record_path = service.record_path.clone();
+        let poison_service = Arc::clone(&service);
+        let poison = thread::spawn(move || {
+            let _operation = poison_service.hold_operation_for_test();
+            panic!("poison source revision operation lane");
+        });
+        assert!(poison.join().is_err());
+
+        let revision = service
+            .snapshot(
+                ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+
+        assert_eq!(revision.generation, 1);
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        assert!(matches!(
+            service.state_scope,
+            WorkspaceStateScope::LegacyPhysical
+        ));
+        assert_eq!(service.record_path, legacy_record_path);
     }
 
     struct FailOnceFence {

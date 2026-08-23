@@ -1,26 +1,74 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::code_intelligence::ProviderDeadline;
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::Duration;
 
 const WAIT_SLICE: Duration = Duration::from_millis(10);
 
 /// One synchronous ownership lane whose contention is bounded by the caller's
 /// monotonic deadline and cancellation signal.
-pub(crate) struct DeadlineLock {
-    inner: Mutex<()>,
+pub(super) trait PoisonPolicy {
+    fn resolve<'a>(
+        &self,
+        poisoned: PoisonError<MutexGuard<'a, ()>>,
+    ) -> Result<MutexGuard<'a, ()>, String>;
 }
 
-impl Default for DeadlineLock {
+pub(super) struct FailClosed {
+    error: &'static str,
+}
+
+impl FailClosed {
+    const fn new(error: &'static str) -> Self {
+        Self { error }
+    }
+}
+
+impl PoisonPolicy for FailClosed {
+    fn resolve<'a>(
+        &self,
+        _poisoned: PoisonError<MutexGuard<'a, ()>>,
+    ) -> Result<MutexGuard<'a, ()>, String> {
+        Err(self.error.to_string())
+    }
+}
+
+pub(super) struct Recover;
+
+impl PoisonPolicy for Recover {
+    fn resolve<'a>(
+        &self,
+        poisoned: PoisonError<MutexGuard<'a, ()>>,
+    ) -> Result<MutexGuard<'a, ()>, String> {
+        Ok(poisoned.into_inner())
+    }
+}
+
+pub(super) struct DeadlineLock<P: PoisonPolicy> {
+    inner: Mutex<()>,
+    poison_policy: P,
+}
+
+impl Default for DeadlineLock<Recover> {
     fn default() -> Self {
         Self {
             inner: Mutex::new(()),
+            poison_policy: Recover,
         }
     }
 }
 
-impl DeadlineLock {
-    pub(crate) fn acquire_before(
+impl DeadlineLock<FailClosed> {
+    pub(super) const fn fail_closed(error: &'static str) -> Self {
+        Self {
+            inner: Mutex::new(()),
+            poison_policy: FailClosed::new(error),
+        }
+    }
+}
+
+impl<P: PoisonPolicy> DeadlineLock<P> {
+    pub(super) fn acquire_before(
         &self,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
@@ -34,9 +82,8 @@ impl DeadlineLock {
                     return Ok(guard);
                 }
                 Err(TryLockError::Poisoned(error)) => {
-                    let guard = error.into_inner();
                     checkpoint(deadline, cancellation, operation)?;
-                    return Ok(guard);
+                    return self.poison_policy.resolve(error);
                 }
                 Err(TryLockError::WouldBlock) => {
                     let remaining = deadline.remaining();
@@ -50,7 +97,7 @@ impl DeadlineLock {
     }
 
     #[cfg(test)]
-    pub(crate) fn hold_for_test(&self) -> MutexGuard<'_, ()> {
+    pub(super) fn hold_for_test(&self) -> MutexGuard<'_, ()> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

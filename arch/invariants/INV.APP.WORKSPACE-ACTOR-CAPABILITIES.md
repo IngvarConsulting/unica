@@ -3,7 +3,7 @@ id: INV.APP.WORKSPACE-ACTOR-CAPABILITIES
 status: active
 governs: product
 decision: DEC.2026-08-23.WORKSPACE-ACTOR-SLICE
-check: crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_capabilities_reject_cross_instance_and_physical_rebinding
+check: crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication
 scope: [app, platform, source]
 ---
 

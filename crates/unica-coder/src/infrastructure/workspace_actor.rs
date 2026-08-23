@@ -2,7 +2,7 @@ use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::deadline_lock::DeadlineLock;
+use crate::infrastructure::deadline_lock::{DeadlineLock, FailClosed};
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedDirectoryCapability,
 };
@@ -266,7 +266,7 @@ pub(crate) struct WorkspaceActor<R = ()> {
     context: WorkspaceContext,
     source_roots: HashMap<WorkspaceSourceSetIdentity, Arc<RetainedDirectoryCapability>>,
     state_scope: WorkspaceStateScope,
-    mutation_lane: DeadlineLock,
+    mutation_lane: DeadlineLock<FailClosed>,
     source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
     runtime: R,
 }
@@ -352,7 +352,7 @@ impl<R> WorkspaceActor<R> {
             context,
             source_roots,
             state_scope,
-            mutation_lane: DeadlineLock::default(),
+            mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             source_revisions: Mutex::new(HashMap::new()),
             runtime,
         })
@@ -633,8 +633,12 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::workspace::WorkspaceContext;
+    use crate::infrastructure::platform::source_revision_fence::{
+        FenceCapability, FenceOutcome, SourceRevisionFence,
+    };
+    use crate::infrastructure::source_revision::SourceRevisionService;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
@@ -893,6 +897,100 @@ mod tests {
             );
             assert!(result.unwrap_err().contains("deadline exceeded"));
             fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn workspace_actor_poisoned_mutation_lane_fails_closed_before_publication() {
+        let fixture = actor_fixture("poisoned-mutation-lane", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("src", &fixture.roots[0])
+            .unwrap();
+        let fence_calls = Arc::new(AtomicUsize::new(0));
+        let revision_service = Arc::new(
+            SourceRevisionService::new_with_fence_for_test(
+                fixture.actor.context(),
+                &fixture.roots[0],
+                fixture.actor.state_scope.clone(),
+                Arc::new(CountingActorFence {
+                    calls: Arc::clone(&fence_calls),
+                }),
+            )
+            .unwrap(),
+        );
+        fixture
+            .actor
+            .install_source_revision_service_for_test(&binding, revision_service)
+            .unwrap();
+        let fence = fixture
+            .actor
+            .capture_revision(
+                &binding,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let poison_actor = Arc::clone(&fixture.actor);
+        let poison_fence = fence.clone();
+        let poison = thread::spawn(move || {
+            let _lease = poison_actor
+                .begin_publication(
+                    &poison_fence,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            panic!("poison workspace actor mutation lane");
+        });
+        assert!(poison.join().is_err());
+        let calls_after_poison = fence_calls.load(Ordering::Acquire);
+
+        let result = fixture
+            .actor
+            .begin_publication(
+                &fence,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .and_then(|lease| {
+                lease.publish(
+                    "POISONED-STAGED-TEXT",
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+            });
+        let error = result.unwrap_err();
+
+        assert_eq!(error, "workspace actor mutation lane is poisoned");
+        assert!(!error.contains("POISONED-STAGED-TEXT"), "{error}");
+        assert_eq!(
+            fence_calls.load(Ordering::Acquire),
+            calls_after_poison,
+            "poisoned mutation lane executed a source revision fence"
+        );
+        fixture.cleanup();
+    }
+
+    struct CountingActorFence {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SourceRevisionFence for CountingActorFence {
+        fn capability(&self) -> FenceCapability {
+            FenceCapability::ProvenFast
+        }
+
+        fn flush(
+            &self,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> Result<FenceOutcome, String> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Ok(FenceOutcome::Proven {
+                changed_paths: Vec::new(),
+            })
         }
     }
 
@@ -1337,7 +1435,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_actor_capabilities_reject_cross_instance_and_physical_rebinding() {
+    fn workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication() {
         use crate::infrastructure::platform::testing::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
@@ -1421,6 +1519,10 @@ mod tests {
             )
             .is_err());
         let _ = std::fs::remove_dir_all(root);
+
+        workspace_actor_pre_cancelled_publication_does_not_wait_for_mutation_lane();
+        workspace_actor_late_cancellation_stops_mutation_lane_wait();
+        workspace_actor_deadline_bounds_mutation_lane_wait();
 
         for (budget, cancel_before_publish) in [
             (Duration::from_secs(5), true),
