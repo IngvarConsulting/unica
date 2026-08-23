@@ -157,6 +157,35 @@ impl ClientRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DaemonErrorCode {
+    InvalidRequest,
+    HandshakeRequired,
+    ProtocolMismatch,
+    CoreMismatch,
+    Unauthorized,
+    DuplicateLease,
+    Overloaded,
+    OwnerCapacity,
+}
+
+impl std::fmt::Display for DaemonErrorCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let code = match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::HandshakeRequired => "handshake_required",
+            Self::ProtocolMismatch => "protocol_mismatch",
+            Self::CoreMismatch => "core_mismatch",
+            Self::Unauthorized => "unauthorized",
+            Self::DuplicateLease => "duplicate_lease",
+            Self::Overloaded => "overloaded",
+            Self::OwnerCapacity => "owner_capacity",
+        };
+        formatter.write_str(code)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ServerResponse {
@@ -173,7 +202,7 @@ pub(crate) enum ServerResponse {
     Pong,
     Released,
     Error {
-        code: String,
+        code: DaemonErrorCode,
     },
 }
 
@@ -187,15 +216,13 @@ impl ServerResponse {
         }
     }
 
-    pub(crate) fn error(code: &'static str) -> Self {
-        Self::Error {
-            code: code.to_string(),
-        }
+    pub(crate) fn error(code: DaemonErrorCode) -> Self {
+        Self::Error { code }
     }
 
-    pub(crate) fn error_code(&self) -> Option<&str> {
+    pub(crate) fn error_code(&self) -> Option<DaemonErrorCode> {
         match self {
-            Self::Error { code } => Some(code),
+            Self::Error { code } => Some(*code),
             _ => None,
         }
     }

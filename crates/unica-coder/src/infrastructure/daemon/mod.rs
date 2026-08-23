@@ -5,13 +5,17 @@ pub(crate) mod server;
 
 #[cfg(test)]
 mod tests {
-    use super::client::{DaemonClient, DaemonClientConfig, ExistingDaemon};
+    use super::client::{
+        DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
+    };
     use super::identity::{CoreIdentity, DaemonStateDirectory};
     use super::protocol::{
-        read_bounded_json_line, ClientRequest, EndpointRecord, ServerResponse,
-        DAEMON_PROTOCOL_VERSION, MAX_JSON_LINE_BYTES,
+        parse_response, read_bounded_json_line, ClientRequest, DaemonErrorCode, EndpointRecord,
+        ServerResponse, DAEMON_PROTOCOL_VERSION, MAX_JSON_LINE_BYTES,
     };
-    use super::server::{install_handshake_pause, run_daemon, DaemonServerConfig, MAX_CONNECTIONS};
+    use super::server::{
+        install_handshake_pause, run_daemon, DaemonServerConfig, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
+    };
     use crate::application::invocation_store::InvocationStoreError;
     use crate::infrastructure::platform::testing::{
         create_directory_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,
@@ -19,10 +23,10 @@ mod tests {
     };
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
     use std::io::{BufReader, Cursor, Write};
-    use std::net::TcpStream;
+    use std::net::{Ipv4Addr, TcpListener, TcpStream};
     use std::path::PathBuf;
     use std::str::FromStr;
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -62,6 +66,27 @@ mod tests {
         bytes.push(b'\n');
         stream.write_all(&bytes).unwrap();
         stream.flush().unwrap();
+    }
+
+    fn connect_raw_owner(
+        record: &EndpointRecord,
+        identity: &CoreIdentity,
+    ) -> (TcpStream, ServerResponse) {
+        let mut stream = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let hello = ClientRequest::hello_with_owner_for_test(
+            record.token().to_string(),
+            identity.clone(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        write_json_line(&mut stream, &hello);
+        let response = serde_json::from_slice(
+            &read_bounded_json_line(&mut BufReader::new(stream.try_clone().unwrap())).unwrap(),
+        )
+        .unwrap();
+        (stream, response)
     }
 
     #[test]
@@ -164,7 +189,7 @@ mod tests {
         let response: ServerResponse =
             serde_json::from_slice(&read_bounded_json_line(&mut BufReader::new(&stream)).unwrap())
                 .unwrap();
-        assert_eq!(response.error_code(), Some("unauthorized"));
+        assert_eq!(response.error_code(), Some(DaemonErrorCode::Unauthorized));
         assert!(!serde_json::to_string(&response)
             .unwrap()
             .contains(bad_token));
@@ -179,9 +204,226 @@ mod tests {
         let response: ServerResponse =
             serde_json::from_slice(&read_bounded_json_line(&mut BufReader::new(&stream)).unwrap())
                 .unwrap();
-        assert_eq!(response.error_code(), Some("protocol_mismatch"));
+        assert_eq!(
+            response.error_code(),
+            Some(DaemonErrorCode::ProtocolMismatch)
+        );
 
         server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn fake_peer_error_code_is_closed_and_never_reaches_client_diagnostic() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let fake_peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _hello = read_bounded_json_line(&mut BufReader::new(&stream)).unwrap();
+            write_json_line(
+                &mut stream,
+                &serde_json::json!({
+                    "kind": "error",
+                    "code": "credential\n\u{001b}[31msecret-looking-value"
+                }),
+            );
+        });
+
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let error = client.connect_existing().unwrap_err();
+        fake_peer.join().unwrap();
+
+        assert_eq!(error, "daemon response is not strict versioned JSON");
+        assert!(!error.contains("credential"));
+        assert!(!error.contains("secret-looking-value"));
+        assert!(parse_response(br#"{"kind":"error","code":"future_code"}"#).is_err());
+    }
+
+    #[test]
+    fn fake_peer_ready_at_deadline_cannot_restart_handshake_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let clock = ManualDaemonClientClock::new();
+        let peer_clock = clock.clone();
+        let peer_record = record.clone();
+        let fake_peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _hello = read_bounded_json_line(&mut BufReader::new(&stream)).unwrap();
+            peer_clock.advance(Duration::from_secs(5));
+            write_json_line(&mut stream, &ServerResponse::ready(&peer_record));
+        });
+        let config = DaemonClientConfig::existing_only(physical, identity)
+            .with_clock_for_test(clock)
+            .with_connect_timeout_for_test(Duration::from_secs(5));
+        let client = DaemonClient::new(config);
+
+        let error = client.connect_existing().unwrap_err();
+        fake_peer.join().unwrap();
+
+        assert_eq!(error, "daemon deadline expired during handshake response");
+    }
+
+    #[test]
+    fn late_malformed_peer_response_cannot_override_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let clock = ManualDaemonClientClock::new();
+        let peer_clock = clock.clone();
+        let fake_peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _hello = read_bounded_json_line(&mut BufReader::new(&stream)).unwrap();
+            peer_clock.advance(Duration::from_secs(5));
+            write_json_line(
+                &mut stream,
+                &serde_json::json!({"kind": "error", "code": "future_code"}),
+            );
+        });
+        let config = DaemonClientConfig::existing_only(physical, identity)
+            .with_clock_for_test(clock)
+            .with_connect_timeout_for_test(Duration::from_secs(5));
+        let client = DaemonClient::new(config);
+
+        let error = client.connect_existing().unwrap_err();
+        fake_peer.join().unwrap();
+
+        assert_eq!(error, "daemon deadline expired during handshake response");
+    }
+
+    #[test]
+    fn late_peer_disconnect_cannot_override_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let clock = ManualDaemonClientClock::new();
+        let peer_clock = clock.clone();
+        let fake_peer = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _hello = read_bounded_json_line(&mut BufReader::new(&stream)).unwrap();
+            peer_clock.advance(Duration::from_secs(5));
+        });
+        let config = DaemonClientConfig::existing_only(physical, identity)
+            .with_clock_for_test(clock)
+            .with_connect_timeout_for_test(Duration::from_secs(5));
+        let client = DaemonClient::new(config);
+
+        let error = client.connect_existing().unwrap_err();
+        fake_peer.join().unwrap();
+
+        assert_eq!(error, "daemon deadline expired during handshake response");
+    }
+
+    #[test]
+    fn ping_uses_one_aggregate_deadline_for_write_and_response() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let clock = ManualDaemonClientClock::new();
+        let peer_clock = clock.clone();
+        let peer_record = record.clone();
+        let fake_peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let _hello = read_bounded_json_line(&mut reader).unwrap();
+            write_json_line(&mut stream, &ServerResponse::ready(&peer_record));
+            let ping = read_bounded_json_line(&mut reader).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<ClientRequest>(&ping).unwrap(),
+                ClientRequest::Ping {}
+            );
+            peer_clock.advance(Duration::from_secs(5));
+            write_json_line(&mut stream, &ServerResponse::Pong);
+        });
+        let config = DaemonClientConfig::existing_only(physical, identity)
+            .with_clock_for_test(clock)
+            .with_connect_timeout_for_test(Duration::from_secs(5));
+        let client = DaemonClient::new(config);
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake endpoint must connect"),
+        };
+
+        let error = owner.ping().unwrap_err();
+        fake_peer.join().unwrap();
+
+        assert_eq!(error, "daemon deadline expired during ping response");
+    }
+
+    #[test]
+    fn owner_drop_closes_connection_without_waiting_for_release_ack() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let peer_record = record.clone();
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let fake_peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let _hello = read_bounded_json_line(&mut reader).unwrap();
+            write_json_line(&mut stream, &ServerResponse::ready(&peer_record));
+            let observed_eof = read_bounded_json_line(&mut reader).unwrap_err().kind()
+                == std::io::ErrorKind::UnexpectedEof;
+            observed_tx.send(observed_eof).unwrap();
+        });
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake endpoint must connect"),
+        };
+
+        drop(owner);
+        assert!(
+            observed_rx.recv().unwrap(),
+            "owner drop sent a release request"
+        );
+        fake_peer.join().unwrap();
+    }
+
+    #[test]
+    fn exited_startup_child_is_reported_before_readiness_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let config = DaemonClientConfig::new(
+            physical,
+            identity,
+            std::env::current_exe().unwrap(),
+            Duration::from_millis(350),
+        )
+        .with_connect_timeout_for_test(Duration::from_millis(500));
+        let client = DaemonClient::new(config);
+
+        let error = match client.connect_or_spawn() {
+            Ok(_) => panic!("exited fixture unexpectedly became a daemon owner"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("exited before readiness with"), "{error}");
     }
 
     #[test]
@@ -211,6 +453,77 @@ mod tests {
         drop(owner);
         server.join().unwrap().unwrap();
         assert_eq!(directory.read_endpoint_record().unwrap(), Some(replacement));
+    }
+
+    #[test]
+    fn authenticated_owners_release_handshake_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, record) = wait_for_record(root.path(), &identity);
+        let mut owners = Vec::new();
+
+        for owner_index in 0..=MAX_HANDSHAKES {
+            let (stream, response) = connect_raw_owner(&record, &identity);
+            assert!(
+                response.matches_record(&record),
+                "owner {owner_index} was rejected after authentication: {response:?}"
+            );
+            owners.push(stream);
+        }
+
+        drop(owners);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn owner_session_capacity_is_distinct_and_retryable() {
+        const EXPECTED_OWNER_SESSION_LIMIT: usize = 64;
+        assert_eq!(MAX_OWNER_SESSIONS, EXPECTED_OWNER_SESSION_LIMIT);
+
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone());
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, record) = wait_for_record(root.path(), &identity);
+        let mut owners = Vec::new();
+
+        for owner_index in 0..EXPECTED_OWNER_SESSION_LIMIT {
+            let (stream, response) = connect_raw_owner(&record, &identity);
+            assert!(
+                response.matches_record(&record),
+                "owner {owner_index} was rejected below the owner-session bound: {response:?}"
+            );
+            owners.push(stream);
+        }
+
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let error = client.connect_existing().unwrap_err();
+        assert_eq!(error, "daemon owner capacity reached; retry later");
+
+        drop(owners.pop());
+        let retry_deadline = Instant::now() + Duration::from_secs(2);
+        let mut recovered = loop {
+            match client.connect_existing() {
+                Ok(ExistingDaemon::Connected(owner)) => break owner,
+                Ok(ExistingDaemon::Absent) => panic!("published daemon disappeared during retry"),
+                Err(error) if error == "daemon owner capacity reached; retry later" => {
+                    assert!(
+                        Instant::now() < retry_deadline,
+                        "owner capacity did not recover after a live session closed"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("owner-capacity retry failed unexpectedly: {error}"),
+            }
+        };
+        recovered.ping().unwrap();
+        drop(recovered);
+
+        drop(owners);
+        server.join().unwrap().unwrap();
     }
 
     #[test]
@@ -310,7 +623,7 @@ mod tests {
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, record) = wait_for_record(root.path(), &identity);
         let mut admitted = Vec::new();
-        for _ in 0..MAX_CONNECTIONS {
+        for _ in 0..MAX_HANDSHAKES {
             admitted.push(TcpStream::connect(record.loopback_addr().unwrap()).unwrap());
             thread::sleep(Duration::from_millis(30));
         }
@@ -322,7 +635,7 @@ mod tests {
         let response: ServerResponse =
             serde_json::from_slice(&read_bounded_json_line(&mut BufReader::new(&extra)).unwrap())
                 .unwrap();
-        assert_eq!(response.error_code(), Some("overloaded"));
+        assert_eq!(response.error_code(), Some(DaemonErrorCode::Overloaded));
 
         drop(extra);
         drop(admitted);
@@ -357,7 +670,7 @@ mod tests {
         let response: ServerResponse =
             serde_json::from_slice(&read_bounded_json_line(&mut BufReader::new(&second)).unwrap())
                 .unwrap();
-        assert_eq!(response.error_code(), Some("duplicate_lease"));
+        assert_eq!(response.error_code(), Some(DaemonErrorCode::DuplicateLease));
 
         write_json_line(&mut first, &ClientRequest::Release {});
         let released: ServerResponse =
@@ -375,7 +688,7 @@ mod tests {
             if response.matches_record(&record) {
                 break candidate;
             }
-            assert_eq!(response.error_code(), Some("duplicate_lease"));
+            assert_eq!(response.error_code(), Some(DaemonErrorCode::DuplicateLease));
             assert!(
                 Instant::now() < release_deadline,
                 "released owner lease remained registered"
@@ -392,7 +705,7 @@ mod tests {
             &read_bounded_json_line(&mut BufReader::new(&oversized)).unwrap(),
         )
         .unwrap();
-        assert_eq!(response.error_code(), Some("invalid_request"));
+        assert_eq!(response.error_code(), Some(DaemonErrorCode::InvalidRequest));
 
         write_json_line(&mut reused, &ClientRequest::Release {});
         server.join().unwrap().unwrap();

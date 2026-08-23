@@ -1,7 +1,7 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol::{
-    parse_request, read_bounded_json_line, ClientRequest, EndpointRecord, ServerResponse,
-    DAEMON_PROTOCOL_VERSION,
+    parse_request, read_bounded_json_line, ClientRequest, DaemonErrorCode, EndpointRecord,
+    ServerResponse, DAEMON_PROTOCOL_VERSION,
 };
 use crate::composition::open_daemon_invocation_store_from_directory;
 use std::collections::HashSet;
@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_millis(100);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
-pub(crate) const MAX_CONNECTIONS: usize = 8;
+pub(crate) const MAX_HANDSHAKES: usize = 8;
+pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
 
 #[derive(Debug, Clone)]
 pub(crate) struct DaemonServerConfig {
@@ -136,10 +137,9 @@ fn spawn_connection_handler(
     #[cfg(test)] handshake_pause: Option<Arc<HandshakePause>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let _slot = slot;
         #[cfg(test)]
         pause_before_handshake_if_configured(handshake_pause);
-        let _ = handle_connection(stream, &record, &active_leases, &shutting_down);
+        let _ = handle_connection(stream, &record, &active_leases, &shutting_down, slot);
     })
 }
 
@@ -148,6 +148,7 @@ fn handle_connection(
     record: &EndpointRecord,
     active_leases: &Arc<LeaseRegistry>,
     shutting_down: &AtomicBool,
+    handshake_slot: ConnectionSlot,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(HANDSHAKE_READ_TIMEOUT))
@@ -164,7 +165,10 @@ fn handle_connection(
     }) {
         Ok(request) => request,
         Err(_) => {
-            write_response(&mut stream, &ServerResponse::error("invalid_request"))?;
+            write_response(
+                &mut stream,
+                &ServerResponse::error(DaemonErrorCode::InvalidRequest),
+            )?;
             return Ok(());
         }
     };
@@ -176,26 +180,54 @@ fn handle_connection(
         owner_lease,
     } = request
     else {
-        write_response(&mut stream, &ServerResponse::error("handshake_required"))?;
+        write_response(
+            &mut stream,
+            &ServerResponse::error(DaemonErrorCode::HandshakeRequired),
+        )?;
         return Ok(());
     };
     if protocol_version != DAEMON_PROTOCOL_VERSION {
-        write_response(&mut stream, &ServerResponse::error("protocol_mismatch"))?;
+        write_response(
+            &mut stream,
+            &ServerResponse::error(DaemonErrorCode::ProtocolMismatch),
+        )?;
         return Ok(());
     }
     if core_identity != *record.core_identity() {
-        write_response(&mut stream, &ServerResponse::error("core_mismatch"))?;
+        write_response(
+            &mut stream,
+            &ServerResponse::error(DaemonErrorCode::CoreMismatch),
+        )?;
         return Ok(());
     }
     if !tokens_equal(&token, record.token()) {
-        write_response(&mut stream, &ServerResponse::error("unauthorized"))?;
+        write_response(
+            &mut stream,
+            &ServerResponse::error(DaemonErrorCode::Unauthorized),
+        )?;
         return Ok(());
     }
 
-    let Some(_owner) = active_leases.acquire(owner_lease)? else {
-        write_response(&mut stream, &ServerResponse::error("duplicate_lease"))?;
-        return Ok(());
+    let _owner = match active_leases.acquire(owner_lease)? {
+        LeaseAdmission::Acquired(owner) => owner,
+        LeaseAdmission::Duplicate => {
+            write_response(
+                &mut stream,
+                &ServerResponse::error(DaemonErrorCode::DuplicateLease),
+            )?;
+            return Ok(());
+        }
+        LeaseAdmission::Capacity => {
+            write_response(
+                &mut stream,
+                &ServerResponse::error(DaemonErrorCode::OwnerCapacity),
+            )?;
+            return Ok(());
+        }
     };
+    // The owner lease becomes the lifecycle fence before the pre-authentication admission
+    // permit is released, so idle shutdown observes at least one of them throughout handoff.
+    drop(handshake_slot);
     write_response(&mut stream, &ServerResponse::ready(record))?;
     stream
         .set_read_timeout(Some(CONNECTION_READ_TIMEOUT))
@@ -205,7 +237,10 @@ fn handle_connection(
             Ok(bytes) => match parse_request(&bytes) {
                 Ok(request) => request,
                 Err(_) => {
-                    write_response(&mut stream, &ServerResponse::error("invalid_request"))?;
+                    write_response(
+                        &mut stream,
+                        &ServerResponse::error(DaemonErrorCode::InvalidRequest),
+                    )?;
                     break;
                 }
             },
@@ -227,7 +262,10 @@ fn handle_connection(
                 break;
             }
             ClientRequest::Hello { .. } => {
-                write_response(&mut stream, &ServerResponse::error("invalid_request"))?;
+                write_response(
+                    &mut stream,
+                    &ServerResponse::error(DaemonErrorCode::InvalidRequest),
+                )?;
                 break;
             }
         }
@@ -261,16 +299,20 @@ struct LeaseRegistry {
 }
 
 impl LeaseRegistry {
-    fn acquire(self: &Arc<Self>, lease: String) -> Result<Option<LeaseGuard>, String> {
+    fn acquire(self: &Arc<Self>, lease: String) -> Result<LeaseAdmission, String> {
         let mut leases = self
             .leases
             .lock()
             .map_err(|_| "daemon owner lease registry is poisoned".to_string())?;
-        if !leases.insert(lease.clone()) {
-            return Ok(None);
+        if leases.contains(&lease) {
+            return Ok(LeaseAdmission::Duplicate);
         }
+        if leases.len() >= MAX_OWNER_SESSIONS {
+            return Ok(LeaseAdmission::Capacity);
+        }
+        leases.insert(lease.clone());
         drop(leases);
-        Ok(Some(LeaseGuard {
+        Ok(LeaseAdmission::Acquired(LeaseGuard {
             registry: Arc::clone(self),
             lease,
         }))
@@ -282,6 +324,12 @@ impl LeaseRegistry {
             .map(|leases| leases.is_empty())
             .map_err(|_| "daemon owner lease registry is poisoned".to_string())
     }
+}
+
+enum LeaseAdmission {
+    Acquired(LeaseGuard),
+    Duplicate,
+    Capacity,
 }
 
 struct LeaseGuard {
@@ -305,7 +353,7 @@ impl ConnectionSlot {
     fn acquire(admitted: Arc<AtomicUsize>) -> Option<Self> {
         admitted
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < MAX_CONNECTIONS).then_some(current + 1)
+                (current < MAX_HANDSHAKES).then_some(current + 1)
             })
             .ok()
             .map(|_| Self { admitted })
@@ -320,7 +368,10 @@ impl Drop for ConnectionSlot {
 
 fn reject_overloaded_connection(mut stream: TcpStream) {
     let _ = stream.set_write_timeout(Some(Duration::from_millis(100)));
-    let _ = write_response(&mut stream, &ServerResponse::error("overloaded"));
+    let _ = write_response(
+        &mut stream,
+        &ServerResponse::error(DaemonErrorCode::Overloaded),
+    );
 }
 
 fn reap_finished_handlers(handlers: Vec<JoinHandle<()>>) -> Vec<JoinHandle<()>> {
