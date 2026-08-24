@@ -239,6 +239,9 @@ impl DaemonInvocationError {
             Self::Executor(InvocationExecutorError::ExecutionFailed) => {
                 DaemonErrorCode::InvocationFailed
             }
+            Self::Executor(InvocationExecutorError::DeadlineAuthorityMismatch) => {
+                DaemonErrorCode::InvocationFailed
+            }
             Self::Executor(InvocationExecutorError::StatePoisoned) => {
                 DaemonErrorCode::InvocationFailed
             }

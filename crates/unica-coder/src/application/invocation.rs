@@ -96,12 +96,17 @@ impl InvocationResponseDeadline {
         self.clock.now()
     }
 
-    fn handoff_elapsed(&self, now: Instant) -> bool {
-        self.handoff_at == self.receipt_at || now >= self.handoff_at
+    fn belongs_to(&self, clock: &Arc<dyn Clock>) -> bool {
+        Arc::ptr_eq(&self.clock, clock)
     }
 
-    fn same_boundary(&self, other: &Self) -> bool {
-        self.receipt_at == other.receipt_at
+    fn handoff_elapsed(&self) -> bool {
+        self.handoff_at == self.receipt_at || self.now() >= self.handoff_at
+    }
+
+    fn same_authority_and_boundary(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.clock, &other.clock)
+            && self.receipt_at == other.receipt_at
             && self.handoff_at == other.handoff_at
             && self.response_at == other.response_at
     }
@@ -195,6 +200,7 @@ pub(crate) enum InvocationExecutorError {
     Store(InvocationStoreError),
     ExecutionFailed,
     ResultTooLarge,
+    DeadlineAuthorityMismatch,
     StatePoisoned,
     RestartRequested,
 }
@@ -470,14 +476,20 @@ impl InvocationExecutor {
             + Send
             + 'static,
     {
+        if !response_deadline.belongs_to(&self.clock) {
+            return Err(InvocationExecutorError::DeadlineAuthorityMismatch);
+        }
+        if let Ok(prepared) = &prepared {
+            if !prepared
+                .response_deadline
+                .same_authority_and_boundary(&response_deadline)
+            {
+                return Err(InvocationExecutorError::DeadlineAuthorityMismatch);
+            }
+        }
         self.ensure_healthy()?;
         match prepared {
-            Ok(prepared) => {
-                if !prepared.response_deadline.same_boundary(&response_deadline) {
-                    return Err(InvocationExecutorError::StatePoisoned);
-                }
-                self.submit(prepared, execute)
-            }
+            Ok(prepared) => self.submit(prepared, execute),
             Err(invalid) => match canonical_result_size(&invalid) {
                 Ok(_) => Ok(InvocationOutcome::Direct(invalid)),
                 Err(CanonicalResultSizeError::TooLarge) => {
@@ -491,7 +503,7 @@ impl InvocationExecutor {
         }
     }
 
-    pub(crate) fn submit<F>(
+    fn submit<F>(
         self: &Arc<Self>,
         prepared: PreparedDaemonInvocation,
         execute: F,
@@ -506,7 +518,7 @@ impl InvocationExecutor {
         self.ensure_healthy()?;
         let invocation_id = InvocationId::new();
         if matches!(prepared.class, ExecutionClass::KnownLong(_))
-            || prepared.response_deadline.handoff_elapsed(self.clock.now())
+            || prepared.response_deadline.handoff_elapsed()
         {
             let store_deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
             let intended = self.new_materialization_record(&prepared, invocation_id);
@@ -1961,6 +1973,123 @@ pub(crate) mod tests {
         prepared_at(Instant::now(), class, budget)
     }
 
+    fn response_deadline_from_clock(
+        clock: &Arc<ManualClock>,
+        budget: Duration,
+    ) -> InvocationResponseDeadline {
+        let clock: Arc<dyn Clock> = Arc::clone(clock) as Arc<dyn Clock>;
+        InvocationResponseDeadline::capture(clock).restrict_to_frontend_budget(budget)
+    }
+
+    #[test]
+    fn foreign_deadline_clock_is_rejected_before_store_or_execution() {
+        let started = Instant::now();
+        let executor_clock = Arc::new(ManualClock::new(started));
+        let foreign_clock = Arc::new(ManualClock::new(started));
+        let store = Arc::new(MemoryStore::default());
+        let executor = Arc::new(InvocationExecutor::new(
+            store.clone(),
+            executor_clock.clone(),
+        ));
+        let response_deadline = executor
+            .capture_response_deadline()
+            .restrict_to_frontend_budget(Duration::from_secs(7));
+        let foreign_deadline = response_deadline_from_clock(&foreign_clock, Duration::from_secs(7));
+        let prepared = PreparedDaemonInvocation::new(
+            ToolIdentity::Check,
+            NormalizedArgumentsHash::from_sha256([0x22; 32]),
+            SafeIdentityHash::from_sha256([0x33; 32]),
+            ExecutionClass::KnownLong(KnownLongReason::ColdIndex),
+            foreign_deadline,
+        );
+        executor_clock.advance(Duration::from_secs(8));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let executions_run = Arc::clone(&executions);
+
+        let outcome = executor.submit_prepared(response_deadline, Ok(prepared), move |_| {
+            executions_run.fetch_add(1, Ordering::SeqCst);
+            Ok(result("must not execute"))
+        });
+
+        assert!(matches!(
+            outcome,
+            Err(super::InvocationExecutorError::DeadlineAuthorityMismatch)
+        ));
+        assert_eq!(store.working_creates.load(Ordering::SeqCst), 0);
+        assert_eq!(store.queued_creates.load(Ordering::SeqCst), 0);
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn foreign_deadline_clock_is_rejected_before_invalid_direct_disclosure() {
+        let started = Instant::now();
+        let executor_clock = Arc::new(ManualClock::new(started));
+        let foreign_clock = Arc::new(ManualClock::new(started));
+        let store = Arc::new(MemoryStore::default());
+        let executor = Arc::new(InvocationExecutor::new(
+            store.clone(),
+            executor_clock.clone(),
+        ));
+        let response_deadline =
+            response_deadline_from_clock(&foreign_clock, Duration::from_secs(7));
+        executor_clock.advance(Duration::from_secs(8));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let executions_run = Arc::clone(&executions);
+        let invalid = DomainResult {
+            ok: false,
+            summary: "invalid address".into(),
+            ..DomainResult::success("unused")
+        };
+
+        let outcome = executor.submit_prepared(response_deadline, Err(invalid), move |_| {
+            executions_run.fetch_add(1, Ordering::SeqCst);
+            Ok(result("must not execute"))
+        });
+
+        assert!(matches!(
+            outcome,
+            Err(super::InvocationExecutorError::DeadlineAuthorityMismatch)
+        ));
+        assert_eq!(store.working_creates.load(Ordering::SeqCst), 0);
+        assert_eq!(store.queued_creates.load(Ordering::SeqCst), 0);
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn changed_deadline_boundary_is_rejected_before_store_or_execution() {
+        let executor_clock = Arc::new(ManualClock::new(Instant::now()));
+        let store = Arc::new(MemoryStore::default());
+        let executor = Arc::new(InvocationExecutor::new(store.clone(), executor_clock));
+        let response_deadline = executor
+            .capture_response_deadline()
+            .restrict_to_frontend_budget(Duration::from_secs(7));
+        let changed_deadline = response_deadline
+            .clone()
+            .restrict_to_frontend_budget(Duration::from_secs(6));
+        let prepared = PreparedDaemonInvocation::new(
+            ToolIdentity::Check,
+            NormalizedArgumentsHash::from_sha256([0x22; 32]),
+            SafeIdentityHash::from_sha256([0x33; 32]),
+            ExecutionClass::KnownLong(KnownLongReason::ColdIndex),
+            changed_deadline,
+        );
+        let executions = Arc::new(AtomicUsize::new(0));
+        let executions_run = Arc::clone(&executions);
+
+        let outcome = executor.submit_prepared(response_deadline, Ok(prepared), move |_| {
+            executions_run.fetch_add(1, Ordering::SeqCst);
+            Ok(result("must not execute"))
+        });
+
+        assert!(matches!(
+            outcome,
+            Err(super::InvocationExecutorError::DeadlineAuthorityMismatch)
+        ));
+        assert_eq!(store.working_creates.load(Ordering::SeqCst), 0);
+        assert_eq!(store.queued_creates.load(Ordering::SeqCst), 0);
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn fake_clock_6999_is_direct_and_7000_is_already_a_durable_task() {
         let started = Instant::now();
@@ -3314,6 +3443,9 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn canonical_handoff_boundary_is_direct_before_7000_and_durable_at_or_before_deadline(
     ) {
+        foreign_deadline_clock_is_rejected_before_store_or_execution();
+        foreign_deadline_clock_is_rejected_before_invalid_direct_disclosure();
+        changed_deadline_boundary_is_rejected_before_store_or_execution();
         fake_clock_6999_is_direct_and_7000_is_already_a_durable_task();
         zero_budget_is_materialized_before_execution_and_never_returns_direct();
         simultaneous_completion_and_handoff_publish_one_terminal_result_from_one_execution();

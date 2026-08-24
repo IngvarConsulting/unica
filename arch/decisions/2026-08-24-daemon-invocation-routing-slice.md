@@ -22,7 +22,7 @@ design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 Запас IPC равен 125 мс и не возобновляет frontend deadline: поздний большой
 result становится тем же Task, а запись ответа ограничена оставшимся session
 deadline и внутренним safety cap 10 секунд.
-Daemon захватывает один deadline executor clock до validation/admission/prepare; wire budget только сужает его, ActorBound/Prepared/writer не перезапускают, а TaskId после final deadline потребует будущий invocation token.
+Daemon захватывает один deadline с exact private `Arc<Clock>` executor authority до validation/admission/prepare; wire budget только сужает его, ActorBound/Prepared/writer сохраняют authority и не перезапускают clock, а TaskId после final deadline потребует будущий invocation token.
 
 Строгий daemon protocol v2 принимает `SubmitInvocation`, `GetTask`, `WaitTask`,
 `CancelTask`. После schema-проверки вызов получает opaque capability точного

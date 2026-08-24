@@ -22,5 +22,7 @@ scope: [app]
 Daemon захватывает один opaque absolute deadline своим executor clock сразу
 после приёма request JSONL и до strict validation, actor admission/binding и
 service preparation. Переданный frontend remaining budget может только сузить
-его. Actor-bound/prepared invocation и response writer используют тот же
-deadline; ни один этап daemon не прибавляет duration к новому `now`.
+его. Actor-bound/prepared invocation и response writer сохраняют тот же private
+`Arc<Clock>` authority и те же границы; чужой clock с равными `Instant`
+отклоняется до direct result, store и execution. Ни один этап daemon не
+прибавляет duration к новому `now`.
