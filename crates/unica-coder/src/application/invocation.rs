@@ -36,6 +36,87 @@ pub(crate) fn handoff_budget(host_remaining: Option<Duration>) -> Duration {
         .min(INVOCATION_HANDOFF_WINDOW)
 }
 
+/// Opaque daemon-receipt capability shared by admission, preparation,
+/// execution handoff and the final response writer. The frontend contributes
+/// only a shrinking remaining budget; no later daemon stage may add that
+/// duration to a fresh clock reading.
+#[derive(Clone)]
+pub(crate) struct InvocationResponseDeadline {
+    clock: Arc<dyn Clock>,
+    receipt_at: Instant,
+    handoff_at: Instant,
+    response_at: Instant,
+}
+
+impl std::fmt::Debug for InvocationResponseDeadline {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InvocationResponseDeadline")
+            .field("receipt_at", &self.receipt_at)
+            .field("handoff_at", &self.handoff_at)
+            .field("response_at", &self.response_at)
+            .finish()
+    }
+}
+
+impl InvocationResponseDeadline {
+    fn capture(clock: Arc<dyn Clock>) -> Self {
+        let receipt_at = clock.now();
+        let handoff_at = receipt_at + INVOCATION_HANDOFF_WINDOW;
+        Self {
+            clock,
+            receipt_at,
+            handoff_at,
+            response_at: handoff_at + RESPONSE_SERIALIZATION_MARGIN,
+        }
+    }
+
+    pub(crate) fn restrict_to_frontend_budget(mut self, remaining: Duration) -> Self {
+        self.handoff_at = self
+            .handoff_at
+            .min(self.receipt_at + remaining.min(INVOCATION_HANDOFF_WINDOW));
+        self.response_at = self.handoff_at + RESPONSE_SERIALIZATION_MARGIN;
+        self
+    }
+
+    #[cfg(test)]
+    fn capture_at_for_test(receipt_at: Instant) -> Self {
+        Self::capture(Arc::new(FixedInvocationResponseClock(receipt_at)))
+    }
+
+    fn handoff_at(&self) -> Instant {
+        self.handoff_at
+    }
+
+    pub(crate) fn response_at(&self) -> Instant {
+        self.response_at
+    }
+
+    pub(crate) fn now(&self) -> Instant {
+        self.clock.now()
+    }
+
+    fn handoff_elapsed(&self, now: Instant) -> bool {
+        self.handoff_at == self.receipt_at || now >= self.handoff_at
+    }
+
+    fn same_boundary(&self, other: &Self) -> bool {
+        self.receipt_at == other.receipt_at
+            && self.handoff_at == other.handoff_at
+            && self.response_at == other.response_at
+    }
+}
+
+#[cfg(test)]
+struct FixedInvocationResponseClock(Instant);
+
+#[cfg(test)]
+impl Clock for FixedInvocationResponseClock {
+    fn now(&self) -> Instant {
+        self.0
+    }
+}
+
 pub(crate) fn normalized_arguments_hash(
     arguments: &serde_json::Map<String, Value>,
 ) -> NormalizedArgumentsHash {
@@ -67,7 +148,7 @@ pub(crate) struct PreparedDaemonInvocation {
     normalized_arguments_hash: NormalizedArgumentsHash,
     workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
     class: ExecutionClass,
-    response_budget: Duration,
+    response_deadline: InvocationResponseDeadline,
     resource_lease: Option<Arc<dyn Send + Sync>>,
 }
 
@@ -79,7 +160,7 @@ impl std::fmt::Debug for PreparedDaemonInvocation {
             .field("normalized_arguments_hash", &self.normalized_arguments_hash)
             .field("workspace_identity_hash", &self.workspace_identity_hash)
             .field("class", &self.class)
-            .field("response_budget", &self.response_budget)
+            .field("response_deadline", &self.response_deadline)
             .field("has_resource_lease", &self.resource_lease.is_some())
             .finish()
     }
@@ -91,14 +172,14 @@ impl PreparedDaemonInvocation {
         normalized_arguments_hash: NormalizedArgumentsHash,
         workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
         class: ExecutionClass,
-        response_budget: Duration,
+        response_deadline: InvocationResponseDeadline,
     ) -> Self {
         Self {
             tool,
             normalized_arguments_hash,
             workspace_identity_hash,
             class,
-            response_budget,
+            response_deadline,
             resource_lease: None,
         }
     }
@@ -251,6 +332,10 @@ impl InvocationExecutor {
         }
     }
 
+    pub(crate) fn capture_response_deadline(&self) -> InvocationResponseDeadline {
+        InvocationResponseDeadline::capture(Arc::clone(&self.clock))
+    }
+
     #[cfg(test)]
     pub(crate) fn new_with_reconciliation_budget_for_test(
         store: Arc<dyn InvocationStore>,
@@ -374,6 +459,7 @@ impl InvocationExecutor {
 
     pub(crate) fn submit_prepared<F>(
         self: &Arc<Self>,
+        response_deadline: InvocationResponseDeadline,
         prepared: Result<PreparedDaemonInvocation, DomainResult>,
         execute: F,
     ) -> Result<InvocationOutcome, InvocationExecutorError>
@@ -386,7 +472,12 @@ impl InvocationExecutor {
     {
         self.ensure_healthy()?;
         match prepared {
-            Ok(prepared) => self.submit(prepared, execute),
+            Ok(prepared) => {
+                if !prepared.response_deadline.same_boundary(&response_deadline) {
+                    return Err(InvocationExecutorError::StatePoisoned);
+                }
+                self.submit(prepared, execute)
+            }
             Err(invalid) => match canonical_result_size(&invalid) {
                 Ok(_) => Ok(InvocationOutcome::Direct(invalid)),
                 Err(CanonicalResultSizeError::TooLarge) => {
@@ -415,7 +506,7 @@ impl InvocationExecutor {
         self.ensure_healthy()?;
         let invocation_id = InvocationId::new();
         if matches!(prepared.class, ExecutionClass::KnownLong(_))
-            || prepared.response_budget.is_zero()
+            || prepared.response_deadline.handoff_elapsed(self.clock.now())
         {
             let store_deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
             let intended = self.new_materialization_record(&prepared, invocation_id);
@@ -460,7 +551,7 @@ impl InvocationExecutor {
         // The transmitted response budget is already shrinking when the daemon receives the
         // request. Capture its local boundary before scheduling execution so thread startup can
         // never replenish the caller's handoff window.
-        let deadline = self.clock.now() + prepared.response_budget;
+        let deadline = prepared.response_deadline.handoff_at();
         self.spawn_execution(Arc::clone(&live), execute);
         let mut state = live
             .state
@@ -1502,8 +1593,11 @@ impl From<DomainResult> for OperationResult {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{handoff_budget, Invocation, InvocationExecutor, PreparedDaemonInvocation};
+pub(crate) mod tests {
+    use super::{
+        handoff_budget, Invocation, InvocationExecutor, InvocationResponseDeadline,
+        PreparedDaemonInvocation,
+    };
     use crate::application::invocation_store::{
         InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
         SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
@@ -1848,14 +1942,23 @@ mod tests {
         }
     }
 
-    fn prepared(class: ExecutionClass, budget: Duration) -> PreparedDaemonInvocation {
+    fn prepared_at(
+        receipt_at: Instant,
+        class: ExecutionClass,
+        budget: Duration,
+    ) -> PreparedDaemonInvocation {
         PreparedDaemonInvocation::new(
             ToolIdentity::Check,
             NormalizedArgumentsHash::from_sha256([0x22; 32]),
             SafeIdentityHash::from_sha256([0x33; 32]),
             class,
-            budget,
+            InvocationResponseDeadline::capture_at_for_test(receipt_at)
+                .restrict_to_frontend_budget(budget),
         )
+    }
+
+    fn prepared(class: ExecutionClass, budget: Duration) -> PreparedDaemonInvocation {
+        prepared_at(Instant::now(), class, budget)
     }
 
     #[test]
@@ -1873,7 +1976,11 @@ mod tests {
             let executor = Arc::clone(&direct_executor);
             std::thread::spawn(move || {
                 executor.submit(
-                    prepared(ExecutionClass::InlineCandidate, Duration::from_secs(7)),
+                    prepared_at(
+                        started,
+                        ExecutionClass::InlineCandidate,
+                        Duration::from_secs(7),
+                    ),
                     move |_| {
                         direct_started.send(()).unwrap();
                         direct_wait.recv().unwrap();
@@ -1899,7 +2006,11 @@ mod tests {
             let executor = Arc::clone(&task_executor);
             std::thread::spawn(move || {
                 executor.submit(
-                    prepared(ExecutionClass::InlineCandidate, Duration::from_secs(7)),
+                    prepared_at(
+                        started,
+                        ExecutionClass::InlineCandidate,
+                        Duration::from_secs(7),
+                    ),
                     move |_| {
                         task_started.send(()).unwrap();
                         task_wait.recv().unwrap();
@@ -2128,18 +2239,20 @@ mod tests {
             let run_count = Arc::clone(&executions);
             let (execution_entered, execution_entered_wait) = mpsc::channel();
             let (execution_release, execution_wait) = mpsc::channel();
+            let prepared = prepared_at(
+                clock.now(),
+                ExecutionClass::InlineCandidate,
+                Duration::from_secs(7),
+            );
             let run = {
                 let executor = Arc::clone(&executor);
                 std::thread::spawn(move || {
-                    executor.submit(
-                        prepared(ExecutionClass::InlineCandidate, Duration::from_secs(7)),
-                        move |_| {
-                            run_count.fetch_add(1, Ordering::SeqCst);
-                            execution_entered.send(()).unwrap();
-                            execution_wait.recv().unwrap();
-                            Ok(result("completion staged at handoff"))
-                        },
-                    )
+                    executor.submit(prepared, move |_| {
+                        run_count.fetch_add(1, Ordering::SeqCst);
+                        execution_entered.send(()).unwrap();
+                        execution_wait.recv().unwrap();
+                        Ok(result("completion staged at handoff"))
+                    })
                 })
             };
             execution_entered_wait.recv().unwrap();
@@ -3124,18 +3237,20 @@ mod tests {
         let count_run = Arc::clone(&count);
         let (started, started_wait) = mpsc::channel();
         let (release, release_wait) = mpsc::channel();
+        let prepared = prepared_at(
+            clock.now(),
+            ExecutionClass::InlineCandidate,
+            Duration::from_secs(7),
+        );
         let run = {
             let executor = Arc::clone(&executor);
             std::thread::spawn(move || {
-                executor.submit(
-                    prepared(ExecutionClass::InlineCandidate, Duration::from_secs(7)),
-                    move |_| {
-                        count_run.fetch_add(1, Ordering::SeqCst);
-                        started.send(()).unwrap();
-                        release_wait.recv().unwrap();
-                        Ok(result("race terminal"))
-                    },
-                )
+                executor.submit(prepared, move |_| {
+                    count_run.fetch_add(1, Ordering::SeqCst);
+                    started.send(()).unwrap();
+                    release_wait.recv().unwrap();
+                    Ok(result("race terminal"))
+                })
             })
         };
         started_wait.recv().unwrap();
@@ -3165,17 +3280,19 @@ mod tests {
         ));
         let (started, started_wait) = mpsc::channel();
         let (release, release_wait) = mpsc::channel();
+        let prepared = prepared_at(
+            clock.now(),
+            ExecutionClass::InlineCandidate,
+            Duration::from_secs(7),
+        );
         let run = {
             let executor = Arc::clone(&executor);
             std::thread::spawn(move || {
-                executor.submit(
-                    prepared(ExecutionClass::InlineCandidate, Duration::from_secs(7)),
-                    move |_| {
-                        started.send(()).unwrap();
-                        release_wait.recv().unwrap();
-                        Ok(result("boundary terminal"))
-                    },
-                )
+                executor.submit(prepared, move |_| {
+                    started.send(()).unwrap();
+                    release_wait.recv().unwrap();
+                    Ok(result("boundary terminal"))
+                })
             })
         };
         started_wait.recv().unwrap();
@@ -3195,7 +3312,8 @@ mod tests {
     }
 
     #[test]
-    fn canonical_handoff_boundary_is_direct_before_7000_and_durable_at_or_before_deadline() {
+    pub(crate) fn canonical_handoff_boundary_is_direct_before_7000_and_durable_at_or_before_deadline(
+    ) {
         fake_clock_6999_is_direct_and_7000_is_already_a_durable_task();
         zero_budget_is_materialized_before_execution_and_never_returns_direct();
         simultaneous_completion_and_handoff_publish_one_terminal_result_from_one_execution();
@@ -3204,7 +3322,8 @@ mod tests {
     }
 
     #[test]
-    fn every_known_long_reason_materializes_before_execution_and_invalid_preparation_is_direct() {
+    pub(crate) fn every_known_long_reason_materializes_before_execution_and_invalid_preparation_is_direct(
+    ) {
         for reason in [
             KnownLongReason::MissingEngine,
             KnownLongReason::ColdIndex,
@@ -3251,8 +3370,11 @@ mod tests {
             summary: "invalid address".into(),
             ..DomainResult::success("unused")
         };
+        let response_deadline = executor
+            .capture_response_deadline()
+            .restrict_to_frontend_budget(Duration::from_secs(7));
         let outcome = executor
-            .submit_prepared(Err(invalid.clone()), {
+            .submit_prepared(response_deadline, Err(invalid.clone()), {
                 let count = Arc::clone(&count);
                 move |_| {
                     count.fetch_add(1, Ordering::SeqCst);

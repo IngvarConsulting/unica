@@ -5,7 +5,7 @@ use super::protocol::{
 };
 use crate::application::invocation::{
     normalized_arguments_hash, InvocationExecutor, InvocationExecutorError,
-    PreparedDaemonInvocation, RESPONSE_SERIALIZATION_MARGIN_MS,
+    InvocationResponseDeadline, PreparedDaemonInvocation, RESPONSE_SERIALIZATION_MARGIN_MS,
 };
 use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
 use crate::application::operation_descriptors::ExecutionClass;
@@ -42,7 +42,7 @@ const ACTOR_OPERATION_BUDGET: Duration = Duration::from_secs(7);
 pub(crate) struct ActorBoundInvocation {
     tool: crate::application::invocation_store::ToolIdentity,
     arguments: serde_json::Map<String, serde_json::Value>,
-    response_budget: Duration,
+    response_deadline: InvocationResponseDeadline,
     actor: Arc<WorkspaceActor>,
     provider_root: ProviderRootBinding,
     workspace_identity_hash: SafeIdentityHash,
@@ -167,6 +167,7 @@ impl CanonicalInvocationService for DormantCanonicalV13Service {
 fn bind_workspace_invocation(
     request: &InvocationRequest,
     actors: &WorkspaceActorRegistry,
+    response_deadline: InvocationResponseDeadline,
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
         .map_err(|_| WorkspaceAdmissionError::Invalid)?;
@@ -187,7 +188,7 @@ fn bind_workspace_invocation(
     Ok(ActorBoundInvocation {
         tool: request.tool(),
         arguments: request.arguments().clone(),
-        response_budget: Duration::from_millis(request.response_budget_ms()),
+        response_deadline,
         actor,
         provider_root,
         workspace_identity_hash,
@@ -429,23 +430,34 @@ impl DaemonInvocationRuntime {
         }
     }
 
+    fn capture_response_deadline(&self) -> InvocationResponseDeadline {
+        self.executor.capture_response_deadline()
+    }
+
     fn submit(
         &self,
         request: InvocationRequest,
+        response_deadline: InvocationResponseDeadline,
     ) -> Result<InvocationResponse, DaemonInvocationError> {
         let actor_bound = match validate_hidden_v13_request(&request) {
-            Ok(()) => match bind_workspace_invocation(&request, &self.workspace_actors) {
-                Ok(bound) => Ok(bound),
-                Err(WorkspaceAdmissionError::Capacity) => {
-                    return Err(DaemonInvocationError::WorkspaceCapacity)
+            Ok(()) => {
+                match bind_workspace_invocation(
+                    &request,
+                    &self.workspace_actors,
+                    response_deadline.clone(),
+                ) {
+                    Ok(bound) => Ok(bound),
+                    Err(WorkspaceAdmissionError::Capacity) => {
+                        return Err(DaemonInvocationError::WorkspaceCapacity)
+                    }
+                    Err(WorkspaceAdmissionError::RegistryFailed) => {
+                        return Err(DaemonInvocationError::WorkspaceRegistryFailed)
+                    }
+                    Err(WorkspaceAdmissionError::Invalid) => {
+                        Err(failed_domain_result("workspace actor admission failed"))
+                    }
                 }
-                Err(WorkspaceAdmissionError::RegistryFailed) => {
-                    return Err(DaemonInvocationError::WorkspaceRegistryFailed)
-                }
-                Err(WorkspaceAdmissionError::Invalid) => {
-                    Err(failed_domain_result("workspace actor admission failed"))
-                }
-            },
+            }
             Err(summary) => Err(failed_domain_result(&summary)),
         };
         let prepared = match &actor_bound {
@@ -461,14 +473,14 @@ impl DaemonInvocationRuntime {
                 normalized_arguments_hash(invocation.arguments()),
                 invocation.workspace_identity_hash().clone(),
                 class,
-                invocation.response_budget,
+                invocation.response_deadline.clone(),
             )
             .with_resource_lease(Arc::new(invocation.clone()))
         });
         let service = Arc::clone(&self.service);
         let execute_invocation = actor_bound.ok();
         self.executor
-            .submit_prepared(prepared, move |cancellation| {
+            .submit_prepared(response_deadline, prepared, move |cancellation| {
                 let invocation = execute_invocation.ok_or_else(|| {
                     InvocationFailure::new(
                         "workspace_admission_failed",
@@ -549,6 +561,8 @@ pub(crate) struct DaemonServerConfig {
     #[cfg(test)]
     reconciliation_budget: Option<Duration>,
     #[cfg(test)]
+    invocation_clock: Option<Arc<dyn Clock>>,
+    #[cfg(test)]
     handshake_pause: Option<Arc<HandshakePause>>,
 }
 
@@ -567,6 +581,8 @@ impl DaemonServerConfig {
             invocation_store: None,
             #[cfg(test)]
             reconciliation_budget: None,
+            #[cfg(test)]
+            invocation_clock: None,
             #[cfg(test)]
             handshake_pause: None,
         }
@@ -593,6 +609,12 @@ impl DaemonServerConfig {
     #[cfg(test)]
     pub(crate) fn with_reconciliation_budget_for_test(mut self, budget: Duration) -> Self {
         self.reconciliation_budget = Some(budget);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_invocation_clock_for_test(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.invocation_clock = Some(clock);
         self
     }
 
@@ -643,17 +665,22 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
         opened_store.store
     };
     #[cfg(test)]
+    let invocation_clock = config
+        .invocation_clock
+        .clone()
+        .unwrap_or_else(|| Arc::new(TokioClock));
+    #[cfg(test)]
     let invocation_runtime = Arc::new(match config.reconciliation_budget {
         Some(budget) => DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
             invocation_store,
             Arc::clone(&config.invocation_service),
-            Arc::new(TokioClock),
+            Arc::clone(&invocation_clock),
             budget,
         ),
         None => DaemonInvocationRuntime::new(
             invocation_store,
             Arc::clone(&config.invocation_service),
-            Arc::new(TokioClock),
+            invocation_clock,
         ),
     });
     #[cfg(not(test))]
@@ -847,17 +874,8 @@ fn handle_connection(
         .set_read_timeout(Some(CONNECTION_READ_TIMEOUT))
         .map_err(|error| daemon_io_error("configure daemon owner timeout", error))?;
     while !shutting_down.load(Ordering::Acquire) {
-        let request = match read_bounded_request_line(&mut reader) {
-            Ok(bytes) => match parse_request(&bytes) {
-                Ok(request) => request,
-                Err(_) => {
-                    write_response(
-                        &mut stream,
-                        &ServerResponse::error(DaemonErrorCode::InvalidRequest),
-                    )?;
-                    break;
-                }
-            },
+        let bytes = match read_bounded_request_line(&mut reader) {
+            Ok(bytes) => bytes,
             Err(error)
                 if matches!(
                     error.kind(),
@@ -868,6 +886,20 @@ fn handle_connection(
             }
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(_) => break,
+        };
+        // Capture before strict request/schema validation and before any actor
+        // discovery or dynamic service preparation. The parsed frontend budget
+        // can only narrow this already-running daemon-receipt deadline.
+        let response_deadline = invocation_runtime.capture_response_deadline();
+        let request = match parse_request(&bytes) {
+            Ok(request) => request,
+            Err(_) => {
+                write_response(
+                    &mut stream,
+                    &ServerResponse::error(DaemonErrorCode::InvalidRequest),
+                )?;
+                break;
+            }
         };
         match request {
             ClientRequest::Ping {} => write_response_before(
@@ -891,19 +923,19 @@ fn handle_connection(
                 break;
             }
             ClientRequest::SubmitInvocation { invocation } => {
-                let deadline = session_response_deadline(Duration::from_millis(
-                    invocation.response_budget_ms(),
-                ));
-                match invocation_runtime.submit(invocation) {
-                    Ok(outcome) => write_response_before(
+                let response_deadline = response_deadline.restrict_to_frontend_budget(
+                    Duration::from_millis(invocation.response_budget_ms()),
+                );
+                match invocation_runtime.submit(invocation, response_deadline.clone()) {
+                    Ok(outcome) => write_invocation_response_before(
                         &mut stream,
                         &ServerResponse::invocation(outcome),
-                        deadline,
+                        &response_deadline,
                     )?,
-                    Err(error) => write_response_before(
+                    Err(error) => write_invocation_response_before(
                         &mut stream,
                         &ServerResponse::error(error.protocol_code()),
-                        deadline,
+                        &response_deadline,
                     )?,
                 }
             }
@@ -964,8 +996,30 @@ fn write_response_before(
     response: &ServerResponse,
     session_deadline: Instant,
 ) -> Result<(), String> {
-    let deadline = session_deadline.min(Instant::now() + OWNER_RESPONSE_WRITE_TIMEOUT);
-    if Instant::now() >= deadline {
+    write_response_before_with_now(stream, response, session_deadline, Instant::now)
+}
+
+fn write_invocation_response_before(
+    stream: &mut TcpStream,
+    response: &ServerResponse,
+    response_deadline: &InvocationResponseDeadline,
+) -> Result<(), String> {
+    write_response_before_with_now(stream, response, response_deadline.response_at(), || {
+        response_deadline.now()
+    })
+}
+
+fn write_response_before_with_now<N>(
+    stream: &mut TcpStream,
+    response: &ServerResponse,
+    session_deadline: Instant,
+    mut now: N,
+) -> Result<(), String>
+where
+    N: FnMut() -> Instant,
+{
+    let deadline = session_deadline.min(now() + OWNER_RESPONSE_WRITE_TIMEOUT);
+    if now() >= deadline {
         return Err("write daemon response: session response deadline elapsed".to_string());
     }
     let mut bytes = match serialize_response_bounded(response) {
@@ -978,17 +1032,13 @@ fn write_response_before(
             return Err("daemon response could not be serialized".to_string())
         }
     };
-    if Instant::now() >= deadline {
+    if now() >= deadline {
         return Err("write daemon response: session response deadline elapsed".to_string());
     }
     bytes.push(b'\n');
-    write_bytes_before(
-        stream,
-        &bytes,
-        deadline,
-        Instant::now,
-        |stream, remaining| stream.set_write_timeout(Some(remaining)),
-    )
+    write_bytes_before(stream, &bytes, deadline, now, |stream, remaining| {
+        stream.set_write_timeout(Some(remaining))
+    })
 }
 
 pub(super) fn write_bytes_before<W, N, C>(
@@ -1095,8 +1145,28 @@ pub(crate) mod actor_capacity_tests {
         ToolIdentity,
     };
     use crate::application::operation_descriptors::KnownLongReason;
+    use crate::domain::invocation::InvocationStatus;
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Barrier};
+
+    struct ManualInvocationClock(Mutex<Instant>);
+
+    impl ManualInvocationClock {
+        fn new(now: Instant) -> Self {
+            Self(Mutex::new(now))
+        }
+
+        fn advance(&self, duration: Duration) {
+            *self.0.lock().unwrap() += duration;
+        }
+    }
+
+    impl Clock for ManualInvocationClock {
+        fn now(&self) -> Instant {
+            *self.0.lock().unwrap()
+        }
+    }
 
     struct BlockingService {
         entered: mpsc::Sender<()>,
@@ -1107,6 +1177,12 @@ pub(crate) mod actor_capacity_tests {
     struct NonCooperativeActorService {
         entered: mpsc::Sender<()>,
         release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    struct DelayedPrepareService {
+        clock: Arc<ManualInvocationClock>,
+        delay: Duration,
+        executions: Arc<AtomicUsize>,
     }
 
     struct UncertainCancelStore {
@@ -1217,11 +1293,120 @@ pub(crate) mod actor_capacity_tests {
         }
     }
 
+    impl CanonicalInvocationService for DelayedPrepareService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            self.clock.advance(self.delay);
+            Ok(ExecutionClass::InlineCandidate)
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            Ok(DomainResult::success("deadline-bound prepare result"))
+        }
+    }
+
+    #[test]
+    pub(crate) fn daemon_receipt_deadline_is_not_replenished_after_delayed_prepare() {
+        for delay in [Duration::from_millis(110), Duration::from_millis(226)] {
+            let task_root = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            let (store, _) =
+                FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock))
+                    .unwrap();
+            let clock = Arc::new(ManualInvocationClock::new(Instant::now()));
+            let executions = Arc::new(AtomicUsize::new(0));
+            let runtime = DaemonInvocationRuntime::new(
+                Arc::new(store),
+                Arc::new(DelayedPrepareService {
+                    clock: Arc::clone(&clock),
+                    delay,
+                    executions: Arc::clone(&executions),
+                }),
+                clock,
+            );
+            let response = submit_at_receipt(
+                &runtime,
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    100,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let task_id = task_id(response);
+            let terminal = runtime.wait(task_id, 7_000).unwrap();
+            assert_eq!(terminal.status, InvocationStatus::Completed);
+            assert_eq!(
+                terminal.result.unwrap().summary,
+                "deadline-bound prepare result"
+            );
+            assert_eq!(executions.load(Ordering::SeqCst), 1);
+        }
+
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let started = Instant::now();
+        let clock = Arc::new(ManualInvocationClock::new(started));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(DelayedPrepareService {
+                clock: Arc::clone(&clock),
+                delay: Duration::from_millis(226),
+                executions: Arc::clone(&executions),
+            }),
+            clock.clone(),
+        );
+        let invalid = submit_at_receipt(
+            &runtime,
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({"unknown": true}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                100,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            invalid,
+            InvocationResponse::Direct(result)
+                if !result.ok && result.summary.contains("unknown argument")
+        ));
+        assert_eq!(clock.now(), started);
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
     fn task_id(response: InvocationResponse) -> crate::domain::invocation::TaskId {
         match response {
             InvocationResponse::Task(snapshot) => snapshot.task_id,
             other => panic!("expected durable task: {other:?}"),
         }
+    }
+
+    fn submit_at_receipt(
+        runtime: &DaemonInvocationRuntime,
+        request: InvocationRequest,
+    ) -> Result<InvocationResponse, DaemonInvocationError> {
+        let response_deadline = runtime
+            .capture_response_deadline()
+            .restrict_to_frontend_budget(Duration::from_millis(request.response_budget_ms()));
+        runtime.submit(request, response_deadline)
     }
 
     fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
@@ -1255,13 +1440,13 @@ pub(crate) mod actor_capacity_tests {
             .unwrap()
         };
 
-        let first = task_id(runtime.submit(request(&roots[0])).unwrap());
-        let second = task_id(runtime.submit(request(&roots[1])).unwrap());
-        let alias = task_id(runtime.submit(request(&roots[0].join("."))).unwrap());
+        let first = task_id(submit_at_receipt(&runtime, request(&roots[0])).unwrap());
+        let second = task_id(submit_at_receipt(&runtime, request(&roots[1])).unwrap());
+        let alias = task_id(submit_at_receipt(&runtime, request(&roots[0].join("."))).unwrap());
         // A returned task snapshot is the durable admission point. Its actor lease is already
         // retained before the background worker is scheduled, so capacity evidence must not
         // depend on runner scheduling.
-        let rejected = runtime.submit(request(&roots[2])).unwrap_err();
+        let rejected = submit_at_receipt(&runtime, request(&roots[2])).unwrap_err();
         assert_eq!(rejected.protocol_code(), DaemonErrorCode::WorkspaceCapacity);
         assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 2);
 
@@ -1316,19 +1501,19 @@ pub(crate) mod actor_capacity_tests {
         );
         runtime.workspace_actors.poison_for_test();
 
-        let error = runtime
-            .submit(
-                InvocationRequest::new(
-                    ToolIdentity::Run,
-                    serde_json::json!({}),
-                    std::fs::canonicalize(workspace.path())
-                        .unwrap()
-                        .to_string_lossy(),
-                    0,
-                )
-                .unwrap(),
+        let error = submit_at_receipt(
+            &runtime,
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                0,
             )
-            .unwrap_err();
+            .unwrap(),
+        )
+        .unwrap_err();
         assert_eq!(
             error.protocol_code(),
             DaemonErrorCode::WorkspaceRegistryFailed
@@ -1349,17 +1534,17 @@ pub(crate) mod actor_capacity_tests {
         for index in 0..80 {
             let workspace = workspaces.path().join(format!("workspace-{index}"));
             std::fs::create_dir(&workspace).unwrap();
-            let response = runtime
-                .submit(
-                    InvocationRequest::new(
-                        ToolIdentity::Run,
-                        serde_json::json!({}),
-                        std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
-                        0,
-                    )
-                    .unwrap(),
+            let response = submit_at_receipt(
+                &runtime,
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
+                    0,
                 )
-                .unwrap();
+                .unwrap(),
+            )
+            .unwrap();
             assert!(matches!(
                 response,
                 InvocationResponse::Direct(result)
@@ -1396,7 +1581,7 @@ pub(crate) mod actor_capacity_tests {
             0,
         )
         .unwrap();
-        let task_id = task_id(runtime.submit(request).unwrap());
+        let task_id = task_id(submit_at_receipt(&runtime, request).unwrap());
         entered_wait.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(runtime.workspace_actors.live_len_for_test().unwrap(), 1);
 

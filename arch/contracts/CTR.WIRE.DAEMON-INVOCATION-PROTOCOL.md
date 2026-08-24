@@ -32,3 +32,12 @@ Task record и response JSONL ограничены 8 MiB + 64 KiB bounded envelo
 truncated response закрывает owner session, повторное использование запрещено.
 IPC serialization имеет 125 мс сверх переданного operation budget, но не
 перезапускает этот deadline; внутренний safety cap ответа — 10 секунд.
+
+Для `SubmitInvocation` daemon захватывает absolute response deadline executor
+clock сразу после получения JSONL, до strict validation, workspace binding и
+service preparation. Wire `responseBudgetMs` только сужает этот deadline;
+ActorBound/Prepared/executor и writer получают одну capability, а не duration.
+Если handoff истёк, Invocation уже Task. После истечения также response margin
+writer закрывается без ответа, но durable Invocation не исполняется повторно.
+Task 7 не обещает обнаружение TaskId, не доставленного после final deadline:
+для этого нужен будущий protocol-level invocation/idempotency token.

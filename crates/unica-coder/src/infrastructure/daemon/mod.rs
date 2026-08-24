@@ -25,6 +25,7 @@ mod tests {
         MAX_CANONICAL_RESULT_BYTES,
     };
     use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+    use crate::application::ports::Clock;
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::invocation::{DomainResult, InvocationFailure, InvocationStatus, TaskId};
     use crate::infrastructure::platform::testing::{
@@ -319,6 +320,30 @@ mod tests {
         summary_bytes: usize,
     }
 
+    struct ManualInvocationClock(Mutex<Instant>);
+
+    impl ManualInvocationClock {
+        fn new(now: Instant) -> Self {
+            Self(Mutex::new(now))
+        }
+
+        fn advance(&self, duration: Duration) {
+            *self.0.lock().unwrap() += duration;
+        }
+    }
+
+    impl Clock for ManualInvocationClock {
+        fn now(&self) -> Instant {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    struct DelayedPrepareService {
+        clock: Arc<ManualInvocationClock>,
+        delay: Duration,
+        executions: Arc<AtomicUsize>,
+    }
+
     #[derive(Default)]
     struct DaemonMemoryStore {
         records: Mutex<HashMap<TaskId, StoredInvocationRecord>>,
@@ -508,6 +533,25 @@ mod tests {
             _cancellation: CancellationToken,
         ) -> Result<DomainResult, InvocationFailure> {
             Ok(DomainResult::success("R".repeat(self.summary_bytes)))
+        }
+    }
+
+    impl CanonicalInvocationService for DelayedPrepareService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            self.clock.advance(self.delay);
+            Ok(ExecutionClass::InlineCandidate)
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            Ok(DomainResult::success("daemon receipt deadline result"))
         }
     }
 
@@ -827,11 +871,101 @@ mod tests {
     }
 
     #[test]
+    fn server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write() {
+        for (delay, response_is_deliverable) in [
+            (Duration::from_millis(110), true),
+            (Duration::from_millis(226), false),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let physical = physical_root(root.path());
+            let identity = CoreIdentity::production();
+            let store = Arc::new(DaemonMemoryStore::default());
+            let clock = Arc::new(ManualInvocationClock::new(Instant::now()));
+            let executions = Arc::new(AtomicUsize::new(0));
+            let config = server_config(physical.clone(), identity.clone())
+                .with_invocation_store_for_test(store.clone())
+                .with_invocation_clock_for_test(clock.clone())
+                .with_invocation_service(Arc::new(DelayedPrepareService {
+                    clock,
+                    delay,
+                    executions: Arc::clone(&executions),
+                }));
+            let server = thread::spawn(move || run_daemon(config));
+            let (_directory, _record) = wait_for_record(root.path(), &identity);
+            let client = DaemonClient::new(DaemonClientConfig::existing_only(
+                physical.clone(),
+                identity,
+            ));
+            let mut owner = match client.connect_existing().unwrap() {
+                ExistingDaemon::Connected(owner) => owner,
+                ExistingDaemon::Absent => panic!("published daemon must connect"),
+            };
+            let submission = owner.submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    physical.to_string_lossy(),
+                    100,
+                )
+                .unwrap(),
+            );
+
+            if response_is_deliverable {
+                let task_id = match submission.unwrap() {
+                    InvocationResponse::Task(snapshot) => snapshot.task_id,
+                    other => panic!("delayed prepare escaped as direct: {other:?}"),
+                };
+                let terminal = owner.wait_task(task_id, 7_000).unwrap();
+                assert_eq!(terminal.status, InvocationStatus::Completed);
+                assert_eq!(
+                    terminal.result.unwrap().summary,
+                    "daemon receipt deadline result"
+                );
+            } else {
+                let error = submission.unwrap_err();
+                assert!(error.starts_with("read daemon response:"), "{error}");
+                let deadline = Instant::now() + INTEGRATION_COORDINATION_TIMEOUT;
+                loop {
+                    let records = store.records.lock().unwrap();
+                    if let Some(record) = records.values().next() {
+                        if record.status == InvocationStatus::Completed {
+                            assert_eq!(
+                                record.result.as_ref().unwrap().summary,
+                                "daemon receipt deadline result"
+                            );
+                            break;
+                        }
+                    }
+                    drop(records);
+                    assert!(
+                        Instant::now() < deadline,
+                        "durable result was not published"
+                    );
+                    thread::yield_now();
+                }
+            }
+            assert_eq!(executions.load(Ordering::SeqCst), 1);
+            drop(owner);
+            server.join().unwrap().unwrap();
+        }
+    }
+
+    #[test]
     fn daemon_result_size_and_session_bounds_are_enforced() {
         response_limit_round_trips_results_above_request_cap_and_near_canonical_cap();
         result_over_canonical_cap_fails_closed_for_direct_and_task();
         hostile_oversized_response_closes_owner_session_before_a_second_request();
         malformed_and_truncated_responses_close_owner_sessions_before_reuse();
+        backpressured_response_uses_the_original_session_margin_without_reset();
+        server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write();
+    }
+
+    #[test]
+    fn daemon_invocation_receipt_deadline_is_single_and_never_replenished() {
+        crate::application::invocation::tests::canonical_handoff_boundary_is_direct_before_7000_and_durable_at_or_before_deadline();
+        crate::application::invocation::tests::every_known_long_reason_materializes_before_execution_and_invalid_preparation_is_direct();
+        super::server::actor_capacity_tests::daemon_receipt_deadline_is_not_replenished_after_delayed_prepare();
+        server_captures_one_invocation_deadline_before_delayed_prepare_and_response_write();
         backpressured_response_uses_the_original_session_margin_without_reset();
     }
 
