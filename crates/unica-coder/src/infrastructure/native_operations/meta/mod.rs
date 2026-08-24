@@ -126,6 +126,18 @@ pub(crate) use xml_model::{
     meta_info_child, meta_info_child_text, meta_info_children, meta_info_inner_text,
 };
 
+/// The hidden v0.13 tree delegates metadata branches to the current typed
+/// metadata reader. This predicate describes only reader ownership; it never
+/// resolves a path or treats a physical resource as logical identity.
+pub(crate) fn accepts_logical_metadata_address(
+    address: &crate::domain::address::QualifiedAddress,
+) -> bool {
+    address
+        .segments()
+        .first()
+        .is_some_and(|segment| segment.kind().is_metadata_kind())
+}
+
 #[cfg(test)]
 mod info_projection_tests;
 #[cfg(test)]

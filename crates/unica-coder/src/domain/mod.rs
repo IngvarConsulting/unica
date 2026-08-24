@@ -1,3 +1,6 @@
+// Hidden v0.13 address policy remains unreachable from the package-selected v0.12 surface.
+#[allow(dead_code)]
+pub(crate) mod address;
 pub mod cache;
 pub mod cancellation;
 pub mod code_intelligence;
@@ -13,6 +16,8 @@ pub(crate) mod invocation;
 pub mod long_work;
 pub(crate) mod metadata;
 pub mod operational_config;
+#[allow(dead_code)]
+pub(crate) mod platform_profile;
 pub mod progress;
 #[allow(dead_code)]
 pub(crate) mod project_health;

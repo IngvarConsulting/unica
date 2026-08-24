@@ -1,4 +1,6 @@
+use crate::domain::address::NodeKind;
 use crate::domain::metadata::MetadataKind;
+use crate::domain::platform_profile::{ModuleRole, PlatformProfile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MetadataLayout {
@@ -102,77 +104,18 @@ pub(crate) fn metadata_kind_index(tag: &str) -> Option<usize> {
 }
 
 pub(crate) fn supports_direct_module_role(tag: &str, role: &str) -> bool {
-    match role {
-        "ObjectModule" => matches!(
-            tag,
-            "Catalog"
-                | "Document"
-                | "ExchangePlan"
-                | "ChartOfAccounts"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-                | "Report"
-                | "DataProcessor"
-        ),
-        "ManagerModule" => matches!(
-            tag,
-            "Catalog"
-                | "Document"
-                | "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-                | "ChartOfAccounts"
-                | "ChartOfCharacteristicTypes"
-                | "ChartOfCalculationTypes"
-                | "BusinessProcess"
-                | "Task"
-                | "ExchangePlan"
-                | "Enum"
-                | "Report"
-                | "DataProcessor"
-                | "Constant"
-                | "DocumentJournal"
-                | "FilterCriterion"
-                | "SettingsStorage"
-        ),
-        "RecordSetModule" => matches!(
-            tag,
-            "InformationRegister"
-                | "AccumulationRegister"
-                | "AccountingRegister"
-                | "CalculationRegister"
-        ),
-        "ValueManagerModule" => tag == "Constant",
-        _ => false,
-    }
+    metadata_kind(tag)
+        .and_then(|layout| NodeKind::parse(layout.tag).ok())
+        .zip(ModuleRole::from_v12_terminal(role))
+        .is_some_and(|(owner, role)| {
+            PlatformProfile::v8_3_27().supports_direct_module_role(owner, role)
+        })
 }
 
 pub(crate) fn supports_nested_form_or_command(tag: &str) -> bool {
-    matches!(
-        tag,
-        "Document"
-            | "Catalog"
-            | "DataProcessor"
-            | "Report"
-            | "InformationRegister"
-            | "AccumulationRegister"
-            | "AccountingRegister"
-            | "CalculationRegister"
-            | "ChartOfAccounts"
-            | "ChartOfCharacteristicTypes"
-            | "ChartOfCalculationTypes"
-            | "ExchangePlan"
-            | "BusinessProcess"
-            | "Task"
-            | "DocumentJournal"
-            | "Enum"
-            | "Constant"
-            | "Sequence"
-            | "DocumentNumerator"
-    )
+    metadata_kind(tag)
+        .and_then(|layout| NodeKind::parse(layout.tag).ok())
+        .is_some_and(|owner| PlatformProfile::v8_3_27().supports_nested_form_or_command(owner))
 }
 
 /// Platform XML value-type spellings of a metadata kind.
@@ -447,5 +390,20 @@ mod tests {
                 "{kind} must not own {role}"
             );
         }
+    }
+
+    #[test]
+    fn v12_module_capability_adapter_keeps_exact_canonical_tag_inputs() {
+        assert!(supports_direct_module_role("Document", "ObjectModule"));
+        assert!(supports_nested_form_or_command("Document"));
+
+        // Russian spellings belong to the hidden qualified-address parser, not
+        // to the existing Platform XML layout registry consumed by v0.12.
+        assert!(!supports_direct_module_role("Документ", "ObjectModule"));
+        assert!(!supports_nested_form_or_command("Документ"));
+        assert!(!supports_direct_module_role(
+            "WebSocketClient",
+            "ObjectModule"
+        ));
     }
 }
