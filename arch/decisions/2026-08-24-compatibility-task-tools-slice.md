@@ -20,11 +20,14 @@ design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 
 Три compatibility-инструмента — тонкие adapters к той же daemon-owned durable
 Invocation. `get` читает сразу, `result` ждёт по умолчанию 7000 мс и принимает
-`waitMs` от 0 до 7000, но один абсолютный budget `waitMs + 125 мс`, ограниченный
-исходным frontend deadline, расходуется на connect, handshake, request и
-response без перезапуска; `cancel` идемпотентен. Polling не вызывает предметный
-handler повторно. Терминальный completed result байт-в-байт совпадает с direct
-canonical `CallToolResult`.
+`waitMs` от 0 до 7000. Frontend один раз выводит абсолютный monotonic cutoff как
+минимум `waitMs + 125 мс` и исходного frontend cutoff; daemon client связывает
+его со своим exact monotonic clock и не превращает обратно в duration при
+admission. Тот же cutoff расходуется на connect, handshake, request, чтение и
+разбор response; checkpoint после parse не публикует поздний результат и
+закрывает operation session. `cancel` идемпотентен. Polling не вызывает
+предметный handler повторно. Терминальный completed result байт-в-байт совпадает
+с direct canonical `CallToolResult`.
 
 Незавершённая Invocation возвращается обычным model-visible result с opaque
 `taskId`, закрытым status, durable timestamps/TTL, poll interval и безопасным

@@ -20,45 +20,94 @@ const INVOCATION_RESPONSE_MARGIN: Duration =
     Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS);
 
 trait DaemonClientClock: Send + Sync {
-    fn elapsed(&self) -> Duration;
+    fn now(&self) -> Instant;
+
+    #[cfg(test)]
+    fn response_parse_started(&self) {}
 }
 
-struct SystemDaemonClientClock(Instant);
+struct SystemDaemonClientClock;
 
 impl SystemDaemonClientClock {
     fn new() -> Self {
-        Self(Instant::now())
+        Self
     }
 }
 
 impl DaemonClientClock for SystemDaemonClientClock {
-    fn elapsed(&self) -> Duration {
-        self.0.elapsed()
+    fn now(&self) -> Instant {
+        Instant::now()
     }
 }
 
 #[cfg(test)]
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct ManualDaemonClientClock {
+    origin: Instant,
     elapsed: Arc<std::sync::Mutex<Duration>>,
+    advance_before_next_sample: Arc<std::sync::Mutex<Option<Duration>>>,
+    advance_during_next_response_parse: Arc<std::sync::Mutex<Option<Duration>>>,
 }
 
 #[cfg(test)]
 impl ManualDaemonClientClock {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self::new_at(Instant::now())
+    }
+
+    pub(crate) fn new_at(origin: Instant) -> Self {
+        Self {
+            origin,
+            elapsed: Arc::default(),
+            advance_before_next_sample: Arc::default(),
+            advance_during_next_response_parse: Arc::default(),
+        }
     }
 
     pub(crate) fn advance(&self, amount: Duration) {
         let mut elapsed = self.elapsed.lock().expect("manual daemon client clock");
         *elapsed = elapsed.saturating_add(amount);
     }
+
+    pub(crate) fn advance_before_next_sample(&self, amount: Duration) {
+        *self
+            .advance_before_next_sample
+            .lock()
+            .expect("manual daemon client sample pause") = Some(amount);
+    }
+
+    pub(crate) fn advance_during_next_response_parse(&self, amount: Duration) {
+        *self
+            .advance_during_next_response_parse
+            .lock()
+            .expect("manual daemon client parse pause") = Some(amount);
+    }
 }
 
 #[cfg(test)]
 impl DaemonClientClock for ManualDaemonClientClock {
-    fn elapsed(&self) -> Duration {
-        *self.elapsed.lock().expect("manual daemon client clock")
+    fn now(&self) -> Instant {
+        let pause = self
+            .advance_before_next_sample
+            .lock()
+            .expect("manual daemon client sample pause")
+            .take();
+        let mut elapsed = self.elapsed.lock().expect("manual daemon client clock");
+        if let Some(pause) = pause {
+            *elapsed = elapsed.saturating_add(pause);
+        }
+        self.origin + *elapsed
+    }
+
+    fn response_parse_started(&self) {
+        let pause = self
+            .advance_during_next_response_parse
+            .lock()
+            .expect("manual daemon client parse pause")
+            .take();
+        if let Some(pause) = pause {
+            self.advance(pause);
+        }
     }
 }
 
@@ -116,8 +165,7 @@ impl DaemonClientConfig {
 
 #[derive(Clone)]
 struct DaemonDeadline {
-    started: Duration,
-    budget: Duration,
+    cutoff: Instant,
     clock: Arc<dyn DaemonClientClock>,
 }
 
@@ -126,17 +174,22 @@ impl DaemonDeadline {
         if budget.is_zero() {
             return Err("daemon deadline budget must be positive".to_string());
         }
-        let started = clock.elapsed();
-        Ok(Self {
-            started,
-            budget,
-            clock,
-        })
+        let cutoff = clock
+            .now()
+            .checked_add(budget)
+            .ok_or_else(|| "daemon deadline cutoff overflow".to_string())?;
+        Self::at(cutoff, clock)
+    }
+
+    fn at(cutoff: Instant, clock: Arc<dyn DaemonClientClock>) -> Result<Self, String> {
+        let deadline = Self { cutoff, clock };
+        deadline.checkpoint("deadline capture")?;
+        Ok(deadline)
     }
 
     fn remaining(&self, stage: &'static str) -> Result<Duration, String> {
-        self.budget
-            .checked_sub(self.clock.elapsed().saturating_sub(self.started))
+        self.cutoff
+            .checked_duration_since(self.clock.now())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| format!("daemon deadline expired during {stage}"))
     }
@@ -481,6 +534,7 @@ impl DaemonOwner {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_task_deadline(
         &self,
         budget: Duration,
@@ -489,6 +543,18 @@ impl DaemonOwner {
             return Err(DaemonTaskExchangeError::SessionPoisoned);
         }
         DaemonDeadline::new(budget, Arc::clone(&self.clock))
+            .map(|deadline| DaemonTaskDeadline { deadline })
+            .map_err(|_| DaemonTaskExchangeError::Transport)
+    }
+
+    pub(crate) fn begin_task_deadline_at(
+        &self,
+        cutoff: Instant,
+    ) -> Result<DaemonTaskDeadline, DaemonTaskExchangeError> {
+        if self.poisoned {
+            return Err(DaemonTaskExchangeError::SessionPoisoned);
+        }
+        DaemonDeadline::at(cutoff, Arc::clone(&self.clock))
             .map(|deadline| DaemonTaskDeadline { deadline })
             .map_err(|_| DaemonTaskExchangeError::Transport)
     }
@@ -724,5 +790,10 @@ fn read_response(
         .map_err(|error| format!("configure daemon read timeout: {error}"))?;
     let bytes = read_bounded_response_line(reader);
     deadline.checkpoint(stage)?;
-    parse_response(&bytes.map_err(|error| format!("read daemon response: {error}"))?)
+    #[cfg(test)]
+    deadline.clock.response_parse_started();
+    let response =
+        parse_response(&bytes.map_err(|error| format!("read daemon response: {error}"))?);
+    deadline.checkpoint(stage)?;
+    response
 }

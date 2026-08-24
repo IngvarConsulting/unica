@@ -15,4 +15,5 @@ scope: [app, wire]
 а initial receipt, polling, wait, cancel, reconnect и restart обращаются к одной
 durable Invocation и не повторяют её execution. Compatibility projection
 принимает только согласованную status/result/failure-presence форму без failure
-prose; один абсолютный wait budget охватывает connect и полный exchange.
+prose; один absolute monotonic cutoff без duration rebase охватывает connect и
+полный exchange, включая post-parse checkpoint и закрытие поздней session.

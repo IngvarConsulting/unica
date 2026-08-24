@@ -127,6 +127,16 @@ impl FrontendInvocationDeadline {
             .map(|remaining| remaining.saturating_sub(elapsed));
         host_remaining.map_or(own_remaining, |remaining| own_remaining.min(remaining))
     }
+
+    fn transport_cutoff(self) -> Instant {
+        let own_cutoff = self
+            .received_at
+            .checked_add(INVOCATION_HANDOFF_WINDOW.saturating_add(RESPONSE_SERIALIZATION_MARGIN))
+            .expect("bounded frontend transport cutoff");
+        self.host_remaining_at_receipt
+            .and_then(|remaining| self.received_at.checked_add(remaining))
+            .map_or(own_cutoff, |host_cutoff| own_cutoff.min(host_cutoff))
+    }
 }
 
 pub fn run_stdio() {
@@ -410,14 +420,17 @@ fn bounded_compatibility_wait_ms(
     requested_wait_ms.min(remaining_ms)
 }
 
-fn compatibility_wait_transport_budget(
+fn compatibility_wait_transport_cutoff(
     requested_wait_ms: u64,
     deadline: FrontendInvocationDeadline,
     now: Instant,
-) -> Duration {
-    Duration::from_millis(requested_wait_ms)
-        .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
-        .min(deadline.remaining_transport_at(now))
+) -> Instant {
+    let requested_cutoff = now
+        .checked_add(
+            Duration::from_millis(requested_wait_ms).saturating_add(RESPONSE_SERIALIZATION_MARGIN),
+        )
+        .expect("bounded compatibility wait cutoff");
+    requested_cutoff.min(deadline.transport_cutoff())
 }
 
 fn compatibility_task_exchange_error(
@@ -507,9 +520,9 @@ fn canonical_daemon_router(
     });
     let wait_anchor = Arc::clone(&anchor);
     let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, wait_ms, deadline| {
-        let operation_budget =
-            compatibility_wait_transport_budget(wait_ms, deadline, Instant::now());
-        let task_deadline = wait_anchor.begin_task_deadline(operation_budget)?;
+        let operation_cutoff =
+            compatibility_wait_transport_cutoff(wait_ms, deadline, Instant::now());
+        let task_deadline = wait_anchor.begin_task_deadline_at(operation_cutoff)?;
         let mut owner = wait_anchor.connect_peer_before(&task_deadline)?;
         owner.wait_task_before(task_id, wait_ms, &task_deadline)
     });
@@ -2351,33 +2364,33 @@ mod tests {
             0
         );
         assert_eq!(
-            compatibility_wait_transport_budget(0, deadline, received),
-            Duration::from_millis(125)
+            compatibility_wait_transport_cutoff(0, deadline, received),
+            received + Duration::from_millis(125)
         );
         assert_eq!(
-            compatibility_wait_transport_budget(1, deadline, received),
-            Duration::from_millis(126)
+            compatibility_wait_transport_cutoff(1, deadline, received),
+            received + Duration::from_millis(126)
         );
         assert_eq!(
-            compatibility_wait_transport_budget(7_000, deadline, received),
-            Duration::from_millis(7_125)
+            compatibility_wait_transport_cutoff(7_000, deadline, received),
+            received + Duration::from_millis(7_125)
         );
         assert_eq!(
-            compatibility_wait_transport_budget(
+            compatibility_wait_transport_cutoff(
                 7_000,
                 deadline,
                 received + Duration::from_millis(6_999),
             ),
-            Duration::from_millis(126),
+            received + Duration::from_millis(7_125),
             "elapsed frontend time is not replenished by the compatibility wait"
         );
         assert_eq!(
-            compatibility_wait_transport_budget(
+            compatibility_wait_transport_cutoff(
                 7_000,
                 FrontendInvocationDeadline::new(received, Some(Duration::from_millis(80))),
                 received,
             ),
-            Duration::from_millis(80),
+            received + Duration::from_millis(80),
             "an earlier host deadline is stronger than waitMs plus response margin"
         );
     }
@@ -2865,7 +2878,7 @@ mod tests {
                     ClientRequest::wait_task(task_id, 0),
                     "connect time consumes the wait slice before the 125ms response margin"
                 );
-                peer_clock.advance(Duration::from_millis(65 + requested_wait_ms));
+                peer_clock.advance(Duration::from_millis(1_065 + requested_wait_ms));
                 write_line(
                     &mut operation,
                     &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
@@ -2905,6 +2918,316 @@ mod tests {
     #[tokio::test]
     async fn compatibility_wait_zero_and_one_share_one_budget_across_connect_and_response() {
         compatibility_wait_single_deadline_case().await;
+    }
+
+    async fn compatibility_wait_frontend_cutoff_is_not_rebased_case() {
+        use crate::infrastructure::daemon::client::{
+            DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
+        };
+        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        use crate::infrastructure::daemon::protocol::{
+            read_bounded_json_line, DaemonTaskSnapshot, EndpointRecord, ServerResponse,
+        };
+        use std::io::{BufReader as StdBufReader, ErrorKind, Write};
+        use std::net::{Ipv4Addr, TcpListener};
+        use std::sync::atomic::AtomicUsize;
+        use std::thread;
+
+        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
+            serde_json::to_writer(&mut *stream, response).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+
+        let state = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(state.path()).unwrap();
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let task_id = crate::domain::invocation::TaskId::new();
+        let peer_record = record.clone();
+        let operation_requests = Arc::new(AtomicUsize::new(0));
+        let peer_requests = Arc::clone(&operation_requests);
+        let (stop, stop_wait) = mpsc::channel();
+        let fake_peer = thread::spawn(move || {
+            let (mut anchor, _) = listener.accept().unwrap();
+            let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
+            write_line(&mut anchor, &ServerResponse::ready(&peer_record));
+
+            listener.set_nonblocking(true).unwrap();
+            loop {
+                match listener.accept() {
+                    Ok((mut operation, _)) => {
+                        operation.set_nonblocking(false).unwrap();
+                        let mut reader = StdBufReader::new(operation.try_clone().unwrap());
+                        let _hello = read_bounded_json_line(&mut reader).unwrap();
+                        write_line(&mut operation, &ServerResponse::ready(&peer_record));
+                        let _request = read_bounded_json_line(&mut reader).unwrap();
+                        peer_requests.fetch_add(1, Ordering::SeqCst);
+                        write_line(
+                            &mut operation,
+                            &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
+                        );
+                        break;
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        if stop_wait.try_recv().is_ok() {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("accept compatibility operation: {error}"),
+                }
+            }
+        });
+        let clock = ManualDaemonClientClock::new();
+        let client = DaemonClient::new(
+            DaemonClientConfig::existing_only(state_root, identity)
+                .with_clock_for_test(clock.clone()),
+        );
+        let owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
+        };
+        // The next daemon-clock sample is deliberately delayed until after the
+        // frontend calculated waitMs + margin. A Duration rebase starts a fresh
+        // window here; an absolute cutoff is already expired.
+        clock.advance_before_next_sample(Duration::from_secs(1));
+        let (mut mcp, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            owner,
+            "/workspace".to_string(),
+        ));
+        mcp.send(json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{
+                "name":"unica.task.result",
+                "arguments":{"taskId":task_id.to_string(), "waitMs":0},
+                "_meta":modern_meta()
+            }
+        }))
+        .await;
+        let response = mcp.receive().await;
+        let _ = stop.send(());
+        mcp.shutdown().await;
+        fake_peer.join().unwrap();
+
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["code"], "task_transport_failed",
+            "the operation must not rebase its cutoff after the injected pause: {response}"
+        );
+        assert_eq!(
+            operation_requests.load(Ordering::SeqCst),
+            0,
+            "an expired absolute cutoff must stop before operation admission"
+        );
+    }
+
+    fn compatibility_wait_post_parse_cutoff_case(valid_near_limit: bool) {
+        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        use crate::domain::invocation::{DomainResult, InvocationStatus};
+        use crate::infrastructure::daemon::client::{
+            DaemonClient, DaemonClientConfig, DaemonTaskExchangeError, ExistingDaemon,
+            ManualDaemonClientClock,
+        };
+        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        use crate::infrastructure::daemon::protocol::{
+            read_bounded_json_line, EndpointRecord, ServerResponse, MAX_DAEMON_RESPONSE_LINE_BYTES,
+        };
+        use std::io::{BufReader as StdBufReader, Write};
+        use std::net::{Ipv4Addr, TcpListener};
+        use std::thread;
+
+        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
+            serde_json::to_writer(&mut *stream, response).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+
+        let state = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(state.path()).unwrap();
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let task_id = crate::domain::invocation::TaskId::new();
+        let peer_record = record.clone();
+        let response_payload = if valid_near_limit {
+            let snapshot = canonical_snapshot(
+                task_id,
+                InvocationStatus::Completed,
+                Some(DomainResult::success(
+                    "x".repeat(MAX_CANONICAL_RESULT_BYTES - 4_096),
+                )),
+            );
+            let mut bytes = serde_json::to_vec(&ServerResponse::task(snapshot)).unwrap();
+            bytes.push(b'\n');
+            bytes
+        } else {
+            let mut hostile = br#"{"kind":"task","snapshot":{"unknown":""#.to_vec();
+            hostile.extend(std::iter::repeat_n(
+                b'x',
+                MAX_DAEMON_RESPONSE_LINE_BYTES - hostile.len() - 4_096,
+            ));
+            hostile.extend_from_slice(b"\"}}\n");
+            hostile
+        };
+        let clock = ManualDaemonClientClock::new();
+        let peer_clock = clock.clone();
+        let (second_request_seen, second_request_seen_wait) = mpsc::channel();
+        let fake_peer = thread::spawn(move || {
+            let (mut anchor, _) = listener.accept().unwrap();
+            let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
+            write_line(&mut anchor, &ServerResponse::ready(&peer_record));
+
+            let (mut operation, _) = listener.accept().unwrap();
+            operation
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = StdBufReader::new(operation.try_clone().unwrap());
+            let _hello = read_bounded_json_line(&mut reader).unwrap();
+            write_line(&mut operation, &ServerResponse::ready(&peer_record));
+            let _request = read_bounded_json_line(&mut reader).unwrap();
+            peer_clock.advance_during_next_response_parse(Duration::from_millis(2_001));
+            operation.write_all(&response_payload).unwrap();
+            operation.flush().unwrap();
+            let second = read_bounded_json_line(&mut reader).is_ok();
+            if second {
+                write_line(
+                    &mut operation,
+                    &ServerResponse::task(
+                        crate::infrastructure::daemon::protocol::DaemonTaskSnapshot::working_for_test(
+                            task_id,
+                        ),
+                    ),
+                );
+            }
+            second_request_seen.send(second).unwrap();
+        });
+        let client = DaemonClient::new(
+            DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
+        );
+        let anchor = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
+        };
+        let deadline = anchor.begin_task_deadline(Duration::from_secs(2)).unwrap();
+        let mut operation = anchor.connect_peer_before(&deadline).unwrap();
+        let first = operation.wait_task_before(task_id, 0, &deadline);
+        let second = operation.get_task(task_id);
+        let saw_second = second_request_seen_wait.recv().unwrap();
+        fake_peer.join().unwrap();
+
+        assert!(
+            matches!(first, Err(DaemonTaskExchangeError::Transport)),
+            "a parsed response that crossed cutoff must not publish its snapshot"
+        );
+        assert!(
+            matches!(second, Err(DaemonTaskExchangeError::SessionPoisoned)),
+            "post-parse expiry must poison the operation session"
+        );
+        assert!(
+            !saw_second,
+            "post-parse expiry must close the operation session before reuse"
+        );
+    }
+
+    #[tokio::test]
+    async fn compatibility_wait_preserves_frontend_cutoff_across_client_admission_pause() {
+        compatibility_wait_frontend_cutoff_is_not_rebased_case().await;
+    }
+
+    #[test]
+    fn compatibility_wait_post_parse_expiry_wins_for_valid_and_malformed_near_limit_frames() {
+        compatibility_wait_post_parse_cutoff_case(true);
+        compatibility_wait_post_parse_cutoff_case(false);
+    }
+
+    fn compatibility_wait_authenticated_long_and_host_cutoff_case(
+        requested_wait_ms: u64,
+        host_remaining: Option<Duration>,
+        expected_daemon_wait_ms: u64,
+    ) {
+        use crate::infrastructure::daemon::client::{
+            DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
+        };
+        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        use crate::infrastructure::daemon::protocol::{
+            parse_request, read_bounded_json_line, ClientRequest, DaemonTaskSnapshot,
+            EndpointRecord, ServerResponse,
+        };
+        use std::io::{BufReader as StdBufReader, Write};
+        use std::net::{Ipv4Addr, TcpListener};
+        use std::thread;
+
+        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
+            serde_json::to_writer(&mut *stream, response).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+
+        let received = Instant::now();
+        let state = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(state.path()).unwrap();
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let task_id = crate::domain::invocation::TaskId::new();
+        let peer_record = record.clone();
+        let clock = ManualDaemonClientClock::new_at(received);
+        let peer_clock = clock.clone();
+        let (observed_request, observed_request_wait) = mpsc::channel();
+        let fake_peer = thread::spawn(move || {
+            let (mut anchor, _) = listener.accept().unwrap();
+            let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
+            write_line(&mut anchor, &ServerResponse::ready(&peer_record));
+
+            let (mut operation, _) = listener.accept().unwrap();
+            let mut reader = StdBufReader::new(operation.try_clone().unwrap());
+            let _hello = read_bounded_json_line(&mut reader).unwrap();
+            peer_clock.advance(Duration::from_millis(60));
+            write_line(&mut operation, &ServerResponse::ready(&peer_record));
+            let request = parse_request(&read_bounded_json_line(&mut reader).unwrap()).unwrap();
+            observed_request.send(request).unwrap();
+            write_line(
+                &mut operation,
+                &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
+            );
+        });
+        let client = DaemonClient::new(
+            DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
+        );
+        let owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
+        };
+        let router = canonical_daemon_router(owner, "/workspace".to_string());
+        let snapshot = (router.wait)(
+            task_id,
+            requested_wait_ms,
+            FrontendInvocationDeadline::new(received, host_remaining),
+        )
+        .unwrap();
+        assert_eq!(snapshot.task_id, task_id);
+        assert_eq!(
+            observed_request_wait.recv().unwrap(),
+            ClientRequest::wait_task(task_id, expected_daemon_wait_ms)
+        );
+        fake_peer.join().unwrap();
+    }
+
+    #[test]
+    fn compatibility_wait_authenticated_transport_bounds_7000_and_earlier_host_cutoff() {
+        compatibility_wait_authenticated_long_and_host_cutoff_case(7_000, None, 6_940);
+        compatibility_wait_authenticated_long_and_host_cutoff_case(
+            7_000,
+            Some(Duration::from_millis(80)),
+            0,
+        );
     }
 
     #[tokio::test]
@@ -3071,6 +3394,15 @@ mod tests {
         compatibility_receipts_case().await;
         compatibility_wait_budget_case();
         compatibility_wait_single_deadline_case().await;
+        compatibility_wait_frontend_cutoff_is_not_rebased_case().await;
+        compatibility_wait_post_parse_cutoff_case(true);
+        compatibility_wait_post_parse_cutoff_case(false);
+        compatibility_wait_authenticated_long_and_host_cutoff_case(7_000, None, 6_940);
+        compatibility_wait_authenticated_long_and_host_cutoff_case(
+            7_000,
+            Some(Duration::from_millis(80)),
+            0,
+        );
         compatibility_terminal_result_case().await;
         compatibility_closed_errors_case().await;
         compatibility_hostile_status_payload_case().await;

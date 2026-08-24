@@ -16,9 +16,13 @@ consumers: [host]
 `unica.task.result` требует `taskId` и принимает integer `waitMs` в диапазоне
 0..=7000; по умолчанию 7000. Get — immediate probe, result — bounded wait,
 cancel — idempotent переход или чтение terminal winner. Один абсолютный budget
-result равен не более `waitMs + 125 мс` и остатка исходного frontend deadline;
-он не перезапускается между connect, handshake, request и response. Перед
-запросом daemon wait уменьшается на уже израсходованное время и response margin.
+result выводится один раз как absolute monotonic cutoff: не позже
+`waitMs + 125 мс` и исходного frontend cutoff. Он не переводится обратно в
+duration при daemon admission и не перезапускается между connect, handshake,
+request, response read и parse. Перед запросом daemon wait уменьшается на уже
+израсходованное время и response margin; checkpoint после parse имеет приоритет
+над поздним valid или malformed payload, закрывает operation session и не
+публикует snapshot.
 
 Working receipt — обычный structured-only `CallToolResult`: `ok`, `summary`,
 `data.task` с `taskId`, полем состояния, `createdAtEpochMs`, `updatedAtEpochMs`, `ttlMs`,
