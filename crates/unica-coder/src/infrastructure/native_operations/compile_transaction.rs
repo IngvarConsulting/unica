@@ -2716,8 +2716,9 @@ fn recheck_removal(removal: &PlannedRemoval) -> Result<(), String> {
 }
 
 fn reserve_removal_recovery(target: &Path) -> Result<PendingRemovalRecovery, String> {
+    let recovery_parent = recovery_parent(target)?;
     for attempt in 1..=16 {
-        let directory = unique_recovery_directory(target);
+        let directory = unique_recovery_directory(&recovery_parent, target);
         match fs::create_dir(&directory) {
             Ok(()) => {
                 return Ok(PendingRemovalRecovery {
@@ -2743,7 +2744,10 @@ fn reserve_removal_recovery(target: &Path) -> Result<PendingRemovalRecovery, Str
 }
 
 fn reserve_recovery(target: &Path) -> Result<PendingRecovery, String> {
-    reserve_recovery_with(target, || unique_recovery_directory(target))
+    let recovery_parent = recovery_parent(target)?;
+    reserve_recovery_with(target, || {
+        unique_recovery_directory(&recovery_parent, target)
+    })
 }
 
 fn reserve_recovery_with(
@@ -2775,8 +2779,24 @@ fn reserve_recovery_with(
     ))
 }
 
-fn unique_recovery_directory(target: &Path) -> PathBuf {
-    let parent = usable_parent(target);
+fn recovery_parent(target: &Path) -> Result<PathBuf, String> {
+    let workspace = usable_parent(target)
+        .ancestors()
+        .find(|ancestor| ancestor.join("v8project.yaml").is_file());
+    let Some(workspace) = workspace else {
+        return Ok(usable_parent(target).to_path_buf());
+    };
+    let private = workspace.join(".build/unica/recovery");
+    fs::create_dir_all(&private).map_err(|error| {
+        format!(
+            "failed to prepare private compile recovery directory {}: {error}",
+            private.display()
+        )
+    })?;
+    Ok(private)
+}
+
+fn unique_recovery_directory(parent: &Path, target: &Path) -> PathBuf {
     let mut name = OsString::from(".");
     name.push(
         target
@@ -3265,8 +3285,9 @@ fn inspect_published_target(
 }
 
 fn reserve_rollback_quarantine(target: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let recovery_parent = recovery_parent(target)?;
     for attempt in 1..=16 {
-        let directory = unique_recovery_directory(target);
+        let directory = unique_recovery_directory(&recovery_parent, target);
         match fs::create_dir(&directory) {
             Ok(()) => {
                 let path = directory.join("published");
@@ -6916,6 +6937,46 @@ pub(crate) mod tests {
         assert!(reservation.cleanup.directory.path.is_dir());
         assert!(!reservation.path().exists());
         assert!(reservation.cleanup().is_empty());
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+    }
+
+    #[test]
+    fn compile_recovery_is_reserved_outside_workspace_source_root() {
+        let root = temp_root("private-registration-recovery");
+        fs::write(root.join("v8project.yaml"), b"source-set: []")
+            .expect("workspace marker must be written");
+        let source_root = root.join("external-processors/sample");
+        fs::create_dir_all(source_root.join("Ext")).expect("source directories must be created");
+        let target = source_root.join("Ext/ObjectModule.bsl");
+        fs::write(&target, b"before").expect("registration target must be written");
+
+        let private_recovery = root.join(".build/unica/recovery");
+        let mut registration = reserve_recovery(&target).expect("recovery must be reserved");
+        let mut removal =
+            reserve_removal_recovery(&target).expect("removal recovery must be reserved");
+        let (rollback_directory, _rollback_path) =
+            reserve_rollback_quarantine(&target).expect("rollback quarantine must be reserved");
+
+        for recovery_directory in [
+            registration.cleanup.directory_path(),
+            removal.directory.as_path(),
+            rollback_directory.as_path(),
+        ] {
+            assert!(
+                !recovery_directory.starts_with(&source_root),
+                "recovery must stay outside the watched source root: {}",
+                recovery_directory.display()
+            );
+            assert!(
+                recovery_directory.starts_with(&private_recovery),
+                "recovery must use the private workspace recovery root: {}",
+                recovery_directory.display()
+            );
+        }
+
+        assert!(registration.cleanup().is_empty());
+        assert!(removal.cleanup().is_empty());
+        fs::remove_dir(&rollback_directory).expect("rollback quarantine must be removed");
         fs::remove_dir_all(root).expect("temporary root must be removed");
     }
 
