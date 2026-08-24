@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const CORE_ABI_IDENTITY: &str = "unica-v0.13-core-abi-1";
-const DAEMON_PROTOCOL_IDENTITY: &str = "unica-daemon-jsonl-2";
+const DAEMON_PROTOCOL_IDENTITY_PREFIX: &str = "unica-daemon-jsonl-";
 const ENDPOINT_FILE_NAME: &str = "endpoint.json";
 const SPAWN_LOCK_NAME: &str = ".daemon-spawn.lock";
 
@@ -33,7 +33,12 @@ impl CoreIdentity {
         let mut digest = Sha256::new();
         digest.update(CORE_ABI_IDENTITY.as_bytes());
         digest.update(b"\0");
-        digest.update(DAEMON_PROTOCOL_IDENTITY.as_bytes());
+        digest.update(DAEMON_PROTOCOL_IDENTITY_PREFIX.as_bytes());
+        digest.update(
+            super::protocol::DAEMON_PROTOCOL_VERSION
+                .to_string()
+                .as_bytes(),
+        );
         Self(hex_digest(digest.finalize().as_slice()))
     }
 

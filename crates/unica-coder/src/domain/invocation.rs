@@ -292,6 +292,12 @@ pub(crate) struct TaskSnapshot {
     pub(crate) resume: Option<ResumeDescriptor>,
     pub(crate) created_at: Instant,
     pub(crate) updated_at: Instant,
+    /// Restart-stable persisted Task timestamps. The monotonic fields above
+    /// remain local state-machine evidence and are never projected onto MCP.
+    pub(crate) created_at_epoch_ms: u64,
+    pub(crate) updated_at_epoch_ms: u64,
+    pub(crate) ttl_ms: u64,
+    pub(crate) poll_interval_ms: u64,
 }
 
 impl TaskSnapshot {

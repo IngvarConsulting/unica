@@ -1840,6 +1840,7 @@ version = "0.12.0"
 dependencies = [
  "cap-fs-ext",
  "cap-primitives",
+ "chrono",
  "diffy",
  "dispatch2",
  "flate2",

@@ -6,7 +6,8 @@ pub(crate) mod server;
 #[cfg(test)]
 mod tests {
     use super::client::{
-        DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
+        DaemonClient, DaemonClientConfig, DaemonTaskExchangeError, ExistingDaemon,
+        ManualDaemonClientClock,
     };
     use super::identity::{CoreIdentity, DaemonStateDirectory};
     use super::protocol::{
@@ -557,7 +558,31 @@ mod tests {
 
     #[test]
     fn core_identity_is_closed_compile_time_abi_protocol_digest() {
+        use sha2::{Digest, Sha256};
+
         let production = CoreIdentity::production();
+        let identity_for = |protocol: &[u8]| {
+            let mut digest = Sha256::new();
+            digest.update(b"unica-v0.13-core-abi-1");
+            digest.update(b"\0");
+            digest.update(protocol);
+            digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let expected = identity_for(b"unica-daemon-jsonl-3");
+        assert_eq!(
+            production.as_str(),
+            expected,
+            "core compatibility identity must include the exact daemon protocol v3 identity"
+        );
+        assert_ne!(
+            production.as_str(),
+            identity_for(b"unica-daemon-jsonl-2"),
+            "a v3 process must not reuse the v2 compatibility key"
+        );
         assert_eq!(production.as_str().len(), 64);
         assert!(production
             .as_str()
@@ -1046,7 +1071,9 @@ mod tests {
         ] {
             assert!(super::protocol::parse_request(invalid).is_err());
         }
+        core_identity_is_closed_compile_time_abi_protocol_digest();
         daemon_result_size_and_session_bounds_are_enforced();
+        daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it();
     }
 
     #[test]
@@ -1065,7 +1092,10 @@ mod tests {
             .with_invocation_service(service);
         let server = thread::spawn(move || run_daemon(config));
         let (_directory, _record) = wait_for_record(root.path(), &identity);
-        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical.clone(),
+            identity.clone(),
+        ));
         let mut owner = match client.connect_existing().unwrap() {
             ExistingDaemon::Connected(owner) => owner,
             ExistingDaemon::Absent => panic!("published daemon must connect"),
@@ -1082,35 +1112,46 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let task_id = match outcome {
-            InvocationResponse::Task(task) => task.task_id,
+        let initial = match outcome {
+            InvocationResponse::Task(task) => task,
             other => panic!("known-long request did not return a task: {other:?}"),
         };
+        let task_id = initial.task_id;
         entered_wait.recv().unwrap();
-        assert_eq!(
-            owner.get_task(task_id).unwrap().status,
-            InvocationStatus::Working
-        );
+        let observed = owner.get_task(task_id).unwrap();
+        assert_eq!(observed.status, InvocationStatus::Working);
+        assert_eq!(observed.created_at_epoch_ms, initial.created_at_epoch_ms);
+        assert_eq!(observed.updated_at_epoch_ms, initial.updated_at_epoch_ms);
+        assert_eq!(observed.ttl_ms, initial.ttl_ms);
         assert_eq!(
             owner.wait_task(task_id, 0).unwrap().status,
             InvocationStatus::Working
         );
-        assert_eq!(
-            owner.cancel_task(task_id).unwrap().status,
-            InvocationStatus::Cancelled
-        );
-        assert_eq!(
-            owner.cancel_task(task_id).unwrap().status,
-            InvocationStatus::Cancelled
-        );
-        assert_eq!(
-            owner.get_task(task_id).unwrap().status,
-            InvocationStatus::Cancelled
-        );
+        let cancelled = owner.cancel_task(task_id).unwrap();
+        assert_eq!(cancelled.status, InvocationStatus::Cancelled);
+        assert_eq!(cancelled.created_at_epoch_ms, initial.created_at_epoch_ms);
+        assert!(cancelled.updated_at_epoch_ms >= initial.updated_at_epoch_ms);
+        assert_eq!(owner.cancel_task(task_id).unwrap(), cancelled);
+        assert_eq!(owner.get_task(task_id).unwrap(), cancelled);
         assert_eq!(executions.load(Ordering::SeqCst), 1);
 
         drop(owner);
         server.join().unwrap().unwrap();
+
+        let restarted = thread::spawn({
+            let root = root.path().to_path_buf();
+            let identity = identity.clone();
+            move || run_daemon(server_config(root, identity))
+        });
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("restarted daemon must connect"),
+        };
+        assert_eq!(owner.get_task(task_id).unwrap(), cancelled);
+        drop(owner);
+        restarted.join().unwrap().unwrap();
     }
 
     #[test]
@@ -1679,6 +1720,62 @@ mod tests {
         assert!(!error.contains("credential"));
         assert!(!error.contains("secret-looking-value"));
         assert!(parse_response(br#"{"kind":"error","code":"future_code"}"#).is_err());
+    }
+
+    #[test]
+    fn task_exchange_propagates_closed_codes_and_poison_without_parsing_text() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let peer_record = record.clone();
+        let fake_peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let _hello = read_bounded_json_line(&mut reader).unwrap();
+            write_json_line(&mut stream, &ServerResponse::ready(&peer_record));
+            for code in [DaemonErrorCode::TaskNotFound, DaemonErrorCode::TaskExpired] {
+                assert!(matches!(
+                    super::protocol::parse_request(&read_bounded_json_line(&mut reader).unwrap())
+                        .unwrap(),
+                    ClientRequest::GetTask { .. }
+                ));
+                write_json_line(&mut stream, &ServerResponse::error(code));
+            }
+            let _third = read_bounded_json_line(&mut reader).unwrap();
+            stream.write_all(b"{malformed task response}\n").unwrap();
+            stream.flush().unwrap();
+        });
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake task endpoint must connect"),
+        };
+
+        assert_eq!(
+            owner.get_task(TaskId::new()),
+            Err(DaemonTaskExchangeError::Protocol(
+                DaemonErrorCode::TaskNotFound
+            ))
+        );
+        assert_eq!(
+            owner.get_task(TaskId::new()),
+            Err(DaemonTaskExchangeError::Protocol(
+                DaemonErrorCode::TaskExpired
+            ))
+        );
+        assert_eq!(
+            owner.get_task(TaskId::new()),
+            Err(DaemonTaskExchangeError::Transport)
+        );
+        assert_eq!(
+            owner.get_task(TaskId::new()),
+            Err(DaemonTaskExchangeError::SessionPoisoned)
+        );
+        fake_peer.join().unwrap();
     }
 
     #[test]

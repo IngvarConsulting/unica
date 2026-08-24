@@ -20,11 +20,12 @@ use crate::application::{
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
-    ErrorData, Implementation, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
+    ContentBlock, ErrorCode, ErrorData, GetTaskParams, GetTaskResult, Implementation,
+    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
     ProgressNotificationParam, ProgressToken, ProtocolVersion, RequestMetaObject,
-    ServerCapabilities, ServerInfo, Tool,
+    ServerCapabilities, ServerInfo, Tool, UpdateTaskParams, TASKS_EXTENSION_ID,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -60,10 +61,31 @@ type CanonicalToolCallHandler = dyn Fn(
     + Send
     + Sync;
 
+type CanonicalTaskHandler = dyn Fn(
+        crate::domain::invocation::TaskId,
+    ) -> Result<
+        crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
+        crate::infrastructure::daemon::client::DaemonTaskExchangeError,
+    > + Send
+    + Sync;
+
+#[derive(Clone)]
+struct CanonicalV13Router {
+    call: Arc<CanonicalToolCallHandler>,
+    get: Arc<CanonicalTaskHandler>,
+    cancel: Arc<CanonicalTaskHandler>,
+}
+
 #[derive(Clone)]
 enum SurfaceToolRouter {
     LegacyV12(Arc<ToolCallHandler>),
-    CanonicalV13(Arc<CanonicalToolCallHandler>),
+    CanonicalV13(CanonicalV13Router),
+}
+
+enum SurfaceToolOutcome {
+    Legacy(Box<OperationResult>),
+    Canonical(crate::domain::invocation::DomainResult),
+    Task(crate::infrastructure::daemon::protocol::DaemonTaskSnapshot),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -209,8 +231,20 @@ impl UnicaServer {
 
     #[cfg(test)]
     fn with_canonical_v13(handler: Arc<CanonicalToolCallHandler>) -> Self {
+        let unavailable: Arc<CanonicalTaskHandler> = Arc::new(|_| {
+            Err(crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport)
+        });
+        Self::with_canonical_v13_tasks(handler, Arc::clone(&unavailable), unavailable)
+    }
+
+    #[cfg(test)]
+    fn with_canonical_v13_tasks(
+        call: Arc<CanonicalToolCallHandler>,
+        get: Arc<CanonicalTaskHandler>,
+        cancel: Arc<CanonicalTaskHandler>,
+    ) -> Self {
         Self {
-            router: SurfaceToolRouter::CanonicalV13(handler),
+            router: SurfaceToolRouter::CanonicalV13(CanonicalV13Router { call, get, cancel }),
             in_flight: Arc::new(InFlightRegistry::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
@@ -222,11 +256,9 @@ impl UnicaServer {
         owner: crate::infrastructure::daemon::client::DaemonOwner,
         workspace_hint: String,
     ) -> Self {
+        let router = canonical_daemon_router(owner, workspace_hint);
         Self {
-            router: SurfaceToolRouter::CanonicalV13(canonical_daemon_handler(
-                owner,
-                workspace_hint,
-            )),
+            router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
@@ -257,19 +289,27 @@ fn execute_surface_tool(
     cancellation: CancellationToken,
     progress: Arc<dyn ProgressSink>,
     deadline: FrontendInvocationDeadline,
-) -> Result<OperationResult, (i32, String)> {
+    client_supports_tasks: bool,
+) -> Result<SurfaceToolOutcome, (i32, String)> {
     match router {
-        SurfaceToolRouter::LegacyV12(handler) => handler(name, arguments, cancellation, progress),
-        SurfaceToolRouter::CanonicalV13(handler) => {
+        SurfaceToolRouter::LegacyV12(handler) => handler(name, arguments, cancellation, progress)
+            .map(Box::new)
+            .map(SurfaceToolOutcome::Legacy),
+        SurfaceToolRouter::CanonicalV13(router) => {
             let tool = ToolIdentity::from_wire_name(name).ok_or_else(|| {
                 (
                     ErrorCode::INVALID_PARAMS.0,
                     "tool is not in the canonical v0.13 profile".to_string(),
                 )
             })?;
-            match handler(tool, arguments, deadline, cancellation)? {
-                InvocationResponse::Direct(result) => Ok(result.into()),
-                InvocationResponse::Task(snapshot) => Ok(legacy_working_projection(snapshot)),
+            match (router.call)(tool, arguments, deadline, cancellation)? {
+                InvocationResponse::Direct(result) => Ok(SurfaceToolOutcome::Canonical(result)),
+                InvocationResponse::Task(snapshot) if client_supports_tasks => {
+                    Ok(SurfaceToolOutcome::Task(snapshot))
+                }
+                InvocationResponse::Task(snapshot) => Ok(SurfaceToolOutcome::Legacy(Box::new(
+                    legacy_working_projection(snapshot),
+                ))),
             }
         }
     }
@@ -296,33 +336,53 @@ fn legacy_working_projection(
 /// The released stdio constructor remains on `SurfaceRelease::V12` until the
 /// atomic Task 22 cutover.
 #[allow(dead_code)]
-fn canonical_daemon_handler(
+fn canonical_daemon_router(
     owner: crate::infrastructure::daemon::client::DaemonOwner,
     workspace_hint: String,
-) -> Arc<CanonicalToolCallHandler> {
+) -> CanonicalV13Router {
     // Retain one owner lease for the frontend lifetime, but give each Invocation its own protocol
     // session. A slow direct response therefore cannot serialize another call ahead of its
     // seven-second handoff boundary.
     let anchor = Arc::new(owner);
-    Arc::new(move |tool, arguments, deadline, _cancellation| {
-        let mut owner = anchor
-            .connect_peer(deadline.remaining_transport_at(Instant::now()))
-            .map_err(|message| (TOOL_EXECUTION_ERROR, message))?;
-        let response_budget = deadline.remaining_at(Instant::now());
-        let request = InvocationRequest::new(
-            tool,
-            Value::Object(arguments.clone()),
-            workspace_hint.clone(),
-            response_budget.as_millis().min(7_000) as u64,
-        )
-        .map_err(|message| (ErrorCode::INVALID_PARAMS.0, message))?;
-        owner
-            .submit_invocation_with_transport_budget(
-                request,
-                deadline.remaining_transport_at(Instant::now()),
+    let call_anchor = Arc::clone(&anchor);
+    let call: Arc<CanonicalToolCallHandler> =
+        Arc::new(move |tool, arguments, deadline, _cancellation| {
+            let mut owner = call_anchor
+                .connect_peer(deadline.remaining_transport_at(Instant::now()))
+                .map_err(|message| (TOOL_EXECUTION_ERROR, message))?;
+            let response_budget = deadline.remaining_at(Instant::now());
+            let request = InvocationRequest::new(
+                tool,
+                Value::Object(arguments.clone()),
+                workspace_hint.clone(),
+                response_budget.as_millis().min(7_000) as u64,
             )
-            .map_err(|message| (TOOL_EXECUTION_ERROR, message))
-    })
+            .map_err(|message| (ErrorCode::INVALID_PARAMS.0, message))?;
+            owner
+                .submit_invocation_with_transport_budget(
+                    request,
+                    deadline.remaining_transport_at(Instant::now()),
+                )
+                .map_err(|message| (TOOL_EXECUTION_ERROR, message))
+        });
+    let get_anchor = Arc::clone(&anchor);
+    let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
+        let mut owner = get_anchor
+            .connect_peer(Duration::from_millis(125))
+            .map_err(|_| {
+                crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport
+            })?;
+        owner.get_task(task_id)
+    });
+    let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
+        let mut owner = anchor
+            .connect_peer(Duration::from_millis(125))
+            .map_err(|_| {
+                crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport
+            })?;
+        owner.cancel_task(task_id)
+    });
+    CanonicalV13Router { call, get, cancel }
 }
 
 fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
@@ -394,12 +454,18 @@ impl ServerHandler for UnicaServer {
         // #490: the negotiation fallback is pinned, not inherited from the
         // SDK LATEST constant, so an SDK bump cannot move it silently.
         //
-        // Only the implemented surface is declared: tools. Prompts, resources,
-        // completions, logging, tasks and ui are deliberately withheld until a
-        // feature slice implements them — an advertised-but-empty surface
-        // sends capability-gated clients probing dead ends. Each of those
-        // features re-enters here together with its implementation.
-        let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+        // Only the implemented surface is declared. Prompts, resources,
+        // completions, logging and ui stay withheld. Tasks are advertised only
+        // by the injected V13 router and initialize strips them again unless
+        // the negotiated protocol is 2026-07-28.
+        let capabilities = match &self.router {
+            SurfaceToolRouter::LegacyV12(_) => ServerCapabilities::builder().enable_tools().build(),
+            SurfaceToolRouter::CanonicalV13(_) => ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tasks()
+                .build(),
+        };
+        let info = InitializeResult::new(capabilities)
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new("unica", env!("CARGO_PKG_VERSION")));
         // Что осталось от убитого запуска, уходит обычным ответом: своего
@@ -408,6 +474,29 @@ impl ServerHandler for UnicaServer {
             Some(notice) => info.with_instructions(notice.clone()),
             None => info,
         }
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        let mut info = self.get_info();
+        info.protocol_version = if SUPPORTED_PROTOCOL_VERSIONS.contains(&request.protocol_version) {
+            request.protocol_version
+        } else {
+            info.protocol_version
+        };
+        if info.protocol_version.as_str() < ProtocolVersion::V_2026_07_28.as_str() {
+            if let Some(extensions) = info.capabilities.extensions.as_mut() {
+                extensions.remove(TASKS_EXTENSION_ID);
+                if extensions.is_empty() {
+                    info.capabilities.extensions = None;
+                }
+            }
+        }
+        Ok(info)
     }
 
     fn accepted_subscription_filter(
@@ -499,6 +588,7 @@ impl ServerHandler for UnicaServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let received_at = Instant::now();
+        let client_supports_tasks = native_task_capability(&context);
         let admission = self
             .in_flight
             .admit()
@@ -565,6 +655,7 @@ impl ServerHandler for UnicaServer {
                 cancellation,
                 progress,
                 deadline,
+                client_supports_tasks,
             )
         })
         .await;
@@ -578,8 +669,19 @@ impl ServerHandler for UnicaServer {
         drop(admission);
 
         let outcome = match result {
-            Ok(Ok(result)) => {
-                render_tool_result(self.structured_tools.contains(name.as_str()), result)
+            Ok(Ok(SurfaceToolOutcome::Legacy(result))) => {
+                render_tool_result(self.structured_tools.contains(name.as_str()), *result)
+                    .map(CallToolResponse::from)
+            }
+            Ok(Ok(SurfaceToolOutcome::Canonical(result))) => {
+                crate::interfaces::task_projection::call_tool_result(&result)
+                    .map(CallToolResponse::from)
+                    .map_err(|_| crate::interfaces::task_projection::projection_error())
+            }
+            Ok(Ok(SurfaceToolOutcome::Task(snapshot))) => {
+                crate::interfaces::task_projection::create_task_result(&snapshot)
+                    .map(CallToolResponse::from)
+                    .map_err(|_| crate::interfaces::task_projection::projection_error())
             }
             Ok(Err((code, message))) => Err(ErrorData::new(ErrorCode(code), message, None)),
             Err(join_error) => Err(ErrorData::new(
@@ -588,8 +690,146 @@ impl ServerHandler for UnicaServer {
                 None,
             )),
         };
-        outcome.map(CallToolResponse::from)
+        outcome
     }
+
+    async fn get_task(
+        &self,
+        request: GetTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, ErrorData> {
+        ensure_native_task_protocol(&context)?;
+        let task_id = parse_task_id(&request.task_id)?;
+        let handler = canonical_task_router(&self.router)?.get;
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id))
+            .await
+            .map_err(|_| task_internal_error("task_worker_failed"))?
+            .map_err(project_task_exchange_error)?;
+        ensure_task_identity(task_id, &snapshot)?;
+        crate::interfaces::task_projection::detailed_task(&snapshot)
+            .map(GetTaskResult::new)
+            .map_err(|_| crate::interfaces::task_projection::projection_error())
+    }
+
+    async fn update_task(
+        &self,
+        request: UpdateTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        ensure_native_task_protocol(&context)?;
+        let task_id = parse_task_id(&request.task_id)?;
+        let handler = canonical_task_router(&self.router)?.get;
+        // v0.13 never enters input_required. Still prove the task is a current
+        // daemon-owned identity before returning the stable unsupported-input
+        // classification; unknown and expired identities retain their codes.
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id))
+            .await
+            .map_err(|_| task_internal_error("task_worker_failed"))?
+            .map_err(project_task_exchange_error)?;
+        ensure_task_identity(task_id, &snapshot)?;
+        Err(ErrorData::invalid_params(
+            "task_input_not_supported",
+            Some(serde_json::json!({"code": "task_input_not_supported"})),
+        ))
+    }
+
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        ensure_native_task_protocol(&context)?;
+        let task_id = parse_task_id(&request.task_id)?;
+        let handler = canonical_task_router(&self.router)?.cancel;
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id))
+            .await
+            .map_err(|_| task_internal_error("task_worker_failed"))?
+            .map_err(project_task_exchange_error)?;
+        ensure_task_identity(task_id, &snapshot)?;
+        Ok(())
+    }
+}
+
+fn native_task_capability(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .protocol_version()
+        .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+        && context
+            .client_capabilities()
+            .is_some_and(|capabilities| capabilities.supports_tasks())
+}
+
+fn ensure_native_task_protocol(context: &RequestContext<RoleServer>) -> Result<(), ErrorData> {
+    if native_task_capability(context) {
+        Ok(())
+    } else {
+        Err(ErrorData::new(
+            ErrorCode::METHOD_NOT_FOUND,
+            "tasks_not_available_for_protocol",
+            None,
+        ))
+    }
+}
+
+fn canonical_task_router(router: &SurfaceToolRouter) -> Result<CanonicalV13Router, ErrorData> {
+    match router {
+        SurfaceToolRouter::CanonicalV13(router) => Ok(router.clone()),
+        SurfaceToolRouter::LegacyV12(_) => Err(task_internal_error("task_profile_unavailable")),
+    }
+}
+
+fn parse_task_id(encoded: &str) -> Result<crate::domain::invocation::TaskId, ErrorData> {
+    encoded.parse().map_err(|_| {
+        ErrorData::invalid_params(
+            "invalid_task_id",
+            Some(serde_json::json!({"code": "invalid_task_id"})),
+        )
+    })
+}
+
+fn ensure_task_identity(
+    expected: crate::domain::invocation::TaskId,
+    snapshot: &crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
+) -> Result<(), ErrorData> {
+    if snapshot.task_id == expected {
+        Ok(())
+    } else {
+        Err(task_internal_error("task_protocol_failed"))
+    }
+}
+
+fn project_task_exchange_error(
+    error: crate::infrastructure::daemon::client::DaemonTaskExchangeError,
+) -> ErrorData {
+    use crate::infrastructure::daemon::client::DaemonTaskExchangeError;
+    use crate::infrastructure::daemon::protocol::DaemonErrorCode;
+
+    match error {
+        DaemonTaskExchangeError::Protocol(DaemonErrorCode::TaskNotFound) => {
+            ErrorData::invalid_params(
+                "task_not_found",
+                Some(serde_json::json!({"code": "task_not_found"})),
+            )
+        }
+        DaemonTaskExchangeError::Protocol(DaemonErrorCode::TaskExpired) => {
+            ErrorData::invalid_params(
+                "task_expired",
+                Some(serde_json::json!({"code": "task_expired"})),
+            )
+        }
+        DaemonTaskExchangeError::Protocol(_) => task_internal_error("task_backend_failed"),
+        DaemonTaskExchangeError::Transport => task_internal_error("task_transport_failed"),
+        DaemonTaskExchangeError::SessionPoisoned => task_internal_error("task_session_closed"),
+        DaemonTaskExchangeError::UnexpectedResponse => task_internal_error("task_protocol_failed"),
+    }
+}
+
+fn task_internal_error(code: &'static str) -> ErrorData {
+    ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        code,
+        Some(serde_json::json!({"code": code})),
+    )
 }
 
 struct McpProgressForwarding {
@@ -860,8 +1100,12 @@ mod tests {
             CancellationToken::new(),
             Arc::new(NoopProgressSink),
             deadline,
+            false,
         )
         .unwrap();
+        let SurfaceToolOutcome::Legacy(result) = result else {
+            panic!("v0.12 must retain the legacy result envelope");
+        };
         assert_eq!(result.summary, "legacy");
         assert_eq!(legacy_count.load(Ordering::SeqCst), 1);
 
@@ -883,8 +1127,12 @@ mod tests {
             CancellationToken::new(),
             Arc::new(NoopProgressSink),
             deadline,
+            true,
         )
         .unwrap();
+        let SurfaceToolOutcome::Canonical(result) = result else {
+            panic!("v0.13 direct calls must retain the canonical result envelope");
+        };
         assert_eq!(result.summary, "canonical");
         assert_eq!(daemon_count.load(Ordering::SeqCst), 1);
         assert_eq!(legacy_count.load(Ordering::SeqCst), 1);
@@ -1114,8 +1362,11 @@ mod tests {
     }
 
     fn spawn_server(handler: Arc<ToolCallHandler>) -> (McpClient, Arc<InFlightRegistry>) {
+        spawn_unica_server(UnicaServer::new(handler))
+    }
+
+    fn spawn_unica_server(server: UnicaServer) -> (McpClient, Arc<InFlightRegistry>) {
         let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
-        let server = UnicaServer::new(handler);
         let in_flight = server.in_flight();
         let server = tokio::spawn(async move {
             match server.serve(server_io).await {
@@ -1573,6 +1824,364 @@ mod tests {
             "io.modelcontextprotocol/protocolVersion": "2026-07-28",
             "io.modelcontextprotocol/clientCapabilities": {}
         })
+    }
+
+    fn modern_tasks_meta() -> Value {
+        json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {
+                "extensions": {"io.modelcontextprotocol/tasks": {}}
+            }
+        })
+    }
+
+    fn canonical_result(summary: &str) -> crate::domain::invocation::DomainResult {
+        crate::domain::invocation::DomainResult {
+            ok: false,
+            at: Some("main:Catalog.Товары".into()),
+            summary: summary.into(),
+            data: Some(json!({"nested": [1, 2, 3]})),
+            changed: vec![json!({"at": "main:Catalog.Товары.Attribute.Код"})],
+            warnings: vec![json!({"code": "warning"})],
+            diagnostics: vec![json!({"code": "bad_value"})],
+            artifacts: vec![json!({"kind": "report"})],
+            next: vec![json!({"op": "view"})],
+            rev: Some("rev-7".into()),
+            cursor: Some("cursor-2".into()),
+        }
+    }
+
+    fn canonical_snapshot(
+        task_id: crate::domain::invocation::TaskId,
+        status: crate::domain::invocation::InvocationStatus,
+        result: Option<crate::domain::invocation::DomainResult>,
+    ) -> crate::infrastructure::daemon::protocol::DaemonTaskSnapshot {
+        crate::infrastructure::daemon::protocol::DaemonTaskSnapshot {
+            task_id,
+            invocation_id: crate::domain::invocation::InvocationId::new(),
+            status,
+            result,
+            failure: None,
+            poll_interval_ms: 250,
+            created_at_epoch_ms: 1_777_012_345_678,
+            updated_at_epoch_ms: 1_777_012_346_789,
+            ttl_ms: 3_600_000,
+        }
+    }
+
+    async fn tasks_direct_first_capability_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let task_id = TaskId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions);
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let cancel = Arc::clone(&get);
+
+        let server = UnicaServer::with_canonical_v13_tasks(call, get, cancel);
+        assert!(server.get_info().capabilities.supports_tasks());
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {
+                    "name": "unica.check", "arguments": {},
+                    "_meta": modern_tasks_meta()
+                }
+            }))
+            .await;
+        let native = client.receive().await;
+        assert_eq!(native["result"]["resultType"], "task", "{native}");
+        assert_eq!(native["result"]["taskId"], task_id.to_string());
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert!(
+            timeout(Duration::from_millis(50), client.reader.next_line())
+                .await
+                .is_err(),
+            "task projection must not synthesize progress or polling traffic after CreateTaskResult"
+        );
+        client.shutdown().await;
+
+        let executions_without = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions_without);
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {
+                    "name": "unica.check", "arguments": {},
+                    "_meta": modern_meta()
+                }
+            }))
+            .await;
+        let compatibility = client.receive().await;
+        assert_ne!(
+            compatibility["result"]["resultType"], "task",
+            "{compatibility}"
+        );
+        assert_eq!(executions_without.load(Ordering::SeqCst), 1);
+        client.shutdown().await;
+
+        let legacy_session_executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&legacy_session_executions);
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params": {
+                    "protocolVersion":"2025-11-25",
+                    "capabilities": {"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"explicit-task-client","version":"1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert!(
+            initialized["result"]["capabilities"]["extensions"]["io.modelcontextprotocol/tasks"]
+                .is_null(),
+            "2025-11-25 must not advertise SEP-2663: {initialized}"
+        );
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":8, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{}}
+            }))
+            .await;
+        let native = client.receive().await;
+        assert_ne!(native["result"]["resultType"], "task", "{native}");
+        assert_eq!(legacy_session_executions.load(Ordering::SeqCst), 1);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":9, "method":"tasks/get",
+                "params":{"taskId":task_id.to_string()}
+            }))
+            .await;
+        let unavailable = client.receive().await;
+        assert_eq!(unavailable["error"]["code"], -32601, "{unavailable}");
+        client.shutdown().await;
+    }
+
+    async fn tasks_direct_and_completed_get_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let expected = canonical_result("same canonical result");
+        let direct_expected = expected.clone();
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, arguments, _, _| {
+            if arguments.get("async").and_then(Value::as_bool) == Some(true) {
+                Ok(InvocationResponse::Task(canonical_snapshot(
+                    task_id,
+                    InvocationStatus::Working,
+                    None,
+                )))
+            } else {
+                Ok(InvocationResponse::Direct(direct_expected.clone()))
+            }
+        });
+        let get_expected = expected.clone();
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+            Ok(canonical_snapshot(
+                task_id,
+                InvocationStatus::Completed,
+                Some(get_expected.clone()),
+            ))
+        });
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+
+        for (id, arguments) in [(1, json!({})), (2, json!({"async": true}))] {
+            client
+                .send(json!({
+                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": {
+                        "name": "unica.check", "arguments": arguments,
+                        "_meta": modern_tasks_meta()
+                    }
+                }))
+                .await;
+            let response = client.receive().await;
+            if id == 1 {
+                assert_eq!(response["result"]["resultType"], "complete");
+                client
+                    .send(json!({
+                        "jsonrpc": "2.0", "id": 3, "method": "tasks/get",
+                        "params": {"taskId": task_id.to_string(), "_meta": modern_tasks_meta()}
+                    }))
+                    .await;
+                let completed = client.receive().await;
+                assert_eq!(
+                    serde_json::to_vec(&response["result"]).unwrap(),
+                    serde_json::to_vec(&completed["result"]["result"]).unwrap(),
+                    "direct and durable terminal projections diverged: direct={response}, task={completed}"
+                );
+            } else {
+                assert_eq!(response["result"]["resultType"], "task", "{response}");
+            }
+        }
+        client.shutdown().await;
+    }
+
+    async fn tasks_hooks_closed_errors_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use crate::infrastructure::daemon::client::DaemonTaskExchangeError;
+        use crate::infrastructure::daemon::protocol::DaemonErrorCode;
+        use std::str::FromStr;
+        use std::sync::atomic::AtomicUsize;
+
+        let known = TaskId::new();
+        let unknown = TaskId::new();
+        let expired = TaskId::new();
+        let mismatched = TaskId::new();
+        let lookup_count = Arc::new(AtomicUsize::new(0));
+        let lookup_observed = Arc::clone(&lookup_count);
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
+            lookup_observed.fetch_add(1, Ordering::SeqCst);
+            if task_id == unknown {
+                Err(DaemonTaskExchangeError::Protocol(
+                    DaemonErrorCode::TaskNotFound,
+                ))
+            } else if task_id == expired {
+                Err(DaemonTaskExchangeError::Protocol(
+                    DaemonErrorCode::TaskExpired,
+                ))
+            } else {
+                Ok(canonical_snapshot(known, InvocationStatus::Working, None))
+            }
+        });
+        let cancellations = Arc::new(AtomicUsize::new(0));
+        let cancellation_observed = Arc::clone(&cancellations);
+        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+            cancellation_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(canonical_snapshot(known, InvocationStatus::Cancelled, None))
+        });
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                known,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let server = UnicaServer::with_canonical_v13_tasks(call, get, cancel);
+        let (mut client, _) = spawn_unica_server(server);
+
+        for (id, method, task_id, expected_code) in [
+            (1, "tasks/get", unknown.to_string(), "task_not_found"),
+            (2, "tasks/get", expired.to_string(), "task_expired"),
+            (
+                3,
+                "tasks/get",
+                "not-a-canonical-uuid".into(),
+                "invalid_task_id",
+            ),
+            (4, "tasks/update", unknown.to_string(), "task_not_found"),
+            (
+                5,
+                "tasks/update",
+                known.to_string(),
+                "task_input_not_supported",
+            ),
+            (
+                8,
+                "tasks/get",
+                mismatched.to_string(),
+                "task_protocol_failed",
+            ),
+        ] {
+            let mut params = json!({"taskId": task_id, "_meta": modern_tasks_meta()});
+            if method == "tasks/update" {
+                params["inputResponses"] = json!({});
+            }
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            let response = client.receive().await;
+            let expected_jsonrpc = if expected_code == "task_protocol_failed" {
+                -32603
+            } else {
+                -32602
+            };
+            assert_eq!(response["error"]["code"], expected_jsonrpc, "{response}");
+            assert_eq!(
+                response["error"]["data"]["code"], expected_code,
+                "{response}"
+            );
+        }
+        assert!(TaskId::from_str("not-a-canonical-uuid").is_err());
+
+        for id in [6, 7] {
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":id, "method":"tasks/cancel",
+                    "params":{"taskId":known.to_string(), "_meta":modern_tasks_meta()}
+                }))
+                .await;
+            let response = client.receive().await;
+            assert_eq!(response["result"]["resultType"], "complete", "{response}");
+        }
+        assert_eq!(cancellations.load(Ordering::SeqCst), 2);
+        assert_eq!(lookup_count.load(Ordering::SeqCst), 5);
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_direct_first_capability_controls_native_projection_without_reexecution() {
+        tasks_direct_first_capability_case().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_direct_and_completed_get_use_the_same_call_result_renderer() {
+        tasks_direct_and_completed_get_case().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_hooks_preserve_closed_unknown_expired_invalid_and_update_semantics() {
+        tasks_hooks_closed_errors_case().await;
+    }
+
+    #[tokio::test]
+    async fn native_task_projection_contract_is_capability_gated_durable_and_replay_free() {
+        assert!(
+            !UnicaServer::new(application_handler())
+                .get_info()
+                .capabilities
+                .supports_tasks(),
+            "the package-selected v0.12 profile must not advertise Tasks"
+        );
+        tasks_direct_first_capability_case().await;
+        tasks_direct_and_completed_get_case().await;
+        tasks_hooks_closed_errors_case().await;
     }
 
     #[tokio::test]

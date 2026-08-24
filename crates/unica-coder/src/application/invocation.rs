@@ -1287,6 +1287,10 @@ fn snapshot_from_record(record: StoredInvocationRecord, observed_at: Instant) ->
         resume: record.resume,
         created_at: observed_at,
         updated_at: observed_at,
+        created_at_epoch_ms: record.created_at_epoch_ms,
+        updated_at_epoch_ms: record.updated_at_epoch_ms,
+        ttl_ms: record.ttl_ms,
+        poll_interval_ms: record.poll_interval_ms,
     }
 }
 
@@ -1446,6 +1450,10 @@ impl Invocation {
             resume,
             created_at: now,
             updated_at: now,
+            created_at_epoch_ms: 0,
+            updated_at_epoch_ms: 0,
+            ttl_ms: 0,
+            poll_interval_ms: 0,
         })));
         self.updated_at = now;
         Ok(())
@@ -1607,8 +1615,8 @@ impl From<DomainResult> for OperationResult {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        handoff_budget, Invocation, InvocationExecutor, InvocationResponseDeadline,
-        PreparedDaemonInvocation,
+        handoff_budget, snapshot_from_record, Invocation, InvocationExecutor,
+        InvocationResponseDeadline, PreparedDaemonInvocation,
     };
     use crate::application::invocation_store::{
         InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
@@ -1690,6 +1698,31 @@ pub(crate) mod tests {
             rev: Some("rev-2".to_string()),
             cursor: Some("cursor-2".to_string()),
         }
+    }
+
+    #[test]
+    fn durable_snapshot_preserves_stored_epoch_timestamps_ttl_and_poll_interval() {
+        let record = NewInvocationRecord::new(
+            InvocationId::new(),
+            ToolIdentity::View,
+            NormalizedArgumentsHash::from_sha256([0x21; 32]),
+            SafeIdentityHash::from_sha256([0x22; 32]),
+            SafeStatusMessage::Working,
+            375,
+            9_000,
+            None,
+        )
+        .into_working_stored(1_777_012_345_678);
+
+        let first = snapshot_from_record(record.clone(), Instant::now());
+        let second = snapshot_from_record(record, Instant::now() + Duration::from_secs(20));
+
+        assert_eq!(first.created_at_epoch_ms, 1_777_012_345_678);
+        assert_eq!(first.updated_at_epoch_ms, 1_777_012_345_678);
+        assert_eq!(first.ttl_ms, 9_000);
+        assert_eq!(first.poll_interval_ms, 375);
+        assert_eq!(first.created_at_epoch_ms, second.created_at_epoch_ms);
+        assert_eq!(first.updated_at_epoch_ms, second.updated_at_epoch_ms);
     }
 
     fn invocation(clock: Arc<ManualClock>) -> Invocation {

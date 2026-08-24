@@ -23,6 +23,7 @@ import tree_sitter_rust
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RMCP_OWNER = "crates/unica-coder/src/interfaces/mcp.rs"
+RMCP_INTERFACE_ROOT = "crates/unica-coder/src/interfaces/"
 RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 RMCP_ALLOWED_FEATURES = ["server", "transport-io"]
 
@@ -175,14 +176,18 @@ def rmcp_reference_confinement_errors(
     return [
         f"{path}: productive rmcp reference outside transport owner"
         for path, code in sorted(productive.items())
-        if path != owner and re.search(rb"\brmcp\b", code)
+        if not (
+            (owner.endswith("/") and path.startswith(owner))
+            or (not owner.endswith("/") and path == owner)
+        )
+        and re.search(rb"\brmcp\b", code)
     ]
 
 
 def workspace_rmcp_reference_confinement_errors(repo_root: Path) -> list[str]:
     return rmcp_reference_confinement_errors(
         tracked_workspace_production_rust_sources(repo_root),
-        RMCP_OWNER,
+        RMCP_INTERFACE_ROOT,
     )
 
 
@@ -769,7 +774,7 @@ class ProductContractTests(unittest.TestCase):
         self.assertEqual(
             workspace_rmcp_reference_confinement_errors(REPO_ROOT),
             [],
-            "productive rmcp references must stay in interfaces/mcp.rs",
+            "productive rmcp references must stay in interfaces/",
         )
 
     def test_native_validators_do_not_expose_internal_local_owner_only_switch(

@@ -335,6 +335,16 @@ pub(crate) struct DaemonOwner {
     poisoned: bool,
 }
 
+/// Closed task-exchange failures for interface adapters. Runtime and transport
+/// prose never crosses this boundary and callers never classify formatted text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DaemonTaskExchangeError {
+    Protocol(DaemonErrorCode),
+    Transport,
+    SessionPoisoned,
+    UnexpectedResponse,
+}
+
 impl DaemonOwner {
     fn connect(
         record: &EndpointRecord,
@@ -472,7 +482,7 @@ impl DaemonOwner {
     pub(crate) fn get_task(
         &mut self,
         task_id: crate::domain::invocation::TaskId,
-    ) -> Result<DaemonTaskSnapshot, String> {
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
         self.task_exchange(ClientRequest::get_task(task_id), Duration::from_millis(125))
     }
 
@@ -481,7 +491,7 @@ impl DaemonOwner {
         &mut self,
         task_id: crate::domain::invocation::TaskId,
         wait_ms: u64,
-    ) -> Result<DaemonTaskSnapshot, String> {
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
         self.task_exchange(
             ClientRequest::wait_task(task_id, wait_ms),
             Duration::from_millis(wait_ms).saturating_add(INVOCATION_RESPONSE_MARGIN),
@@ -492,7 +502,7 @@ impl DaemonOwner {
     pub(crate) fn cancel_task(
         &mut self,
         task_id: crate::domain::invocation::TaskId,
-    ) -> Result<DaemonTaskSnapshot, String> {
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
         self.task_exchange(
             ClientRequest::cancel_task(task_id),
             Duration::from_millis(125),
@@ -503,17 +513,29 @@ impl DaemonOwner {
         &mut self,
         request: ClientRequest,
         budget: Duration,
-    ) -> Result<DaemonTaskSnapshot, String> {
-        self.ensure_usable()?;
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
+        if self.poisoned {
+            return Err(DaemonTaskExchangeError::SessionPoisoned);
+        }
         let deadline = DaemonDeadline::new(
             budget.max(Duration::from_millis(1)),
             Arc::clone(&self.clock),
-        )?;
-        write_request(&mut self.writer, &request, &deadline, "task request")?;
-        match self.read_response_or_poison(&deadline, "task response")? {
+        )
+        .map_err(|_| DaemonTaskExchangeError::Transport)?;
+        write_request(&mut self.writer, &request, &deadline, "task request")
+            .map_err(|_| DaemonTaskExchangeError::Transport)?;
+        match self
+            .read_response_or_poison(&deadline, "task response")
+            .map_err(|_| DaemonTaskExchangeError::Transport)?
+        {
             ServerResponse::Task { snapshot } => Ok(snapshot),
-            ServerResponse::Error { code } => Err(format!("daemon task request rejected: {code}")),
-            _ => Err("daemon task request returned an unexpected response".into()),
+            ServerResponse::Error { code } => Err(DaemonTaskExchangeError::Protocol(code)),
+            _ => {
+                self.poisoned = true;
+                let _ = self.writer.shutdown(std::net::Shutdown::Both);
+                let _ = self.reader.get_ref().shutdown(std::net::Shutdown::Both);
+                Err(DaemonTaskExchangeError::UnexpectedResponse)
+            }
         }
     }
 

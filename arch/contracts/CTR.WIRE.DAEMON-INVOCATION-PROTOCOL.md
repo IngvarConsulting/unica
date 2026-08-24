@@ -2,20 +2,26 @@
 id: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
 status: active
 governs: product
-decision: DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE
+decision: DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE
 check: crates/unica-coder/src/infrastructure/daemon/mod.rs::invocation_protocol_round_trips_all_four_strict_requests_and_closed_responses
 scope: [app, wire]
-version: 2
+version: 3
 producer: crates/unica-coder/src/infrastructure/daemon/protocol.rs
 consumers: [host]
 ---
 
 # Внутренний daemon protocol canonical Invocation
 
+Protocol identity `unica-daemon-jsonl-3` является частью `CoreIdentity` и
+разделяет discovery/state от любой иной wire ABI.
+
 Версионированный JSONL protocol принимает строгие `SubmitInvocation`,
 `GetTask`, `WaitTask`, `CancelTask`. Submit отвечает `Direct(DomainResult)` или
 `Task(DaemonTaskSnapshot)`. Неизвестные поля, сообщения, неканонические TaskId и
 wait больше 7000 мс отклоняются; ошибки транспорта используют закрытые коды.
+Task snapshot несёт сохранённые `createdAt`/`updatedAt` epoch milliseconds,
+`ttlMs` и `pollIntervalMs`: reconnect/restart не заменяет их временем чтения,
+а `updatedAt` не меняется от чтения и не убывает при durable transition.
 Исчерпание 64 одновременно живых workspace actor capabilities возвращает
 закрытый retryable код `workspace_capacity`; poison actor registry возвращает
 `workspace_registry_failed`. Исчерпание bounded Task retention возвращает

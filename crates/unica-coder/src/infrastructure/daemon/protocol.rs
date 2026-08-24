@@ -12,7 +12,7 @@ use std::io::{self, BufRead};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use uuid::Uuid;
 
-pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 2;
+pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 3;
 pub(crate) const ENDPOINT_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_DAEMON_REQUEST_LINE_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_ENDPOINT_RECORD_BYTES: usize = 16 * 1024;
@@ -90,6 +90,9 @@ pub(crate) struct DaemonTaskSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) failure: Option<InvocationFailure>,
     pub(crate) poll_interval_ms: u64,
+    pub(crate) created_at_epoch_ms: u64,
+    pub(crate) updated_at_epoch_ms: u64,
+    pub(crate) ttl_ms: u64,
 }
 
 impl DaemonTaskSnapshot {
@@ -100,7 +103,10 @@ impl DaemonTaskSnapshot {
             status: snapshot.status,
             result: snapshot.result,
             failure: snapshot.failure,
-            poll_interval_ms: 250,
+            poll_interval_ms: snapshot.poll_interval_ms,
+            created_at_epoch_ms: snapshot.created_at_epoch_ms,
+            updated_at_epoch_ms: snapshot.updated_at_epoch_ms,
+            ttl_ms: snapshot.ttl_ms,
         }
     }
 
@@ -113,6 +119,9 @@ impl DaemonTaskSnapshot {
             result: None,
             failure: None,
             poll_interval_ms: 250,
+            created_at_epoch_ms: 1,
+            updated_at_epoch_ms: 1,
+            ttl_ms: 3_600_000,
         }
     }
 }
