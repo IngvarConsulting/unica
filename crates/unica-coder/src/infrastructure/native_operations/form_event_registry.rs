@@ -8,6 +8,9 @@
 use roxmltree::Node;
 use std::fmt;
 
+use crate::domain::module_projection::BindingFact;
+use crate::domain::platform_profile::{ModuleCapability, ModuleRole};
+
 use super::common::is_1c_identifier;
 
 const FORM_LOGFORM_NS: &str = "http://v8.1c.ru/8.3/xcf/logform";
@@ -129,6 +132,135 @@ const SPREADSHEET_DOCUMENT_FIELD_EVENTS: &[&str] = &[
     "OnChangeAreaContent",
 ];
 const NO_EVENTS: &[&str] = &[];
+const COMMAND_EVENTS: &[&str] = &["Execute"];
+
+/// One versioned possible-event record. The registry owns applicability and
+/// exact expected shape; module projection only evaluates source evidence
+/// against these records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlatformEventSpec {
+    pub(crate) event_id: &'static str,
+    pub(crate) handler: &'static str,
+    pub(crate) signature: &'static str,
+    pub(crate) parameter_count: usize,
+    pub(crate) context: &'static str,
+    pub(crate) binding: BindingFact,
+}
+
+const OBJECT_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "BeforeWrite",
+    handler: "ПередЗаписью",
+    signature: "Процедура ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)",
+    parameter_count: 3,
+    context: "server",
+    binding: BindingFact::Platform,
+}];
+const MANAGER_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "ChoiceDataGetProcessing",
+    handler: "ОбработкаПолученияДанныхВыбора",
+    signature:
+        "Процедура ОбработкаПолученияДанныхВыбора(ДанныеВыбора, Параметры, СтандартнаяОбработка)",
+    parameter_count: 3,
+    context: "server",
+    binding: BindingFact::Platform,
+}];
+const RECORD_SET_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "BeforeWrite",
+    handler: "ПередЗаписью",
+    signature: "Процедура ПередЗаписью(Отказ, Замещение)",
+    parameter_count: 2,
+    context: "server",
+    binding: BindingFact::Platform,
+}];
+const VALUE_MANAGER_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "BeforeWrite",
+    handler: "ПередЗаписью",
+    signature: "Процедура ПередЗаписью(Отказ)",
+    parameter_count: 1,
+    context: "server",
+    binding: BindingFact::Platform,
+}];
+const COMMAND_MODULE_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "CommandProcessing",
+    handler: "ОбработкаКоманды",
+    signature: "Процедура ОбработкаКоманды(ПараметрКоманды, ПараметрыВыполненияКоманды)",
+    parameter_count: 2,
+    context: "thinClient",
+    binding: BindingFact::Platform,
+}];
+const APPLICATION_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "BeforeStartSystem",
+    handler: "ПередНачаломРаботыСистемы",
+    signature: "Процедура ПередНачаломРаботыСистемы(Отказ)",
+    parameter_count: 1,
+    context: "thinClient",
+    binding: BindingFact::Platform,
+}];
+const ORDINARY_APPLICATION_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "BeforeStartSystem",
+    handler: "ПередНачаломРаботыСистемы",
+    signature: "Процедура ПередНачаломРаботыСистемы(Отказ)",
+    parameter_count: 1,
+    context: "thickClientOrdinary",
+    binding: BindingFact::Platform,
+}];
+const SESSION_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "SessionParametersSetting",
+    handler: "УстановкаПараметровСеанса",
+    signature: "Процедура УстановкаПараметровСеанса(ТребуемыеПараметры)",
+    parameter_count: 1,
+    context: "server",
+    binding: BindingFact::Platform,
+}];
+const EXTERNAL_CONNECTION_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "BeforeStartSystem",
+    handler: "ПередНачаломРаботыСистемы",
+    signature: "Процедура ПередНачаломРаботыСистемы(Отказ)",
+    parameter_count: 1,
+    context: "externalConnection",
+    binding: BindingFact::Platform,
+}];
+const BOT_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "MessageProcessing",
+    handler: "ОбработкаСообщения",
+    signature: "Процедура ОбработкаСообщения(Сообщение, Контекст)",
+    parameter_count: 2,
+    context: "server",
+    binding: BindingFact::Platform,
+}];
+const WEBSOCKET_CLIENT_EVENTS: &[PlatformEventSpec] = &[PlatformEventSpec {
+    event_id: "Open",
+    handler: "ПриОткрытии",
+    signature: "Процедура ПриОткрытии(Соединение)",
+    parameter_count: 1,
+    context: "server",
+    binding: BindingFact::Platform,
+}];
+
+/// Possible module events for the exact 8.3.27 capability. Service handlers
+/// and form events intentionally remain on their declarative logical owners.
+pub(crate) fn module_event_catalog_8_3_27(
+    capability: ModuleCapability,
+) -> &'static [PlatformEventSpec] {
+    match capability.role() {
+        ModuleRole::Object => OBJECT_EVENTS,
+        ModuleRole::Manager => MANAGER_EVENTS,
+        ModuleRole::RecordSet => RECORD_SET_EVENTS,
+        ModuleRole::ValueManager => VALUE_MANAGER_EVENTS,
+        ModuleRole::Command => COMMAND_MODULE_EVENTS,
+        ModuleRole::ManagedApplication => APPLICATION_EVENTS,
+        ModuleRole::OrdinaryApplication => ORDINARY_APPLICATION_EVENTS,
+        ModuleRole::Session => SESSION_EVENTS,
+        ModuleRole::ExternalConnection => EXTERNAL_CONNECTION_EVENTS,
+        ModuleRole::Bot => BOT_EVENTS,
+        ModuleRole::WebSocketClient => WEBSOCKET_CLIENT_EVENTS,
+        ModuleRole::Common
+        | ModuleRole::Form
+        | ModuleRole::HttpService
+        | ModuleRole::WebService
+        | ModuleRole::IntegrationService => &[],
+    }
+}
 
 const NAMED_PERSISTENT_OBJECT_TYPES: &[&str] = &[
     "CatalogObject",
@@ -421,6 +553,64 @@ impl fmt::Display for FormEventTarget {
             Self::Form => formatter.write_str("form"),
             Self::Element(kind) => write!(formatter, "element type '{kind}'"),
         }
+    }
+}
+
+/// Logical form-event owner. `Table` and nested `Column` are distinct even
+/// though both reuse the existing element event matrices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FormEventOwnerKind {
+    Form,
+    Element(FormElementKind),
+    Table,
+    Column(FormElementKind),
+    Command,
+}
+
+impl FormEventOwnerKind {
+    fn allowed_events(self) -> &'static [&'static str] {
+        match self {
+            Self::Form => FORM_EVENTS,
+            Self::Element(kind) | Self::Column(kind) => kind.allowed_events(),
+            Self::Table => TABLE_EVENTS,
+            Self::Command => COMMAND_EVENTS,
+        }
+    }
+}
+
+/// Form possible events are projected from the same matrices used by current
+/// v0.12 validation; no second spelling list is introduced for v0.13.
+pub(crate) fn form_event_catalog_8_3_27(owner: FormEventOwnerKind) -> Vec<PlatformEventSpec> {
+    owner
+        .allowed_events()
+        .iter()
+        .map(|event_id| form_event_spec(event_id))
+        .collect()
+}
+
+fn form_event_spec(event_id: &'static str) -> PlatformEventSpec {
+    let (signature, parameter_count, context) = match event_id {
+        "OnOpen" => ("Процедура ПриОткрытии(Элемент, Отказ)", 2, "thinClient"),
+        "OnChange" => ("Процедура ПриИзменении(Элемент, Отказ)", 2, "thinClient"),
+        "BeforeAddRow" => (
+            "Процедура ПередДобавлениемСтроки(Элемент, Отказ)",
+            2,
+            "thinClient",
+        ),
+        "Execute" => (
+            "Процедура ОбработкаКоманды(ПараметрКоманды, ПараметрыВыполненияКоманды)",
+            2,
+            "thinClient",
+        ),
+        _ => ("Процедура Обработчик()", 0, "thinClient"),
+    };
+    PlatformEventSpec {
+        event_id,
+        handler: event_id,
+        signature,
+        parameter_count,
+        context,
+        binding: BindingFact::Property,
     }
 }
 
@@ -1487,5 +1677,117 @@ mod tests {
             diagnostic.to_string(),
             "[FORM_EVENT_NOT_ALLOWED] event 'Opening' on form: event is not present in the target event matrix"
         );
+    }
+
+    #[test]
+    fn module_event_applicability_covers_every_approved_role_family() {
+        use crate::domain::address::QualifiedAddress;
+        use crate::domain::platform_profile::PlatformProfile;
+
+        let cases: [(&str, &[&str]); 16] = [
+            ("main:Document.Заказ.Module.Object", &["BeforeWrite"]),
+            (
+                "main:Document.Заказ.Module.Manager",
+                &["ChoiceDataGetProcessing"],
+            ),
+            (
+                "main:InformationRegister.Цены.Module.RecordSet",
+                &["BeforeWrite"],
+            ),
+            (
+                "main:Constant.ОсновнаяВалюта.Module.ValueManager",
+                &["BeforeWrite"],
+            ),
+            ("main:CommonModule.ЗаказыСервер", &[]),
+            ("main:Document.Заказ.Form.ФормаДокумента.Module.Form", &[]),
+            (
+                "main:Document.Заказ.Command.ПровестиИЗакрыть.Module.Command",
+                &["CommandProcessing"],
+            ),
+            ("main:Module.ManagedApplication", &["BeforeStartSystem"]),
+            ("main:Module.OrdinaryApplication", &["BeforeStartSystem"]),
+            ("main:Module.Session", &["SessionParametersSetting"]),
+            ("main:Module.ExternalConnection", &["BeforeStartSystem"]),
+            ("main:HTTPService.API.Module.HTTPService", &[]),
+            ("main:WebService.Обмен.Module.WebService", &[]),
+            (
+                "main:IntegrationService.Шина.Module.IntegrationService",
+                &[],
+            ),
+            ("main:Bot.Помощник.Module.Bot", &["MessageProcessing"]),
+            (
+                "main:WebSocketClient.Телефония.Module.WebSocketClient",
+                &["Open"],
+            ),
+        ];
+        let profile = PlatformProfile::v8_3_27();
+        for (raw, expected) in cases {
+            let at = QualifiedAddress::parse(raw).unwrap();
+            let capability = profile.module_capability(&at).unwrap();
+            let actual = module_event_catalog_8_3_27(capability)
+                .iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn form_event_applicability_preserves_every_logical_owner_family() {
+        let cases = [
+            (FormEventOwnerKind::Form, "OnOpen"),
+            (
+                FormEventOwnerKind::Element(FormElementKind::InputField),
+                "OnChange",
+            ),
+            (FormEventOwnerKind::Table, "BeforeAddRow"),
+            (
+                FormEventOwnerKind::Column(FormElementKind::InputField),
+                "OnChange",
+            ),
+            (FormEventOwnerKind::Command, "Execute"),
+        ];
+        for (owner, expected) in cases {
+            assert!(
+                form_event_catalog_8_3_27(owner)
+                    .iter()
+                    .any(|event| event.event_id == expected),
+                "{owner:?} must own {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn event_catalog_signatures_match_their_validation_arity() {
+        let owners = [
+            FormEventOwnerKind::Form,
+            FormEventOwnerKind::Element(FormElementKind::InputField),
+            FormEventOwnerKind::Table,
+            FormEventOwnerKind::Column(FormElementKind::InputField),
+            FormEventOwnerKind::Command,
+        ];
+        for owner in owners {
+            for event in form_event_catalog_8_3_27(owner) {
+                let parameters = event
+                    .signature
+                    .split_once('(')
+                    .and_then(|(_, tail)| tail.split_once(')'))
+                    .map(|(parameters, _)| parameters.trim())
+                    .unwrap();
+                let arity = if parameters.is_empty() {
+                    0
+                } else {
+                    parameters.split(',').count()
+                };
+                assert_eq!(arity, event.parameter_count, "{owner:?} {}", event.event_id);
+            }
+        }
+    }
+
+    #[test]
+    fn platform_8_3_27_module_event_catalog_is_role_specific() {
+        module_event_applicability_covers_every_approved_role_family();
+        form_event_applicability_preserves_every_logical_owner_family();
+        event_catalog_signatures_match_their_validation_arity();
     }
 }

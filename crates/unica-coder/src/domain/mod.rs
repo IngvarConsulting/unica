@@ -14,7 +14,10 @@ pub mod format_profile;
 #[allow(dead_code)]
 pub(crate) mod invocation;
 pub mod long_work;
+// Hidden v0.13 module projection remains unreachable from the package-selected v0.12 surface.
 pub(crate) mod metadata;
+#[allow(dead_code)]
+pub(crate) mod module_projection;
 pub mod operational_config;
 #[allow(dead_code)]
 pub(crate) mod platform_profile;

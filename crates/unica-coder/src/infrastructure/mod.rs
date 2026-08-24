@@ -1,5 +1,8 @@
 pub(crate) mod application_ports;
 pub(crate) mod bsl_outline;
+// Hidden v0.13 module projection remains unreachable from the package-selected v0.12 surface.
+#[allow(dead_code)]
+pub(crate) mod bsl_module_projection;
 pub(crate) mod bundled_tools;
 pub(crate) mod code_intelligence;
 pub(crate) mod configuration_help;

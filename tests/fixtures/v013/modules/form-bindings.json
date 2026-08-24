@@ -1,0 +1,40 @@
+{
+  "bindings": [
+    {
+      "case": "form",
+      "owner": "form",
+      "ownerAt": "main:Document.Заказ.Form.ФормаДокумента",
+      "event": "OnOpen",
+      "handler": "ОбщийОбработчик",
+      "callType": "After"
+    },
+    {
+      "case": "element",
+      "owner": "element",
+      "ownerAt": "main:Document.Заказ.Form.ФормаДокумента.Item.Склад",
+      "event": "OnChange",
+      "handler": "ОбщийОбработчик"
+    },
+    {
+      "case": "form-table",
+      "owner": "table",
+      "ownerAt": "main:Document.Заказ.Form.ФормаДокумента.Item.Товары",
+      "event": "BeforeAddRow",
+      "handler": "ОбщийОбработчик"
+    },
+    {
+      "case": "nested-column",
+      "owner": "column",
+      "ownerAt": "main:Document.Заказ.Form.ФормаДокумента.Item.Товары.Item.Количество",
+      "event": "OnChange",
+      "handler": "ОбщийОбработчик"
+    },
+    {
+      "case": "command",
+      "owner": "command",
+      "ownerAt": "main:Document.Заказ.Form.ФормаДокумента.Command.Пересчитать",
+      "event": "Execute",
+      "handler": "ОбщийОбработчик"
+    }
+  ]
+}
