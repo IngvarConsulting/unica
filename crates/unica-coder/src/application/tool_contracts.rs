@@ -6403,11 +6403,11 @@ pub(crate) mod tests {
             ),
             (
                 "unica.meta.add",
-                entry("metadata:Add", "27646:331032f4d1cfefb7"),
+                entry("metadata:Add", "27693:4df3c2a17f42873c"),
             ),
             (
                 "unica.meta.edit",
-                entry("metadata:Edit", "28145:c93c0b516cc77cf1"),
+                entry("metadata:Edit", "28192:488b7c1cd73aeaa8"),
             ),
             (
                 "unica.meta.remove",
