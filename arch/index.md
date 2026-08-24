@@ -84,7 +84,7 @@
 | `INV.APP.OUTLINE-SOURCE` | инвариант · product | active |  | Outline читает текущий файл без индекса | [invariants/INV.APP.OUTLINE-SOURCE.md](invariants/INV.APP.OUTLINE-SOURCE.md) |
 | `INV.APP.PARTIAL-FALLBACK` | инвариант · product | active |  | Завершённый частичный отказ Designer классифицируется для повтора | [invariants/INV.APP.PARTIAL-FALLBACK.md](invariants/INV.APP.PARTIAL-FALLBACK.md) |
 | `INV.APP.PROVIDER-NEUTRAL` | инвариант · product | active |  | Читатель кода выбирается по capability поставщика | [invariants/INV.APP.PROVIDER-NEUTRAL.md](invariants/INV.APP.PROVIDER-NEUTRAL.md) |
-| `INV.APP.RUNTIME-RESOURCE-TREE` | инвариант · product | active |  | Runtime resource остаётся занятым до смерти всего принадлежащего дерева | [invariants/INV.APP.RUNTIME-RESOURCE-TREE.md](invariants/INV.APP.RUNTIME-RESOURCE-TREE.md) |
+| `INV.APP.RUNTIME-RESOURCE-TREE` | инвариант · product | active |  | Runtime resource освобождается только по поддержанной tree capability | [invariants/INV.APP.RUNTIME-RESOURCE-TREE.md](invariants/INV.APP.RUNTIME-RESOURCE-TREE.md) |
 | `INV.APP.SEARCH-EXPANSIONS` | инвариант · product | active |  | Расширения могут добавить совпадение для исходно пустого запроса | [invariants/INV.APP.SEARCH-EXPANSIONS.md](invariants/INV.APP.SEARCH-EXPANSIONS.md) |
 | `INV.APP.SEARCH-TIE-ORDER` | инвариант · product | active |  | Равные оценки документации упорядочены детерминированно | [invariants/INV.APP.SEARCH-TIE-ORDER.md](invariants/INV.APP.SEARCH-TIE-ORDER.md) |
 | `INV.APP.SKILL-REFERENCE-REACHABILITY` | инвариант · process | active |  | Новая справка достижима из скилла | [invariants/INV.APP.SKILL-REFERENCE-REACHABILITY.md](invariants/INV.APP.SKILL-REFERENCE-REACHABILITY.md) |

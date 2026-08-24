@@ -194,6 +194,15 @@ pub(crate) struct FileIdentity {
     file: u64,
 }
 
+impl FileIdentity {
+    pub(crate) fn stable_bytes(self) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
+        bytes[..8].copy_from_slice(&self.volume.to_le_bytes());
+        bytes[8..].copy_from_slice(&self.file.to_le_bytes());
+        bytes
+    }
+}
+
 /// Retained, no-follow capability for one named absolute directory.
 ///
 /// The descriptor keeps the originally admitted directory available for
@@ -204,6 +213,16 @@ pub(crate) struct FileIdentity {
 pub(crate) struct RetainedDirectoryCapability {
     path: PathBuf,
     retained: Arc<RetainedDirectoryCapabilityInner>,
+}
+
+/// Retained no-follow authority for one regular child of an admitted directory.
+/// The open descriptor is the physical identity; validation proves the current
+/// name still resolves to that exact object before a caller publishes or joins.
+pub(crate) struct RetainedRegularFileCapability {
+    parent: RetainedDirectoryCapability,
+    name: std::ffi::OsString,
+    file: fs::File,
+    identity: FileIdentity,
 }
 
 struct RetainedDirectoryCapabilityInner {
@@ -297,6 +316,57 @@ impl RetainedDirectoryCapability {
             ));
         }
         Ok(bytes)
+    }
+
+    pub(crate) fn retain_regular_child(
+        &self,
+        name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedRegularFileCapability> {
+        let file = open_regular_child_nofollow(&self.retained.directory, name)?;
+        let identity = file_identity(&file)?;
+        Ok(RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: name.to_os_string(),
+            file,
+            identity,
+        })
+    }
+}
+
+impl RetainedRegularFileCapability {
+    pub(crate) fn identity(&self) -> FileIdentity {
+        self.identity
+    }
+
+    pub(crate) fn read_bounded(&self, max_bytes: usize) -> io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let mut file = self.file.try_clone()?;
+        file.seek(SeekFrom::Start(0))?;
+        let limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut bytes = Vec::new();
+        file.by_ref().take(limit).read_to_end(&mut bytes)?;
+        if bytes.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("regular file exceeds the {max_bytes}-byte read limit"),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+        self.parent.validate_named_identity()?;
+        let rebound = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
+        if file_identity(&rebound)? != self.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "named regular-file identity changed after capability admission",
+            ));
+        }
+        Ok(())
     }
 }
 

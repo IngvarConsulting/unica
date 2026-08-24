@@ -20,15 +20,26 @@ actor и одна revision разделяют producer; другой worktree и
 Daemon владеет rootless ProviderHost coordinator с ключом
 `engine + target + capabilities`. Разделяется только запуск host: root request,
 результат, cache и существующая `PersistentMcpSession` остаются actor-bound и не
-переиспользуются между корнями. Runtime coordinator ключуется выведенной из
-реального resource authority identity и точным UUIDv4 job lease, который уже
-владеет `active.lock`; повтор аргументов не создаёт idempotency и не объединяет
-destructive invocation.
+переиспользуются между корнями. Runtime coordinator вызывается только через
+`RuntimeJobService`: сервис под тем же lifecycle-lock удерживает no-follow
+descriptor jobs-root и `active.lock`, повторно подтверждает их физическую
+identity и точный UUIDv4 lease и выполняет join до освобождения guard. Movable
+runtime key наружу не выдаётся; повтор аргументов не создаёт idempotency и не
+объединяет destructive invocation.
 
-Leader exit runtime-процесса не терминален, пока retained Unix process group или
-Windows Job Object не доказан пустым. Cancel, startup failure и drop завершают и
-пожинают дерево в одном bounded окне; terminal publication и release ресурса
-следуют только после этой проверки.
+На Windows authority дерева — успешно присоединённый Job Object. На Unix этот
+срез поддерживает только bundled-runner contract: unreaped leader удерживается
+через `waitid(WNOWAIT)` как generation anchor process group, а отдельный
+cooperative ownership FD наследуется всеми принадлежащими потомками независимо
+от stdout/stderr. Это не обещание containment для hostile arbitrary descendant
+или другого process group. Потерянная или не установленная ownership capability,
+ошибка post-spawn cleanup и невозможность доказать terminality дают закрытый
+ownership-uncertain outcome и durable `Lost`: сигнал после потери generation authority не
+посылается, `active.lock` остаётся quarantined, доказанная tree terminality и
+resource release не публикуются. Compatibility phase `Lost` классифицирует
+неопределённость для наблюдателя, но не является authority на освобождение ресурса.
+Cancel и доказуемый cleanup делят одно абсолютное bounded окно с reap и обоими
+output readers.
 
 Canonical V13 capability испытывается injected service после durable Task
 handoff, но production subject handler остаётся dormant до Task 22. SharedWork

@@ -20,3 +20,11 @@ pub(crate) use process::{
     STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT,
 };
 pub(crate) use target::current_target_id;
+
+#[cfg(test)]
+pub(crate) fn assert_runtime_generation_authority_for_test() {
+    #[cfg(unix)]
+    process::assert_released_unix_group_never_signals_reused_identity_for_test();
+    #[cfg(windows)]
+    process::assert_windows_runtime_process_tree_semantics_for_test();
+}

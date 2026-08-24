@@ -355,8 +355,7 @@ mod tests {
 
     use crate::application::shared_work::{
         ArtifactReady, DeliveryFailure, DeliveryFailureClass, DeliveryFormIdentity,
-        DeliveryWorkKey, RuntimeLeaseIdentity, RuntimeResourceIdentity, RuntimeWorkKey,
-        SharedWorkKey,
+        DeliveryWorkKey, ProviderHostKey, SharedWorkKey,
     };
     use crate::domain::progress::NoopProgressSink;
 
@@ -742,10 +741,14 @@ mod tests {
     #[test]
     fn delivery_boundary_rejects_non_delivery_key_mismatched_identity_and_relative_root() {
         let desk = desk();
-        let non_delivery = SharedWorkKey::from(&RuntimeWorkKey::new(
-            RuntimeResourceIdentity::from_authority_digest("1".repeat(64)).unwrap(),
-            RuntimeLeaseIdentity::from_job_id(&uuid::Uuid::new_v4().to_string()).unwrap(),
-        ));
+        let non_delivery = SharedWorkKey::from(
+            &ProviderHostKey::new(
+                "bsl-analyzer",
+                "test-target",
+                std::collections::BTreeSet::from(["search".to_string()]),
+            )
+            .unwrap(),
+        );
         let wrong = exact_delivery_key('e');
         let expected = exact_delivery_key('f');
 

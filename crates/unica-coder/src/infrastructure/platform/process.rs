@@ -30,8 +30,10 @@ pub(crate) enum RuntimeProcessTreeState {
 pub(crate) struct RuntimeProcessTreeHandle {
     tree: ProcessTree,
     leader_exit: Option<ExitStatus>,
+    leader_exit_observed: bool,
 }
 
+#[cfg_attr(unix, allow(dead_code))]
 fn runtime_process_tree_is_terminal(leader_exited: bool, owned_tree_empty: bool) -> bool {
     leader_exited && owned_tree_empty
 }
@@ -44,8 +46,9 @@ fn windows_job_object_is_empty(active_processes: u32) -> bool {
 impl RuntimeProcessTreeHandle {
     pub(crate) fn prepare(command: &mut Command) -> io::Result<Self> {
         Ok(Self {
-            tree: ProcessTree::prepare(command)?,
+            tree: ProcessTree::prepare_runtime(command)?,
             leader_exit: None,
+            leader_exit_observed: false,
         })
     }
 
@@ -54,16 +57,37 @@ impl RuntimeProcessTreeHandle {
     }
 
     pub(crate) fn poll(&mut self, child: &mut Child) -> io::Result<RuntimeProcessTreeState> {
-        if self.leader_exit.is_none() {
-            self.leader_exit = child.try_wait()?;
+        #[cfg(unix)]
+        {
+            if !self.leader_exit_observed {
+                self.leader_exit_observed = self.tree.observe_leader_exit(child)?.is_some();
+            }
+            if !self.leader_exit_observed {
+                return Ok(RuntimeProcessTreeState::Running);
+            }
+            if !self.tree.is_empty_except_retained_leader(child.id())? {
+                return Ok(RuntimeProcessTreeState::Running);
+            }
+            if self.leader_exit.is_none() {
+                self.leader_exit = Some(self.tree.reap_observed_leader(child)?);
+            }
+            Ok(RuntimeProcessTreeState::Exited(
+                self.leader_exit.expect("leader exit was retained above"),
+            ))
         }
-        let Some(status) = self.leader_exit else {
-            return Ok(RuntimeProcessTreeState::Running);
-        };
-        if runtime_process_tree_is_terminal(true, self.tree.is_empty()?) {
-            Ok(RuntimeProcessTreeState::Exited(status))
-        } else {
-            Ok(RuntimeProcessTreeState::Running)
+        #[cfg(not(unix))]
+        {
+            if self.leader_exit.is_none() {
+                self.leader_exit = child.try_wait()?;
+            }
+            let Some(status) = self.leader_exit else {
+                return Ok(RuntimeProcessTreeState::Running);
+            };
+            if runtime_process_tree_is_terminal(true, self.tree.is_empty()?) {
+                Ok(RuntimeProcessTreeState::Exited(status))
+            } else {
+                Ok(RuntimeProcessTreeState::Running)
+            }
         }
     }
 
@@ -102,8 +126,47 @@ impl RuntimeProcessTreeHandle {
 
     #[cfg(test)]
     pub(crate) fn leader_exited(&self) -> bool {
-        self.leader_exit.is_some()
+        self.leader_exit_observed || self.leader_exit.is_some()
     }
+}
+
+#[cfg(unix)]
+fn unix_leader_exit_unreaped(process_id: u32) -> io::Result<Option<ExitStatus>> {
+    use std::mem::zeroed;
+    use std::os::unix::process::ExitStatusExt;
+
+    // WNOWAIT retains the exited leader as the generation authority for its
+    // process group. The numeric PGID therefore cannot be recycled while a
+    // descendant is still owned or cancellation may still signal the group.
+    let mut information: libc::siginfo_t = unsafe { zeroed() };
+    let waited = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            process_id as libc::id_t,
+            &mut information,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if waited == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let observed = unsafe { information.si_pid() };
+    if observed == 0 {
+        return Ok(None);
+    }
+    let status = unsafe { information.si_status() };
+    let raw_status = match information.si_code {
+        libc::CLD_EXITED => status << 8,
+        libc::CLD_KILLED => status,
+        libc::CLD_DUMPED => status | 0x80,
+        code => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected retained leader wait status code {code}"),
+            ));
+        }
+    };
+    Ok(Some(ExitStatus::from_raw(raw_status)))
 }
 
 #[cfg(test)]
@@ -627,10 +690,16 @@ impl ManagedChild {
         self.child.id()
     }
 
+    fn try_wait_owned_leader(&mut self) -> Result<Option<ExitStatus>, String> {
+        self.process_tree
+            .try_reap_leader(&mut self.child)
+            .map_err(process_error)
+    }
+
     pub fn is_running(&mut self) -> Result<bool, String> {
         match self.state {
             ChildState::Reaped | ChildState::Terminating => Ok(false),
-            ChildState::Running => match self.child.try_wait().map_err(process_error)? {
+            ChildState::Running => match self.try_wait_owned_leader()? {
                 Some(_) => {
                     self.process_tree.cleanup_after_leader_exit(&mut self.child);
                     self.state = ChildState::Reaped;
@@ -683,7 +752,7 @@ impl ManagedChild {
                 self.terminate()?;
                 return self.finish_after_termination(stdout, stderr, true, false);
             }
-            if let Some(status) = self.child.try_wait().map_err(process_error)? {
+            if let Some(status) = self.try_wait_owned_leader()? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
                 return Ok(finish_output(status, stdout, stderr, false, false));
@@ -772,7 +841,7 @@ impl ManagedChild {
                     first_line_error,
                 ));
             }
-            if let Some(status) = self.child.try_wait().map_err(process_error)? {
+            if let Some(status) = self.try_wait_owned_leader()? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
                 drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
@@ -795,13 +864,13 @@ impl ManagedChild {
             return Ok(());
         }
         if self.state == ChildState::Running {
-            if self.child.try_wait().map_err(process_error)?.is_some() {
+            if self.try_wait_owned_leader()?.is_some() {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
                 return Ok(());
             }
             if let Err(error) = self.process_tree.terminate(&mut self.child) {
-                if self.child.try_wait().map_err(process_error)?.is_some() {
+                if self.try_wait_owned_leader()?.is_some() {
                     self.state = ChildState::Reaped;
                     return Ok(());
                 }
@@ -828,7 +897,7 @@ impl ManagedChild {
             return Ok(());
         }
         if self.state == ChildState::Running {
-            if self.child.try_wait().map_err(process_error)?.is_some() {
+            if self.try_wait_owned_leader()?.is_some() {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
                 return Ok(());
@@ -837,7 +906,7 @@ impl ManagedChild {
                 .process_tree
                 .request_graceful_termination(&mut self.child)
             {
-                if self.child.try_wait().map_err(process_error)?.is_some() {
+                if self.try_wait_owned_leader()?.is_some() {
                     self.process_tree.cleanup_after_leader_exit(&mut self.child);
                     self.state = ChildState::Reaped;
                     return Ok(());
@@ -853,7 +922,7 @@ impl ManagedChild {
         }
 
         if let Err(error) = self.process_tree.terminate(&mut self.child) {
-            if self.child.try_wait().map_err(process_error)?.is_some() {
+            if self.try_wait_owned_leader()?.is_some() {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
                 return Ok(());
@@ -870,7 +939,7 @@ impl ManagedChild {
     fn reap_bounded(&mut self) -> Result<(), String> {
         let started = Instant::now();
         while started.elapsed() < TERMINATION_WAIT_LIMIT {
-            if self.child.try_wait().map_err(process_error)?.is_some() {
+            if self.try_wait_owned_leader()?.is_some() {
                 self.state = ChildState::Reaped;
                 return Ok(());
             }
@@ -888,7 +957,7 @@ impl ManagedChild {
     ) -> Result<ManagedOutput, String> {
         let started = Instant::now();
         while started.elapsed() < TERMINATION_WAIT_LIMIT {
-            if let Some(status) = self.child.try_wait().map_err(process_error)? {
+            if let Some(status) = self.try_wait_owned_leader()? {
                 self.state = ChildState::Reaped;
                 return Ok(finish_output(status, stdout, stderr, timed_out, cancelled));
             }
@@ -952,10 +1021,8 @@ impl ManagedStartupChild {
     }
 
     pub(crate) fn try_wait_status(&mut self) -> Result<Option<ExitStatus>, String> {
-        self.child
-            .as_mut()
-            .expect("startup child exists")
-            .try_wait()
+        self.process_tree
+            .try_reap_leader(self.child.as_mut().expect("startup child exists"))
             .map_err(process_error)
     }
 
@@ -1033,10 +1100,8 @@ impl ManagedStartupChild {
                 .map(Some)
                 .map_err(process_error);
         }
-        self.child
-            .as_mut()
-            .expect("startup child exists")
-            .try_wait()
+        self.process_tree
+            .try_reap_leader(self.child.as_mut().expect("startup child exists"))
             .map_err(process_error)
     }
 
@@ -1064,7 +1129,12 @@ impl ManagedStartupChild {
 
     pub(crate) fn detach(&mut self) -> Result<(), String> {
         let child = self.child.as_mut().expect("startup child exists");
-        if child.try_wait().map_err(process_error)?.is_some() {
+        if self
+            .process_tree
+            .try_reap_leader(child)
+            .map_err(process_error)?
+            .is_some()
+        {
             self.process_tree.cleanup_after_leader_exit(child);
             return Err("process_failed: startup process exited before detach".to_string());
         }
@@ -1088,8 +1158,200 @@ impl Drop for ManagedStartupChild {
 
 #[cfg(unix)]
 struct ProcessTree {
-    process_group: Option<i32>,
+    process_group: Option<UnixProcessGroupAuthority>,
+    ownership_pipe: Option<UnixOwnershipPipe>,
+    leader: UnixLeaderOwnership,
     kill_sent: bool,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug)]
+enum UnixLeaderOwnership {
+    Running,
+    ExitedUnreaped(ExitStatus),
+    Reaped(ExitStatus),
+    AuthorityLost,
+}
+
+#[cfg(unix)]
+struct UnixOwnershipPipe {
+    reader: std::fs::File,
+    parent_writer: Option<std::fs::File>,
+}
+
+#[cfg(unix)]
+impl UnixOwnershipPipe {
+    fn install(command: &mut Command) -> io::Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        let mut descriptors = [-1_i32; 2];
+        if unsafe { libc::pipe(descriptors.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let reader = unsafe { std::fs::File::from_raw_fd(descriptors[0]) };
+        let writer = unsafe { std::fs::File::from_raw_fd(descriptors[1]) };
+        let reader_flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) };
+        if reader_flags == -1
+            || unsafe {
+                libc::fcntl(
+                    reader.as_raw_fd(),
+                    libc::F_SETFL,
+                    reader_flags | libc::O_NONBLOCK,
+                )
+            } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let reader_descriptor_flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFD) };
+        if reader_descriptor_flags == -1
+            || unsafe {
+                libc::fcntl(
+                    reader.as_raw_fd(),
+                    libc::F_SETFD,
+                    reader_descriptor_flags | libc::FD_CLOEXEC,
+                )
+            } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let writer_descriptor_flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFD) };
+        if writer_descriptor_flags == -1
+            || unsafe {
+                libc::fcntl(
+                    writer.as_raw_fd(),
+                    libc::F_SETFD,
+                    writer_descriptor_flags & !libc::FD_CLOEXEC,
+                )
+            } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        command.env(
+            "UNICA_RUNTIME_TREE_OWNERSHIP_FD",
+            writer.as_raw_fd().to_string(),
+        );
+        Ok(Self {
+            reader,
+            parent_writer: Some(writer),
+        })
+    }
+
+    fn child_attached(&mut self) -> io::Result<()> {
+        self.parent_writer.take();
+        if self.is_empty()? {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "runtime child did not retain its ownership capability",
+            ));
+        }
+        Ok(())
+    }
+
+    fn is_empty(&self) -> io::Result<bool> {
+        use std::os::fd::AsRawFd;
+
+        let mut byte = [0_u8; 1];
+        let read = unsafe { libc::read(self.reader.as_raw_fd(), byte.as_mut_ptr().cast(), 1) };
+        if read == 0 {
+            return Ok(true);
+        }
+        if read == -1 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock {
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "runtime ownership capability carried unexpected bytes",
+        ))
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnixGroupGeneration {
+    RetainedLeader,
+    Released,
+}
+
+#[cfg(unix)]
+struct UnixProcessGroupAuthority {
+    pgid: i32,
+    leader_pid: u32,
+    generation: UnixGroupGeneration,
+}
+
+#[cfg(unix)]
+impl UnixProcessGroupAuthority {
+    fn retained(leader_pid: u32) -> Self {
+        Self {
+            pgid: leader_pid as i32,
+            leader_pid,
+            generation: UnixGroupGeneration::RetainedLeader,
+        }
+    }
+
+    #[cfg(test)]
+    fn released_for_test(pgid: i32) -> Self {
+        Self {
+            pgid,
+            leader_pid: pgid as u32,
+            generation: UnixGroupGeneration::Released,
+        }
+    }
+
+    fn signal(&self, signal: i32) -> io::Result<()> {
+        self.signal_with(signal, |group, signal| {
+            if unsafe { libc::kill(group, signal) } == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    fn signal_with(
+        &self,
+        signal: i32,
+        send: impl FnOnce(i32, i32) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.generation != UnixGroupGeneration::RetainedLeader {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Unix process-group generation authority was released",
+            ));
+        }
+        send(-self.pgid, signal)
+    }
+
+    #[cfg(test)]
+    fn signal_with_for_test(
+        &self,
+        signal: i32,
+        send: impl FnOnce(i32, i32) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.signal_with(signal, send)
+    }
+
+    fn release(&mut self) {
+        self.generation = UnixGroupGeneration::Released;
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn assert_released_unix_group_never_signals_reused_identity_for_test() {
+    let signals = std::cell::Cell::new(0_u32);
+    let authority = UnixProcessGroupAuthority::released_for_test(41_337);
+    let error = authority
+        .signal_with_for_test(libc::SIGKILL, |_group, _signal| {
+            signals.set(signals.get().saturating_add(1));
+            Ok(())
+        })
+        .expect_err("a released generation must fail closed");
+    assert_eq!(signals.get(), 0, "foreign reused group was signalled");
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
 }
 
 #[cfg(unix)]
@@ -1108,8 +1370,16 @@ impl ProcessTree {
         }
         Ok(Self {
             process_group: None,
+            ownership_pipe: None,
+            leader: UnixLeaderOwnership::Running,
             kill_sent: false,
         })
+    }
+
+    fn prepare_runtime(command: &mut Command) -> io::Result<Self> {
+        let mut tree = Self::prepare(command)?;
+        tree.ownership_pipe = Some(UnixOwnershipPipe::install(command)?);
+        Ok(tree)
     }
 
     fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
@@ -1117,24 +1387,30 @@ impl ProcessTree {
     }
 
     fn attach(&mut self, child: &Child) -> io::Result<()> {
-        self.process_group = Some(child.id() as i32);
+        self.process_group = Some(UnixProcessGroupAuthority::retained(child.id()));
+        self.leader = UnixLeaderOwnership::Running;
         self.kill_sent = false;
+        if let Some(ownership_pipe) = self.ownership_pipe.as_mut() {
+            if let Err(error) = ownership_pipe.child_attached() {
+                // EOF here means the child did not retain the cooperative tree
+                // capability. Forget the unusable oracle so later cleanup
+                // cannot mistake its EOF for proof that no descendants exist.
+                self.ownership_pipe = None;
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
     fn terminate(&mut self, _child: &mut Child) -> io::Result<()> {
-        let Some(pgid) = self.process_group else {
+        let Some(authority) = self.process_group.as_ref() else {
             return Ok(());
         };
         if self.kill_sent {
             return Ok(());
         }
-        let process_group = -pgid;
-        // SAFETY: the negative PID targets only the process group created in `prepare`.
-        if unsafe { libc::kill(process_group, libc::SIGKILL) } == -1 {
-            let error = io::Error::last_os_error();
+        if let Err(error) = authority.signal(libc::SIGKILL) {
             if error.raw_os_error() == Some(libc::ESRCH) {
-                self.process_group = None;
                 return Ok(());
             }
             return Err(error);
@@ -1144,7 +1420,7 @@ impl ProcessTree {
     }
 
     fn request_graceful_termination(&mut self, _child: &mut Child) -> io::Result<()> {
-        let Some(pgid) = self.process_group else {
+        let Some(authority) = self.process_group.as_ref() else {
             return Ok(());
         };
         if self.kill_sent {
@@ -1152,10 +1428,8 @@ impl ProcessTree {
         }
         // Give v8-runner a chance to observe SIGTERM and clean up the separately
         // grouped 1C client before the bounded SIGKILL fallback.
-        if unsafe { libc::kill(-pgid, libc::SIGTERM) } == -1 {
-            let error = io::Error::last_os_error();
+        if let Err(error) = authority.signal(libc::SIGTERM) {
             if error.raw_os_error() == Some(libc::ESRCH) {
-                self.process_group = None;
                 return Ok(());
             }
             return Err(error);
@@ -1163,21 +1437,118 @@ impl ProcessTree {
         Ok(())
     }
 
-    fn is_empty(&mut self) -> io::Result<bool> {
-        let Some(pgid) = self.process_group else {
-            return Ok(true);
+    fn try_reap_leader(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        if self.observe_leader_exit(child)?.is_none() {
+            return Ok(None);
+        }
+
+        // The zombie leader still pins this exact process-group generation.
+        // Deliver the one terminal group signal before reaping it; afterwards
+        // the numeric PGID is discarded and can never be probed or signalled.
+        if let Err(error) = self.terminate(child) {
+            // macOS reports EPERM when the retained zombie leader is the only
+            // remaining group member: there is no signalable process left.
+            // Descendants owned by this process remain signalable and take the
+            // successful path (covered by the real detached-descendant test).
+            if error.kind() != io::ErrorKind::PermissionDenied
+                || !self.retains_exact_exited_leader(child.id())
+            {
+                return Err(error);
+            }
+        }
+        self.reap_observed_leader(child).map(Some)
+    }
+
+    fn retains_exact_exited_leader(&self, leader_pid: u32) -> bool {
+        matches!(self.leader, UnixLeaderOwnership::ExitedUnreaped(_))
+            && self.process_group.as_ref().is_some_and(|authority| {
+                authority.leader_pid == leader_pid
+                    && authority.generation == UnixGroupGeneration::RetainedLeader
+            })
+    }
+
+    fn observe_leader_exit(&mut self, child: &Child) -> io::Result<Option<ExitStatus>> {
+        match self.leader {
+            UnixLeaderOwnership::Running => match unix_leader_exit_unreaped(child.id()) {
+                Ok(Some(status)) => {
+                    self.leader = UnixLeaderOwnership::ExitedUnreaped(status);
+                    Ok(Some(status))
+                }
+                Ok(None) => Ok(None),
+                Err(error) => {
+                    self.leader = UnixLeaderOwnership::AuthorityLost;
+                    Err(error)
+                }
+            },
+            UnixLeaderOwnership::ExitedUnreaped(status) | UnixLeaderOwnership::Reaped(status) => {
+                Ok(Some(status))
+            }
+            UnixLeaderOwnership::AuthorityLost => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Unix leader generation authority was lost",
+            )),
+        }
+    }
+
+    fn reap_observed_leader(&mut self, child: &mut Child) -> io::Result<ExitStatus> {
+        let observed_status = match self.leader {
+            UnixLeaderOwnership::ExitedUnreaped(status) => status,
+            UnixLeaderOwnership::Reaped(status) => return Ok(status),
+            UnixLeaderOwnership::Running => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Unix leader has not exited",
+                ));
+            }
+            UnixLeaderOwnership::AuthorityLost => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Unix leader generation authority was lost",
+                ));
+            }
         };
-        // SAFETY: signal 0 only probes the retained process group.
-        if unsafe { libc::kill(-pgid, 0) } == 0 {
-            return Ok(false);
+        let status = match child.try_wait() {
+            Ok(Some(status)) => status,
+            Err(error) if error.raw_os_error() == Some(libc::ECHILD) => observed_status,
+            Ok(None) => {
+                self.leader = UnixLeaderOwnership::AuthorityLost;
+                return Err(io::Error::other(
+                    "retained managed-process leader could not be reaped",
+                ));
+            }
+            Err(error) => {
+                self.leader = UnixLeaderOwnership::AuthorityLost;
+                return Err(error);
+            }
+        };
+        if let Some(authority) = self.process_group.as_mut() {
+            authority.release();
         }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            self.process_group = None;
-            Ok(true)
-        } else {
-            Err(error)
+        self.process_group = None;
+        self.leader = UnixLeaderOwnership::Reaped(status);
+        Ok(status)
+    }
+
+    fn is_empty_except_retained_leader(&mut self, leader_pid: u32) -> io::Result<bool> {
+        let authority = self.process_group.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "runtime process-group authority is absent",
+            )
+        })?;
+        if authority.leader_pid != leader_pid {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "runtime process-group leader identity changed",
+            ));
         }
+        let ownership_pipe = self.ownership_pipe.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "runtime child lacks the bundled-runner ownership capability",
+            )
+        })?;
+        ownership_pipe.is_empty()
     }
 
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
@@ -1187,30 +1558,29 @@ impl ProcessTree {
 
     fn cleanup_after_leader_exit_until(
         &mut self,
-        child: &mut Child,
-        deadline: &StartupTerminationDeadline,
+        _child: &mut Child,
+        _deadline: &StartupTerminationDeadline,
     ) {
-        let _ = self.terminate(child);
-        while let Some(pgid) = self.process_group {
-            if deadline.is_expired() {
-                // SIGKILL was already delivered to the owned group. Forget the numeric PGID
-                // rather than risk targeting an unrelated group after identifier reuse.
-                self.process_group = None;
-                break;
-            }
-            // SAFETY: signal 0 only probes the group and cannot affect a recycled process.
-            if unsafe { libc::kill(-pgid, 0) } == -1
-                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-            {
-                self.process_group = None;
-                break;
-            }
-            deadline.sleep_poll_interval();
+        // Generic managed-child paths have already reaped the leader before
+        // entering this hook. Numeric group identity is no longer authority at
+        // that point, so fail closed instead of signalling a potentially reused
+        // group. Runtime jobs use `RuntimeProcessTreeHandle`, which retains the
+        // leader with WNOWAIT until all descendants are accounted for.
+        if let Some(authority) = self.process_group.as_mut() {
+            authority.release();
+        }
+        self.process_group = None;
+        if !matches!(self.leader, UnixLeaderOwnership::Reaped(_)) {
+            self.leader = UnixLeaderOwnership::AuthorityLost;
         }
     }
 
     fn detach(&mut self) -> io::Result<()> {
+        if let Some(authority) = self.process_group.as_mut() {
+            authority.release();
+        }
         self.process_group = None;
+        self.leader = UnixLeaderOwnership::AuthorityLost;
         Ok(())
     }
 }
@@ -1232,6 +1602,10 @@ unsafe impl Sync for ProcessTree {}
 impl ProcessTree {
     fn prepare(command: &mut Command) -> io::Result<Self> {
         Self::prepare_with_policy(command, true)
+    }
+
+    fn prepare_runtime(command: &mut Command) -> io::Result<Self> {
+        Self::prepare(command)
     }
 
     fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
@@ -1316,6 +1690,10 @@ impl ProcessTree {
 
     fn request_graceful_termination(&mut self, child: &mut Child) -> io::Result<()> {
         self.terminate(child)
+    }
+
+    fn try_reap_leader(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        child.try_wait()
     }
 
     fn is_empty(&mut self) -> io::Result<bool> {
@@ -1454,6 +1832,10 @@ impl ProcessTree {
         Ok(Self)
     }
 
+    fn prepare_runtime(command: &mut Command) -> io::Result<Self> {
+        Self::prepare(command)
+    }
+
     fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
         Self::prepare(command)
     }
@@ -1468,6 +1850,10 @@ impl ProcessTree {
 
     fn request_graceful_termination(&mut self, child: &mut Child) -> io::Result<()> {
         self.terminate(child)
+    }
+
+    fn try_reap_leader(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        child.try_wait()
     }
 
     fn is_empty(&mut self) -> io::Result<bool> {
@@ -2221,6 +2607,12 @@ mod tests {
             true,
             windows_job_object_is_empty(0)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn released_unix_group_generation_never_signals_a_reused_numeric_pgid() {
+        super::assert_released_unix_group_never_signals_reused_identity_for_test();
     }
 
     #[cfg(windows)]

@@ -11,8 +11,8 @@ use crate::application::invocation_store::{InvocationStore, InvocationStoreError
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::ports::{Clock, TokioClock};
 use crate::application::shared_work::{
-    IndexWorkKey, LongWorkFailure, ProviderHostKey, ProviderHostOwner, RuntimeResourceOwner,
-    RuntimeWorkKey, SharedWorkLease, SharedWorkProducer,
+    IndexWorkKey, LongWorkFailure, ProviderHostKey, ProviderHostOwner, SharedWorkLease,
+    SharedWorkProducer,
 };
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::composition::open_daemon_invocation_store_from_directory;
@@ -21,6 +21,7 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{
     DomainResult, InvocationFailure, InvocationOutcome, SafeIdentityHash,
 };
+use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
     ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry, WorkspaceActorRegistryError,
@@ -53,6 +54,7 @@ pub(crate) struct ActorBoundInvocation {
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
+    runtime_service: Option<Arc<RuntimeJobService>>,
 }
 
 impl ActorBoundInvocation {
@@ -154,13 +156,16 @@ impl ActorBoundExecution {
     #[allow(dead_code)]
     pub(crate) fn join_runtime_resource<W>(
         &self,
-        key: RuntimeWorkKey,
+        lease_id: &str,
         work: W,
-    ) -> SharedWorkLease<(), LongWorkFailure>
+    ) -> Result<SharedWorkLease<(), LongWorkFailure>, String>
     where
         W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
     {
-        self.invocation.runtime_resources.join_or_start(key, work)
+        let service = self.invocation.runtime_service.as_ref().ok_or_else(|| {
+            "runtime resource capability is not admitted for this daemon invocation".to_string()
+        })?;
+        service.join_shared_work(lease_id, &self.invocation.runtime_resources, work)
     }
 
     #[allow(dead_code)]
@@ -237,6 +242,7 @@ fn bind_workspace_invocation(
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
+    runtime_service: Option<Arc<RuntimeJobService>>,
     response_deadline: InvocationResponseDeadline,
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
@@ -265,6 +271,7 @@ fn bind_workspace_invocation(
         deliveries,
         provider_hosts,
         runtime_resources,
+        runtime_service,
     })
 }
 
@@ -478,6 +485,7 @@ pub(crate) struct DaemonInvocationRuntime {
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
+    runtime_service: Option<Arc<RuntimeJobService>>,
 }
 
 impl DaemonInvocationRuntime {
@@ -493,6 +501,7 @@ impl DaemonInvocationRuntime {
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
             runtime_resources: Arc::new(RuntimeResourceOwner::default()),
+            runtime_service: None,
         }
     }
 
@@ -512,7 +521,14 @@ impl DaemonInvocationRuntime {
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
             runtime_resources: Arc::new(RuntimeResourceOwner::default()),
+            runtime_service: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_runtime_service_for_test(mut self, service: Arc<RuntimeJobService>) -> Self {
+        self.runtime_service = Some(service);
+        self
     }
 
     fn capture_response_deadline(&self) -> InvocationResponseDeadline {
@@ -532,6 +548,7 @@ impl DaemonInvocationRuntime {
                     Arc::clone(&self.deliveries),
                     Arc::clone(&self.provider_hosts),
                     Arc::clone(&self.runtime_resources),
+                    self.runtime_service.clone(),
                     response_deadline.clone(),
                 ) {
                     Ok(bound) => Ok(bound),
@@ -1234,7 +1251,7 @@ pub(crate) mod actor_capacity_tests {
     };
     use crate::application::operation_descriptors::KnownLongReason;
     use crate::application::shared_work::{
-        ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, ProviderHostKey, RuntimeWorkKey,
+        ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, IndexWorkKey, ProviderHostKey,
         SharedWorkKey,
     };
     use crate::domain::invocation::InvocationStatus;
@@ -1292,14 +1309,21 @@ pub(crate) mod actor_capacity_tests {
     enum LongCapabilityKind {
         Index,
         Provider(ProviderHostKey),
-        Runtime(RuntimeWorkKey),
+        Runtime { lease_id: String },
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum JoinedCapabilityIdentity {
+        Index(IndexWorkKey),
+        Provider(ProviderHostKey),
+        Runtime(String),
     }
 
     struct SharedLongCapabilityService {
         kind: LongCapabilityKind,
         producers: Arc<AtomicUsize>,
         producer_entered: mpsc::Sender<()>,
-        joined: mpsc::Sender<SharedWorkKey>,
+        joined: mpsc::Sender<JoinedCapabilityIdentity>,
         release: Arc<(Mutex<bool>, Condvar)>,
     }
 
@@ -1486,7 +1510,7 @@ pub(crate) mod actor_capacity_tests {
             let reason = match self.kind {
                 LongCapabilityKind::Index => KnownLongReason::ColdIndex,
                 LongCapabilityKind::Provider(_) => KnownLongReason::ProviderStartup,
-                LongCapabilityKind::Runtime(_) => KnownLongReason::ExternalProcess,
+                LongCapabilityKind::Runtime { .. } => KnownLongReason::ExternalProcess,
             };
             Ok(ExecutionClass::KnownLong(reason))
         }
@@ -1514,15 +1538,19 @@ pub(crate) mod actor_capacity_tests {
             let (key, lease) = match &self.kind {
                 LongCapabilityKind::Index => invocation
                     .join_index_work("rlm", "bsl-1", make_work())
-                    .map(|(key, lease)| (SharedWorkKey::from(&key), lease))
+                    .map(|(key, lease)| (JoinedCapabilityIdentity::Index(key), lease))
                     .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?,
                 LongCapabilityKind::Provider(key) => (
-                    SharedWorkKey::from(key),
+                    JoinedCapabilityIdentity::Provider(key.clone()),
                     invocation.join_provider_host(key.clone(), make_work()),
                 ),
-                LongCapabilityKind::Runtime(key) => (
-                    SharedWorkKey::from(key),
-                    invocation.join_runtime_resource(key.clone(), make_work()),
+                LongCapabilityKind::Runtime { lease_id } => (
+                    JoinedCapabilityIdentity::Runtime(lease_id.clone()),
+                    invocation
+                        .join_runtime_resource(lease_id, make_work())
+                        .map_err(|_| {
+                            InvocationFailure::new("runtime_failed", "runtime unavailable")
+                        })?,
                 ),
             };
             self.joined.send(key).expect("join observation");
@@ -1596,7 +1624,7 @@ pub(crate) mod actor_capacity_tests {
         Arc<SharedLongCapabilityService>,
         Arc<AtomicUsize>,
         mpsc::Receiver<()>,
-        mpsc::Receiver<SharedWorkKey>,
+        mpsc::Receiver<JoinedCapabilityIdentity>,
         Arc<(Mutex<bool>, Condvar)>,
     );
 
@@ -1831,14 +1859,16 @@ pub(crate) mod actor_capacity_tests {
             ),
         )
         .unwrap();
-        let runtime_key =
-            RuntimeJobService::shared_work_key_at(runtime_authority.path(), &runtime_lease.id)
-                .unwrap();
+        let runtime_service = Arc::new(RuntimeJobService::coordination_only_for_test(
+            runtime_authority.path(),
+        ));
 
         for kind in [
             LongCapabilityKind::Index,
             LongCapabilityKind::Provider(provider_key),
-            LongCapabilityKind::Runtime(runtime_key),
+            LongCapabilityKind::Runtime {
+                lease_id: runtime_lease.id,
+            },
         ] {
             let task_root = tempfile::tempdir().unwrap();
             let workspace_parent = tempfile::tempdir().unwrap();
@@ -1865,6 +1895,11 @@ pub(crate) mod actor_capacity_tests {
                 shared_capability_service(kind.clone());
             let runtime =
                 DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+            let runtime = if matches!(kind, LongCapabilityKind::Runtime { .. }) {
+                runtime.with_runtime_service_for_test(Arc::clone(&runtime_service))
+            } else {
+                runtime
+            };
             let request = |root: &std::path::Path| {
                 InvocationRequest::new(
                     ToolIdentity::Run,
@@ -2092,6 +2127,7 @@ pub(crate) mod actor_capacity_tests {
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
             runtime_resources: Arc::new(RuntimeResourceOwner::default()),
+            runtime_service: None,
         };
         let request = |root: &std::path::Path| {
             InvocationRequest::new(

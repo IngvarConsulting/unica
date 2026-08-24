@@ -14,8 +14,6 @@ use crate::domain::source_revision::{SourceRevision, SOURCE_REVISION_ALGORITHM};
 pub(crate) enum SharedWorkIdentityError {
     Index,
     Provider,
-    RuntimeResource,
-    RuntimeLease,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -93,75 +91,6 @@ impl ProviderHostKey {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct RuntimeResourceIdentity(String);
-
-impl RuntimeResourceIdentity {
-    /// Accepts only a bounded, already-redacted authority identity. Callers
-    /// derive this from the retained runtime resource capability; it is not a
-    /// workspace label or an ambient path.
-    pub(crate) fn from_authority_digest(
-        value: impl Into<String>,
-    ) -> Result<Self, SharedWorkIdentityError> {
-        let value = value.into();
-        if !lowercase_sha256(&value) {
-            return Err(SharedWorkIdentityError::RuntimeResource);
-        }
-        Ok(Self(value))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct RuntimeLeaseIdentity(uuid::Uuid);
-
-impl RuntimeLeaseIdentity {
-    pub(crate) fn from_job_id(value: &str) -> Result<Self, SharedWorkIdentityError> {
-        let id = uuid::Uuid::parse_str(value).map_err(|_| SharedWorkIdentityError::RuntimeLease)?;
-        if id.get_version() != Some(uuid::Version::Random) || id.to_string() != value {
-            return Err(SharedWorkIdentityError::RuntimeLease);
-        }
-        Ok(Self(id))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn as_uuid(self) -> uuid::Uuid {
-        self.0
-    }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct RuntimeWorkKey {
-    resource_identity: RuntimeResourceIdentity,
-    lease_identity: RuntimeLeaseIdentity,
-}
-
-impl RuntimeWorkKey {
-    pub(crate) fn new(
-        resource_identity: RuntimeResourceIdentity,
-        lease_identity: RuntimeLeaseIdentity,
-    ) -> Self {
-        Self {
-            resource_identity,
-            lease_identity,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn resource_identity(&self) -> &RuntimeResourceIdentity {
-        &self.resource_identity
-    }
-
-    #[cfg(test)]
-    pub(crate) fn lease_identity(&self) -> RuntimeLeaseIdentity {
-        self.lease_identity
-    }
-}
-
 fn lowercase_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -197,7 +126,10 @@ pub(crate) enum SharedWorkKey {
     },
     Index(IndexWorkKey),
     Provider(ProviderHostKey),
-    Runtime(RuntimeWorkKey),
+    Runtime {
+        resource_identity: [u8; 32],
+        lease_identity: uuid::Uuid,
+    },
 }
 
 impl From<&IndexWorkKey> for SharedWorkKey {
@@ -209,12 +141,6 @@ impl From<&IndexWorkKey> for SharedWorkKey {
 impl From<&ProviderHostKey> for SharedWorkKey {
     fn from(key: &ProviderHostKey) -> Self {
         Self::Provider(key.clone())
-    }
-}
-
-impl From<&RuntimeWorkKey> for SharedWorkKey {
-    fn from(key: &RuntimeWorkKey) -> Self {
-        Self::Runtime(key.clone())
     }
 }
 
@@ -711,11 +637,6 @@ exact_owner!(
     ProviderHostKey,
     SharedWorkLifetime::ProducerBound
 );
-exact_owner!(
-    RuntimeResourceOwner,
-    RuntimeWorkKey,
-    SharedWorkLifetime::OwnerBound
-);
 
 impl<R, E> SharedWork<R, E>
 where
@@ -936,9 +857,8 @@ impl<R, E> Drop for SharedWorkLease<R, E> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeliveryFormIdentity, IndexWorkKey, ProviderHostKey, RuntimeLeaseIdentity,
-        RuntimeResourceIdentity, RuntimeWorkKey, SharedWork, SharedWorkKey, SharedWorkLifetime,
-        SharedWorkSnapshot,
+        DeliveryFormIdentity, IndexWorkKey, ProviderHostKey, SharedWork, SharedWorkKey,
+        SharedWorkLifetime, SharedWorkSnapshot,
     };
     use crate::domain::invocation::SafeIdentityHash;
     use crate::domain::source_revision::{SourceRevision, SOURCE_REVISION_ALGORITHM};
@@ -984,10 +904,10 @@ mod tests {
             )
             .unwrap(),
         );
-        let runtime = SharedWorkKey::from(&RuntimeWorkKey::new(
-            RuntimeResourceIdentity::from_authority_digest("3".repeat(64)).unwrap(),
-            RuntimeLeaseIdentity::from_job_id(&uuid::Uuid::new_v4().to_string()).unwrap(),
-        ));
+        let runtime = SharedWorkKey::Runtime {
+            resource_identity: [3; 32],
+            lease_identity: uuid::Uuid::new_v4(),
+        };
 
         assert_ne!(delivery, index);
         assert_ne!(index, provider);
@@ -996,7 +916,6 @@ mod tests {
 
     #[test]
     fn typed_long_work_keys_reject_weak_identity_and_include_the_complete_revision() {
-        assert!(RuntimeResourceIdentity::from_authority_digest("workspace-a").is_err());
         assert!(
             ProviderHostKey::new("bsl-analyzer", "aarch64-apple-darwin", BTreeSet::new(),).is_err()
         );
@@ -1077,19 +996,16 @@ mod tests {
             "bsl-1",
         )
         .is_err());
-        let runtime_resource =
-            RuntimeResourceIdentity::from_authority_digest("8".repeat(64)).unwrap();
         assert_ne!(
-            RuntimeWorkKey::new(
-                runtime_resource.clone(),
-                RuntimeLeaseIdentity::from_job_id(&uuid::Uuid::new_v4().to_string()).unwrap(),
-            ),
-            RuntimeWorkKey::new(
-                runtime_resource,
-                RuntimeLeaseIdentity::from_job_id(&uuid::Uuid::new_v4().to_string()).unwrap(),
-            )
+            SharedWorkKey::Runtime {
+                resource_identity: [8; 32],
+                lease_identity: uuid::Uuid::new_v4(),
+            },
+            SharedWorkKey::Runtime {
+                resource_identity: [8; 32],
+                lease_identity: uuid::Uuid::new_v4(),
+            }
         );
-        assert!(RuntimeLeaseIdentity::from_job_id(&uuid::Uuid::nil().to_string()).is_err());
     }
 
     #[test]
