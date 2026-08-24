@@ -687,6 +687,8 @@ impl UnicaApplication {
 }
 
 #[cfg(test)]
+mod external_reader_surface_tests;
+#[cfg(test)]
 mod meta_add_surface_tests;
 #[cfg(test)]
 mod meta_info_surface_tests;

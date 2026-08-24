@@ -10,7 +10,7 @@ use crate::infrastructure::native_operations::common::{
     read_support_state_strict, support_root_uuid_from_bytes, SupportState,
 };
 use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_resource_evidence, resolve_platform_xml_target_in, TargetKindPolicy,
+    platform_xml_resource_evidence, resolve_platform_xml_read_target_in, TargetKindPolicy,
 };
 use crate::infrastructure::source_roots::{resolve_named_source_set, ResolvedNamedSourceSet};
 use crate::infrastructure::subsystem_topology::{
@@ -78,7 +78,7 @@ impl<'a> WorkspaceSupportStateReader<'a> {
             source_set: target.source_set.clone(),
             metadata_path: target.metadata_path.clone(),
         };
-        let resolution = resolve_platform_xml_target_in(
+        let resolution = resolve_platform_xml_read_target_in(
             self.context,
             &source_target,
             TargetKindPolicy::Any,

@@ -16,8 +16,8 @@ use crate::infrastructure::native_operations::logical_selector::{
 };
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
-    resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
-    TargetKindPolicy,
+    resolve_platform_xml_read_target, resolve_platform_xml_target, revalidate_platform_xml_target,
+    ClosedPlatformXmlTarget, TargetKindPolicy,
 };
 use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
@@ -1997,7 +1997,7 @@ pub(crate) fn resolve_metadata_object_descriptor(
     context: &WorkspaceContext,
 ) -> Result<(ResolvedTarget, PathBuf), String> {
     let target = metadata_object_source_target(args).map_err(|error| error.to_string())?;
-    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+    let resolution = resolve_platform_xml_read_target(context, &target, TargetKindPolicy::Any)
         .map_err(|error| error.to_string())?;
     if resolution.resolved.target_kind != TargetKind::MetadataObject {
         return Err(format!(

@@ -141,6 +141,11 @@ allowed-tools:
 `unica.mxl.info` принимает либо логический селектор, либо файловый путь —
 ровно один из двух. Оба сразу отклоняются кодом `selector_conflict`.
 
+Для Designer EPF/ERF оба селектора поддерживаются тем же read-only профилем:
+`ExternalDataProcessor.<Имя>.Template.<Макет>` /
+`ExternalReport.<Имя>.Template.<Макет>` и соответствующий `TemplatePath`
+сходятся к одному ресурсу.
+
 ```json
 {
   "jsonrpc": "2.0",

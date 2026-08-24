@@ -132,6 +132,17 @@ impl MetadataOperations {
                 .with_metadata_path(subject.target.clone())],
             };
         }
+        if subject
+            .target
+            .segments()
+            .next()
+            .is_some_and(|kind| matches!(kind, "ExternalDataProcessor" | "ExternalReport"))
+        {
+            return MetadataValidationResult {
+                status: crate::domain::metadata::MetaValidationStatus::Passed,
+                diagnostics: Vec::new(),
+            };
+        }
         MetadataValidator.validate_complete_read(subject, context)
     }
 

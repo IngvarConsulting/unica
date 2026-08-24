@@ -213,6 +213,8 @@ pub(crate) enum MetaInfoDetails {
     },
     Report {},
     DataProcessor {},
+    ExternalReport {},
+    ExternalDataProcessor {},
     CommonModule {},
     ScheduledJob {
         method: Option<MetaScheduledMethod>,

@@ -22,7 +22,7 @@ use crate::infrastructure::diagnostics_jsonl::AnalyzerDiagnosticsBatch;
 use crate::infrastructure::internal_adapters::BslAnalyzerMcpAdapter;
 use crate::infrastructure::platform_xml_source_targets::{
     locate_platform_xml_source_path_in, platform_xml_resource_evidence, portable_relative,
-    resolve_platform_xml_target_in, resolve_platform_xml_target_in_diagnostic_context,
+    resolve_platform_xml_read_target_in, resolve_platform_xml_target_in_diagnostic_context,
     source_set_relative_path, TargetKindPolicy,
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
@@ -93,7 +93,7 @@ pub(crate) fn resolve_diagnostic_context(
         source_set: selected.source_set.name.clone(),
         metadata_path: request.metadata_path.clone(),
     };
-    let resolution = resolve_platform_xml_target_in(
+    let resolution = resolve_platform_xml_read_target_in(
         workspace,
         &source_target,
         TargetKindPolicy::Any,
@@ -1686,6 +1686,46 @@ mod tests {
             limit: 200,
             timeout: Some(Duration::from_secs(30)),
         }
+    }
+
+    #[test]
+    fn diagnostics_context_accepts_external_processor_modules_without_starting_a_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let root =
+            crate::infrastructure::source_roots::normalize_path_identity(temp.path()).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: processors\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("epf/Review/Ext")).unwrap();
+        fs::write(
+            root.join("epf/Review.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor><Properties><Name>Review</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("epf/Review/Ext/ObjectModule.bsl"),
+            "Procedure Run()\nEndProcedure\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let mut request = request(Some("ExternalDataProcessor.Review.ObjectModule"));
+        request.source_set = "processors".to_string();
+
+        let resolved =
+            resolve_diagnostic_context(&request, &context, &CancellationToken::new()).unwrap();
+
+        assert_eq!(
+            resolved.target.metadata_path.as_ref().unwrap().as_str(),
+            "ExternalDataProcessor.Review.ObjectModule"
+        );
+        assert_eq!(resolved.target.target_kind, TargetKind::Module);
     }
 
     fn diagnostic(

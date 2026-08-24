@@ -21,8 +21,8 @@ use crate::domain::source_target::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform_xml_source_targets::{
-    platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
-    TargetKindPolicy,
+    platform_xml_resource_evidence, resolve_platform_xml_read_target, resolve_platform_xml_target,
+    ClosedPlatformXmlTarget, TargetKindPolicy,
 };
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
@@ -2350,8 +2350,12 @@ pub(crate) fn resolve_typed_metadata_object(
         source_set: source_set.to_string(),
         metadata_path: Some(metadata_path.clone()),
     };
-    let resolution = resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
-        .map_err(|error| typed_resolution_failure(metadata_path, operation, error.code))?;
+    let resolution = if operation == "info" {
+        resolve_platform_xml_read_target(context, &target, TargetKindPolicy::Any)
+    } else {
+        resolve_platform_xml_target(context, &target, TargetKindPolicy::Any)
+    }
+    .map_err(|error| typed_resolution_failure(metadata_path, operation, error.code))?;
     if resolution.resolved.target_kind != TargetKind::MetadataObject {
         return Err(typed_diagnostic(
             MetaDiagnosticCode::InvalidArguments,

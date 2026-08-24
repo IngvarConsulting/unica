@@ -14,6 +14,9 @@ allowed-tools:
 - Preferred path: use MCP `unica` tool `unica.meta.info`.
 - Выбирайте объект логически через `sourceSet + metadataPath`; расположение XML
   внутри выгрузки остаётся внутренней деталью `unica`.
+- Designer EPF/ERF читаются по `ExternalDataProcessor.<Имя>` и
+  `ExternalReport.<Имя>`; это read-only профиль и не обещает поддержку этих
+  видов в `meta.add/edit/remove`.
 - Читайте локальную структуру и `data.validation` из одного результата. Отдельный
   публичный вызов проверки не нужен.
 - Инструмент читает только дерево исходников и не обращается к индексу кода ни
