@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -225,6 +226,7 @@ pub(crate) struct SharedWorkProgress {
 pub(crate) enum SharedWorkError<E> {
     Producer(Arc<E>),
     ProducerPanicked,
+    ProducerSpawnFailed,
 }
 
 impl<E> SharedWorkError<E> {
@@ -232,7 +234,7 @@ impl<E> SharedWorkError<E> {
     pub(crate) fn producer(&self) -> Option<&E> {
         match self {
             Self::Producer(error) => Some(error),
-            Self::ProducerPanicked => None,
+            Self::ProducerPanicked | Self::ProducerSpawnFailed => None,
         }
     }
 }
@@ -355,6 +357,17 @@ impl<R, E> SharedWorkEntry<R, E> {
         }
     }
 
+    fn finish(this: &Arc<Self>, outcome: Result<Arc<R>, Arc<SharedWorkError<E>>>) {
+        let mut state = this
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *state = SharedWorkState::Finished(outcome);
+        drop(state);
+        this.settled.notify_all();
+        Self::retire_if_terminal_and_unowned(this);
+    }
+
     fn retire_if_terminal_and_unowned(this: &Arc<Self>) {
         let terminal = matches!(
             *this
@@ -413,6 +426,8 @@ impl<R, E> SharedWorkEntry<R, E> {
 struct SharedWorkRegistry<R, E> {
     entries: Mutex<HashMap<SharedWorkKey, Weak<SharedWorkEntry<R, E>>>>,
     #[cfg(test)]
+    producer_spawner: Mutex<Option<Box<ProducerSpawner>>>,
+    #[cfg(test)]
     before_existing_owner_attach: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     before_terminal_retire_registry: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -423,10 +438,39 @@ impl<R, E> Default for SharedWorkRegistry<R, E> {
         Self {
             entries: Mutex::new(HashMap::new()),
             #[cfg(test)]
+            producer_spawner: Mutex::new(None),
+            #[cfg(test)]
             before_existing_owner_attach: Mutex::new(None),
             #[cfg(test)]
             before_terminal_retire_registry: Mutex::new(None),
         }
+    }
+}
+
+type ProducerTask = Box<dyn FnOnce() + Send + 'static>;
+
+#[cfg(test)]
+type ProducerSpawner = dyn FnOnce(ProducerTask) -> io::Result<()> + Send + 'static;
+
+fn spawn_producer(task: ProducerTask) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("unica-shared-work".to_string())
+        .spawn(task)
+        .map(drop)
+}
+
+impl<R, E> SharedWorkRegistry<R, E> {
+    fn spawn_producer(&self, task: ProducerTask) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(spawn) = self
+            .producer_spawner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            return spawn(task);
+        }
+        spawn_producer(task)
     }
 }
 
@@ -493,7 +537,7 @@ where
         drop(entries);
 
         let running = Arc::clone(&entry);
-        std::thread::spawn(move || {
+        let task = Box::new(move || {
             let outcome = catch_unwind(AssertUnwindSafe(|| work(running.producer())))
                 .map_err(|_| SharedWorkError::ProducerPanicked)
                 .and_then(|outcome| {
@@ -501,15 +545,11 @@ where
                 })
                 .map(Arc::new)
                 .map_err(Arc::new);
-            let mut state = running
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *state = SharedWorkState::Finished(outcome);
-            drop(state);
-            running.settled.notify_all();
-            SharedWorkEntry::retire_if_terminal_and_unowned(&running);
+            SharedWorkEntry::finish(&running, outcome);
         });
+        if self.registry.spawn_producer(task).is_err() {
+            SharedWorkEntry::finish(&entry, Err(Arc::new(SharedWorkError::ProducerSpawnFailed)));
+        }
 
         SharedWorkLease {
             entry,
@@ -536,6 +576,18 @@ where
             .before_terminal_retire_registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(hook));
+    }
+
+    #[cfg(test)]
+    fn set_producer_spawner_for_test(
+        &self,
+        spawn: impl FnOnce(ProducerTask) -> io::Result<()> + Send + 'static,
+    ) {
+        *self
+            .registry
+            .producer_spawner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(spawn));
     }
 }
 
@@ -655,6 +707,7 @@ mod tests {
     };
 
     use std::collections::BTreeSet;
+    use std::io;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Barrier};
     use std::time::Duration;
@@ -745,6 +798,77 @@ mod tests {
             Some(&"download failed")
         );
         assert_eq!(*different.wait().expect("different key result"), 29);
+    }
+
+    #[test]
+    fn producer_spawn_failure_is_terminal_for_the_leader_and_attached_follower() {
+        let work = Arc::new(SharedWork::<usize, &'static str>::new(
+            SharedWorkLifetime::ProducerBound,
+        ));
+        let (spawn_entered_tx, spawn_entered_rx) = mpsc::channel();
+        let (fail_spawn_tx, fail_spawn_rx) = mpsc::channel();
+        work.set_producer_spawner_for_test({
+            move |_| {
+                spawn_entered_tx.send(()).unwrap();
+                fail_spawn_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("test releases the injected spawn failure");
+                Err(io::Error::other("forced shared-work spawn failure"))
+            }
+        });
+
+        let key = delivery(&"0".repeat(64));
+        let (leader_tx, leader_rx) = mpsc::channel();
+        let leader_thread = {
+            let work = Arc::clone(&work);
+            let key = key.clone();
+            std::thread::spawn(move || {
+                let leader =
+                    work.join_or_start(key, |_| panic!("failed spawn must not run producer work"));
+                leader_tx.send(leader).unwrap();
+            })
+        };
+        spawn_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("injected spawner is reached");
+        let follower = work.join_or_start(key.clone(), |_| {
+            panic!("a follower must attach before spawn failure is published")
+        });
+        assert!(!follower.started_here());
+        fail_spawn_tx.send(()).unwrap();
+        let leader = leader_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("spawn failure must return a leader lease without unwind");
+        leader_thread
+            .join()
+            .expect("spawn failure must not unwind caller");
+
+        let SharedWorkSnapshot::Failed(leader_error) = leader.wait_timeout(Duration::from_secs(2))
+        else {
+            panic!("leader must see terminal spawn failure");
+        };
+        let SharedWorkSnapshot::Failed(follower_error) =
+            follower.wait_timeout(Duration::from_secs(2))
+        else {
+            panic!("attached follower must see terminal spawn failure");
+        };
+        assert!(matches!(
+            &*leader_error,
+            super::SharedWorkError::ProducerSpawnFailed
+        ));
+        assert!(matches!(
+            &*follower_error,
+            super::SharedWorkError::ProducerSpawnFailed
+        ));
+        drop(leader);
+        drop(follower);
+
+        let replacement = work.join_or_start(key, |_| Ok(61));
+        assert!(replacement.started_here());
+        assert!(matches!(
+            replacement.wait_timeout(Duration::from_secs(2)),
+            SharedWorkSnapshot::Ready(result) if *result == 61
+        ));
     }
 
     #[test]
@@ -988,6 +1112,7 @@ mod tests {
         exact_key_vocabulary_covers_delivery_index_provider_and_runtime();
         one_producer_serves_many_exact_key_followers_and_fans_out_the_result();
         different_exact_keys_do_not_share_and_failure_is_fanned_out();
+        producer_spawn_failure_is_terminal_for_the_leader_and_attached_follower();
         follower_cancellation_does_not_cancel_a_live_owner();
         owner_bound_work_is_cancelled_when_the_last_owner_leaves();
         owner_attach_racing_last_owner_drop_observes_one_retiring_producer();

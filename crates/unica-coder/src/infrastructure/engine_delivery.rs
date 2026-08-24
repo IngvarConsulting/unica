@@ -89,6 +89,32 @@ impl DeliveryDesk {
             + Send
             + 'static,
     {
+        self.request_with_poll_step(
+            key,
+            work,
+            window,
+            cancellation,
+            progress,
+            DELIVERY_PROGRESS_STEP,
+        )
+    }
+
+    fn request_with_poll_step<W>(
+        &self,
+        key: DeliveryWorkKey,
+        work: W,
+        window: Duration,
+        cancellation: &CancellationToken,
+        progress: &dyn ProgressSink,
+        poll_step: Duration,
+    ) -> EngineDeliveryState
+    where
+        W: FnOnce(
+                crate::application::shared_work::SharedWorkProducer,
+            ) -> Result<ArtifactReady, DeliveryFailure>
+            + Send
+            + 'static,
+    {
         let artifact = key.artifact().to_string();
         let lease = self.join(key, work);
         let wait_window = if lease.started_here() {
@@ -99,7 +125,13 @@ impl DeliveryDesk {
         let deadline = Instant::now() + wait_window;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let snapshot = lease.wait_timeout(remaining.min(DELIVERY_PROGRESS_STEP));
+            let cancelled_before_wait = cancellation.is_cancelled();
+            let wait = if cancelled_before_wait {
+                Duration::ZERO
+            } else {
+                remaining.min(poll_step)
+            };
+            let snapshot = lease.wait_timeout(wait);
             match snapshot {
                 SharedWorkSnapshot::Ready(ready) => return EngineDeliveryState::Ready(ready),
                 SharedWorkSnapshot::Failed(error) => {
@@ -108,6 +140,10 @@ impl DeliveryDesk {
                         SharedWorkError::ProducerPanicked => Arc::new(DeliveryFailure::new(
                             DeliveryFailureClass::Internal,
                             "engine delivery worker panicked",
+                        )),
+                        SharedWorkError::ProducerSpawnFailed => Arc::new(DeliveryFailure::new(
+                            DeliveryFailureClass::Internal,
+                            "engine delivery worker could not start",
                         )),
                     };
                     return EngineDeliveryState::Failed {
@@ -119,7 +155,6 @@ impl DeliveryDesk {
                     progress: moved,
                     elapsed,
                 } => {
-                    publish_exact(&artifact, moved, progress);
                     if cancellation.is_cancelled() || remaining.is_zero() {
                         return EngineDeliveryState::Working {
                             artifact: artifact.clone(),
@@ -128,6 +163,7 @@ impl DeliveryDesk {
                             poll_interval_ms: poll_hint(moved, elapsed),
                         };
                     }
+                    publish_exact(&artifact, moved, progress);
                 }
             }
         }
@@ -530,6 +566,68 @@ mod tests {
     }
 
     #[test]
+    fn pre_cancelled_delivery_returns_before_polling_and_never_publishes_progress() {
+        let desk = Arc::new(desk());
+        let key = exact_delivery_key('8');
+        let producers = Arc::new(AtomicUsize::new(0));
+        let progress = Arc::new(Heard::default());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let requester = {
+            let desk = Arc::clone(&desk);
+            let key = key.clone();
+            let producers = Arc::clone(&producers);
+            let progress = Arc::clone(&progress);
+            thread::spawn(move || {
+                let outcome = desk.request_with_poll_step(
+                    key.clone(),
+                    move |_| {
+                        producers.fetch_add(1, Ordering::SeqCst);
+                        started_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        ArtifactReady::new(key, PathBuf::from("/cache/pre-cancelled"))
+                    },
+                    WIDE,
+                    &cancelled,
+                    progress.as_ref(),
+                    Duration::from_secs(30),
+                );
+                result_tx.send(outcome).unwrap();
+            })
+        };
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("producer starts independently of the cancelled observer");
+
+        let early = result_rx.recv_timeout(Duration::from_secs(2));
+        if early.is_err() {
+            release_tx.send(()).unwrap();
+            requester.join().unwrap();
+            panic!("a pre-cancelled observer entered the injected 30 s progress polling step");
+        }
+        let outcome = early.unwrap();
+        assert!(matches!(outcome, EngineDeliveryState::Working { .. }));
+        assert!(
+            progress.events.lock().expect("events").is_empty(),
+            "a pre-cancelled observer must not publish delivery progress"
+        );
+
+        let follower = desk.join(key, |_| {
+            panic!("the non-cancelled follower must join the process-owned producer")
+        });
+        release_tx.send(()).unwrap();
+        requester.join().unwrap();
+        assert!(matches!(
+            follower.wait_timeout(Duration::from_secs(2)),
+            SharedWorkSnapshot::Ready(_)
+        ));
+        assert_eq!(producers.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn two_worktrees_join_one_identical_immutable_delivery() {
         let desk = Arc::new(desk());
         let key = exact_delivery_key('a');
@@ -676,6 +774,7 @@ mod tests {
     fn exact_delivery_identity_failure_and_follower_cancellation_are_one_contract() {
         exact_delivery_progress_is_projected_to_the_owning_waiter();
         cancelling_one_delivery_follower_does_not_stop_the_process_owned_producer();
+        pre_cancelled_delivery_returns_before_polling_and_never_publishes_progress();
         two_worktrees_join_one_identical_immutable_delivery();
         different_delivery_sha256_values_never_share();
         interrupted_archive_is_a_classified_failure_and_never_artifact_ready();
