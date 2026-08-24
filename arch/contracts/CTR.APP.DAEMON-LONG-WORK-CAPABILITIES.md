@@ -26,7 +26,13 @@ Unix runtime tree в этом контракте означает только r
 чужого inherited FD. Ошибка startup, fallback, stale local poll, output или
 persistence оставляет canonical worker supervising retained authority; reader
 failure sticky. Поздний release читает и атомарно публикует record через retained
-job-directory, синхронизирует renamed handle и подтверждает canonical
-job-directory/`record.json` до удаления lease; он остаётся привязан к исходному
-physical jobs-root.
+исходный job-directory, который принимается до initial spawn либо до принятия
+attach process ownership и не переоткрывается по имени на retry; синхронизирует
+renamed handle и подтверждает исходный named
+job-directory/`record.json` под lifecycle lane до удаления lease. Эта final
+confirmation линеаризует release; post-commit mutation вне lane не заявлена.
+Capability остаётся привязан к исходному physical jobs-root.
+Activation/fallback ownership-transfer record transitions после capability
+admission также публикуются только через этот retained job-directory; normal
+poll/observation publication остаётся вне этого узкого среза.
 Production subject handler и durable progress остаются границей Task 22.

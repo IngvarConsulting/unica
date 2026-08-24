@@ -1075,6 +1075,15 @@ impl ActiveLifecycleLock {
             .retain_regular_child(std::ffi::OsStr::new("active.lock"))
     }
 
+    fn retain_job_directory(&self, id: &str) -> io::Result<RetainedDirectoryCapability> {
+        self.validate()?;
+        let directory = self
+            .jobs_root
+            .retain_directory_child(std::ffi::OsStr::new(id))?;
+        directory.validate_named_identity()?;
+        Ok(directory)
+    }
+
     fn release_active_lock_for(
         &self,
         id: &str,
@@ -1746,9 +1755,18 @@ impl RuntimeJobStore {
 }
 
 /// Durable job worker harness. A public transport adapter is deliberately outside this module.
+#[derive(Clone)]
+struct RetainedRuntimeJobAuthority {
+    jobs_root: RetainedDirectoryCapability,
+    job_directory: RetainedDirectoryCapability,
+}
+
 struct ActiveRuntimeJobProcess {
     process: Box<dyn RuntimeJobProcess>,
     jobs_root: RetainedDirectoryCapability,
+    /// Exact descriptor authority admitted before the process could start.
+    /// Quarantine retries must never re-resolve `jobs/<id>` from its name.
+    job_directory: RetainedDirectoryCapability,
     attempt_argv: Vec<String>,
     fallback: Option<RuntimeJobRequest>,
     previous_output: Option<RuntimeJobOutput>,
@@ -2035,6 +2053,13 @@ impl RuntimeJobService {
                 "runtime job worker operation does not match queued job",
             ));
         }
+        let job_directory = lifecycle_lock
+            .retain_job_directory(&record.id)
+            .map_err(|error| io_error("retain activated runtime job directory", &error))?;
+        let retained_authority = RetainedRuntimeJobAuthority {
+            jobs_root: lifecycle_lock.jobs_root.clone(),
+            job_directory,
+        };
         // The first reauthorization may have completed while cancellation or
         // recovery owned the lifecycle guard. Repeat it after claiming the
         // activation boundary so stale evidence cannot cross into spawn.
@@ -2044,22 +2069,43 @@ impl RuntimeJobService {
         });
         if let Err(error) = preflight_result {
             let error = redacted_error(&error);
-            let _ = self.fail_start_guarded(&mut record, &error);
+            let _ = self.fail_start_with_authority_guarded(
+                &mut record,
+                &error,
+                &retained_authority,
+                &lifecycle_lock,
+            );
             return Err(error);
+        }
+        if let Err(error) = retained_authority.job_directory.validate_named_identity() {
+            return Err(io_error(
+                "revalidate activated runtime job directory",
+                &error,
+            ));
         }
         // The child must never be able to exist before the record admits it. A
         // worker killed between the spawn and the `Running` write would otherwise
         // leave a queued record that wrongly proves the workspace is childless.
         record.child_spawn_attempted = Some(true);
-        if let Err(error) = self.store.write_record(&record) {
-            let _ = self.fail_start_guarded(&mut record, &error);
+        if let Err(error) = self.write_record_with_authority(&retained_authority, &record) {
+            let _ = self.fail_start_with_authority_guarded(
+                &mut record,
+                &error,
+                &retained_authority,
+                &lifecycle_lock,
+            );
             return Err(error);
         }
         let process = match self.runner.spawn(request) {
             Ok(process) => process,
             Err(RuntimeJobSpawnFailure::ProvenChildless(error)) => {
                 let error = redacted_error(&error);
-                let _ = self.fail_start_guarded(&mut record, &error);
+                let _ = self.fail_start_with_authority_guarded(
+                    &mut record,
+                    &error,
+                    &retained_authority,
+                    &lifecycle_lock,
+                );
                 return Err(error);
             }
             Err(RuntimeJobSpawnFailure::OwnershipRetained { error, process }) => {
@@ -2067,7 +2113,7 @@ impl RuntimeJobService {
                     &mut record,
                     request,
                     process,
-                    lifecycle_lock.jobs_root.clone(),
+                    retained_authority.clone(),
                     None,
                     &error,
                 ));
@@ -2078,11 +2124,11 @@ impl RuntimeJobService {
         record.started_at_ms = Some(now_millis());
         record.heartbeat_at_ms = Some(now_millis());
         record.transition(RuntimeJobPhase::Running)?;
-        if let Err(error) = self.store.write_record(&record) {
+        if let Err(error) = self.write_record_with_authority(&retained_authority, &record) {
             self.cleanup_activation_failure_guarded(
                 &mut record,
                 process,
-                lifecycle_lock.jobs_root.clone(),
+                retained_authority.clone(),
                 request.raw_argv.clone(),
                 None,
                 &error,
@@ -2095,7 +2141,7 @@ impl RuntimeJobService {
                 self.cleanup_activation_failure_guarded(
                     &mut record,
                     process,
-                    lifecycle_lock.jobs_root.clone(),
+                    retained_authority.clone(),
                     request.raw_argv.clone(),
                     None,
                     &error,
@@ -2109,7 +2155,8 @@ impl RuntimeJobService {
             id.to_string(),
             ActiveRuntimeJobProcess {
                 process,
-                jobs_root: lifecycle_lock.jobs_root.clone(),
+                jobs_root: retained_authority.jobs_root,
+                job_directory: retained_authority.job_directory,
                 attempt_argv: request.raw_argv.clone(),
                 fallback,
                 previous_output: None,
@@ -2160,7 +2207,7 @@ impl RuntimeJobService {
     }
 
     pub(crate) fn poll(&self, id: &str) -> JobResult<RuntimeJobSnapshot> {
-        let _lifecycle_lock = self.store.acquire_active_lifecycle_lock()?;
+        let lifecycle_lock = self.store.acquire_active_lifecycle_lock()?;
         let mut record = self.store.read_record(id)?;
         if record.phase.is_terminal() {
             return Ok(record.snapshot(false));
@@ -2211,7 +2258,7 @@ impl RuntimeJobService {
             output,
             attempt_argv,
             fallback_pending,
-        } = match self.observe_process(&record, request_safe_cancel) {
+        } = match self.observe_process(&record, request_safe_cancel, &lifecycle_lock) {
             Ok(observation) => observation,
             Err(error) => {
                 return Err(self.quarantine_observation_failure_guarded(&mut record, &error));
@@ -2393,9 +2440,17 @@ impl RuntimeJobService {
         &self,
         record: &RuntimeJobRecord,
         request_safe_cancel: bool,
+        lifecycle: &ActiveLifecycleLock,
     ) -> JobResult<RuntimeJobObservation> {
         let mut processes = self.lock_processes()?;
         if !processes.contains_key(&record.id) {
+            // A compatibility attach cannot precede the historical spawn, but
+            // it must retain the exact directory before accepting ownership of
+            // the process. From this point every quarantine retry carries this
+            // capability instead of resolving the job name again.
+            let job_directory = lifecycle
+                .retain_job_directory(&record.id)
+                .map_err(|error| io_error("retain attached runtime job directory", &error))?;
             let process_id = record.pid.ok_or_else(|| {
                 redacted_error(&format!(
                     "runtime job {} has no persisted process id",
@@ -2409,7 +2464,8 @@ impl RuntimeJobService {
                 record.id.clone(),
                 ActiveRuntimeJobProcess {
                     process,
-                    jobs_root: self.store.retain_jobs_root()?,
+                    jobs_root: lifecycle.jobs_root.clone(),
+                    job_directory,
                     attempt_argv: record.redacted_argv.clone(),
                     fallback: None,
                     previous_output: None,
@@ -2451,12 +2507,18 @@ impl RuntimeJobService {
         first_output: &RuntimeJobOutput,
         first_exit_code: i32,
     ) -> JobResult<Option<RuntimeJobSnapshot>> {
-        let (fallback, jobs_root) = {
+        let (fallback, retained_authority) = {
             let mut processes = self.lock_processes()?;
             let active = processes.get_mut(&record.id).ok_or_else(|| {
                 redacted_error(&format!("runtime job {} process is unavailable", record.id))
             })?;
-            (active.fallback.take(), active.jobs_root.clone())
+            (
+                active.fallback.take(),
+                RetainedRuntimeJobAuthority {
+                    jobs_root: active.jobs_root.clone(),
+                    job_directory: active.job_directory.clone(),
+                },
+            )
         };
         let Some(fallback) = fallback else {
             return Ok(None);
@@ -2488,7 +2550,7 @@ impl RuntimeJobService {
                     record,
                     &fallback,
                     process,
-                    jobs_root,
+                    retained_authority,
                     Some(first_output.clone()),
                     &error,
                 );
@@ -2500,11 +2562,11 @@ impl RuntimeJobService {
         record.redacted_argv = redact_argv(&fallback.raw_argv);
         record.heartbeat_at_ms = Some(now_millis());
         record.warnings.push(PARTIAL_FALLBACK_WARNING.to_string());
-        if let Err(error) = self.store.write_record(record) {
+        if let Err(error) = self.write_record_with_authority(&retained_authority, record) {
             self.cleanup_activation_failure_guarded(
                 record,
                 next,
-                jobs_root.clone(),
+                retained_authority.clone(),
                 fallback.raw_argv.clone(),
                 Some(first_output.clone()),
                 &error,
@@ -2518,7 +2580,7 @@ impl RuntimeJobService {
                 self.cleanup_activation_failure_guarded(
                     record,
                     next,
-                    jobs_root.clone(),
+                    retained_authority.clone(),
                     fallback.raw_argv.clone(),
                     Some(first_output.clone()),
                     &error,
@@ -2533,7 +2595,7 @@ impl RuntimeJobService {
             self.cleanup_activation_failure_guarded(
                 record,
                 next,
-                jobs_root,
+                retained_authority,
                 fallback.raw_argv.clone(),
                 Some(first_output.clone()),
                 &error,
@@ -2558,7 +2620,7 @@ impl RuntimeJobService {
         record: &mut RuntimeJobRecord,
         request: &RuntimeJobRequest,
         process: Box<dyn RuntimeJobProcess>,
-        jobs_root: RetainedDirectoryCapability,
+        retained_authority: RetainedRuntimeJobAuthority,
         previous_output: Option<RuntimeJobOutput>,
         error: &str,
     ) -> String {
@@ -2572,13 +2634,14 @@ impl RuntimeJobService {
         record.warnings.push(redacted_error(&format!(
             "runtime process ownership is uncertain after spawn: {error}; active.lock remains quarantined"
         )));
-        let persist = self.store.write_record(record);
+        let persist = self.write_record_with_authority(&retained_authority, record);
         let retain = self.lock_processes().map(|mut processes| {
             processes.insert(
                 record.id.clone(),
                 ActiveRuntimeJobProcess {
                     process,
-                    jobs_root,
+                    jobs_root: retained_authority.jobs_root,
+                    job_directory: retained_authority.job_directory,
                     attempt_argv: request.raw_argv.clone(),
                     fallback: None,
                     previous_output,
@@ -2639,19 +2702,45 @@ impl RuntimeJobService {
         Ok(record.snapshot(false))
     }
 
-    fn fail_start_guarded(&self, record: &mut RuntimeJobRecord, error: &str) -> JobResult<()> {
+    fn write_record_with_authority(
+        &self,
+        authority: &RetainedRuntimeJobAuthority,
+        record: &RuntimeJobRecord,
+    ) -> JobResult<()> {
+        authority
+            .job_directory
+            .validate_named_identity()
+            .map_err(|error| io_error("validate retained runtime job directory", &error))?;
+        self.store
+            .write_record_in_retained_job(&authority.job_directory, record)
+            .map(|_| ())
+    }
+
+    fn fail_start_with_authority_guarded(
+        &self,
+        record: &mut RuntimeJobRecord,
+        error: &str,
+        authority: &RetainedRuntimeJobAuthority,
+        lifecycle: &ActiveLifecycleLock,
+    ) -> JobResult<()> {
         record.transition(RuntimeJobPhase::Failed)?;
         record.finished_at_ms = Some(now_millis());
         record.warnings.push(redact_text(error));
-        self.store.write_record(record)?;
-        self.store.release_active_lock_guarded(&record.id, || {})
+        self.write_record_with_authority(authority, record)?;
+        authority
+            .job_directory
+            .validate_named_identity()
+            .map_err(|error| io_error("revalidate failed runtime job directory", &error))?;
+        lifecycle
+            .release_active_lock_for(&record.id, || {})
+            .map_err(|error| io_error("release failed runtime job lock", &error))
     }
 
     fn cleanup_activation_failure_guarded(
         &self,
         record: &mut RuntimeJobRecord,
         mut process: Box<dyn RuntimeJobProcess>,
-        jobs_root: RetainedDirectoryCapability,
+        retained_authority: RetainedRuntimeJobAuthority,
         attempt_argv: Vec<String>,
         previous_output: Option<RuntimeJobOutput>,
         activation_error: &str,
@@ -2666,11 +2755,25 @@ impl RuntimeJobService {
                 record.warnings.push(redact_text(&format!(
                     "worker activation failed after child spawn: {activation_error}"
                 )));
-                if self.store.write_record(record).is_ok() {
+                if self
+                    .write_record_with_authority(&retained_authority, record)
+                    .is_ok()
+                {
                     let _ = self
                         .store
-                        .acquire_active_lifecycle_lock_for_root_bounded(jobs_root.clone())
+                        .acquire_active_lifecycle_lock_for_root_bounded(
+                            retained_authority.jobs_root.clone(),
+                        )
                         .and_then(|lifecycle| {
+                            retained_authority
+                                .job_directory
+                                .validate_named_identity()
+                                .map_err(|error| {
+                                    io_error(
+                                        "validate retained runtime activation directory",
+                                        &error,
+                                    )
+                                })?;
                             lifecycle
                                 .release_active_lock_for(&record.id, || {})
                                 .map_err(|error| {
@@ -2689,7 +2792,7 @@ impl RuntimeJobService {
                     "worker activation lost child ownership: {activation_error}; cleanup: {cleanup_error}"
                 )));
                 // The lock intentionally remains: the child tree may still be mutating.
-                let _ = self.store.write_record(record);
+                let _ = self.write_record_with_authority(&retained_authority, record);
                 // Ownership moves to the same map consumed by canonical worker
                 // quarantine supervision. Drop is not allowed to become the
                 // last owner after an uncertain cleanup.
@@ -2698,7 +2801,8 @@ impl RuntimeJobService {
                         record.id.clone(),
                         ActiveRuntimeJobProcess {
                             process,
-                            jobs_root,
+                            jobs_root: retained_authority.jobs_root,
+                            job_directory: retained_authority.job_directory,
                             attempt_argv,
                             fallback: None,
                             previous_output,
@@ -2836,10 +2940,7 @@ fn try_release_owned_quarantine_once_after_record_hooks(
     lifecycle
         .validate()
         .map_err(|error| io_error("revalidate retained runtime quarantine root", &error))?;
-    let job_directory = lifecycle
-        .jobs_root
-        .retain_directory_child(std::ffi::OsStr::new(job_id))
-        .map_err(|error| io_error("retain runtime quarantine job directory", &error))?;
+    let job_directory = active.job_directory.clone();
     let record_file = job_directory
         .retain_regular_child(std::ffi::OsStr::new("record.json"))
         .map_err(|error| io_error("retain runtime quarantine record", &error))?;
@@ -4952,6 +5053,30 @@ pub(crate) mod tests {
             active.process.try_wait(),
             Ok(RuntimeJobProcessState::Exited { .. })
         ));
+
+        let retry = try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            |_| {},
+        );
+        assert!(
+            retry.is_err(),
+            "second quarantine probe accepted replacement job-directory B"
+        );
+        assert_eq!(
+            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+            *expected_b.lock().unwrap(),
+            "later quarantine probe modified replacement job-directory B"
+        );
+        assert!(
+            service.store.active_lock_path().exists(),
+            "later quarantine probe removed active.lock"
+        );
+        assert!(matches!(
+            active.process.try_wait(),
+            Ok(RuntimeJobProcessState::Exited { .. })
+        ));
     }
 
     #[test]
@@ -4984,6 +5109,18 @@ pub(crate) mod tests {
             active.process.try_wait(),
             Ok(RuntimeJobProcessState::Exited { .. })
         ));
+
+        assert!(try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            |_| {},
+        )
+        .expect("transient descriptor flush failure remains retryable"));
+        assert!(
+            !service.store.active_lock_path().exists(),
+            "successful retry did not release the exact retained active.lock"
+        );
     }
 
     #[test]
@@ -5015,6 +5152,27 @@ pub(crate) mod tests {
             fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
             *expected_b.lock().unwrap(),
             "final confirmation modified replacement job-directory B"
+        );
+        assert!(service.store.active_lock_path().exists());
+        assert!(matches!(
+            active.process.try_wait(),
+            Ok(RuntimeJobProcessState::Exited { .. })
+        ));
+
+        let retry = try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            |_| {},
+        );
+        assert!(
+            retry.is_err(),
+            "second post-publication probe accepted replacement job-directory B"
+        );
+        assert_eq!(
+            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+            *expected_b.lock().unwrap(),
+            "later post-publication probe modified replacement job-directory B"
         );
         assert!(service.store.active_lock_path().exists());
         assert!(matches!(
@@ -5059,6 +5217,64 @@ pub(crate) mod tests {
             service.store.read_record(&active).unwrap().phase,
             RuntimeJobPhase::Lost
         );
+    }
+
+    #[test]
+    fn ownership_retained_transition_never_writes_replacement_job_directory() {
+        let cache = TestCache::new();
+        let jobs_root = cache.path().join("jobs");
+        let expected_replacement = Arc::new(Mutex::new(Vec::new()));
+        let service = RuntimeJobService::new(
+            cache.path(),
+            Arc::new(JobDirectorySwapRunner {
+                jobs_root: jobs_root.clone(),
+                expected_replacement: Arc::clone(&expected_replacement),
+                outcome: JobDirectorySwapOutcome::OwnershipRetained,
+            }),
+        );
+
+        service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect_err("ownership uncertainty after a namespace swap must fail closed");
+        let job_id = fs::read_to_string(jobs_root.join("active.lock")).unwrap();
+        assert_eq!(
+            fs::read(jobs_root.join(&job_id).join("record.json")).unwrap(),
+            *expected_replacement.lock().unwrap(),
+            "ownership-retained transition wrote A's Lost state into replacement B"
+        );
+        assert!(service.has_retained_process(&job_id));
+        assert!(service.store.active_lock_path().exists());
+
+        service.lock_processes().unwrap().remove(&job_id);
+    }
+
+    #[test]
+    fn failed_activation_cleanup_never_writes_replacement_job_directory() {
+        let cache = TestCache::new();
+        let jobs_root = cache.path().join("jobs");
+        let expected_replacement = Arc::new(Mutex::new(Vec::new()));
+        let service = RuntimeJobService::new(
+            cache.path(),
+            Arc::new(JobDirectorySwapRunner {
+                jobs_root: jobs_root.clone(),
+                expected_replacement: Arc::clone(&expected_replacement),
+                outcome: JobDirectorySwapOutcome::ActivationCleanupFailure,
+            }),
+        );
+
+        service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect_err("failed activation cleanup after a namespace swap must quarantine");
+        let job_id = fs::read_to_string(jobs_root.join("active.lock")).unwrap();
+        assert_eq!(
+            fs::read(jobs_root.join(&job_id).join("record.json")).unwrap(),
+            *expected_replacement.lock().unwrap(),
+            "failed activation cleanup wrote A's Lost state into replacement B"
+        );
+        assert!(service.has_retained_process(&job_id));
+        assert!(service.store.active_lock_path().exists());
+
+        service.lock_processes().unwrap().remove(&job_id);
     }
 
     #[test]
@@ -5838,6 +6054,8 @@ pub(crate) mod tests {
         quarantine_post_rename_flush_failure_never_releases_active_lock();
         quarantine_post_publication_confirmation_rejects_same_root_job_directory_swap();
         quarantine_record_transition_completes_only_in_exact_retained_root();
+        ownership_retained_transition_never_writes_replacement_job_directory();
+        failed_activation_cleanup_never_writes_replacement_job_directory();
         uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt();
         uncertain_post_spawn_failure_retains_active_lock_for_full_build_fallback();
         worker_supervises_initial_retained_ownership_until_proven_terminal();
@@ -7681,6 +7899,56 @@ pub(crate) mod tests {
         retain_on_failure: bool,
         first: Mutex<Option<FakeProcessState>>,
         processes: Arc<Mutex<HashMap<u32, Arc<Mutex<FakeProcessState>>>>>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum JobDirectorySwapOutcome {
+        OwnershipRetained,
+        ActivationCleanupFailure,
+    }
+
+    struct JobDirectorySwapRunner {
+        jobs_root: PathBuf,
+        expected_replacement: Arc<Mutex<Vec<u8>>>,
+        outcome: JobDirectorySwapOutcome,
+    }
+
+    impl RuntimeJobRunner for JobDirectorySwapRunner {
+        fn spawn(&self, _request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
+            let job_id = fs::read_to_string(self.jobs_root.join("active.lock"))
+                .expect("read active runtime job id");
+            let canonical = self.jobs_root.join(&job_id);
+            let displaced = self.jobs_root.join(format!("{job_id}-retained"));
+            let bytes =
+                fs::read(canonical.join("record.json")).expect("capture admitted job record");
+            fs::rename(&canonical, displaced).expect("displace admitted job directory A");
+            fs::create_dir(&canonical).expect("install replacement job directory B");
+            fs::write(canonical.join("record.json"), &bytes)
+                .expect("install byte-identical replacement record");
+            *self.expected_replacement.lock().unwrap() = bytes;
+
+            let process: Box<dyn RuntimeJobProcess> = Box::new(ObservationFailureProcess {
+                state: Arc::new(ObservationFailureState {
+                    fail_poll: AtomicBool::new(false),
+                    fail_output: AtomicBool::new(false),
+                    terminal: AtomicBool::new(false),
+                    dropped: AtomicBool::new(false),
+                }),
+            });
+            match self.outcome {
+                JobDirectorySwapOutcome::OwnershipRetained => {
+                    Err(RuntimeJobSpawnFailure::OwnershipRetained {
+                        error: redacted_error("injected retained ownership after namespace swap"),
+                        process,
+                    })
+                }
+                JobDirectorySwapOutcome::ActivationCleanupFailure => Ok(process),
+            }
+        }
+
+        fn attach(&self, _process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {
+            Err(redacted_error("replacement runner cannot attach"))
+        }
     }
 
     impl UncertainSpawnRunner {

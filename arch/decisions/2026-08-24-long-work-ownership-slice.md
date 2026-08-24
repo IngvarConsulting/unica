@@ -20,10 +20,15 @@ Daemon владеет rootless ProviderHost coordinator `engine + target + capab
 остаются actor-bound. Runtime join доступен только через `RuntimeJobService` под
 lifecycle-lock точного no-follow jobs-root, `active.lock` и UUIDv4 lease; movable
 key и dedup по аргументам запрещены. Quarantine release удерживает jobs-root,
-job directory и record; чтение и atomic publish descriptor-relative. Renamed
-record синхронизируется по сохранённому writable handle, затем его новое имя и
-имя job directory подтверждаются до release. Подмена ambient A→B или job A→B
-сохраняет lock и байты B.
+исходный job directory и record; исходный job-directory capability принимается
+до initial spawn, а в attach adapter — до принятия process ownership, и не
+переоткрывается по `jobs/<id>` между retry. Record для activation/fallback
+ownership-transfer и quarantine-release публикуется только descriptor-relative.
+Renamed record синхронизируется по сохранённому writable
+handle, затем его новое имя и имя исходного job directory подтверждаются под
+lifecycle lane. Эта final named confirmation — linearization point release;
+подмена до неё сохраняет lock и байты B. Мутация namespace вне lifecycle lane
+после успешной confirmation не входит в это обязательство.
 
 На Windows authority — присоединённый Job Object. Unix bundled-runner contract —
 unreaped leader через `waitid(WNOWAIT)` и child-only inherited lifetime sentinel.

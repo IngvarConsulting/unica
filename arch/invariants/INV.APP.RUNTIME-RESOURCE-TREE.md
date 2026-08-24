@@ -29,5 +29,13 @@ Durable compatibility phase `Lost` только классифицирует э�
 lease descriptor-relative только из сохранённого jobs-root; replacement root
 не является authority даже с совпадающим текстом job id. Durable record read и
 atomic publish используют retained job-directory/record, а не ambient path.
+Один исходный job-directory capability принимается до initial spawn либо до
+принятия attach process ownership и переносится через normal, ownership-retained,
+activation-failure, fallback и quarantine lifecycle; retry не разрешает
+`jobs/<id>` заново. Activation/fallback ownership-transfer и quarantine-release
+publication используют эту capability, включая ownership uncertainty и failed
+activation cleanup; normal poll/observation publication этим правилом не заявлена.
 После rename writable handle синхронизируется; published inode под именем
-`record.json` и retained job-directory подтверждаются до удаления lease.
+`record.json` и исходный retained job-directory подтверждаются под lifecycle
+lane до удаления lease. Успешная final named confirmation — linearization point;
+контракт не утверждает защиту от внешней namespace mutation после неё.
