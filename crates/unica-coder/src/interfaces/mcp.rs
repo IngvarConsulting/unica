@@ -10,7 +10,7 @@ use crate::application::invocation::{
     handoff_budget, INVOCATION_HANDOFF_WINDOW, RESPONSE_SERIALIZATION_MARGIN,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::application::tool_contracts::SurfaceRelease;
+use crate::application::tool_contracts::{SurfaceRelease, V13TaskProfile};
 use crate::application::{
     code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
     operation_result_output_schema, role_edit_argument_failure_result, role_edit_output_schema,
@@ -69,10 +69,21 @@ type CanonicalTaskHandler = dyn Fn(
     > + Send
     + Sync;
 
+type CanonicalTaskWaitHandler = dyn Fn(
+        crate::domain::invocation::TaskId,
+        u64,
+        FrontendInvocationDeadline,
+    ) -> Result<
+        crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
+        crate::infrastructure::daemon::client::DaemonTaskExchangeError,
+    > + Send
+    + Sync;
+
 #[derive(Clone)]
 struct CanonicalV13Router {
     call: Arc<CanonicalToolCallHandler>,
     get: Arc<CanonicalTaskHandler>,
+    wait: Arc<CanonicalTaskWaitHandler>,
     cancel: Arc<CanonicalTaskHandler>,
 }
 
@@ -243,8 +254,25 @@ impl UnicaServer {
         get: Arc<CanonicalTaskHandler>,
         cancel: Arc<CanonicalTaskHandler>,
     ) -> Self {
+        let wait_get = Arc::clone(&get);
+        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, _, _| wait_get(task_id));
+        Self::with_canonical_v13_task_handlers(call, get, wait, cancel)
+    }
+
+    #[cfg(test)]
+    fn with_canonical_v13_task_handlers(
+        call: Arc<CanonicalToolCallHandler>,
+        get: Arc<CanonicalTaskHandler>,
+        wait: Arc<CanonicalTaskWaitHandler>,
+        cancel: Arc<CanonicalTaskHandler>,
+    ) -> Self {
         Self {
-            router: SurfaceToolRouter::CanonicalV13(CanonicalV13Router { call, get, cancel }),
+            router: SurfaceToolRouter::CanonicalV13(CanonicalV13Router {
+                call,
+                get,
+                wait,
+                cancel,
+            }),
             in_flight: Arc::new(InFlightRegistry::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
@@ -296,6 +324,20 @@ fn execute_surface_tool(
             .map(Box::new)
             .map(SurfaceToolOutcome::Legacy),
         SurfaceToolRouter::CanonicalV13(router) => {
+            if let Some(request) =
+                crate::application::v13::task_tools::parse_task_tool_call(name, arguments)
+            {
+                if client_supports_tasks {
+                    return Err((
+                        ErrorCode::INVALID_PARAMS.0,
+                        "compatibility task tools are unavailable when native Tasks is active"
+                            .to_string(),
+                    ));
+                }
+                return Ok(SurfaceToolOutcome::Canonical(
+                    execute_compatibility_task_tool(router, request, deadline),
+                ));
+            }
             let tool = ToolIdentity::from_wire_name(name).ok_or_else(|| {
                 (
                     ErrorCode::INVALID_PARAMS.0,
@@ -307,29 +349,107 @@ fn execute_surface_tool(
                 InvocationResponse::Task(snapshot) if client_supports_tasks => {
                     Ok(SurfaceToolOutcome::Task(snapshot))
                 }
-                InvocationResponse::Task(snapshot) => Ok(SurfaceToolOutcome::Legacy(Box::new(
-                    legacy_working_projection(snapshot),
-                ))),
+                InvocationResponse::Task(snapshot) => Ok(SurfaceToolOutcome::Canonical(
+                    project_compatibility_snapshot(&snapshot, CompatibilityProjection::State),
+                )),
             }
         }
     }
 }
 
-fn legacy_working_projection(
-    snapshot: crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
-) -> OperationResult {
-    use crate::domain::long_work::{WorkState, WorkStatus};
+use crate::application::v13::task_tools::{
+    CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction, TaskToolError,
+};
 
-    let mut result: OperationResult = crate::domain::invocation::DomainResult::success(
-        "canonical invocation continues in daemon",
+fn execute_compatibility_task_tool(
+    router: &CanonicalV13Router,
+    request: Result<crate::application::v13::task_tools::TaskToolRequest, TaskToolError>,
+    deadline: FrontendInvocationDeadline,
+) -> crate::domain::invocation::DomainResult {
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => return crate::application::v13::task_tools::task_tool_error_result(error),
+    };
+    let exchange = match request.action {
+        TaskToolAction::Get => (router.get)(request.task_id),
+        TaskToolAction::Result { wait_ms } => {
+            let bounded = bounded_compatibility_wait_ms(wait_ms, deadline, Instant::now());
+            (router.wait)(request.task_id, bounded, deadline)
+        }
+        TaskToolAction::Cancel => (router.cancel)(request.task_id),
+    };
+    let snapshot = match exchange {
+        Ok(snapshot) if snapshot.task_id == request.task_id => snapshot,
+        Ok(_) => {
+            return crate::application::v13::task_tools::task_tool_error_result(
+                TaskToolError::TaskProtocolFailed,
+            )
+        }
+        Err(error) => {
+            return crate::application::v13::task_tools::task_tool_error_result(
+                compatibility_task_exchange_error(error),
+            )
+        }
+    };
+    let projection = match request.action {
+        TaskToolAction::Result { .. } => CompatibilityProjection::TerminalResult,
+        TaskToolAction::Get | TaskToolAction::Cancel => CompatibilityProjection::State,
+    };
+    project_compatibility_snapshot(&snapshot, projection)
+}
+
+fn bounded_compatibility_wait_ms(
+    requested_wait_ms: u64,
+    deadline: FrontendInvocationDeadline,
+    now: Instant,
+) -> u64 {
+    let remaining_ms = deadline
+        .remaining_at(now)
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    requested_wait_ms.min(remaining_ms)
+}
+
+fn compatibility_task_exchange_error(
+    error: crate::infrastructure::daemon::client::DaemonTaskExchangeError,
+) -> TaskToolError {
+    use crate::infrastructure::daemon::client::DaemonTaskExchangeError;
+    use crate::infrastructure::daemon::protocol::DaemonErrorCode;
+
+    match error {
+        DaemonTaskExchangeError::Protocol(DaemonErrorCode::TaskNotFound) => {
+            TaskToolError::TaskNotFound
+        }
+        DaemonTaskExchangeError::Protocol(DaemonErrorCode::TaskExpired) => {
+            TaskToolError::TaskExpired
+        }
+        DaemonTaskExchangeError::Protocol(_) => TaskToolError::TaskBackendFailed,
+        DaemonTaskExchangeError::Transport => TaskToolError::TaskTransportFailed,
+        DaemonTaskExchangeError::SessionPoisoned => TaskToolError::TaskSessionClosed,
+        DaemonTaskExchangeError::UnexpectedResponse => TaskToolError::TaskProtocolFailed,
+    }
+}
+
+fn project_compatibility_snapshot(
+    snapshot: &crate::infrastructure::daemon::protocol::DaemonTaskSnapshot,
+    projection: CompatibilityProjection,
+) -> crate::domain::invocation::DomainResult {
+    let state = CompatibilityTaskSnapshot::new(
+        snapshot.task_id,
+        snapshot.status,
+        snapshot.result.clone(),
+        snapshot.created_at_epoch_ms,
+        snapshot.updated_at_epoch_ms,
+        snapshot.ttl_ms,
+        snapshot.poll_interval_ms,
+    );
+    crate::application::v13::task_tools::project_task_snapshot(&state, projection).unwrap_or_else(
+        |_| {
+            crate::application::v13::task_tools::task_tool_error_result(
+                TaskToolError::ProjectionFailed,
+            )
+        },
     )
-    .into();
-    result.work = Some(WorkState {
-        status: WorkStatus::Working,
-        status_message: "canonical invocation continues in daemon".to_string(),
-        poll_interval_ms: Some(snapshot.poll_interval_ms),
-    });
-    result
 }
 
 /// Hidden bridge used only by explicitly selected canonical-v0.13 frontends.
@@ -374,6 +494,20 @@ fn canonical_daemon_router(
             })?;
         owner.get_task(task_id)
     });
+    let wait_anchor = Arc::clone(&anchor);
+    let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, wait_ms, deadline| {
+        let mut owner = wait_anchor
+            .connect_peer(deadline.remaining_transport_at(Instant::now()))
+            .map_err(|_| {
+                crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport
+            })?;
+        let effective_wait = bounded_compatibility_wait_ms(wait_ms, deadline, Instant::now());
+        owner.wait_task_with_transport_budget(
+            task_id,
+            effective_wait,
+            deadline.remaining_transport_at(Instant::now()),
+        )
+    });
     let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
         let mut owner = anchor
             .connect_peer(Duration::from_millis(125))
@@ -382,7 +516,12 @@ fn canonical_daemon_router(
             })?;
         owner.cancel_task(task_id)
     });
-    CanonicalV13Router { call, get, cancel }
+    CanonicalV13Router {
+        call,
+        get,
+        wait,
+        cancel,
+    }
 }
 
 fn structured_output_schema(spec: &ToolSpec) -> Option<Value> {
@@ -427,12 +566,70 @@ fn all_tool_definitions() -> &'static [Tool] {
     ALL.get_or_init(|| tool_definitions(&crate::application::tools()))
 }
 
+fn v13_tool_definitions(profile: V13TaskProfile) -> &'static [Tool] {
+    static NATIVE: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
+    static COMPATIBILITY: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
+    let build = || {
+        let catalog = crate::application::v13::tool_catalog::catalog_for(SurfaceRelease::V13)
+            .expect("hidden V13 profile has a catalog");
+        let mut tools = catalog
+            .tools
+            .into_iter()
+            .map(|contract| v13_tool_definition(contract.name, None, contract.input_schema))
+            .collect::<Vec<_>>();
+        if profile == V13TaskProfile::Compatibility {
+            tools.extend(
+                crate::application::v13::task_tools::compatibility_tool_contracts()
+                    .into_iter()
+                    .map(|contract| {
+                        v13_tool_definition(
+                            contract.name,
+                            Some(contract.description),
+                            contract.input_schema,
+                        )
+                    }),
+            );
+        }
+        tools
+    };
+    match profile {
+        V13TaskProfile::Native => NATIVE.get_or_init(build),
+        V13TaskProfile::Compatibility => COMPATIBILITY.get_or_init(build),
+    }
+}
+
+fn v13_tool_definition(name: &str, description: Option<&str>, schema: Value) -> Tool {
+    let schema = match schema {
+        Value::Object(schema) => schema,
+        other => unreachable!("V13 tool unica.{name} produced non-object schema: {other}"),
+    };
+    let mut tool = Tool::new(
+        format!("unica.{name}"),
+        description.unwrap_or_default().to_string(),
+        schema,
+    );
+    if description.is_none() {
+        tool.description = None;
+    }
+    tool
+}
+
 /// SEP-2549 cache fields are required on list results from protocol revision
 /// 2026-07-28; older peers must keep the exact legacy wire shape.
 fn modern_peer(context: &RequestContext<RoleServer>) -> bool {
     context
         .protocol_version()
         .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+}
+
+fn modern_protocol_authority(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .protocol_version()
+        .is_some_and(|version| version == ProtocolVersion::V_2026_07_28)
+        && context
+            .peer
+            .peer_info()
+            .is_none_or(|peer| peer.protocol_version == ProtocolVersion::V_2026_07_28)
 }
 
 /// The served protocol versions are exactly the #490 guaranteed matrix: the
@@ -516,9 +713,22 @@ impl ServerHandler for UnicaServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let all = all_tool_definitions();
+        let (all, modern) = match &self.router {
+            SurfaceToolRouter::LegacyV12(_) => (all_tool_definitions(), modern_peer(&context)),
+            SurfaceToolRouter::CanonicalV13(_) => {
+                let profile = if native_task_capability(&context) {
+                    V13TaskProfile::Native
+                } else {
+                    V13TaskProfile::Compatibility
+                };
+                (
+                    v13_tool_definitions(profile),
+                    modern_protocol_authority(&context),
+                )
+            }
+        };
         let cursor = request.and_then(|request| request.cursor);
-        if !modern_peer(&context) {
+        if !modern {
             // #490: the legacy surface is served whole; no cursor is ever
             // issued there, so a presented cursor is a contract violation.
             if let Some(cursor) = cursor {
@@ -751,18 +961,10 @@ impl ServerHandler for UnicaServer {
 }
 
 fn native_task_capability(context: &RequestContext<RoleServer>) -> bool {
-    let effective_protocol_is_modern = context
-        .protocol_version()
-        .is_some_and(|version| version == ProtocolVersion::V_2026_07_28);
     // Request metadata is allowed to shape one response, but it cannot replace
     // the protocol authority established by initialize. A direct-first request
     // has no peer_info and therefore carries its own complete authority.
-    let negotiated_session_is_modern = context
-        .peer
-        .peer_info()
-        .is_none_or(|peer| peer.protocol_version == ProtocolVersion::V_2026_07_28);
-    effective_protocol_is_modern
-        && negotiated_session_is_modern
+    modern_protocol_authority(context)
         && context
             .client_capabilities()
             .is_some_and(|capabilities| capabilities.supports_tasks())
@@ -1077,7 +1279,7 @@ mod tests {
     use crate::application::{ResultContract, ToolExecution};
     use crate::domain::cache::CacheReport;
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::time::timeout;
@@ -1876,6 +2078,729 @@ mod tests {
             updated_at_epoch_ms: 1_777_012_346_789,
             ttl_ms: 3_600_000,
         }
+    }
+
+    fn canonical_profile_server() -> UnicaServer {
+        let task_id = crate::domain::invocation::TaskId::new();
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                task_id,
+                crate::domain::invocation::InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+            Ok(canonical_snapshot(
+                task_id,
+                crate::domain::invocation::InvocationStatus::Working,
+                None,
+            ))
+        });
+        UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get)
+    }
+
+    async fn listed_tool_names(
+        client: &mut McpClient,
+        id: u64,
+        meta: Option<Value>,
+    ) -> Vec<String> {
+        let mut params = json!({});
+        if let Some(meta) = meta {
+            params["_meta"] = meta;
+        }
+        client
+            .send(json!({"jsonrpc":"2.0", "id":id, "method":"tools/list", "params":params}))
+            .await;
+        let response = client.receive().await;
+        assert!(response.get("error").is_none(), "{response}");
+        response["result"]["tools"]
+            .as_array()
+            .expect("tools/list must return tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name").to_string())
+            .collect()
+    }
+
+    fn assert_v13_profile_names(names: &[String], native_tasks: bool) {
+        let mut expected = vec![
+            "unica.view",
+            "unica.apply",
+            "unica.find",
+            "unica.search",
+            "unica.check",
+            "unica.diff",
+            "unica.run",
+            "unica.docs",
+        ];
+        if !native_tasks {
+            expected.extend(["unica.task.get", "unica.task.result", "unica.task.cancel"]);
+        }
+        assert_eq!(names, expected, "wrong hidden V13 tools/list profile");
+        for forbidden in [
+            "unica.task.list",
+            "unica.task.logs",
+            "unica.runtime.job.start",
+            "unica.runtime.job.status",
+            "unica.runtime.job.wait",
+            "unica.runtime.job.logs",
+            "unica.runtime.job.list",
+            "unica.runtime.job.cancel",
+        ] {
+            assert!(
+                !names.iter().any(|name| name == forbidden),
+                "leaked {forbidden}"
+            );
+        }
+    }
+
+    async fn surface_profiles_case() {
+        // A legacy initialized session stays on the compatibility profile even
+        // when one request carries modern Tasks metadata.
+        let (mut legacy, _) = spawn_unica_server(canonical_profile_server());
+        legacy
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params":{
+                    "protocolVersion":"2025-11-25",
+                    "capabilities":{},
+                    "clientInfo":{"name":"legacy-profile","version":"1"}
+                }
+            }))
+            .await;
+        assert_eq!(
+            legacy.receive().await["result"]["protocolVersion"],
+            "2025-11-25"
+        );
+        assert_v13_profile_names(&listed_tool_names(&mut legacy, 1, None).await, false);
+        assert_v13_profile_names(
+            &listed_tool_names(&mut legacy, 2, Some(modern_tasks_meta())).await,
+            false,
+        );
+        legacy.shutdown().await;
+
+        // A legitimately negotiated modern session selects from its own
+        // capabilities and never from another client's previous list.
+        let (mut modern_native, _) = spawn_unica_server(canonical_profile_server());
+        modern_native
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params":{
+                    "protocolVersion":"2026-07-28",
+                    "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"modern-native","version":"1"}
+                }
+            }))
+            .await;
+        modern_native.receive().await;
+        assert_v13_profile_names(&listed_tool_names(&mut modern_native, 1, None).await, true);
+        modern_native.shutdown().await;
+
+        let (mut modern_compat, _) = spawn_unica_server(canonical_profile_server());
+        modern_compat
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params":{
+                    "protocolVersion":"2026-07-28",
+                    "capabilities":{},
+                    "clientInfo":{"name":"modern-compat","version":"1"}
+                }
+            }))
+            .await;
+        modern_compat.receive().await;
+        assert_v13_profile_names(&listed_tool_names(&mut modern_compat, 1, None).await, false);
+        modern_compat.shutdown().await;
+
+        // Direct-first requests select independently per request.
+        let (mut direct, _) = spawn_unica_server(canonical_profile_server());
+        assert_v13_profile_names(
+            &listed_tool_names(&mut direct, 1, Some(modern_tasks_meta())).await,
+            true,
+        );
+        assert_v13_profile_names(
+            &listed_tool_names(&mut direct, 2, Some(modern_meta())).await,
+            false,
+        );
+        direct.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn surface_profiles_publish_eight_native_or_eleven_compatibility_tools_per_client() {
+        surface_profiles_case().await;
+    }
+
+    async fn compatibility_receipts_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let task_id = TaskId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let execution_observed = Arc::clone(&executions);
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            execution_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let gets = Arc::new(AtomicUsize::new(0));
+        let get_observed = Arc::clone(&gets);
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+            get_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(canonical_snapshot(task_id, InvocationStatus::Working, None))
+        });
+        let cancellations = Arc::new(AtomicUsize::new(0));
+        let cancel_observed = Arc::clone(&cancellations);
+        let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |_| {
+            cancel_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(canonical_snapshot(
+                task_id,
+                InvocationStatus::Cancelled,
+                None,
+            ))
+        });
+        let (mut client, _) =
+            spawn_unica_server(UnicaServer::with_canonical_v13_tasks(call, get, cancel));
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.check", "arguments":{}, "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let initial = client.receive().await;
+        assert_ne!(initial["result"]["resultType"], "task", "{initial}");
+        assert_eq!(initial["result"]["content"], json!([]), "{initial}");
+        assert_eq!(
+            initial["result"]["structuredContent"]["data"]["task"]["taskId"],
+            task_id.to_string(),
+            "{initial}"
+        );
+        assert_eq!(
+            initial["result"]["structuredContent"]["data"]["task"]["status"],
+            "working"
+        );
+        assert!(initial["result"]["structuredContent"].get("work").is_none());
+        assert!(initial["result"]["structuredContent"].get("job").is_none());
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get",
+                    "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let get_result = client.receive().await;
+        assert_eq!(
+            get_result["result"]["structuredContent"]["data"]["task"],
+            initial["result"]["structuredContent"]["data"]["task"]
+        );
+
+        for id in [3, 4] {
+            client
+                .send(json!({
+                    "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                    "params":{
+                        "name":"unica.task.cancel",
+                        "arguments":{"taskId":task_id.to_string()},
+                        "_meta":modern_meta()
+                    }
+                }))
+                .await;
+            let cancelled = client.receive().await;
+            assert_eq!(
+                cancelled["result"]["structuredContent"]["data"]["code"], "task_cancelled",
+                "{cancelled}"
+            );
+        }
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert_eq!(gets.load(Ordering::SeqCst), 1);
+        assert_eq!(cancellations.load(Ordering::SeqCst), 2);
+        client.shutdown().await;
+    }
+
+    fn compatibility_wait_budget_case() {
+        let received = Instant::now();
+        let deadline = FrontendInvocationDeadline::new(received, None);
+        assert_eq!(
+            bounded_compatibility_wait_ms(0, deadline, received),
+            0,
+            "zero is an immediate probe"
+        );
+        assert_eq!(
+            bounded_compatibility_wait_ms(7_000, deadline, received),
+            7_000
+        );
+        assert_eq!(
+            bounded_compatibility_wait_ms(7_000, deadline, received + Duration::from_millis(6_999),),
+            1,
+            "elapsed frontend time is never replenished"
+        );
+        assert_eq!(
+            bounded_compatibility_wait_ms(7_000, deadline, received + Duration::from_secs(7),),
+            0
+        );
+    }
+
+    async fn compatibility_terminal_result_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let task_id = TaskId::new();
+        let subject = canonical_result("same terminal subject result");
+        let executions = Arc::new(AtomicUsize::new(0));
+        let execution_observed = Arc::clone(&executions);
+        let direct_subject = subject.clone();
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, arguments, _, _| {
+            execution_observed.fetch_add(1, Ordering::SeqCst);
+            if arguments.get("direct").and_then(Value::as_bool) == Some(true) {
+                Ok(InvocationResponse::Direct(direct_subject.clone()))
+            } else {
+                Ok(InvocationResponse::Task(canonical_snapshot(
+                    task_id,
+                    InvocationStatus::Working,
+                    None,
+                )))
+            }
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let waits = Arc::new(Mutex::new(Vec::<u64>::new()));
+        let waits_observed = Arc::clone(&waits);
+        let wait_subject = subject.clone();
+        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, wait_ms, _| {
+            waits_observed.lock().unwrap().push(wait_ms);
+            Ok(if wait_ms == 0 {
+                canonical_snapshot(task_id, InvocationStatus::Working, None)
+            } else {
+                canonical_snapshot(
+                    task_id,
+                    InvocationStatus::Completed,
+                    Some(wait_subject.clone()),
+                )
+            })
+        });
+        let cancel = Arc::clone(&get);
+        let server = UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel);
+        let (mut client, _) = spawn_unica_server(server);
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.check", "arguments":{"direct":true}, "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let direct = client.receive().await;
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{
+                    "name":"unica.check", "arguments":{}, "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let initial = client.receive().await;
+        assert_eq!(
+            initial["result"]["structuredContent"]["data"]["task"]["taskId"],
+            task_id.to_string()
+        );
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result",
+                    "arguments":{"taskId":task_id.to_string(), "waitMs":0},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let still_working = client.receive().await;
+        assert_eq!(
+            still_working["result"]["structuredContent"]["data"]["task"]["status"], "working",
+            "{still_working}"
+        );
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":4, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result",
+                    "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let terminal = client.receive().await;
+        assert_eq!(
+            serde_json::to_vec(&direct["result"]).unwrap(),
+            serde_json::to_vec(&terminal["result"]).unwrap()
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        {
+            let waits = waits.lock().unwrap();
+            assert_eq!(waits.len(), 2);
+            assert_eq!(waits[0], 0);
+            assert!(waits[1] <= 7_000);
+            assert!(
+                waits[1] > 0,
+                "default result wait must not become immediate"
+            );
+        }
+        client.shutdown().await;
+    }
+
+    async fn compatibility_closed_errors_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use crate::infrastructure::daemon::client::DaemonTaskExchangeError;
+        use crate::infrastructure::daemon::protocol::DaemonErrorCode;
+        use std::sync::atomic::AtomicUsize;
+
+        let known = TaskId::new();
+        let unknown = TaskId::new();
+        let expired = TaskId::new();
+        let subject_executions = Arc::new(AtomicUsize::new(0));
+        let subject_observed = Arc::clone(&subject_executions);
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            subject_observed.fetch_add(1, Ordering::SeqCst);
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                known,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get_calls = Arc::new(AtomicUsize::new(0));
+        let get_observed = Arc::clone(&get_calls);
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
+            get_observed.fetch_add(1, Ordering::SeqCst);
+            if task_id == unknown {
+                Err(DaemonTaskExchangeError::Protocol(
+                    DaemonErrorCode::TaskNotFound,
+                ))
+            } else {
+                Ok(canonical_snapshot(known, InvocationStatus::Working, None))
+            }
+        });
+        let wait_calls = Arc::new(AtomicUsize::new(0));
+        let wait_observed = Arc::clone(&wait_calls);
+        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, _, _| {
+            wait_observed.fetch_add(1, Ordering::SeqCst);
+            if task_id == expired {
+                Err(DaemonTaskExchangeError::Protocol(
+                    DaemonErrorCode::TaskExpired,
+                ))
+            } else {
+                Ok(canonical_snapshot(known, InvocationStatus::Working, None))
+            }
+        });
+        let cancel = Arc::clone(&get);
+        let (mut compat, _) = spawn_unica_server(UnicaServer::with_canonical_v13_task_handlers(
+            Arc::clone(&call),
+            Arc::clone(&get),
+            Arc::clone(&wait),
+            Arc::clone(&cancel),
+        ));
+
+        for (id, name, arguments, expected) in [
+            (
+                1,
+                "unica.task.get",
+                json!({"taskId":unknown.to_string()}),
+                "task_not_found",
+            ),
+            (
+                2,
+                "unica.task.result",
+                json!({"taskId":expired.to_string(), "waitMs":0}),
+                "task_expired",
+            ),
+            (
+                3,
+                "unica.task.get",
+                json!({"taskId":"not-canonical"}),
+                "invalid_task_id",
+            ),
+            (
+                4,
+                "unica.task.result",
+                json!({"taskId":known.to_string(), "waitMs":7_001}),
+                "bad_wait_ms",
+            ),
+        ] {
+            compat
+                .send(json!({
+                    "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                    "params":{"name":name, "arguments":arguments, "_meta":modern_meta()}
+                }))
+                .await;
+            let response = compat.receive().await;
+            assert_eq!(
+                response["result"]["structuredContent"]["data"]["code"], expected,
+                "{response}"
+            );
+            assert_eq!(response["result"]["isError"], true, "{response}");
+        }
+        assert_eq!(subject_executions.load(Ordering::SeqCst), 0);
+        assert_eq!(get_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(wait_calls.load(Ordering::SeqCst), 1);
+        compat.shutdown().await;
+
+        let (mut native, _) = spawn_unica_server(UnicaServer::with_canonical_v13_task_handlers(
+            call, get, wait, cancel,
+        ));
+        native
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get",
+                    "arguments":{"taskId":known.to_string()},
+                    "_meta":modern_tasks_meta()
+                }
+            }))
+            .await;
+        let rejected = native.receive().await;
+        assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+        assert_eq!(subject_executions.load(Ordering::SeqCst), 0);
+        native.shutdown().await;
+    }
+
+    struct CompatibilityRestartService {
+        executions: Arc<AtomicUsize>,
+    }
+
+    impl crate::infrastructure::daemon::server::CanonicalInvocationService
+        for CompatibilityRestartService
+    {
+        fn prepare(
+            &self,
+            _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+        ) -> Result<
+            crate::application::operation_descriptors::ExecutionClass,
+            Box<crate::domain::invocation::DomainResult>,
+        > {
+            Ok(
+                crate::application::operation_descriptors::ExecutionClass::KnownLong(
+                    crate::application::operation_descriptors::KnownLongReason::ExternalProcess,
+                ),
+            )
+        }
+
+        fn execute(
+            &self,
+            _invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+            _cancellation: crate::domain::cancellation::CancellationToken,
+        ) -> Result<
+            crate::domain::invocation::DomainResult,
+            crate::domain::invocation::InvocationFailure,
+        > {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            Ok(crate::domain::invocation::DomainResult::success(
+                "durable compatibility result",
+            ))
+        }
+    }
+
+    fn wait_for_compatibility_daemon(
+        state_root: &std::path::Path,
+        identity: &crate::infrastructure::daemon::identity::CoreIdentity,
+    ) {
+        let deadline = Instant::now() + TEST_STEP;
+        loop {
+            let state = crate::infrastructure::daemon::identity::DaemonStateDirectory::open(
+                state_root, identity,
+            )
+            .unwrap();
+            if state.read_endpoint_record().unwrap().is_some() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "compatibility daemon endpoint was not published"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn connect_compatibility_daemon(
+        state_root: std::path::PathBuf,
+        identity: crate::infrastructure::daemon::identity::CoreIdentity,
+    ) -> crate::infrastructure::daemon::client::DaemonOwner {
+        let client = crate::infrastructure::daemon::client::DaemonClient::new(
+            crate::infrastructure::daemon::client::DaemonClientConfig::existing_only(
+                state_root, identity,
+            ),
+        );
+        match client.connect_existing().unwrap() {
+            crate::infrastructure::daemon::client::ExistingDaemon::Connected(owner) => owner,
+            crate::infrastructure::daemon::client::ExistingDaemon::Absent => {
+                panic!("published compatibility daemon must connect")
+            }
+        }
+    }
+
+    async fn compatibility_daemon_restart_case() {
+        use crate::domain::invocation::TaskId;
+        use crate::infrastructure::daemon::identity::CoreIdentity;
+        use crate::infrastructure::daemon::server::{run_daemon, DaemonServerConfig};
+        use std::str::FromStr;
+
+        let state = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(state.path()).unwrap();
+        let workspace_hint = std::fs::canonicalize(workspace.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let identity = CoreIdentity::production();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let service = Arc::new(CompatibilityRestartService {
+            executions: Arc::clone(&executions),
+        });
+        let first_config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(350),
+        )
+        .with_invocation_service(service);
+        let first_daemon = std::thread::spawn(move || run_daemon(first_config));
+        wait_for_compatibility_daemon(&state_root, &identity);
+
+        let first_owner = connect_compatibility_daemon(state_root.clone(), identity.clone());
+        let (mut first, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            first_owner,
+            workspace_hint.clone(),
+        ));
+        first
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.run", "arguments":{}, "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let initial = first.receive().await;
+        assert_ne!(initial["result"]["resultType"], "task", "{initial}");
+        let task_id_text = initial["result"]["structuredContent"]["data"]["task"]["taskId"]
+            .as_str()
+            .expect("compatibility receipt must disclose the durable task id")
+            .to_owned();
+        let task_id = TaskId::from_str(&task_id_text).unwrap();
+
+        first
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result", "arguments":{"taskId":task_id_text},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let first_result = first.receive().await;
+        assert_eq!(
+            first_result["result"]["structuredContent"]["summary"], "durable compatibility result",
+            "{first_result}"
+        );
+        first
+            .send(json!({
+                "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get", "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let before_restart = first.receive().await;
+        let before_task = before_restart["result"]["structuredContent"]["data"]["task"].clone();
+        assert_eq!(before_task["status"], "completed", "{before_restart}");
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+        first.shutdown().await;
+        first_daemon.join().unwrap().unwrap();
+
+        let second_config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(350),
+        );
+        let second_daemon = std::thread::spawn(move || run_daemon(second_config));
+        wait_for_compatibility_daemon(&state_root, &identity);
+        let second_owner = connect_compatibility_daemon(state_root, identity);
+        let (mut second, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            second_owner,
+            workspace_hint,
+        ));
+        second
+            .send(json!({
+                "jsonrpc":"2.0", "id":4, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get", "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let after_restart = second.receive().await;
+        assert_eq!(
+            after_restart["result"]["structuredContent"]["data"]["task"], before_task,
+            "task identity, status, timestamps, and TTL must survive daemon restart"
+        );
+        second
+            .send(json!({
+                "jsonrpc":"2.0", "id":5, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result", "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let after_result = second.receive().await;
+        assert_eq!(
+            serde_json::to_vec(&after_result["result"]).unwrap(),
+            serde_json::to_vec(&first_result["result"]).unwrap(),
+            "the restarted adapter must project the same durable terminal result"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        second.shutdown().await;
+        second_daemon.join().unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn compatibility_tools_return_durable_receipts_without_native_tasks_or_reexecution() {
+        compatibility_receipts_case().await;
+    }
+
+    #[test]
+    fn compatibility_result_wait_is_bounded_by_request_and_original_frontend_window() {
+        compatibility_wait_budget_case();
+    }
+
+    #[tokio::test]
+    async fn compatibility_result_uses_wait_handler_and_preserves_terminal_direct_bytes() {
+        compatibility_terminal_result_case().await;
+    }
+
+    #[tokio::test]
+    async fn compatibility_task_errors_are_closed_and_native_profile_rejects_adapters() {
+        compatibility_closed_errors_case().await;
+    }
+
+    #[tokio::test]
+    async fn compatibility_adapter_reconnects_to_the_same_durable_task_after_daemon_restart() {
+        compatibility_daemon_restart_case().await;
+    }
+
+    #[tokio::test]
+    async fn v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free() {
+        surface_profiles_case().await;
+        compatibility_receipts_case().await;
+        compatibility_wait_budget_case();
+        compatibility_terminal_result_case().await;
+        compatibility_closed_errors_case().await;
+        compatibility_daemon_restart_case().await;
     }
 
     async fn tasks_direct_first_capability_case() {

@@ -492,10 +492,20 @@ impl DaemonOwner {
         task_id: crate::domain::invocation::TaskId,
         wait_ms: u64,
     ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
-        self.task_exchange(
-            ClientRequest::wait_task(task_id, wait_ms),
+        self.wait_task_with_transport_budget(
+            task_id,
+            wait_ms,
             Duration::from_millis(wait_ms).saturating_add(INVOCATION_RESPONSE_MARGIN),
         )
+    }
+
+    pub(crate) fn wait_task_with_transport_budget(
+        &mut self,
+        task_id: crate::domain::invocation::TaskId,
+        wait_ms: u64,
+        transport_budget: Duration,
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
+        self.task_exchange(ClientRequest::wait_task(task_id, wait_ms), transport_budget)
     }
 
     #[allow(dead_code)]

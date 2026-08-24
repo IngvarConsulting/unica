@@ -5,6 +5,7 @@
 | Символ | Вид | Статус | Построено | Суть | Файл |
 | --- | --- | --- | --- | --- | --- |
 | `CTR.FORMAT.PLATFORM-XML-8-3-27` | контракт · product | active |  | Чтение ресурсов сохраняет байты корпуса Platform XML 8.3.27 | [contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md](contracts/CTR.FORMAT.PLATFORM-XML-8-3-27.md) |
+| `CTR.WIRE.COMPATIBILITY-TASK-TOOLS` | контракт · product | active |  | Три compatibility-инструмента durable Task | [contracts/CTR.WIRE.COMPATIBILITY-TASK-TOOLS.md](contracts/CTR.WIRE.COMPATIBILITY-TASK-TOOLS.md) |
 | `CTR.WIRE.DAEMON-INVOCATION-PROTOCOL` | контракт · product | active |  | Внутренний daemon protocol canonical Invocation | [contracts/CTR.WIRE.DAEMON-INVOCATION-PROTOCOL.md](contracts/CTR.WIRE.DAEMON-INVOCATION-PROTOCOL.md) |
 | `CTR.WIRE.LIST-CACHE-FIELDS` | контракт · product | active |  | Современный list несёт cache-поля, legacy сохраняет прежнюю форму | [contracts/CTR.WIRE.LIST-CACHE-FIELDS.md](contracts/CTR.WIRE.LIST-CACHE-FIELDS.md) |
 | `CTR.WIRE.NATIVE-TASK-PROJECTION` | контракт · product | active |  | SEP-2663 projection скрытого V13 | [contracts/CTR.WIRE.NATIVE-TASK-PROJECTION.md](contracts/CTR.WIRE.NATIVE-TASK-PROJECTION.md) |
@@ -45,6 +46,7 @@
 | `DEC.2026-08-23.USER-CORE-DAEMON-SLICE` | решение · product | active | да | Версионированный пользовательский daemon становится владельцем execution state | [decisions/2026-08-23-user-core-daemon-slice.md](decisions/2026-08-23-user-core-daemon-slice.md) |
 | `DEC.2026-08-23.V0-13-EXECUTION-SURFACE` | решение · product | planned | нет | v0.13 отделяет восемь предметных входов от управления долгой работой | [decisions/2026-08-23-v0-13-execution-surface.md](decisions/2026-08-23-v0-13-execution-surface.md) |
 | `DEC.2026-08-23.WORKSPACE-ACTOR-SLICE` | решение · product | active | да | Daemon изолирует рабочие пространства акторами | [decisions/2026-08-23-workspace-actor-slice.md](decisions/2026-08-23-workspace-actor-slice.md) |
+| `DEC.2026-08-24.COMPATIBILITY-TASK-TOOLS-SLICE` | решение · product | active | да | Скрытый V13 эмулирует Tasks тремя обычными инструментами | [decisions/2026-08-24-compatibility-task-tools-slice.md](decisions/2026-08-24-compatibility-task-tools-slice.md) |
 | `DEC.2026-08-24.DAEMON-INVOCATION-ROUTING-SLICE` | решение · product | active | да | Скрытый canonical v0.13 profile исполняется только в daemon | [decisions/2026-08-24-daemon-invocation-routing-slice.md](decisions/2026-08-24-daemon-invocation-routing-slice.md) |
 | `DEC.2026-08-24.NATIVE-TASK-PROJECTION-SLICE` | решение · product | active | да | Скрытый V13 проецирует durable Invocation как SEP-2663 Task | [decisions/2026-08-24-native-task-projection-slice.md](decisions/2026-08-24-native-task-projection-slice.md) |
 | `INV.APP.CODE-DEFINITION-READINESS` | инвариант · product | active |  | Definition не публикует ложный типизированный успех | [invariants/INV.APP.CODE-DEFINITION-READINESS.md](invariants/INV.APP.CODE-DEFINITION-READINESS.md) |
@@ -290,3 +292,4 @@
 | `INV.WIRE.SDK-TRANSPORT` | инвариант · process | active |  | Ссылки на официальный SDK изолированы в interfaces | [invariants/INV.WIRE.SDK-TRANSPORT.md](invariants/INV.WIRE.SDK-TRANSPORT.md) |
 | `INV.WIRE.SURFACE-RELEASE-ROUTING` | инвариант · product | active |  | V12 и hidden V13 имеют взаимоисключающие dispatch paths | [invariants/INV.WIRE.SURFACE-RELEASE-ROUTING.md](invariants/INV.WIRE.SURFACE-RELEASE-ROUTING.md) |
 | `INV.WIRE.TYPED-READ-FINALIZER` | инвариант · product | active |  | Успешное типизированное чтение завершается только с data | [invariants/INV.WIRE.TYPED-READ-FINALIZER.md](invariants/INV.WIRE.TYPED-READ-FINALIZER.md) |
+| `INV.WIRE.V13-TASK-PROFILES` | инвариант · product | active |  | Hidden V13 выбирает ровно один Tasks-профиль без replay | [invariants/INV.WIRE.V13-TASK-PROFILES.md](invariants/INV.WIRE.V13-TASK-PROFILES.md) |

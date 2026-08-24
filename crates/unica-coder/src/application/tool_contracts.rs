@@ -32,6 +32,12 @@ pub(crate) enum SurfaceRelease {
     V13,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V13TaskProfile {
+    Native,
+    Compatibility,
+}
+
 impl SurfaceRelease {
     pub(crate) const fn from_package_version() -> Self {
         Self::V12
