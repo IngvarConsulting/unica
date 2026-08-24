@@ -1594,7 +1594,7 @@ impl RuntimeJobStore {
         &self,
         job_directory: &RetainedDirectoryCapability,
         record: &RuntimeJobRecord,
-    ) -> JobResult<()> {
+    ) -> JobResult<RetainedRegularFileCapability> {
         #[cfg(test)]
         if INJECT_RUNTIME_RECORD_WRITE_FAILURE.swap(false, std::sync::atomic::Ordering::AcqRel) {
             return Err(redacted_error("injected runtime record write failure"));
@@ -2787,27 +2787,33 @@ fn try_release_owned_quarantine_once_after_terminal(
     active: &mut ActiveRuntimeJobProcess,
     after_terminal_proof: impl FnOnce(),
 ) -> JobResult<bool> {
-    try_release_owned_quarantine_once_after_record_hooks(
-        store,
-        job_id,
-        active,
-        after_terminal_proof,
-        || {},
-        || {},
-        || {},
-    )
+    let mut after_terminal_proof = Some(after_terminal_proof);
+    try_release_owned_quarantine_once_after_record_hooks(store, job_id, active, |point| {
+        if point == QuarantineReleaseHookPoint::AfterTerminalProof {
+            if let Some(hook) = after_terminal_proof.take() {
+                hook();
+            }
+        }
+    })
 }
 
-/// Test hooks expose the two ambient record-I/O windows independently. The
-/// production wrappers pass no-ops.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuarantineReleaseHookPoint {
+    AfterTerminalProof,
+    AfterFinalValidationBeforeRead,
+    AfterRecordRead,
+    ImmediatelyBeforeRecordPublish,
+    AfterRecordPublishBeforeConfirmation,
+}
+
+/// The typed hook exposes each record-I/O boundary without widening the
+/// production transition's argument surface. Production wrappers ignore every
+/// point.
 fn try_release_owned_quarantine_once_after_record_hooks(
     store: &RuntimeJobStore,
     job_id: &str,
     active: &mut ActiveRuntimeJobProcess,
-    after_terminal_proof: impl FnOnce(),
-    after_final_validation_before_read: impl FnOnce(),
-    after_record_read: impl FnOnce(),
-    immediately_before_record_publish: impl FnOnce(),
+    mut hook: impl FnMut(QuarantineReleaseHookPoint),
 ) -> JobResult<bool> {
     let terminal = matches!(
         active.process.try_wait(),
@@ -2823,7 +2829,7 @@ fn try_release_owned_quarantine_once_after_record_hooks(
     if !output_complete {
         return Ok(false);
     }
-    after_terminal_proof();
+    hook(QuarantineReleaseHookPoint::AfterTerminalProof);
 
     let lifecycle =
         store.acquire_active_lifecycle_lock_for_root_bounded(active.jobs_root.clone())?;
@@ -2841,9 +2847,9 @@ fn try_release_owned_quarantine_once_after_record_hooks(
         .validate_named_identity()
         .and_then(|()| record_file.validate_named_identity())
         .map_err(|error| io_error("validate retained runtime quarantine record", &error))?;
-    after_final_validation_before_read();
+    hook(QuarantineReleaseHookPoint::AfterFinalValidationBeforeRead);
     let mut record = store.read_retained_record(job_id, &record_file)?;
-    after_record_read();
+    hook(QuarantineReleaseHookPoint::AfterRecordRead);
     if matches!(
         record.phase,
         RuntimeJobPhase::Queued | RuntimeJobPhase::Running | RuntimeJobPhase::CancelRequested
@@ -2864,8 +2870,14 @@ fn try_release_owned_quarantine_once_after_record_hooks(
         .validate_named_identity()
         .and_then(|()| record_file.validate_named_identity())
         .map_err(|error| io_error("revalidate retained runtime quarantine record", &error))?;
-    immediately_before_record_publish();
-    store.write_record_in_retained_job(&job_directory, &record)?;
+    hook(QuarantineReleaseHookPoint::ImmediatelyBeforeRecordPublish);
+    let published_record = store.write_record_in_retained_job(&job_directory, &record)?;
+    hook(QuarantineReleaseHookPoint::AfterRecordPublishBeforeConfirmation);
+    lifecycle
+        .validate()
+        .and_then(|()| job_directory.validate_named_identity())
+        .and_then(|()| published_record.validate_named_identity())
+        .map_err(|error| io_error("confirm retained runtime quarantine publication", &error))?;
     lifecycle
         .release_active_lock_for(job_id, || {})
         .map_err(|error| io_error("release retained runtime quarantine lock", &error))?;
@@ -4804,6 +4816,21 @@ pub(crate) mod tests {
             .expect("install matching-looking active lock in B");
     }
 
+    fn install_matching_replacement_job_directory(
+        jobs: &Path,
+        job_id: &str,
+        displaced_name: &str,
+    ) -> (PathBuf, Vec<u8>) {
+        let canonical = jobs.join(job_id);
+        let displaced = jobs.join(displaced_name);
+        let bytes = fs::read(canonical.join("record.json")).expect("save canonical record bytes");
+        fs::rename(&canonical, &displaced).expect("move retained job directory A");
+        fs::create_dir(&canonical).expect("install replacement job directory B");
+        fs::write(canonical.join("record.json"), &bytes)
+            .expect("install matching-looking record in B");
+        (displaced, bytes)
+    }
+
     #[test]
     fn quarantine_record_read_never_follows_replacement_after_retained_validation() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
@@ -4817,22 +4844,23 @@ pub(crate) mod tests {
             &service.store,
             &job_id,
             &mut active,
-            || {},
-            || {
-                install_matching_replacement_jobs_root(&jobs, &original, &job_id);
-                let path = jobs.join(&job_id).join("record.json");
-                let mut replacement: RuntimeJobRecord =
-                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-                replacement.warnings.push("record-from-root-b".to_string());
-                let bytes = serde_json::to_vec_pretty(&replacement).unwrap();
-                fs::write(&path, &bytes).unwrap();
-                *expected_b_for_hook.lock().unwrap() = bytes;
+            |point| match point {
+                QuarantineReleaseHookPoint::AfterFinalValidationBeforeRead => {
+                    install_matching_replacement_jobs_root(&jobs, &original, &job_id);
+                    let path = jobs.join(&job_id).join("record.json");
+                    let mut replacement: RuntimeJobRecord =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    replacement.warnings.push("record-from-root-b".to_string());
+                    let bytes = serde_json::to_vec_pretty(&replacement).unwrap();
+                    fs::write(&path, &bytes).unwrap();
+                    *expected_b_for_hook.lock().unwrap() = bytes;
+                }
+                QuarantineReleaseHookPoint::AfterRecordRead => {
+                    fs::rename(&jobs, &saved_b).expect("retain replacement B for inspection");
+                    fs::rename(&original, &jobs).expect("restore original jobs root A");
+                }
+                _ => {}
             },
-            || {
-                fs::rename(&jobs, &saved_b).expect("retain replacement B for inspection");
-                fs::rename(&original, &jobs).expect("restore original jobs root A");
-            },
-            || {},
         );
 
         assert!(result.expect("descriptor-relative A transition"));
@@ -4864,10 +4892,11 @@ pub(crate) mod tests {
             &service.store,
             &job_id,
             &mut active,
-            || {},
-            || {},
-            || {},
-            || install_matching_replacement_jobs_root(&jobs, &original, &job_id),
+            |point| {
+                if point == QuarantineReleaseHookPoint::ImmediatelyBeforeRecordPublish {
+                    install_matching_replacement_jobs_root(&jobs, &original, &job_id);
+                }
+            },
         );
 
         assert!(
@@ -4886,6 +4915,115 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn quarantine_publication_never_releases_after_same_root_job_directory_replacement() {
+        let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
+        let jobs = service.store.jobs_root();
+        let displaced_name = format!("{job_id}-retained");
+        let expected_b = Arc::new(Mutex::new(Vec::new()));
+        let expected_b_for_hook = Arc::clone(&expected_b);
+
+        let result = try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            |point| {
+                if point == QuarantineReleaseHookPoint::ImmediatelyBeforeRecordPublish {
+                    let (_displaced, bytes) =
+                        install_matching_replacement_job_directory(&jobs, &job_id, &displaced_name);
+                    *expected_b_for_hook.lock().unwrap() = bytes;
+                }
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "same-root job-directory replacement falsely confirmed publication"
+        );
+        assert_eq!(
+            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+            *expected_b.lock().unwrap(),
+            "publication modified replacement job-directory B"
+        );
+        assert!(
+            service.store.active_lock_path().exists(),
+            "unconfirmed publication removed active.lock"
+        );
+        assert!(matches!(
+            active.process.try_wait(),
+            Ok(RuntimeJobProcessState::Exited { .. })
+        ));
+    }
+
+    #[test]
+    fn quarantine_post_rename_flush_failure_never_releases_active_lock() {
+        let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
+        let before = fs::read(service.store.record_path(&job_id).unwrap()).unwrap();
+        crate::infrastructure::platform::filesystem::inject_post_rename_sync_failure_for_test();
+
+        let result = try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            |_| {},
+        );
+
+        assert!(
+            result.is_err(),
+            "post-rename durability failure was reported as successful publication"
+        );
+        assert_ne!(
+            fs::read(service.store.record_path(&job_id).unwrap()).unwrap(),
+            before,
+            "failure injection ran before the descriptor-relative rename"
+        );
+        assert!(
+            service.store.active_lock_path().exists(),
+            "post-rename durability failure removed active.lock"
+        );
+        assert!(matches!(
+            active.process.try_wait(),
+            Ok(RuntimeJobProcessState::Exited { .. })
+        ));
+    }
+
+    #[test]
+    fn quarantine_post_publication_confirmation_rejects_same_root_job_directory_swap() {
+        let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
+        let jobs = service.store.jobs_root();
+        let displaced_name = format!("{job_id}-published");
+        let expected_b = Arc::new(Mutex::new(Vec::new()));
+        let expected_b_for_hook = Arc::clone(&expected_b);
+
+        let result = try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            |point| {
+                if point == QuarantineReleaseHookPoint::AfterRecordPublishBeforeConfirmation {
+                    let (_displaced, bytes) =
+                        install_matching_replacement_job_directory(&jobs, &job_id, &displaced_name);
+                    *expected_b_for_hook.lock().unwrap() = bytes;
+                }
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "post-publication job-directory swap bypassed final confirmation"
+        );
+        assert_eq!(
+            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+            *expected_b.lock().unwrap(),
+            "final confirmation modified replacement job-directory B"
+        );
+        assert!(service.store.active_lock_path().exists());
+        assert!(matches!(
+            active.process.try_wait(),
+            Ok(RuntimeJobProcessState::Exited { .. })
+        ));
+    }
+
+    #[test]
     fn quarantine_record_transition_completes_only_in_exact_retained_root() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
 
@@ -4893,10 +5031,7 @@ pub(crate) mod tests {
             &service.store,
             &job_id,
             &mut active,
-            || {},
-            || {},
-            || {},
-            || {},
+            |_| {},
         )
         .expect("exact retained transition"));
         assert!(!service.store.active_lock_path().exists());
@@ -5699,6 +5834,9 @@ pub(crate) mod tests {
         quarantine_release_never_removes_active_lock_from_replacement_jobs_root();
         quarantine_record_read_never_follows_replacement_after_retained_validation();
         quarantine_record_publish_never_writes_replacement_root();
+        quarantine_publication_never_releases_after_same_root_job_directory_replacement();
+        quarantine_post_rename_flush_failure_never_releases_active_lock();
+        quarantine_post_publication_confirmation_rejects_same_root_job_directory_swap();
         quarantine_record_transition_completes_only_in_exact_retained_root();
         uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt();
         uncertain_post_spawn_failure_retains_active_lock_for_full_build_fallback();

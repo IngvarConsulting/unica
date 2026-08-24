@@ -5,6 +5,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_post_rename_sync_failure_for_test() {
+    TEST_POST_RENAME_SYNC_FAILURE.with(|slot| slot.set(true));
+}
+
 /// Returns a short, private directory suitable as a child process' Unix runtime
 /// directory.  It deliberately lives below `/tmp`: macOS's `TMPDIR` and a
 /// caller's `XDG_RUNTIME_DIR` can both be too long once a Unix socket name is
@@ -326,7 +336,7 @@ impl RetainedDirectoryCapability {
         stage_name: &std::ffi::OsStr,
         destination_name: &std::ffi::OsStr,
         bytes: &[u8],
-    ) -> io::Result<()> {
+    ) -> io::Result<RetainedRegularFileCapability> {
         use std::io::Write;
 
         let mut stage = create_new_regular_child(&self.retained.directory, stage_name)?;
@@ -341,7 +351,16 @@ impl RetainedDirectoryCapability {
                 &stage,
                 destination_name,
             )?;
-            sync_directory(&self.retained.directory)
+            sync_renamed_regular_child(&stage)?;
+            sync_directory(&self.retained.directory)?;
+            let published = RetainedRegularFileCapability {
+                parent: self.clone(),
+                name: destination_name.to_os_string(),
+                file: stage.try_clone()?,
+                identity,
+            };
+            published.validate_named_identity()?;
+            Ok(published)
         })();
         if publication.is_err() {
             let _ = remove_identity_bound_regular_child(
@@ -427,6 +446,16 @@ impl RetainedDirectoryCapability {
             identity,
         })
     }
+}
+
+fn sync_renamed_regular_child(file: &fs::File) -> io::Result<()> {
+    #[cfg(test)]
+    if TEST_POST_RENAME_SYNC_FAILURE.with(|slot| slot.replace(false)) {
+        return Err(io::Error::other(
+            "injected post-rename regular-file sync failure",
+        ));
+    }
+    file.sync_all()
 }
 
 impl RetainedRegularFileCapability {
@@ -4681,7 +4710,8 @@ mod tests {
             verify_windows_elevation_value, verify_windows_immutable_security_descriptor,
             verify_windows_local_fixed_device_info, verify_windows_local_fixed_volume,
             with_case_sensitivity_query_error, EffectiveTokenSource, OpenedChildKind,
-            OwnerOnlySecurityAttributes, ProcessToken, WindowsImmutableAclProfile,
+            OwnerOnlySecurityAttributes, ProcessToken, RetainedDirectoryCapability,
+            WindowsImmutableAclProfile,
         };
         use std::ffi::OsString;
         use std::mem::{offset_of, size_of};
@@ -5300,6 +5330,28 @@ mod tests {
         }
 
         #[test]
+        fn windows_retained_atomic_replace_returns_the_named_destination_capability() {
+            let root = unique_temp_root("retained-atomic-replace-destination");
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("record.json"), b"old").unwrap();
+            let directory = RetainedDirectoryCapability::open(&root).unwrap();
+
+            let published = directory
+                .replace_regular_child_atomically(
+                    std::ffi::OsStr::new("stage.tmp"),
+                    std::ffi::OsStr::new("record.json"),
+                    b"new",
+                )
+                .expect("native Windows replacement must flush and retain its renamed handle");
+
+            published.validate_named_identity().unwrap();
+            assert_eq!(published.read_bounded(16).unwrap(), b"new");
+            drop(published);
+            drop(directory);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
         fn ownership_lock_child_cannot_be_replaced_or_deleted_while_locked() {
             use crate::infrastructure::platform::filesystem::{
                 open_directory_ownership_lock, replace_file_atomically,
@@ -5797,6 +5849,44 @@ mod tests {
         drop(root);
         fs::remove_file(&root_path).unwrap();
         fs::remove_dir_all(parent_path).unwrap();
+    }
+
+    #[test]
+    fn retained_atomic_replace_flushes_renamed_handle_before_directory_sync() {
+        let source = include_str!("filesystem.rs");
+        let start = source
+            .find("pub(crate) fn replace_regular_child_atomically(")
+            .expect("retained atomic publisher exists");
+        let end = source[start..]
+            .find("pub(crate) fn read_relative_regular_bounded(")
+            .map(|offset| start + offset)
+            .expect("publisher has a bounded source slice");
+        let publisher = &source[start..end];
+        let rename = publisher
+            .find("replace_identity_bound_regular_child(")
+            .expect("publisher retains descriptor-relative rename");
+        let renamed_flush = publisher
+            .find("sync_renamed_regular_child(")
+            .expect("publisher flushes the renamed writable handle");
+        let directory_sync = publisher
+            .find("sync_directory(")
+            .expect("publisher retains supported directory durability");
+
+        assert!(
+            rename < renamed_flush && renamed_flush < directory_sync,
+            "rename must precede descriptor flush, which must precede directory sync"
+        );
+
+        let windows_start = source
+            .find("#[cfg(windows)]\npub(crate) fn replace_identity_bound_regular_child(")
+            .expect("Windows descriptor-relative replacement exists");
+        let windows_end = source[windows_start..]
+            .find("#[cfg(not(any(unix, windows)))]")
+            .map(|offset| windows_start + offset)
+            .expect("Windows replacement has a bounded source slice");
+        let windows_replace = &source[windows_start..windows_end];
+        assert!(windows_replace.contains("rename_open_child("));
+        assert!(!windows_replace.contains("MoveFileExW"));
     }
 
     #[cfg(windows)]

@@ -29,3 +29,5 @@ Durable compatibility phase `Lost` только классифицирует э�
 lease descriptor-relative только из сохранённого jobs-root; replacement root
 не является authority даже с совпадающим текстом job id. Durable record read и
 atomic publish используют retained job-directory/record, а не ambient path.
+После rename writable handle синхронизируется; published inode под именем
+`record.json` и retained job-directory подтверждаются до удаления lease.
