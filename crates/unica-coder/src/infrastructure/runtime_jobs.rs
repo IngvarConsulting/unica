@@ -40,6 +40,7 @@ use std::{
 use uuid::Uuid;
 
 const RECORD_SCHEMA_VERSION: u8 = 1;
+const RUNTIME_RECORD_BYTES: usize = 256 * 1024;
 const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
 const FALLBACK_RECEIPT_BYTES: usize = STDOUT_CAPTURE_LIMIT;
 const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -50,6 +51,22 @@ const RUNTIME_STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 #[cfg(test)]
 thread_local! {
     static STREAM_FINISH_ATTEMPTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static RUNTIME_RESOURCE_CONTRACT_EXECUTIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_runtime_resource_contract_executions_for_test() {
+    RUNTIME_RESOURCE_CONTRACT_EXECUTIONS.with(|slot| slot.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_resource_contract_executions_for_test() -> u32 {
+    RUNTIME_RESOURCE_CONTRACT_EXECUTIONS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn run_runtime_resource_tree_contract_for_test() {
+    tests::runtime_resource_tree_lease_contract();
 }
 #[cfg(test)]
 static INJECT_RUNTIME_RECORD_WRITE_FAILURE: std::sync::atomic::AtomicBool =
@@ -686,8 +703,14 @@ struct StreamTail {
     text: Arc<Mutex<String>>,
     receipt: Option<Arc<Mutex<Vec<u8>>>>,
     receipt_truncated: Arc<std::sync::atomic::AtomicBool>,
-    reader: Option<thread::JoinHandle<io::Result<()>>>,
+    state: StreamTailState,
     finished: mpsc::Receiver<()>,
+}
+
+enum StreamTailState {
+    Reading(Option<thread::JoinHandle<io::Result<()>>>),
+    Eof,
+    Failed(String),
 }
 
 impl StreamTail {
@@ -739,7 +762,7 @@ impl StreamTail {
             text,
             receipt,
             receipt_truncated,
-            reader: Some(reader),
+            state: StreamTailState::Reading(Some(reader)),
             finished,
         }
     }
@@ -761,20 +784,40 @@ impl StreamTail {
     }
 
     fn finish_within(&mut self, timeout: Duration) -> JobResult<bool> {
-        let Some(reader) = self.reader.take() else {
-            return Ok(false);
-        };
+        match &self.state {
+            StreamTailState::Eof => return Ok(false),
+            StreamTailState::Failed(error) => return Err(error.clone()),
+            StreamTailState::Reading(_) => {}
+        }
         match self.finished.recv_timeout(timeout) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => reader
-                .join()
-                .map_err(|_| redacted_error("join runtime job output reader"))?
-                .map_err(|error| io_error("read runtime job output", &error))
-                .map(|()| false),
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let reader = match &mut self.state {
+                    StreamTailState::Reading(reader) => reader
+                        .take()
+                        .expect("reading stream retains exactly one reader handle"),
+                    StreamTailState::Eof | StreamTailState::Failed(_) => unreachable!(),
+                };
+                let result = reader
+                    .join()
+                    .map_err(|_| redacted_error("join runtime job output reader"))
+                    .and_then(|result| {
+                        result.map_err(|error| io_error("read runtime job output", &error))
+                    });
+                match result {
+                    Ok(()) => {
+                        self.state = StreamTailState::Eof;
+                        Ok(false)
+                    }
+                    Err(error) => {
+                        self.state = StreamTailState::Failed(error.clone());
+                        Err(error)
+                    }
+                }
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Preserve the reader capability so quarantine supervision can
                 // later prove EOF. The partial bytes remain readable, but the
                 // receipt cannot authorize a fallback until then.
-                self.reader = Some(reader);
                 self.receipt_truncated
                     .store(true, std::sync::atomic::Ordering::Release);
                 Ok(true)
@@ -1507,14 +1550,29 @@ impl RuntimeJobStore {
 
     fn read_record(&self, id: &str) -> JobResult<RuntimeJobRecord> {
         let path = self.record_path(id)?;
-        let contents = fs::read_to_string(&path).map_err(|error| {
+        let contents = fs::read(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 redacted_error(&format!("runtime job {id} record is missing"))
             } else {
                 io_error("read runtime job record", &error)
             }
         })?;
-        let record: RuntimeJobRecord = serde_json::from_str(&contents).map_err(|error| {
+        self.decode_record(id, &contents)
+    }
+
+    fn read_retained_record(
+        &self,
+        id: &str,
+        record: &RetainedRegularFileCapability,
+    ) -> JobResult<RuntimeJobRecord> {
+        let contents = record
+            .read_bounded(RUNTIME_RECORD_BYTES)
+            .map_err(|error| io_error("read retained runtime job record", &error))?;
+        self.decode_record(id, &contents)
+    }
+
+    fn decode_record(&self, id: &str, contents: &[u8]) -> JobResult<RuntimeJobRecord> {
+        let record: RuntimeJobRecord = serde_json::from_slice(contents).map_err(|error| {
             redacted_error(&format!("runtime job {id} record is corrupt: {error}"))
         })?;
         if record.schema_version != RECORD_SCHEMA_VERSION {
@@ -1530,6 +1588,32 @@ impl RuntimeJobStore {
             )));
         }
         Ok(record)
+    }
+
+    fn write_record_in_retained_job(
+        &self,
+        job_directory: &RetainedDirectoryCapability,
+        record: &RuntimeJobRecord,
+    ) -> JobResult<()> {
+        #[cfg(test)]
+        if INJECT_RUNTIME_RECORD_WRITE_FAILURE.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return Err(redacted_error("injected runtime record write failure"));
+        }
+        let bytes = serde_json::to_vec_pretty(record)
+            .map_err(|error| redacted_error(&format!("serialize runtime job record: {error}")))?;
+        if bytes.len() > RUNTIME_RECORD_BYTES {
+            return Err(redacted_error(
+                "runtime job record exceeds its bounded size",
+            ));
+        }
+        let stage = format!(".record.json.{}.tmp", Uuid::new_v4());
+        job_directory
+            .replace_regular_child_atomically(
+                std::ffi::OsStr::new(&stage),
+                std::ffi::OsStr::new("record.json"),
+                &bytes,
+            )
+            .map_err(|error| io_error("publish retained runtime job record", &error))
     }
 
     fn write_record(&self, record: &RuntimeJobRecord) -> JobResult<()> {
@@ -2086,7 +2170,6 @@ impl RuntimeJobService {
             record.finished_at_ms = Some(now_millis());
             record.warnings.push("stale heartbeat".to_string());
             self.store.write_record(&record)?;
-            self.remove_process(&record.id)?;
             return Ok(record.snapshot(false));
         }
 
@@ -2704,6 +2787,28 @@ fn try_release_owned_quarantine_once_after_terminal(
     active: &mut ActiveRuntimeJobProcess,
     after_terminal_proof: impl FnOnce(),
 ) -> JobResult<bool> {
+    try_release_owned_quarantine_once_after_record_hooks(
+        store,
+        job_id,
+        active,
+        after_terminal_proof,
+        || {},
+        || {},
+        || {},
+    )
+}
+
+/// Test hooks expose the two ambient record-I/O windows independently. The
+/// production wrappers pass no-ops.
+fn try_release_owned_quarantine_once_after_record_hooks(
+    store: &RuntimeJobStore,
+    job_id: &str,
+    active: &mut ActiveRuntimeJobProcess,
+    after_terminal_proof: impl FnOnce(),
+    after_final_validation_before_read: impl FnOnce(),
+    after_record_read: impl FnOnce(),
+    immediately_before_record_publish: impl FnOnce(),
+) -> JobResult<bool> {
     let terminal = matches!(
         active.process.try_wait(),
         Ok(RuntimeJobProcessState::Exited { .. } | RuntimeJobProcessState::TimedOut { .. })
@@ -2725,7 +2830,20 @@ fn try_release_owned_quarantine_once_after_terminal(
     lifecycle
         .validate()
         .map_err(|error| io_error("revalidate retained runtime quarantine root", &error))?;
-    let mut record = store.read_record(job_id)?;
+    let job_directory = lifecycle
+        .jobs_root
+        .retain_directory_child(std::ffi::OsStr::new(job_id))
+        .map_err(|error| io_error("retain runtime quarantine job directory", &error))?;
+    let record_file = job_directory
+        .retain_regular_child(std::ffi::OsStr::new("record.json"))
+        .map_err(|error| io_error("retain runtime quarantine record", &error))?;
+    job_directory
+        .validate_named_identity()
+        .and_then(|()| record_file.validate_named_identity())
+        .map_err(|error| io_error("validate retained runtime quarantine record", &error))?;
+    after_final_validation_before_read();
+    let mut record = store.read_retained_record(job_id, &record_file)?;
+    after_record_read();
     if matches!(
         record.phase,
         RuntimeJobPhase::Queued | RuntimeJobPhase::Running | RuntimeJobPhase::CancelRequested
@@ -2742,7 +2860,12 @@ fn try_release_owned_quarantine_once_after_terminal(
     lifecycle
         .validate()
         .map_err(|error| io_error("revalidate retained runtime quarantine root", &error))?;
-    store.write_record(&record)?;
+    job_directory
+        .validate_named_identity()
+        .and_then(|()| record_file.validate_named_identity())
+        .map_err(|error| io_error("revalidate retained runtime quarantine record", &error))?;
+    immediately_before_record_publish();
+    store.write_record_in_retained_job(&job_directory, &record)?;
     lifecycle
         .release_active_lock_for(job_id, || {})
         .map_err(|error| io_error("release retained runtime quarantine lock", &error))?;
@@ -2996,6 +3119,9 @@ fn run_worker_request(
             }
             Err(error) => return Err(error),
         };
+        if snapshot.phase.is_terminal() && service.has_retained_process(&job_id) {
+            return service.supervise_quarantine(&job_id);
+        }
         if snapshot.phase.is_terminal() {
             if snapshot.phase == RuntimeJobPhase::Succeeded {
                 if let Err(error) = apply_runtime_success_effects(&worker_cwd, operation, &job_id) {
@@ -3416,6 +3542,57 @@ pub(crate) mod tests {
         released: Arc<std::sync::atomic::AtomicBool>,
     }
 
+    enum FaultyStream {
+        Error,
+        Panic,
+    }
+
+    impl Read for FaultyStream {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            match self {
+                Self::Error => Err(io::Error::other("injected stream read failure")),
+                Self::Panic => panic!("injected stream reader panic"),
+            }
+        }
+    }
+
+    struct TerminalFaultyTailProcess {
+        tail: StreamTail,
+    }
+
+    impl RuntimeJobProcess for TerminalFaultyTailProcess {
+        fn id(&self) -> u32 {
+            7332
+        }
+
+        fn try_wait(&mut self) -> JobResult<RuntimeJobProcessState> {
+            Ok(RuntimeJobProcessState::Exited { exit_code: 1 })
+        }
+
+        fn cancel(&mut self) -> JobResult<()> {
+            Ok(())
+        }
+
+        fn output_tails(&mut self, max_bytes: usize) -> JobResult<RuntimeJobOutput> {
+            self.output_tails_until(max_bytes, Instant::now())
+        }
+
+        fn output_tails_until(
+            &mut self,
+            max_bytes: usize,
+            _deadline: Instant,
+        ) -> JobResult<RuntimeJobOutput> {
+            let output_incomplete = self.tail.finish_within(Duration::from_secs(1))?;
+            Ok(RuntimeJobOutput {
+                stdout: self.tail.tail(max_bytes)?,
+                stderr: String::new(),
+                output_incomplete,
+                fallback_receipt: None,
+                fallback_receipt_truncated: false,
+            })
+        }
+    }
+
     struct TerminalTreeWithTwoHeldReaders {
         stdout: StreamTail,
         stderr: StreamTail,
@@ -3495,6 +3672,50 @@ pub(crate) mod tests {
             "an abandoned reader cannot prove a whole receipt, so no fallback may be authorized"
         );
         released.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn assert_faulty_reader_stays_quarantined(stream: FaultyStream) {
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(0)));
+        let started = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("start retained process");
+        let mut record = service.store.read_record(&started.id).unwrap();
+        record.transition(RuntimeJobPhase::Lost).unwrap();
+        service.store.write_record(&record).unwrap();
+        let mut active = service
+            .lock_processes()
+            .unwrap()
+            .remove(&started.id)
+            .expect("take retained process");
+        active.process = Box::new(TerminalFaultyTailProcess {
+            tail: StreamTail::spawn(stream),
+        });
+
+        assert!(
+            !try_release_owned_quarantine_once(&service.store, &started.id, &mut active,)
+                .expect("first failed reader probe remains quarantined")
+        );
+        assert!(
+            !try_release_owned_quarantine_once(&service.store, &started.id, &mut active,)
+                .expect("second failed reader probe remains quarantined")
+        );
+        assert!(service.store.active_lock_path().exists());
+        assert_eq!(
+            service.store.read_record(&started.id).unwrap().phase,
+            RuntimeJobPhase::Lost,
+            "a failed reader must not publish success or authorize fallback"
+        );
+    }
+
+    #[test]
+    fn stream_tail_read_failure_is_sticky_across_quarantine_probes() {
+        assert_faulty_reader_stays_quarantined(FaultyStream::Error);
+    }
+
+    #[test]
+    fn stream_tail_panic_is_sticky_across_quarantine_probes() {
+        assert_faulty_reader_stays_quarantined(FaultyStream::Panic);
     }
 
     #[test]
@@ -4547,6 +4768,143 @@ pub(crate) mod tests {
         );
     }
 
+    fn lost_quarantine_fixture() -> (
+        TestCache,
+        RuntimeJobService,
+        String,
+        ActiveRuntimeJobProcess,
+    ) {
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(0)));
+        let started = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("start retained process in physical jobs root A");
+        let mut record = service.store.read_record(&started.id).unwrap();
+        record.transition(RuntimeJobPhase::Lost).unwrap();
+        service.store.write_record(&record).unwrap();
+        let active = service
+            .lock_processes()
+            .unwrap()
+            .remove(&started.id)
+            .expect("take retained process");
+        (cache, service, started.id, active)
+    }
+
+    fn install_matching_replacement_jobs_root(jobs: &Path, original: &Path, job_id: &str) {
+        fs::rename(jobs, original).expect("move retained jobs root A");
+        fs::create_dir(jobs).expect("install replacement jobs root B");
+        let replacement_job = jobs.join(job_id);
+        fs::create_dir(&replacement_job).expect("install matching-looking job in B");
+        fs::copy(
+            original.join(job_id).join("record.json"),
+            replacement_job.join("record.json"),
+        )
+        .expect("copy byte-identical quarantine record into B");
+        fs::write(jobs.join("active.lock"), job_id)
+            .expect("install matching-looking active lock in B");
+    }
+
+    #[test]
+    fn quarantine_record_read_never_follows_replacement_after_retained_validation() {
+        let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
+        let jobs = service.store.jobs_root();
+        let original = service.store.cache_root.join("jobs-original-read");
+        let saved_b = service.store.cache_root.join("jobs-saved-b-read");
+        let expected_b = Arc::new(Mutex::new(Vec::new()));
+        let expected_b_for_hook = Arc::clone(&expected_b);
+
+        let result = try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            || {},
+            || {
+                install_matching_replacement_jobs_root(&jobs, &original, &job_id);
+                let path = jobs.join(&job_id).join("record.json");
+                let mut replacement: RuntimeJobRecord =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                replacement.warnings.push("record-from-root-b".to_string());
+                let bytes = serde_json::to_vec_pretty(&replacement).unwrap();
+                fs::write(&path, &bytes).unwrap();
+                *expected_b_for_hook.lock().unwrap() = bytes;
+            },
+            || {
+                fs::rename(&jobs, &saved_b).expect("retain replacement B for inspection");
+                fs::rename(&original, &jobs).expect("restore original jobs root A");
+            },
+            || {},
+        );
+
+        assert!(result.expect("descriptor-relative A transition"));
+        assert_eq!(
+            fs::read(saved_b.join(&job_id).join("record.json")).unwrap(),
+            *expected_b.lock().unwrap(),
+            "reading A followed the replacement namespace into B"
+        );
+        assert!(
+            !service
+                .store
+                .read_record(&job_id)
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|warning| warning == "record-from-root-b"),
+            "B's durable record was read and republished into A"
+        );
+    }
+
+    #[test]
+    fn quarantine_record_publish_never_writes_replacement_root() {
+        let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
+        let jobs = service.store.jobs_root();
+        let original = service.store.cache_root.join("jobs-original-publish");
+        let expected_b = fs::read(service.store.record_path(&job_id).unwrap()).unwrap();
+
+        let result = try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            || {},
+            || {},
+            || {},
+            || install_matching_replacement_jobs_root(&jobs, &original, &job_id),
+        );
+
+        assert!(
+            result.is_err(),
+            "replacement before publish must quarantine A"
+        );
+        assert_eq!(
+            fs::read(jobs.join(&job_id).join("record.json")).unwrap(),
+            expected_b,
+            "A-derived terminal state was published into B"
+        );
+        assert!(
+            original.join("active.lock").exists(),
+            "A was falsely released"
+        );
+    }
+
+    #[test]
+    fn quarantine_record_transition_completes_only_in_exact_retained_root() {
+        let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
+
+        assert!(try_release_owned_quarantine_once_after_record_hooks(
+            &service.store,
+            &job_id,
+            &mut active,
+            || {},
+            || {},
+            || {},
+            || {},
+        )
+        .expect("exact retained transition"));
+        assert!(!service.store.active_lock_path().exists());
+        let record = service.store.read_record(&job_id).unwrap();
+        assert_eq!(record.phase, RuntimeJobPhase::Lost);
+        assert!(record.finished_at_ms.is_some());
+    }
+
     #[test]
     fn uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt() {
         let cache = TestCache::new();
@@ -4963,6 +5321,7 @@ pub(crate) mod tests {
         fail_poll: AtomicBool,
         fail_output: AtomicBool,
         terminal: AtomicBool,
+        dropped: AtomicBool,
     }
 
     struct ObservationFailureRunner {
@@ -4977,6 +5336,12 @@ pub(crate) mod tests {
 
     struct ObservationFailureProcess {
         state: Arc<ObservationFailureState>,
+    }
+
+    impl Drop for ObservationFailureProcess {
+        fn drop(&mut self) {
+            self.state.dropped.store(true, Ordering::Release);
+        }
     }
 
     impl RuntimeJobRunner for ObservationFailureRunner {
@@ -5052,6 +5417,7 @@ pub(crate) mod tests {
             fail_poll: AtomicBool::new(fail_poll),
             fail_output: AtomicBool::new(fail_output),
             terminal: AtomicBool::new(fail_output),
+            dropped: AtomicBool::new(false),
         });
         let runner = Arc::new(ObservationFailureRunner {
             state: Arc::clone(&state),
@@ -5093,6 +5459,71 @@ pub(crate) mod tests {
         assert_worker_supervises_observation_failure(false, true);
     }
 
+    #[test]
+    fn stale_local_worker_retains_process_until_later_terminal_proof() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Test);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let state = Arc::new(ObservationFailureState {
+            fail_poll: AtomicBool::new(false),
+            fail_output: AtomicBool::new(false),
+            terminal: AtomicBool::new(false),
+            dropped: AtomicBool::new(false),
+        });
+        let runner = Arc::new(ObservationFailureRunner {
+            state: Arc::clone(&state),
+        });
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            finished_tx
+                .send(run_worker_request(handoff, runner))
+                .expect("send worker result");
+        });
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        let running_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if store
+                .read_record(&queued.id)
+                .is_ok_and(|record| record.phase == RuntimeJobPhase::Running)
+            {
+                break;
+            }
+            assert!(Instant::now() < running_deadline, "worker never activated");
+            thread::yield_now();
+        }
+        {
+            let _lifecycle = store.acquire_active_lifecycle_lock().unwrap();
+            let mut record = store.read_record(&queued.id).unwrap();
+            record.heartbeat_at_ms = Some(0);
+            store.write_record(&record).unwrap();
+        }
+        wait_for_lost_record(&store, &queued.id);
+
+        assert!(
+            matches!(
+                finished_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "stale polling let the canonical worker return with live authority"
+        );
+        assert!(
+            !state.dropped.load(Ordering::Acquire),
+            "stale polling dropped the retained process capability"
+        );
+        assert_replacement_refused(&cache, &request);
+
+        state.terminal.store(true, Ordering::Release);
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker did not finish stale-process supervision")
+            .expect("terminal proof completes stale-process supervision");
+        worker.join().expect("join worker");
+        assert!(state.dropped.load(Ordering::Acquire));
+        assert!(!store.active_lock_path().exists());
+        assert_replacement_available(&cache, &request);
+    }
+
     fn assert_worker_supervises_post_spawn_record_failure(
         request: RuntimeJobRequest,
         first: Option<FakeProcessState>,
@@ -5104,6 +5535,7 @@ pub(crate) mod tests {
             fail_poll: AtomicBool::new(true),
             fail_output: AtomicBool::new(false),
             terminal: AtomicBool::new(false),
+            dropped: AtomicBool::new(false),
         });
         let runner = Arc::new(ActivationWriteFailureRunner {
             attempts: AtomicU32::new(0),
@@ -5255,19 +5687,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn runtime_resource_tree_lease_contract() {
+    pub(crate) fn runtime_resource_tree_lease_contract() {
+        RUNTIME_RESOURCE_CONTRACT_EXECUTIONS.with(|slot| {
+            slot.set(slot.get().saturating_add(1));
+        });
         runtime_shared_work_joins_only_the_exact_active_resource_and_lease();
         runtime_shared_work_separates_physical_resources_and_distinct_v4_leases();
         stale_runtime_shared_work_authority_starts_no_producer_after_lock_replacement();
         replaced_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer();
         symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer();
         quarantine_release_never_removes_active_lock_from_replacement_jobs_root();
+        quarantine_record_read_never_follows_replacement_after_retained_validation();
+        quarantine_record_publish_never_writes_replacement_root();
+        quarantine_record_transition_completes_only_in_exact_retained_root();
         uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt();
         uncertain_post_spawn_failure_retains_active_lock_for_full_build_fallback();
         worker_supervises_initial_retained_ownership_until_proven_terminal();
         worker_supervises_fallback_retained_ownership_until_proven_terminal();
         worker_quarantines_poll_failure_until_later_terminal_proof();
         worker_quarantines_output_failure_until_later_eof_proof();
+        stale_local_worker_retains_process_until_later_terminal_proof();
+        stream_tail_read_failure_is_sticky_across_quarantine_probes();
+        stream_tail_panic_is_sticky_across_quarantine_probes();
         worker_retains_initial_process_when_running_record_write_fails();
         worker_retains_fallback_process_when_running_record_write_fails();
         quarantine_thread_spawn_failure_retains_process_authority_and_active_lock();

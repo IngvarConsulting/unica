@@ -21,10 +21,10 @@ durable Task, затем ждёт producer; polling не запускает prod
 Capability не являются MCP tools, не добавляют TaskStore phase и не обходят
 ProviderRootBinding, revision fence, `BslIndexLock` или runtime `active.lock`.
 Unix runtime tree в этом контракте означает только retained unreaped leader и
-установленный Unica child-only inherited lifetime sentinel FD, сохраняемый
-текущим pinned runner без handshake/acknowledgement. Ошибка startup, fallback,
-poll, output или persistence оставляет canonical worker supervising retained
-authority; отсутствие или потеря capability quarantine-ит ресурс, а не
-объявляет его свободным. Поздний release также остаётся привязан к исходному
-physical jobs-root и не следует за подменённым ambient-путём.
+установленный Unica child-only inherited lifetime sentinel dynamic FD,
+сохраняемый текущим pinned runner без handshake/acknowledgement и без overwrite
+чужого inherited FD. Ошибка startup, fallback, stale local poll, output или
+persistence оставляет canonical worker supervising retained authority; reader
+failure sticky. Поздний release читает и атомарно публикует record через retained
+job-directory и остаётся привязан к исходному physical jobs-root.
 Production subject handler и durable progress остаются границей Task 22.

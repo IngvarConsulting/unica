@@ -19,21 +19,23 @@ Daemon владеет rootless ProviderHost coordinator `engine + target + capab
 Разделяется только host startup; request/result/cache/`PersistentMcpSession`
 остаются actor-bound. Runtime join доступен только через `RuntimeJobService` под
 lifecycle-lock точного no-follow jobs-root, `active.lock` и UUIDv4 lease; movable
-key и dedup по аргументам запрещены. Quarantine release использует тот же
-retained descriptor: подмена ambient A→B сохраняет A и не затрагивает B.
+key и dedup по аргументам запрещены. Quarantine release удерживает jobs-root,
+job directory и record; чтение и atomic publish descriptor-relative. Подмена
+ambient A→B сохраняет A и байты B.
 
 На Windows authority — присоединённый Job Object. Unix bundled-runner contract —
 unreaped leader через `waitid(WNOWAIT)` и child-only inherited lifetime sentinel.
 Pinned `v8-runner` `7ce1b062843d86644fe55741dbe0ee79f7ca767d` не закрывает
-унаследованные descriptors перед обычным `Command` spawn. Это sentinel без
-runner handshake/acknowledgement и без hostile/cross-group containment.
+унаследованные descriptors перед обычным `Command` spawn. Sentinel передаёт
+фактический dynamic FD, не затирая inherited descriptor; это не runner
+handshake/acknowledgement и не hostile/cross-group containment.
 
 Потеря capability, post-spawn cleanup error или недоказанная terminality дают
 ownership-uncertain и durable `Lost`: signal/release запрещены, `active.lock`
 quarantined. `Lost` не является authority. Canonical worker синхронно хранит
-process и оба reader до terminal+EOF; failure supervisor оставляет capability
-retained. Cancel/cleanup/reap/readers делят один monotonic deadline, Drop его не
-перезапускает.
+process и оба reader до terminal+EOF; local stale worker остаётся под той же
+supervision, а reader error/panic sticky и не становится EOF. Cancel/cleanup,
+reap/readers делят один monotonic deadline, Drop его не перезапускает.
 
 Injected V13 service проверяет capability после durable Task handoff; production
 subject handler dormant до Task 22. SharedWork phase/resume не персистятся,

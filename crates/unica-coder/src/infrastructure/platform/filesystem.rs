@@ -213,6 +213,7 @@ impl FileIdentity {
 pub(crate) struct RetainedDirectoryCapability {
     path: PathBuf,
     retained: Arc<RetainedDirectoryCapabilityInner>,
+    parent: Option<Arc<RetainedDirectoryParent>>,
 }
 
 /// Retained no-follow authority for one regular child of an admitted directory.
@@ -229,6 +230,11 @@ pub(crate) struct RetainedRegularFileCapability {
 struct RetainedDirectoryCapabilityInner {
     directory: fs::File,
     identity: FileIdentity,
+}
+
+struct RetainedDirectoryParent {
+    directory: RetainedDirectoryCapability,
+    name: std::ffi::OsString,
 }
 
 impl std::fmt::Debug for RetainedDirectoryCapability {
@@ -251,6 +257,7 @@ impl RetainedDirectoryCapability {
                 directory,
                 identity,
             }),
+            parent: None,
         })
     }
 
@@ -263,6 +270,7 @@ impl RetainedDirectoryCapability {
                 directory,
                 identity,
             }),
+            parent: None,
         })
     }
 
@@ -275,7 +283,12 @@ impl RetainedDirectoryCapability {
     }
 
     pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
-        let rebound = open_absolute_directory_path_nofollow(&self.path)?;
+        let rebound = if let Some(parent) = &self.parent {
+            parent.directory.validate_named_identity()?;
+            open_directory_child_nofollow(&parent.directory.retained.directory, &parent.name)?
+        } else {
+            open_absolute_directory_path_nofollow(&self.path)?
+        };
         let rebound_identity = file_identity(&rebound)?;
         if rebound_identity != self.retained.identity {
             return Err(io::Error::new(
@@ -284,6 +297,61 @@ impl RetainedDirectoryCapability {
             ));
         }
         Ok(())
+    }
+
+    /// Retains one no-follow child directory relative to this exact directory
+    /// descriptor. Its later validation also walks through the retained parent
+    /// descriptor rather than reopening the child through an ambient path.
+    pub(crate) fn retain_directory_child(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        let directory = open_directory_child_nofollow(&self.retained.directory, name)?;
+        let identity = file_identity(&directory)?;
+        Ok(Self {
+            path: self.path.join(name),
+            retained: Arc::new(RetainedDirectoryCapabilityInner {
+                directory,
+                identity,
+            }),
+            parent: Some(Arc::new(RetainedDirectoryParent {
+                directory: self.clone(),
+                name: name.to_os_string(),
+            })),
+        })
+    }
+
+    /// Publishes bytes atomically inside this retained directory. Both the
+    /// staging child and rename destination are resolved through the retained
+    /// directory handle, so replacing the lexical path cannot redirect bytes.
+    pub(crate) fn replace_regular_child_atomically(
+        &self,
+        stage_name: &std::ffi::OsStr,
+        destination_name: &std::ffi::OsStr,
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        use std::io::Write;
+
+        let mut stage = create_new_regular_child(&self.retained.directory, stage_name)?;
+        let identity = file_identity(&stage)?;
+        let publication = (|| {
+            stage.write_all(bytes)?;
+            stage.sync_data()?;
+            replace_identity_bound_regular_child(
+                &self.retained.directory,
+                stage_name,
+                identity,
+                &stage,
+                destination_name,
+            )?;
+            sync_directory(&self.retained.directory)
+        })();
+        if publication.is_err() {
+            let _ = remove_identity_bound_regular_child(
+                &self.retained.directory,
+                stage_name,
+                identity,
+                &stage,
+            );
+        }
+        publication
     }
 
     pub(crate) fn read_relative_regular_bounded(

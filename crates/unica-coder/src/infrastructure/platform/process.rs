@@ -429,6 +429,7 @@ thread_local! {
 pub(crate) fn assert_runtime_ownership_sentinel_for_test() {
     tests::permission_denied_empty_group_policy_requires_exact_platform_evidence();
     tests::runtime_ownership_writer_is_cloexec_in_the_parent();
+    tests::runtime_sentinel_preserves_a_meaningful_inherited_fd198();
     tests::runtime_ownership_pipe_accepts_an_exact_quick_terminal_child();
     tests::concurrent_runtime_sentinels_do_not_cross_inherit_or_leak_to_unrelated_exec();
     tests::runner_style_new_process_group_and_closed_stdio_still_hold_sentinel_lifetime();
@@ -1300,9 +1301,6 @@ struct UnixOwnershipPipe {
     parent_writer: Option<std::fs::File>,
 }
 
-#[cfg(unix)]
-const RUNTIME_OWNERSHIP_SENTINEL_FD: i32 = 198;
-
 #[cfg(all(unix, target_vendor = "apple"))]
 fn atomic_cloexec_ownership_pair() -> io::Result<[i32; 2]> {
     use std::os::unix::ffi::OsStrExt;
@@ -1386,31 +1384,21 @@ impl UnixOwnershipPipe {
         let reader = unsafe { std::fs::File::from_raw_fd(descriptors[0]) };
         let writer = unsafe { std::fs::File::from_raw_fd(descriptors[1]) };
         let writer_fd = writer.as_raw_fd();
-        // SAFETY: dup2, close and fcntl are async-signal-safe. The parent keeps
-        // writer CLOEXEC at all times; only this child maps it onto the reserved
-        // sentinel descriptor and clears CLOEXEC there before exec.
+        // SAFETY: fcntl is async-signal-safe. The parent keeps this exact
+        // descriptor CLOEXEC at all times; only this child clears the flag on
+        // the descriptor it actually inherited. No fixed target is overwritten.
         unsafe {
             command.pre_exec(move || {
-                if writer_fd != RUNTIME_OWNERSHIP_SENTINEL_FD {
-                    if libc::dup2(writer_fd, RUNTIME_OWNERSHIP_SENTINEL_FD) == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    libc::close(writer_fd);
-                } else {
-                    let flags = libc::fcntl(writer_fd, libc::F_GETFD);
-                    if flags == -1
-                        || libc::fcntl(writer_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
-                    {
-                        return Err(io::Error::last_os_error());
-                    }
+                let flags = libc::fcntl(writer_fd, libc::F_GETFD);
+                if flags == -1
+                    || libc::fcntl(writer_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
+                {
+                    return Err(io::Error::last_os_error());
                 }
                 Ok(())
             });
         }
-        command.env(
-            "UNICA_RUNTIME_TREE_OWNERSHIP_FD",
-            RUNTIME_OWNERSHIP_SENTINEL_FD.to_string(),
-        );
+        command.env("UNICA_RUNTIME_TREE_OWNERSHIP_FD", writer_fd.to_string());
         Ok(Self {
             reader,
             parent_writer: Some(writer),
@@ -2388,6 +2376,10 @@ mod tests {
     const RUNTIME_SENTINEL_HELPER_ENV: &str = "UNICA_RUNTIME_SENTINEL_HELPER";
     #[cfg(unix)]
     const RUNTIME_SENTINEL_PID_FILE_ENV: &str = "UNICA_RUNTIME_SENTINEL_PID_FILE";
+    #[cfg(unix)]
+    const RUNTIME_SENTINEL_FD198_MARKER_ENV: &str = "UNICA_RUNTIME_SENTINEL_FD198_MARKER";
+    #[cfg(unix)]
+    const RUNTIME_SENTINEL_FD198_HARNESS_ENV: &str = "UNICA_RUNTIME_SENTINEL_FD198_HARNESS";
 
     fn with_wait_error<T>(action: impl FnOnce() -> T) -> T {
         struct Reset(bool);
@@ -2904,6 +2896,195 @@ mod tests {
             0,
             "ownership writer is globally inheritable by unrelated concurrent spawns"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::zombie_processes)]
+    // The parent test owns and reaps the detached descendant after observing
+    // sentinel-only lifetime; waiting here would erase the tested boundary.
+    fn runtime_preexisting_fd198_helper() {
+        use std::os::fd::{FromRawFd, IntoRawFd};
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::process::CommandExt;
+
+        let Some(marker) = std::env::var_os(RUNTIME_SENTINEL_FD198_MARKER_ENV) else {
+            return;
+        };
+        let mut inherited = unsafe { std::fs::File::from_raw_fd(198) };
+        let metadata = inherited.metadata().unwrap();
+        let mut bytes = Vec::new();
+        inherited.read_to_end(&mut bytes).unwrap();
+        let _ = inherited.into_raw_fd();
+        let mut descendant = Command::new("/bin/sleep");
+        descendant
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            descendant.pre_exec(|| {
+                if libc::setpgid(0, 0) == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let descendant = descendant.spawn().unwrap();
+        std::fs::write(
+            marker,
+            format!(
+                "{}:{}:{}\n{}",
+                metadata.dev(),
+                metadata.ino(),
+                String::from_utf8(bytes).unwrap(),
+                descendant.id()
+            ),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    pub(super) fn runtime_sentinel_preserves_a_meaningful_inherited_fd198() {
+        use std::os::fd::FromRawFd;
+        use std::os::unix::fs::MetadataExt;
+
+        if std::env::var_os(RUNTIME_SENTINEL_FD198_HARNESS_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "infrastructure::platform::process::tests::runtime_sentinel_preserves_a_meaningful_inherited_fd198",
+                    "--nocapture",
+                ])
+                .env(RUNTIME_SENTINEL_FD198_HARNESS_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated inherited-fd harness failed");
+            return;
+        }
+
+        struct RestoreFd198 {
+            saved: Option<i32>,
+            flags: Option<i32>,
+        }
+        impl Drop for RestoreFd198 {
+            fn drop(&mut self) {
+                match self.saved {
+                    Some(saved) => unsafe {
+                        libc::dup2(saved, 198);
+                        if let Some(flags) = self.flags {
+                            libc::fcntl(198, libc::F_SETFD, flags);
+                        }
+                        libc::close(saved);
+                    },
+                    None => unsafe {
+                        libc::close(198);
+                    },
+                };
+            }
+        }
+
+        let original_flags = unsafe { libc::fcntl(198, libc::F_GETFD) };
+        let saved = unsafe { libc::fcntl(198, libc::F_DUPFD_CLOEXEC, 256) };
+        let _restore = RestoreFd198 {
+            saved: (saved >= 0).then_some(saved),
+            flags: (original_flags >= 0).then_some(original_flags),
+        };
+        let descriptors =
+            super::atomic_cloexec_ownership_pair().expect("create inherited fd198 fixture");
+        assert_ne!(unsafe { libc::dup2(descriptors[0], 198) }, -1);
+        unsafe { libc::close(descriptors[0]) };
+        let mut payload = unsafe { std::fs::File::from_raw_fd(descriptors[1]) };
+        let nonce = format!("fd198-authority-{}", std::process::id());
+        payload.write_all(nonce.as_bytes()).unwrap();
+        drop(payload);
+        let metadata = unsafe { std::fs::File::from_raw_fd(libc::dup(198)) }
+            .metadata()
+            .unwrap();
+        let expected = format!("{}:{}:{}", metadata.dev(), metadata.ino(), nonce);
+        let marker = std::env::temp_dir().join(format!(
+            "unica-runtime-fd198-{}-{:?}",
+            std::process::id(),
+            thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::runtime_preexisting_fd198_helper",
+                "--nocapture",
+            ])
+            .env(RUNTIME_SENTINEL_FD198_MARKER_ENV, &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut handle = super::RuntimeProcessTreeHandle::prepare(&mut command).unwrap();
+        let sentinel_fd = command
+            .get_envs()
+            .find_map(|(name, value)| {
+                (name == "UNICA_RUNTIME_TREE_OWNERSHIP_FD")
+                    .then(|| value.unwrap().to_string_lossy().parse::<i32>().unwrap())
+            })
+            .unwrap();
+        assert_ne!(
+            sentinel_fd, 198,
+            "sentinel selected an occupied authority fd"
+        );
+        let mut child = command.spawn().unwrap();
+        handle.attach(&mut child).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let descendant = loop {
+            if let Ok(actual) = std::fs::read_to_string(&marker) {
+                if !actual.is_empty() {
+                    let (actual, descendant) = actual
+                        .split_once('\n')
+                        .expect("helper publishes authority proof and descendant pid");
+                    assert_eq!(
+                        actual, expected,
+                        "child inherited a different fd198 identity/data"
+                    );
+                    break descendant.parse::<u32>().unwrap();
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child never proved inherited fd198"
+            );
+            assert!(matches!(
+                handle.poll(&mut child).unwrap(),
+                super::RuntimeProcessTreeState::Running
+            ));
+            thread::yield_now();
+        };
+        loop {
+            match handle.poll(&mut child).unwrap() {
+                super::RuntimeProcessTreeState::Running if handle.leader_exited() => break,
+                super::RuntimeProcessTreeState::Running if Instant::now() < deadline => {
+                    thread::yield_now();
+                }
+                other => panic!("dynamic sentinel did not retain its exact lifetime: {other:?}"),
+            }
+        }
+        unsafe { libc::kill(descendant as i32, libc::SIGKILL) };
+        loop {
+            match handle.poll(&mut child).unwrap() {
+                super::RuntimeProcessTreeState::Exited(_) => break,
+                super::RuntimeProcessTreeState::Running if Instant::now() < deadline => {
+                    thread::yield_now();
+                }
+                other => panic!("dynamic sentinel did not close after descendant death: {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_file(marker);
+        assert_ne!(unsafe { libc::fcntl(198, libc::F_GETFD) }, -1);
+        assert_eq!(
+            unsafe { libc::fcntl(198, libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        assert_ne!(unsafe { libc::fcntl(198, libc::F_GETFD) }, -1);
     }
 
     #[cfg(unix)]
