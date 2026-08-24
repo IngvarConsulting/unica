@@ -27,6 +27,8 @@ use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::collections::HashSet;
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
@@ -1794,6 +1796,8 @@ pub(crate) struct RuntimeJobService {
     store: RuntimeJobStore,
     runner: Arc<dyn RuntimeJobRunner>,
     processes: Mutex<HashMap<String, ActiveRuntimeJobProcess>>,
+    #[cfg(test)]
+    test_admission: Option<TestServiceAdmission>,
 }
 
 impl Drop for RuntimeJobService {
@@ -1804,8 +1808,6 @@ impl Drop for RuntimeJobService {
         for (job_id, active) in processes.drain() {
             let store = self.store.clone();
             #[cfg(test)]
-            let test_root = store.cache_root.clone();
-            #[cfg(test)]
             let (active, controlled_test_supervision) = {
                 let mut active = active;
                 let controlled = active.process.prepare_controlled_test_supervision();
@@ -1815,12 +1817,18 @@ impl Drop for RuntimeJobService {
             match spawn_quarantine_supervisor(store, job_id.clone(), Arc::clone(&retained)) {
                 Ok(supervisor) => {
                     #[cfg(test)]
-                    register_test_quarantine_supervisor(
-                        test_root,
-                        job_id,
-                        controlled_test_supervision,
-                        supervisor,
-                    );
+                    {
+                        let admission = self.test_admission.as_ref().expect(
+                            "retained test process must have an explicit fixture owner admission",
+                        );
+                        register_test_quarantine_supervisor(
+                            admission.owner,
+                            admission.service_root.clone(),
+                            job_id,
+                            controlled_test_supervision,
+                            supervisor,
+                        );
+                    }
                     #[cfg(not(test))]
                     drop(supervisor);
                 }
@@ -1892,18 +1900,61 @@ fn spawn_quarantine_supervisor(
 }
 
 #[cfg(test)]
-static TEST_QUARANTINE_SUPERVISORS: std::sync::OnceLock<
-    Mutex<HashMap<PathBuf, Vec<TestQuarantineSupervisor>>>,
-> = std::sync::OnceLock::new();
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct TestFixtureOwnerToken(Uuid);
 
 #[cfg(test)]
-fn test_quarantine_supervisors() -> &'static Mutex<HashMap<PathBuf, Vec<TestQuarantineSupervisor>>>
-{
-    TEST_QUARANTINE_SUPERVISORS.get_or_init(|| Mutex::new(HashMap::new()))
+#[derive(Default)]
+struct TestFixtureRegistry {
+    owners: HashMap<TestFixtureOwnerToken, TestFixtureOwnerState>,
+    exact_roots: HashMap<PathBuf, TestFixtureOwnerToken>,
+}
+
+#[cfg(test)]
+struct TestFixtureOwnerState {
+    outer_root: PathBuf,
+    admission_open: bool,
+    live_admissions: usize,
+    exact_service_roots: HashSet<PathBuf>,
+    supervisors: Vec<TestQuarantineSupervisor>,
+}
+
+#[cfg(test)]
+static TEST_FIXTURE_REGISTRY: std::sync::OnceLock<Mutex<TestFixtureRegistry>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn test_fixture_registry() -> &'static Mutex<TestFixtureRegistry> {
+    TEST_FIXTURE_REGISTRY.get_or_init(|| Mutex::new(TestFixtureRegistry::default()))
+}
+
+#[cfg(test)]
+struct TestServiceAdmission {
+    owner: TestFixtureOwnerToken,
+    service_root: PathBuf,
+}
+
+#[cfg(test)]
+impl Drop for TestServiceAdmission {
+    fn drop(&mut self) {
+        let mut registry = test_fixture_registry()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = registry
+            .owners
+            .get_mut(&self.owner)
+            .expect("test fixture owner outlived its service admission");
+        assert!(
+            state.live_admissions > 0,
+            "test fixture service admission count underflow"
+        );
+        state.live_admissions -= 1;
+    }
 }
 
 #[cfg(test)]
 struct TestQuarantineSupervisor {
+    service_root: PathBuf,
     job_id: String,
     controlled: bool,
     supervisor: QuarantineSupervisor,
@@ -1911,30 +1962,138 @@ struct TestQuarantineSupervisor {
 
 #[cfg(test)]
 fn register_test_quarantine_supervisor(
-    root: PathBuf,
+    owner: TestFixtureOwnerToken,
+    service_root: PathBuf,
     job_id: String,
     controlled: bool,
     supervisor: QuarantineSupervisor,
 ) {
-    test_quarantine_supervisors()
+    let mut registry = test_fixture_registry()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .entry(root)
-        .or_default()
-        .push(TestQuarantineSupervisor {
-            job_id,
-            controlled,
-            supervisor,
-        });
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let state = registry
+        .owners
+        .get_mut(&owner)
+        .expect("test fixture owner disappeared before supervisor registration");
+    assert!(
+        state.exact_service_roots.contains(&service_root),
+        "test supervisor service root is not bound to its fixture owner"
+    );
+    assert!(
+        state.live_admissions > 0,
+        "test supervisor registration must precede service admission release"
+    );
+    state.supervisors.push(TestQuarantineSupervisor {
+        service_root,
+        job_id,
+        controlled,
+        supervisor,
+    });
 }
 
 #[cfg(test)]
-fn drain_test_quarantine_supervisors(root: &Path) {
-    let mut supervisors = test_quarantine_supervisors()
+fn create_test_fixture_owner(outer_root: PathBuf) -> TestFixtureOwnerToken {
+    let owner = TestFixtureOwnerToken(Uuid::new_v4());
+    let mut registry = test_fixture_registry()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(root)
-        .unwrap_or_default();
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(
+        !registry.exact_roots.contains_key(&outer_root),
+        "test fixture root already has an owner"
+    );
+    registry.exact_roots.insert(outer_root.clone(), owner);
+    registry.owners.insert(
+        owner,
+        TestFixtureOwnerState {
+            outer_root: outer_root.clone(),
+            admission_open: true,
+            live_admissions: 0,
+            exact_service_roots: HashSet::from([outer_root]),
+            supervisors: Vec::new(),
+        },
+    );
+    owner
+}
+
+#[cfg(test)]
+fn bind_test_service_root(owner: TestFixtureOwnerToken, service_root: PathBuf) -> PathBuf {
+    let mut registry = test_fixture_registry()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = registry.exact_roots.get(&service_root) {
+        assert_eq!(
+            *existing, owner,
+            "test service root is already bound to another fixture owner"
+        );
+    }
+    let admission_open = registry
+        .owners
+        .get(&owner)
+        .expect("bind service root to live test fixture owner")
+        .admission_open;
+    if !admission_open {
+        drop(registry);
+        panic!("test fixture supervisor admission is already closed");
+    }
+    let state = registry
+        .owners
+        .get_mut(&owner)
+        .expect("bind service root to live test fixture owner");
+    if state.exact_service_roots.contains(&service_root) {
+        return service_root;
+    }
+    state.exact_service_roots.insert(service_root.clone());
+    registry.exact_roots.insert(service_root.clone(), owner);
+    service_root
+}
+
+#[cfg(test)]
+fn acquire_test_service_admission(service_root: &Path) -> Option<TestServiceAdmission> {
+    let mut registry = test_fixture_registry()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let owner = *registry.exact_roots.get(service_root)?;
+    let state = registry
+        .owners
+        .get_mut(&owner)
+        .expect("test service root points to a live fixture owner");
+    assert!(
+        state.admission_open,
+        "test fixture supervisor admission is already closed"
+    );
+    state.live_admissions = state
+        .live_admissions
+        .checked_add(1)
+        .expect("test fixture service admission count overflow");
+    Some(TestServiceAdmission {
+        owner,
+        service_root: service_root.to_path_buf(),
+    })
+}
+
+#[cfg(test)]
+fn drain_test_fixture_owner(owner: TestFixtureOwnerToken) {
+    let (outer_root, mut supervisors) = {
+        let mut registry = test_fixture_registry()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(state) = registry.owners.get_mut(&owner) else {
+            return;
+        };
+        state.admission_open = false;
+        if state.live_admissions != 0 {
+            let live = state.live_admissions;
+            let roots = state.exact_service_roots.clone();
+            drop(registry);
+            panic!(
+                "test fixture owner still has {live} live runtime service admission(s): {roots:?}"
+            );
+        }
+        (
+            state.outer_root.clone(),
+            std::mem::take(&mut state.supervisors),
+        )
+    };
     let deadline = Instant::now() + Duration::from_secs(2);
     while let Some(supervisor) = supervisors.pop() {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1944,18 +2103,22 @@ fn drain_test_quarantine_supervisors(root: &Path) {
             .recv_timeout(remaining)
             .is_ok();
         if !finished {
+            let service_root = supervisor.service_root.clone();
             let job_id = supervisor.job_id.clone();
             let controlled = supervisor.controlled;
             supervisors.push(supervisor);
-            test_quarantine_supervisors()
+            test_fixture_registry()
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(root.to_path_buf())
-                .or_default()
+                .owners
+                .get_mut(&owner)
+                .expect("restore unfinished test supervisor to fixture owner")
+                .supervisors
                 .append(&mut supervisors);
             panic!(
-                "test quarantine supervisor remains active for root {} job {} (controlled={controlled}); fixture must prove terminal ownership and drain it explicitly",
-                root.display(),
+                "test quarantine supervisor remains active for owner root {} service root {} job {} (controlled={controlled}); fixture must prove terminal ownership and drain it explicitly",
+                outer_root.display(),
+                service_root.display(),
                 job_id,
             );
         }
@@ -1965,41 +2128,53 @@ fn drain_test_quarantine_supervisors(root: &Path) {
             .join()
             .expect("test quarantine supervisor panicked");
     }
+
+    let mut registry = test_fixture_registry()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let state = registry
+        .owners
+        .remove(&owner)
+        .expect("remove drained test fixture owner");
+    assert_eq!(state.live_admissions, 0);
+    assert!(state.supervisors.is_empty());
+    for root in state.exact_service_roots {
+        assert_eq!(registry.exact_roots.remove(&root), Some(owner));
+    }
 }
 
 #[cfg(test)]
 thread_local! {
-    static TEST_SUPERVISOR_SCOPES: std::cell::RefCell<Vec<Arc<Mutex<Vec<PathBuf>>>>> =
+    static TEST_SUPERVISOR_SCOPES: std::cell::RefCell<Vec<Arc<Mutex<Vec<TestFixtureOwnerToken>>>>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
 struct TestSupervisorScope {
-    roots: Arc<Mutex<Vec<PathBuf>>>,
+    owners: Arc<Mutex<Vec<TestFixtureOwnerToken>>>,
 }
 
 #[cfg(test)]
 impl TestSupervisorScope {
     fn new() -> Self {
-        let roots = Arc::new(Mutex::new(Vec::new()));
-        TEST_SUPERVISOR_SCOPES.with(|scopes| scopes.borrow_mut().push(Arc::clone(&roots)));
-        Self { roots }
+        let owners = Arc::new(Mutex::new(Vec::new()));
+        TEST_SUPERVISOR_SCOPES.with(|scopes| scopes.borrow_mut().push(Arc::clone(&owners)));
+        Self { owners }
     }
 
     fn assert_drained(&self) {
-        let roots = self
-            .roots
+        let owners = self
+            .owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let supervisors = test_quarantine_supervisors()
+        let registry = test_fixture_registry()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for root in roots {
+        for owner in owners {
             assert!(
-                !supervisors.contains_key(&root),
-                "test fixture left a quarantine supervisor registered for {}",
-                root.display()
+                !registry.owners.contains_key(&owner),
+                "test fixture owner {owner:?} remains registered after teardown"
             );
         }
     }
@@ -2010,19 +2185,19 @@ impl Drop for TestSupervisorScope {
     fn drop(&mut self) {
         TEST_SUPERVISOR_SCOPES.with(|scopes| {
             let popped = scopes.borrow_mut().pop().expect("test supervisor scope");
-            assert!(Arc::ptr_eq(&popped, &self.roots));
+            assert!(Arc::ptr_eq(&popped, &self.owners));
         });
     }
 }
 
 #[cfg(test)]
-fn register_test_supervisor_root(root: &Path) {
+fn register_test_supervisor_owner(owner: TestFixtureOwnerToken) {
     TEST_SUPERVISOR_SCOPES.with(|scopes| {
         for scope in scopes.borrow().iter() {
             scope
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(root.to_path_buf());
+                .push(owner);
         }
     });
 }
@@ -2152,11 +2327,23 @@ impl RuntimeJobService {
         runner: Arc<dyn RuntimeJobRunner>,
         stale_after: Duration,
     ) -> Self {
+        let cache_root = cache_root.into();
         Self {
+            #[cfg(test)]
+            test_admission: acquire_test_service_admission(&cache_root),
             store: RuntimeJobStore::new(cache_root, stale_after),
             runner,
             processes: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[cfg(test)]
+    fn require_test_fixture_admission(&self) -> JobResult<()> {
+        self.test_admission.as_ref().map(|_| ()).ok_or_else(|| {
+            redacted_error(
+                "test runtime service root has no explicit fixture owner binding; use TestCache::service_root for nested roots",
+            )
+        })
     }
 
     #[cfg(test)]
@@ -2202,6 +2389,8 @@ impl RuntimeJobService {
         after_preflight: impl FnOnce(),
         before_activation_guard: impl FnOnce(),
     ) -> JobResult<RuntimeJobSnapshot> {
+        #[cfg(test)]
+        self.require_test_fixture_admission()?;
         let mut record = self.store.read_record(id)?;
         // No platform process has started while the record is still queued, so
         // every operation can honor cancellation safely at this boundary. The
@@ -2629,6 +2818,8 @@ impl RuntimeJobService {
         request_safe_cancel: bool,
         lifecycle: &ActiveLifecycleLock,
     ) -> JobResult<RuntimeJobObservation> {
+        #[cfg(test)]
+        self.require_test_fixture_admission()?;
         let mut processes = self.lock_processes()?;
         if !processes.contains_key(&record.id) {
             // A compatibility attach cannot precede the historical spawn, but
@@ -3838,7 +4029,7 @@ pub(crate) mod tests {
         .expect("read terminal record");
         drop(reconnected);
         drop(service);
-        drain_test_quarantine_supervisors(&cache.path());
+        cache.drain_supervisors();
         assert_eq!(
             fs::read(
                 RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER)
@@ -5470,6 +5661,212 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn nested_retained_supervisor_is_not_hidden_from_outer_fixture_owner() {
+        let scope = TestSupervisorScope::new();
+        let nested_root;
+        {
+            let cache = TestCache::new();
+            nested_root = cache.service_root("state");
+            let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(0, None));
+            let service = RuntimeJobService::new(nested_root.clone(), runner);
+
+            service
+                .start(fake_request(RuntimeJobOperation::Test))
+                .expect_err("post-spawn ownership uncertainty must fail closed");
+        }
+
+        scope.assert_drained();
+        let registry = test_fixture_registry()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            !registry.exact_roots.contains_key(&nested_root),
+            "nested service root remained bound after owner teardown"
+        );
+    }
+
+    #[test]
+    fn nested_externally_terminal_uncontrolled_supervisor_is_owner_drained() {
+        struct ExternallyTerminalRunner {
+            dropped: Arc<AtomicBool>,
+        }
+
+        struct ExternallyTerminalProcess {
+            dropped: Arc<AtomicBool>,
+        }
+
+        impl Drop for ExternallyTerminalProcess {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+
+        impl RuntimeJobProcess for ExternallyTerminalProcess {
+            fn id(&self) -> u32 {
+                93_001
+            }
+
+            fn try_wait(&mut self) -> JobResult<RuntimeJobProcessState> {
+                Ok(RuntimeJobProcessState::Exited { exit_code: 1 })
+            }
+
+            fn cancel(&mut self) -> JobResult<()> {
+                Ok(())
+            }
+
+            fn output_tails(&mut self, _max_bytes: usize) -> JobResult<RuntimeJobOutput> {
+                Ok(RuntimeJobOutput::default())
+            }
+        }
+
+        impl RuntimeJobRunner for ExternallyTerminalRunner {
+            fn spawn(&self, _request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
+                Err(RuntimeJobSpawnFailure::OwnershipRetained {
+                    error: redacted_error("externally terminal retained test process"),
+                    process: Box::new(ExternallyTerminalProcess {
+                        dropped: Arc::clone(&self.dropped),
+                    }),
+                })
+            }
+
+            fn attach(&self, _process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {
+                Err(redacted_error("externally terminal runner cannot attach"))
+            }
+        }
+
+        let scope = TestSupervisorScope::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        {
+            let cache = TestCache::new();
+            let service = RuntimeJobService::new(
+                cache.service_root("state"),
+                Arc::new(ExternallyTerminalRunner {
+                    dropped: Arc::clone(&dropped),
+                }),
+            );
+            service
+                .start(fake_request(RuntimeJobOperation::Test))
+                .expect_err("retained external process must fail closed");
+        }
+
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "owner teardown did not join the externally terminal production supervisor"
+        );
+        scope.assert_drained();
+    }
+
+    #[test]
+    fn unbound_nested_test_service_fails_before_process_admission() {
+        let cache = TestCache::new();
+        let runner = Arc::new(FakeRunner::success_after(1));
+        let service = RuntimeJobService::new(cache.path().join("unbound-state"), runner.clone());
+
+        let error = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect_err("unbound nested fixture must fail closed before spawn");
+
+        assert!(error.contains("explicit fixture owner binding"), "{error}");
+        assert!(
+            runner
+                .processes
+                .lock()
+                .expect("lock fake processes")
+                .is_empty(),
+            "unbound nested fixture admitted a producer"
+        );
+    }
+
+    #[test]
+    fn fixture_owner_close_blocks_late_nested_admission() {
+        let scope = TestSupervisorScope::new();
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(1)));
+
+        let live_admission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.drain_supervisors();
+        }));
+        assert!(
+            live_admission.is_err(),
+            "fixture teardown accepted a live runtime service admission"
+        );
+        let late_binding = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.service_root("late-state");
+        }));
+        assert!(
+            late_binding.is_err(),
+            "closed fixture owner accepted a late nested service root"
+        );
+
+        drop(service);
+        cache.drain_supervisors();
+        drop(cache);
+        scope.assert_drained();
+    }
+
+    #[test]
+    fn unfinished_nested_supervisor_is_restored_with_same_owner_root_and_handle() {
+        let scope = TestSupervisorScope::new();
+        let cache = TestCache::new();
+        let nested_root = cache.service_root("state");
+        let admission = acquire_test_service_admission(&nested_root)
+            .expect("acquire nested test service admission");
+        let (release_tx, release_rx) = mpsc::sync_channel::<()>(1);
+        let handle = thread::Builder::new()
+            .name("unica-test-unfinished-quarantine".to_string())
+            .spawn(move || {
+                let _ = release_rx.recv();
+            })
+            .expect("spawn unfinished supervisor probe");
+        let expected_thread = handle.thread().id();
+        let (finished_tx, finished_rx) = mpsc::sync_channel::<()>(1);
+        drop(finished_tx);
+        register_test_quarantine_supervisor(
+            cache.owner,
+            nested_root.clone(),
+            "00000000-0000-4000-8000-000000000001".to_string(),
+            false,
+            QuarantineSupervisor {
+                handle,
+                finished: finished_rx,
+            },
+        );
+        drop(admission);
+
+        let drain = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.drain_supervisors();
+        }));
+        assert!(
+            drain.is_err(),
+            "unfinished nested supervisor was silently detached"
+        );
+        let restored = {
+            let mut registry = test_fixture_registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = registry
+                .owners
+                .get_mut(&cache.owner)
+                .expect("unfinished owner remains registered");
+            assert_eq!(state.supervisors.len(), 1);
+            let restored = state.supervisors.pop().expect("restored supervisor");
+            assert_eq!(restored.service_root, nested_root);
+            assert_eq!(restored.supervisor.handle.thread().id(), expected_thread);
+            restored
+        };
+        release_tx.send(()).expect("release unfinished probe");
+        restored
+            .supervisor
+            .handle
+            .join()
+            .expect("join restored supervisor handle");
+
+        cache.drain_supervisors();
+        drop(cache);
+        scope.assert_drained();
+    }
+
+    #[test]
     fn ownership_retained_transition_never_writes_replacement_job_directory() {
         let cache = TestCache::new();
         let jobs_root = cache.path().join("jobs");
@@ -6315,6 +6712,11 @@ pub(crate) mod tests {
         ownership_retained_transition_never_writes_replacement_job_directory();
         failed_activation_cleanup_never_writes_replacement_job_directory();
         retained_test_fake_supervisor_is_drained_before_authority_root_teardown();
+        nested_retained_supervisor_is_not_hidden_from_outer_fixture_owner();
+        nested_externally_terminal_uncontrolled_supervisor_is_owner_drained();
+        unbound_nested_test_service_fails_before_process_admission();
+        fixture_owner_close_blocks_late_nested_admission();
+        unfinished_nested_supervisor_is_restored_with_same_owner_root_and_handle();
         uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt();
         uncertain_post_spawn_failure_retains_active_lock_for_full_build_fallback();
         worker_supervises_initial_retained_ownership_until_proven_terminal();
@@ -6758,6 +7160,28 @@ pub(crate) mod tests {
         assert!(!record.contains(RECEIPT_SECRET));
         assert!(!logs.stdout.contains(RECEIPT_SECRET));
         assert!(logs.stdout.contains("<redacted>"));
+
+        drop(service);
+        {
+            let registry = test_fixture_registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let state = registry
+                .owners
+                .get(&cache.owner)
+                .expect("current fallback fixture owner remains registered before drain");
+            assert_eq!(state.supervisors.len(), 1);
+            assert_eq!(state.supervisors[0].service_root, cache.path());
+        }
+        cache.drain_supervisors();
+        assert!(
+            !test_fixture_registry()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .owners
+                .contains_key(&cache.owner),
+            "current fallback fixture owner remained after exact supervisor join"
+        );
     }
 
     #[test]
@@ -7183,7 +7607,7 @@ pub(crate) mod tests {
         .with_build_preflight(Some(
             RuntimeBuildPreflight::capture(&args, &context).unwrap(),
         ));
-        let state_root = cache.path().join("state");
+        let state_root = cache.service_root("state");
         let runner = Arc::new(FakeRunner::success_after(1));
         let service = RuntimeJobService::new(state_root.clone(), runner.clone());
         let queued = RuntimeJobService::enqueue(&state_root, &request).expect("queue build job");
@@ -7262,7 +7686,7 @@ pub(crate) mod tests {
         .with_build_preflight(Some(
             RuntimeBuildPreflight::capture(&args, &context).unwrap(),
         ));
-        let state_root = cache.path().join("state");
+        let state_root = cache.service_root("state");
         let runner = Arc::new(FakeRunner::success_after(1));
         let service = RuntimeJobService::new(state_root.clone(), runner.clone());
         let queued = RuntimeJobService::enqueue(&state_root, &request).expect("queue build job");
@@ -7328,7 +7752,7 @@ pub(crate) mod tests {
         .with_build_preflight(Some(
             RuntimeBuildPreflight::capture(&args, &context).unwrap(),
         ));
-        let state_root = cache.path().join("state");
+        let state_root = cache.service_root("state");
         let runner = Arc::new(FakeRunner::success_after(1));
         let service = RuntimeJobService::new(state_root.clone(), runner.clone());
         let queued = RuntimeJobService::enqueue(&state_root, &request).expect("queue build job");
@@ -7397,7 +7821,7 @@ pub(crate) mod tests {
         )
         .expect("activate configuration support");
         let runner = Arc::new(FakeRunner::success_after(1));
-        let state_root = cache.path().join("state");
+        let state_root = cache.service_root("state");
         let service = RuntimeJobService::new(state_root.clone(), runner.clone());
         let request = RuntimeJobRequest::new(
             RuntimeJobOperation::Build,
@@ -8059,6 +8483,7 @@ pub(crate) mod tests {
 
     struct TestCache {
         root: PathBuf,
+        owner: TestFixtureOwnerToken,
     }
 
     struct CancelDuringCommitWriter {
@@ -8123,18 +8548,27 @@ pub(crate) mod tests {
     impl TestCache {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!("unica-runtime-jobs-{}", Uuid::new_v4()));
-            register_test_supervisor_root(&root);
-            Self { root }
+            let owner = create_test_fixture_owner(root.clone());
+            register_test_supervisor_owner(owner);
+            Self { root, owner }
         }
 
         fn path(&self) -> PathBuf {
             self.root.clone()
         }
+
+        fn service_root(&self, relative: impl AsRef<Path>) -> PathBuf {
+            bind_test_service_root(self.owner, self.root.join(relative))
+        }
+
+        fn drain_supervisors(&self) {
+            drain_test_fixture_owner(self.owner);
+        }
     }
 
     impl Drop for TestCache {
         fn drop(&mut self) {
-            drain_test_quarantine_supervisors(&self.root);
+            drain_test_fixture_owner(self.owner);
             let _ = fs::remove_dir_all(&self.root);
         }
     }
