@@ -11,5 +11,6 @@ scope: [app, wire]
 
 Только hidden V13 и `2026-07-28` request/session с явно объявленным Tasks
 capability получает `CreateTaskResult` и `tasks/*`. V12, старый протокол и новый
-протокол без capability native Task не получают; projection, get, update,
-cancel и polling не повторяют domain execution.
+протокол без capability native Task не получают; request metadata не повышает
+legacy initialized session. Projection, get, update, cancel и polling не
+повторяют domain execution.

@@ -1,3 +1,7 @@
+use crate::application::invocation_store::{
+    canonical_result_size, CanonicalResultSizeError, MAX_CANONICAL_RESULT_BYTES,
+    MAX_TASK_RECORD_ENVELOPE_BYTES,
+};
 use crate::domain::invocation::{DomainResult, InvocationStatus};
 use crate::infrastructure::daemon::protocol::DaemonTaskSnapshot;
 use chrono::{SecondsFormat, Utc};
@@ -5,14 +9,57 @@ use rmcp::model::{
     CallToolResult, CreateTaskResult, DetailedTask, ErrorCode, ErrorData, JsonObject, Task,
     TaskPayload, TaskStatus,
 };
+use serde::Serialize;
+use std::io::{self, Write};
+
+const MAX_MCP_TASK_PROJECTION_BYTES: usize =
+    MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskProjectionError {
     TimestampOutOfRange,
+    ReverseTimestampOrder,
     MissingCompletedResult,
     MissingFailure,
     UnexpectedPayload,
+    ResultTooLarge,
     Serialization,
+}
+
+struct ProjectionSizeWriter {
+    bytes: usize,
+    too_large: bool,
+}
+
+impl Write for ProjectionSizeWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let next = self.bytes.saturating_add(buffer.len());
+        if next > MAX_MCP_TASK_PROJECTION_BYTES {
+            self.too_large = true;
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "MCP task projection exceeds byte limit",
+            ));
+        }
+        self.bytes = next;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn ensure_projection_bounded(value: &impl Serialize) -> Result<(), TaskProjectionError> {
+    let mut writer = ProjectionSizeWriter {
+        bytes: 0,
+        too_large: false,
+    };
+    let serialized = serde_json::to_writer(&mut writer, value);
+    if writer.too_large {
+        return Err(TaskProjectionError::ResultTooLarge);
+    }
+    serialized.map_err(|_| TaskProjectionError::Serialization)
 }
 
 fn iso8601(epoch_ms: u64) -> Result<String, TaskProjectionError> {
@@ -32,31 +79,50 @@ fn task_status(status: InvocationStatus) -> TaskStatus {
 }
 
 fn task(snapshot: &DaemonTaskSnapshot) -> Result<Task, TaskProjectionError> {
-    Ok(Task::new(
+    if snapshot.updated_at_epoch_ms < snapshot.created_at_epoch_ms {
+        return Err(TaskProjectionError::ReverseTimestampOrder);
+    }
+    let projected = Task::new(
         snapshot.task_id.to_string(),
         task_status(snapshot.status),
         iso8601(snapshot.created_at_epoch_ms)?,
         iso8601(snapshot.updated_at_epoch_ms)?,
     )
     .with_ttl_ms(snapshot.ttl_ms)
-    .with_poll_interval_ms(snapshot.poll_interval_ms))
+    .with_poll_interval_ms(snapshot.poll_interval_ms);
+    ensure_projection_bounded(&projected)?;
+    Ok(projected)
 }
 
 pub(super) fn call_tool_result(
     result: &DomainResult,
 ) -> Result<CallToolResult, TaskProjectionError> {
+    match canonical_result_size(result) {
+        Ok(_) => {}
+        Err(CanonicalResultSizeError::TooLarge) => return Err(TaskProjectionError::ResultTooLarge),
+        Err(CanonicalResultSizeError::Serialization) => {
+            return Err(TaskProjectionError::Serialization)
+        }
+        Err(CanonicalResultSizeError::Checkpoint(never)) => match never {},
+    }
     let value = serde_json::to_value(result).map_err(|_| TaskProjectionError::Serialization)?;
-    Ok(if result.ok {
-        CallToolResult::structured(value)
-    } else {
-        CallToolResult::structured_error(value)
-    })
+    // `CallToolResult::structured` mirrors the complete JSON value into a text
+    // ContentBlock. The canonical V13 result is already self-describing
+    // structured content, so that convenience constructor would double an
+    // allowed 8 MiB result on the MCP wire.
+    let mut projected = CallToolResult::default();
+    projected.structured_content = Some(value);
+    projected.is_error = Some(!result.ok);
+    ensure_projection_bounded(&projected)?;
+    Ok(projected)
 }
 
 pub(super) fn create_task_result(
     snapshot: &DaemonTaskSnapshot,
 ) -> Result<CreateTaskResult, TaskProjectionError> {
-    Ok(CreateTaskResult::new(task(snapshot)?))
+    let projected = CreateTaskResult::new(task(snapshot)?);
+    ensure_projection_bounded(&projected)?;
+    Ok(projected)
 }
 
 fn call_result_object(result: &DomainResult) -> Result<JsonObject, TaskProjectionError> {
@@ -129,14 +195,20 @@ pub(super) fn detailed_task(
         }
         _ => return Err(TaskProjectionError::UnexpectedPayload),
     };
-    Ok(DetailedTask::new(task(snapshot)?, payload))
+    let projected = DetailedTask::new(task(snapshot)?, payload);
+    ensure_projection_bounded(&projected)?;
+    Ok(projected)
 }
 
-pub(super) fn projection_error() -> ErrorData {
+pub(super) fn projection_error(error: TaskProjectionError) -> ErrorData {
+    let code = match error {
+        TaskProjectionError::ResultTooLarge => "result_too_large",
+        _ => "task_projection_failed",
+    };
     ErrorData::new(
         ErrorCode::INTERNAL_ERROR,
-        "task_projection_failed",
-        Some(serde_json::json!({"code": "task_projection_failed"})),
+        code,
+        Some(serde_json::json!({"code": code})),
     )
 }
 
@@ -223,5 +295,62 @@ mod tests {
 
         let completed_without_result = snapshot(InvocationStatus::Completed);
         assert!(super::detailed_task(&completed_without_result).is_err());
+    }
+
+    #[test]
+    fn tasks_projection_rejects_reverse_durable_timestamps() {
+        let mut reversed = snapshot(InvocationStatus::Working);
+        reversed.updated_at_epoch_ms = reversed.created_at_epoch_ms - 1;
+
+        assert!(super::create_task_result(&reversed).is_err());
+        assert!(super::detailed_task(&reversed).is_err());
+    }
+
+    #[test]
+    fn tasks_projection_bounds_near_limit_without_structured_duplication() {
+        use crate::application::invocation_store::{
+            canonical_result_size, MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES,
+        };
+
+        let result = DomainResult::success("x".repeat(MAX_CANONICAL_RESULT_BYTES - 4_096));
+        assert!(canonical_result_size(&result).unwrap() <= MAX_CANONICAL_RESULT_BYTES);
+
+        let direct = super::call_tool_result(&result).expect("project near-limit direct result");
+        assert!(
+            direct.content.is_empty(),
+            "structured payload must not be duplicated as text"
+        );
+        let direct_bytes = serde_json::to_vec(&direct).unwrap();
+        assert!(
+            direct_bytes.len() <= MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES,
+            "near-limit direct projection expanded to {} bytes",
+            direct_bytes.len()
+        );
+
+        let mut completed = snapshot(InvocationStatus::Completed);
+        completed.result = Some(result);
+        let detailed = super::detailed_task(&completed).expect("project near-limit terminal task");
+        let detailed_bytes = serde_json::to_vec(&detailed).unwrap();
+        assert!(
+            detailed_bytes.len() <= MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES,
+            "near-limit terminal projection expanded to {} bytes",
+            detailed_bytes.len()
+        );
+        let rmcp::model::TaskPayload::Completed { result } = detailed.payload else {
+            panic!("completed task must carry a call result");
+        };
+        assert_eq!(Value::Object(result), serde_json::to_value(direct).unwrap());
+    }
+
+    #[test]
+    fn tasks_projection_rejects_a_canonical_result_over_the_shared_limit() {
+        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+
+        let oversized = DomainResult::success("x".repeat(MAX_CANONICAL_RESULT_BYTES + 1));
+        assert!(super::call_tool_result(&oversized).is_err());
+
+        let mut completed = snapshot(InvocationStatus::Completed);
+        completed.result = Some(oversized);
+        assert!(super::detailed_task(&completed).is_err());
     }
 }

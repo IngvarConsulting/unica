@@ -676,12 +676,12 @@ impl ServerHandler for UnicaServer {
             Ok(Ok(SurfaceToolOutcome::Canonical(result))) => {
                 crate::interfaces::task_projection::call_tool_result(&result)
                     .map(CallToolResponse::from)
-                    .map_err(|_| crate::interfaces::task_projection::projection_error())
+                    .map_err(crate::interfaces::task_projection::projection_error)
             }
             Ok(Ok(SurfaceToolOutcome::Task(snapshot))) => {
                 crate::interfaces::task_projection::create_task_result(&snapshot)
                     .map(CallToolResponse::from)
-                    .map_err(|_| crate::interfaces::task_projection::projection_error())
+                    .map_err(crate::interfaces::task_projection::projection_error)
             }
             Ok(Err((code, message))) => Err(ErrorData::new(ErrorCode(code), message, None)),
             Err(join_error) => Err(ErrorData::new(
@@ -708,7 +708,7 @@ impl ServerHandler for UnicaServer {
         ensure_task_identity(task_id, &snapshot)?;
         crate::interfaces::task_projection::detailed_task(&snapshot)
             .map(GetTaskResult::new)
-            .map_err(|_| crate::interfaces::task_projection::projection_error())
+            .map_err(crate::interfaces::task_projection::projection_error)
     }
 
     async fn update_task(
@@ -751,9 +751,18 @@ impl ServerHandler for UnicaServer {
 }
 
 fn native_task_capability(context: &RequestContext<RoleServer>) -> bool {
-    context
+    let effective_protocol_is_modern = context
         .protocol_version()
-        .is_some_and(|version| version.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+        .is_some_and(|version| version == ProtocolVersion::V_2026_07_28);
+    // Request metadata is allowed to shape one response, but it cannot replace
+    // the protocol authority established by initialize. A direct-first request
+    // has no peer_info and therefore carries its own complete authority.
+    let negotiated_session_is_modern = context
+        .peer
+        .peer_info()
+        .is_none_or(|peer| peer.protocol_version == ProtocolVersion::V_2026_07_28);
+    effective_protocol_is_modern
+        && negotiated_session_is_modern
         && context
             .client_capabilities()
             .is_some_and(|capabilities| capabilities.supports_tasks())
@@ -1993,6 +2002,118 @@ mod tests {
         client.shutdown().await;
     }
 
+    async fn legacy_initialized_session_cannot_escalate_tasks_per_request_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let task_id = TaskId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions);
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params": {
+                    "protocolVersion":"2025-11-25",
+                    "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"legacy-hybrid-client","version":"1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params": {
+                    "name":"unica.check", "arguments":{},
+                    "_meta":modern_tasks_meta()
+                }
+            }))
+            .await;
+        let call_response = client.receive().await;
+
+        let mut task_method_codes = Vec::new();
+        for (id, method) in [(2, "tasks/get"), (3, "tasks/update"), (4, "tasks/cancel")] {
+            let mut params = json!({
+                "taskId":task_id.to_string(),
+                "_meta":modern_tasks_meta()
+            });
+            if method == "tasks/update" {
+                params["inputResponses"] = json!({});
+            }
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            task_method_codes.push(client.receive().await["error"]["code"].as_i64());
+        }
+
+        assert_eq!(
+            (
+                call_response["result"]["resultType"].as_str(),
+                task_method_codes,
+                executions.load(Ordering::SeqCst),
+            ),
+            (
+                Some("complete"),
+                vec![Some(-32601), Some(-32601), Some(-32601)],
+                1,
+            ),
+            "legacy initialize authority was escalated by request metadata: {call_response}"
+        );
+        client.shutdown().await;
+    }
+
+    async fn modern_initialized_session_retains_native_tasks_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(InvocationResponse::Task(canonical_snapshot(
+                task_id,
+                InvocationStatus::Working,
+                None,
+            )))
+        });
+        let get: Arc<CanonicalTaskHandler> =
+            Arc::new(move |_| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":0, "method":"initialize",
+                "params": {
+                    "protocolVersion":"2026-07-28",
+                    "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
+                    "clientInfo":{"name":"modern-task-client","version":"1"}
+                }
+            }))
+            .await;
+        let initialized = client.receive().await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2026-07-28");
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{}}
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(response["result"]["resultType"], "task", "{response}");
+        client.shutdown().await;
+    }
+
     async fn tasks_direct_and_completed_get_case() {
         use crate::domain::invocation::{InvocationStatus, TaskId};
 
@@ -2050,6 +2171,178 @@ mod tests {
                 assert_eq!(response["result"]["resultType"], "task", "{response}");
             }
         }
+        client.shutdown().await;
+    }
+
+    async fn tasks_projection_rejects_reverse_timestamps_on_wire_case() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let mut reversed = canonical_snapshot(task_id, InvocationStatus::Working, None);
+        reversed.updated_at_epoch_ms = reversed.created_at_epoch_ms - 1;
+        let call_snapshot = reversed.clone();
+        let call: Arc<CanonicalToolCallHandler> =
+            Arc::new(move |_, _, _, _| Ok(InvocationResponse::Task(call_snapshot.clone())));
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| Ok(reversed.clone()));
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+
+        let mut projection_codes = Vec::new();
+        for (id, method, params) in [
+            (
+                1,
+                "tools/call",
+                json!({"name":"unica.check", "arguments":{}, "_meta":modern_tasks_meta()}),
+            ),
+            (
+                2,
+                "tasks/get",
+                json!({"taskId":task_id.to_string(), "_meta":modern_tasks_meta()}),
+            ),
+        ] {
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            projection_codes.push(client.receive().await["error"]["data"]["code"].clone());
+        }
+        assert_eq!(
+            projection_codes,
+            vec![
+                json!("task_projection_failed"),
+                json!("task_projection_failed")
+            ]
+        );
+        client.shutdown().await;
+    }
+
+    async fn tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case() {
+        use crate::application::invocation_store::{
+            MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES,
+        };
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+        use std::sync::atomic::AtomicUsize;
+
+        let near = crate::domain::invocation::DomainResult::success(
+            "x".repeat(MAX_CANONICAL_RESULT_BYTES - 4_096),
+        );
+        let over = crate::domain::invocation::DomainResult::success(
+            "x".repeat(MAX_CANONICAL_RESULT_BYTES + 1),
+        );
+        let near_task = TaskId::new();
+        let over_task = TaskId::new();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&executions);
+        let call_near = near.clone();
+        let call_over = over.clone();
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, arguments, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            match arguments.get("mode").and_then(Value::as_str) {
+                Some("near-task") => Ok(InvocationResponse::Task(canonical_snapshot(
+                    near_task,
+                    InvocationStatus::Working,
+                    None,
+                ))),
+                Some("over-direct") => Ok(InvocationResponse::Direct(call_over.clone())),
+                Some("over-task") => Ok(InvocationResponse::Task(canonical_snapshot(
+                    over_task,
+                    InvocationStatus::Working,
+                    None,
+                ))),
+                _ => Ok(InvocationResponse::Direct(call_near.clone())),
+            }
+        });
+        let get_near = near.clone();
+        let get_over = over.clone();
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
+            Ok(if task_id == near_task {
+                canonical_snapshot(
+                    near_task,
+                    InvocationStatus::Completed,
+                    Some(get_near.clone()),
+                )
+            } else {
+                canonical_snapshot(
+                    over_task,
+                    InvocationStatus::Completed,
+                    Some(get_over.clone()),
+                )
+            })
+        });
+        let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
+        let (mut client, _) = spawn_unica_server(server);
+
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{}, "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let direct = client.receive().await;
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{"name":"unica.check", "arguments":{"mode":"near-task"}, "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let _created = client.receive().await;
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":3, "method":"tasks/get",
+                "params":{"taskId":near_task.to_string(), "_meta":modern_tasks_meta()}
+            }))
+            .await;
+        let completed = client.receive().await;
+
+        let projection_limit = MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
+        let direct_bytes = serde_json::to_vec(&direct["result"]).unwrap();
+        let detailed_bytes = serde_json::to_vec(&completed["result"]).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&direct["result"]).unwrap(),
+            serde_json::to_vec(&completed["result"]["result"]).unwrap()
+        );
+        assert_eq!(direct["result"]["content"], json!([]));
+        assert!(
+            direct_bytes.len() <= projection_limit,
+            "direct bytes={}",
+            direct_bytes.len()
+        );
+        assert!(
+            detailed_bytes.len() <= projection_limit,
+            "detailed bytes={}",
+            detailed_bytes.len()
+        );
+
+        let mut over_codes = Vec::new();
+        for (id, method, params) in [
+            (
+                4,
+                "tools/call",
+                json!({"name":"unica.check", "arguments":{"mode":"over-direct"}, "_meta":modern_tasks_meta()}),
+            ),
+            (
+                5,
+                "tools/call",
+                json!({"name":"unica.check", "arguments":{"mode":"over-task"}, "_meta":modern_tasks_meta()}),
+            ),
+            (
+                6,
+                "tasks/get",
+                json!({"taskId":over_task.to_string(), "_meta":modern_tasks_meta()}),
+            ),
+        ] {
+            client
+                .send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
+                .await;
+            let response = client.receive().await;
+            if id != 5 {
+                over_codes.push(response["error"]["data"]["code"].clone());
+            }
+        }
+        assert_eq!(
+            over_codes,
+            vec![json!("result_too_large"), json!("result_too_large")]
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 4);
         client.shutdown().await;
     }
 
@@ -2161,8 +2454,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_initialized_session_cannot_escalate_tasks_with_modern_request_metadata() {
+        legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
+    }
+
+    #[tokio::test]
+    async fn modern_initialized_session_can_use_negotiated_native_tasks() {
+        modern_initialized_session_retains_native_tasks_case().await;
+    }
+
+    #[tokio::test]
     async fn tasks_direct_and_completed_get_use_the_same_call_result_renderer() {
         tasks_direct_and_completed_get_case().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_projection_rejects_reverse_durable_timestamps_on_wire() {
+        tasks_projection_rejects_reverse_timestamps_on_wire_case().await;
+    }
+
+    #[tokio::test]
+    async fn tasks_projection_bounds_near_limit_wire_and_rejects_over_limit() {
+        tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case().await;
     }
 
     #[tokio::test]
@@ -2180,7 +2493,11 @@ mod tests {
             "the package-selected v0.12 profile must not advertise Tasks"
         );
         tasks_direct_first_capability_case().await;
+        legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
+        modern_initialized_session_retains_native_tasks_case().await;
         tasks_direct_and_completed_get_case().await;
+        tasks_projection_rejects_reverse_timestamps_on_wire_case().await;
+        tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case().await;
         tasks_hooks_closed_errors_case().await;
     }
 

@@ -17,6 +17,8 @@ consumers: [host]
 существующей неистёкшей Task возвращает `task_input_not_supported`, а unknown,
 expired и noncanonical identity не маскируются. Task timestamps — стабильный
 ISO-8601 projection durable epoch values; TTL и poll interval также приходят из
-store. В `completed.result` лежит байт-в-байт тот же `CallToolResult`, что в
-direct-ответе, включая content order, `isError`, `_meta`, `resultType` и
-`structuredContent`.
+store; `updatedAt < createdAt` отклоняется. В `completed.result` лежит
+байт-в-байт тот же `CallToolResult`, что в direct-ответе: canonical JSON один раз
+находится в `structuredContent`, `content` пуст, а `isError`, `_meta` и
+`resultType` совпадают. Сериализованные `CallToolResult` и `DetailedTask` не
+превышают 8 MiB + 64 KiB; превышение возвращает закрытый `result_too_large`.
