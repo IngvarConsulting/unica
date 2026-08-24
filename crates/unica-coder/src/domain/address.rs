@@ -328,6 +328,29 @@ pub(crate) struct QualifiedAddress {
 }
 
 impl QualifiedAddress {
+    /// Resolves user input against the source sets already selected by the
+    /// workspace. Identity parsing remains strict; this contextual boundary is
+    /// the only place where an omitted source-set prefix is inferred.
+    pub(crate) fn resolve_input(
+        raw: &str,
+        available_source_sets: &[&str],
+    ) -> Result<Self, AddressError> {
+        if raw.contains(':') {
+            return Self::parse(raw);
+        }
+        match available_source_sets {
+            [source_set] => Self::parse(&format!("{source_set}:{raw}")),
+            [] => Err(AddressError::new(
+                AddressErrorCode::SourceSetRequired,
+                "unqualified logical address requires one available source set",
+            )),
+            _ => Err(AddressError::new(
+                AddressErrorCode::AmbiguousAddress,
+                "unqualified logical address is ambiguous across source sets",
+            )),
+        }
+    }
+
     pub(crate) fn parse(raw: &str) -> Result<Self, AddressError> {
         let Some((source_set, logical_path)) = raw.split_once(':') else {
             return Err(AddressError::new(
@@ -371,10 +394,15 @@ impl QualifiedAddress {
             });
         }
 
-        if segments.first().is_some_and(|segment| {
-            segment.kind == NodeKind::Configuration
-                && (segments.len() != 1 || segment.name.is_some())
-        }) {
+        let sole_configuration_root = matches!(
+            segments.as_slice(),
+            [root] if root.kind == NodeKind::Configuration && root.name.is_none()
+        );
+        if !sole_configuration_root
+            && segments
+                .iter()
+                .any(|segment| segment.kind == NodeKind::Configuration)
+        {
             return Err(AddressError::new(
                 AddressErrorCode::ConfigurationRootOnly,
                 "Configuration is the single un-named configuration-root address",
@@ -430,6 +458,7 @@ impl Serialize for QualifiedAddress {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AddressErrorCode {
     SourceSetRequired,
+    AmbiguousAddress,
     AddressEmpty,
     EmptySegment,
     UnknownKind,
@@ -474,6 +503,7 @@ mod tests {
     #[serde(rename_all = "camelCase")]
     struct AddressFixture {
         valid_addresses: Vec<ValidAddressCase>,
+        contextual_inputs: Vec<ContextualInputCase>,
         invalid_addresses: Vec<InvalidAddressCase>,
     }
 
@@ -493,6 +523,16 @@ mod tests {
         case: String,
         input: String,
         error: AddressErrorCode,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ContextualInputCase {
+        case: String,
+        input: String,
+        available_source_sets: Vec<String>,
+        canonical: Option<String>,
+        error: Option<AddressErrorCode>,
     }
 
     fn fixture() -> AddressFixture {
@@ -588,9 +628,35 @@ mod tests {
     }
 
     #[test]
+    fn unqualified_input_resolves_only_with_one_source_set_and_stays_qualified() {
+        assert!(QualifiedAddress::parse("Document.Заказ").is_err());
+        for case in fixture().contextual_inputs {
+            let available = case
+                .available_source_sets
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            match QualifiedAddress::resolve_input(&case.input, &available) {
+                Ok(address) => {
+                    assert_eq!(Some(address.to_string()), case.canonical, "{}", case.case)
+                }
+                Err(error) => assert_eq!(Some(error.code()), case.error, "{}", case.case),
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_kind_is_rejected_everywhere_except_the_sole_root() {
+        let error = QualifiedAddress::parse("main:Document.Заказ.Configuration").unwrap_err();
+        assert_eq!(error.code(), AddressErrorCode::ConfigurationRootOnly);
+    }
+
+    #[test]
     fn qualified_logical_address_contract_is_complete() {
         qualified_addresses_are_table_driven_canonical_and_arbitrarily_deep();
         qualified_addresses_reject_unqualified_malformed_and_noncanonical_roots();
         metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate();
+        unqualified_input_resolves_only_with_one_source_set_and_stays_qualified();
+        configuration_kind_is_rejected_everywhere_except_the_sole_root();
     }
 }

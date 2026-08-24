@@ -1,6 +1,13 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::platform_profile::{ModuleCapability, PlatformProfile};
-use crate::infrastructure::native_operations::meta::accepts_logical_metadata_address;
+use crate::domain::source_target::MetadataAddress;
+use crate::infrastructure::native_operations::common::typed_role_reader_target;
+use crate::infrastructure::native_operations::dcs::typed_dcs_reader_target;
+use crate::infrastructure::native_operations::form::typed_form_reader_target;
+use crate::infrastructure::native_operations::meta::{
+    accepts_logical_metadata_address, logical_metadata_reader_target,
+};
+use crate::infrastructure::native_operations::mxl::typed_mxl_reader_target;
 use serde::Deserialize;
 use std::fmt;
 use std::path::PathBuf;
@@ -21,6 +28,7 @@ pub(crate) enum LogicalReader {
 pub(crate) struct LogicalTreeRoute {
     at: QualifiedAddress,
     reader: LogicalReader,
+    reader_metadata_path: Option<MetadataAddress>,
     module: Option<ModuleCapability>,
     diagnostic_file: Option<PathBuf>,
 }
@@ -38,6 +46,10 @@ impl LogicalTreeRoute {
         self.module
     }
 
+    pub(crate) fn reader_metadata_path(&self) -> Option<&MetadataAddress> {
+        self.reader_metadata_path.as_ref()
+    }
+
     pub(crate) fn diagnostic_file(&self) -> Option<&std::path::Path> {
         self.diagnostic_file.as_deref()
     }
@@ -49,7 +61,7 @@ pub(crate) fn route_logical_address(
 ) -> Result<LogicalTreeRoute, LogicalTreeError> {
     if let Some(module) = profile.module_prefix_capability(address) {
         let _internal_layout = module.source_layout();
-        return Ok(route(address, LogicalReader::Module, Some(module)));
+        return Ok(route(address, LogicalReader::Module, None, Some(module)));
     }
 
     let segments = address.segments();
@@ -61,13 +73,14 @@ pub(crate) fn route_logical_address(
     }
     if matches!(segments, [root] if root.kind() == NodeKind::Configuration && root.name().is_none())
     {
-        return Ok(route(address, LogicalReader::Configuration, None));
+        return Ok(route(address, LogicalReader::Configuration, None, None));
     }
     if segments
         .first()
         .is_some_and(|segment| segment.kind() == NodeKind::Role)
     {
-        return Ok(route(address, LogicalReader::Role, None));
+        let target = typed_role_reader_target(address).ok_or_else(|| not_found(address))?;
+        return Ok(route(address, LogicalReader::Role, Some(target), None));
     }
     if segments
         .first()
@@ -76,7 +89,8 @@ pub(crate) fn route_logical_address(
             .iter()
             .any(|segment| segment.kind() == NodeKind::Form)
     {
-        return Ok(route(address, LogicalReader::Form, None));
+        let target = typed_form_reader_target(address).ok_or_else(|| not_found(address))?;
+        return Ok(route(address, LogicalReader::Form, Some(target), None));
     }
     if segments.iter().any(|segment| {
         matches!(
@@ -88,16 +102,23 @@ pub(crate) fn route_logical_address(
                 | NodeKind::Setting
         )
     }) {
-        return Ok(route(address, LogicalReader::Dcs, None));
+        let target = typed_dcs_reader_target(address).ok_or_else(|| not_found(address))?;
+        return Ok(route(address, LogicalReader::Dcs, Some(target), None));
     }
     if segments
         .iter()
         .any(|segment| segment.kind() == NodeKind::Area)
     {
-        return Ok(route(address, LogicalReader::Mxl, None));
+        let target = typed_mxl_reader_target(address).ok_or_else(|| not_found(address))?;
+        return Ok(route(address, LogicalReader::Mxl, Some(target), None));
     }
     if accepts_logical_metadata_address(address) {
-        return Ok(route(address, LogicalReader::Metadata, None));
+        return Ok(route(
+            address,
+            LogicalReader::Metadata,
+            logical_metadata_reader_target(address),
+            None,
+        ));
     }
     Err(not_found(address))
 }
@@ -105,11 +126,13 @@ pub(crate) fn route_logical_address(
 fn route(
     address: &QualifiedAddress,
     reader: LogicalReader,
+    reader_metadata_path: Option<MetadataAddress>,
     module: Option<ModuleCapability>,
 ) -> LogicalTreeRoute {
     LogicalTreeRoute {
         at: address.clone(),
         reader,
+        reader_metadata_path,
         module,
         diagnostic_file: None,
     }
@@ -222,8 +245,64 @@ mod tests {
     }
 
     #[test]
+    fn deep_invalid_module_suffix_cannot_hide_below_a_valid_module_prefix() {
+        let address = QualifiedAddress::parse(
+            "main:Document.Заказ.Module.Object.Method.Проверить.Module.Service",
+        )
+        .unwrap();
+
+        let error = route_logical_address(&address, PlatformProfile::v8_3_27()).unwrap_err();
+        assert_eq!(error.code(), LogicalTreeErrorCode::NotFound);
+    }
+
+    #[test]
+    fn logical_tree_delegates_representative_addresses_to_current_typed_reader_adapters() {
+        let profile = PlatformProfile::v8_3_27();
+        let cases = [
+            (
+                "main:Document.Заказ.Attribute.Контрагент",
+                LogicalReader::Metadata,
+                "Document.Заказ",
+            ),
+            (
+                "main:Document.Заказ.Form.ФормаДокумента.Attribute.Объект",
+                LogicalReader::Form,
+                "Document.Заказ.Form.ФормаДокумента",
+            ),
+            (
+                "main:Role.Кладовщик.Right.Catalog_Товары",
+                LogicalReader::Role,
+                "Role.Кладовщик",
+            ),
+            (
+                "main:Report.Продажи.Template.ОсновнаяСхема.DataSet.Продажи",
+                LogicalReader::Dcs,
+                "Report.Продажи.Template.ОсновнаяСхема",
+            ),
+            (
+                "main:Report.Продажи.Template.Печать.Area.Шапка",
+                LogicalReader::Mxl,
+                "Report.Продажи.Template.Печать",
+            ),
+        ];
+
+        for (raw, reader, expected_target) in cases {
+            let address = QualifiedAddress::parse(raw).unwrap();
+            let route = route_logical_address(&address, profile).unwrap();
+            assert_eq!(route.reader(), reader, "{raw}");
+            assert_eq!(
+                route.reader_metadata_path().map(|target| target.as_str()),
+                Some(expected_target),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
     fn qualified_logical_tree_core_contract_is_complete() {
         logical_tree_routes_branches_to_existing_typed_readers();
+        logical_tree_delegates_representative_addresses_to_current_typed_reader_adapters();
         platform_capability_controls_logical_existence_without_filesystem_evidence();
+        deep_invalid_module_suffix_cannot_hide_below_a_valid_module_prefix();
     }
 }

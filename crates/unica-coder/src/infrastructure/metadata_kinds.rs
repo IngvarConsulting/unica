@@ -405,5 +405,15 @@ mod tests {
             "WebSocketClient",
             "ObjectModule"
         ));
+        assert!(!supports_direct_module_role(
+            "ExternalDataProcessor",
+            "ObjectModule"
+        ));
+        assert!(!supports_nested_form_or_command("ExternalDataProcessor"));
+        assert!(!supports_direct_module_role(
+            "ExternalReport",
+            "ObjectModule"
+        ));
+        assert!(!supports_nested_form_or_command("ExternalReport"));
     }
 }

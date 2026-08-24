@@ -2,12 +2,14 @@
 
 use crate::application::operation_descriptors::TEMPLATE_PATH;
 use crate::application::AdapterOutcome;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::support_state::{
     ObjectSupportData as DomainObjectSupportData, SupportStateReader,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::native_operations::mxl::TEMPLATE_KINDS;
 use crate::infrastructure::platform_xml_owner::DCS_ROOT;
@@ -32,6 +34,12 @@ pub(crate) const DCS_CORE_NS: &str = "http://v8.1c.ru/8.1/data-composition-syste
 pub(crate) const DCS_COMMON_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/common";
 pub(crate) const V8_DATA_NS: &str = "http://v8.1c.ru/8.1/data/core";
 pub(crate) const XML_SCHEMA_INSTANCE_NS: &str = "http://www.w3.org/2001/XMLSchema-instance";
+
+pub(crate) fn typed_dcs_reader_target(
+    address: &QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    typed_reader_metadata_target(address, TEMPLATE_KINDS)
+}
 
 pub(crate) fn require_dcs_root(root: roxmltree::Node<'_, '_>) -> Result<(), String> {
     let local_name = root.tag_name().name();

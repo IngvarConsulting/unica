@@ -12,6 +12,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::application::source_navigation::{LocateRejection, SourceLocateRequest};
+use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::project_sources::SourceFormat;
 use crate::domain::source_target::{
@@ -121,6 +122,30 @@ pub(crate) fn logical_selection(
         return None;
     }
     Some(resolve(args, context, want, accepted_kinds))
+}
+
+/// Projects a v0.13 logical descendant back to the exact v0.12 metadata owner
+/// consumed by an existing typed reader. The reader's accepted-kind registry
+/// and `MetadataAddress` parser remain the authority; no layout is inferred.
+pub(crate) fn typed_reader_metadata_target(
+    address: &QualifiedAddress,
+    accepted_kinds: &[&str],
+) -> Option<MetadataAddress> {
+    let target_end = address
+        .segments()
+        .iter()
+        .position(|segment| accepted_kinds.contains(&segment.kind().as_str()))?;
+    let target_segments = &address.segments()[..=target_end];
+    target_segments.last()?.name()?;
+
+    let mut parts = Vec::with_capacity(target_segments.len() * 2);
+    for segment in target_segments {
+        parts.push(segment.kind().as_str());
+        parts.push(segment.name()?);
+    }
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts.join(".")).ok()?;
+    ensure_kind_is_read_by_this_tool(&target, accepted_kinds).ok()?;
+    Some(target)
 }
 
 fn resolve(

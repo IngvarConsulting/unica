@@ -2,6 +2,7 @@
 
 use crate::application::operation_descriptors::{CFE_VALIDATE_PATH, CF_PATH, RIGHTS_PATH};
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
+use crate::domain::address::QualifiedAddress;
 use crate::domain::format_profile::{
     classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
 };
@@ -12,7 +13,8 @@ use crate::domain::source_target::{
 use crate::domain::support_state::{SupportReadError, SupportReadErrorCode};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
@@ -1141,11 +1143,18 @@ pub(crate) fn resolve_role_validate_rights_path(path: PathBuf) -> PathBuf {
     rights_path
 }
 
+const ROLE_KINDS: &[&str] = &["Role"];
+
+pub(crate) fn typed_role_reader_target(address: &QualifiedAddress) -> Option<MetadataAddress> {
+    typed_reader_metadata_target(address, ROLE_KINDS)
+}
+
 pub(crate) fn resolve_role_read_rights_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, &["Role"]) {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, ROLE_KINDS)
+    {
         return selection
             .map(|selection| selection.resource_path)
             .map_err(|failure| failure.to_string());
@@ -1161,7 +1170,8 @@ pub(crate) fn resolve_role_info_target(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<ResolvedReadTarget, String> {
-    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, &["Role"]) {
+    if let Some(selection) = logical_selection(args, context, AttachedResource::Rights, ROLE_KINDS)
+    {
         return selection.map_err(|failure| failure.to_string());
     }
     let rights_path = resolve_role_read_rights_path(args, context)?;

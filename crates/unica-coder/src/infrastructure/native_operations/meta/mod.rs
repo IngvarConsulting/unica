@@ -129,13 +129,36 @@ pub(crate) use xml_model::{
 /// The hidden v0.13 tree delegates metadata branches to the current typed
 /// metadata reader. This predicate describes only reader ownership; it never
 /// resolves a path or treats a physical resource as logical identity.
+pub(crate) fn logical_metadata_reader_target(
+    address: &crate::domain::address::QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    let owner = address.segments().first()?;
+    if !owner.kind().is_metadata_kind() || owner.name().is_none() {
+        return None;
+    }
+    crate::infrastructure::native_operations::logical_selector::typed_reader_metadata_target(
+        address,
+        &[owner.kind().as_str()],
+    )
+}
+
 pub(crate) fn accepts_logical_metadata_address(
     address: &crate::domain::address::QualifiedAddress,
 ) -> bool {
-    address
-        .segments()
-        .first()
-        .is_some_and(|segment| segment.kind().is_metadata_kind())
+    let Some(owner) = address.segments().first() else {
+        return false;
+    };
+    if !owner.kind().is_metadata_kind() {
+        return false;
+    }
+    if owner.name().is_some() {
+        return logical_metadata_reader_target(address).is_some();
+    }
+    crate::domain::source_target::MetadataAddressPrefix::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        owner.kind().as_str(),
+    )
+    .is_ok()
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 
 use crate::application::operation_descriptors::{FORM_PATH, OBJECT_PATH};
 use crate::application::AdapterOutcome;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::form_edit::validate_form_edit_definition;
 use crate::domain::format_profile::{classify_root_version, FormatCompatibility};
 use crate::domain::support_state::{
@@ -9,7 +10,8 @@ use crate::domain::support_state::{
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::platform_xml_owner::{root_version_literal, MANAGED_FORM_ROOT};
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -1716,6 +1718,12 @@ pub(crate) fn analyze_form_info(
 /// The address kinds a form reader accepts: a nested `Catalog.X.Form.Y` and a
 /// top-level `CommonForm.Y`.
 pub(crate) const FORM_KINDS: &[&str] = &["Form", "CommonForm"];
+
+pub(crate) fn typed_form_reader_target(
+    address: &QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    typed_reader_metadata_target(address, FORM_KINDS)
+}
 
 /// The single args→path entry point of `form.info` and `form.validate`, and the
 /// one the format guard calls.

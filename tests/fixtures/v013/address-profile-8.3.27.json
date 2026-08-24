@@ -135,12 +135,23 @@
       "route": "mxl"
     }
   ],
-  "invalidAddresses": [
+  "contextualInputs": [
     {
-      "case": "source-set-prefix-required",
+      "case": "single-source-set-qualifies-unqualified-input",
       "input": "Document.Заказ",
-      "error": "source_set_required"
+      "availableSourceSets": ["main"],
+      "canonical": "main:Document.Заказ",
+      "error": null
     },
+    {
+      "case": "multiple-source-sets-make-unqualified-input-ambiguous",
+      "input": "Document.Заказ",
+      "availableSourceSets": ["main", "extension"],
+      "canonical": null,
+      "error": "ambiguous_address"
+    }
+  ],
+  "invalidAddresses": [
     {
       "case": "source-set-empty",
       "input": ":Document.Заказ",
@@ -180,6 +191,11 @@
       "case": "configuration-root-has-no-children",
       "input": "main:Configuration.Main.Attribute.Код",
       "error": "configuration_root_only"
+    },
+    {
+      "case": "configuration-cannot-occur-below-metadata",
+      "input": "main:Document.Заказ.Configuration",
+      "error": "configuration_root_only"
     }
   ],
   "moduleCapabilities": [
@@ -201,11 +217,18 @@
     {"case": "integration-service-module", "at": "main:IntegrationService.Шина.Module.IntegrationService", "exists": true, "role": "IntegrationService"},
     {"case": "bot-module", "at": "main:Bot.Помощник.Module.Bot", "exists": true, "role": "Bot"},
     {"case": "websocket-client-module", "at": "main:WebSocketClient.Телефония.Module.WebSocketClient", "exists": true, "role": "WebSocketClient"},
+    {"case": "epf-object-module", "at": "epf:ExternalDataProcessor.Импорт.Module.Object", "exists": true, "role": "Object"},
+    {"case": "epf-form-module", "at": "epf:ExternalDataProcessor.Импорт.Form.Основная.Module.Form", "exists": true, "role": "Form"},
+    {"case": "epf-command-module", "at": "epf:ExternalDataProcessor.Импорт.Command.Выполнить.Module.Command", "exists": true, "role": "Command"},
+    {"case": "erf-object-module", "at": "erf:ExternalReport.Продажи.Module.Object", "exists": true, "role": "Object"},
+    {"case": "erf-form-module", "at": "erf:ExternalReport.Продажи.Form.Основная.Module.Form", "exists": true, "role": "Form"},
+    {"case": "erf-command-module", "at": "erf:ExternalReport.Продажи.Command.Сформировать.Module.Command", "exists": true, "role": "Command"},
     {"case": "valid-missing-object-module", "at": "main:Document.ЕщеНеВыгружен.Module.Object", "exists": true, "role": "Object"},
     {"case": "record-manager-does-not-exist", "at": "main:InformationRegister.Цены.Module.RecordManager", "exists": false, "role": null},
     {"case": "generic-service-does-not-exist", "at": "main:HTTPService.API.Module.Service", "exists": false, "role": null},
     {"case": "invalid-owner-role-is-not-found", "at": "main:Catalog.Товары.Module.RecordSet", "exists": false, "role": null},
     {"case": "invalid-role-cannot-hide-behind-common-module-prefix", "at": "main:CommonModule.ЗаказыСервер.Module.Service", "exists": false, "role": null},
-    {"case": "invalid-role-cannot-hide-behind-valid-module-prefix", "at": "main:Document.Заказ.Module.Object.Module.Service", "exists": false, "role": null}
+    {"case": "invalid-role-cannot-hide-behind-valid-module-prefix", "at": "main:Document.Заказ.Module.Object.Module.Service", "exists": false, "role": null},
+    {"case": "deep-invalid-role-cannot-hide-below-method", "at": "main:Document.Заказ.Module.Object.Method.Проверить.Module.Service", "exists": false, "role": null}
   ]
 }

@@ -1,12 +1,14 @@
 #![allow(dead_code, unused_imports)]
 
 use crate::application::AdapterOutcome;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::support_state::{
     ObjectSupportData as DomainObjectSupportData, SupportStateReader,
 };
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::native_operations::logical_selector::{
-    logical_selection, physical_selection, AttachedResource, ResolvedReadTarget,
+    logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
+    ResolvedReadTarget,
 };
 use crate::infrastructure::platform_xml_owner::MXL_ROOT;
 use crate::infrastructure::support_state::WorkspaceSupportStateReader;
@@ -22,6 +24,12 @@ use super::common::*;
 use super::compile_transaction::CompileTransaction;
 
 pub(crate) const MXL_DOCUMENT_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+
+pub(crate) fn typed_mxl_reader_target(
+    address: &QualifiedAddress,
+) -> Option<crate::domain::source_target::MetadataAddress> {
+    typed_reader_metadata_target(address, TEMPLATE_KINDS)
+}
 
 pub(crate) fn empty_spreadsheet_document_xml() -> String {
     format!(

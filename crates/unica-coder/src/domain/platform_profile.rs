@@ -138,19 +138,7 @@ impl PlatformProfile {
         let segments = address.segments();
         (1..=segments.len()).rev().find_map(|length| {
             let capability = module_capability_for_segments(&segments[..length])?;
-            (length == segments.len()
-                || segments.get(length).is_some_and(|segment| {
-                    matches!(
-                        segment.kind(),
-                        NodeKind::Method
-                            | NodeKind::Region
-                            | NodeKind::Interface
-                            | NodeKind::Event
-                            | NodeKind::Compilation
-                            | NodeKind::Body
-                    )
-                }))
-            .then_some(capability)
+            module_projection_suffix_is_valid(&segments[length..]).then_some(capability)
         })
     }
 
@@ -178,6 +166,8 @@ impl PlatformProfile {
                     | NodeKind::Task
                     | NodeKind::Report
                     | NodeKind::DataProcessor
+                    | NodeKind::ExternalDataProcessor
+                    | NodeKind::ExternalReport
             ),
             ModuleRole::Manager => matches!(
                 owner_kind,
@@ -235,7 +225,46 @@ impl PlatformProfile {
                 | NodeKind::Constant
                 | NodeKind::Sequence
                 | NodeKind::DocumentNumerator
+                | NodeKind::ExternalDataProcessor
+                | NodeKind::ExternalReport
         )
+    }
+}
+
+fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
+    match suffix {
+        [] => true,
+        [branch]
+            if matches!(branch.kind(), NodeKind::Compilation | NodeKind::Body)
+                && branch.name().is_none() =>
+        {
+            true
+        }
+        [branch]
+            if matches!(
+                branch.kind(),
+                NodeKind::Method | NodeKind::Interface | NodeKind::Event
+            ) =>
+        {
+            true
+        }
+        [method, projection]
+            if method.kind() == NodeKind::Method
+                && method.name().is_some()
+                && matches!(projection.kind(), NodeKind::Compilation | NodeKind::Body)
+                && projection.name().is_none() =>
+        {
+            true
+        }
+        regions
+            if regions.iter().enumerate().all(|(index, region)| {
+                region.kind() == NodeKind::Region
+                    && (region.name().is_some() || index + 1 == regions.len())
+            }) =>
+        {
+            true
+        }
+        _ => false,
     }
 }
 
@@ -417,6 +446,48 @@ mod tests {
 
         assert!(!profile.supports_owner_kind("GRPCService"));
         assert!(QualifiedAddress::parse("main:GRPCService.API.Module.GRPCService").is_err());
+    }
+
+    #[test]
+    fn external_epf_erf_object_form_and_command_roles_are_capabilities() {
+        let profile = PlatformProfile::v8_3_27();
+        let expected = [
+            (
+                "epf:ExternalDataProcessor.Импорт.Module.Object",
+                ModuleRole::Object,
+            ),
+            (
+                "epf:ExternalDataProcessor.Импорт.Form.Основная.Module.Form",
+                ModuleRole::Form,
+            ),
+            (
+                "epf:ExternalDataProcessor.Импорт.Command.Выполнить.Module.Command",
+                ModuleRole::Command,
+            ),
+            (
+                "erf:ExternalReport.Продажи.Module.Object",
+                ModuleRole::Object,
+            ),
+            (
+                "erf:ExternalReport.Продажи.Form.Основная.Module.Form",
+                ModuleRole::Form,
+            ),
+            (
+                "erf:ExternalReport.Продажи.Command.Сформировать.Module.Command",
+                ModuleRole::Command,
+            ),
+        ];
+
+        for (raw, role) in expected {
+            let address = QualifiedAddress::parse(raw).unwrap();
+            assert_eq!(
+                profile
+                    .module_capability(&address)
+                    .map(|value| value.role()),
+                Some(role),
+                "{raw}"
+            );
+        }
     }
 
     #[test]
