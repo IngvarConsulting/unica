@@ -79,7 +79,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 select_python() {
-  for candidate in "${PYTHON:-}" python3.12 python3.11 python3.10 python3 python; do
+  for candidate in "${PYTHON:-}" python3.12 python3 python; do
     if [ -z "$candidate" ]; then
       continue
     fi
@@ -88,14 +88,14 @@ select_python() {
     fi
     if "$candidate" - <<'PY' >/dev/null 2>&1
 import sys
-raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+raise SystemExit(0 if sys.version_info >= (3, 12) else 1)
 PY
     then
       printf '%s\n' "$candidate"
       return 0
     fi
   done
-  echo "Python >= 3.10 is required. Set PYTHON=/path/to/python if needed." >&2
+  echo "Python >= 3.12 is required. Set PYTHON=/path/to/python if needed." >&2
   return 69
 }
 
