@@ -15,7 +15,10 @@ consumers: [host]
 `unica.task.get` и `unica.task.cancel` требуют один canonical opaque `taskId`.
 `unica.task.result` требует `taskId` и принимает integer `waitMs` в диапазоне
 0..=7000; по умолчанию 7000. Get — immediate probe, result — bounded wait,
-cancel — idempotent переход или чтение terminal winner.
+cancel — idempotent переход или чтение terminal winner. Один абсолютный budget
+result равен не более `waitMs + 125 мс` и остатка исходного frontend deadline;
+он не перезапускается между connect, handshake, request и response. Перед
+запросом daemon wait уменьшается на уже израсходованное время и response margin.
 
 Working receipt — обычный structured-only `CallToolResult`: `ok`, `summary`,
 `data.task` с `taskId`, полем состояния, `createdAtEpochMs`, `updatedAtEpochMs`, `ttlMs`,
@@ -24,3 +27,9 @@ optionals опускаются; ключей `job` и `work` нет. Completed �
 canonical result, что direct предметный вызов. Invalid identity, bad wait,
 unknown, expired, failed, cancelled и transport/projection failure имеют
 различимые закрытые коды без daemon prose.
+
+Допустимая форма Task исчерпывается матрицей: queued/working не имеют result и
+failure; completed имеет только result; failed имеет только закрытый признак
+failure; cancelled не имеет ни result, ни failure. Failure code/message не
+проецируются. Любая другая форма в get и result возвращает
+`task_projection_failed` до публикации содержимого.

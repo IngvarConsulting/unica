@@ -65,6 +65,8 @@ pub(crate) struct CompatibilityTaskSnapshot {
     pub(crate) task_id: TaskId,
     pub(crate) status: InvocationStatus,
     pub(crate) result: Option<DomainResult>,
+    /// Closed presence only: failure code/message remains on the daemon side.
+    pub(crate) has_failure: bool,
     pub(crate) created_at_epoch_ms: u64,
     pub(crate) updated_at_epoch_ms: u64,
     pub(crate) ttl_ms: u64,
@@ -77,6 +79,7 @@ impl CompatibilityTaskSnapshot {
         task_id: TaskId,
         status: InvocationStatus,
         result: Option<DomainResult>,
+        has_failure: bool,
         created_at_epoch_ms: u64,
         updated_at_epoch_ms: u64,
         ttl_ms: u64,
@@ -86,6 +89,7 @@ impl CompatibilityTaskSnapshot {
             task_id,
             status,
             result,
+            has_failure,
             created_at_epoch_ms,
             updated_at_epoch_ms,
             ttl_ms,
@@ -96,8 +100,8 @@ impl CompatibilityTaskSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompatibilityProjectionError {
+    InvalidStatusPayload,
     ReverseTimestampOrder,
-    MissingCompletedResult,
 }
 
 pub(crate) fn compatibility_tool_contracts() -> Vec<CompatibilityToolContract> {
@@ -197,6 +201,21 @@ pub(crate) fn project_task_snapshot(
     snapshot: &CompatibilityTaskSnapshot,
     projection: CompatibilityProjection,
 ) -> Result<DomainResult, CompatibilityProjectionError> {
+    let valid_shape = matches!(
+        (
+            snapshot.status,
+            snapshot.result.is_some(),
+            snapshot.has_failure
+        ),
+        (InvocationStatus::Queued, false, false)
+            | (InvocationStatus::Working, false, false)
+            | (InvocationStatus::Completed, true, false)
+            | (InvocationStatus::Failed, false, true)
+            | (InvocationStatus::Cancelled, false, false)
+    );
+    if !valid_shape {
+        return Err(CompatibilityProjectionError::InvalidStatusPayload);
+    }
     if snapshot.updated_at_epoch_ms < snapshot.created_at_epoch_ms {
         return Err(CompatibilityProjectionError::ReverseTimestampOrder);
     }
@@ -206,7 +225,7 @@ pub(crate) fn project_task_snapshot(
         return snapshot
             .result
             .clone()
-            .ok_or(CompatibilityProjectionError::MissingCompletedResult);
+            .ok_or(CompatibilityProjectionError::InvalidStatusPayload);
     }
 
     let (ok, summary, code) = match snapshot.status {
@@ -294,6 +313,7 @@ mod tests {
                 .unwrap(),
             status,
             None,
+            status == InvocationStatus::Failed,
             1_777_012_345_678,
             1_777_012_346_789,
             3_600_000,
@@ -489,5 +509,43 @@ mod tests {
         let mut reversed = snapshot(InvocationStatus::Working);
         reversed.updated_at_epoch_ms = reversed.created_at_epoch_ms - 1;
         assert!(project_task_snapshot(&reversed, CompatibilityProjection::State).is_err());
+    }
+
+    #[test]
+    fn compatibility_projection_accepts_only_the_complete_status_result_failure_matrix() {
+        let hostile = DomainResult::success("hostile result /private/secret bearer-secret");
+        for status in [
+            InvocationStatus::Queued,
+            InvocationStatus::Working,
+            InvocationStatus::Completed,
+            InvocationStatus::Failed,
+            InvocationStatus::Cancelled,
+        ] {
+            for has_result in [false, true] {
+                for has_failure in [false, true] {
+                    let valid = matches!(
+                        (status, has_result, has_failure),
+                        (InvocationStatus::Queued, false, false)
+                            | (InvocationStatus::Working, false, false)
+                            | (InvocationStatus::Completed, true, false)
+                            | (InvocationStatus::Failed, false, true)
+                            | (InvocationStatus::Cancelled, false, false)
+                    );
+                    let mut candidate = snapshot(status);
+                    candidate.result = has_result.then(|| hostile.clone());
+                    candidate.has_failure = has_failure;
+                    for projection in [
+                        CompatibilityProjection::State,
+                        CompatibilityProjection::TerminalResult,
+                    ] {
+                        assert_eq!(
+                            project_task_snapshot(&candidate, projection).is_ok(),
+                            valid,
+                            "status={status:?} result={has_result} failure={has_failure} projection={projection:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

@@ -345,6 +345,31 @@ pub(crate) enum DaemonTaskExchangeError {
     UnexpectedResponse,
 }
 
+/// One task-adapter transport budget captured before connection admission.
+/// The same clock/deadline is consumed by connect, handshake, request, and
+/// response so a short compatibility wait cannot reopen the frontend window.
+pub(crate) struct DaemonTaskDeadline {
+    deadline: DaemonDeadline,
+}
+
+impl DaemonTaskDeadline {
+    fn matches_clock(&self, clock: &Arc<dyn DaemonClientClock>) -> bool {
+        Arc::ptr_eq(&self.deadline.clock, clock)
+    }
+
+    fn bounded_wait_ms(&self, requested_wait_ms: u64) -> Result<u64, DaemonTaskExchangeError> {
+        let remaining = self
+            .deadline
+            .remaining("compatibility task wait budget")
+            .map_err(|_| DaemonTaskExchangeError::Transport)?;
+        let wait_ms = remaining
+            .saturating_sub(INVOCATION_RESPONSE_MARGIN)
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        Ok(requested_wait_ms.min(wait_ms))
+    }
+}
+
 impl DaemonOwner {
     fn connect(
         record: &EndpointRecord,
@@ -456,6 +481,46 @@ impl DaemonOwner {
         })
     }
 
+    pub(crate) fn begin_task_deadline(
+        &self,
+        budget: Duration,
+    ) -> Result<DaemonTaskDeadline, DaemonTaskExchangeError> {
+        if self.poisoned {
+            return Err(DaemonTaskExchangeError::SessionPoisoned);
+        }
+        DaemonDeadline::new(budget, Arc::clone(&self.clock))
+            .map(|deadline| DaemonTaskDeadline { deadline })
+            .map_err(|_| DaemonTaskExchangeError::Transport)
+    }
+
+    pub(crate) fn connect_peer_before(
+        &self,
+        deadline: &DaemonTaskDeadline,
+    ) -> Result<Self, DaemonTaskExchangeError> {
+        if self.poisoned {
+            return Err(DaemonTaskExchangeError::SessionPoisoned);
+        }
+        if !deadline.matches_clock(&self.clock) {
+            return Err(DaemonTaskExchangeError::Transport);
+        }
+        let exchange_budget = deadline
+            .deadline
+            .remaining("compatibility task peer admission")
+            .map_err(|_| DaemonTaskExchangeError::Transport)?;
+        Self::connect(
+            &self.record,
+            &deadline.deadline,
+            exchange_budget,
+            Arc::clone(&self.clock),
+        )
+        .map_err(|failure| match failure {
+            ConnectFailure::RetryLater(code) => DaemonTaskExchangeError::Protocol(code),
+            ConnectFailure::Absent | ConnectFailure::Rejected(_) => {
+                DaemonTaskExchangeError::Transport
+            }
+        })
+    }
+
     pub(crate) fn submit_invocation_with_transport_budget(
         &mut self,
         request: InvocationRequest,
@@ -508,6 +573,22 @@ impl DaemonOwner {
         self.task_exchange(ClientRequest::wait_task(task_id, wait_ms), transport_budget)
     }
 
+    pub(crate) fn wait_task_before(
+        &mut self,
+        task_id: crate::domain::invocation::TaskId,
+        requested_wait_ms: u64,
+        deadline: &DaemonTaskDeadline,
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
+        if !deadline.matches_clock(&self.clock) {
+            return Err(DaemonTaskExchangeError::Transport);
+        }
+        let wait_ms = deadline.bounded_wait_ms(requested_wait_ms)?;
+        self.task_exchange_before(
+            ClientRequest::wait_task(task_id, wait_ms),
+            &deadline.deadline,
+        )
+    }
+
     #[allow(dead_code)]
     pub(crate) fn cancel_task(
         &mut self,
@@ -532,10 +613,18 @@ impl DaemonOwner {
             Arc::clone(&self.clock),
         )
         .map_err(|_| DaemonTaskExchangeError::Transport)?;
-        write_request(&mut self.writer, &request, &deadline, "task request")
+        self.task_exchange_before(request, &deadline)
+    }
+
+    fn task_exchange_before(
+        &mut self,
+        request: ClientRequest,
+        deadline: &DaemonDeadline,
+    ) -> Result<DaemonTaskSnapshot, DaemonTaskExchangeError> {
+        write_request(&mut self.writer, &request, deadline, "task request")
             .map_err(|_| DaemonTaskExchangeError::Transport)?;
         match self
-            .read_response_or_poison(&deadline, "task response")
+            .read_response_or_poison(deadline, "task response")
             .map_err(|_| DaemonTaskExchangeError::Transport)?
         {
             ServerResponse::Task { snapshot } => Ok(snapshot),

@@ -13,4 +13,6 @@ scope: [app, wire]
 инструментов; compatibility-запрос видит их же плюс ровно get/result/cancel.
 Профиль не переносится между клиентами, legacy session не повышается metadata,
 а initial receipt, polling, wait, cancel, reconnect и restart обращаются к одной
-durable Invocation и не повторяют её execution.
+durable Invocation и не повторяют её execution. Compatibility projection
+принимает только согласованную status/result/failure-presence форму без failure
+prose; один абсолютный wait budget охватывает connect и полный exchange.

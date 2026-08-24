@@ -20,16 +20,21 @@ design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 
 Три compatibility-инструмента — тонкие adapters к той же daemon-owned durable
 Invocation. `get` читает сразу, `result` ждёт по умолчанию 7000 мс и принимает
-`waitMs` от 0 до 7000, но исходный frontend deadline всегда сильнее; `cancel`
-идемпотентен. Polling не вызывает предметный handler повторно. Терминальный
-completed result байт-в-байт совпадает с direct canonical `CallToolResult`.
+`waitMs` от 0 до 7000, но один абсолютный budget `waitMs + 125 мс`, ограниченный
+исходным frontend deadline, расходуется на connect, handshake, request и
+response без перезапуска; `cancel` идемпотентен. Polling не вызывает предметный
+handler повторно. Терминальный completed result байт-в-байт совпадает с direct
+canonical `CallToolResult`.
 
 Незавершённая Invocation возвращается обычным model-visible result с opaque
 `taskId`, закрытым status, durable timestamps/TTL, poll interval и безопасным
 следующим вызовом. Полей `job` и `work`, runtime prose, путей и секретов в нём
-нет. Invalid, unknown, expired, failed и cancelled остаются различимыми
-закрытыми результатами. После reconnect/restart adapters читают тот же record;
-источник истины и execution owner не меняются.
+нет. До любого результата adapter проверяет закрытую матрицу
+status/result/failure-presence; failure code/message не покидают daemon, а
+невозможная форма становится `task_projection_failed`. Invalid, unknown,
+expired, failed и cancelled остаются различимыми закрытыми результатами. После
+reconnect/restart adapters читают тот же record; источник истины и execution
+owner не меняются.
 
 Package-selected V12 сохраняет прежнюю поверхность и wire до Task 22. В hidden
 V13 нет `task.list`, `task.logs` и `unica.runtime.job.*`; native Tasks и эти три

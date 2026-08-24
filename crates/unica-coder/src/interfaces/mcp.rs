@@ -410,6 +410,16 @@ fn bounded_compatibility_wait_ms(
     requested_wait_ms.min(remaining_ms)
 }
 
+fn compatibility_wait_transport_budget(
+    requested_wait_ms: u64,
+    deadline: FrontendInvocationDeadline,
+    now: Instant,
+) -> Duration {
+    Duration::from_millis(requested_wait_ms)
+        .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
+        .min(deadline.remaining_transport_at(now))
+}
+
 fn compatibility_task_exchange_error(
     error: crate::infrastructure::daemon::client::DaemonTaskExchangeError,
 ) -> TaskToolError {
@@ -438,6 +448,7 @@ fn project_compatibility_snapshot(
         snapshot.task_id,
         snapshot.status,
         snapshot.result.clone(),
+        snapshot.failure.is_some(),
         snapshot.created_at_epoch_ms,
         snapshot.updated_at_epoch_ms,
         snapshot.ttl_ms,
@@ -496,17 +507,11 @@ fn canonical_daemon_router(
     });
     let wait_anchor = Arc::clone(&anchor);
     let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |task_id, wait_ms, deadline| {
-        let mut owner = wait_anchor
-            .connect_peer(deadline.remaining_transport_at(Instant::now()))
-            .map_err(|_| {
-                crate::infrastructure::daemon::client::DaemonTaskExchangeError::Transport
-            })?;
-        let effective_wait = bounded_compatibility_wait_ms(wait_ms, deadline, Instant::now());
-        owner.wait_task_with_transport_budget(
-            task_id,
-            effective_wait,
-            deadline.remaining_transport_at(Instant::now()),
-        )
+        let operation_budget =
+            compatibility_wait_transport_budget(wait_ms, deadline, Instant::now());
+        let task_deadline = wait_anchor.begin_task_deadline(operation_budget)?;
+        let mut owner = wait_anchor.connect_peer_before(&task_deadline)?;
+        owner.wait_task_before(task_id, wait_ms, &task_deadline)
     });
     let cancel: Arc<CanonicalTaskHandler> = Arc::new(move |task_id| {
         let mut owner = anchor
@@ -2345,6 +2350,36 @@ mod tests {
             bounded_compatibility_wait_ms(7_000, deadline, received + Duration::from_secs(7),),
             0
         );
+        assert_eq!(
+            compatibility_wait_transport_budget(0, deadline, received),
+            Duration::from_millis(125)
+        );
+        assert_eq!(
+            compatibility_wait_transport_budget(1, deadline, received),
+            Duration::from_millis(126)
+        );
+        assert_eq!(
+            compatibility_wait_transport_budget(7_000, deadline, received),
+            Duration::from_millis(7_125)
+        );
+        assert_eq!(
+            compatibility_wait_transport_budget(
+                7_000,
+                deadline,
+                received + Duration::from_millis(6_999),
+            ),
+            Duration::from_millis(126),
+            "elapsed frontend time is not replenished by the compatibility wait"
+        );
+        assert_eq!(
+            compatibility_wait_transport_budget(
+                7_000,
+                FrontendInvocationDeadline::new(received, Some(Duration::from_millis(80))),
+                received,
+            ),
+            Duration::from_millis(80),
+            "an earlier host deadline is stronger than waitMs plus response margin"
+        );
     }
 
     async fn compatibility_terminal_result_case() {
@@ -2778,6 +2813,100 @@ mod tests {
         compatibility_wait_budget_case();
     }
 
+    async fn compatibility_wait_single_deadline_case() {
+        use crate::infrastructure::daemon::client::{
+            DaemonClient, DaemonClientConfig, ExistingDaemon, ManualDaemonClientClock,
+        };
+        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        use crate::infrastructure::daemon::protocol::{
+            read_bounded_json_line, ClientRequest, DaemonTaskSnapshot, EndpointRecord,
+            ServerResponse,
+        };
+        use std::io::{BufReader as StdBufReader, Write};
+        use std::net::{Ipv4Addr, TcpListener};
+        use std::thread;
+
+        fn write_line(stream: &mut std::net::TcpStream, response: &ServerResponse) {
+            serde_json::to_writer(&mut *stream, response).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+
+        for requested_wait_ms in [0_u64, 1] {
+            let state = tempfile::tempdir().unwrap();
+            let state_root = std::fs::canonicalize(state.path()).unwrap();
+            let identity = CoreIdentity::production();
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let record =
+                EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+            let directory = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+            directory.write_endpoint_record_for_test(&record).unwrap();
+            let clock = ManualDaemonClientClock::new();
+            let peer_clock = clock.clone();
+            let peer_record = record.clone();
+            let task_id = crate::domain::invocation::TaskId::new();
+            let fake_peer = thread::spawn(move || {
+                let (mut anchor, _) = listener.accept().unwrap();
+                let _hello = read_bounded_json_line(&mut StdBufReader::new(&anchor)).unwrap();
+                write_line(&mut anchor, &ServerResponse::ready(&peer_record));
+
+                let (mut operation, _) = listener.accept().unwrap();
+                let mut operation_reader = StdBufReader::new(operation.try_clone().unwrap());
+                let _hello = read_bounded_json_line(&mut operation_reader).unwrap();
+                peer_clock.advance(Duration::from_millis(60));
+                write_line(&mut operation, &ServerResponse::ready(&peer_record));
+
+                let request = crate::infrastructure::daemon::protocol::parse_request(
+                    &read_bounded_json_line(&mut operation_reader).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    request,
+                    ClientRequest::wait_task(task_id, 0),
+                    "connect time consumes the wait slice before the 125ms response margin"
+                );
+                peer_clock.advance(Duration::from_millis(65 + requested_wait_ms));
+                write_line(
+                    &mut operation,
+                    &ServerResponse::task(DaemonTaskSnapshot::working_for_test(task_id)),
+                );
+            });
+            let client = DaemonClient::new(
+                DaemonClientConfig::existing_only(state_root, identity).with_clock_for_test(clock),
+            );
+            let owner = match client.connect_existing().unwrap() {
+                ExistingDaemon::Connected(owner) => owner,
+                ExistingDaemon::Absent => panic!("fake compatibility daemon must connect"),
+            };
+            let (mut mcp, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+                owner,
+                "/workspace".to_string(),
+            ));
+            mcp.send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.result",
+                    "arguments":{"taskId":task_id.to_string(), "waitMs":requested_wait_ms},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+            let response = mcp.receive().await;
+            assert_eq!(
+            response["result"]["structuredContent"]["data"]["code"],
+            "task_transport_failed",
+            "connect plus wait response exceeded the single {requested_wait_ms}ms + 125ms operation budget: {response}"
+        );
+            mcp.shutdown().await;
+            fake_peer.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn compatibility_wait_zero_and_one_share_one_budget_across_connect_and_response() {
+        compatibility_wait_single_deadline_case().await;
+    }
+
     #[tokio::test]
     async fn compatibility_result_uses_wait_handler_and_preserves_terminal_direct_bytes() {
         compatibility_terminal_result_case().await;
@@ -2786,6 +2915,149 @@ mod tests {
     #[tokio::test]
     async fn compatibility_task_errors_are_closed_and_native_profile_rejects_adapters() {
         compatibility_closed_errors_case().await;
+    }
+
+    async fn compatibility_hostile_status_payload_case() {
+        use crate::domain::invocation::{
+            DomainResult, InvocationFailure, InvocationStatus, TaskId,
+        };
+
+        let statuses = [
+            InvocationStatus::Queued,
+            InvocationStatus::Working,
+            InvocationStatus::Completed,
+            InvocationStatus::Failed,
+            InvocationStatus::Cancelled,
+        ];
+        for status in statuses {
+            for has_result in [false, true] {
+                for has_failure in [false, true] {
+                    let valid = matches!(
+                        (status, has_result, has_failure),
+                        (InvocationStatus::Queued, false, false)
+                            | (InvocationStatus::Working, false, false)
+                            | (InvocationStatus::Completed, true, false)
+                            | (InvocationStatus::Failed, false, true)
+                            | (InvocationStatus::Cancelled, false, false)
+                    );
+                    if valid {
+                        continue;
+                    }
+
+                    let task_id = TaskId::new();
+                    let mut hostile = canonical_snapshot(
+                        task_id,
+                        status,
+                        has_result.then(|| {
+                            DomainResult::success(
+                                "hostile result /private/result-secret bearer-result",
+                            )
+                        }),
+                    );
+                    hostile.failure = has_failure.then(|| {
+                        InvocationFailure::new(
+                            "hostile_failure_code",
+                            "/private/failure-secret bearer-failure",
+                        )
+                    });
+                    let get_snapshot = hostile.clone();
+                    let get: Arc<CanonicalTaskHandler> =
+                        Arc::new(move |_| Ok(get_snapshot.clone()));
+                    let wait_snapshot = hostile.clone();
+                    let wait: Arc<CanonicalTaskWaitHandler> =
+                        Arc::new(move |_, _, _| Ok(wait_snapshot.clone()));
+                    let cancel = Arc::clone(&get);
+                    let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+                        Ok(InvocationResponse::Direct(DomainResult::success("unused")))
+                    });
+                    let (mut client, _) = spawn_unica_server(
+                        UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel),
+                    );
+
+                    for (id, name, arguments) in [
+                        (1, "unica.task.get", json!({"taskId": task_id.to_string()})),
+                        (
+                            2,
+                            "unica.task.result",
+                            json!({"taskId": task_id.to_string(), "waitMs": 0}),
+                        ),
+                    ] {
+                        client
+                            .send(json!({
+                                "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                                "params":{
+                                    "name":name, "arguments":arguments, "_meta":modern_meta()
+                                }
+                            }))
+                            .await;
+                        let response = client.receive().await;
+                        assert_eq!(
+                            response["result"]["structuredContent"]["data"]["code"],
+                            "task_projection_failed",
+                            "status={status:?} result={has_result} failure={has_failure}: {response}"
+                        );
+                        let serialized = serde_json::to_string(&response).unwrap();
+                        for forbidden in [
+                            "/private/result-secret",
+                            "bearer-result",
+                            "/private/failure-secret",
+                            "bearer-failure",
+                            "hostile_failure_code",
+                        ] {
+                            assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+                        }
+                    }
+                    client.shutdown().await;
+                }
+            }
+        }
+
+        let task_id = TaskId::new();
+        let mut failed = canonical_snapshot(task_id, InvocationStatus::Failed, None);
+        failed.failure = Some(InvocationFailure::new(
+            "hostile_failure_code",
+            "/private/failure-secret bearer-failure",
+        ));
+        let get_failed = failed.clone();
+        let get: Arc<CanonicalTaskHandler> = Arc::new(move |_| Ok(get_failed.clone()));
+        let wait_failed = failed.clone();
+        let wait: Arc<CanonicalTaskWaitHandler> = Arc::new(move |_, _, _| Ok(wait_failed.clone()));
+        let cancel = Arc::clone(&get);
+        let call: Arc<CanonicalToolCallHandler> = Arc::new(move |_, _, _, _| {
+            Ok(InvocationResponse::Direct(DomainResult::success("unused")))
+        });
+        let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13_task_handlers(
+            call, get, wait, cancel,
+        ));
+        client
+            .send(json!({
+                "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                "params":{
+                    "name":"unica.task.get", "arguments":{"taskId":task_id.to_string()},
+                    "_meta":modern_meta()
+                }
+            }))
+            .await;
+        let response = client.receive().await;
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["code"], "task_failed",
+            "{response}"
+        );
+        let serialized = serde_json::to_string(&response).unwrap();
+        for forbidden in [
+            "/private/failure-secret",
+            "bearer-failure",
+            "hostile_failure_code",
+        ] {
+            assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+        }
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn compatibility_adapter_rejects_every_hostile_status_payload_shape_without_leaking_failure(
+    ) {
+        compatibility_hostile_status_payload_case().await;
     }
 
     #[tokio::test]
@@ -2798,8 +3070,10 @@ mod tests {
         surface_profiles_case().await;
         compatibility_receipts_case().await;
         compatibility_wait_budget_case();
+        compatibility_wait_single_deadline_case().await;
         compatibility_terminal_result_case().await;
         compatibility_closed_errors_case().await;
+        compatibility_hostile_status_payload_case().await;
         compatibility_daemon_restart_case().await;
     }
 
