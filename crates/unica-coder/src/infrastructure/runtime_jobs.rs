@@ -340,6 +340,13 @@ pub(crate) trait RuntimeJobProcess: Send {
     fn leader_exited_for_test(&self) -> bool {
         false
     }
+    /// Test-owned fakes may provide a controlled terminal+complete-output
+    /// transition before the real quarantine supervisor accepts them. Real and
+    /// deliberately non-cooperative authorities keep the fail-closed default.
+    #[cfg(test)]
+    fn prepare_controlled_test_supervision(&mut self) -> bool {
+        false
+    }
 }
 
 /// Runner boundary. `attach` reconnects to an existing process; it never starts it again.
@@ -1796,13 +1803,34 @@ impl Drop for RuntimeJobService {
         };
         for (job_id, active) in processes.drain() {
             let store = self.store.clone();
+            #[cfg(test)]
+            let test_root = store.cache_root.clone();
+            #[cfg(test)]
+            let (active, controlled_test_supervision) = {
+                let mut active = active;
+                let controlled = active.process.prepare_controlled_test_supervision();
+                (active, controlled)
+            };
             let retained = Arc::new(Mutex::new(Some(active)));
-            if spawn_quarantine_supervisor(store, job_id, Arc::clone(&retained)).is_err() {
-                // Thread creation failed before the clone could assume
-                // ownership. Intentionally retain the last in-process OS
-                // capability forever; active.lock is the durable companion
-                // quarantine. Dropping it would falsely make replacement safe.
-                std::mem::forget(retained);
+            match spawn_quarantine_supervisor(store, job_id.clone(), Arc::clone(&retained)) {
+                Ok(supervisor) => {
+                    #[cfg(test)]
+                    register_test_quarantine_supervisor(
+                        test_root,
+                        job_id,
+                        controlled_test_supervision,
+                        supervisor,
+                    );
+                    #[cfg(not(test))]
+                    drop(supervisor);
+                }
+                Err(_) => {
+                    // Thread creation failed before the clone could assume
+                    // ownership. Intentionally retain the last in-process OS
+                    // capability forever; active.lock is the durable companion
+                    // quarantine. Dropping it would falsely make replacement safe.
+                    std::mem::forget(retained);
+                }
             }
         }
     }
@@ -1814,11 +1842,20 @@ type QuarantinedRuntimeProcess = Arc<Mutex<Option<ActiveRuntimeJobProcess>>>;
 static INJECT_QUARANTINE_THREAD_SPAWN_FAILURE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(test)]
+struct QuarantineSupervisor {
+    handle: thread::JoinHandle<()>,
+    finished: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(not(test))]
+type QuarantineSupervisor = thread::JoinHandle<()>;
+
 fn spawn_quarantine_supervisor(
     store: RuntimeJobStore,
     job_id: String,
     retained: QuarantinedRuntimeProcess,
-) -> io::Result<()> {
+) -> io::Result<QuarantineSupervisor> {
     #[cfg(test)]
     if INJECT_QUARANTINE_THREAD_SPAWN_FAILURE.swap(false, std::sync::atomic::Ordering::AcqRel) {
         return Err(io::Error::other(
@@ -1826,7 +1863,9 @@ fn spawn_quarantine_supervisor(
         ));
     }
 
-    thread::Builder::new()
+    #[cfg(test)]
+    let (finished_tx, finished_rx) = std::sync::mpsc::sync_channel(1);
+    let handle = thread::Builder::new()
         .name("unica-runtime-quarantine".to_string())
         .spawn(move || {
             let active = retained
@@ -1836,8 +1875,156 @@ fn spawn_quarantine_supervisor(
             if let Some(active) = active {
                 supervise_owned_quarantine(store, job_id, active);
             }
+            #[cfg(test)]
+            let _ = finished_tx.send(());
+        })?;
+    #[cfg(test)]
+    {
+        Ok(QuarantineSupervisor {
+            handle,
+            finished: finished_rx,
         })
-        .map(|_| ())
+    }
+    #[cfg(not(test))]
+    {
+        Ok(handle)
+    }
+}
+
+#[cfg(test)]
+static TEST_QUARANTINE_SUPERVISORS: std::sync::OnceLock<
+    Mutex<HashMap<PathBuf, Vec<TestQuarantineSupervisor>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn test_quarantine_supervisors() -> &'static Mutex<HashMap<PathBuf, Vec<TestQuarantineSupervisor>>>
+{
+    TEST_QUARANTINE_SUPERVISORS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+struct TestQuarantineSupervisor {
+    job_id: String,
+    controlled: bool,
+    supervisor: QuarantineSupervisor,
+}
+
+#[cfg(test)]
+fn register_test_quarantine_supervisor(
+    root: PathBuf,
+    job_id: String,
+    controlled: bool,
+    supervisor: QuarantineSupervisor,
+) {
+    test_quarantine_supervisors()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(root)
+        .or_default()
+        .push(TestQuarantineSupervisor {
+            job_id,
+            controlled,
+            supervisor,
+        });
+}
+
+#[cfg(test)]
+fn drain_test_quarantine_supervisors(root: &Path) {
+    let mut supervisors = test_quarantine_supervisors()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(root)
+        .unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while let Some(supervisor) = supervisors.pop() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let finished = supervisor
+            .supervisor
+            .finished
+            .recv_timeout(remaining)
+            .is_ok();
+        if !finished {
+            let job_id = supervisor.job_id.clone();
+            let controlled = supervisor.controlled;
+            supervisors.push(supervisor);
+            test_quarantine_supervisors()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(root.to_path_buf())
+                .or_default()
+                .append(&mut supervisors);
+            panic!(
+                "test quarantine supervisor remains active for root {} job {} (controlled={controlled}); fixture must prove terminal ownership and drain it explicitly",
+                root.display(),
+                job_id,
+            );
+        }
+        supervisor
+            .supervisor
+            .handle
+            .join()
+            .expect("test quarantine supervisor panicked");
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SUPERVISOR_SCOPES: std::cell::RefCell<Vec<Arc<Mutex<Vec<PathBuf>>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+struct TestSupervisorScope {
+    roots: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+#[cfg(test)]
+impl TestSupervisorScope {
+    fn new() -> Self {
+        let roots = Arc::new(Mutex::new(Vec::new()));
+        TEST_SUPERVISOR_SCOPES.with(|scopes| scopes.borrow_mut().push(Arc::clone(&roots)));
+        Self { roots }
+    }
+
+    fn assert_drained(&self) {
+        let roots = self
+            .roots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let supervisors = test_quarantine_supervisors()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for root in roots {
+            assert!(
+                !supervisors.contains_key(&root),
+                "test fixture left a quarantine supervisor registered for {}",
+                root.display()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestSupervisorScope {
+    fn drop(&mut self) {
+        TEST_SUPERVISOR_SCOPES.with(|scopes| {
+            let popped = scopes.borrow_mut().pop().expect("test supervisor scope");
+            assert!(Arc::ptr_eq(&popped, &self.roots));
+        });
+    }
+}
+
+#[cfg(test)]
+fn register_test_supervisor_root(root: &Path) {
+    TEST_SUPERVISOR_SCOPES.with(|scopes| {
+        for scope in scopes.borrow().iter() {
+            scope
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(root.to_path_buf());
+        }
+    });
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -2951,34 +3138,51 @@ fn try_release_owned_quarantine_once_after_record_hooks(
     hook(QuarantineReleaseHookPoint::AfterFinalValidationBeforeRead);
     let mut record = store.read_retained_record(job_id, &record_file)?;
     hook(QuarantineReleaseHookPoint::AfterRecordRead);
-    if matches!(
+    let publish_lost = if matches!(
         record.phase,
         RuntimeJobPhase::Queued | RuntimeJobPhase::Running | RuntimeJobPhase::CancelRequested
     ) {
         record.transition(RuntimeJobPhase::Lost)?;
-    }
-    if record.phase != RuntimeJobPhase::Lost {
+        true
+    } else if record.phase == RuntimeJobPhase::Lost {
+        true
+    } else if record.phase.is_terminal() {
+        false
+    } else {
         return Err(redacted_error(
             "runtime quarantine record has an unexpected terminal phase",
         ));
+    };
+    if publish_lost {
+        record.finished_at_ms.get_or_insert_with(now_millis);
+        record.heartbeat_at_ms = Some(now_millis());
+        lifecycle
+            .validate()
+            .map_err(|error| io_error("revalidate retained runtime quarantine root", &error))?;
+        job_directory
+            .validate_named_identity()
+            .and_then(|()| record_file.validate_named_identity())
+            .map_err(|error| io_error("revalidate retained runtime quarantine record", &error))?;
+        hook(QuarantineReleaseHookPoint::ImmediatelyBeforeRecordPublish);
+        let published_record = store.write_record_in_retained_job(&job_directory, &record)?;
+        hook(QuarantineReleaseHookPoint::AfterRecordPublishBeforeConfirmation);
+        lifecycle
+            .validate()
+            .and_then(|()| job_directory.validate_named_identity())
+            .and_then(|()| published_record.validate_named_identity())
+            .map_err(|error| io_error("confirm retained runtime quarantine publication", &error))?;
+    } else {
+        // Another exact service instance may have published the terminal
+        // result and released the lease while this instance still retained an
+        // attachment. Terminal process+EOF proof allows this duplicate OS
+        // capability to converge, but the already-published result is never
+        // rewritten as Lost.
+        lifecycle
+            .validate()
+            .and_then(|()| job_directory.validate_named_identity())
+            .and_then(|()| record_file.validate_named_identity())
+            .map_err(|error| io_error("confirm retained terminal runtime record", &error))?;
     }
-    record.finished_at_ms.get_or_insert_with(now_millis);
-    record.heartbeat_at_ms = Some(now_millis());
-    lifecycle
-        .validate()
-        .map_err(|error| io_error("revalidate retained runtime quarantine root", &error))?;
-    job_directory
-        .validate_named_identity()
-        .and_then(|()| record_file.validate_named_identity())
-        .map_err(|error| io_error("revalidate retained runtime quarantine record", &error))?;
-    hook(QuarantineReleaseHookPoint::ImmediatelyBeforeRecordPublish);
-    let published_record = store.write_record_in_retained_job(&job_directory, &record)?;
-    hook(QuarantineReleaseHookPoint::AfterRecordPublishBeforeConfirmation);
-    lifecycle
-        .validate()
-        .and_then(|()| job_directory.validate_named_identity())
-        .and_then(|()| published_record.validate_named_identity())
-        .map_err(|error| io_error("confirm retained runtime quarantine publication", &error))?;
     lifecycle
         .release_active_lock_for(job_id, || {})
         .map_err(|error| io_error("release retained runtime quarantine lock", &error))?;
@@ -3624,6 +3828,30 @@ pub(crate) mod tests {
         assert_eq!(
             reconnected.poll(&job.id).expect("reconnected poll").phase,
             RuntimeJobPhase::Succeeded
+        );
+        let terminal_record = fs::read(
+            reconnected
+                .store
+                .record_path(&job.id)
+                .expect("terminal record path"),
+        )
+        .expect("read terminal record");
+        drop(reconnected);
+        drop(service);
+        drain_test_quarantine_supervisors(&cache.path());
+        assert_eq!(
+            fs::read(
+                RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER)
+                    .record_path(&job.id)
+                    .expect("converged terminal record path"),
+            )
+            .expect("read converged terminal record"),
+            terminal_record,
+            "a duplicate retained authority rewrote the published terminal result",
+        );
+        assert!(
+            !cache.path().join("jobs/active.lock").exists(),
+            "a duplicate retained authority recreated or retained the released lease",
         );
     }
 
@@ -4773,6 +5001,9 @@ pub(crate) mod tests {
             "a lifecycle lock for A admitted physical B"
         );
         assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+        fs::remove_dir_all(&jobs).expect("remove rejected physical jobs root B");
+        fs::rename(&original, &jobs).expect("restore exact jobs root A before teardown");
     }
 
     #[test]
@@ -4818,6 +5049,9 @@ pub(crate) mod tests {
             "a lifecycle lock for A followed a link to B"
         );
         assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+        fs::remove_file(&jobs).expect("remove rejected jobs symlink to B");
+        fs::rename(&original, &jobs).expect("restore exact jobs root A before teardown");
     }
 
     #[test]
@@ -5217,6 +5451,22 @@ pub(crate) mod tests {
             service.store.read_record(&active).unwrap().phase,
             RuntimeJobPhase::Lost
         );
+    }
+
+    #[test]
+    fn retained_test_fake_supervisor_is_drained_before_authority_root_teardown() {
+        let scope = TestSupervisorScope::new();
+        {
+            let cache = TestCache::new();
+            let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(0, None));
+            let service = RuntimeJobService::new(cache.path(), runner);
+
+            service
+                .start(fake_request(RuntimeJobOperation::Test))
+                .expect_err("post-spawn ownership uncertainty must fail closed");
+        }
+
+        scope.assert_drained();
     }
 
     #[test]
@@ -5757,6 +6007,13 @@ pub(crate) mod tests {
             }
             Ok(RuntimeJobOutput::default())
         }
+
+        fn prepare_controlled_test_supervision(&mut self) -> bool {
+            self.state.fail_poll.store(false, Ordering::Release);
+            self.state.fail_output.store(false, Ordering::Release);
+            self.state.terminal.store(true, Ordering::Release);
+            true
+        }
     }
 
     fn assert_worker_supervises_observation_failure(fail_poll: bool, fail_output: bool) {
@@ -6039,6 +6296,7 @@ pub(crate) mod tests {
 
     #[test]
     pub(crate) fn runtime_resource_tree_lease_contract() {
+        let supervisor_scope = TestSupervisorScope::new();
         RUNTIME_RESOURCE_CONTRACT_EXECUTIONS.with(|slot| {
             slot.set(slot.get().saturating_add(1));
         });
@@ -6056,6 +6314,7 @@ pub(crate) mod tests {
         quarantine_record_transition_completes_only_in_exact_retained_root();
         ownership_retained_transition_never_writes_replacement_job_directory();
         failed_activation_cleanup_never_writes_replacement_job_directory();
+        retained_test_fake_supervisor_is_drained_before_authority_root_teardown();
         uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt();
         uncertain_post_spawn_failure_retains_active_lock_for_full_build_fallback();
         worker_supervises_initial_retained_ownership_until_proven_terminal();
@@ -6080,6 +6339,7 @@ pub(crate) mod tests {
         system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies();
         dropping_system_runtime_process_reaps_the_owned_tree_within_one_budget();
         assert_system_cancellation_reaps_process_tree();
+        supervisor_scope.assert_drained();
     }
 
     #[test]
@@ -7862,9 +8122,9 @@ pub(crate) mod tests {
 
     impl TestCache {
         fn new() -> Self {
-            Self {
-                root: std::env::temp_dir().join(format!("unica-runtime-jobs-{}", Uuid::new_v4())),
-            }
+            let root = std::env::temp_dir().join(format!("unica-runtime-jobs-{}", Uuid::new_v4()));
+            register_test_supervisor_root(&root);
+            Self { root }
         }
 
         fn path(&self) -> PathBuf {
@@ -7874,6 +8134,7 @@ pub(crate) mod tests {
 
     impl Drop for TestCache {
         fn drop(&mut self) {
+            drain_test_quarantine_supervisors(&self.root);
             let _ = fs::remove_dir_all(&self.root);
         }
     }
@@ -8291,6 +8552,14 @@ pub(crate) mod tests {
                 fallback_receipt: Some(state.stdout.clone()),
                 fallback_receipt_truncated: false,
             })
+        }
+
+        fn prepare_controlled_test_supervision(&mut self) -> bool {
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .polls_until_exit = 0;
+            true
         }
     }
 }
