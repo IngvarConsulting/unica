@@ -10,9 +10,13 @@ pub(crate) mod testing;
 
 pub use entrypoint::run_platform_main;
 pub(crate) use filesystem::short_private_runtime_dir;
+#[cfg(all(test, windows))]
+pub(crate) use process::assert_windows_runtime_process_tree_semantics_for_test;
+#[cfg(test)]
+pub(crate) use process::runtime_process_tree_test_scenario_for_test;
 pub(crate) use process::{
-    cancel_runtime_job_process_tree, configure_runtime_job_command, ensure_truncation_diagnostics,
-    ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput, ManagedStartupChild,
-    StreamControl, STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT,
+    ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
+    ManagedStartupChild, RuntimeProcessTreeHandle, RuntimeProcessTreeState, StreamControl,
+    STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT,
 };
 pub(crate) use target::current_target_id;

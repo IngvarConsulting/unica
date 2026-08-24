@@ -1,3 +1,4 @@
+use crate::application::shared_work::{IndexWorkKey, IndexWorkOwner};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::SafeIdentityHash;
@@ -281,6 +282,7 @@ pub(crate) struct WorkspaceActor<R = ()> {
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
     source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
+    index_work: IndexWorkOwner,
     runtime: R,
 }
 
@@ -367,6 +369,7 @@ impl<R> WorkspaceActor<R> {
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             source_revisions: Mutex::new(HashMap::new()),
+            index_work: IndexWorkOwner::default(),
             runtime,
         })
     }
@@ -485,6 +488,37 @@ impl<R> WorkspaceActor<R> {
             source_set: binding.source_set.clone(),
             revision,
         })
+    }
+
+    /// Exact actor-owned index readiness identity. The workspace component is
+    /// derived from this actor's complete canonical identity; the source-set
+    /// and revision come from capabilities issued by this same actor instance.
+    pub(crate) fn index_work_key(
+        &self,
+        binding: &ProviderRootBinding,
+        fence: &WorkspaceRevisionFence,
+        provider: &str,
+        profile: &str,
+    ) -> Result<IndexWorkKey, String> {
+        self.validate_binding(binding)?;
+        if fence.actor_identity != self.identity
+            || fence.actor_instance != self.instance_id
+            || fence.source_set != binding.source_set
+        {
+            return Err("index revision fence belongs to another workspace actor".to_string());
+        }
+        IndexWorkKey::new(
+            self.safe_identity_hash()?,
+            binding.source_set.name.clone(),
+            fence.revision.clone(),
+            provider,
+            profile,
+        )
+        .map_err(|_| "actor-owned index work identity is invalid".to_string())
+    }
+
+    pub(crate) fn index_work(&self) -> &IndexWorkOwner {
+        &self.index_work
     }
 
     pub(crate) fn begin_publication(

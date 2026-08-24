@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const SOURCE_REVISION_ALGORITHM: &str = "unica-source-sha256-v1";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceRevision {
     pub generation: u64,

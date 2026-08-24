@@ -16,69 +16,302 @@ const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
 pub(crate) const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
 pub(crate) const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
 
+#[derive(Debug)]
+pub(crate) enum RuntimeProcessTreeState {
+    Running,
+    Exited(ExitStatus),
+}
+
+/// Retained authority for a runtime job's complete owned process tree.
+///
+/// Leader exit is remembered but is not terminal until the Unix process group
+/// or Windows Job Object proves empty. Callers therefore cannot release a
+/// workspace resource merely because `Child::try_wait` reaped the leader.
+pub(crate) struct RuntimeProcessTreeHandle {
+    tree: ProcessTree,
+    leader_exit: Option<ExitStatus>,
+}
+
+fn runtime_process_tree_is_terminal(leader_exited: bool, owned_tree_empty: bool) -> bool {
+    leader_exited && owned_tree_empty
+}
+
+#[cfg(any(test, windows))]
+fn windows_job_object_is_empty(active_processes: u32) -> bool {
+    active_processes == 0
+}
+
+impl RuntimeProcessTreeHandle {
+    pub(crate) fn prepare(command: &mut Command) -> io::Result<Self> {
+        Ok(Self {
+            tree: ProcessTree::prepare(command)?,
+            leader_exit: None,
+        })
+    }
+
+    pub(crate) fn attach(&mut self, child: &Child) -> io::Result<()> {
+        self.tree.attach(child)
+    }
+
+    pub(crate) fn poll(&mut self, child: &mut Child) -> io::Result<RuntimeProcessTreeState> {
+        if self.leader_exit.is_none() {
+            self.leader_exit = child.try_wait()?;
+        }
+        let Some(status) = self.leader_exit else {
+            return Ok(RuntimeProcessTreeState::Running);
+        };
+        if runtime_process_tree_is_terminal(true, self.tree.is_empty()?) {
+            Ok(RuntimeProcessTreeState::Exited(status))
+        } else {
+            Ok(RuntimeProcessTreeState::Running)
+        }
+    }
+
+    pub(crate) fn terminate(&mut self, child: &mut Child) -> io::Result<()> {
+        self.tree.terminate(child)
+    }
+
+    /// One bounded cleanup window for every partial startup state. Killing the
+    /// leader as a fallback is required when Windows attachment failed before
+    /// the child entered the Job Object.
+    pub(crate) fn terminate_and_reap_bounded(
+        &mut self,
+        child: &mut Child,
+        budget: Duration,
+    ) -> io::Result<()> {
+        let started = Instant::now();
+        let tree_result = self.tree.terminate(child);
+        let _ = child.kill();
+        loop {
+            match self.poll(child)? {
+                RuntimeProcessTreeState::Exited(_) => return tree_result,
+                RuntimeProcessTreeState::Running if started.elapsed() >= budget => {
+                    return Err(tree_result.err().unwrap_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "runtime process tree cleanup deadline elapsed",
+                        )
+                    }));
+                }
+                RuntimeProcessTreeState::Running => thread::sleep(
+                    PROCESS_POLL_INTERVAL.min(budget.saturating_sub(started.elapsed())),
+                ),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn leader_exited(&self) -> bool {
+        self.leader_exit.is_some()
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct RuntimeProcessTreeTestScenario {
+    program: PathBuf,
+    leader_with_descendant_args: Vec<String>,
+    long_lived_args: Vec<String>,
+    descendant_pid_path: PathBuf,
+}
+
+#[cfg(test)]
+impl RuntimeProcessTreeTestScenario {
+    pub(crate) fn program(&self) -> PathBuf {
+        self.program.clone()
+    }
+
+    pub(crate) fn leader_with_descendant_args(&self) -> Vec<String> {
+        self.leader_with_descendant_args.clone()
+    }
+
+    pub(crate) fn long_lived_args(&self) -> Vec<String> {
+        self.long_lived_args.clone()
+    }
+
+    pub(crate) fn wait_for_descendant(
+        &self,
+        timeout: Duration,
+    ) -> io::Result<RuntimeProcessTreeTestProbe> {
+        let started = Instant::now();
+        loop {
+            match std::fs::read_to_string(&self.descendant_pid_path) {
+                Ok(value) => {
+                    if let Ok(process_id) = value.trim().parse::<u32>() {
+                        let probe = RuntimeProcessTreeTestProbe { process_id };
+                        if probe.is_alive()? {
+                            return Ok(probe);
+                        }
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            if started.elapsed() >= timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "runtime descendant did not publish a live process id",
+                ));
+            }
+            thread::sleep(PROCESS_POLL_INTERVAL);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct RuntimeProcessTreeTestProbe {
+    process_id: u32,
+}
+
+#[cfg(test)]
+impl RuntimeProcessTreeTestProbe {
+    pub(crate) fn is_alive(&self) -> io::Result<bool> {
+        runtime_process_pid_alive_for_test(self.process_id)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_process_tree_test_scenario_for_test(
+    root: &std::path::Path,
+) -> RuntimeProcessTreeTestScenario {
+    let descendant_pid_path = root.join("runtime-tree-descendant.pid");
+    #[cfg(unix)]
+    {
+        let escaped_path = descendant_pid_path.to_string_lossy().replace('\'', "'\\''");
+        RuntimeProcessTreeTestScenario {
+            program: PathBuf::from("/bin/sh"),
+            leader_with_descendant_args: vec![
+                "-c".to_string(),
+                format!(
+                    "sleep 30 </dev/null >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '{escaped_path}'"
+                ),
+            ],
+            long_lived_args: vec![
+                "-c".to_string(),
+                format!(
+                    "sleep 30 </dev/null >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '{escaped_path}'; wait \"$child\""
+                ),
+            ],
+            descendant_pid_path,
+        }
+    }
+    #[cfg(windows)]
+    {
+        let escaped_path = descendant_pid_path.to_string_lossy().replace('\'', "''");
+        let spawn = format!(
+            "$p = Start-Process -PassThru -WindowStyle Hidden ping.exe -ArgumentList @('-n','20','127.0.0.1'); Set-Content -NoNewline -LiteralPath '{escaped_path}' -Value $p.Id"
+        );
+        RuntimeProcessTreeTestScenario {
+            program: PathBuf::from("powershell.exe"),
+            leader_with_descendant_args: vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                spawn.clone(),
+            ],
+            long_lived_args: vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                format!("{spawn}; Wait-Process -Id $p.Id"),
+            ],
+            descendant_pid_path,
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        RuntimeProcessTreeTestScenario {
+            program: PathBuf::from("false"),
+            leader_with_descendant_args: Vec::new(),
+            long_lived_args: Vec::new(),
+            descendant_pid_path,
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+fn runtime_process_pid_alive_for_test(process_id: u32) -> io::Result<bool> {
+    let process_id = i32::try_from(process_id)
+        .map_err(|_| io::Error::other("process id is outside Unix pid range"))?;
+    // SAFETY: signal 0 only probes the test-owned process.
+    if unsafe { libc::kill(process_id, 0) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error),
+    }
+}
+
+#[cfg(all(test, windows))]
+fn runtime_process_pid_alive_for_test(process_id: u32) -> io::Result<bool> {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+
+    // SAFETY: the handle is used only for a zero-time test probe and is closed
+    // before returning.
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, process_id) };
+    if process.is_null() {
+        return Ok(false);
+    }
+    let alive = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
+    unsafe {
+        CloseHandle(process);
+    }
+    Ok(alive)
+}
+
+#[cfg(all(test, not(any(unix, windows))))]
+fn runtime_process_pid_alive_for_test(_process_id: u32) -> io::Result<bool> {
+    Ok(false)
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Result<()> {
+    let mut command = Command::new("cmd.exe");
+    command
+        .args(["/D", "/S", "/C", "start \"\" /B ping -n 20 127.0.0.1 >NUL"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut process_tree = RuntimeProcessTreeHandle::prepare(&mut command)?;
+    let mut child = command.spawn()?;
+    if let Err(error) = process_tree.attach(&child) {
+        let _ = process_tree.terminate_and_reap_bounded(&mut child, TERMINATION_WAIT_LIMIT);
+        return Err(error);
+    }
+
+    let started = Instant::now();
+    loop {
+        match process_tree.poll(&mut child)? {
+            RuntimeProcessTreeState::Running if process_tree.leader_exited() => break,
+            RuntimeProcessTreeState::Running if started.elapsed() < Duration::from_secs(5) => {
+                thread::sleep(PROCESS_POLL_INTERVAL)
+            }
+            RuntimeProcessTreeState::Running => {
+                let _ = process_tree.terminate_and_reap_bounded(&mut child, TERMINATION_WAIT_LIMIT);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Windows runtime leader did not exit while its Job Object descendant lived",
+                ));
+            }
+            RuntimeProcessTreeState::Exited(_) => {
+                return Err(io::Error::other(
+                    "Windows runtime process tree became terminal with a live descendant",
+                ));
+            }
+        }
+    }
+
+    process_tree.terminate_and_reap_bounded(&mut child, TERMINATION_WAIT_LIMIT)
+}
+
 #[cfg(test)]
 thread_local! {
     static INJECT_WAIT_ERROR: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(unix)]
-pub(crate) fn configure_runtime_job_command(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-
-    // The group makes safe cancellation cover v8-runner descendants too.
-    command.process_group(0);
-}
-
-#[cfg(not(unix))]
-pub(crate) fn configure_runtime_job_command(_command: &mut Command) {}
-
-#[cfg(unix)]
-pub(crate) fn cancel_runtime_job_process_tree(process_id: u32) -> Result<(), String> {
-    let group = i32::try_from(process_id)
-        .map_err(|_| runtime_job_error("runtime job process id is outside Unix pid range"))?;
-    // A negative pid targets the process group created before spawn.
-    let result = unsafe { libc::kill(-group, libc::SIGKILL) };
-    if result == 0 {
-        return Ok(());
-    }
-
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(runtime_job_io_error(
-            "cancel runtime job process group",
-            &error,
-        ))
-    }
-}
-
-#[cfg(windows)]
-pub(crate) fn cancel_runtime_job_process_tree(process_id: u32) -> Result<(), String> {
-    let status = Command::new("taskkill")
-        .args(["/PID", &process_id.to_string(), "/T", "/F"])
-        .status()
-        .map_err(|error| runtime_job_io_error("cancel runtime job process tree", &error))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(runtime_job_error("cancel runtime job process tree failed"))
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn cancel_runtime_job_process_tree(_process_id: u32) -> Result<(), String> {
-    Err(runtime_job_error(
-        "runtime job process-tree cancellation is unsupported on this platform",
-    ))
-}
-
-fn runtime_job_error(message: &str) -> String {
-    crate::infrastructure::redaction::redactor(message)
-}
-
-fn runtime_job_io_error(context: &str, error: &io::Error) -> String {
-    runtime_job_error(&format!("{context}: {error}"))
 }
 
 #[derive(Debug, Clone)]
@@ -930,6 +1163,23 @@ impl ProcessTree {
         Ok(())
     }
 
+    fn is_empty(&mut self) -> io::Result<bool> {
+        let Some(pgid) = self.process_group else {
+            return Ok(true);
+        };
+        // SAFETY: signal 0 only probes the retained process group.
+        if unsafe { libc::kill(-pgid, 0) } == 0 {
+            return Ok(false);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            self.process_group = None;
+            Ok(true)
+        } else {
+            Err(error)
+        }
+    }
+
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
         let deadline = StartupTerminationDeadline::system(TERMINATION_WAIT_LIMIT);
         self.cleanup_after_leader_exit_until(child, &deadline);
@@ -1068,6 +1318,31 @@ impl ProcessTree {
         self.terminate(child)
     }
 
+    fn is_empty(&mut self) -> io::Result<bool> {
+        use std::mem::{size_of, zeroed};
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectBasicAccountingInformation, QueryInformationJobObject,
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        };
+
+        // SAFETY: this POD is valid when zeroed and the live Job Object handle
+        // and exact structure size are supplied to the query.
+        let mut information: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+        let queried = unsafe {
+            QueryInformationJobObject(
+                self.job,
+                JobObjectBasicAccountingInformation,
+                &mut information as *mut _ as *mut _,
+                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if queried == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(windows_job_object_is_empty(information.ActiveProcesses))
+    }
+
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
         let deadline = StartupTerminationDeadline::system(TERMINATION_WAIT_LIMIT);
         self.cleanup_after_leader_exit_until(child, &deadline);
@@ -1193,6 +1468,10 @@ impl ProcessTree {
 
     fn request_graceful_termination(&mut self, child: &mut Child) -> io::Result<()> {
         self.terminate(child)
+    }
+
+    fn is_empty(&mut self) -> io::Result<bool> {
+        Ok(true)
     }
 
     fn cleanup_after_leader_exit(&mut self, child: &mut Child) {
@@ -1475,10 +1754,11 @@ fn retain_tail(captured: &mut CapturedOutput, chunk: &[u8], limit: usize) {
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]
-    use super::ProcessTree;
+    use super::{assert_windows_runtime_process_tree_semantics_for_test, ProcessTree};
     use super::{
-        ChildState, ManagedChild, ManagedCommand, ManagedOutput, ManagedStartupChild,
-        ManualStartupTerminationProbe, StreamControl,
+        runtime_process_tree_is_terminal, windows_job_object_is_empty, ChildState, ManagedChild,
+        ManagedCommand, ManagedOutput, ManagedStartupChild, ManualStartupTerminationProbe,
+        StreamControl,
     };
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
@@ -1852,21 +2132,6 @@ mod tests {
         !process_test_support::is_alive(pid)
     }
 
-    #[cfg(unix)]
-    fn process_group_is_alive(process_id: u32) -> std::io::Result<bool> {
-        let process_group = i32::try_from(process_id)
-            .map_err(|_| std::io::Error::other("process id is outside Unix pid range"))?;
-        if unsafe { libc::kill(-process_group, 0) } == 0 {
-            return Ok(true);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(false)
-        } else {
-            Err(error)
-        }
-    }
-
     fn run_helper(
         mode: &str,
         timeout: Duration,
@@ -1933,6 +2198,36 @@ mod tests {
             output.stdout
         );
         assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
+    }
+
+    #[test]
+    fn runtime_tree_policy_keeps_windows_job_or_unix_group_running_after_leader_exit() {
+        assert!(!runtime_process_tree_is_terminal(false, false));
+        assert!(!runtime_process_tree_is_terminal(false, true));
+        assert!(!runtime_process_tree_is_terminal(true, false));
+        assert!(runtime_process_tree_is_terminal(true, true));
+    }
+
+    #[test]
+    fn runtime_tree_windows_job_accounting_retains_descendant_after_leader_exit() {
+        assert!(!windows_job_object_is_empty(2));
+        assert!(!windows_job_object_is_empty(1));
+        assert!(windows_job_object_is_empty(0));
+        assert!(!runtime_process_tree_is_terminal(
+            true,
+            windows_job_object_is_empty(1)
+        ));
+        assert!(runtime_process_tree_is_terminal(
+            true,
+            windows_job_object_is_empty(0)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_process_tree_handle_waits_for_windows_job_object_descendants() {
+        assert_windows_runtime_process_tree_semantics_for_test()
+            .expect("retain and terminate Windows runtime Job Object");
     }
 
     #[test]
@@ -2160,16 +2455,9 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn system_runtime_job_cancellation_reaps_the_process_group() {
-        crate::infrastructure::runtime_jobs::assert_system_cancellation_reaps_process_tree(
-            PathBuf::from("/bin/sh"),
-            vec!["-c".to_string(), "sleep 10 & wait".to_string()],
-            |process_id| {
-                process_group_is_alive(process_id).expect("probe runtime-job process group")
-            },
-        );
+    fn system_runtime_job_cancellation_reaps_the_owned_process_tree() {
+        crate::infrastructure::runtime_jobs::assert_system_cancellation_reaps_process_tree();
     }
 
     #[test]
@@ -2648,8 +2936,7 @@ mod tests {
         managed_child_drop_terminates_and_reaps_running_process();
         managed_child_kills_descendants();
         startup_child_cleanup_kills_descendants();
-        #[cfg(unix)]
-        system_runtime_job_cancellation_reaps_the_process_group();
+        system_runtime_job_cancellation_reaps_the_owned_process_tree();
         #[cfg(windows)]
         process_tree_keeps_child_suspended_until_attach();
     }

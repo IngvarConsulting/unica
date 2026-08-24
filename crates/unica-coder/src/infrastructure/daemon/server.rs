@@ -10,6 +10,10 @@ use crate::application::invocation::{
 use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::ports::{Clock, TokioClock};
+use crate::application::shared_work::{
+    IndexWorkKey, LongWorkFailure, ProviderHostKey, ProviderHostOwner, RuntimeResourceOwner,
+    RuntimeWorkKey, SharedWorkLease, SharedWorkProducer,
+};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::composition::open_daemon_invocation_store_from_directory;
 use crate::domain::cancellation::CancellationToken;
@@ -47,6 +51,8 @@ pub(crate) struct ActorBoundInvocation {
     provider_root: ProviderRootBinding,
     workspace_identity_hash: SafeIdentityHash,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    provider_hosts: Arc<ProviderHostOwner>,
+    runtime_resources: Arc<RuntimeResourceOwner>,
 }
 
 impl ActorBoundInvocation {
@@ -110,6 +116,54 @@ impl ActorBoundExecution {
     }
 
     #[allow(dead_code)]
+    pub(crate) fn join_index_work<W>(
+        &self,
+        provider: &str,
+        profile: &str,
+        work: W,
+    ) -> Result<(IndexWorkKey, SharedWorkLease<(), LongWorkFailure>), String>
+    where
+        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
+    {
+        let key = self.invocation.actor.index_work_key(
+            &self.invocation.provider_root,
+            &self.revision,
+            provider,
+            profile,
+        )?;
+        let lease = self
+            .invocation
+            .actor
+            .index_work()
+            .join_or_start(key.clone(), work);
+        Ok((key, lease))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn join_provider_host<W>(
+        &self,
+        key: ProviderHostKey,
+        work: W,
+    ) -> SharedWorkLease<(), LongWorkFailure>
+    where
+        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
+    {
+        self.invocation.provider_hosts.join_or_start(key, work)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn join_runtime_resource<W>(
+        &self,
+        key: RuntimeWorkKey,
+        work: W,
+    ) -> SharedWorkLease<(), LongWorkFailure>
+    where
+        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
+    {
+        self.invocation.runtime_resources.join_or_start(key, work)
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn read_relative_file(
         &self,
         relative: &std::path::Path,
@@ -120,6 +174,11 @@ impl ActorBoundExecution {
             relative,
             max_bytes,
         )
+    }
+
+    #[cfg(test)]
+    fn mark_source_revision_dirty_for_test(&self) {
+        self.invocation.actor.mark_source_revisions_dirty();
     }
 
     fn publish<T>(self, staged: T, cancellation: &CancellationToken) -> Result<T, String> {
@@ -176,6 +235,8 @@ fn bind_workspace_invocation(
     request: &InvocationRequest,
     actors: &WorkspaceActorRegistry,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    provider_hosts: Arc<ProviderHostOwner>,
+    runtime_resources: Arc<RuntimeResourceOwner>,
     response_deadline: InvocationResponseDeadline,
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
@@ -202,6 +263,8 @@ fn bind_workspace_invocation(
         provider_root,
         workspace_identity_hash,
         deliveries,
+        provider_hosts,
+        runtime_resources,
     })
 }
 
@@ -413,6 +476,8 @@ pub(crate) struct DaemonInvocationRuntime {
     service: Arc<dyn CanonicalInvocationService>,
     workspace_actors: WorkspaceActorRegistry,
     deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    provider_hosts: Arc<ProviderHostOwner>,
+    runtime_resources: Arc<RuntimeResourceOwner>,
 }
 
 impl DaemonInvocationRuntime {
@@ -426,6 +491,8 @@ impl DaemonInvocationRuntime {
             service,
             workspace_actors: WorkspaceActorRegistry::default(),
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
+            provider_hosts: Arc::new(ProviderHostOwner::default()),
+            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
         }
     }
 
@@ -443,6 +510,8 @@ impl DaemonInvocationRuntime {
             service,
             workspace_actors: WorkspaceActorRegistry::default(),
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
+            provider_hosts: Arc::new(ProviderHostOwner::default()),
+            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
         }
     }
 
@@ -461,6 +530,8 @@ impl DaemonInvocationRuntime {
                     &request,
                     &self.workspace_actors,
                     Arc::clone(&self.deliveries),
+                    Arc::clone(&self.provider_hosts),
+                    Arc::clone(&self.runtime_resources),
                     response_deadline.clone(),
                 ) {
                     Ok(bound) => Ok(bound),
@@ -1162,8 +1233,14 @@ pub(crate) mod actor_capacity_tests {
         ToolIdentity,
     };
     use crate::application::operation_descriptors::KnownLongReason;
-    use crate::application::shared_work::{ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey};
+    use crate::application::shared_work::{
+        ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, ProviderHostKey, RuntimeWorkKey,
+        SharedWorkKey,
+    };
     use crate::domain::invocation::InvocationStatus;
+    use crate::infrastructure::runtime_jobs::{
+        RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
+    };
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Barrier, Condvar};
@@ -1209,6 +1286,31 @@ pub(crate) mod actor_capacity_tests {
         producer_entered: mpsc::Sender<()>,
         joined: mpsc::Sender<usize>,
         release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    #[derive(Clone)]
+    enum LongCapabilityKind {
+        Index,
+        Provider(ProviderHostKey),
+        Runtime(RuntimeWorkKey),
+    }
+
+    struct SharedLongCapabilityService {
+        kind: LongCapabilityKind,
+        producers: Arc<AtomicUsize>,
+        producer_entered: mpsc::Sender<()>,
+        joined: mpsc::Sender<SharedWorkKey>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    struct RevisionChangingIndexService {
+        producers: Arc<AtomicUsize>,
+        producer_entered: mpsc::Sender<()>,
+        joined: mpsc::Sender<SharedWorkKey>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        first_execution: AtomicBool,
+        mark_dirty: Mutex<mpsc::Receiver<()>>,
+        dirty_done: mpsc::Sender<()>,
     }
 
     struct UncertainCancelStore {
@@ -1374,6 +1476,148 @@ pub(crate) mod actor_capacity_tests {
                 .map_err(|_| InvocationFailure::new("delivery_failed", "delivery failed"))?;
             Ok(DomainResult::success("shared daemon delivery ready"))
         }
+    }
+
+    impl CanonicalInvocationService for SharedLongCapabilityService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            let reason = match self.kind {
+                LongCapabilityKind::Index => KnownLongReason::ColdIndex,
+                LongCapabilityKind::Provider(_) => KnownLongReason::ProviderStartup,
+                LongCapabilityKind::Runtime(_) => KnownLongReason::ExternalProcess,
+            };
+            Ok(ExecutionClass::KnownLong(reason))
+        }
+
+        fn execute(
+            &self,
+            invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            let make_work = || {
+                let producers = Arc::clone(&self.producers);
+                let producer_entered = self.producer_entered.clone();
+                let release = Arc::clone(&self.release);
+                move |_| {
+                    producers.fetch_add(1, Ordering::SeqCst);
+                    producer_entered.send(()).expect("producer observation");
+                    let (released, wake) = &*release;
+                    let mut released = released.lock().expect("long-work release");
+                    while !*released {
+                        released = wake.wait(released).expect("long-work release wait");
+                    }
+                    Ok(())
+                }
+            };
+            let (key, lease) = match &self.kind {
+                LongCapabilityKind::Index => invocation
+                    .join_index_work("rlm", "bsl-1", make_work())
+                    .map(|(key, lease)| (SharedWorkKey::from(&key), lease))
+                    .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?,
+                LongCapabilityKind::Provider(key) => (
+                    SharedWorkKey::from(key),
+                    invocation.join_provider_host(key.clone(), make_work()),
+                ),
+                LongCapabilityKind::Runtime(key) => (
+                    SharedWorkKey::from(key),
+                    invocation.join_runtime_resource(key.clone(), make_work()),
+                ),
+            };
+            self.joined.send(key).expect("join observation");
+            lease
+                .wait()
+                .map_err(|_| InvocationFailure::new("long_work_failed", "work unavailable"))?;
+            let marker = invocation
+                .read_relative_file(std::path::Path::new("marker.txt"), 64)
+                .map_err(|_| InvocationFailure::new("root_failed", "root unavailable"))?;
+            Ok(DomainResult::success(
+                String::from_utf8(marker).expect("marker is utf8"),
+            ))
+        }
+    }
+
+    impl CanonicalInvocationService for RevisionChangingIndexService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::KnownLong(KnownLongReason::ColdIndex))
+        }
+
+        fn execute(
+            &self,
+            invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            let producers = Arc::clone(&self.producers);
+            let producer_entered = self.producer_entered.clone();
+            let release = Arc::clone(&self.release);
+            let (key, lease) = invocation
+                .join_index_work("rlm", "bsl-1", move |_| {
+                    producers.fetch_add(1, Ordering::SeqCst);
+                    producer_entered
+                        .send(())
+                        .expect("index producer observation");
+                    let (released, wake) = &*release;
+                    let mut released = released.lock().expect("index release");
+                    while !*released {
+                        released = wake.wait(released).expect("index release wait");
+                    }
+                    Ok(())
+                })
+                .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?;
+            self.joined
+                .send(SharedWorkKey::from(&key))
+                .expect("index join observation");
+            if !self.first_execution.swap(true, Ordering::SeqCst) {
+                self.mark_dirty
+                    .lock()
+                    .expect("dirty signal")
+                    .recv()
+                    .expect("dirty request");
+                invocation.mark_source_revision_dirty_for_test();
+                self.dirty_done.send(()).expect("dirty acknowledgement");
+            }
+            lease
+                .wait()
+                .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?;
+            let marker = invocation
+                .read_relative_file(std::path::Path::new("marker.txt"), 64)
+                .map_err(|_| InvocationFailure::new("root_failed", "root unavailable"))?;
+            Ok(DomainResult::success(
+                String::from_utf8(marker).expect("marker is utf8"),
+            ))
+        }
+    }
+
+    type SharedCapabilityFixture = (
+        Arc<SharedLongCapabilityService>,
+        Arc<AtomicUsize>,
+        mpsc::Receiver<()>,
+        mpsc::Receiver<SharedWorkKey>,
+        Arc<(Mutex<bool>, Condvar)>,
+    );
+
+    fn shared_capability_service(kind: LongCapabilityKind) -> SharedCapabilityFixture {
+        let producers = Arc::new(AtomicUsize::new(0));
+        let (producer_entered, producer_wait) = mpsc::channel();
+        let (joined, joined_wait) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        (
+            Arc::new(SharedLongCapabilityService {
+                kind,
+                producers: Arc::clone(&producers),
+                producer_entered,
+                joined,
+                release: Arc::clone(&release),
+            }),
+            producers,
+            producer_wait,
+            joined_wait,
+            release,
+        )
     }
 
     #[test]
@@ -1564,6 +1808,267 @@ pub(crate) mod actor_capacity_tests {
         assert_eq!(producers.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership() {
+        let provider_key = ProviderHostKey::new(
+            "bsl-analyzer",
+            "aarch64-apple-darwin",
+            std::collections::BTreeSet::from([
+                "diagnostics".to_string(),
+                "navigation".to_string(),
+                "search".to_string(),
+            ]),
+        )
+        .unwrap();
+        let runtime_authority = tempfile::tempdir().unwrap();
+        let runtime_lease = RuntimeJobService::enqueue(
+            runtime_authority.path(),
+            &RuntimeJobRequest::new(
+                RuntimeJobOperation::Test,
+                Vec::new(),
+                "workspace:test".to_string(),
+                None,
+            ),
+        )
+        .unwrap();
+        let runtime_key =
+            RuntimeJobService::shared_work_key_at(runtime_authority.path(), &runtime_lease.id)
+                .unwrap();
+
+        for kind in [
+            LongCapabilityKind::Index,
+            LongCapabilityKind::Provider(provider_key),
+            LongCapabilityKind::Runtime(runtime_key),
+        ] {
+            let task_root = tempfile::tempdir().unwrap();
+            let workspace_parent = tempfile::tempdir().unwrap();
+            let roots = if matches!(kind, LongCapabilityKind::Index) {
+                let root = workspace_parent.path().join("index-workspace");
+                std::fs::create_dir(&root).unwrap();
+                std::fs::write(root.join("marker.txt"), "index").unwrap();
+                let root = std::fs::canonicalize(root).unwrap();
+                vec![root.clone(), root]
+            } else {
+                (0..2)
+                    .map(|index| {
+                        let root = workspace_parent.path().join(format!("workspace-{index}"));
+                        std::fs::create_dir(&root).unwrap();
+                        std::fs::write(root.join("marker.txt"), format!("root-{index}")).unwrap();
+                        std::fs::canonicalize(root).unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let (store, _) =
+                FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock))
+                    .unwrap();
+            let (service, producers, producer_wait, joined_wait, release) =
+                shared_capability_service(kind.clone());
+            let runtime =
+                DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+            let request = |root: &std::path::Path| {
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    root.to_string_lossy(),
+                    0,
+                )
+                .unwrap()
+            };
+
+            let first = task_id(submit_at_receipt(&runtime, request(&roots[0])).unwrap());
+            producer_wait
+                .recv_timeout(Duration::from_secs(10))
+                .expect("first task entered long-work producer");
+            let second = task_id(submit_at_receipt(&runtime, request(&roots[1])).unwrap());
+            let first_key = joined_wait
+                .recv_timeout(Duration::from_secs(10))
+                .expect("first task joined long work");
+            let second_key = joined_wait
+                .recv_timeout(Duration::from_secs(10))
+                .expect("second task joined long work");
+
+            assert_eq!(first_key, second_key);
+            assert_eq!(producers.load(Ordering::SeqCst), 1);
+            for task_id in [first, second] {
+                assert_eq!(
+                    runtime.get(task_id).unwrap().status,
+                    InvocationStatus::Working
+                );
+            }
+            assert_eq!(
+                runtime.workspace_actors.live_len_for_test().unwrap(),
+                if matches!(kind, LongCapabilityKind::Index) {
+                    1
+                } else {
+                    2
+                }
+            );
+            let (released, wake) = &*release;
+            *released.lock().unwrap() = true;
+            wake.notify_all();
+            let first_result = runtime.wait(first, 7_000).unwrap().result.unwrap();
+            let second_result = runtime.wait(second, 7_000).unwrap().result.unwrap();
+            if matches!(kind, LongCapabilityKind::Index) {
+                assert_eq!(first_result.summary, "index");
+                assert_eq!(second_result.summary, "index");
+            } else {
+                assert_eq!(first_result.summary, "root-0");
+                assert_eq!(second_result.summary, "root-1");
+            }
+        }
+    }
+
+    #[test]
+    fn daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication() {
+        // Distinct actor identities intentionally cannot join one Index key.
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace_parent = tempfile::tempdir().unwrap();
+        let roots = (0..2)
+            .map(|index| {
+                let root = workspace_parent.path().join(format!("index-root-{index}"));
+                std::fs::create_dir(&root).unwrap();
+                std::fs::write(root.join("marker.txt"), format!("root-{index}")).unwrap();
+                std::fs::canonicalize(root).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let (service, producers, producer_wait, joined_wait, release) =
+            shared_capability_service(LongCapabilityKind::Index);
+        let runtime = DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+        let request = |root: &std::path::Path| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({}),
+                root.to_string_lossy(),
+                0,
+            )
+            .unwrap()
+        };
+        let first = task_id(submit_at_receipt(&runtime, request(&roots[0])).unwrap());
+        producer_wait
+            .recv_timeout(Duration::from_secs(10))
+            .expect("first index producer");
+        let second = task_id(submit_at_receipt(&runtime, request(&roots[1])).unwrap());
+        producer_wait
+            .recv_timeout(Duration::from_secs(10))
+            .expect("second index producer");
+        let first_key = joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        let second_key = joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_ne!(first_key, second_key);
+        assert_eq!(producers.load(Ordering::SeqCst), 2);
+        let (released, wake) = &*release;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+        assert_eq!(
+            runtime.wait(first, 7_000).unwrap().status,
+            InvocationStatus::Completed
+        );
+        assert_eq!(
+            runtime.wait(second, 7_000).unwrap().status,
+            InvocationStatus::Completed
+        );
+
+        // A new trusted source revision starts a new producer, and the result
+        // staged under the prior revision cannot cross the actor publication fence.
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("marker.txt"), "old").unwrap();
+        std::fs::write(
+            workspace.path().join("Module.bsl"),
+            "Procedure Old()\nEndProcedure",
+        )
+        .unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let producers = Arc::new(AtomicUsize::new(0));
+        let (producer_entered, producer_wait) = mpsc::channel();
+        let (joined, joined_wait) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (mark_dirty, dirty_request) = mpsc::channel();
+        let (dirty_done, dirty_wait) = mpsc::channel();
+        let service = Arc::new(RevisionChangingIndexService {
+            producers: Arc::clone(&producers),
+            producer_entered,
+            joined,
+            release: Arc::clone(&release),
+            first_execution: AtomicBool::new(false),
+            mark_dirty: Mutex::new(dirty_request),
+            dirty_done,
+        });
+        let runtime = DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+        let first = task_id(submit_at_receipt(&runtime, request(&root)).unwrap());
+        producer_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        let old_key = joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        std::fs::write(root.join("marker.txt"), "new").unwrap();
+        std::fs::write(root.join("Module.bsl"), "Procedure New()\nEndProcedure").unwrap();
+        mark_dirty.send(()).unwrap();
+        dirty_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        let second = task_id(submit_at_receipt(&runtime, request(&root)).unwrap());
+        producer_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        let new_key = joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_ne!(old_key, new_key);
+        assert_eq!(producers.load(Ordering::SeqCst), 2);
+        let (released, wake) = &*release;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+        assert_eq!(
+            runtime.wait(first, 7_000).unwrap().status,
+            InvocationStatus::Failed
+        );
+        let second = runtime.wait(second, 7_000).unwrap();
+        assert_eq!(second.status, InvocationStatus::Completed);
+        assert_eq!(second.result.unwrap().summary, "new");
+    }
+
+    #[test]
+    fn daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication() {
+        let task_root = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("marker.txt"), "old").unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let (service, _, producer_wait, joined_wait, release) =
+            shared_capability_service(LongCapabilityKind::Index);
+        let runtime = DaemonInvocationRuntime::new(Arc::new(store), service, Arc::new(TokioClock));
+        let request = || {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                serde_json::json!({}),
+                root.to_string_lossy(),
+                0,
+            )
+            .unwrap()
+        };
+        let first = task_id(submit_at_receipt(&runtime, request()).unwrap());
+        producer_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        joined_wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        let moved = parent.path().join("workspace-old");
+        std::fs::rename(&root, moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("marker.txt"), "replacement").unwrap();
+        let rejected = submit_at_receipt(&runtime, request()).unwrap();
+        assert!(matches!(rejected, InvocationResponse::Direct(result) if !result.ok));
+        let (released, wake) = &*release;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+        assert_eq!(
+            runtime.wait(first, 7_000).unwrap().status,
+            InvocationStatus::Failed
+        );
+    }
+
+    #[test]
+    fn daemon_exact_long_work_ownership_contract() {
+        daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership();
+        daemon_index_work_separates_worktrees_and_rejects_stale_revision_publication();
+        daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication();
+    }
+
     fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
         let task_root = tempfile::tempdir().unwrap();
         let workspace_parent = tempfile::tempdir().unwrap();
@@ -1585,6 +2090,8 @@ pub(crate) mod actor_capacity_tests {
             service: Arc::new(BlockingService { entered }),
             workspace_actors: WorkspaceActorRegistry::with_capacity_for_test(2),
             deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
+            provider_hosts: Arc::new(ProviderHostOwner::default()),
+            runtime_resources: Arc::new(RuntimeResourceOwner::default()),
         };
         let request = |root: &std::path::Path| {
             InvocationRequest::new(

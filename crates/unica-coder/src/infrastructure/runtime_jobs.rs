@@ -7,20 +7,25 @@ use super::runtime_build_fallback::{
     classify_partial_platform_failure, full_rebuild_argv, BuildAttempt, PARTIAL_FALLBACK_WARNING,
 };
 use super::runtime_build_preflight::RuntimeBuildPreflight;
+use crate::application::shared_work::{
+    RuntimeLeaseIdentity, RuntimeResourceIdentity, RuntimeWorkKey,
+};
 use crate::domain::cache::CacheAccess;
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::events::{runtime_event_kind, DomainEvent};
 use crate::infrastructure::platform::filesystem::{
-    metadata_is_link_or_reparse_point, replace_file_atomically, sync_parent_directory,
+    metadata_is_link_or_reparse_point, replace_file_atomically, stable_path_identity_bytes,
+    sync_parent_directory,
 };
 use crate::infrastructure::platform::{
-    cancel_runtime_job_process_tree, configure_runtime_job_command, STDOUT_CAPTURE_LIMIT,
+    RuntimeProcessTreeHandle, RuntimeProcessTreeState, STDOUT_CAPTURE_LIMIT,
 };
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_services::WorkspaceServiceManager;
 use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
@@ -40,6 +45,7 @@ const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
 const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(30);
 const LIFECYCLE_LOCK_RETRY: Duration = Duration::from_millis(20);
 const STREAM_FINISH_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const RUNTIME_SECRET_VALUE_FLAGS: &[&str] =
     &["password", "pwd", "token", "secret", "connection", "c"];
 const RUNTIME_CONNECTION_MARKERS: &[&str] = &[
@@ -295,6 +301,10 @@ pub(crate) trait RuntimeJobProcess: Send {
     fn cancel(&mut self) -> JobResult<()>;
     /// Return at most `max_bytes` of each stream. The core redacts the retained tails again.
     fn output_tails(&mut self, max_bytes: usize) -> JobResult<RuntimeJobOutput>;
+    #[cfg(test)]
+    fn leader_exited_for_test(&self) -> bool {
+        false
+    }
 }
 
 /// Runner boundary. `attach` reconnects to an existing process; it never starts it again.
@@ -379,18 +389,28 @@ impl RuntimeJobRunner for SystemRuntimeJobRunner {
             .current_dir(&self.cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        configure_runtime_job_command(&mut command);
+        let mut process_tree = RuntimeProcessTreeHandle::prepare(&mut command)
+            .map_err(|error| redacted_error(&format!("prepare runtime job process: {error}")))?;
         let mut child = command
             .spawn()
             .map_err(|error| redacted_error(&format!("spawn runtime job process: {error}")))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| redacted_error("runtime job process has no stdout pipe"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| redacted_error("runtime job process has no stderr pipe"))?;
+        if let Err(error) = process_tree.attach(&child) {
+            let _ = process_tree
+                .terminate_and_reap_bounded(&mut child, RUNTIME_STARTUP_CLEANUP_TIMEOUT);
+            return Err(redacted_error(&format!(
+                "attach runtime job process tree: {error}"
+            )));
+        }
+        let Some(stdout) = child.stdout.take() else {
+            let _ = process_tree
+                .terminate_and_reap_bounded(&mut child, RUNTIME_STARTUP_CLEANUP_TIMEOUT);
+            return Err(redacted_error("runtime job process has no stdout pipe"));
+        };
+        let Some(stderr) = child.stderr.take() else {
+            let _ = process_tree
+                .terminate_and_reap_bounded(&mut child, RUNTIME_STARTUP_CLEANUP_TIMEOUT);
+            return Err(redacted_error("runtime job process has no stderr pipe"));
+        };
         let stdout = if request.full_rebuild_fallback_argv.is_some() {
             StreamTail::spawn_with_receipt(stdout)
         } else {
@@ -399,6 +419,7 @@ impl RuntimeJobRunner for SystemRuntimeJobRunner {
         Ok(Box::new(SystemRuntimeJobProcess {
             id: child.id(),
             child,
+            process_tree,
             stdout,
             stderr: StreamTail::spawn(stderr),
             exited: false,
@@ -415,6 +436,7 @@ impl RuntimeJobRunner for SystemRuntimeJobRunner {
 struct SystemRuntimeJobProcess {
     id: u32,
     child: Child,
+    process_tree: RuntimeProcessTreeHandle,
     stdout: StreamTail,
     stderr: StreamTail,
     exited: bool,
@@ -427,22 +449,24 @@ impl RuntimeJobProcess for SystemRuntimeJobProcess {
 
     fn try_wait(&mut self) -> JobResult<RuntimeJobProcessState> {
         match self
-            .child
-            .try_wait()
+            .process_tree
+            .poll(&mut self.child)
             .map_err(|error| redacted_error(&format!("poll runtime job process: {error}")))?
         {
-            Some(status) => {
+            RuntimeProcessTreeState::Exited(status) => {
                 self.exited = true;
                 Ok(RuntimeJobProcessState::Exited {
                     exit_code: status.code().unwrap_or(1),
                 })
             }
-            None => Ok(RuntimeJobProcessState::Running),
+            RuntimeProcessTreeState::Running => Ok(RuntimeJobProcessState::Running),
         }
     }
 
     fn cancel(&mut self) -> JobResult<()> {
-        cancel_runtime_job_process_tree(self.id)
+        self.process_tree
+            .terminate(&mut self.child)
+            .map_err(|error| redacted_error(&format!("cancel runtime job process tree: {error}")))
     }
 
     fn output_tails(&mut self, max_bytes: usize) -> JobResult<RuntimeJobOutput> {
@@ -468,6 +492,23 @@ impl RuntimeJobProcess for SystemRuntimeJobProcess {
             fallback_receipt,
             fallback_receipt_truncated,
         })
+    }
+
+    #[cfg(test)]
+    fn leader_exited_for_test(&self) -> bool {
+        self.process_tree.leader_exited()
+    }
+}
+
+impl Drop for SystemRuntimeJobProcess {
+    fn drop(&mut self) {
+        if self.exited {
+            return;
+        }
+        let _ = self
+            .process_tree
+            .terminate_and_reap_bounded(&mut self.child, RUNTIME_STARTUP_CLEANUP_TIMEOUT);
+        self.exited = true;
     }
 }
 
@@ -1384,6 +1425,44 @@ pub(crate) struct RuntimeJobService {
 impl RuntimeJobService {
     pub(crate) fn new(cache_root: impl Into<PathBuf>, runner: Arc<dyn RuntimeJobRunner>) -> Self {
         Self::with_stale_after(cache_root, runner, DEFAULT_STALE_AFTER)
+    }
+
+    /// Bind in-process Runtime SharedWork to the same exact lease that owns
+    /// the cross-process `active.lock`. A caller cannot manufacture a second
+    /// destructive lease merely by repeating arguments.
+    #[allow(dead_code)] // Consumed by the canonical runtime handler at Task 22 cutover.
+    pub(crate) fn shared_work_key(&self, id: &str) -> JobResult<RuntimeWorkKey> {
+        Self::shared_work_key_at(self.store.cache_root.clone(), id)
+    }
+
+    #[allow(dead_code)] // Consumed by the canonical runtime handler at Task 22 cutover.
+    pub(crate) fn shared_work_key_at(
+        cache_root: impl Into<PathBuf>,
+        id: &str,
+    ) -> JobResult<RuntimeWorkKey> {
+        let store = RuntimeJobStore::new(cache_root, DEFAULT_STALE_AFTER);
+        let id = canonical_job_id(id)?;
+        let active = fs::read_to_string(store.active_lock_path())
+            .map_err(|error| io_error("read runtime active lease", &error))?;
+        if active != id {
+            return Err(redacted_error(
+                "runtime shared work lease does not own the active resource",
+            ));
+        }
+        let jobs_root = fs::canonicalize(store.jobs_root())
+            .map_err(|error| io_error("resolve runtime resource authority", &error))?;
+        let identity = stable_path_identity_bytes(&jobs_root)
+            .map_err(|_| redacted_error("derive runtime resource authority"))?;
+        let mut digest = Sha256::new();
+        digest.update(b"unica-runtime-resource-v1\0");
+        digest.update((identity.len() as u64).to_le_bytes());
+        digest.update(identity);
+        let resource =
+            RuntimeResourceIdentity::from_authority_digest(format!("{:x}", digest.finalize()))
+                .map_err(|_| redacted_error("derive runtime resource authority"))?;
+        let lease = RuntimeLeaseIdentity::from_job_id(&id)
+            .map_err(|_| redacted_error("derive runtime lease identity"))?;
+        Ok(RuntimeWorkKey::new(resource, lease))
     }
 
     fn with_stale_after(
@@ -3352,32 +3431,181 @@ pub(crate) mod tests {
             .expect("recovery must still free a provably childless workspace");
     }
 
-    pub(crate) fn assert_system_cancellation_reaps_process_tree(
-        program: PathBuf,
-        args: Vec<String>,
-        process_tree_is_alive: impl FnOnce(u32) -> bool,
-    ) {
+    pub(crate) fn assert_system_cancellation_reaps_process_tree() {
         let cache = TestCache::new();
         fs::create_dir_all(cache.path()).expect("create worker cwd");
+        let scenario = crate::infrastructure::platform::runtime_process_tree_test_scenario_for_test(
+            &cache.path(),
+        );
         let runner = SystemRuntimeJobRunner {
-            program,
+            program: scenario.program(),
             cwd: cache.path().to_path_buf(),
         };
         let request = RuntimeJobRequest::new(
             RuntimeJobOperation::Test,
-            args,
+            scenario.long_lived_args(),
             "workspace:test".to_string(),
             None,
         );
         let mut process = runner.spawn(&request).expect("spawn process group");
-        let process_id = process.id();
+        let descendant = scenario
+            .wait_for_descendant(Duration::from_secs(5))
+            .expect("observe runtime-job descendant");
 
         cancel_and_reap(&mut *process).expect("cancel and reap process group");
 
         assert!(
-            !process_tree_is_alive(process_id),
+            !descendant.is_alive().expect("probe runtime-job descendant"),
             "the process tree must no longer be alive"
         );
+    }
+
+    #[test]
+    fn system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies() {
+        let cache = TestCache::new();
+        fs::create_dir_all(cache.path()).expect("create runtime cwd");
+        let scenario = crate::infrastructure::platform::runtime_process_tree_test_scenario_for_test(
+            &cache.path(),
+        );
+        let runner = Arc::new(SystemRuntimeJobRunner {
+            program: scenario.program(),
+            cwd: cache.path().to_path_buf(),
+        });
+        let service = RuntimeJobService::new(cache.path(), runner);
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Test,
+            scenario.leader_with_descendant_args(),
+            "workspace:test".to_string(),
+            None,
+        );
+        let started = service.start(request).expect("start runtime process tree");
+        let descendant = scenario
+            .wait_for_descendant(Duration::from_secs(5))
+            .expect("observe runtime descendant");
+
+        // Poll until the platform handle has reaped the leader. Reaching
+        // Running with `leader_exited` proves the retained process group/Job
+        // Object query still observes the descendant.
+        let observation_started = Instant::now();
+        let observed = loop {
+            let snapshot = service.poll(&started.id).expect("observe process tree");
+            let leader_exited = service
+                .lock_processes()
+                .ok()
+                .and_then(|processes| {
+                    processes
+                        .get(&started.id)
+                        .map(|process| process.process.leader_exited_for_test())
+                })
+                .unwrap_or(false);
+            if leader_exited || snapshot.phase.is_terminal() {
+                break snapshot;
+            }
+            assert!(
+                observation_started.elapsed() < Duration::from_secs(5),
+                "leader did not exit"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        let active_lock_held = service.store.active_lock_path().exists();
+
+        assert_eq!(observed.phase, RuntimeJobPhase::Running);
+        assert!(
+            descendant
+                .is_alive()
+                .expect("probe descendant after leader exit"),
+            "descendant was not alive after leader exit"
+        );
+        assert!(
+            active_lock_held,
+            "active.lock was released before tree death"
+        );
+
+        // Cancellation owns and reaps the complete retained tree before the
+        // terminal record can release the workspace resource.
+        let mut cancelled = service.cancel(&started.id).expect("request cancellation");
+        let cancel_started = Instant::now();
+        while !cancelled.phase.is_terminal() && cancel_started.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(10));
+            cancelled = service.poll(&started.id).expect("poll cancellation");
+        }
+
+        assert!(
+            cancelled.phase.is_terminal(),
+            "cancelled tree stayed active"
+        );
+        assert!(!service.store.active_lock_path().exists());
+        assert!(
+            !descendant
+                .is_alive()
+                .expect("probe descendant after cancellation"),
+            "cancel returned before the owned descendant died"
+        );
+    }
+
+    #[test]
+    fn runtime_shared_work_key_is_derived_from_the_active_resource_and_exact_job_lease() {
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let started = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("start active runtime lease");
+        let key = service
+            .shared_work_key(&started.id)
+            .expect("derive exact runtime shared-work key");
+
+        assert_eq!(key.lease_identity().as_uuid().to_string(), started.id);
+        assert_eq!(key.resource_identity().as_str().len(), 64);
+        assert!(service
+            .shared_work_key(&Uuid::new_v4().to_string())
+            .is_err());
+    }
+
+    #[test]
+    fn dropping_system_runtime_process_reaps_the_owned_tree_within_one_budget() {
+        let cache = TestCache::new();
+        fs::create_dir_all(cache.path()).expect("create runtime cwd");
+        let scenario = crate::infrastructure::platform::runtime_process_tree_test_scenario_for_test(
+            &cache.path(),
+        );
+        let runner = SystemRuntimeJobRunner {
+            program: scenario.program(),
+            cwd: cache.path().to_path_buf(),
+        };
+        let request = RuntimeJobRequest::new(
+            RuntimeJobOperation::Test,
+            scenario.long_lived_args(),
+            "workspace:test".to_string(),
+            None,
+        );
+        let process = runner.spawn(&request).expect("spawn owned process tree");
+        let descendant = scenario
+            .wait_for_descendant(Duration::from_secs(5))
+            .expect("observe drop-test descendant");
+        assert!(
+            descendant.is_alive().expect("probe live process tree"),
+            "runtime descendant did not start"
+        );
+
+        drop(process);
+        let started = Instant::now();
+        while descendant.is_alive().expect("probe dropped process tree")
+            && started.elapsed() < Duration::from_secs(1)
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !descendant.is_alive().expect("probe reaped process tree"),
+            "dropping runtime process left its owned tree alive"
+        );
+    }
+
+    #[test]
+    fn runtime_resource_tree_lease_contract() {
+        runtime_shared_work_key_is_derived_from_the_active_resource_and_exact_job_lease();
+        system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies();
+        dropping_system_runtime_process_reaps_the_owned_tree_within_one_budget();
+        assert_system_cancellation_reaps_process_tree();
     }
 
     #[test]

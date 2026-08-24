@@ -4603,6 +4603,7 @@ fn bsl_analyzer_cache_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::shared_work::ProviderHostKey;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::testing;
     use crate::infrastructure::source_roots::source_generation;
@@ -4630,6 +4631,50 @@ mod tests {
         assert_eq!(
             runtime.workspace_identity().provider_profile(),
             LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn provider_host_identity_is_rootless_while_route_state_remains_root_bound() {
+        let context = test_context("provider-host-root-split");
+        let first_root = context.workspace_root.join("src-a");
+        let second_root = context.workspace_root.join("src-b");
+        fs::create_dir_all(&first_root).unwrap();
+        fs::create_dir_all(&second_root).unwrap();
+        let capabilities = std::collections::BTreeSet::from([
+            "diagnostics".to_string(),
+            "navigation".to_string(),
+            "search".to_string(),
+        ]);
+        let first_host = ProviderHostKey::new(
+            "bsl-analyzer",
+            crate::infrastructure::platform::current_target_id().unwrap(),
+            capabilities.clone(),
+        )
+        .unwrap();
+        let second_host = ProviderHostKey::new(
+            "bsl-analyzer",
+            crate::infrastructure::platform::current_target_id().unwrap(),
+            capabilities,
+        )
+        .unwrap();
+
+        assert_eq!(first_host, second_host, "host readiness is rootless");
+        assert_ne!(
+            WorkspaceServiceIdentity::new(&context, &first_root).unwrap(),
+            WorkspaceServiceIdentity::new(&context, &second_root).unwrap(),
+            "root-bound compatibility sessions must not be reused across roots"
+        );
+        assert_ne!(
+            bsl_analyzer_cache_dir(&context, &first_root).unwrap(),
+            bsl_analyzer_cache_dir(&context, &second_root).unwrap(),
+            "code intelligence and diagnostics caches remain root-bound"
+        );
+        assert_ne!(
+            rlm_generation_root(&context, &first_root).unwrap(),
+            rlm_generation_root(&context, &second_root).unwrap(),
+            "RLM navigation generations remain root-bound"
         );
         cleanup(&context);
     }
