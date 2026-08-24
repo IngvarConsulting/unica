@@ -19,6 +19,9 @@ design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 незавершённая работа уже durable Task. Нулевой или более ранний host budget
 ускоряет handoff с запасом сериализации. `KnownLong` определяется подготовленной
 границей после валидации и до дорогого ожидания, а не именем инструмента.
+Запас IPC равен 125 мс и не возобновляет frontend deadline: поздний большой
+result становится тем же Task, а запись ответа ограничена оставшимся session
+deadline и внутренним safety cap 10 секунд.
 
 Строгий daemon protocol v2 принимает `SubmitInvocation`, `GetTask`, `WaitTask`,
 `CancelTask`. После schema-проверки вызов получает opaque capability точного
@@ -40,6 +43,9 @@ re-execution. Исчерпание policy закрывает submit, скрыв�
 зависший syscall/non-cooperative execution и разрешает successor заменить
 оставленный PID-bound endpoint. Resume owners пока нет: после restart v1/v2
 `Working` закрывается как interrupted/unsupported; unknown schema отклоняется.
+Canonical result имеет единый cap 8 MiB; record/response добавляют не более
+64 KiB envelope. Request cap остаётся 16 KiB, malformed response закрывает
+frontend session.
 
 Входной `SurfaceRelease::V12` с 71 инструментом остаётся на прежнем dispatch и
 wire-контракте; v0.12.3 baseline из 74 имён — отдельная приёмка. Здесь нет

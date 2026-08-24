@@ -24,3 +24,11 @@ wait больше 7000 мс отклоняются; ошибки транспо�
 не staged DomainResult. Старый процесс перестаёт принимать соединения и
 оставляет PID-bound endpoint до своей смерти; successor заменяет только stale
 record. Текст внутренних ошибок не классифицируется и не попадает в protocol.
+
+Request JSONL ограничен 16 KiB. Один canonical `DomainResult` ограничен 8 MiB;
+Task record и response JSONL ограничены 8 MiB + 64 KiB bounded envelope. Direct
+и Task применяют один result limit и закрытый код `result_too_large`. Frontend
+читает response cap независимо от request cap; oversized, malformed или
+truncated response закрывает owner session, повторное использование запрещено.
+IPC serialization имеет 125 мс сверх переданного operation budget, но не
+перезапускает этот deadline; внутренний safety cap ответа — 10 секунд.

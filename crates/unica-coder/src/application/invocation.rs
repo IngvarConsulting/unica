@@ -1,4 +1,5 @@
 use crate::application::invocation_store::{
+    canonical_result_size, canonical_result_size_with_checkpoint, CanonicalResultSizeError,
     InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
     SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
 };
@@ -18,7 +19,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub(crate) const INVOCATION_HANDOFF_WINDOW: Duration = Duration::from_secs(7);
-pub(crate) const RESPONSE_SERIALIZATION_MARGIN: Duration = Duration::from_millis(125);
+pub(crate) const RESPONSE_SERIALIZATION_MARGIN_MS: u64 = 125;
+pub(crate) const RESPONSE_SERIALIZATION_MARGIN: Duration =
+    Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS);
+const LARGE_DIRECT_RESULT_BYTES: usize = 16 * 1024;
 const INVOCATION_POLL_INTERVAL_MS: u64 = 250;
 const INVOCATION_TTL_MS: u64 = 60 * 60 * 1_000;
 const RECONCILIATION_BUDGET: Duration = Duration::from_secs(2);
@@ -109,6 +113,7 @@ impl PreparedDaemonInvocation {
 pub(crate) enum InvocationExecutorError {
     Store(InvocationStoreError),
     ExecutionFailed,
+    ResultTooLarge,
     StatePoisoned,
     RestartRequested,
 }
@@ -127,7 +132,7 @@ enum LiveInvocationState {
         task_id: TaskId,
         outcome: Option<Box<Result<DomainResult, InvocationFailure>>>,
     },
-    Direct(Box<Result<DomainResult, InvocationFailure>>),
+    Direct(Option<Box<Result<DomainResult, InvocationFailure>>>),
     DurableTerminal,
     RestartRequested,
 }
@@ -205,6 +210,18 @@ impl ReconciliationTimer for SystemReconciliationTimer {
     }
 }
 
+#[derive(Clone)]
+enum DurableTerminalOutcome {
+    Complete(Arc<DomainResult>),
+    Fail(SafeFailureReason),
+}
+
+#[cfg(test)]
+struct TerminalWorkerGate {
+    entered: std::sync::mpsc::Sender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
 /// Daemon-owned single execution path. Query/cancel methods accept no domain
 /// closure, making re-execution through polling structurally impossible.
 pub(crate) struct InvocationExecutor {
@@ -215,6 +232,8 @@ pub(crate) struct InvocationExecutor {
     health: Arc<Mutex<InvocationExecutorHealth>>,
     reconciliation: ReconciliationPolicy,
     reconciliation_timer: Arc<dyn ReconciliationTimer>,
+    #[cfg(test)]
+    terminal_worker_gate: Mutex<Option<TerminalWorkerGate>>,
 }
 
 impl InvocationExecutor {
@@ -227,6 +246,8 @@ impl InvocationExecutor {
             health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
             reconciliation: ReconciliationPolicy::production(),
             reconciliation_timer: Arc::new(SystemReconciliationTimer),
+            #[cfg(test)]
+            terminal_worker_gate: Mutex::new(None),
         }
     }
 
@@ -244,6 +265,7 @@ impl InvocationExecutor {
             health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
             reconciliation: ReconciliationPolicy::with_budget_for_test(budget),
             reconciliation_timer: Arc::new(SystemReconciliationTimer),
+            terminal_worker_gate: Mutex::new(None),
         }
     }
 
@@ -262,6 +284,31 @@ impl InvocationExecutor {
             health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
             reconciliation,
             reconciliation_timer,
+            terminal_worker_gate: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_reconciliation_and_terminal_gate_for_test(
+        store: Arc<dyn InvocationStore>,
+        clock: Arc<dyn Clock>,
+        reconciliation: ReconciliationPolicy,
+        reconciliation_timer: Arc<dyn ReconciliationTimer>,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> Self {
+        Self {
+            store: InvocationStoreActor::spawn(store),
+            clock,
+            live_tasks: Mutex::new(HashMap::new()),
+            inline_waiters: Mutex::new(Vec::new()),
+            health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
+            reconciliation,
+            reconciliation_timer,
+            terminal_worker_gate: Mutex::new(Some(TerminalWorkerGate {
+                entered,
+                release: Mutex::new(release),
+            })),
         }
     }
 
@@ -340,7 +387,16 @@ impl InvocationExecutor {
         self.ensure_healthy()?;
         match prepared {
             Ok(prepared) => self.submit(prepared, execute),
-            Err(invalid) => Ok(InvocationOutcome::Direct(invalid)),
+            Err(invalid) => match canonical_result_size(&invalid) {
+                Ok(_) => Ok(InvocationOutcome::Direct(invalid)),
+                Err(CanonicalResultSizeError::TooLarge) => {
+                    Err(InvocationExecutorError::ResultTooLarge)
+                }
+                Err(CanonicalResultSizeError::Checkpoint(never)) => match never {},
+                Err(CanonicalResultSizeError::Serialization) => {
+                    Err(InvocationExecutorError::ExecutionFailed)
+                }
+            },
         }
     }
 
@@ -361,6 +417,7 @@ impl InvocationExecutor {
         if matches!(prepared.class, ExecutionClass::KnownLong(_))
             || prepared.response_budget.is_zero()
         {
+            let store_deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
             let intended = self.new_materialization_record(&prepared, invocation_id);
             let task_id = intended.task_id();
             let live = Arc::new(LiveInvocation::new(None, prepared.resource_lease.clone()));
@@ -373,7 +430,6 @@ impl InvocationExecutor {
                     outcome: None,
                 };
             self.insert_live(task_id, Arc::clone(&live))?;
-            let store_deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
             let record = match self.materialize(
                 intended,
                 &prepared,
@@ -411,24 +467,53 @@ impl InvocationExecutor {
             .lock()
             .map_err(|_| InvocationExecutorError::StatePoisoned)?;
         loop {
-            match &*state {
+            match &mut *state {
                 LiveInvocationState::Direct(result) => {
-                    let result = result.as_ref().clone();
+                    let result = result
+                        .take()
+                        .ok_or(InvocationExecutorError::StatePoisoned)?;
                     if self.clock.now() < deadline {
-                        return result
-                            .map(InvocationOutcome::Direct)
-                            .map_err(|_| InvocationExecutorError::ExecutionFailed);
+                        match result.as_ref() {
+                            Ok(domain) => match canonical_result_size(domain) {
+                                Ok(size) => {
+                                    let remaining =
+                                        deadline.saturating_duration_since(self.clock.now());
+                                    if size <= LARGE_DIRECT_RESULT_BYTES
+                                        || remaining > RESPONSE_SERIALIZATION_MARGIN
+                                    {
+                                        return Ok(InvocationOutcome::Direct(match *result {
+                                            Ok(domain) => domain,
+                                            Err(_) => unreachable!(
+                                                "validated direct result remains successful"
+                                            ),
+                                        }));
+                                    }
+                                }
+                                Err(CanonicalResultSizeError::TooLarge) => {
+                                    return Err(InvocationExecutorError::ResultTooLarge)
+                                }
+                                Err(CanonicalResultSizeError::Checkpoint(never)) => match never {},
+                                Err(CanonicalResultSizeError::Serialization) => {
+                                    return Err(InvocationExecutorError::ExecutionFailed)
+                                }
+                            },
+                            Err(_) => {
+                                if self.clock.now() < deadline {
+                                    return Err(InvocationExecutorError::ExecutionFailed);
+                                }
+                            }
+                        }
                     }
+                    let store_deadline =
+                        self.reconciliation_timer.now() + self.reconciliation.budget;
                     let intended = self.new_materialization_record(&prepared, invocation_id);
                     let task_id = intended.task_id();
                     *state = LiveInvocationState::Materializing {
                         task_id,
-                        outcome: Some(Box::new(result)),
+                        outcome: Some(result),
                     };
                     self.insert_live(task_id, Arc::clone(&live))?;
                     drop(state);
-                    let store_deadline =
-                        self.reconciliation_timer.now() + self.reconciliation.budget;
                     let working = match self.materialize(
                         intended,
                         &prepared,
@@ -467,6 +552,7 @@ impl InvocationExecutor {
             }
             let remaining = deadline.saturating_duration_since(self.clock.now());
             if remaining.is_zero() {
+                let store_deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
                 let intended = self.new_materialization_record(&prepared, invocation_id);
                 let task_id = intended.task_id();
                 *state = LiveInvocationState::Materializing {
@@ -475,7 +561,6 @@ impl InvocationExecutor {
                 };
                 self.insert_live(task_id, Arc::clone(&live))?;
                 drop(state);
-                let store_deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
                 let record = match self.materialize(
                     intended,
                     &prepared,
@@ -651,28 +736,30 @@ impl InvocationExecutor {
     fn persist_terminal_once(
         &self,
         task_id: TaskId,
-        outcome: Result<DomainResult, InvocationFailure>,
+        outcome: &DurableTerminalOutcome,
         deadline: Instant,
         cancellation: &crate::domain::cancellation::CancellationToken,
     ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+        self.reconciliation_checkpoint(deadline)?;
         let before = self.store.get(task_id, deadline, cancellation)?;
-        let transition = match &outcome {
-            Ok(result) => TaskTransition::Complete {
+        self.reconciliation_checkpoint(deadline)?;
+        let transition = match outcome {
+            DurableTerminalOutcome::Complete(result) => TaskTransition::Complete {
                 status_message: SafeStatusMessage::Completed,
-                result: Box::new(result.clone()),
+                result: Box::new(result.as_ref().clone()),
             },
-            Err(_) => TaskTransition::Fail {
+            DurableTerminalOutcome::Fail(reason) => TaskTransition::Fail {
                 status_message: SafeStatusMessage::Failed,
-                reason: SafeFailureReason::InvocationFailed,
+                reason: *reason,
             },
         };
+        self.reconciliation_checkpoint(deadline)?;
         match self
             .store
             .update(task_id, transition, deadline, cancellation)
         {
             Ok(record)
-                if same_record_identity(&before, &record)
-                    && terminal_matches(&record, &outcome) =>
+                if same_record_identity(&before, &record) && terminal_matches(&record, outcome) =>
             {
                 Ok(record)
             }
@@ -690,7 +777,7 @@ impl InvocationExecutor {
                 match self.store.get(task_id, deadline, cancellation) {
                     Ok(record)
                         if same_record_identity(&before, &record)
-                            && (terminal_matches(&record, &outcome)
+                            && (terminal_matches(&record, outcome)
                                 || record.status == InvocationStatus::Cancelled) =>
                     {
                         Ok(record)
@@ -708,15 +795,26 @@ impl InvocationExecutor {
         task_id: TaskId,
         outcome: Result<DomainResult, InvocationFailure>,
     ) {
+        // This is the single terminal durability deadline. It starts before
+        // result preparation, Arc allocation, worker scheduling or store-channel work.
+        let deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
         let executor = Arc::clone(self);
         std::thread::spawn(move || {
-            let deadline = executor.reconciliation_timer.now() + executor.reconciliation.budget;
+            #[cfg(test)]
+            executor.wait_at_terminal_worker_gate_for_test();
+            let outcome = match executor.prepare_terminal_outcome(outcome, deadline) {
+                Ok(outcome) => outcome,
+                Err(()) => {
+                    executor.request_restart();
+                    return;
+                }
+            };
             let mut backoff = executor.reconciliation.initial_backoff;
             let store_cancellation = crate::domain::cancellation::CancellationToken::new();
             loop {
                 match executor.persist_terminal_once(
                     task_id,
-                    outcome.clone(),
+                    &outcome,
                     deadline,
                     &store_cancellation,
                 ) {
@@ -740,6 +838,53 @@ impl InvocationExecutor {
                 }
             }
         });
+    }
+
+    fn reconciliation_checkpoint(&self, deadline: Instant) -> Result<(), InvocationStoreError> {
+        if self.reconciliation_timer.now() >= deadline {
+            Err(InvocationStoreError::DeadlineExceeded)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn prepare_terminal_outcome(
+        &self,
+        outcome: Result<DomainResult, InvocationFailure>,
+        deadline: Instant,
+    ) -> Result<DurableTerminalOutcome, ()> {
+        self.reconciliation_checkpoint(deadline).map_err(|_| ())?;
+        match outcome {
+            Ok(result) => {
+                let size = canonical_result_size_with_checkpoint(&result, || {
+                    self.reconciliation_checkpoint(deadline)
+                });
+                match size {
+                    Ok(_) => Ok(DurableTerminalOutcome::Complete(Arc::new(result))),
+                    Err(CanonicalResultSizeError::TooLarge) => Ok(DurableTerminalOutcome::Fail(
+                        SafeFailureReason::ResultTooLarge,
+                    )),
+                    Err(CanonicalResultSizeError::Checkpoint(_))
+                    | Err(CanonicalResultSizeError::Serialization) => Err(()),
+                }
+            }
+            Err(_) => Ok(DurableTerminalOutcome::Fail(
+                SafeFailureReason::InvocationFailed,
+            )),
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_at_terminal_worker_gate_for_test(&self) {
+        let gate = self
+            .terminal_worker_gate
+            .lock()
+            .ok()
+            .and_then(|mut gate| gate.take());
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.lock().map(|release| release.recv());
+        }
     }
 
     fn spawn_execution<F>(self: &Arc<Self>, live: Arc<LiveInvocation>, execute: F)
@@ -780,7 +925,7 @@ impl InvocationExecutor {
                 drop(state);
                 executor.spawn_terminal_reconciliation(live, task_id, outcome);
             } else {
-                *state = LiveInvocationState::Direct(Box::new(outcome));
+                *state = LiveInvocationState::Direct(Some(Box::new(outcome)));
                 live.changed.notify_all();
             }
         });
@@ -842,8 +987,8 @@ impl InvocationExecutor {
         task_id: TaskId,
     ) -> Result<TaskSnapshot, InvocationExecutorError> {
         self.ensure_healthy()?;
-        let cancellation = crate::domain::cancellation::CancellationToken::new();
         let deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
         let before = self.handle_store_call(self.store.get(task_id, deadline, &cancellation))?;
         let record = match self.store.cancel(
             task_id,
@@ -978,23 +1123,20 @@ fn initial_working_matches(
         && record.created_at_epoch_ms == record.updated_at_epoch_ms
 }
 
-fn terminal_matches(
-    record: &StoredInvocationRecord,
-    outcome: &Result<DomainResult, InvocationFailure>,
-) -> bool {
+fn terminal_matches(record: &StoredInvocationRecord, outcome: &DurableTerminalOutcome) -> bool {
     match outcome {
-        Ok(result) => {
+        DurableTerminalOutcome::Complete(result) => {
             record.status == InvocationStatus::Completed
                 && record.status_message == SafeStatusMessage::Completed
-                && record.result.as_ref() == Some(result)
+                && record.result.as_ref() == Some(result.as_ref())
                 && record.failure_reason.is_none()
                 && record.resume.is_none()
         }
-        Err(_) => {
+        DurableTerminalOutcome::Fail(reason) => {
             record.status == InvocationStatus::Failed
                 && record.status_message == SafeStatusMessage::Failed
                 && record.result.is_none()
-                && record.failure_reason == Some(SafeFailureReason::InvocationFailed)
+                && record.failure_reason == Some(*reason)
                 && record.resume.is_none()
         }
     }
@@ -1017,6 +1159,10 @@ fn snapshot_from_record(record: StoredInvocationRecord, observed_at: Instant) ->
         SafeFailureReason::InvocationFailed => {
             InvocationFailure::new("invocation_failed", "daemon invocation failed")
         }
+        SafeFailureReason::ResultTooLarge => InvocationFailure::new(
+            "result_too_large",
+            "daemon invocation result exceeded the canonical byte limit",
+        ),
         SafeFailureReason::Interrupted => {
             InvocationFailure::new("interrupted", "daemon invocation was interrupted")
         }
@@ -1361,6 +1507,7 @@ mod tests {
     use crate::application::invocation_store::{
         InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
         SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
+        MAX_CANONICAL_RESULT_BYTES,
     };
     use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
     use crate::application::ports::{Clock, TokioClock};
@@ -1405,6 +1552,10 @@ mod tests {
                 now: Mutex::new(now),
                 waits: Mutex::new(Vec::new()),
             }
+        }
+
+        fn advance(&self, duration: Duration) {
+            *self.now.lock().unwrap() += duration;
         }
     }
 
@@ -2360,6 +2511,135 @@ mod tests {
         assert_eq!(store.update_attempts.load(Ordering::SeqCst), 4);
     }
 
+    #[test]
+    fn terminal_deadline_starts_before_worker_scheduling_and_blocks_late_store_calls() {
+        let store = Arc::new(MemoryStore::default());
+        let timer = Arc::new(RecordingReconciliationTimer::new(Instant::now()));
+        let (worker_entered, worker_entered_wait) = mpsc::channel();
+        let (worker_release, worker_release_wait) = mpsc::channel();
+        let executor = Arc::new(
+            InvocationExecutor::new_with_reconciliation_and_terminal_gate_for_test(
+                store.clone(),
+                Arc::new(ManualClock::new(Instant::now())),
+                super::ReconciliationPolicy::with_budget_for_test(Duration::from_millis(40)),
+                timer.clone(),
+                worker_entered,
+                worker_release_wait,
+            ),
+        );
+        let outcome = executor
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                    Duration::ZERO,
+                ),
+                |_| Ok(DomainResult::success("S".repeat(4 * 1024 * 1024))),
+            )
+            .unwrap();
+        let task_id = match outcome {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected task: {other:?}"),
+        };
+        worker_entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        timer.advance(Duration::from_millis(41));
+        worker_release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !executor.restart_requested() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+
+        assert!(executor.restart_requested());
+        assert_eq!(store.update_attempts.load(Ordering::SeqCst), 0);
+        let retained = store.get(task_id).unwrap();
+        assert_eq!(retained.status, InvocationStatus::Working);
+        assert!(retained.result.is_none());
+    }
+
+    #[test]
+    fn canonical_result_limit_rejects_direct_and_task_bytes_without_persisting_them() {
+        const OVER_LIMIT_SUMMARY_BYTES: usize = 8 * 1024 * 1024 + 1;
+
+        let direct_store = Arc::new(MemoryStore::default());
+        let direct = Arc::new(InvocationExecutor::new(
+            direct_store,
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        assert!(matches!(
+            direct.submit(
+                prepared(ExecutionClass::InlineCandidate, Duration::from_secs(7)),
+                |_| Ok(DomainResult::success("X".repeat(OVER_LIMIT_SUMMARY_BYTES))),
+            ),
+            Err(super::InvocationExecutorError::ResultTooLarge)
+        ));
+
+        let task_store = Arc::new(MemoryStore::default());
+        let task = Arc::new(InvocationExecutor::new(
+            task_store.clone(),
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let task_id = match task
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                    Duration::ZERO,
+                ),
+                |_| Ok(DomainResult::success("X".repeat(OVER_LIMIT_SUMMARY_BYTES))),
+            )
+            .unwrap()
+        {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected task: {other:?}"),
+        };
+        let terminal = task.wait_task(task_id, Duration::from_secs(1)).unwrap();
+        assert_eq!(terminal.status, InvocationStatus::Failed);
+        assert_eq!(
+            terminal.failure,
+            Some(InvocationFailure::new(
+                "result_too_large",
+                "daemon invocation result exceeded the canonical byte limit",
+            ))
+        );
+        let retained = task_store.get(task_id).unwrap();
+        assert!(retained.result.is_none());
+        assert_eq!(
+            retained.failure_reason,
+            Some(SafeFailureReason::ResultTooLarge)
+        );
+    }
+
+    #[test]
+    fn late_large_result_uses_the_same_durable_invocation_before_transport_margin() {
+        const LATE_RESULT_BYTES: usize = MAX_CANONICAL_RESULT_BYTES - 4_096;
+        let store = Arc::new(MemoryStore::default());
+        let clock = Arc::new(ManualClock::new(Instant::now()));
+        let executor = Arc::new(InvocationExecutor::new(store, clock.clone()));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let execution_clock = clock.clone();
+        let execution_count = executions.clone();
+
+        let outcome = executor
+            .submit(
+                prepared(ExecutionClass::InlineCandidate, Duration::from_secs(7)),
+                move |_| {
+                    execution_count.fetch_add(1, Ordering::SeqCst);
+                    execution_clock.advance(Duration::from_millis(6_999));
+                    Ok(DomainResult::success("L".repeat(LATE_RESULT_BYTES)))
+                },
+            )
+            .unwrap();
+        let task_id = match outcome {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("late large result must hand off as the same task: {other:?}"),
+        };
+        let terminal = executor.wait_task(task_id, Duration::from_secs(1)).unwrap();
+
+        assert_eq!(terminal.status, InvocationStatus::Completed);
+        assert_eq!(terminal.result.unwrap().summary.len(), LATE_RESULT_BYTES);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
     fn wait_until_inactive(executor: &InvocationExecutor) {
         let deadline = Instant::now() + Duration::from_secs(1);
         while executor.has_active_invocations() && Instant::now() < deadline {
@@ -2821,6 +3101,9 @@ mod tests {
         completion_at_handoff_reconciles_create_without_exposing_staged_result();
         terminal_complete_and_fail_faults_reconcile_without_reexecution_or_early_idle();
         terminal_reconciliation_uses_bounded_exponential_backoff();
+        terminal_deadline_starts_before_worker_scheduling_and_blocks_late_store_calls();
+        canonical_result_limit_rejects_direct_and_task_bytes_without_persisting_them();
+        late_large_result_uses_the_same_durable_invocation_before_transport_margin();
         permanent_terminal_failure_uses_bounded_policy_then_requires_restart();
         cancel_faults_keep_the_live_owner_until_cancellation_is_durable();
         cancel_returns_the_exact_completed_or_failed_terminal_winner();
@@ -2917,6 +3200,7 @@ mod tests {
         zero_budget_is_materialized_before_execution_and_never_returns_direct();
         simultaneous_completion_and_handoff_publish_one_terminal_result_from_one_execution();
         completion_staged_at_the_7000_boundary_is_a_durable_terminal_task_not_direct();
+        late_large_result_uses_the_same_durable_invocation_before_transport_margin();
     }
 
     #[test]

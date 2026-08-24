@@ -1,11 +1,11 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol::{
-    parse_request, read_bounded_json_line, ClientRequest, DaemonErrorCode, DaemonTaskSnapshot,
+    parse_request, read_bounded_request_line, ClientRequest, DaemonErrorCode, DaemonTaskSnapshot,
     EndpointRecord, InvocationRequest, InvocationResponse, ServerResponse, DAEMON_PROTOCOL_VERSION,
 };
 use crate::application::invocation::{
     normalized_arguments_hash, InvocationExecutor, InvocationExecutorError,
-    PreparedDaemonInvocation,
+    PreparedDaemonInvocation, RESPONSE_SERIALIZATION_MARGIN_MS,
 };
 use crate::application::invocation_store::{InvocationStore, InvocationStoreError};
 use crate::application::operation_descriptors::ExecutionClass;
@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_millis(100);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
+const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const MAX_HANDSHAKES: usize = 8;
 pub(crate) const MAX_OWNER_SESSIONS: usize = 64;
 const ACTOR_OPERATION_BUDGET: Duration = Duration::from_secs(7);
@@ -227,6 +228,12 @@ impl DaemonInvocationError {
             Self::Executor(InvocationExecutorError::Store(InvocationStoreError::Capacity {
                 ..
             })) => DaemonErrorCode::TaskCapacity,
+            Self::Executor(InvocationExecutorError::Store(
+                InvocationStoreError::ResultTooLarge { .. },
+            ))
+            | Self::Executor(InvocationExecutorError::ResultTooLarge) => {
+                DaemonErrorCode::ResultTooLarge
+            }
             Self::Executor(InvocationExecutorError::Store(_)) => DaemonErrorCode::StoreFailed,
             Self::Executor(InvocationExecutorError::ExecutionFailed) => {
                 DaemonErrorCode::InvocationFailed
@@ -764,7 +771,7 @@ fn handle_connection(
         .try_clone()
         .map_err(|error| daemon_io_error("clone daemon client stream", error))?;
     let mut reader = BufReader::new(reader_stream);
-    let request = match read_bounded_json_line(&mut reader).and_then(|bytes| {
+    let request = match read_bounded_request_line(&mut reader).and_then(|bytes| {
         parse_request(&bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }) {
         Ok(request) => request,
@@ -834,10 +841,13 @@ fn handle_connection(
     drop(handshake_slot);
     write_response(&mut stream, &ServerResponse::ready(record))?;
     stream
+        .set_write_timeout(Some(OWNER_RESPONSE_WRITE_TIMEOUT))
+        .map_err(|error| daemon_io_error("configure daemon owner response timeout", error))?;
+    stream
         .set_read_timeout(Some(CONNECTION_READ_TIMEOUT))
         .map_err(|error| daemon_io_error("configure daemon owner timeout", error))?;
     while !shutting_down.load(Ordering::Acquire) {
-        let request = match read_bounded_json_line(&mut reader) {
+        let request = match read_bounded_request_line(&mut reader) {
             Ok(bytes) => match parse_request(&bytes) {
                 Ok(request) => request,
                 Err(_) => {
@@ -860,9 +870,17 @@ fn handle_connection(
             Err(_) => break,
         };
         match request {
-            ClientRequest::Ping {} => write_response(&mut stream, &ServerResponse::Pong)?,
+            ClientRequest::Ping {} => write_response_before(
+                &mut stream,
+                &ServerResponse::Pong,
+                session_response_deadline(Duration::ZERO),
+            )?,
             ClientRequest::Release {} => {
-                write_response(&mut stream, &ServerResponse::Released)?;
+                write_response_before(
+                    &mut stream,
+                    &ServerResponse::Released,
+                    session_response_deadline(Duration::ZERO),
+                )?;
                 break;
             }
             ClientRequest::Hello { .. } => {
@@ -872,46 +890,201 @@ fn handle_connection(
                 )?;
                 break;
             }
-            ClientRequest::SubmitInvocation { invocation } => match invocation_runtime
-                .submit(invocation)
-            {
-                Ok(outcome) => write_response(&mut stream, &ServerResponse::invocation(outcome))?,
-                Err(error) => {
-                    write_response(&mut stream, &ServerResponse::error(error.protocol_code()))?
+            ClientRequest::SubmitInvocation { invocation } => {
+                let deadline = session_response_deadline(Duration::from_millis(
+                    invocation.response_budget_ms(),
+                ));
+                match invocation_runtime.submit(invocation) {
+                    Ok(outcome) => write_response_before(
+                        &mut stream,
+                        &ServerResponse::invocation(outcome),
+                        deadline,
+                    )?,
+                    Err(error) => write_response_before(
+                        &mut stream,
+                        &ServerResponse::error(error.protocol_code()),
+                        deadline,
+                    )?,
                 }
-            },
+            }
             ClientRequest::GetTask { task_id } => {
-                write_task_response(&mut stream, invocation_runtime.get(task_id))?
+                let deadline = session_response_deadline(Duration::ZERO);
+                write_task_response_before(&mut stream, invocation_runtime.get(task_id), deadline)?
             }
             ClientRequest::WaitTask { task_id, wait_ms } => {
-                write_task_response(&mut stream, invocation_runtime.wait(task_id, wait_ms))?
+                let deadline = session_response_deadline(Duration::from_millis(wait_ms));
+                write_task_response_before(
+                    &mut stream,
+                    invocation_runtime.wait(task_id, wait_ms),
+                    deadline,
+                )?
             }
             ClientRequest::CancelTask { task_id } => {
-                write_task_response(&mut stream, invocation_runtime.cancel(task_id))?
+                let deadline = session_response_deadline(Duration::ZERO);
+                write_task_response_before(
+                    &mut stream,
+                    invocation_runtime.cancel(task_id),
+                    deadline,
+                )?
             }
         }
     }
     Ok(())
 }
 
-fn write_task_response(
+fn write_task_response_before(
     stream: &mut TcpStream,
     result: Result<DaemonTaskSnapshot, DaemonInvocationError>,
+    deadline: Instant,
 ) -> Result<(), String> {
     match result {
-        Ok(snapshot) => write_response(stream, &ServerResponse::task(snapshot)),
-        Err(error) => write_response(stream, &ServerResponse::error(error.protocol_code())),
+        Ok(snapshot) => write_response_before(stream, &ServerResponse::task(snapshot), deadline),
+        Err(error) => write_response_before(
+            stream,
+            &ServerResponse::error(error.protocol_code()),
+            deadline,
+        ),
     }
 }
 
+fn session_response_deadline(operation_budget: Duration) -> Instant {
+    Instant::now() + operation_budget + Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS)
+}
+
 fn write_response(stream: &mut TcpStream, response: &ServerResponse) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(response)
-        .map_err(|_| "daemon response could not be serialized".to_string())?;
+    write_response_before(
+        stream,
+        response,
+        Instant::now() + OWNER_RESPONSE_WRITE_TIMEOUT,
+    )
+}
+
+fn write_response_before(
+    stream: &mut TcpStream,
+    response: &ServerResponse,
+    session_deadline: Instant,
+) -> Result<(), String> {
+    let deadline = session_deadline.min(Instant::now() + OWNER_RESPONSE_WRITE_TIMEOUT);
+    if Instant::now() >= deadline {
+        return Err("write daemon response: session response deadline elapsed".to_string());
+    }
+    let mut bytes = match serialize_response_bounded(response) {
+        Ok(bytes) => bytes,
+        Err(ResponseSerializationError::TooLarge) => {
+            serialize_response_bounded(&ServerResponse::error(DaemonErrorCode::ResultTooLarge))
+                .map_err(|_| "bounded daemon error response could not be serialized".to_string())?
+        }
+        Err(ResponseSerializationError::Invalid) => {
+            return Err("daemon response could not be serialized".to_string())
+        }
+    };
+    if Instant::now() >= deadline {
+        return Err("write daemon response: session response deadline elapsed".to_string());
+    }
     bytes.push(b'\n');
-    stream
-        .write_all(&bytes)
-        .and_then(|_| stream.flush())
-        .map_err(|error| daemon_io_error("write daemon response", error))
+    write_bytes_before(
+        stream,
+        &bytes,
+        deadline,
+        Instant::now,
+        |stream, remaining| stream.set_write_timeout(Some(remaining)),
+    )
+}
+
+pub(super) fn write_bytes_before<W, N, C>(
+    writer: &mut W,
+    bytes: &[u8],
+    deadline: Instant,
+    mut now: N,
+    mut configure_timeout: C,
+) -> Result<(), String>
+where
+    W: Write,
+    N: FnMut() -> Instant,
+    C: FnMut(&mut W, Duration) -> io::Result<()>,
+{
+    let mut written = 0;
+    while written < bytes.len() {
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Err("write daemon response: bounded response deadline elapsed".to_string());
+        }
+        configure_timeout(writer, remaining)
+            .map_err(|error| daemon_io_error("configure daemon response timeout", error))?;
+        match writer.write(&bytes[written..]) {
+            Ok(0) => {
+                return Err("write daemon response: connection closed before response".to_string())
+            }
+            Ok(count) => written += count,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                std::thread::sleep(Duration::from_millis(1).min(remaining));
+            }
+            Err(error) => return Err(daemon_io_error("write daemon response", error)),
+        }
+    }
+    writer
+        .flush()
+        .map_err(|error| daemon_io_error("flush daemon response", error))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponseSerializationError {
+    TooLarge,
+    Invalid,
+}
+
+struct BoundedResponseWriter {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    too_large: bool,
+}
+
+impl Write for BoundedResponseWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let Some(next) = self.bytes.len().checked_add(buffer.len()) else {
+            self.too_large = true;
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "response too large",
+            ));
+        };
+        if next > self.max_bytes {
+            self.too_large = true;
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "response too large",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialize_response_bounded(
+    response: &ServerResponse,
+) -> Result<Vec<u8>, ResponseSerializationError> {
+    let mut writer = BoundedResponseWriter {
+        bytes: Vec::new(),
+        max_bytes: super::protocol::MAX_DAEMON_RESPONSE_LINE_BYTES.saturating_sub(1),
+        too_large: false,
+    };
+    let serialized = serde_json::to_writer(&mut writer, response);
+    if writer.too_large {
+        return Err(ResponseSerializationError::TooLarge);
+    }
+    if serialized.is_err() {
+        return Err(ResponseSerializationError::Invalid);
+    }
+    Ok(writer.bytes)
 }
 
 #[cfg(test)]

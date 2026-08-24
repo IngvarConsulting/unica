@@ -1,4 +1,4 @@
-use super::protocol::{parse_endpoint_record, EndpointRecord, MAX_JSON_LINE_BYTES};
+use super::protocol::{parse_endpoint_record, EndpointRecord, MAX_ENDPOINT_RECORD_BYTES};
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_directory_child, create_owner_only_file_child, file_identity,
     open_directory_child_nofollow, open_directory_ownership_lock,
@@ -231,10 +231,10 @@ impl DaemonStateDirectory {
             .map_err(|error| daemon_io_error("identify daemon endpoint record", error))?;
         let mut bytes = Vec::new();
         Read::by_ref(&mut file)
-            .take((MAX_JSON_LINE_BYTES + 1) as u64)
+            .take((MAX_ENDPOINT_RECORD_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|error| daemon_io_error("read daemon endpoint record", error))?;
-        if bytes.len() > MAX_JSON_LINE_BYTES {
+        if bytes.len() > MAX_ENDPOINT_RECORD_BYTES {
             return Err("daemon endpoint record exceeds the byte limit".to_string());
         }
         let record = parse_endpoint_record(&bytes)?;
@@ -269,7 +269,7 @@ impl DaemonStateDirectory {
         let mut bytes = serde_json::to_vec(record)
             .map_err(|_| "daemon endpoint record could not be serialized".to_string())?;
         bytes.push(b'\n');
-        if bytes.len() > MAX_JSON_LINE_BYTES {
+        if bytes.len() > MAX_ENDPOINT_RECORD_BYTES {
             return Err("daemon endpoint record exceeds the byte limit".to_string());
         }
         if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {

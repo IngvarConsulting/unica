@@ -29,3 +29,8 @@ interrupted.
 Повторный cancel и cancel, проигравший complete/fail/cancel, возвращают точное
 победившее durable terminal-состояние. Get/wait только наблюдают durable record
 и не запускают работу.
+
+Единый absolute terminal deadline захватывается до result preparation/clone,
+Arc allocation, thread scheduling и store-channel send. Counting serialization,
+store actor wait, file serialization и retry используют его без reset; worker,
+начавший после deadline, не вызывает store и переводит daemon в fail-stop.

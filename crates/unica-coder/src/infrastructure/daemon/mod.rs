@@ -12,16 +12,17 @@ mod tests {
     use super::protocol::{
         parse_response, read_bounded_json_line, ClientRequest, DaemonErrorCode, EndpointRecord,
         InvocationRequest, InvocationResponse, ServerResponse, DAEMON_PROTOCOL_VERSION,
-        MAX_JSON_LINE_BYTES,
+        MAX_DAEMON_REQUEST_LINE_BYTES, MAX_DAEMON_RESPONSE_LINE_BYTES,
     };
     use super::server::{
         install_handshake_pause, run_daemon, workspace_capacity_protocol_code_for_test,
-        ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService, DaemonServerConfig,
-        MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
+        write_bytes_before, ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
+        DaemonServerConfig, MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
     };
     use crate::application::invocation_store::{
         InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
         SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
+        MAX_CANONICAL_RESULT_BYTES,
     };
     use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
     use crate::domain::cancellation::CancellationToken;
@@ -314,6 +315,10 @@ mod tests {
         staged_summary: &'static str,
     }
 
+    struct SizedResultService {
+        summary_bytes: usize,
+    }
+
     #[derive(Default)]
     struct DaemonMemoryStore {
         records: Mutex<HashMap<TaskId, StoredInvocationRecord>>,
@@ -489,6 +494,23 @@ mod tests {
         }
     }
 
+    impl CanonicalInvocationService for SizedResultService {
+        fn prepare(
+            &self,
+            _invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            Ok(ExecutionClass::InlineCandidate)
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            Ok(DomainResult::success("R".repeat(self.summary_bytes)))
+        }
+    }
+
     #[test]
     fn core_identity_is_closed_compile_time_abi_protocol_digest() {
         let production = CoreIdentity::production();
@@ -558,7 +580,7 @@ mod tests {
 
     #[test]
     fn protocol_rejects_oversized_and_noncanonical_lines() {
-        let oversized = vec![b'x'; MAX_JSON_LINE_BYTES + 1];
+        let oversized = vec![b'x'; MAX_DAEMON_REQUEST_LINE_BYTES + 1];
         let error =
             read_bounded_json_line(&mut BufReader::new(Cursor::new(oversized))).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
@@ -568,6 +590,249 @@ mod tests {
         );
         let error = serde_json::from_slice::<ClientRequest>(unknown.as_bytes()).unwrap_err();
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    fn round_trip_sized_result(summary_bytes: usize) {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(Arc::new(SizedResultService { summary_bytes }));
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical.clone(),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let direct = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    physical.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            match direct {
+                InvocationResponse::Direct(result) => result.summary.len(),
+                other => panic!("sized inline result was not direct: {other:?}"),
+            },
+            summary_bytes
+        );
+
+        let task_id = match owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    physical.to_string_lossy(),
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        {
+            InvocationResponse::Task(snapshot) => snapshot.task_id,
+            other => panic!("zero-budget sized result was not a task: {other:?}"),
+        };
+        let terminal = owner.wait_task(task_id, INTEGRATION_TASK_WAIT_MS).unwrap();
+        assert_eq!(terminal.status, InvocationStatus::Completed);
+        assert_eq!(terminal.result.unwrap().summary.len(), summary_bytes);
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn response_limit_round_trips_results_above_request_cap_and_near_canonical_cap() {
+        round_trip_sized_result(32 * 1024);
+        round_trip_sized_result(MAX_CANONICAL_RESULT_BYTES - 4_096);
+    }
+
+    #[test]
+    fn result_over_canonical_cap_fails_closed_for_direct_and_task() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let config = server_config(root.path().to_path_buf(), identity.clone())
+            .with_invocation_service(Arc::new(SizedResultService {
+                summary_bytes: MAX_CANONICAL_RESULT_BYTES + 1,
+            }));
+        let server = thread::spawn(move || run_daemon(config));
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(
+            physical.clone(),
+            identity,
+        ));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+
+        let direct_error = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    physical.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            direct_error,
+            "daemon invocation submission rejected: result_too_large"
+        );
+
+        let task_id = match owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    physical.to_string_lossy(),
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        {
+            InvocationResponse::Task(snapshot) => snapshot.task_id,
+            other => panic!("zero-budget oversized result was not a task: {other:?}"),
+        };
+        let terminal = owner.wait_task(task_id, INTEGRATION_TASK_WAIT_MS).unwrap();
+        assert_eq!(terminal.status, InvocationStatus::Failed);
+        assert_eq!(terminal.failure.unwrap().code, "result_too_large");
+        assert!(terminal.result.is_none());
+
+        drop(owner);
+        server.join().unwrap().unwrap();
+    }
+
+    fn assert_hostile_response_closes_owner_session(payload: Vec<u8>, expected_error: &str) {
+        let root = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = EndpointRecord::new(identity.clone(), listener.local_addr().unwrap().port());
+        let directory = DaemonStateDirectory::open(&physical, &identity).unwrap();
+        directory.write_endpoint_record_for_test(&record).unwrap();
+        let peer_record = record.clone();
+        let (second_request_seen, second_request_seen_wait) = mpsc::channel();
+        let fake_peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let _hello = read_bounded_json_line(&mut reader).unwrap();
+            write_json_line(&mut stream, &ServerResponse::ready(&peer_record));
+            let first = read_bounded_json_line(&mut reader).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<ClientRequest>(&first).unwrap(),
+                ClientRequest::Ping {}
+            );
+            let _ = stream.write_all(&payload).and_then(|_| stream.flush());
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            second_request_seen
+                .send(read_bounded_json_line(&mut reader).is_ok())
+                .unwrap();
+        });
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("fake endpoint must connect"),
+        };
+
+        let error = owner.ping().unwrap_err();
+        assert!(error.contains(expected_error), "{error}");
+        assert!(owner.ping().is_err());
+        assert!(!second_request_seen_wait.recv().unwrap());
+        fake_peer.join().unwrap();
+    }
+
+    #[test]
+    fn hostile_oversized_response_closes_owner_session_before_a_second_request() {
+        let mut hostile = vec![b'x'; MAX_DAEMON_RESPONSE_LINE_BYTES + 1];
+        hostile.push(b'\n');
+        assert_hostile_response_closes_owner_session(hostile, "byte limit");
+    }
+
+    #[test]
+    fn malformed_and_truncated_responses_close_owner_sessions_before_reuse() {
+        assert_hostile_response_closes_owner_session(b"{not-json}\n".to_vec(), "strict versioned");
+        assert_hostile_response_closes_owner_session(
+            br#"{"kind":"pong"}"#.to_vec(),
+            "missing its terminator",
+        );
+    }
+
+    struct DeterministicBackpressure {
+        now: Arc<Mutex<Instant>>,
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl Write for DeterministicBackpressure {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            *self.now.lock().unwrap() += Duration::from_millis(60);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "deterministic backpressure",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn backpressured_response_uses_the_original_session_margin_without_reset() {
+        let started = Instant::now();
+        let now = Arc::new(Mutex::new(started));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut writer = DeterministicBackpressure {
+            now: now.clone(),
+            attempts: attempts.clone(),
+        };
+        let observed = now.clone();
+
+        let error = write_bytes_before(
+            &mut writer,
+            &[b'x'; 32 * 1024],
+            started + Duration::from_millis(125),
+            move || *observed.lock().unwrap(),
+            |_writer, _remaining| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("bounded response deadline elapsed"),
+            "{error}"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(*now.lock().unwrap(), started + Duration::from_millis(180));
+    }
+
+    #[test]
+    fn daemon_result_size_and_session_bounds_are_enforced() {
+        response_limit_round_trips_results_above_request_cap_and_near_canonical_cap();
+        result_over_canonical_cap_fails_closed_for_direct_and_task();
+        hostile_oversized_response_closes_owner_session_before_a_second_request();
+        malformed_and_truncated_responses_close_owner_sessions_before_reuse();
+        backpressured_response_uses_the_original_session_margin_without_reset();
     }
 
     #[test]
@@ -604,6 +869,7 @@ mod tests {
             ServerResponse::error(DaemonErrorCode::WorkspaceCapacity),
             ServerResponse::error(DaemonErrorCode::WorkspaceRegistryFailed),
             ServerResponse::error(DaemonErrorCode::TaskCapacity),
+            ServerResponse::error(DaemonErrorCode::ResultTooLarge),
             ServerResponse::error(DaemonErrorCode::DurabilityUncertain),
         ];
         for response in responses {
@@ -646,6 +912,7 @@ mod tests {
         ] {
             assert!(super::protocol::parse_request(invalid).is_err());
         }
+        daemon_result_size_and_session_bounds_are_enforced();
     }
 
     #[test]
@@ -1162,6 +1429,7 @@ mod tests {
         owner.cancel_task(task_id).unwrap();
         drop(owner);
         server.join().unwrap().unwrap();
+        daemon_result_size_and_session_bounds_are_enforced();
     }
 
     #[test]
@@ -1734,7 +2002,7 @@ mod tests {
 
         let mut oversized = TcpStream::connect(record.loopback_addr().unwrap()).unwrap();
         oversized
-            .write_all(&vec![b'x'; MAX_JSON_LINE_BYTES + 1])
+            .write_all(&vec![b'x'; MAX_DAEMON_REQUEST_LINE_BYTES + 1])
             .unwrap();
         oversized.write_all(b"\n").unwrap();
         let response: ServerResponse = serde_json::from_slice(

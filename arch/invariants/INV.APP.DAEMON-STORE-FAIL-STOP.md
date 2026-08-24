@@ -19,6 +19,10 @@ File store ограничивает writer acquisition, размер record, rec
 и число retained records. Create использует preallocated TaskId и атомарную
 публикацию без замены; collision типизирован. При capacity удаляются только
 истёкшие terminal records; active и неистёкшие records не вытесняются.
+Успешный rename изменяет in-memory retention catalog до fallible directory
+sync, поэтому видимый uncertain record учитывается немедленно и после reopen.
+Pre-rename failure catalog не меняет. Record ограничен 8 MiB canonical result
+плюс 64 KiB envelope; serialization использует исходный store deadline.
 
 `RestartRequested` не означает, что in-process resources уже освобождены.
 Listener закрывается, PID-bound endpoint остаётся до смерти процесса, и только

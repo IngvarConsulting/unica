@@ -13,3 +13,8 @@ scope: [app]
 незавершённая Invocation уже имеет durable Task; нулевой бюджет материализует её
 до execution. Конкурентные completion и handoff публикуют один terminal result
 при одном execution.
+
+Подготовка result к transport не продлевает frontend deadline: разрешён один
+заранее вычтенный запас 125 мс. Результат больше 16 KiB, завершившийся при
+остатке не более этого запаса, материализуется как тот же durable Task без
+повторного execution; малый результат в 6999 мс сохраняет direct-семантику.

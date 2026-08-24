@@ -1,10 +1,11 @@
 //! Sole-writer durable Task and Invocation store used by the versioned daemon.
 
 use crate::application::invocation_store::{
-    store_operation_checkpoint, CommitOperation, EpochMillisClock, InvocationStore,
-    InvocationStoreError, NewInvocationRecord, SafeFailureReason, SafeStatusMessage,
-    StoredInvocationRecord, TaskTransition, ToolIdentity, INVOCATION_RECORD_SCHEMA_VERSION,
-    LEGACY_INVOCATION_RECORD_SCHEMA_VERSION,
+    canonical_result_size, store_operation_checkpoint, CanonicalResultSizeError, CommitOperation,
+    EpochMillisClock, InvocationStore, InvocationStoreError, NewInvocationRecord,
+    SafeFailureReason, SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
+    INVOCATION_RECORD_SCHEMA_VERSION, LEGACY_INVOCATION_RECORD_SCHEMA_VERSION,
+    MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_BYTES,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -23,7 +24,7 @@ use fs2::FileExt;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -58,7 +59,6 @@ const STORE_LOCK_FILE: &str = ".invocation-store.lock";
 const STORE_OPERATION_BUDGET: Duration = Duration::from_secs(7);
 const STORE_WRITER_WAIT_SLICE: Duration = Duration::from_millis(10);
 const MAX_TASK_RECORDS: usize = 4_096;
-const MAX_TASK_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECOVERY_EXTRA_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
@@ -350,12 +350,26 @@ impl FileInvocationStore {
                         reason,
                     },
                 )?;
-                self.publish_record(&recovered, CommitOperation::Recovery, || {})?;
+                self.publish_record(
+                    &mut writer,
+                    &recovered,
+                    CommitOperation::Recovery,
+                    deadline,
+                    &cancellation,
+                    || {},
+                )?;
                 store_operation_checkpoint(deadline, &cancellation)?;
                 record = recovered;
                 report.classifications.push(classification);
             } else if decoded.schema == DecodedSchema::V1 {
-                self.publish_record(&record, CommitOperation::Recovery, || {})?;
+                self.publish_record(
+                    &mut writer,
+                    &record,
+                    CommitOperation::Recovery,
+                    deadline,
+                    &cancellation,
+                    || {},
+                )?;
                 store_operation_checkpoint(deadline, &cancellation)?;
                 report
                     .classifications
@@ -543,14 +557,18 @@ impl FileInvocationStore {
 
     fn publish_record<F>(
         &self,
+        catalog: &mut StoreCatalog,
         record: &StoredInvocationRecord,
         operation: CommitOperation,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
         before_replace: F,
     ) -> Result<(), InvocationStoreError>
     where
         F: FnOnce(),
     {
         validate_record(record)?;
+        store_operation_checkpoint(deadline, cancellation)?;
         self.verify_root_identity()?;
         let target_name = format!("{}.json", record.task_id);
         let temporary_name = format!(".{}.{}.tmp", record.task_id, Uuid::new_v4());
@@ -568,30 +586,24 @@ impl FileInvocationStore {
             );
             return Err(storage_error("restrict task staging file", error));
         }
-        let bytes = match serde_json::to_vec(record) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                let _ = remove_identity_bound_regular_child(
-                    &self.root,
-                    temporary_name,
-                    temporary_identity,
-                    &file,
-                );
-                return Err(corrupt_error("task record could not be serialized"));
-            }
-        };
-        if bytes.len() > self.limits.max_record_bytes {
+        let serialization = serialize_record_bounded(
+            &mut file,
+            record,
+            self.limits.max_record_bytes,
+            deadline,
+            cancellation,
+        );
+        if let Err(error) = serialization {
             let _ = remove_identity_bound_regular_child(
                 &self.root,
                 temporary_name,
                 temporary_identity,
                 &file,
             );
-            return Err(InvocationStoreError::RecordTooLarge {
-                max_bytes: self.limits.max_record_bytes,
-            });
+            return Err(error);
         }
-        if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+        store_operation_checkpoint(deadline, cancellation)?;
+        if let Err(error) = file.sync_all() {
             let _ = remove_identity_bound_regular_child(
                 &self.root,
                 temporary_name,
@@ -601,6 +613,7 @@ impl FileInvocationStore {
             return Err(storage_error("flush task staging file", error));
         }
 
+        store_operation_checkpoint(deadline, cancellation)?;
         before_replace();
         #[cfg(test)]
         let injected_failure = self.take_publication_failure()?;
@@ -651,6 +664,12 @@ impl FileInvocationStore {
             }
             return Err(storage_error("atomically publish task record", error));
         }
+        // The record is visible after the atomic rename even when directory
+        // durability cannot be confirmed. Retention therefore changes at this
+        // exact visibility point, before the fallible directory sync.
+        catalog
+            .records
+            .insert(record.task_id, RetentionRecord::from(record));
         #[cfg(test)]
         if injected_failure == Some(PublicationFailure::AfterRenameBeforeSync) {
             return Err(InvocationStoreError::CommitUncertain {
@@ -658,6 +677,12 @@ impl FileInvocationStore {
                 operation,
             });
         }
+        store_operation_checkpoint(deadline, cancellation).map_err(|_| {
+            InvocationStoreError::CommitUncertain {
+                task_id: record.task_id,
+                operation,
+            }
+        })?;
         sync_directory(&self.root).map_err(|_| InvocationStoreError::CommitUncertain {
             task_id: record.task_id,
             operation,
@@ -720,10 +745,14 @@ impl FileInvocationStore {
             new_record.into_stored(self.clock.now_epoch_millis())
         };
         store_operation_checkpoint(deadline, cancellation)?;
-        self.publish_record(&record, CommitOperation::Create, || {})?;
-        writer
-            .records
-            .insert(task_id, RetentionRecord::from(&record));
+        self.publish_record(
+            &mut writer,
+            &record,
+            CommitOperation::Create,
+            deadline,
+            cancellation,
+            || {},
+        )?;
         after_publish(task_id);
         Ok(record)
     }
@@ -781,10 +810,14 @@ impl FileInvocationStore {
         }
         let updated = self.transition_record(record, transition)?;
         store_operation_checkpoint(deadline, cancellation)?;
-        self.publish_record(&updated, CommitOperation::Update, before_publish)?;
-        writer
-            .records
-            .insert(task_id, RetentionRecord::from(&updated));
+        self.publish_record(
+            &mut writer,
+            &updated,
+            CommitOperation::Update,
+            deadline,
+            cancellation,
+            before_publish,
+        )?;
         Ok(updated)
     }
 
@@ -994,10 +1027,14 @@ impl InvocationStore for FileInvocationStore {
         record.failure_reason = None;
         record.resume = None;
         store_operation_checkpoint(deadline, cancellation)?;
-        self.publish_record(&record, CommitOperation::Cancel, || {})?;
-        writer
-            .records
-            .insert(task_id, RetentionRecord::from(&record));
+        self.publish_record(
+            &mut writer,
+            &record,
+            CommitOperation::Cancel,
+            deadline,
+            cancellation,
+            || {},
+        )?;
         Ok(record)
     }
 }
@@ -1046,6 +1083,22 @@ fn validate_record(record: &StoredInvocationRecord) -> Result<(), InvocationStor
     if !shape_is_valid {
         return Err(corrupt_error("task record status payload is inconsistent"));
     }
+    if let Some(result) = record.result.as_ref() {
+        match canonical_result_size(result) {
+            Ok(_) => {}
+            Err(CanonicalResultSizeError::TooLarge) => {
+                return Err(InvocationStoreError::ResultTooLarge {
+                    max_bytes: MAX_CANONICAL_RESULT_BYTES,
+                })
+            }
+            Err(CanonicalResultSizeError::Checkpoint(never)) => match never {},
+            Err(CanonicalResultSizeError::Serialization) => {
+                return Err(corrupt_error(
+                    "canonical task result could not be serialized",
+                ))
+            }
+        }
+    }
     let status_message_is_valid = match record.status {
         InvocationStatus::Queued => record.status_message == SafeStatusMessage::Queued,
         InvocationStatus::Working => matches!(
@@ -1065,6 +1118,83 @@ fn validate_record(record: &StoredInvocationRecord) -> Result<(), InvocationStor
         ));
     }
     Ok(())
+}
+
+struct BoundedRecordWriter<'a> {
+    file: &'a mut File,
+    bytes: usize,
+    max_bytes: usize,
+    deadline: ProviderDeadline,
+    cancellation: &'a CancellationToken,
+    failure: Option<InvocationStoreError>,
+}
+
+impl Write for BoundedRecordWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if let Err(error) = store_operation_checkpoint(self.deadline, self.cancellation) {
+            self.failure = Some(error);
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "task record serialization deadline elapsed",
+            ));
+        }
+        let Some(next) = self.bytes.checked_add(buffer.len()) else {
+            self.failure = Some(InvocationStoreError::RecordTooLarge {
+                max_bytes: self.max_bytes,
+            });
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "task record exceeds byte limit",
+            ));
+        };
+        if next > self.max_bytes {
+            self.failure = Some(InvocationStoreError::RecordTooLarge {
+                max_bytes: self.max_bytes,
+            });
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "task record exceeds byte limit",
+            ));
+        }
+        match self.file.write(buffer) {
+            Ok(written) => {
+                self.bytes += written;
+                Ok(written)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+fn serialize_record_bounded(
+    file: &mut File,
+    record: &StoredInvocationRecord,
+    max_bytes: usize,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> Result<(), InvocationStoreError> {
+    let mut writer = BoundedRecordWriter {
+        file,
+        bytes: 0,
+        max_bytes,
+        deadline,
+        cancellation,
+        failure: None,
+    };
+    let serialized = serde_json::to_writer(&mut writer, record);
+    if let Some(error) = writer.failure.take() {
+        return Err(error);
+    }
+    if serialized.is_err() {
+        return Err(InvocationStoreError::Storage(
+            "serialize task staging record".to_string(),
+        ));
+    }
+    store_operation_checkpoint(deadline, cancellation)
 }
 
 fn corrupt_error(message: &'static str) -> InvocationStoreError {
@@ -1093,6 +1223,7 @@ pub(crate) mod tests {
     use crate::application::invocation_store::{
         CommitOperation, EpochMillisClock, InvocationStore, InvocationStoreError,
         NewInvocationRecord, SafeFailureReason, SafeStatusMessage, TaskTransition, ToolIdentity,
+        MAX_CANONICAL_RESULT_BYTES,
     };
     use crate::domain::invocation::{
         DeliveryResume, DomainResult, InvocationId, InvocationStatus, NormalizedArgumentsHash,
@@ -1104,7 +1235,7 @@ pub(crate) mod tests {
     use std::fs;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{mpsc, Arc};
+    use std::sync::{mpsc, Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     #[derive(Default)]
@@ -1124,6 +1255,15 @@ pub(crate) mod tests {
         fn now_epoch_millis(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
+    }
+
+    static SERIALIZATION_DEADLINE_NOW: OnceLock<Mutex<Instant>> = OnceLock::new();
+
+    fn advancing_serialization_now() -> Instant {
+        let clock = SERIALIZATION_DEADLINE_NOW.get_or_init(|| Mutex::new(Instant::now()));
+        let mut now = clock.lock().unwrap();
+        *now += Duration::from_millis(1);
+        *now
     }
 
     fn new_record(ttl_ms: u64, resume: Option<ResumeDescriptor>) -> NewInvocationRecord {
@@ -1242,6 +1382,113 @@ pub(crate) mod tests {
             after.get(task_id).unwrap().status,
             InvocationStatus::Working
         );
+    }
+
+    #[test]
+    fn uncertain_visible_create_counts_toward_capacity_before_and_after_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(1_660));
+        let (store, _) = FileInvocationStore::open_with_limits_for_test(
+            root.path(),
+            clock.clone(),
+            1,
+            1_048_576,
+        )
+        .unwrap();
+        store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+        let task_id = match store.create_working(new_record(10_000, None)).unwrap_err() {
+            InvocationStoreError::CommitUncertain {
+                task_id,
+                operation: CommitOperation::Create,
+            } => task_id,
+            other => panic!("unexpected create outcome: {other:?}"),
+        };
+        assert_eq!(
+            store.get(task_id).unwrap().status,
+            InvocationStatus::Working
+        );
+        assert_eq!(
+            store.create_working(new_record(10_000, None)).unwrap_err(),
+            InvocationStoreError::Capacity { max_records: 1 },
+            "a visible uncertain create must consume the in-process retention slot"
+        );
+        drop(store);
+
+        let (reopened, _) =
+            FileInvocationStore::open_with_limits_for_test(root.path(), clock, 1, 1_048_576)
+                .unwrap();
+        assert_eq!(
+            reopened.get(task_id).unwrap().status,
+            InvocationStatus::Failed
+        );
+        assert_eq!(
+            reopened
+                .create_working(new_record(10_000, None))
+                .unwrap_err(),
+            InvocationStoreError::Capacity { max_records: 1 }
+        );
+    }
+
+    #[test]
+    fn pre_rename_create_failure_does_not_consume_retention_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(1_665));
+        let (store, _) =
+            FileInvocationStore::open_with_limits_for_test(root.path(), clock, 1, 1_048_576)
+                .unwrap();
+        store.inject_next_publication_failure(PublicationFailure::BeforeRename);
+        assert!(matches!(
+            store.create_working(new_record(10_000, None)),
+            Err(InvocationStoreError::Storage(_))
+        ));
+
+        let committed = store.create_working(new_record(10_000, None)).unwrap();
+        assert_eq!(store.get(committed.task_id).unwrap(), committed);
+    }
+
+    #[test]
+    fn uncertain_visible_terminal_update_and_cancel_refresh_retention_state() {
+        for cancel in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let clock = Arc::new(ManualEpochClock::at(1_670));
+            let (store, _) = FileInvocationStore::open_with_limits_for_test(
+                root.path(),
+                clock.clone(),
+                1,
+                1_048_576,
+            )
+            .unwrap();
+            let working = store.create_working(new_record(1, None)).unwrap();
+            store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+            let error = if cancel {
+                store
+                    .cancel(working.task_id, SafeStatusMessage::Cancelled)
+                    .unwrap_err()
+            } else {
+                store
+                    .update(
+                        working.task_id,
+                        TaskTransition::Complete {
+                            status_message: SafeStatusMessage::Completed,
+                            result: Box::new(DomainResult::success("terminal")),
+                        },
+                    )
+                    .unwrap_err()
+            };
+            assert!(matches!(
+                error,
+                InvocationStoreError::CommitUncertain { .. }
+            ));
+            assert!(store.get(working.task_id).unwrap().is_terminal());
+
+            clock.set(1_672);
+            let replacement = store.create_working(new_record(10_000, None)).unwrap();
+            assert_eq!(store.get(replacement.task_id).unwrap(), replacement);
+            assert!(matches!(
+                store.get(working.task_id),
+                Err(InvocationStoreError::NotFound)
+            ));
+        }
     }
 
     #[test]
@@ -2143,14 +2390,85 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn file_store_enforces_the_canonical_result_limit_before_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_450));
+        let (store, _) = open_store(root.path(), clock);
+        let working = store.create_working(new_record(10_000, None)).unwrap();
+
+        let error = store
+            .update(
+                working.task_id,
+                TaskTransition::Complete {
+                    status_message: SafeStatusMessage::Completed,
+                    result: Box::new(DomainResult::success(
+                        "X".repeat(MAX_CANONICAL_RESULT_BYTES + 1),
+                    )),
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            InvocationStoreError::ResultTooLarge {
+                max_bytes: MAX_CANONICAL_RESULT_BYTES,
+            }
+        );
+        assert_eq!(
+            store.get(working.task_id).unwrap().status,
+            InvocationStatus::Working
+        );
+    }
+
+    #[test]
+    fn record_serialization_uses_the_original_store_deadline_without_reset() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualEpochClock::at(14_475));
+        let (store, _) = open_store(root.path(), clock);
+        let working = store.create_working(new_record(10_000, None)).unwrap();
+        let started = Instant::now();
+        *SERIALIZATION_DEADLINE_NOW
+            .get_or_init(|| Mutex::new(started))
+            .lock()
+            .unwrap() = started;
+        let deadline = ProviderDeadline::with_clock(
+            started + Duration::from_millis(7),
+            advancing_serialization_now,
+        );
+
+        let error = store
+            .update_before(
+                working.task_id,
+                TaskTransition::Complete {
+                    status_message: SafeStatusMessage::Completed,
+                    result: Box::new(DomainResult::success("Y".repeat(64 * 1024))),
+                },
+                deadline,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error, InvocationStoreError::DeadlineExceeded);
+        assert_eq!(
+            store.get(working.task_id).unwrap().status,
+            InvocationStatus::Working
+        );
+    }
+
+    #[test]
     pub(crate) fn file_invocation_store_bounds_and_retention_are_enforced() {
         preallocated_create_collision_is_typed_and_never_replaces_the_first_record();
+        uncertain_visible_create_counts_toward_capacity_before_and_after_reopen();
+        pre_rename_create_failure_does_not_consume_retention_capacity();
+        uncertain_visible_terminal_update_and_cancel_refresh_retention_state();
         held_file_writer_is_bounded_by_the_same_deadline_without_releasing_guard();
         active_and_nonexpired_terminal_records_are_never_evicted_at_capacity();
         expired_terminal_records_are_reclaimed_only_when_bounded_capacity_is_needed();
         create_does_not_rescan_a_directory_that_grew_beyond_the_recovery_bound();
         recovery_excess_is_typed_capacity_not_unbounded_enumeration_or_corruption();
         oversized_valid_record_is_rejected_before_unbounded_recovery_read();
+        file_store_enforces_the_canonical_result_limit_before_publication();
+        record_serialization_uses_the_original_store_deadline_without_reset();
     }
 
     fn collect_recursive_bytes(path: &Path, output: &mut Vec<u8>) {

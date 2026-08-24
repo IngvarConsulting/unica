@@ -14,3 +14,7 @@ arguments, actor-derived workspace identity, закрытые status,
 `SafeFailureReason` и допустимый DomainResult. Raw arguments, caller/runtime
 text, stdout, stderr и свободный failure text в record не попадают. Ошибка Task
 строится только из закрытой причины при чтении.
+Canonical DomainResult ограничен 8 MiB и одинаково проверяется для direct и
+Task. Persistent envelope имеет отдельный запас 64 KiB и не расширяет result.
+Превышение сохраняется только закрытой причиной `ResultTooLarge`, без bytes
+результата.

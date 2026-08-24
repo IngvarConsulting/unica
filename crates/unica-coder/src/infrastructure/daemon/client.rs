@@ -1,8 +1,10 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory};
 use super::protocol::{
-    parse_response, read_bounded_json_line, ClientRequest, DaemonErrorCode, DaemonTaskSnapshot,
+    parse_response, read_bounded_response_line, ClientRequest, DaemonErrorCode, DaemonTaskSnapshot,
     EndpointRecord, InvocationRequest, InvocationResponse, ServerResponse, DAEMON_PROTOCOL_VERSION,
+    MAX_DAEMON_REQUEST_LINE_BYTES,
 };
+use crate::application::invocation::RESPONSE_SERIALIZATION_MARGIN_MS;
 use crate::infrastructure::platform::ManagedStartupChild;
 use std::io::{self, BufReader, Write};
 use std::net::TcpStream;
@@ -14,7 +16,8 @@ use std::time::{Duration, Instant};
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
-const INVOCATION_RESPONSE_MARGIN: Duration = Duration::from_millis(125);
+const INVOCATION_RESPONSE_MARGIN: Duration =
+    Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS);
 
 trait DaemonClientClock: Send + Sync {
     fn elapsed(&self) -> Duration;
@@ -329,6 +332,7 @@ pub(crate) struct DaemonOwner {
     record: EndpointRecord,
     exchange_budget: Duration,
     clock: Arc<dyn DaemonClientClock>,
+    poisoned: bool,
 }
 
 impl DaemonOwner {
@@ -399,10 +403,12 @@ impl DaemonOwner {
             record: record.clone(),
             exchange_budget,
             clock,
+            poisoned: false,
         })
     }
 
     pub(crate) fn ping(&mut self) -> Result<(), String> {
+        self.ensure_usable()?;
         let deadline = DaemonDeadline::new(self.exchange_budget, Arc::clone(&self.clock))?;
         write_request(
             &mut self.writer,
@@ -410,7 +416,7 @@ impl DaemonOwner {
             &deadline,
             "ping request",
         )?;
-        match read_response(&mut self.reader, &deadline, "ping response")? {
+        match self.read_response_or_poison(&deadline, "ping response")? {
             ServerResponse::Pong => Ok(()),
             response => Err(response.error_code().map_or_else(
                 || "daemon ping returned an unexpected response".to_string(),
@@ -445,6 +451,7 @@ impl DaemonOwner {
         request: InvocationRequest,
         transport_budget: Duration,
     ) -> Result<InvocationResponse, String> {
+        self.ensure_usable()?;
         let deadline = DaemonDeadline::new(transport_budget, Arc::clone(&self.clock))?;
         write_request(
             &mut self.writer,
@@ -452,7 +459,7 @@ impl DaemonOwner {
             &deadline,
             "invocation submit request",
         )?;
-        match read_response(&mut self.reader, &deadline, "invocation submit response")? {
+        match self.read_response_or_poison(&deadline, "invocation submit response")? {
             ServerResponse::Invocation { outcome } => Ok(outcome),
             ServerResponse::Error { code } => {
                 Err(format!("daemon invocation submission rejected: {code}"))
@@ -497,12 +504,13 @@ impl DaemonOwner {
         request: ClientRequest,
         budget: Duration,
     ) -> Result<DaemonTaskSnapshot, String> {
+        self.ensure_usable()?;
         let deadline = DaemonDeadline::new(
             budget.max(Duration::from_millis(1)),
             Arc::clone(&self.clock),
         )?;
         write_request(&mut self.writer, &request, &deadline, "task request")?;
-        match read_response(&mut self.reader, &deadline, "task response")? {
+        match self.read_response_or_poison(&deadline, "task response")? {
             ServerResponse::Task { snapshot } => Ok(snapshot),
             ServerResponse::Error { code } => Err(format!("daemon task request rejected: {code}")),
             _ => Err("daemon task request returned an unexpected response".into()),
@@ -511,6 +519,30 @@ impl DaemonOwner {
 
     pub(crate) fn daemon_pid(&self) -> u32 {
         self.record.pid()
+    }
+
+    fn ensure_usable(&self) -> Result<(), String> {
+        if self.poisoned {
+            Err("daemon owner session is closed after a malformed response".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn read_response_or_poison(
+        &mut self,
+        deadline: &DaemonDeadline,
+        stage: &'static str,
+    ) -> Result<ServerResponse, String> {
+        match read_response(&mut self.reader, deadline, stage) {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                self.poisoned = true;
+                let _ = self.writer.shutdown(std::net::Shutdown::Both);
+                let _ = self.reader.get_ref().shutdown(std::net::Shutdown::Both);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -544,6 +576,9 @@ fn write_request(
         "locally constructed daemon request must satisfy the strict protocol"
     );
     bytes.push(b'\n');
+    if bytes.len() > MAX_DAEMON_REQUEST_LINE_BYTES {
+        return Err("daemon request exceeds the byte limit".to_string());
+    }
     let remaining = deadline.remaining(stage)?;
     stream
         .set_write_timeout(Some(remaining))
@@ -566,7 +601,7 @@ fn read_response(
         .get_ref()
         .set_read_timeout(Some(remaining))
         .map_err(|error| format!("configure daemon read timeout: {error}"))?;
-    let bytes = read_bounded_json_line(reader);
+    let bytes = read_bounded_response_line(reader);
     deadline.checkpoint(stage)?;
     parse_response(&bytes.map_err(|error| format!("read daemon response: {error}"))?)
 }

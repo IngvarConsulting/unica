@@ -1,5 +1,8 @@
 use super::identity::CoreIdentity;
-use crate::application::invocation_store::ToolIdentity;
+use crate::application::invocation_store::{
+    canonical_result_size, CanonicalResultSizeError, ToolIdentity, MAX_CANONICAL_RESULT_BYTES,
+    MAX_TASK_RECORD_ENVELOPE_BYTES,
+};
 use crate::domain::invocation::{
     DomainResult, InvocationFailure, InvocationId, InvocationStatus, TaskId,
 };
@@ -11,7 +14,10 @@ use uuid::Uuid;
 
 pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 2;
 pub(crate) const ENDPOINT_SCHEMA_VERSION: u32 = 1;
-pub(crate) const MAX_JSON_LINE_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_DAEMON_REQUEST_LINE_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_ENDPOINT_RECORD_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_DAEMON_RESPONSE_LINE_BYTES: usize =
+    MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
 pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 
 /// One canonical v0.13 call submitted to the daemon. Raw arguments exist only
@@ -333,6 +339,7 @@ pub(crate) enum DaemonErrorCode {
     TaskNotFound,
     TaskExpired,
     InvocationFailed,
+    ResultTooLarge,
     StoreFailed,
     DurabilityUncertain,
 }
@@ -354,6 +361,7 @@ impl std::fmt::Display for DaemonErrorCode {
             Self::TaskNotFound => "task_not_found",
             Self::TaskExpired => "task_expired",
             Self::InvocationFailed => "invocation_failed",
+            Self::ResultTooLarge => "result_too_large",
             Self::StoreFailed => "store_failed",
             Self::DurabilityUncertain => "durability_uncertain",
         };
@@ -431,7 +439,10 @@ impl ServerResponse {
     }
 }
 
-pub(crate) fn read_bounded_json_line<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
+fn read_bounded_json_line_with_limit<R: BufRead>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> io::Result<Vec<u8>> {
     let mut line = Vec::new();
     loop {
         let buffer = reader.fill_buf()?;
@@ -450,7 +461,7 @@ pub(crate) fn read_bounded_json_line<R: BufRead>(reader: &mut R) -> io::Result<V
         }
         let newline = buffer.iter().position(|byte| *byte == b'\n');
         let take = newline.map_or(buffer.len(), |position| position + 1);
-        if line.len().saturating_add(take) > MAX_JSON_LINE_BYTES {
+        if line.len().saturating_add(take) > max_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "daemon JSON line exceeds the byte limit",
@@ -476,6 +487,19 @@ pub(crate) fn read_bounded_json_line<R: BufRead>(reader: &mut R) -> io::Result<V
     }
 }
 
+pub(crate) fn read_bounded_request_line<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
+    read_bounded_json_line_with_limit(reader, MAX_DAEMON_REQUEST_LINE_BYTES)
+}
+
+pub(crate) fn read_bounded_response_line<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
+    read_bounded_json_line_with_limit(reader, MAX_DAEMON_RESPONSE_LINE_BYTES)
+}
+
+#[cfg(test)]
+pub(crate) fn read_bounded_json_line<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
+    read_bounded_request_line(reader)
+}
+
 pub(crate) fn parse_endpoint_record(bytes: &[u8]) -> Result<EndpointRecord, String> {
     let record: EndpointRecord = serde_json::from_slice(bytes)
         .map_err(|_| "daemon endpoint record is not strict versioned JSON".to_string())?;
@@ -491,6 +515,36 @@ pub(crate) fn parse_request(bytes: &[u8]) -> Result<ClientRequest, String> {
 }
 
 pub(crate) fn parse_response(bytes: &[u8]) -> Result<ServerResponse, String> {
-    serde_json::from_slice(bytes)
-        .map_err(|_| "daemon response is not strict versioned JSON".to_string())
+    let response: ServerResponse = serde_json::from_slice(bytes)
+        .map_err(|_| "daemon response is not strict versioned JSON".to_string())?;
+    for result in response_domain_results(&response) {
+        match canonical_result_size(result) {
+            Ok(_) => {}
+            Err(CanonicalResultSizeError::TooLarge) => {
+                return Err("daemon response canonical result exceeds the byte limit".to_string())
+            }
+            Err(CanonicalResultSizeError::Checkpoint(never)) => match never {},
+            Err(CanonicalResultSizeError::Serialization) => {
+                return Err("daemon response canonical result is not serializable".to_string())
+            }
+        }
+    }
+    Ok(response)
+}
+
+fn response_domain_results(response: &ServerResponse) -> impl Iterator<Item = &DomainResult> {
+    let direct = match response {
+        ServerResponse::Invocation {
+            outcome: InvocationResponse::Direct(result),
+        } => Some(result),
+        _ => None,
+    };
+    let task = match response {
+        ServerResponse::Invocation {
+            outcome: InvocationResponse::Task(snapshot),
+        }
+        | ServerResponse::Task { snapshot } => snapshot.result.as_ref(),
+        _ => None,
+    };
+    direct.into_iter().chain(task)
 }
