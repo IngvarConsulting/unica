@@ -200,7 +200,7 @@ claude --plugin-dir ./plugins/unica
 ```
 
 На Windows x64 запускайте этот скрипт из **Git Bash**, входящего в 64-битный
-Git for Windows. Для локальной сборки нужны Python 3.10 или новее, стабильный
+Git for Windows. Для локальной сборки нужны Python 3.12 или новее, стабильный
 Rust с нативным toolchain MSVC, а также Microsoft C++ Build Tools и Windows SDK.
 
 WSL сохраняет Linux-семантику и собирает `linux-x64`. MSYS2 и Cygwin не входят

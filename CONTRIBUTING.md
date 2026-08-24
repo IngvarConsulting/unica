@@ -10,10 +10,9 @@
 
 ### Python 3.12
 
-Для разработки рекомендуем [Python 3.12](https://www.python.org/downloads/).
-Это более узкая рекомендация, чем нижняя граница Python 3.10, указанная в
-`README.md` для локальной сборки на Windows: при разработке используйте ту же
-ветку интерпретатора, на которой выполняются команды проверки проекта.
+Минимальная поддерживаемая версия для локальной разработки и сборки —
+[Python 3.12](https://www.python.org/downloads/). Используйте ту же ветку
+интерпретатора, на которой выполняются команды проверки проекта.
 
 После установки убедитесь, что интерпретатор доступен из shell, в котором
 работает агент:
@@ -95,9 +94,10 @@ rust-analyzer --version
 ### Codex
 
 Сначала проверьте, какие навыки уже установлены. Ожидаемый путь каждого навыка —
-`$CODEX_HOME/skills/<имя>/SKILL.md`. Вызовите `$skill-installer` и попросите
-установить из repository `anthropics/claude-plugins-official`, ref `main`,
-только отсутствующие пути из списка:
+`$CODEX_HOME/skills/<имя>/SKILL.md`; если `CODEX_HOME` не задан —
+`~/.codex/skills/<имя>/SKILL.md`. Вызовите `$skill-installer` и попросите
+установить из repository `anthropics/claude-plugins-official`, ref `main`, только
+отсутствующие пути из списка:
 
 ```text
 plugins/mcp-server-dev/skills/build-mcp-server
