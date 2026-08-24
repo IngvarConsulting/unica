@@ -1689,43 +1689,58 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_context_accepts_external_processor_modules_without_starting_a_provider() {
-        let temp = tempfile::tempdir().unwrap();
-        let root =
-            crate::infrastructure::source_roots::normalize_path_identity(temp.path()).unwrap();
-        fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: processors\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("epf/Review/Ext")).unwrap();
-        fs::write(
-            root.join("epf/Review.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor><Properties><Name>Review</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("epf/Review/Ext/ObjectModule.bsl"),
-            "Procedure Run()\nEndProcedure\n",
-        )
-        .unwrap();
-        let context = WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let mut request = request(Some("ExternalDataProcessor.Review.ObjectModule"));
-        request.source_set = "processors".to_string();
+    fn diagnostics_context_accepts_external_modules_without_starting_a_provider() {
+        for (source_type, directory, object_kind, name) in [
+            (
+                "EXTERNAL_DATA_PROCESSORS",
+                "epf",
+                "ExternalDataProcessor",
+                "Review",
+            ),
+            ("EXTERNAL_REPORTS", "erf", "ExternalReport", "Analysis"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root =
+                crate::infrastructure::source_roots::normalize_path_identity(temp.path()).unwrap();
+            fs::write(
+                root.join("v8project.yaml"),
+                format!(
+                    "format: DESIGNER\nsource-set:\n  - name: external\n    type: {source_type}\n    path: {directory}\n"
+                ),
+            )
+            .unwrap();
+            fs::create_dir_all(root.join(format!("{directory}/{name}/Ext"))).unwrap();
+            fs::write(
+                root.join(format!("{directory}/{name}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{object_kind}><Properties><Name>{name}</Name></Properties><ChildObjects/></{object_kind}></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+            fs::write(
+                root.join(format!("{directory}/{name}/Ext/ObjectModule.bsl")),
+                "Procedure Run()\nEndProcedure\n",
+            )
+            .unwrap();
+            let context = WorkspaceContext {
+                cwd: root.clone(),
+                workspace_root: root.clone(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            };
+            let metadata_path = format!("{object_kind}.{name}.ObjectModule");
+            let mut request = request(Some(&metadata_path));
+            request.source_set = "external".to_string();
 
-        let resolved =
-            resolve_diagnostic_context(&request, &context, &CancellationToken::new()).unwrap();
+            let resolved =
+                resolve_diagnostic_context(&request, &context, &CancellationToken::new()).unwrap();
 
-        assert_eq!(
-            resolved.target.metadata_path.as_ref().unwrap().as_str(),
-            "ExternalDataProcessor.Review.ObjectModule"
-        );
-        assert_eq!(resolved.target.target_kind, TargetKind::Module);
+            assert_eq!(
+                resolved.target.metadata_path.as_ref().unwrap().as_str(),
+                metadata_path
+            );
+            assert_eq!(resolved.target.target_kind, TargetKind::Module);
+        }
     }
 
     fn diagnostic(

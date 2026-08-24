@@ -3397,6 +3397,15 @@ fn resolve_platform_xml_root(
     selected: ResolvedNamedSourceSet,
     access: PlatformXmlTargetAccess,
 ) -> Result<PlatformXmlResolution, SourceTargetError> {
+    if matches!(
+        selected.source_set.kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Err(SourceTargetError::new(
+            SourceTargetErrorCode::MetadataAddressNotFound,
+            "external sourceSet root has no readable resource target",
+        ));
+    }
     let root_path = WorkspacePathPolicy::new(context)
         .resolve_write(selected.lexical_path.clone())
         .map_err(|_| source_root_containment_error(&target.source_set))?;
@@ -3412,14 +3421,7 @@ fn resolve_platform_xml_root(
     }
     let workspace_root = normalize_path_identity(&context.workspace_root)
         .map_err(|_| source_root_containment_error(&target.source_set))?;
-    let registration_path = if matches!(
-        selected.source_set.kind,
-        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
-    ) {
-        selected.path.clone()
-    } else {
-        selected.path.join("Configuration.xml")
-    };
+    let registration_path = selected.path.join("Configuration.xml");
     Ok(PlatformXmlResolution {
         resolved: ResolvedTarget {
             source_set: selected.source_set.name.clone(),

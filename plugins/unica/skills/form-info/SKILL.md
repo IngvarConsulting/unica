@@ -72,7 +72,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "<имя набора>",
-      "metadataPath": "Catalog.<Объект>.Form.<Форма>"
+      "metadataPath": "ExternalDataProcessor.<Имя>.Form.<Форма>"
     }
   }
 }

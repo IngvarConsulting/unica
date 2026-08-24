@@ -1,14 +1,6 @@
 use super::UnicaApplication;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::diagnostics::{
-    DiagnosticAction, DiagnosticFilter, DiagnosticRequest, DiagnosticSeverity,
-};
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::diagnostics::resolve_diagnostic_context;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use uuid::Uuid;
 
 struct TempWorkspace(PathBuf);
@@ -197,47 +189,6 @@ fn assert_external_readers(source_set_type: &str, init_tool: &str, owner_kind: &
         let result = call(workspace.path(), tool, [(field.to_string(), json!(value))]);
         assert!(result.ok, "{tool}: {result:?}");
     }
-
-    let diagnostics = DiagnosticRequest {
-        action: DiagnosticAction::Findings,
-        source_set: "external".to_string(),
-        metadata_path: Some(
-            MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("{owner_kind}.{name}.ObjectModule"),
-            )
-            .unwrap(),
-        ),
-        filter: DiagnosticFilter {
-            min_severity: Some(DiagnosticSeverity::Warning),
-            codes: Vec::new(),
-        },
-        range: None,
-        limit: 20,
-        timeout: Some(Duration::from_secs(30)),
-    };
-    let root =
-        crate::infrastructure::source_roots::normalize_path_identity(workspace.path()).unwrap();
-    let diagnostics_context = resolve_diagnostic_context(
-        &diagnostics,
-        &WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".build/unica"),
-            workspace_epoch: 1,
-        },
-        &CancellationToken::new(),
-    )
-    .unwrap();
-    assert_eq!(
-        diagnostics_context
-            .target
-            .metadata_path
-            .as_ref()
-            .unwrap()
-            .as_str(),
-        format!("{owner_kind}.{name}.ObjectModule")
-    );
 
     std::fs::write(
         workspace

@@ -155,7 +155,7 @@ allowed-tools:
     "arguments": {
       "cwd": "<workspace>",
       "sourceSet": "<имя набора>",
-      "metadataPath": "Report.<Отчёт>.Template.<Макет>"
+      "metadataPath": "ExternalReport.<Имя>.Template.<Макет>"
     }
   }
 }

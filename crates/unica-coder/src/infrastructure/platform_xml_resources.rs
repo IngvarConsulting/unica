@@ -1188,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn source_resources_report_an_empty_external_source_set_as_unavailable() {
+    fn source_resources_report_an_empty_external_source_set_as_a_missing_target() {
         let fixture = Fixture::new(b"Procedure Run()\nEndProcedure\n");
         fs::create_dir_all(fixture.root.join("external")).unwrap();
         fs::write(
@@ -1213,7 +1213,7 @@ mod tests {
             )
             .unwrap_err();
 
-        assert_eq!(error.code, SourceResourceErrorCode::SourceUnavailable);
+        assert_eq!(error.code, SourceResourceErrorCode::TargetNotFound);
     }
 
     #[test]
