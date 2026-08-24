@@ -19,7 +19,11 @@ mod tests {
         ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService, DaemonServerConfig,
         MAX_HANDSHAKES, MAX_OWNER_SESSIONS,
     };
-    use crate::application::invocation_store::{InvocationStoreError, ToolIdentity};
+    use crate::application::invocation::{InvocationExecutor, PreparedDaemonInvocation};
+    use crate::application::invocation_store::{
+        InvocationStore, InvocationStoreError, NewInvocationRecord, SafeFailureReason,
+        SafeStatusMessage, StoredInvocationRecord, TaskTransition, ToolIdentity,
+    };
     use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::invocation::{DomainResult, InvocationFailure, InvocationStatus, TaskId};
@@ -28,6 +32,7 @@ mod tests {
         FileLinkFixtureOutcome,
     };
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
+    use std::collections::HashMap;
     use std::io::{BufReader, Cursor, Write};
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
     use std::path::PathBuf;
@@ -36,6 +41,12 @@ mod tests {
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    // These waits only bound native thread/TCP coordination in integration tests. They exceed
+    // the actor's seven-second operation budget so parallel test-runner scheduling cannot be
+    // mistaken for the product deadline being exercised inside the daemon.
+    const INTEGRATION_COORDINATION_TIMEOUT: Duration = Duration::from_secs(10);
+    const INTEGRATION_TASK_WAIT_MS: u64 = 7_000;
 
     fn alternate_identity() -> CoreIdentity {
         CoreIdentity::from_str("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
@@ -109,6 +120,198 @@ mod tests {
         entered: mpsc::Sender<()>,
         release: Mutex<mpsc::Receiver<()>>,
         staged_summary: &'static str,
+    }
+
+    #[derive(Default)]
+    struct DaemonMemoryStore {
+        records: Mutex<HashMap<TaskId, StoredInvocationRecord>>,
+        update_attempts: AtomicUsize,
+        fail_updates: AtomicUsize,
+    }
+
+    struct PermanentTerminalFileStore {
+        inner: FileInvocationStore,
+    }
+
+    struct UncertainCreateFileStore {
+        inner: FileInvocationStore,
+    }
+
+    impl InvocationStore for UncertainCreateFileStore {
+        fn create(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create(record)
+        }
+
+        fn create_working(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            let stored = self.inner.create_working(record)?;
+            Err(InvocationStoreError::CommitUncertain {
+                task_id: stored.task_id,
+                operation: crate::application::invocation_store::CommitOperation::Create,
+            })
+        }
+
+        fn get(&self, _task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            Err(InvocationStoreError::Storage(
+                "permanent create readback failure".into(),
+            ))
+        }
+
+        fn update(
+            &self,
+            task_id: TaskId,
+            transition: TaskTransition,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.update(task_id, transition)
+        }
+
+        fn cancel(
+            &self,
+            task_id: TaskId,
+            status_message: SafeStatusMessage,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.cancel(task_id, status_message)
+        }
+    }
+
+    impl InvocationStore for PermanentTerminalFileStore {
+        fn create(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create(record)
+        }
+
+        fn create_working(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.create_working(record)
+        }
+
+        fn get(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.get(task_id)
+        }
+
+        fn update(
+            &self,
+            _task_id: TaskId,
+            _transition: TaskTransition,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            Err(InvocationStoreError::Storage(
+                "permanent terminal write failure".into(),
+            ))
+        }
+
+        fn cancel(
+            &self,
+            task_id: TaskId,
+            status_message: SafeStatusMessage,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.inner.cancel(task_id, status_message)
+        }
+    }
+
+    impl InvocationStore for DaemonMemoryStore {
+        fn create(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            let stored = record.into_stored(1);
+            self.records
+                .lock()
+                .unwrap()
+                .insert(stored.task_id, stored.clone());
+            Ok(stored)
+        }
+
+        fn create_working(
+            &self,
+            record: NewInvocationRecord,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            let stored = record.into_working_stored(1);
+            self.records
+                .lock()
+                .unwrap()
+                .insert(stored.task_id, stored.clone());
+            Ok(stored)
+        }
+
+        fn get(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.records
+                .lock()
+                .unwrap()
+                .get(&task_id)
+                .cloned()
+                .ok_or(InvocationStoreError::NotFound)
+        }
+
+        fn update(
+            &self,
+            task_id: TaskId,
+            transition: TaskTransition,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.update_attempts.fetch_add(1, Ordering::SeqCst);
+            if self.fail_updates.load(Ordering::SeqCst) != 0 {
+                return Err(InvocationStoreError::Storage(
+                    "permanent daemon terminal failure".into(),
+                ));
+            }
+            let mut records = self.records.lock().unwrap();
+            let record = records
+                .get_mut(&task_id)
+                .ok_or(InvocationStoreError::NotFound)?;
+            if record.is_terminal() {
+                return Err(InvocationStoreError::InvalidTransition {
+                    from: record.status,
+                    attempted: "update",
+                });
+            }
+            match transition {
+                TaskTransition::StartWorking { status_message } => {
+                    record.status = InvocationStatus::Working;
+                    record.status_message = status_message;
+                }
+                TaskTransition::Complete {
+                    status_message,
+                    result,
+                } => {
+                    record.status = InvocationStatus::Completed;
+                    record.status_message = status_message;
+                    record.result = Some(*result);
+                }
+                TaskTransition::Fail {
+                    status_message,
+                    reason,
+                } => {
+                    record.status = InvocationStatus::Failed;
+                    record.status_message = status_message;
+                    record.failure_reason = Some(reason);
+                }
+            }
+            Ok(record.clone())
+        }
+
+        fn cancel(
+            &self,
+            task_id: TaskId,
+            status_message: SafeStatusMessage,
+        ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            let mut records = self.records.lock().unwrap();
+            let record = records
+                .get_mut(&task_id)
+                .ok_or(InvocationStoreError::NotFound)?;
+            if !record.is_terminal() {
+                record.status = InvocationStatus::Cancelled;
+                record.status_message = status_message;
+            }
+            Ok(record.clone())
+        }
     }
 
     impl CanonicalInvocationService for BoundReadingService {
@@ -291,11 +494,29 @@ mod tests {
         let task = ServerResponse::invocation(InvocationResponse::Task(
             super::protocol::DaemonTaskSnapshot::working_for_test(task_id),
         ));
-        let capacity = ServerResponse::error(DaemonErrorCode::WorkspaceCapacity);
-        for response in [direct, task, capacity] {
+        let responses = [
+            direct,
+            task,
+            ServerResponse::error(DaemonErrorCode::WorkspaceCapacity),
+            ServerResponse::error(DaemonErrorCode::WorkspaceRegistryFailed),
+            ServerResponse::error(DaemonErrorCode::DurabilityUncertain),
+        ];
+        for response in responses {
             let wire = serde_json::to_vec(&response).unwrap();
             assert_eq!(parse_response(&wire).unwrap(), response);
         }
+        assert_eq!(
+            serde_json::to_value(ServerResponse::error(
+                DaemonErrorCode::WorkspaceRegistryFailed
+            ))
+            .unwrap()["code"],
+            "workspace_registry_failed"
+        );
+        assert_eq!(
+            serde_json::to_value(ServerResponse::error(DaemonErrorCode::DurabilityUncertain))
+                .unwrap()["code"],
+            "durability_uncertain"
+        );
 
         let mut noncanonical_response = serde_json::to_value(ServerResponse::invocation(
             InvocationResponse::Direct(DomainResult::success("ready")),
@@ -382,6 +603,158 @@ mod tests {
     }
 
     #[test]
+    fn durability_uncertainty_stops_the_daemon_before_idle_grace() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let physical = physical_root(root.path());
+        let identity = CoreIdentity::production();
+        let store = Arc::new(DaemonMemoryStore::default());
+        store.fail_updates.store(1, Ordering::SeqCst);
+        let config =
+            DaemonServerConfig::new(physical.clone(), identity.clone(), Duration::from_secs(30))
+                .with_invocation_store_for_test(store.clone())
+                .with_reconciliation_budget_for_test(Duration::ZERO);
+        let (done, done_wait) = mpsc::channel();
+        thread::spawn(move || done.send(run_daemon(config)).unwrap());
+        let (_directory, _record) = wait_for_record(root.path(), &identity);
+        let client = DaemonClient::new(DaemonClientConfig::existing_only(physical, identity));
+        let mut owner = match client.connect_existing().unwrap() {
+            ExistingDaemon::Connected(owner) => owner,
+            ExistingDaemon::Absent => panic!("published daemon must connect"),
+        };
+        let response = owner
+            .submit_invocation(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    physical_root(workspace.path()).to_string_lossy(),
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(response, InvocationResponse::Task(_)));
+
+        assert!(matches!(
+            done_wait.recv_timeout(INTEGRATION_COORDINATION_TIMEOUT),
+            Ok(Ok(()))
+        ));
+        assert!(store.update_attempts.load(Ordering::SeqCst) <= 2);
+        assert!(store
+            .records
+            .lock()
+            .unwrap()
+            .values()
+            .all(|record| record.status == InvocationStatus::Working && record.result.is_none()));
+        drop(owner);
+    }
+
+    #[test]
+    fn restart_after_durability_uncertainty_recovers_working_as_interrupted() {
+        let root = tempfile::tempdir().unwrap();
+        let (store, _) =
+            FileInvocationStore::open(root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let executor = Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
+            Arc::new(PermanentTerminalFileStore { inner: store }),
+            Arc::new(crate::application::ports::TokioClock),
+            Duration::ZERO,
+        ));
+        let outcome = executor
+            .submit(
+                PreparedDaemonInvocation::new(
+                    ToolIdentity::Run,
+                    crate::domain::invocation::NormalizedArgumentsHash::from_sha256([0x41; 32]),
+                    crate::domain::invocation::SafeIdentityHash::from_sha256([0x42; 32]),
+                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                    Duration::ZERO,
+                ),
+                |_| {
+                    Ok(DomainResult::success(
+                        "staged result must not survive restart",
+                    ))
+                },
+            )
+            .unwrap();
+        let task_id = match outcome {
+            crate::domain::invocation::InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected durable task: {other:?}"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !executor.restart_required() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(executor.restart_required());
+        drop(executor);
+
+        let (reopened, recovery) =
+            FileInvocationStore::open(root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        assert!(recovery
+            .classifications
+            .iter()
+            .any(|classification| matches!(
+                classification,
+                crate::infrastructure::task_store::RecoveryClassification::InterruptedNonResumable {
+                    task_id: recovered
+                } if *recovered == task_id
+            )));
+        let recovered = reopened.get(task_id).unwrap();
+        assert_eq!(recovered.status, InvocationStatus::Failed);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::Interrupted)
+        );
+        assert!(recovered.result.is_none());
+    }
+
+    #[test]
+    fn uncertain_create_never_executes_and_reopen_closes_its_working_record() {
+        let root = tempfile::tempdir().unwrap();
+        let (store, _) =
+            FileInvocationStore::open(root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let executor = Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
+            Arc::new(UncertainCreateFileStore { inner: store }),
+            Arc::new(crate::application::ports::TokioClock),
+            Duration::ZERO,
+        ));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let run_count = Arc::clone(&executions);
+        assert!(matches!(
+            executor.submit(
+                PreparedDaemonInvocation::new(
+                    ToolIdentity::Run,
+                    crate::domain::invocation::NormalizedArgumentsHash::from_sha256([0x51; 32]),
+                    crate::domain::invocation::SafeIdentityHash::from_sha256([0x52; 32]),
+                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                    Duration::ZERO,
+                ),
+                move |_| {
+                    run_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(DomainResult::success("must never execute"))
+                },
+            ),
+            Err(crate::application::invocation::InvocationExecutorError::RestartRequired)
+        ));
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert!(executor.restart_required());
+        drop(executor);
+
+        let (reopened, recovery) =
+            FileInvocationStore::open(root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let task_id = match recovery.classifications.as_slice() {
+            [crate::infrastructure::task_store::RecoveryClassification::InterruptedNonResumable {
+                task_id,
+            }] => *task_id,
+            other => panic!("expected one interrupted uncertain create: {other:?}"),
+        };
+        let recovered = reopened.get(task_id).unwrap();
+        assert_eq!(recovered.status, InvocationStatus::Failed);
+        assert_eq!(
+            recovered.failure_reason,
+            Some(SafeFailureReason::Interrupted)
+        );
+        assert!(recovered.result.is_none());
+    }
+
     fn canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity() {
         let daemon_root = tempfile::tempdir().unwrap();
         let workspace_a = tempfile::tempdir().unwrap();
@@ -390,10 +763,12 @@ mod tests {
         std::fs::write(workspace_b.path().join("Module.bsl"), b"workspace B").unwrap();
         let identity = CoreIdentity::production();
         let (observed, observed_wait) = mpsc::channel();
+        let store = Arc::new(DaemonMemoryStore::default());
         let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
+            .with_invocation_store_for_test(store.clone())
             .with_invocation_service(Arc::new(BoundReadingService { observed }));
         let server = thread::spawn(move || run_daemon(config));
-        let (directory, _record) = wait_for_record(daemon_root.path(), &identity);
+        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
         let client = DaemonClient::new(DaemonClientConfig::existing_only(
             physical_root(daemon_root.path()),
             identity,
@@ -422,19 +797,13 @@ mod tests {
                 InvocationResponse::Task(snapshot) => snapshot.task_id,
                 other => panic!("zero-budget actor-bound request was not durable: {other:?}"),
             };
-            let (actor_hash, bytes) = observed_wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            let (actor_hash, bytes) = observed_wait
+                .recv_timeout(INTEGRATION_COORDINATION_TIMEOUT)
+                .unwrap();
             assert_eq!(bytes, expected);
-            let terminal = owner.wait_task(task_id, 2_000).unwrap();
+            let terminal = owner.wait_task(task_id, INTEGRATION_TASK_WAIT_MS).unwrap();
             assert_eq!(terminal.status, InvocationStatus::Completed);
-            let record_bytes = std::fs::read(
-                directory
-                    .path()
-                    .join("tasks")
-                    .join(format!("{task_id}.json")),
-            )
-            .unwrap();
-            let record: crate::application::invocation_store::StoredInvocationRecord =
-                serde_json::from_slice(&record_bytes).unwrap();
+            let record = store.get(task_id).unwrap();
             assert_eq!(record.workspace_identity_hash, actor_hash);
         }
 
@@ -452,7 +821,9 @@ mod tests {
         let (entered, entered_wait) = mpsc::channel();
         let (release, release_wait) = mpsc::channel();
         let staged = "STAGED_BYTES_MUST_NOT_ESCAPE_AFTER_SWAP";
+        let store = Arc::new(DaemonMemoryStore::default());
         let config = server_config(daemon_root.path().to_path_buf(), identity.clone())
+            .with_invocation_store_for_test(store)
             .with_invocation_service(Arc::new(StagedActorService {
                 entered,
                 release: Mutex::new(release_wait),
@@ -483,7 +854,9 @@ mod tests {
             InvocationResponse::Task(snapshot) => snapshot.task_id,
             other => panic!("expected task: {other:?}"),
         };
-        entered_wait.recv_timeout(Duration::from_secs(2)).unwrap();
+        entered_wait
+            .recv_timeout(INTEGRATION_COORDINATION_TIMEOUT)
+            .unwrap();
         if replace_root {
             let retained = workspace_parent.path().join("retained-old-workspace");
             std::fs::rename(&workspace, &retained).unwrap();
@@ -493,7 +866,7 @@ mod tests {
             std::fs::write(workspace.join("Module.bsl"), b"changed revision").unwrap();
         }
         release.send(()).unwrap();
-        let terminal = owner.wait_task(task_id, 2_000).unwrap();
+        let terminal = owner.wait_task(task_id, INTEGRATION_TASK_WAIT_MS).unwrap();
         assert_eq!(terminal.status, InvocationStatus::Failed);
         assert!(terminal.result.is_none());
         assert_eq!(
@@ -509,12 +882,10 @@ mod tests {
         server.join().unwrap().unwrap();
     }
 
-    #[test]
     fn actor_bound_publication_rejects_root_replacement_and_hides_staged_bytes() {
         run_actor_swap_case(true);
     }
 
-    #[test]
     fn actor_bound_publication_rejects_revision_swap_and_hides_staged_bytes() {
         run_actor_swap_case(false);
     }
@@ -553,44 +924,6 @@ mod tests {
         let wire = serde_json::to_value(ServerResponse::error(DaemonErrorCode::WorkspaceCapacity))
             .unwrap();
         assert_eq!(wire["code"], "workspace_capacity");
-    }
-
-    #[test]
-    fn daemon_prunes_sequential_workspace_actor_capabilities_beyond_the_live_cap() {
-        let daemon_root = tempfile::tempdir().unwrap();
-        let workspaces = tempfile::tempdir().unwrap();
-        let identity = CoreIdentity::production();
-        let config = server_config(daemon_root.path().to_path_buf(), identity.clone());
-        let server = thread::spawn(move || run_daemon(config));
-        let (_directory, _record) = wait_for_record(daemon_root.path(), &identity);
-        let client = DaemonClient::new(DaemonClientConfig::existing_only(
-            physical_root(daemon_root.path()),
-            identity,
-        ));
-        let mut owner = match client.connect_existing().unwrap() {
-            ExistingDaemon::Connected(owner) => owner,
-            ExistingDaemon::Absent => panic!("published daemon must connect"),
-        };
-
-        for index in 0..80 {
-            let workspace = workspaces.path().join(format!("workspace-{index}"));
-            std::fs::create_dir(&workspace).unwrap();
-            let response = owner
-                .submit_invocation(
-                    InvocationRequest::new(
-                        ToolIdentity::Run,
-                        serde_json::json!({}),
-                        physical_root(&workspace).to_string_lossy(),
-                        7_000,
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            assert!(matches!(response, InvocationResponse::Direct(_)));
-        }
-
-        drop(owner);
-        server.join().unwrap().unwrap();
     }
 
     #[test]

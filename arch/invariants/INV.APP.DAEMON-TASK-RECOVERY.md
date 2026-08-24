@@ -13,4 +13,6 @@ Store строго читает schema v1 и v2. На этом срезе resume
 любой v1/v2 `Working` после restart становится durable failed record с закрытой
 причиной `Interrupted` или `ResumeUnsupported`, но не запускается повторно и не
 остаётся `Working`. V1 terminal мигрирует в v2 без изменения DomainResult;
-неизвестная schema и неизвестные поля отклоняются.
+неизвестная schema и неизвестные поля отклоняются. Это же правило закрывает на
+следующем open запись, оставшуюся `Working` после controlled restart из-за
+неподтверждаемой durable publication.

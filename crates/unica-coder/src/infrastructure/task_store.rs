@@ -478,17 +478,9 @@ impl FileInvocationStore {
         F: FnOnce(TaskId),
     {
         let _writer = self.lock_writer()?;
-        let task_id = loop {
-            let candidate = TaskId::new();
-            let candidate_name = format!("{candidate}.json");
-            let names = read_directory_names_bounded(&self.root, usize::MAX, || Ok(())).map_err(
-                |error| storage_error("inspect task identity before durable creation", error),
-            )?;
-            if !names.iter().any(|name| name == OsStr::new(&candidate_name)) {
-                break candidate;
-            }
-        };
-        let record = new_record.into_stored(task_id, self.clock.now_epoch_millis());
+        let task_id = new_record.task_id();
+        reject_existing_preallocated_task_id(&self.root, task_id)?;
+        let record = new_record.into_stored(self.clock.now_epoch_millis());
         self.publish_record(&record, CommitOperation::Create, || {})?;
         after_publish(task_id);
         Ok(record)
@@ -503,17 +495,9 @@ impl FileInvocationStore {
         F: FnOnce(TaskId),
     {
         let _writer = self.lock_writer()?;
-        let task_id = loop {
-            let candidate = TaskId::new();
-            let candidate_name = format!("{candidate}.json");
-            let names = read_directory_names_bounded(&self.root, usize::MAX, || Ok(())).map_err(
-                |error| storage_error("inspect task identity before durable creation", error),
-            )?;
-            if !names.iter().any(|name| name == OsStr::new(&candidate_name)) {
-                break candidate;
-            }
-        };
-        let record = new_record.into_working_stored(task_id, self.clock.now_epoch_millis());
+        let task_id = new_record.task_id();
+        reject_existing_preallocated_task_id(&self.root, task_id)?;
+        let record = new_record.into_working_stored(self.clock.now_epoch_millis());
         self.publish_record(&record, CommitOperation::Create, || {})?;
         after_publish(task_id);
         Ok(record)
@@ -656,6 +640,21 @@ impl InvocationStore for FileInvocationStore {
         self.publish_record(&record, CommitOperation::Cancel, || {})?;
         Ok(record)
     }
+}
+
+fn reject_existing_preallocated_task_id(
+    root: &File,
+    task_id: TaskId,
+) -> Result<(), InvocationStoreError> {
+    let candidate_name = format!("{task_id}.json");
+    let names = read_directory_names_bounded(root, usize::MAX, || Ok(()))
+        .map_err(|error| storage_error("inspect task identity before durable creation", error))?;
+    if names.iter().any(|name| name == OsStr::new(&candidate_name)) {
+        return Err(InvocationStoreError::Storage(
+            "preallocated task identity already exists".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn acquire_root_lock(root: &File) -> Result<File, InvocationStoreError> {
@@ -1255,8 +1254,7 @@ mod tests {
     fn v1_nonresumable_working_record_recovers_as_interrupted_failure() {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualEpochClock::at(9_000));
-        let mut legacy =
-            new_record(10_000, None).into_stored(crate::domain::invocation::TaskId::new(), 9_000);
+        let mut legacy = new_record(10_000, None).into_stored(9_000);
         legacy.status = InvocationStatus::Working;
         legacy.status_message = SafeStatusMessage::Working;
         write_legacy_v1_record(root.path(), &legacy);
@@ -1335,8 +1333,7 @@ mod tests {
         let resume = ResumeDescriptor::Delivery(DeliveryResume::new(
             SafeIdentityHash::from_sha256([0x44; 32]),
         ));
-        let mut legacy = new_record(10_000, Some(resume))
-            .into_stored(crate::domain::invocation::TaskId::new(), 10_000);
+        let mut legacy = new_record(10_000, Some(resume)).into_stored(10_000);
         legacy.status = InvocationStatus::Working;
         legacy.status_message = SafeStatusMessage::Delivering;
         write_legacy_v1_record(root.path(), &legacy);
@@ -1364,8 +1361,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let clock = Arc::new(ManualEpochClock::at(10_500));
         let expected = DomainResult::success("legacy terminal");
-        let mut legacy =
-            new_record(10_000, None).into_stored(crate::domain::invocation::TaskId::new(), 10_000);
+        let mut legacy = new_record(10_000, None).into_stored(10_000);
         legacy.status = InvocationStatus::Completed;
         legacy.status_message = SafeStatusMessage::Completed;
         legacy.result = Some(expected.clone());
@@ -1405,8 +1401,7 @@ mod tests {
         ] {
             let root = tempfile::tempdir().unwrap();
             let clock = Arc::new(ManualEpochClock::at(10_625));
-            let mut legacy = new_record(10_000, None)
-                .into_stored(crate::domain::invocation::TaskId::new(), 10_500);
+            let mut legacy = new_record(10_000, None).into_stored(10_500);
             legacy.status = status;
             legacy.status_message = message;
             write_legacy_v1_record(root.path(), &legacy);
@@ -1456,8 +1451,7 @@ mod tests {
     #[test]
     fn unknown_record_schema_fails_closed_instead_of_reinterpreting_bytes() {
         let root = tempfile::tempdir().unwrap();
-        let record = new_record(10_000, None)
-            .into_working_stored(crate::domain::invocation::TaskId::new(), 10_000);
+        let record = new_record(10_000, None).into_working_stored(10_000);
         let mut value = serde_json::to_value(&record).unwrap();
         value["schemaVersion"] = json!(99);
         fs::write(
@@ -1575,8 +1569,7 @@ mod tests {
 
     #[test]
     fn record_validation_rejects_status_codes_inconsistent_with_lifecycle_state() {
-        let record =
-            new_record(10_000, None).into_stored(crate::domain::invocation::TaskId::new(), 12_000);
+        let record = new_record(10_000, None).into_stored(12_000);
         let mut inconsistent = record;
         inconsistent.status_message = SafeStatusMessage::Completed;
 

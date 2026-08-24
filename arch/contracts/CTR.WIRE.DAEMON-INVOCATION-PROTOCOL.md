@@ -17,5 +17,8 @@ consumers: [host]
 `Task(DaemonTaskSnapshot)`. Неизвестные поля, сообщения, неканонические TaskId и
 wait больше 7000 мс отклоняются; ошибки транспорта используют закрытые коды.
 Исчерпание 64 одновременно живых workspace actor capabilities возвращает
-закрытый retryable код `workspace_capacity`; текст внутренних ошибок не
-классифицируется и не попадает в protocol.
+закрытый retryable код `workspace_capacity`; poison actor registry возвращает
+`workspace_registry_failed`. Неподтверждаемая durable publication переводит
+daemon в controlled restart и возвращает `durability_uncertain`, но не staged
+DomainResult. Текст внутренних ошибок не классифицируется и не попадает в
+protocol.

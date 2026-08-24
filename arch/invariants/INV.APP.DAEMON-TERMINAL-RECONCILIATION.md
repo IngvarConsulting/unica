@@ -11,8 +11,17 @@ scope: [app, cache]
 
 Materialized Task атомарно создаётся как `Working`. Неопределённый create,
 complete, fail или cancel commit подтверждается чтением точной ожидаемой
-identity и state. Пока terminal не подтверждён, daemon сохраняет live owner и
-opaque actor capability, не разрешает idle exit и повторяет только публикацию,
-но никогда не domain execution. Повторный cancel подтверждает то же закрытое
-terminal-состояние; get/wait только наблюдают durable record и не запускают
-работу.
+identity и state. TaskId выделяется и live owner регистрируется до create;
+domain execution начинается только после точного durable подтверждения
+начального `Working`.
+
+Reconciliation имеет абсолютный monotonic budget и bounded exponential
+backoff. Пока подтверждение возможно, daemon сохраняет live owner и opaque
+actor capability, не разрешает idle exit и повторяет только store operation,
+но никогда не domain execution. Если точный commit нельзя доказать в пределах
+policy, executor закрывает новые submit состоянием `RestartRequired`, не
+публикует staged result, освобождает actor capability и завершает daemon;
+следующее открытие store закрывает оставшийся `Working` как interrupted.
+Повторный cancel и cancel, проигравший complete/fail/cancel, возвращают точное
+победившее durable terminal-состояние. Get/wait только наблюдают durable record
+и не запускают работу.

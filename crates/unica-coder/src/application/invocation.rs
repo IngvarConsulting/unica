@@ -20,6 +20,9 @@ pub(crate) const INVOCATION_HANDOFF_WINDOW: Duration = Duration::from_secs(7);
 pub(crate) const RESPONSE_SERIALIZATION_MARGIN: Duration = Duration::from_millis(125);
 const INVOCATION_POLL_INTERVAL_MS: u64 = 250;
 const INVOCATION_TTL_MS: u64 = 60 * 60 * 1_000;
+const RECONCILIATION_BUDGET: Duration = Duration::from_secs(2);
+const RECONCILIATION_INITIAL_BACKOFF: Duration = Duration::from_millis(10);
+const RECONCILIATION_MAX_BACKOFF: Duration = Duration::from_millis(250);
 
 pub(crate) fn handoff_budget(host_remaining: Option<Duration>) -> Duration {
     host_remaining
@@ -106,6 +109,7 @@ pub(crate) enum InvocationExecutorError {
     Store(InvocationStoreError),
     ExecutionFailed,
     StatePoisoned,
+    RestartRequired,
 }
 
 impl From<InvocationStoreError> for InvocationExecutorError {
@@ -115,9 +119,16 @@ impl From<InvocationStoreError> for InvocationExecutorError {
 }
 
 enum LiveInvocationState {
-    Running { task_id: Option<TaskId> },
+    Running {
+        task_id: Option<TaskId>,
+    },
+    Materializing {
+        task_id: TaskId,
+        outcome: Option<Box<Result<DomainResult, InvocationFailure>>>,
+    },
     Direct(Box<Result<DomainResult, InvocationFailure>>),
     DurableTerminal,
+    RestartRequired,
 }
 
 struct LiveInvocation {
@@ -144,6 +155,56 @@ impl LiveInvocation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InvocationExecutorHealth {
+    Healthy,
+    DrainingForRestart,
+    RestartRequired,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReconciliationPolicy {
+    budget: Duration,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+}
+
+impl ReconciliationPolicy {
+    const fn production() -> Self {
+        Self {
+            budget: RECONCILIATION_BUDGET,
+            initial_backoff: RECONCILIATION_INITIAL_BACKOFF,
+            max_backoff: RECONCILIATION_MAX_BACKOFF,
+        }
+    }
+
+    #[cfg(test)]
+    const fn with_budget_for_test(budget: Duration) -> Self {
+        Self {
+            budget,
+            initial_backoff: RECONCILIATION_INITIAL_BACKOFF,
+            max_backoff: RECONCILIATION_MAX_BACKOFF,
+        }
+    }
+}
+
+trait ReconciliationTimer: Send + Sync {
+    fn now(&self) -> Instant;
+    fn wait(&self, duration: Duration);
+}
+
+struct SystemReconciliationTimer;
+
+impl ReconciliationTimer for SystemReconciliationTimer {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn wait(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
 /// Daemon-owned single execution path. Query/cancel methods accept no domain
 /// closure, making re-execution through polling structurally impossible.
 pub(crate) struct InvocationExecutor {
@@ -151,6 +212,9 @@ pub(crate) struct InvocationExecutor {
     clock: Arc<dyn Clock>,
     live_tasks: Mutex<HashMap<TaskId, Arc<LiveInvocation>>>,
     inline_waiters: Mutex<Vec<std::sync::Weak<LiveInvocation>>>,
+    health: Arc<Mutex<InvocationExecutorHealth>>,
+    reconciliation: ReconciliationPolicy,
+    reconciliation_timer: Arc<dyn ReconciliationTimer>,
 }
 
 impl InvocationExecutor {
@@ -160,7 +224,118 @@ impl InvocationExecutor {
             clock,
             live_tasks: Mutex::new(HashMap::new()),
             inline_waiters: Mutex::new(Vec::new()),
+            health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
+            reconciliation: ReconciliationPolicy::production(),
+            reconciliation_timer: Arc::new(SystemReconciliationTimer),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_reconciliation_budget_for_test(
+        store: Arc<dyn InvocationStore>,
+        clock: Arc<dyn Clock>,
+        budget: Duration,
+    ) -> Self {
+        Self {
+            store,
+            clock,
+            live_tasks: Mutex::new(HashMap::new()),
+            inline_waiters: Mutex::new(Vec::new()),
+            health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
+            reconciliation: ReconciliationPolicy::with_budget_for_test(budget),
+            reconciliation_timer: Arc::new(SystemReconciliationTimer),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_reconciliation_for_test(
+        store: Arc<dyn InvocationStore>,
+        clock: Arc<dyn Clock>,
+        reconciliation: ReconciliationPolicy,
+        reconciliation_timer: Arc<dyn ReconciliationTimer>,
+    ) -> Self {
+        Self {
+            store,
+            clock,
+            live_tasks: Mutex::new(HashMap::new()),
+            inline_waiters: Mutex::new(Vec::new()),
+            health: Arc::new(Mutex::new(InvocationExecutorHealth::Healthy)),
+            reconciliation,
+            reconciliation_timer,
+        }
+    }
+
+    fn ensure_healthy(&self) -> Result<(), InvocationExecutorError> {
+        match self.health.lock() {
+            Ok(health) if *health == InvocationExecutorHealth::Healthy => Ok(()),
+            Ok(_) | Err(_) => Err(InvocationExecutorError::RestartRequired),
+        }
+    }
+
+    pub(crate) fn restart_required(&self) -> bool {
+        self.health
+            .lock()
+            .map(|health| *health == InvocationExecutorHealth::RestartRequired)
+            .unwrap_or(true)
+    }
+
+    fn enter_restart_required(&self) {
+        if self.begin_restart_draining() {
+            Self::finish_restart_draining(&self.health);
+        }
+    }
+
+    fn begin_restart_draining(&self) -> bool {
+        let mut health = match self.health.lock() {
+            Ok(health) => health,
+            Err(_) => return false,
+        };
+        if *health != InvocationExecutorHealth::Healthy {
+            return false;
+        }
+        *health = InvocationExecutorHealth::DrainingForRestart;
+        drop(health);
+
+        let mut live = self
+            .live_tasks
+            .lock()
+            .map(|mut tasks| tasks.drain().map(|(_, live)| live).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if let Ok(mut waiters) = self.inline_waiters.lock() {
+            live.extend(waiters.drain(..).filter_map(|waiter| waiter.upgrade()));
+        }
+        for invocation in live {
+            invocation.cancellation.cancel();
+            if let Ok(mut state) = invocation.state.lock() {
+                *state = LiveInvocationState::RestartRequired;
+                invocation.changed.notify_all();
+            }
+            invocation.release_resource_lease();
+        }
+        true
+    }
+
+    fn finish_restart_draining(health: &Mutex<InvocationExecutorHealth>) {
+        if let Ok(mut health) = health.lock() {
+            *health = InvocationExecutorHealth::RestartRequired;
+        }
+    }
+
+    fn wait_before_reconciliation_retry(&self, deadline: Instant, backoff: &mut Duration) -> bool {
+        let now = self.reconciliation_timer.now();
+        if now >= deadline {
+            return false;
+        }
+        let wait = (*backoff).min(deadline.saturating_duration_since(now));
+        if wait.is_zero() {
+            return false;
+        }
+        self.reconciliation_timer.wait(wait);
+        *backoff = (*backoff)
+            .checked_mul(2)
+            .unwrap_or(self.reconciliation.max_backoff)
+            .min(self.reconciliation.max_backoff);
+        self.reconciliation_timer.now() < deadline
     }
 
     pub(crate) fn submit_prepared<F>(
@@ -175,6 +350,7 @@ impl InvocationExecutor {
             + Send
             + 'static,
     {
+        self.ensure_healthy()?;
         match prepared {
             Ok(prepared) => self.submit(prepared, execute),
             Err(invalid) => Ok(InvocationOutcome::Direct(invalid)),
@@ -193,17 +369,35 @@ impl InvocationExecutor {
             + Send
             + 'static,
     {
+        self.ensure_healthy()?;
         let invocation_id = InvocationId::new();
         if matches!(prepared.class, ExecutionClass::KnownLong(_))
             || prepared.response_budget.is_zero()
         {
-            let record = self.materialize(&prepared, invocation_id)?;
+            let intended = self.new_materialization_record(&prepared, invocation_id);
+            let task_id = intended.task_id();
+            let live = Arc::new(LiveInvocation::new(None, prepared.resource_lease.clone()));
+            *live
+                .state
+                .lock()
+                .map_err(|_| InvocationExecutorError::StatePoisoned)? =
+                LiveInvocationState::Materializing {
+                    task_id,
+                    outcome: None,
+                };
+            self.insert_live(task_id, Arc::clone(&live))?;
+            let record = match self.materialize(intended, &prepared, invocation_id) {
+                Ok(record) => record,
+                Err(error) => {
+                    self.abandon_pending(&live, task_id);
+                    return Err(error);
+                }
+            };
+            if self.confirm_materialization(&live, task_id)?.is_some() {
+                self.enter_restart_required();
+                return Err(InvocationExecutorError::RestartRequired);
+            }
             let snapshot = snapshot_from_record(record.clone(), self.clock.now());
-            let live = Arc::new(LiveInvocation::new(
-                Some(record.task_id),
-                prepared.resource_lease.clone(),
-            ));
-            self.insert_live(record.task_id, Arc::clone(&live))?;
             self.spawn_execution(live, execute);
             return Ok(InvocationOutcome::Task(snapshot));
         }
@@ -231,13 +425,25 @@ impl InvocationExecutor {
                             .map(InvocationOutcome::Direct)
                             .map_err(|_| InvocationExecutorError::ExecutionFailed);
                     }
-                    let working = self.materialize(&prepared, invocation_id)?;
-                    *state = LiveInvocationState::Running {
-                        task_id: Some(working.task_id),
+                    let intended = self.new_materialization_record(&prepared, invocation_id);
+                    let task_id = intended.task_id();
+                    *state = LiveInvocationState::Materializing {
+                        task_id,
+                        outcome: Some(Box::new(result)),
                     };
-                    self.insert_live(working.task_id, Arc::clone(&live))?;
+                    self.insert_live(task_id, Arc::clone(&live))?;
                     drop(state);
-                    self.spawn_terminal_reconciliation(Arc::clone(&live), working.task_id, result);
+                    let working = match self.materialize(intended, &prepared, invocation_id) {
+                        Ok(record) => record,
+                        Err(error) => {
+                            self.abandon_pending(&live, task_id);
+                            return Err(error);
+                        }
+                    };
+                    let staged = self
+                        .confirm_materialization(&live, task_id)?
+                        .ok_or(InvocationExecutorError::StatePoisoned)?;
+                    self.spawn_terminal_reconciliation(Arc::clone(&live), task_id, staged);
                     return Ok(InvocationOutcome::Task(snapshot_from_record(
                         working,
                         self.clock.now(),
@@ -246,18 +452,37 @@ impl InvocationExecutor {
                 LiveInvocationState::DurableTerminal => {
                     return Err(InvocationExecutorError::StatePoisoned);
                 }
+                LiveInvocationState::RestartRequired => {
+                    return Err(InvocationExecutorError::RestartRequired);
+                }
                 LiveInvocationState::Running { task_id: Some(_) } => {
                     return Err(InvocationExecutorError::StatePoisoned);
                 }
                 LiveInvocationState::Running { task_id: None } => {}
+                LiveInvocationState::Materializing { .. } => {
+                    return Err(InvocationExecutorError::StatePoisoned);
+                }
             }
             let remaining = deadline.saturating_duration_since(self.clock.now());
             if remaining.is_zero() {
-                let record = self.materialize(&prepared, invocation_id)?;
-                *state = LiveInvocationState::Running {
-                    task_id: Some(record.task_id),
+                let intended = self.new_materialization_record(&prepared, invocation_id);
+                let task_id = intended.task_id();
+                *state = LiveInvocationState::Materializing {
+                    task_id,
+                    outcome: None,
                 };
-                self.insert_live(record.task_id, Arc::clone(&live))?;
+                self.insert_live(task_id, Arc::clone(&live))?;
+                drop(state);
+                let record = match self.materialize(intended, &prepared, invocation_id) {
+                    Ok(record) => record,
+                    Err(error) => {
+                        self.abandon_pending(&live, task_id);
+                        return Err(error);
+                    }
+                };
+                if let Some(staged) = self.confirm_materialization(&live, task_id)? {
+                    self.spawn_terminal_reconciliation(Arc::clone(&live), task_id, staged);
+                }
                 return Ok(InvocationOutcome::Task(snapshot_from_record(
                     record,
                     self.clock.now(),
@@ -271,12 +496,12 @@ impl InvocationExecutor {
         }
     }
 
-    fn materialize(
+    fn new_materialization_record(
         &self,
         prepared: &PreparedDaemonInvocation,
         invocation_id: InvocationId,
-    ) -> Result<StoredInvocationRecord, InvocationExecutorError> {
-        let intended = NewInvocationRecord::new(
+    ) -> NewInvocationRecord {
+        NewInvocationRecord::new(
             invocation_id,
             prepared.tool,
             prepared.normalized_arguments_hash.clone(),
@@ -285,25 +510,95 @@ impl InvocationExecutor {
             INVOCATION_POLL_INTERVAL_MS,
             INVOCATION_TTL_MS,
             None,
-        );
+        )
+    }
+
+    fn materialize(
+        &self,
+        intended: NewInvocationRecord,
+        prepared: &PreparedDaemonInvocation,
+        invocation_id: InvocationId,
+    ) -> Result<StoredInvocationRecord, InvocationExecutorError> {
+        let intended_task_id = intended.task_id();
         match self.store.create_working(intended) {
             Ok(record) => Ok(record),
             Err(InvocationStoreError::CommitUncertain {
                 task_id,
                 operation: crate::application::invocation_store::CommitOperation::Create,
             }) => {
-                let record = self.store.get(task_id)?;
-                if initial_working_matches(&record, prepared, invocation_id) {
-                    Ok(record)
-                } else {
-                    Err(InvocationStoreError::CommitUncertain {
-                        task_id,
-                        operation: crate::application::invocation_store::CommitOperation::Create,
+                if task_id != intended_task_id {
+                    self.enter_restart_required();
+                    return Err(InvocationExecutorError::RestartRequired);
+                }
+                let deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
+                let mut backoff = self.reconciliation.initial_backoff;
+                let mut first_read = true;
+                loop {
+                    match self.store.get(task_id) {
+                        Ok(record) if initial_working_matches(&record, prepared, invocation_id) => {
+                            return Ok(record)
+                        }
+                        Err(InvocationStoreError::NotFound) if first_read => {
+                            return Err(InvocationStoreError::NotFound.into())
+                        }
+                        Ok(_) | Err(_) => {}
                     }
-                    .into())
+                    first_read = false;
+                    if !self.wait_before_reconciliation_retry(deadline, &mut backoff) {
+                        self.enter_restart_required();
+                        return Err(InvocationExecutorError::RestartRequired);
+                    }
                 }
             }
             Err(error) => Err(error.into()),
+        }
+    }
+
+    fn confirm_materialization(
+        &self,
+        live: &Arc<LiveInvocation>,
+        task_id: TaskId,
+    ) -> Result<Option<Result<DomainResult, InvocationFailure>>, InvocationExecutorError> {
+        let mut state = live
+            .state
+            .lock()
+            .map_err(|_| InvocationExecutorError::StatePoisoned)?;
+        let previous = std::mem::replace(
+            &mut *state,
+            LiveInvocationState::Running {
+                task_id: Some(task_id),
+            },
+        );
+        match previous {
+            LiveInvocationState::Materializing {
+                task_id: pending_task_id,
+                outcome,
+            } if pending_task_id == task_id => Ok(outcome.map(|outcome| *outcome)),
+            LiveInvocationState::RestartRequired => {
+                *state = LiveInvocationState::RestartRequired;
+                Err(InvocationExecutorError::RestartRequired)
+            }
+            other => {
+                *state = other;
+                Err(InvocationExecutorError::StatePoisoned)
+            }
+        }
+    }
+
+    fn abandon_pending(&self, live: &Arc<LiveInvocation>, task_id: TaskId) {
+        live.cancellation.cancel();
+        if let Ok(mut state) = live.state.lock() {
+            *state = LiveInvocationState::RestartRequired;
+            live.changed.notify_all();
+        }
+        live.release_resource_lease();
+        if let Ok(mut tasks) = self.live_tasks.lock() {
+            if tasks
+                .get(&task_id)
+                .is_some_and(|registered| Arc::ptr_eq(registered, live))
+            {
+                tasks.remove(&task_id);
+            }
         }
     }
 
@@ -375,20 +670,34 @@ impl InvocationExecutor {
         outcome: Result<DomainResult, InvocationFailure>,
     ) {
         let executor = Arc::clone(self);
-        std::thread::spawn(move || loop {
-            match executor.persist_terminal_once(task_id, outcome.clone()) {
-                Ok(_) => {
-                    if let Ok(mut state) = live.state.lock() {
-                        *state = LiveInvocationState::DurableTerminal;
-                        live.changed.notify_all();
+        std::thread::spawn(move || {
+            let deadline = executor.reconciliation_timer.now() + executor.reconciliation.budget;
+            let mut backoff = executor.reconciliation.initial_backoff;
+            loop {
+                match executor.persist_terminal_once(task_id, outcome.clone()) {
+                    Ok(_) => {
+                        if let Ok(mut state) = live.state.lock() {
+                            *state = LiveInvocationState::DurableTerminal;
+                            live.changed.notify_all();
+                        }
+                        live.release_resource_lease();
+                        if let Ok(mut tasks) = executor.live_tasks.lock() {
+                            tasks.remove(&task_id);
+                        }
+                        return;
                     }
-                    live.release_resource_lease();
-                    if let Ok(mut tasks) = executor.live_tasks.lock() {
-                        tasks.remove(&task_id);
+                    Err(_) if executor.wait_before_reconciliation_retry(deadline, &mut backoff) => {
                     }
-                    return;
+                    Err(_) => {
+                        let health = Arc::clone(&executor.health);
+                        let owns_draining = executor.begin_restart_draining();
+                        drop(executor);
+                        if owns_draining {
+                            Self::finish_restart_draining(&health);
+                        }
+                        return;
+                    }
                 }
-                Err(_) => std::thread::sleep(Duration::from_millis(10)),
             }
         });
     }
@@ -411,7 +720,19 @@ impl InvocationExecutor {
             };
             let task_id = match &*state {
                 LiveInvocationState::Running { task_id } => *task_id,
-                LiveInvocationState::Direct(_) | LiveInvocationState::DurableTerminal => return,
+                LiveInvocationState::Materializing { .. } => {
+                    if let LiveInvocationState::Materializing {
+                        outcome: staged, ..
+                    } = &mut *state
+                    {
+                        *staged = Some(Box::new(outcome));
+                        live.changed.notify_all();
+                    }
+                    return;
+                }
+                LiveInvocationState::Direct(_)
+                | LiveInvocationState::DurableTerminal
+                | LiveInvocationState::RestartRequired => return,
             };
             if let Some(task_id) = task_id {
                 // A committed cancellation wins over late completion. The
@@ -429,6 +750,7 @@ impl InvocationExecutor {
         &self,
         task_id: TaskId,
     ) -> Result<TaskSnapshot, InvocationExecutorError> {
+        self.ensure_healthy()?;
         self.store
             .get(task_id)
             .map(|record| snapshot_from_record(record, self.clock.now()))
@@ -440,6 +762,7 @@ impl InvocationExecutor {
         task_id: TaskId,
         wait: Duration,
     ) -> Result<TaskSnapshot, InvocationExecutorError> {
+        self.ensure_healthy()?;
         let current = self.get_task(task_id)?;
         if current.status != InvocationStatus::Working || wait.is_zero() {
             return Ok(current);
@@ -467,48 +790,54 @@ impl InvocationExecutor {
         &self,
         task_id: TaskId,
     ) -> Result<TaskSnapshot, InvocationExecutorError> {
+        self.ensure_healthy()?;
         let before = self.store.get(task_id)?;
         let record = match self.store.cancel(task_id, SafeStatusMessage::Cancelled) {
-            Ok(record)
-                if same_record_identity(&before, &record)
-                    && record.status == InvocationStatus::Cancelled =>
-            {
-                record
+            Ok(record) if same_record_identity(&before, &record) && record.is_terminal() => record,
+            Ok(_) => self.confirm_terminal_after_cancel(&before, task_id)?,
+            Err(InvocationStoreError::CommitUncertain {
+                operation: crate::application::invocation_store::CommitOperation::Cancel,
+                ..
+            })
+            | Err(InvocationStoreError::InvalidTransition { .. }) => {
+                self.confirm_terminal_after_cancel(&before, task_id)?
             }
-            Ok(_) => {
-                return Err(InvocationStoreError::CommitUncertain {
-                    task_id,
-                    operation: crate::application::invocation_store::CommitOperation::Cancel,
-                }
-                .into())
-            }
-            Err(
-                error @ InvocationStoreError::CommitUncertain {
-                    operation: crate::application::invocation_store::CommitOperation::Cancel,
-                    ..
-                },
-            ) => match self.store.get(task_id) {
-                Ok(record)
-                    if same_record_identity(&before, &record)
-                        && record.status == InvocationStatus::Cancelled =>
-                {
-                    record
-                }
-                _ => return Err(error.into()),
-            },
             Err(error) => return Err(error.into()),
         };
-        if let Some(live) = self
-            .live_tasks
-            .lock()
-            .map_err(|_| InvocationExecutorError::StatePoisoned)?
-            .get(&task_id)
-            .cloned()
-        {
-            live.cancellation.cancel();
-            live.changed.notify_all();
+        if record.status == InvocationStatus::Cancelled {
+            if let Some(live) = self
+                .live_tasks
+                .lock()
+                .map_err(|_| InvocationExecutorError::StatePoisoned)?
+                .get(&task_id)
+                .cloned()
+            {
+                live.cancellation.cancel();
+                live.changed.notify_all();
+            }
         }
         Ok(snapshot_from_record(record, self.clock.now()))
+    }
+
+    fn confirm_terminal_after_cancel(
+        &self,
+        before: &StoredInvocationRecord,
+        task_id: TaskId,
+    ) -> Result<StoredInvocationRecord, InvocationExecutorError> {
+        let deadline = self.reconciliation_timer.now() + self.reconciliation.budget;
+        let mut backoff = self.reconciliation.initial_backoff;
+        loop {
+            match self.store.get(task_id) {
+                Ok(record) if same_record_identity(before, &record) && record.is_terminal() => {
+                    return Ok(record)
+                }
+                Ok(_) | Err(_) => {}
+            }
+            if !self.wait_before_reconciliation_retry(deadline, &mut backoff) {
+                self.enter_restart_required();
+                return Err(InvocationExecutorError::RestartRequired);
+            }
+        }
     }
 
     pub(crate) fn has_active_invocations(&self) -> bool {
@@ -950,7 +1279,7 @@ mod tests {
         NormalizedArgumentsHash, SafeIdentityHash, TaskId,
     };
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
@@ -971,6 +1300,31 @@ mod tests {
     impl Clock for ManualClock {
         fn now(&self) -> Instant {
             *self.0.lock().expect("manual clock lock")
+        }
+    }
+
+    struct RecordingReconciliationTimer {
+        now: Mutex<Instant>,
+        waits: Mutex<Vec<Duration>>,
+    }
+
+    impl RecordingReconciliationTimer {
+        fn new(now: Instant) -> Self {
+            Self {
+                now: Mutex::new(now),
+                waits: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl super::ReconciliationTimer for RecordingReconciliationTimer {
+        fn now(&self) -> Instant {
+            *self.now.lock().unwrap()
+        }
+
+        fn wait(&self, duration: Duration) {
+            self.waits.lock().unwrap().push(duration);
+            *self.now.lock().unwrap() += duration;
         }
     }
 
@@ -1005,8 +1359,15 @@ mod tests {
         queued_creates: AtomicUsize,
         working_creates: AtomicUsize,
         create_working_fault: Mutex<Option<Arc<CommitFault>>>,
+        create_record_mismatch: AtomicUsize,
+        get_faults: Mutex<VecDeque<InvocationStoreError>>,
+        get_always_fails: AtomicUsize,
         update_fault: Mutex<Option<Arc<CommitFault>>>,
+        update_always_fails: AtomicUsize,
+        update_attempts: AtomicUsize,
         cancel_fault: Mutex<Option<Arc<CommitFault>>>,
+        cancel_returns_invalid_transition: AtomicUsize,
+        cancel_always_uncertain: AtomicUsize,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1054,7 +1415,7 @@ mod tests {
             record: NewInvocationRecord,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
             self.queued_creates.fetch_add(1, Ordering::SeqCst);
-            let stored = record.into_stored(TaskId::new(), 1);
+            let stored = record.into_stored(1);
             self.records
                 .lock()
                 .unwrap()
@@ -1063,6 +1424,14 @@ mod tests {
         }
 
         fn get(&self, task_id: TaskId) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            if self.get_always_fails.load(Ordering::SeqCst) != 0 {
+                return Err(InvocationStoreError::Storage(
+                    "permanent confirming read failure".into(),
+                ));
+            }
+            if let Some(error) = self.get_faults.lock().unwrap().pop_front() {
+                return Err(error);
+            }
             self.records
                 .lock()
                 .unwrap()
@@ -1076,7 +1445,7 @@ mod tests {
             record: NewInvocationRecord,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
             self.working_creates.fetch_add(1, Ordering::SeqCst);
-            let stored = record.into_working_stored(TaskId::new(), 1);
+            let stored = record.into_working_stored(1);
             let fault = self.create_working_fault.lock().unwrap().take();
             if fault
                 .as_ref()
@@ -1086,10 +1455,14 @@ mod tests {
                     "injected pre-commit create failure".into(),
                 ));
             }
+            let mut persisted = stored.clone();
+            if self.create_record_mismatch.load(Ordering::SeqCst) != 0 {
+                persisted.workspace_identity_hash = SafeIdentityHash::from_sha256([0x99; 32]);
+            }
             self.records
                 .lock()
                 .unwrap()
-                .insert(stored.task_id, stored.clone());
+                .insert(stored.task_id, persisted);
             if fault
                 .as_ref()
                 .is_some_and(|fault| fault.checkpoint(CommitFaultTiming::After))
@@ -1107,6 +1480,12 @@ mod tests {
             task_id: TaskId,
             transition: TaskTransition,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            self.update_attempts.fetch_add(1, Ordering::SeqCst);
+            if self.update_always_fails.load(Ordering::SeqCst) != 0 {
+                return Err(InvocationStoreError::Storage(
+                    "permanent terminal publication failure".into(),
+                ));
+            }
             let fault = self.update_fault.lock().unwrap().take();
             if fault
                 .as_ref()
@@ -1167,6 +1546,29 @@ mod tests {
             task_id: TaskId,
             status_message: SafeStatusMessage,
         ) -> Result<StoredInvocationRecord, InvocationStoreError> {
+            if self
+                .cancel_returns_invalid_transition
+                .swap(0, Ordering::SeqCst)
+                != 0
+            {
+                let from = self
+                    .records
+                    .lock()
+                    .unwrap()
+                    .get(&task_id)
+                    .map(|record| record.status)
+                    .ok_or(InvocationStoreError::NotFound)?;
+                return Err(InvocationStoreError::InvalidTransition {
+                    from,
+                    attempted: "cancel",
+                });
+            }
+            if self.cancel_always_uncertain.load(Ordering::SeqCst) != 0 {
+                return Err(InvocationStoreError::CommitUncertain {
+                    task_id,
+                    operation: crate::application::invocation_store::CommitOperation::Cancel,
+                });
+            }
             let fault = self.cancel_fault.lock().unwrap().take();
             if fault
                 .as_ref()
@@ -1386,6 +1788,332 @@ mod tests {
         }
     }
 
+    #[test]
+    fn uncertain_create_transient_readback_is_reconciled_before_execution() {
+        let store = Arc::new(MemoryStore::default());
+        let (fault, entered, release) = CommitFault::new(CommitFaultTiming::After);
+        *store.create_working_fault.lock().unwrap() = Some(fault);
+        store
+            .get_faults
+            .lock()
+            .unwrap()
+            .push_back(InvocationStoreError::Storage(
+                "transient confirming read failure".into(),
+            ));
+        let executor = Arc::new(InvocationExecutor::new(
+            store.clone(),
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let run_count = Arc::clone(&executions);
+        let run = {
+            let executor = Arc::clone(&executor);
+            std::thread::spawn(move || {
+                executor.submit(
+                    prepared(
+                        ExecutionClass::KnownLong(KnownLongReason::ColdIndex),
+                        Duration::ZERO,
+                    ),
+                    move |_| {
+                        run_count.fetch_add(1, Ordering::SeqCst);
+                        Ok(result("confirmed after transient readback"))
+                    },
+                )
+            })
+        };
+
+        entered.recv().unwrap();
+        assert_eq!(store.records.lock().unwrap().len(), 1);
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        let pending_task_id = *store.records.lock().unwrap().keys().next().unwrap();
+        let pending_is_owned = executor
+            .live_tasks
+            .lock()
+            .unwrap()
+            .contains_key(&pending_task_id);
+        release.send(()).unwrap();
+        assert!(
+            pending_is_owned,
+            "the exact preallocated TaskId must have live actor ownership before confirmation"
+        );
+
+        let outcome = run
+            .join()
+            .unwrap()
+            .expect("bounded readback reconciliation confirms exact Working record");
+        let task_id = match outcome {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("confirmed uncertain create must hand off: {other:?}"),
+        };
+        assert_eq!(
+            executor
+                .wait_task(task_id, Duration::from_secs(1))
+                .unwrap()
+                .status,
+            InvocationStatus::Completed
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn completion_at_handoff_reconciles_create_without_exposing_staged_result() {
+        for transient in [true, false] {
+            let store = Arc::new(MemoryStore::default());
+            let (fault, fault_entered, fault_release) = CommitFault::new(CommitFaultTiming::After);
+            *store.create_working_fault.lock().unwrap() = Some(fault);
+            if transient {
+                store
+                    .get_faults
+                    .lock()
+                    .unwrap()
+                    .push_back(InvocationStoreError::Storage(
+                        "transient completion-handoff read failure".into(),
+                    ));
+            } else {
+                store.get_always_fails.store(1, Ordering::SeqCst);
+            }
+            let clock = Arc::new(ManualClock::new(Instant::now()));
+            let executor = Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
+                store.clone(),
+                clock.clone(),
+                if transient {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::ZERO
+                },
+            ));
+            let executions = Arc::new(AtomicUsize::new(0));
+            let run_count = Arc::clone(&executions);
+            let (execution_entered, execution_entered_wait) = mpsc::channel();
+            let (execution_release, execution_wait) = mpsc::channel();
+            let run = {
+                let executor = Arc::clone(&executor);
+                std::thread::spawn(move || {
+                    executor.submit(
+                        prepared(ExecutionClass::InlineCandidate, Duration::from_secs(7)),
+                        move |_| {
+                            run_count.fetch_add(1, Ordering::SeqCst);
+                            execution_entered.send(()).unwrap();
+                            execution_wait.recv().unwrap();
+                            Ok(result("completion staged at handoff"))
+                        },
+                    )
+                })
+            };
+            execution_entered_wait.recv().unwrap();
+            clock.advance(Duration::from_secs(7));
+            execution_release.send(()).unwrap();
+            executor.wake_deadline_waiters_for_test();
+            fault_entered.recv().unwrap();
+            let record = store
+                .records
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .clone();
+            assert_eq!(record.status, InvocationStatus::Working);
+            assert!(record.result.is_none());
+            assert!(executor.has_active_invocations());
+            fault_release.send(()).unwrap();
+
+            if transient {
+                let task_id = match run.join().unwrap().unwrap() {
+                    InvocationOutcome::Task(snapshot) => snapshot.task_id,
+                    other => panic!("completion-at-handoff must be durable: {other:?}"),
+                };
+                assert_eq!(
+                    executor
+                        .wait_task(task_id, Duration::from_secs(1))
+                        .unwrap()
+                        .status,
+                    InvocationStatus::Completed
+                );
+            } else {
+                assert!(matches!(
+                    run.join().unwrap(),
+                    Err(super::InvocationExecutorError::RestartRequired)
+                ));
+                assert!(executor.restart_required());
+                assert!(store
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .all(|record| record.result.is_none()));
+            }
+            assert_eq!(executions.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn permanent_uncertain_create_fails_closed_and_stops_new_execution() {
+        struct LeaseDrop(Arc<AtomicUsize>);
+        impl Drop for LeaseDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        for mismatch in [false, true] {
+            let store = Arc::new(MemoryStore::default());
+            let (fault, entered, release) = CommitFault::new(CommitFaultTiming::After);
+            *store.create_working_fault.lock().unwrap() = Some(fault);
+            if mismatch {
+                store.create_record_mismatch.store(1, Ordering::SeqCst);
+            } else {
+                store.get_always_fails.store(1, Ordering::SeqCst);
+            }
+            let executor = Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
+                store.clone(),
+                Arc::new(ManualClock::new(Instant::now())),
+                Duration::ZERO,
+            ));
+            let executions = Arc::new(AtomicUsize::new(0));
+            let run_count = Arc::clone(&executions);
+            let lease_drops = Arc::new(AtomicUsize::new(0));
+            let run = {
+                let executor = Arc::clone(&executor);
+                let lease_drops = Arc::clone(&lease_drops);
+                std::thread::spawn(move || {
+                    executor.submit(
+                        prepared(
+                            ExecutionClass::KnownLong(KnownLongReason::ColdIndex),
+                            Duration::ZERO,
+                        )
+                        .with_resource_lease(Arc::new(LeaseDrop(lease_drops))),
+                        move |_| {
+                            run_count.fetch_add(1, Ordering::SeqCst);
+                            Ok(result("must never execute"))
+                        },
+                    )
+                })
+            };
+
+            entered.recv().unwrap();
+            assert_eq!(executions.load(Ordering::SeqCst), 0);
+            assert!(executor.has_active_invocations());
+            release.send(()).unwrap();
+            assert!(matches!(
+                run.join().unwrap(),
+                Err(super::InvocationExecutorError::RestartRequired)
+            ));
+            assert!(executor.restart_required());
+            assert!(!executor.has_active_invocations());
+            assert_eq!(lease_drops.load(Ordering::SeqCst), 1);
+            assert_eq!(store.records.lock().unwrap().len(), 1);
+            assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+            let second_run_count = Arc::clone(&executions);
+            let second = executor.submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::ColdIndex),
+                    Duration::ZERO,
+                ),
+                move |_| {
+                    second_run_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(result("second invocation must not execute"))
+                },
+            );
+            assert!(matches!(
+                second,
+                Err(super::InvocationExecutorError::RestartRequired)
+            ));
+            assert_eq!(executions.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn permanent_terminal_failure_uses_bounded_policy_then_requires_restart() {
+        struct LeaseDrop(Arc<AtomicUsize>);
+        impl Drop for LeaseDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let store = Arc::new(MemoryStore::default());
+        store.update_always_fails.store(1, Ordering::SeqCst);
+        let executor = Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
+            store.clone(),
+            Arc::new(ManualClock::new(Instant::now())),
+            Duration::ZERO,
+        ));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let run_count = Arc::clone(&executions);
+        let lease_drops = Arc::new(AtomicUsize::new(0));
+        let outcome = executor
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                    Duration::ZERO,
+                )
+                .with_resource_lease(Arc::new(LeaseDrop(Arc::clone(&lease_drops)))),
+                move |_| {
+                    run_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(result("staged terminal must stay hidden"))
+                },
+            )
+            .unwrap();
+        let task_id = match outcome {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected task: {other:?}"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !executor.restart_required() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+
+        assert!(executor.restart_required());
+        assert!(!executor.has_active_invocations());
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        assert!(store.update_attempts.load(Ordering::SeqCst) <= 2);
+        let persisted = store.records.lock().unwrap()[&task_id].clone();
+        assert_eq!(persisted.status, InvocationStatus::Working);
+        assert!(persisted.result.is_none());
+        assert_eq!(lease_drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn terminal_reconciliation_uses_bounded_exponential_backoff() {
+        let store = Arc::new(MemoryStore::default());
+        store.update_always_fails.store(1, Ordering::SeqCst);
+        let timer = Arc::new(RecordingReconciliationTimer::new(Instant::now()));
+        let executor = Arc::new(InvocationExecutor::new_with_reconciliation_for_test(
+            store.clone(),
+            Arc::new(ManualClock::new(Instant::now())),
+            super::ReconciliationPolicy::with_budget_for_test(Duration::from_millis(75)),
+            timer.clone(),
+        ));
+        let outcome = executor
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                    Duration::ZERO,
+                ),
+                |_| Ok(result("must not publish")),
+            )
+            .unwrap();
+        assert!(matches!(outcome, InvocationOutcome::Task(_)));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !executor.restart_required() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+
+        assert!(executor.restart_required());
+        assert_eq!(
+            *timer.waits.lock().unwrap(),
+            vec![
+                Duration::from_millis(10),
+                Duration::from_millis(20),
+                Duration::from_millis(40),
+                Duration::from_millis(5),
+            ]
+        );
+        assert_eq!(store.update_attempts.load(Ordering::SeqCst), 4);
+    }
+
     fn wait_until_inactive(executor: &InvocationExecutor) {
         let deadline = Instant::now() + Duration::from_secs(1);
         while executor.has_active_invocations() && Instant::now() < deadline {
@@ -1588,10 +2316,255 @@ mod tests {
     }
 
     #[test]
+    fn cancel_returns_the_exact_completed_or_failed_terminal_winner() {
+        for should_fail in [false, true] {
+            let store = Arc::new(MemoryStore::default());
+            let executor = Arc::new(InvocationExecutor::new(
+                store,
+                Arc::new(ManualClock::new(Instant::now())),
+            ));
+            let executions = Arc::new(AtomicUsize::new(0));
+            let run_count = Arc::clone(&executions);
+            let outcome = executor
+                .submit(
+                    prepared(
+                        ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                        Duration::ZERO,
+                    ),
+                    move |_| {
+                        run_count.fetch_add(1, Ordering::SeqCst);
+                        if should_fail {
+                            Err(InvocationFailure::new(
+                                "runtime_failure",
+                                "runtime failure is projected safely",
+                            ))
+                        } else {
+                            Ok(result("completed before cancel"))
+                        }
+                    },
+                )
+                .unwrap();
+            let task_id = match outcome {
+                InvocationOutcome::Task(snapshot) => snapshot.task_id,
+                other => panic!("expected task: {other:?}"),
+            };
+            let winner = executor.wait_task(task_id, Duration::from_secs(1)).unwrap();
+            let cancel = executor
+                .cancel_task(task_id)
+                .expect("cancel observes the already committed terminal winner");
+
+            assert_eq!(cancel, winner);
+            assert_eq!(
+                cancel.status,
+                if should_fail {
+                    InvocationStatus::Failed
+                } else {
+                    InvocationStatus::Completed
+                }
+            );
+            assert_eq!(executions.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn cancel_invalid_transition_readback_returns_the_exact_terminal_winner() {
+        for should_fail in [false, true] {
+            let store = Arc::new(MemoryStore::default());
+            let executor = Arc::new(InvocationExecutor::new(
+                store.clone(),
+                Arc::new(ManualClock::new(Instant::now())),
+            ));
+            let executions = Arc::new(AtomicUsize::new(0));
+            let run_count = Arc::clone(&executions);
+            let task_id = match executor
+                .submit(
+                    prepared(
+                        ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                        Duration::ZERO,
+                    ),
+                    move |_| {
+                        run_count.fetch_add(1, Ordering::SeqCst);
+                        if should_fail {
+                            Err(InvocationFailure::new("failed", "safe failure"))
+                        } else {
+                            Ok(result("completed before invalid transition"))
+                        }
+                    },
+                )
+                .unwrap()
+            {
+                InvocationOutcome::Task(snapshot) => snapshot.task_id,
+                other => panic!("expected task: {other:?}"),
+            };
+            let winner = executor.wait_task(task_id, Duration::from_secs(1)).unwrap();
+            store
+                .cancel_returns_invalid_transition
+                .store(1, Ordering::SeqCst);
+
+            assert_eq!(executor.cancel_task(task_id).unwrap(), winner);
+            assert_eq!(executions.load(Ordering::SeqCst), 1);
+        }
+
+        let store = Arc::new(MemoryStore::default());
+        let executor = Arc::new(InvocationExecutor::new(
+            store.clone(),
+            Arc::new(ManualClock::new(Instant::now())),
+        ));
+        let task_id = match executor
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::OccupiedWriteLease),
+                    Duration::ZERO,
+                ),
+                |cancellation| {
+                    while !cancellation.is_cancelled() {
+                        std::thread::yield_now();
+                    }
+                    Err(InvocationFailure::new("cancelled", "safe cancellation"))
+                },
+            )
+            .unwrap()
+        {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected task: {other:?}"),
+        };
+        let winner = executor.cancel_task(task_id).unwrap();
+        assert_eq!(winner.status, InvocationStatus::Cancelled);
+        store
+            .cancel_returns_invalid_transition
+            .store(1, Ordering::SeqCst);
+        assert_eq!(executor.cancel_task(task_id).unwrap(), winner);
+    }
+
+    #[test]
+    fn permanent_cancel_uncertainty_requires_restart_without_exposing_or_reexecuting() {
+        struct LeaseDrop(Arc<AtomicUsize>);
+        impl Drop for LeaseDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let store = Arc::new(MemoryStore::default());
+        store.cancel_always_uncertain.store(1, Ordering::SeqCst);
+        let executor = Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
+            store.clone(),
+            Arc::new(ManualClock::new(Instant::now())),
+            Duration::ZERO,
+        ));
+        let executions = Arc::new(AtomicUsize::new(0));
+        let run_count = Arc::clone(&executions);
+        let lease_drops = Arc::new(AtomicUsize::new(0));
+        let (started, started_wait) = mpsc::channel();
+        let task_id = match executor
+            .submit(
+                prepared(
+                    ExecutionClass::KnownLong(KnownLongReason::OccupiedWriteLease),
+                    Duration::ZERO,
+                )
+                .with_resource_lease(Arc::new(LeaseDrop(Arc::clone(&lease_drops)))),
+                move |cancellation| {
+                    run_count.fetch_add(1, Ordering::SeqCst);
+                    started.send(()).unwrap();
+                    while !cancellation.is_cancelled() {
+                        std::thread::yield_now();
+                    }
+                    Err(InvocationFailure::new("cancelled", "safe cancellation"))
+                },
+            )
+            .unwrap()
+        {
+            InvocationOutcome::Task(snapshot) => snapshot.task_id,
+            other => panic!("expected task: {other:?}"),
+        };
+        started_wait.recv().unwrap();
+
+        assert!(matches!(
+            executor.cancel_task(task_id),
+            Err(super::InvocationExecutorError::RestartRequired)
+        ));
+        assert!(executor.restart_required());
+        assert!(!executor.has_active_invocations());
+        assert_eq!(lease_drops.load(Ordering::SeqCst), 1);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let persisted = store.get(task_id).unwrap();
+        assert_eq!(persisted.status, InvocationStatus::Working);
+        assert!(persisted.result.is_none());
+        assert!(matches!(
+            executor.submit(
+                prepared(ExecutionClass::InlineCandidate, Duration::ZERO),
+                |_| Ok(result("must not execute")),
+            ),
+            Err(super::InvocationExecutorError::RestartRequired)
+        ));
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancel_observes_complete_or_fail_that_committed_before_uncertain_return() {
+        for should_fail in [false, true] {
+            let store = Arc::new(MemoryStore::default());
+            let (fault, entered, release) = CommitFault::new(CommitFaultTiming::After);
+            *store.update_fault.lock().unwrap() = Some(fault);
+            let executor = Arc::new(InvocationExecutor::new(
+                store,
+                Arc::new(ManualClock::new(Instant::now())),
+            ));
+            let executions = Arc::new(AtomicUsize::new(0));
+            let run_count = Arc::clone(&executions);
+            let outcome = executor
+                .submit(
+                    prepared(
+                        ExecutionClass::KnownLong(KnownLongReason::ExternalProcess),
+                        Duration::ZERO,
+                    ),
+                    move |_| {
+                        run_count.fetch_add(1, Ordering::SeqCst);
+                        if should_fail {
+                            Err(InvocationFailure::new("failed", "safe failure"))
+                        } else {
+                            Ok(result("completed before uncertain return"))
+                        }
+                    },
+                )
+                .unwrap();
+            let task_id = match outcome {
+                InvocationOutcome::Task(snapshot) => snapshot.task_id,
+                other => panic!("expected task: {other:?}"),
+            };
+            entered.recv().unwrap();
+
+            let winner = executor.cancel_task(task_id).unwrap();
+            assert_eq!(
+                winner.status,
+                if should_fail {
+                    InvocationStatus::Failed
+                } else {
+                    InvocationStatus::Completed
+                }
+            );
+            release.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while executor.has_active_invocations() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(!executor.has_active_invocations());
+            assert_eq!(executions.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
     fn terminal_publication_faults_reconcile_without_reexecution_or_false_idle() {
         create_working_faults_are_resolved_by_exact_identity_bound_readback();
+        uncertain_create_transient_readback_is_reconciled_before_execution();
+        permanent_uncertain_create_fails_closed_and_stops_new_execution();
         terminal_complete_and_fail_faults_reconcile_without_reexecution_or_early_idle();
+        terminal_reconciliation_uses_bounded_exponential_backoff();
+        permanent_terminal_failure_uses_bounded_policy_then_requires_restart();
         cancel_faults_keep_the_live_owner_until_cancellation_is_durable();
+        cancel_returns_the_exact_completed_or_failed_terminal_winner();
+        cancel_invalid_transition_readback_returns_the_exact_terminal_winner();
+        permanent_cancel_uncertainty_requires_restart_without_exposing_or_reexecuting();
         actor_resource_capability_is_retained_through_terminal_reconciliation();
     }
 

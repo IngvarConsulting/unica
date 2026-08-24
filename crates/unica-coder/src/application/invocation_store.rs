@@ -105,6 +105,7 @@ pub(crate) enum SafeFailureReason {
 
 #[derive(Debug, Clone)]
 pub(crate) struct NewInvocationRecord {
+    task_id: TaskId,
     invocation_id: InvocationId,
     tool: ToolIdentity,
     normalized_arguments_hash: NormalizedArgumentsHash,
@@ -128,6 +129,7 @@ impl NewInvocationRecord {
         resume: Option<ResumeDescriptor>,
     ) -> Self {
         Self {
+            task_id: TaskId::new(),
             invocation_id,
             tool,
             normalized_arguments_hash,
@@ -139,10 +141,14 @@ impl NewInvocationRecord {
         }
     }
 
-    pub(crate) fn into_stored(self, task_id: TaskId, now_epoch_ms: u64) -> StoredInvocationRecord {
+    pub(crate) fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    pub(crate) fn into_stored(self, now_epoch_ms: u64) -> StoredInvocationRecord {
         StoredInvocationRecord {
             schema_version: INVOCATION_RECORD_SCHEMA_VERSION,
-            task_id,
+            task_id: self.task_id,
             invocation_id: self.invocation_id,
             tool: self.tool,
             normalized_arguments_hash: self.normalized_arguments_hash,
@@ -159,12 +165,8 @@ impl NewInvocationRecord {
         }
     }
 
-    pub(crate) fn into_working_stored(
-        self,
-        task_id: TaskId,
-        now_epoch_ms: u64,
-    ) -> StoredInvocationRecord {
-        let mut stored = self.into_stored(task_id, now_epoch_ms);
+    pub(crate) fn into_working_stored(self, now_epoch_ms: u64) -> StoredInvocationRecord {
+        let mut stored = self.into_stored(now_epoch_ms);
         stored.status = InvocationStatus::Working;
         stored.status_message = SafeStatusMessage::Working;
         stored

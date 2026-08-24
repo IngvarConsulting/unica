@@ -328,10 +328,12 @@ pub(crate) enum DaemonErrorCode {
     Overloaded,
     OwnerCapacity,
     WorkspaceCapacity,
+    WorkspaceRegistryFailed,
     TaskNotFound,
     TaskExpired,
     InvocationFailed,
     StoreFailed,
+    DurabilityUncertain,
 }
 
 impl std::fmt::Display for DaemonErrorCode {
@@ -346,10 +348,12 @@ impl std::fmt::Display for DaemonErrorCode {
             Self::Overloaded => "overloaded",
             Self::OwnerCapacity => "owner_capacity",
             Self::WorkspaceCapacity => "workspace_capacity",
+            Self::WorkspaceRegistryFailed => "workspace_registry_failed",
             Self::TaskNotFound => "task_not_found",
             Self::TaskExpired => "task_expired",
             Self::InvocationFailed => "invocation_failed",
             Self::StoreFailed => "store_failed",
+            Self::DurabilityUncertain => "durability_uncertain",
         };
         formatter.write_str(code)
     }

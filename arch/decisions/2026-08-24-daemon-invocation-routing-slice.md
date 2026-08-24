@@ -12,44 +12,37 @@ design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 # Скрытый canonical v0.13 profile исполняется только в daemon
 
 **Решение.** Явно выбранный внутренний `SurfaceRelease::V13` превращает каждый
-канонический вызов в одну daemon-owned Invocation. Frontend только отправляет
-вызов, ждёт прямой ответ или принимает durable Task и проецирует результат;
-повторный frontend execution и polling re-execution запрещены структурно.
+вызов в одну daemon-owned Invocation. Frontend только отправляет, ждёт или
+проецирует durable Task; повторный execution запрещён структурно.
 
-Срок начинается при получении frontend-запроса. До 7000 мс завершившийся вызов
-может ответить напрямую; в 7000 мс незавершённая работа уже записана как Task.
-Нулевой переданный бюджет означает немедленную материализацию после дешёвой
-валидации. Более ранний известный host deadline сокращает бюджет с запасом на
-сериализацию. `KnownLong` выбирается подготовленной границей после валидации и
-до дорогого ожидания или запуска, а не списком имён инструментов.
+Срок начинается при frontend receipt: до 7000 мс допустим direct, в 7000 мс
+незавершённая работа уже durable Task. Нулевой или более ранний host budget
+ускоряет handoff с запасом сериализации. `KnownLong` определяется подготовленной
+границей после валидации и до дорогого ожидания, а не именем инструмента.
 
-Daemon protocol v2 принимает только строгие `SubmitInvocation`, `GetTask`,
-`WaitTask`, `CancelTask`. После дешёвой schema-проверки daemon связывает вызов с
-opaque capability точного `WorkspaceActor`; handler больше не получает
-`workspaceHint`, а чтение и публикация проходят через retained physical root и
-revision fence этого actor. Реестр actor хранит weak entries, очищает умершие и
-ограничивает одновременно живые capabilities числом 64, не вытесняя активные.
+Строгий daemon protocol v2 принимает `SubmitInvocation`, `GetTask`, `WaitTask`,
+`CancelTask`. После schema-проверки вызов получает opaque capability точного
+`WorkspaceActor`; handler не видит `workspaceHint`, чтение и публикация проходят
+через retained root и revision fence. Weak registry допускает 64 живых actor,
+не вытесняет активные; capacity retryable, poison — закрытая внутренняя ошибка.
 
 Durable record schema v2 хранит закрытые identity, digest, status и
-`SafeFailureReason`, но не raw arguments, caller/runtime text, stdout или
-stderr. Task сразу создаётся атомарно в `Working`. Неопределённость commit
-разрешается identity-bound readback; terminal publication удерживает live owner
-и actor capability до подтверждённого durable terminal без повторного domain
-execution. На этом срезе зарегистрированных resume owners нет: любой v1/v2
-working record после restart становится закрытой interrupted или
-resume-unsupported failure, а v1 terminal детерминированно мигрирует в v2.
-Неизвестная schema отклоняется.
+`SafeFailureReason`, не raw arguments/runtime text/stdout/stderr. До create
+выделяются TaskId и live owner; execution начинается лишь после точного
+`Working`. Uncertain commit разрешается identity-bound readback по bounded
+monotonic policy; terminal удерживает owner/capability без re-execution.
+Исчерпание policy закрывает submit, скрывает staged result, освобождает actor и
+завершает daemon. Resume owners пока нет: после restart v1/v2 `Working`
+закрывается как interrupted/unsupported, v1 terminal мигрирует, unknown schema
+отклоняется.
 
 Входной `SurfaceRelease::V12` с 71 инструментом остаётся на прежнем dispatch и
 wire-контракте; опубликованный v0.12.3 baseline из 74 имён остаётся отдельной
-миграционной приёмкой. Этот срез не отображает legacy registry в восемь
-канонических identities, не включает SEP-2663 capability и не добавляет
-task-tools; атомарное публичное переключение и удаление legacy path принадлежат
-Task 22.
+миграционной приёмкой. Здесь нет legacy-to-canonical mapping, SEP-2663 или
+task-tools; публичное переключение и удаление legacy path принадлежат Task 22.
 
 **Почему.** Так внутренний execution lifecycle становится единым до изменения
 публичной поверхности, не сохраняя небезопасный legacy payload и не выдавая
 частичную миграцию за отгруженную v0.13.
 
-**Цена.** До Task 22 в одном бинаре сосуществуют неизменённый публичный V12
-dispatch и непубликуемый canonical V13 router.
+**Цена.** До Task 22 сосуществуют публичный V12 dispatch и скрытый V13 router.

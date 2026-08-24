@@ -637,14 +637,16 @@ impl std::error::Error for WorkspaceActorRegistryError {}
 #[derive(Debug)]
 pub(crate) struct WorkspaceActorRegistry {
     actors: Mutex<HashMap<WorkspaceIdentity, Weak<WorkspaceActor>>>,
-    max_active: usize,
+    #[cfg(test)]
+    max_active_override: Option<usize>,
 }
 
 impl Default for WorkspaceActorRegistry {
     fn default() -> Self {
         Self {
             actors: Mutex::new(HashMap::new()),
-            max_active: MAX_ACTIVE_WORKSPACE_ACTORS,
+            #[cfg(test)]
+            max_active_override: None,
         }
     }
 }
@@ -671,10 +673,9 @@ impl WorkspaceActorRegistry {
         if let Some(actor) = actors.get(&identity).and_then(Weak::upgrade) {
             return Ok(actor);
         }
-        if actors.len() >= self.max_active {
-            return Err(WorkspaceActorRegistryError::Capacity {
-                limit: self.max_active,
-            });
+        let max_active = self.max_active();
+        if actors.len() >= max_active {
+            return Err(WorkspaceActorRegistryError::Capacity { limit: max_active });
         }
         let actor = Arc::new(
             WorkspaceActor::new(identity.clone(), context.clone())
@@ -702,8 +703,16 @@ impl WorkspaceActorRegistry {
         assert!(max_active > 0);
         Self {
             actors: Mutex::new(HashMap::new()),
-            max_active,
+            max_active_override: Some(max_active),
         }
+    }
+
+    fn max_active(&self) -> usize {
+        #[cfg(test)]
+        if let Some(max_active) = self.max_active_override {
+            return max_active;
+        }
+        MAX_ACTIVE_WORKSPACE_ACTORS
     }
 
     #[cfg(test)]
@@ -712,11 +721,20 @@ impl WorkspaceActorRegistry {
     }
 
     #[cfg(test)]
-    fn entry_len_for_test(&self) -> Result<usize, String> {
+    pub(crate) fn entry_len_for_test(&self) -> Result<usize, String> {
         self.actors
             .lock()
             .map(|actors| actors.len())
             .map_err(|_| "workspace actor registry is poisoned".to_string())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.actors.lock().unwrap();
+            panic!("poison workspace actor registry for deterministic admission test");
+        }));
+        assert!(poisoned.is_err());
     }
 
     #[cfg(test)]

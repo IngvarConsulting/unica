@@ -174,8 +174,8 @@ fn bind_workspace_invocation(
         .get_or_create(&context, [("main", &source_root)], "canonical-v0.13")
         .map_err(|error| match error {
             WorkspaceActorRegistryError::Capacity { .. } => WorkspaceAdmissionError::Capacity,
-            WorkspaceActorRegistryError::InvalidIdentity(_)
-            | WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::Invalid,
+            WorkspaceActorRegistryError::InvalidIdentity(_) => WorkspaceAdmissionError::Invalid,
+            WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::RegistryFailed,
         })?;
     let provider_root = actor
         .bind_provider_root("main", &source_root)
@@ -196,12 +196,14 @@ fn bind_workspace_invocation(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkspaceAdmissionError {
     Capacity,
+    RegistryFailed,
     Invalid,
 }
 
 #[derive(Debug)]
 enum DaemonInvocationError {
     WorkspaceCapacity,
+    WorkspaceRegistryFailed,
     Executor(InvocationExecutorError),
 }
 
@@ -215,6 +217,7 @@ impl DaemonInvocationError {
     fn protocol_code(&self) -> DaemonErrorCode {
         match self {
             Self::WorkspaceCapacity => DaemonErrorCode::WorkspaceCapacity,
+            Self::WorkspaceRegistryFailed => DaemonErrorCode::WorkspaceRegistryFailed,
             Self::Executor(InvocationExecutorError::Store(InvocationStoreError::NotFound)) => {
                 DaemonErrorCode::TaskNotFound
             }
@@ -227,6 +230,9 @@ impl DaemonInvocationError {
             }
             Self::Executor(InvocationExecutorError::StatePoisoned) => {
                 DaemonErrorCode::InvocationFailed
+            }
+            Self::Executor(InvocationExecutorError::RestartRequired) => {
+                DaemonErrorCode::DurabilityUncertain
             }
         }
     }
@@ -397,6 +403,22 @@ impl DaemonInvocationRuntime {
         }
     }
 
+    #[cfg(test)]
+    fn new_with_reconciliation_budget_for_test(
+        store: Arc<dyn InvocationStore>,
+        service: Arc<dyn CanonicalInvocationService>,
+        clock: Arc<dyn Clock>,
+        budget: Duration,
+    ) -> Self {
+        Self {
+            executor: Arc::new(InvocationExecutor::new_with_reconciliation_budget_for_test(
+                store, clock, budget,
+            )),
+            service,
+            workspace_actors: WorkspaceActorRegistry::default(),
+        }
+    }
+
     fn submit(
         &self,
         request: InvocationRequest,
@@ -406,6 +428,9 @@ impl DaemonInvocationRuntime {
                 Ok(bound) => Ok(bound),
                 Err(WorkspaceAdmissionError::Capacity) => {
                     return Err(DaemonInvocationError::WorkspaceCapacity)
+                }
+                Err(WorkspaceAdmissionError::RegistryFailed) => {
+                    return Err(DaemonInvocationError::WorkspaceRegistryFailed)
                 }
                 Err(WorkspaceAdmissionError::Invalid) => {
                     Err(failed_domain_result("workspace actor admission failed"))
@@ -497,6 +522,10 @@ impl DaemonInvocationRuntime {
     fn has_active_invocations(&self) -> bool {
         self.executor.has_active_invocations()
     }
+
+    fn restart_required(&self) -> bool {
+        self.executor.restart_required()
+    }
 }
 
 #[derive(Clone)]
@@ -505,6 +534,10 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) core_identity: CoreIdentity,
     pub(crate) idle_grace: Duration,
     invocation_service: Arc<dyn CanonicalInvocationService>,
+    #[cfg(test)]
+    invocation_store: Option<Arc<dyn InvocationStore>>,
+    #[cfg(test)]
+    reconciliation_budget: Option<Duration>,
     #[cfg(test)]
     handshake_pause: Option<Arc<HandshakePause>>,
 }
@@ -521,6 +554,10 @@ impl DaemonServerConfig {
             idle_grace,
             invocation_service: Arc::new(DormantCanonicalV13Service),
             #[cfg(test)]
+            invocation_store: None,
+            #[cfg(test)]
+            reconciliation_budget: None,
+            #[cfg(test)]
             handshake_pause: None,
         }
     }
@@ -531,6 +568,21 @@ impl DaemonServerConfig {
         service: Arc<dyn CanonicalInvocationService>,
     ) -> Self {
         self.invocation_service = service;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_invocation_store_for_test(
+        mut self,
+        store: Arc<dyn InvocationStore>,
+    ) -> Self {
+        self.invocation_store = Some(store);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_reconciliation_budget_for_test(mut self, budget: Duration) -> Self {
+        self.reconciliation_budget = Some(budget);
         self
     }
 
@@ -562,13 +614,41 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
         .map_err(|error| daemon_io_error("inspect daemon listener", error))?
         .port();
 
-    let task_store_directory = state.create_private_subdirectory("tasks")?;
-    let opened_store = open_daemon_invocation_store_from_directory(task_store_directory)?;
-    // Recovery belongs to this daemon even before Task 7 routes work. Keeping the report beside
-    // the sole-writer store makes it impossible for the stdio frontend to consume it early.
-    let _recovery_classifications = opened_store.recovery.classifications.len();
+    #[cfg(test)]
+    let invocation_store = if let Some(store) = config.invocation_store.clone() {
+        store
+    } else {
+        let task_store_directory = state.create_private_subdirectory("tasks")?;
+        let opened_store = open_daemon_invocation_store_from_directory(task_store_directory)?;
+        // Recovery belongs to this daemon before routing starts. Keeping the report beside the
+        // sole-writer store prevents the stdio frontend from consuming it early.
+        let _recovery_classifications = opened_store.recovery.classifications.len();
+        opened_store.store
+    };
+    #[cfg(not(test))]
+    let invocation_store = {
+        let task_store_directory = state.create_private_subdirectory("tasks")?;
+        let opened_store = open_daemon_invocation_store_from_directory(task_store_directory)?;
+        let _recovery_classifications = opened_store.recovery.classifications.len();
+        opened_store.store
+    };
+    #[cfg(test)]
+    let invocation_runtime = Arc::new(match config.reconciliation_budget {
+        Some(budget) => DaemonInvocationRuntime::new_with_reconciliation_budget_for_test(
+            invocation_store,
+            Arc::clone(&config.invocation_service),
+            Arc::new(TokioClock),
+            budget,
+        ),
+        None => DaemonInvocationRuntime::new(
+            invocation_store,
+            Arc::clone(&config.invocation_service),
+            Arc::new(TokioClock),
+        ),
+    });
+    #[cfg(not(test))]
     let invocation_runtime = Arc::new(DaemonInvocationRuntime::new(
-        opened_store.store,
+        invocation_store,
         Arc::clone(&config.invocation_service),
         Arc::new(TokioClock),
     ));
@@ -609,6 +689,9 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
         }
 
         handlers = reap_finished_handlers(handlers);
+        if invocation_runtime.restart_required() {
+            break;
+        }
         if active_leases.is_empty()?
             && admitted_connections.load(Ordering::Acquire) == 0
             && !invocation_runtime.has_active_invocations()
@@ -825,11 +908,13 @@ mod actor_capacity_tests {
     use crate::application::invocation_store::ToolIdentity;
     use crate::application::operation_descriptors::KnownLongReason;
     use crate::infrastructure::task_store::{FileInvocationStore, SystemEpochMillisClock};
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Barrier};
 
     struct BlockingService {
         entered: mpsc::Sender<()>,
     }
+
+    struct RejectingAfterActorAdmissionService;
 
     impl CanonicalInvocationService for BlockingService {
         fn prepare(
@@ -852,6 +937,26 @@ mod actor_capacity_tests {
         }
     }
 
+    impl CanonicalInvocationService for RejectingAfterActorAdmissionService {
+        fn prepare(
+            &self,
+            invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            assert_eq!(invocation.tool(), ToolIdentity::Run);
+            Err(Box::new(failed_domain_result(
+                "test rejection after actor admission",
+            )))
+        }
+
+        fn execute(
+            &self,
+            _invocation: &ActorBoundExecution,
+            _cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            panic!("rejected preparation must not reach execution")
+        }
+    }
+
     fn task_id(response: InvocationResponse) -> crate::domain::invocation::TaskId {
         match response {
             InvocationResponse::Task(snapshot) => snapshot.task_id,
@@ -859,7 +964,6 @@ mod actor_capacity_tests {
         }
     }
 
-    #[test]
     fn live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root() {
         let task_root = tempfile::tempdir().unwrap();
         let workspace_parent = tempfile::tempdir().unwrap();
@@ -899,6 +1003,7 @@ mod actor_capacity_tests {
         }
         let rejected = runtime.submit(request(&roots[2])).unwrap_err();
         assert_eq!(rejected.protocol_code(), DaemonErrorCode::WorkspaceCapacity);
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 2);
 
         for task_id in [first, second, alias] {
             assert_eq!(
@@ -906,6 +1011,111 @@ mod actor_capacity_tests {
                 crate::domain::invocation::InvocationStatus::Cancelled
             );
         }
+    }
+
+    fn concurrent_same_identity_admission_creates_one_actor() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(workspace.path()).unwrap();
+        let context = discover_workspace(Some(root.clone())).unwrap();
+        let registry = Arc::new(WorkspaceActorRegistry::default());
+        let barrier = Arc::new(Barrier::new(9));
+        let mut admissions = Vec::new();
+        for _ in 0..8 {
+            let registry = Arc::clone(&registry);
+            let barrier = Arc::clone(&barrier);
+            let context = context.clone();
+            let root = root.clone();
+            admissions.push(std::thread::spawn(move || {
+                barrier.wait();
+                registry
+                    .get_or_create(&context, [("main", &root)], "canonical-v0.13")
+                    .unwrap()
+            }));
+        }
+        barrier.wait();
+        let actors = admissions
+            .into_iter()
+            .map(|admission| admission.join().unwrap())
+            .collect::<Vec<_>>();
+        for actor in actors.iter().skip(1) {
+            assert!(Arc::ptr_eq(&actors[0], actor));
+        }
+        assert_eq!(registry.entry_len_for_test().unwrap(), 1);
+    }
+
+    fn poisoned_registry_is_a_closed_internal_error_and_admits_nothing() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let (entered, _entered_wait) = mpsc::channel();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(BlockingService { entered }),
+            Arc::new(TokioClock),
+        );
+        runtime.workspace_actors.poison_for_test();
+
+        let error = runtime
+            .submit(
+                InvocationRequest::new(
+                    ToolIdentity::Run,
+                    serde_json::json!({}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.protocol_code(),
+            DaemonErrorCode::WorkspaceRegistryFailed
+        );
+    }
+
+    fn sequential_direct_admissions_release_actor_capabilities_and_prune_dead_entries() {
+        let task_root = tempfile::tempdir().unwrap();
+        let workspaces = tempfile::tempdir().unwrap();
+        let (store, _) =
+            FileInvocationStore::open(task_root.path(), Arc::new(SystemEpochMillisClock)).unwrap();
+        let runtime = DaemonInvocationRuntime::new(
+            Arc::new(store),
+            Arc::new(RejectingAfterActorAdmissionService),
+            Arc::new(TokioClock),
+        );
+
+        for index in 0..80 {
+            let workspace = workspaces.path().join(format!("workspace-{index}"));
+            std::fs::create_dir(&workspace).unwrap();
+            let response = runtime
+                .submit(
+                    InvocationRequest::new(
+                        ToolIdentity::Run,
+                        serde_json::json!({}),
+                        std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
+                        0,
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            assert!(matches!(
+                response,
+                InvocationResponse::Direct(result)
+                    if !result.ok && result.summary == "test rejection after actor admission"
+            ));
+            assert!(runtime.workspace_actors.entry_len_for_test().unwrap() <= 1);
+        }
+        assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 1);
+    }
+
+    #[test]
+    fn daemon_workspace_actor_admission_is_concurrent_bounded_and_fail_closed() {
+        live_actor_capacity_reuses_alias_and_rejects_only_a_distinct_third_root();
+        concurrent_same_identity_admission_creates_one_actor();
+        poisoned_registry_is_a_closed_internal_error_and_admits_nothing();
+        sequential_direct_admissions_release_actor_capabilities_and_prune_dead_entries();
     }
 
     #[test]
@@ -934,6 +1144,15 @@ mod actor_capacity_tests {
             DaemonInvocationError::Executor(InvocationExecutorError::ExecutionFailed)
                 .protocol_code(),
             DaemonErrorCode::InvocationFailed
+        );
+        assert_eq!(
+            DaemonInvocationError::Executor(InvocationExecutorError::RestartRequired)
+                .protocol_code(),
+            DaemonErrorCode::DurabilityUncertain
+        );
+        assert_eq!(
+            DaemonInvocationError::WorkspaceRegistryFailed.protocol_code(),
+            DaemonErrorCode::WorkspaceRegistryFailed
         );
     }
 }
