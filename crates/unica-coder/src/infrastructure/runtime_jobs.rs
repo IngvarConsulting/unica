@@ -16,7 +16,7 @@ use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::events::{runtime_event_kind, DomainEvent};
 use crate::infrastructure::platform::filesystem::{
     metadata_is_link_or_reparse_point, replace_file_atomically, sync_parent_directory,
-    RetainedDirectoryCapability,
+    RetainedDirectoryCapability, RetainedRegularFileCapability,
 };
 use crate::infrastructure::platform::{
     RuntimeProcessTreeHandle, RuntimeProcessTreeState, STDOUT_CAPTURE_LIMIT,
@@ -47,6 +47,13 @@ const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(30);
 const LIFECYCLE_LOCK_RETRY: Duration = Duration::from_millis(20);
 const STREAM_FINISH_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
+#[cfg(test)]
+thread_local! {
+    static STREAM_FINISH_ATTEMPTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+static INJECT_RUNTIME_RECORD_WRITE_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 const RUNTIME_SECRET_VALUE_FLAGS: &[&str] =
     &["password", "pwd", "token", "secret", "connection", "c"];
 const RUNTIME_CONNECTION_MARKERS: &[&str] = &[
@@ -309,6 +316,9 @@ pub(crate) trait RuntimeJobProcess: Send {
     ) -> JobResult<RuntimeJobOutput> {
         self.output_tails(max_bytes)
     }
+    /// Binds all cleanup work, including Drop, to the caller's one absolute
+    /// monotonic deadline. Generic fakes need no extra state.
+    fn bind_cleanup_deadline(&mut self, _deadline: Instant) {}
     #[cfg(test)]
     fn leader_exited_for_test(&self) -> bool {
         false
@@ -466,8 +476,10 @@ impl RuntimeJobRunner for SystemRuntimeJobRunner {
             stdout,
             stderr,
             exited: false,
+            cleanup_deadline: None,
+            cleanup_complete: false,
         };
-        if let Err(error) = process.process_tree.attach(&process.child) {
+        if let Err(error) = process.process_tree.attach(&mut process.child) {
             return Err(process.classify_failed_start(redacted_error(&format!(
                 "attach runtime job process tree: {error}"
             ))));
@@ -494,23 +506,60 @@ struct SystemRuntimeJobProcess {
     stdout: Option<StreamTail>,
     stderr: Option<StreamTail>,
     exited: bool,
+    cleanup_deadline: Option<Instant>,
+    cleanup_complete: bool,
 }
 
 impl SystemRuntimeJobProcess {
     fn classify_failed_start(mut self, error: String) -> RuntimeJobSpawnFailure {
-        match self
-            .process_tree
-            .terminate_and_reap_bounded(&mut self.child, RUNTIME_STARTUP_CLEANUP_TIMEOUT)
-        {
-            Ok(()) => {
-                self.exited = true;
-                RuntimeJobSpawnFailure::ProvenChildless(error)
-            }
+        let cleanup_deadline = self.begin_cleanup_deadline();
+        match self.cleanup_until(cleanup_deadline) {
+            Ok(()) => RuntimeJobSpawnFailure::ProvenChildless(error),
             Err(cleanup) => RuntimeJobSpawnFailure::OwnershipRetained {
                 error: redacted_error(&format!("{error}; startup cleanup uncertain: {cleanup}")),
                 process: Box::new(self),
             },
         }
+    }
+
+    fn begin_cleanup_deadline(&mut self) -> Instant {
+        *self.cleanup_deadline.get_or_insert_with(|| {
+            let started = Instant::now();
+            started
+                .checked_add(RUNTIME_STARTUP_CLEANUP_TIMEOUT)
+                .unwrap_or(started)
+        })
+    }
+
+    fn cleanup_until(&mut self, cleanup_deadline: Instant) -> JobResult<()> {
+        let tree_result = if self.exited {
+            Ok(())
+        } else {
+            self.process_tree
+                .terminate_and_reap_until(&mut self.child, cleanup_deadline)
+                .map_err(|error| io_error("cleanup runtime process tree", &error))
+        };
+        if tree_result.is_ok() {
+            self.exited = true;
+        }
+        // Reader accounting is finally-style: even a tree/probe error must not
+        // skip either reader and let Drop open another cleanup window.
+        let output_result = self.output_tails_until(OUTPUT_TAIL_BYTES, cleanup_deadline);
+        if let Err(tree_error) = tree_result {
+            let output = output_result
+                .err()
+                .map(|error| format!("; output cleanup: {error}"))
+                .unwrap_or_default();
+            return Err(redacted_error(&format!("{tree_error}{output}")));
+        }
+        let output = output_result?;
+        if output.output_incomplete {
+            return Err(redacted_error(
+                "runtime output cleanup deadline elapsed before both readers reached EOF",
+            ));
+        }
+        self.cleanup_complete = true;
+        Ok(())
     }
 }
 
@@ -556,34 +605,35 @@ impl RuntimeJobProcess for SystemRuntimeJobProcess {
         // The receipt only decides anything once the process is gone, and it is
         // the whole retained buffer. Reading it on every 25 ms poll of a running
         // build would clone and re-validate it for nothing.
-        let (output_incomplete, fallback_receipt, fallback_receipt_truncated) = if self.exited {
-            let stdout_incomplete = self
-                .stdout
-                .as_mut()
-                .map(|stream| stream.finish_until(deadline))
-                .transpose()?
-                .unwrap_or(true);
-            let stderr_incomplete = self
-                .stderr
-                .as_mut()
-                .map(|stream| stream.finish_until(deadline))
-                .transpose()?
-                .unwrap_or(true);
-            let (receipt, receipt_truncated) = self
-                .stdout
-                .as_ref()
-                .map(StreamTail::receipt)
-                .transpose()?
-                .unwrap_or((None, true));
-            (
-                stdout_incomplete || stderr_incomplete,
-                receipt,
-                receipt_truncated,
-            )
-        } else {
-            (false, None, false)
-        };
-        Ok(RuntimeJobOutput {
+        let (output_incomplete, fallback_receipt, fallback_receipt_truncated) =
+            if self.exited || self.cleanup_deadline.is_some() {
+                let stdout_incomplete = self
+                    .stdout
+                    .as_mut()
+                    .map(|stream| stream.finish_until(deadline))
+                    .transpose()?
+                    .unwrap_or(true);
+                let stderr_incomplete = self
+                    .stderr
+                    .as_mut()
+                    .map(|stream| stream.finish_until(deadline))
+                    .transpose()?
+                    .unwrap_or(true);
+                let (receipt, receipt_truncated) = self
+                    .stdout
+                    .as_ref()
+                    .map(StreamTail::receipt)
+                    .transpose()?
+                    .unwrap_or((None, true));
+                (
+                    stdout_incomplete || stderr_incomplete,
+                    receipt,
+                    receipt_truncated,
+                )
+            } else {
+                (false, None, false)
+            };
+        let output = RuntimeJobOutput {
             stdout: self
                 .stdout
                 .as_ref()
@@ -599,7 +649,19 @@ impl RuntimeJobProcess for SystemRuntimeJobProcess {
             output_incomplete,
             fallback_receipt,
             fallback_receipt_truncated,
-        })
+        };
+        if self.exited && !output.output_incomplete {
+            self.cleanup_complete = true;
+        }
+        Ok(output)
+    }
+
+    fn bind_cleanup_deadline(&mut self, deadline: Instant) {
+        self.cleanup_deadline = Some(
+            self.cleanup_deadline
+                .map(|current| current.min(deadline))
+                .unwrap_or(deadline),
+        );
     }
 
     #[cfg(test)]
@@ -610,13 +672,13 @@ impl RuntimeJobProcess for SystemRuntimeJobProcess {
 
 impl Drop for SystemRuntimeJobProcess {
     fn drop(&mut self) {
-        if self.exited {
+        if self.cleanup_complete {
             return;
         }
-        let _ = self
-            .process_tree
-            .terminate_and_reap_bounded(&mut self.child, RUNTIME_STARTUP_CLEANUP_TIMEOUT);
-        self.exited = true;
+        if self.cleanup_deadline.is_none() {
+            let cleanup_deadline = self.begin_cleanup_deadline();
+            let _ = self.cleanup_until(cleanup_deadline);
+        }
     }
 }
 
@@ -693,6 +755,8 @@ impl StreamTail {
     }
 
     fn finish_until(&mut self, deadline: Instant) -> JobResult<bool> {
+        #[cfg(test)]
+        STREAM_FINISH_ATTEMPTS.with(|slot| slot.set(slot.get().saturating_add(1)));
         self.finish_within(deadline.saturating_duration_since(Instant::now()))
     }
 
@@ -701,15 +765,16 @@ impl StreamTail {
             return Ok(false);
         };
         match self.finished.recv_timeout(timeout) {
-            Err(mpsc::RecvTimeoutError::Disconnected) => reader
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => reader
                 .join()
                 .map_err(|_| redacted_error("join runtime job output reader"))?
                 .map_err(|error| io_error("read runtime job output", &error))
                 .map(|()| false),
-            _ => {
-                // What the reader already captured stays readable, but the
-                // receipt can no longer be proven whole, so it must not
-                // authorize a full rebuild.
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Preserve the reader capability so quarantine supervision can
+                // later prove EOF. The partial bytes remain readable, but the
+                // receipt cannot authorize a fallback until then.
+                self.reader = Some(reader);
                 self.receipt_truncated
                     .store(true, std::sync::atomic::Ordering::Release);
                 Ok(true)
@@ -952,6 +1017,46 @@ struct CancelMarker {
 #[derive(Debug)]
 struct ActiveLifecycleLock {
     file: File,
+    jobs_root: RetainedDirectoryCapability,
+    lifecycle: RetainedRegularFileCapability,
+}
+
+impl ActiveLifecycleLock {
+    fn validate(&self) -> io::Result<()> {
+        self.jobs_root.validate_named_identity()?;
+        self.lifecycle.validate_named_identity()
+    }
+
+    fn retain_active_lock(&self) -> io::Result<RetainedRegularFileCapability> {
+        self.jobs_root
+            .retain_regular_child(std::ffi::OsStr::new("active.lock"))
+    }
+
+    fn release_active_lock_for(
+        &self,
+        id: &str,
+        after_guarded_observation: impl FnOnce(),
+    ) -> io::Result<()> {
+        self.validate()?;
+        let active = match self.retain_active_lock() {
+            Ok(active) => active,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let current = String::from_utf8(active.read_bounded(128)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "runtime active lease is not canonical UTF-8",
+            )
+        })?;
+        if current.trim() != id {
+            return Ok(());
+        }
+        after_guarded_observation();
+        self.validate()?;
+        active.validate_named_identity()?;
+        active.remove_named_identity()
+    }
 }
 
 impl Drop for ActiveLifecycleLock {
@@ -987,10 +1092,20 @@ impl RuntimeJobStore {
         self.cache_root.join("jobs")
     }
 
+    fn retain_jobs_root(&self) -> JobResult<RetainedDirectoryCapability> {
+        fs::create_dir_all(&self.cache_root)
+            .map_err(|error| io_error("create runtime cache directory", &error))?;
+        let canonical_cache = fs::canonicalize(&self.cache_root)
+            .map_err(|error| io_error("resolve runtime cache directory", &error))?;
+        RetainedDirectoryCapability::open_or_create(&canonical_cache.join("jobs"))
+            .map_err(|error| io_error("retain runtime jobs directory", &error))
+    }
+
     fn active_lock_path(&self) -> PathBuf {
         self.jobs_root().join("active.lock")
     }
 
+    #[cfg(test)]
     fn active_lifecycle_lock_path(&self) -> PathBuf {
         self.jobs_root().join("active.lifecycle.lock")
     }
@@ -1074,6 +1189,26 @@ impl RuntimeJobStore {
         }
     }
 
+    fn acquire_active_lifecycle_lock_for_root_bounded(
+        &self,
+        jobs_root: RetainedDirectoryCapability,
+    ) -> JobResult<ActiveLifecycleLock> {
+        let deadline = Instant::now()
+            .checked_add(LIFECYCLE_LOCK_WAIT)
+            .ok_or_else(|| redacted_error("runtime job lifecycle deadline is unrepresentable"))?;
+        loop {
+            if let Some(lifecycle) = self.open_active_lifecycle_lock_in(jobs_root.clone(), true)? {
+                return Ok(lifecycle);
+            }
+            if Instant::now() >= deadline {
+                return Err(redacted_error(
+                    "retained runtime lifecycle transition remained contended",
+                ));
+            }
+            thread::sleep(LIFECYCLE_LOCK_RETRY);
+        }
+    }
+
     fn try_acquire_active_lifecycle_lock(&self) -> JobResult<Option<ActiveLifecycleLock>> {
         self.open_active_lifecycle_lock(true)
     }
@@ -1082,23 +1217,35 @@ impl RuntimeJobStore {
         &self,
         nonblocking: bool,
     ) -> JobResult<Option<ActiveLifecycleLock>> {
-        fs::create_dir_all(self.jobs_root())
-            .map_err(|error| io_error("create runtime jobs directory", &error))?;
-        let path = self.active_lifecycle_lock_path();
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
+        let jobs_root = self.retain_jobs_root()?;
+        self.open_active_lifecycle_lock_in(jobs_root, nonblocking)
+    }
+
+    fn open_active_lifecycle_lock_in(
+        &self,
+        jobs_root: RetainedDirectoryCapability,
+        nonblocking: bool,
+    ) -> JobResult<Option<ActiveLifecycleLock>> {
+        jobs_root
+            .validate_named_identity()
+            .map_err(|error| io_error("revalidate retained runtime jobs directory", &error))?;
+        let lifecycle = jobs_root
+            .retain_or_create_regular_child(std::ffi::OsStr::new("active.lifecycle.lock"))
             .map_err(|error| io_error("open active runtime job lifecycle lock", &error))?;
+        let file = lifecycle
+            .try_clone_file()
+            .map_err(|error| io_error("clone active runtime job lifecycle lock", &error))?;
         let lock_result = if nonblocking {
             FileExt::try_lock_exclusive(&file)
         } else {
             FileExt::lock_exclusive(&file)
         };
         match lock_result {
-            Ok(()) => Ok(Some(ActiveLifecycleLock { file })),
+            Ok(()) => Ok(Some(ActiveLifecycleLock {
+                file,
+                jobs_root,
+                lifecycle,
+            })),
             Err(error) if nonblocking && lock_is_contended(&error) => Ok(None),
             Err(error) => Err(io_error(
                 "acquire active runtime job lifecycle lock",
@@ -1386,6 +1533,10 @@ impl RuntimeJobStore {
     }
 
     fn write_record(&self, record: &RuntimeJobRecord) -> JobResult<()> {
+        #[cfg(test)]
+        if INJECT_RUNTIME_RECORD_WRITE_FAILURE.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return Err(redacted_error("injected runtime record write failure"));
+        }
         let path = self.record_path(&record.id)?;
         let parent = path
             .parent()
@@ -1513,6 +1664,7 @@ impl RuntimeJobStore {
 /// Durable job worker harness. A public transport adapter is deliberately outside this module.
 struct ActiveRuntimeJobProcess {
     process: Box<dyn RuntimeJobProcess>,
+    jobs_root: RetainedDirectoryCapability,
     attempt_argv: Vec<String>,
     fallback: Option<RuntimeJobRequest>,
     previous_output: Option<RuntimeJobOutput>,
@@ -1533,6 +1685,57 @@ pub(crate) struct RuntimeJobService {
     store: RuntimeJobStore,
     runner: Arc<dyn RuntimeJobRunner>,
     processes: Mutex<HashMap<String, ActiveRuntimeJobProcess>>,
+}
+
+impl Drop for RuntimeJobService {
+    fn drop(&mut self) {
+        let Ok(processes) = self.processes.get_mut() else {
+            return;
+        };
+        for (job_id, active) in processes.drain() {
+            let store = self.store.clone();
+            let retained = Arc::new(Mutex::new(Some(active)));
+            if spawn_quarantine_supervisor(store, job_id, Arc::clone(&retained)).is_err() {
+                // Thread creation failed before the clone could assume
+                // ownership. Intentionally retain the last in-process OS
+                // capability forever; active.lock is the durable companion
+                // quarantine. Dropping it would falsely make replacement safe.
+                std::mem::forget(retained);
+            }
+        }
+    }
+}
+
+type QuarantinedRuntimeProcess = Arc<Mutex<Option<ActiveRuntimeJobProcess>>>;
+
+#[cfg(test)]
+static INJECT_QUARANTINE_THREAD_SPAWN_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn spawn_quarantine_supervisor(
+    store: RuntimeJobStore,
+    job_id: String,
+    retained: QuarantinedRuntimeProcess,
+) -> io::Result<()> {
+    #[cfg(test)]
+    if INJECT_QUARANTINE_THREAD_SPAWN_FAILURE.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        return Err(io::Error::other(
+            "injected runtime quarantine thread spawn failure",
+        ));
+    }
+
+    thread::Builder::new()
+        .name("unica-runtime-quarantine".to_string())
+        .spawn(move || {
+            let active = retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(active) = active {
+                supervise_owned_quarantine(store, job_id, active);
+            }
+        })
+        .map(|_| ())
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1608,13 +1811,10 @@ impl RuntimeJobService {
         W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
     {
         let id = canonical_job_id(id)?;
-        let _lifecycle = self.store.acquire_active_lifecycle_lock_bounded()?;
-        let jobs_root = fs::canonicalize(self.store.jobs_root())
-            .map_err(|error| io_error("resolve runtime resource authority", &error))?;
-        let directory = RetainedDirectoryCapability::open(&jobs_root)
-            .map_err(|error| io_error("retain runtime resource authority", &error))?;
-        let active = directory
-            .retain_regular_child(std::ffi::OsStr::new("active.lock"))
+        let lifecycle = self.store.acquire_active_lifecycle_lock_bounded()?;
+        after_capability();
+        let active = lifecycle
+            .retain_active_lock()
             .map_err(|error| io_error("retain runtime active lease", &error))?;
         let retained_lease = String::from_utf8(
             active
@@ -1627,9 +1827,8 @@ impl RuntimeJobService {
                 "runtime shared work lease does not own the active resource",
             ));
         }
-        after_capability();
-        directory
-            .validate_named_identity()
+        lifecycle
+            .validate()
             .and_then(|()| active.validate_named_identity())
             .map_err(|error| io_error("revalidate runtime active lease", &error))?;
         let revalidated_lease = String::from_utf8(
@@ -1647,7 +1846,7 @@ impl RuntimeJobService {
             Uuid::parse_str(&id).map_err(|_| redacted_error("derive runtime lease identity"))?;
         let mut digest = Sha256::new();
         digest.update(b"unica-runtime-resource-v1\0");
-        digest.update(directory.identity().stable_bytes());
+        digest.update(lifecycle.jobs_root.identity().stable_bytes());
         digest.update(active.identity().stable_bytes());
         let resource_identity: [u8; 32] = digest.finalize().into();
         Ok(owner.join_or_start(
@@ -1739,7 +1938,7 @@ impl RuntimeJobService {
         // Recovery and cancellation are separate processes. Linearize the
         // queued-to-running claim with both of them, then re-read durable state
         // under the same guard that is held through spawn and publication.
-        let _lifecycle_lock = self.store.acquire_active_lifecycle_lock()?;
+        let lifecycle_lock = self.store.acquire_active_lifecycle_lock()?;
         record = self.store.read_record(id)?;
         if let Some(cancelled) = self.cancel_enqueued_before_start_guarded(&mut record)? {
             return Ok(cancelled);
@@ -1772,7 +1971,7 @@ impl RuntimeJobService {
             let _ = self.fail_start_guarded(&mut record, &error);
             return Err(error);
         }
-        let mut process = match self.runner.spawn(request) {
+        let process = match self.runner.spawn(request) {
             Ok(process) => process,
             Err(RuntimeJobSpawnFailure::ProvenChildless(error)) => {
                 let error = redacted_error(&error);
@@ -1784,6 +1983,7 @@ impl RuntimeJobService {
                     &mut record,
                     request,
                     process,
+                    lifecycle_lock.jobs_root.clone(),
                     None,
                     &error,
                 ));
@@ -1795,13 +1995,27 @@ impl RuntimeJobService {
         record.heartbeat_at_ms = Some(now_millis());
         record.transition(RuntimeJobPhase::Running)?;
         if let Err(error) = self.store.write_record(&record) {
-            self.cleanup_activation_failure_guarded(&mut record, &mut *process, &error);
+            self.cleanup_activation_failure_guarded(
+                &mut record,
+                process,
+                lifecycle_lock.jobs_root.clone(),
+                request.raw_argv.clone(),
+                None,
+                &error,
+            );
             return Err(error);
         }
         let mut processes = match self.lock_processes() {
             Ok(processes) => processes,
             Err(error) => {
-                self.cleanup_activation_failure_guarded(&mut record, &mut *process, &error);
+                self.cleanup_activation_failure_guarded(
+                    &mut record,
+                    process,
+                    lifecycle_lock.jobs_root.clone(),
+                    request.raw_argv.clone(),
+                    None,
+                    &error,
+                );
                 return Err(error);
             }
         };
@@ -1811,6 +2025,7 @@ impl RuntimeJobService {
             id.to_string(),
             ActiveRuntimeJobProcess {
                 process,
+                jobs_root: lifecycle_lock.jobs_root.clone(),
                 attempt_argv: request.raw_argv.clone(),
                 fallback,
                 previous_output: None,
@@ -1913,7 +2128,12 @@ impl RuntimeJobService {
             output,
             attempt_argv,
             fallback_pending,
-        } = self.observe_process(&record, request_safe_cancel)?;
+        } = match self.observe_process(&record, request_safe_cancel) {
+            Ok(observation) => observation,
+            Err(error) => {
+                return Err(self.quarantine_observation_failure_guarded(&mut record, &error));
+            }
+        };
         self.store.write_logs(&record.id, &output)?;
         if output.output_incomplete {
             record.warnings.push(
@@ -2106,6 +2326,7 @@ impl RuntimeJobService {
                 record.id.clone(),
                 ActiveRuntimeJobProcess {
                     process,
+                    jobs_root: self.store.retain_jobs_root()?,
                     attempt_argv: record.redacted_argv.clone(),
                     fallback: None,
                     previous_output: None,
@@ -2147,12 +2368,12 @@ impl RuntimeJobService {
         first_output: &RuntimeJobOutput,
         first_exit_code: i32,
     ) -> JobResult<Option<RuntimeJobSnapshot>> {
-        let fallback = {
+        let (fallback, jobs_root) = {
             let mut processes = self.lock_processes()?;
             let active = processes.get_mut(&record.id).ok_or_else(|| {
                 redacted_error(&format!("runtime job {} process is unavailable", record.id))
             })?;
-            active.fallback.take()
+            (active.fallback.take(), active.jobs_root.clone())
         };
         let Some(fallback) = fallback else {
             return Ok(None);
@@ -2169,7 +2390,7 @@ impl RuntimeJobService {
             }
         }
 
-        let mut next = match self.runner.spawn(&fallback) {
+        let next = match self.runner.spawn(&fallback) {
             Ok(process) => process,
             Err(RuntimeJobSpawnFailure::ProvenChildless(error)) => {
                 record.warnings.push(redacted_error(&format!(
@@ -2184,6 +2405,7 @@ impl RuntimeJobService {
                     record,
                     &fallback,
                     process,
+                    jobs_root,
                     Some(first_output.clone()),
                     &error,
                 );
@@ -2196,14 +2418,28 @@ impl RuntimeJobService {
         record.heartbeat_at_ms = Some(now_millis());
         record.warnings.push(PARTIAL_FALLBACK_WARNING.to_string());
         if let Err(error) = self.store.write_record(record) {
-            self.cleanup_activation_failure_guarded(record, &mut *next, &error);
+            self.cleanup_activation_failure_guarded(
+                record,
+                next,
+                jobs_root.clone(),
+                fallback.raw_argv.clone(),
+                Some(first_output.clone()),
+                &error,
+            );
             return Err(error);
         }
 
         let mut processes = match self.lock_processes() {
             Ok(processes) => processes,
             Err(error) => {
-                self.cleanup_activation_failure_guarded(record, &mut *next, &error);
+                self.cleanup_activation_failure_guarded(
+                    record,
+                    next,
+                    jobs_root.clone(),
+                    fallback.raw_argv.clone(),
+                    Some(first_output.clone()),
+                    &error,
+                );
                 return Err(error);
             }
         };
@@ -2211,7 +2447,14 @@ impl RuntimeJobService {
             let error =
                 redacted_error(&format!("runtime job {} process is unavailable", record.id));
             drop(processes);
-            self.cleanup_activation_failure_guarded(record, &mut *next, &error);
+            self.cleanup_activation_failure_guarded(
+                record,
+                next,
+                jobs_root,
+                fallback.raw_argv.clone(),
+                Some(first_output.clone()),
+                &error,
+            );
             return Err(error);
         };
         active.process = next;
@@ -2232,6 +2475,7 @@ impl RuntimeJobService {
         record: &mut RuntimeJobRecord,
         request: &RuntimeJobRequest,
         process: Box<dyn RuntimeJobProcess>,
+        jobs_root: RetainedDirectoryCapability,
         previous_output: Option<RuntimeJobOutput>,
         error: &str,
     ) -> String {
@@ -2251,6 +2495,7 @@ impl RuntimeJobService {
                 record.id.clone(),
                 ActiveRuntimeJobProcess {
                     process,
+                    jobs_root,
                     attempt_argv: request.raw_argv.clone(),
                     fallback: None,
                     previous_output,
@@ -2263,6 +2508,30 @@ impl RuntimeJobService {
                 "{error}; retain uncertain runtime ownership: persist={}; memory={}",
                 persist.err().unwrap_or_else(|| "ok".to_string()),
                 retain.err().unwrap_or_else(|| "ok".to_string())
+            )),
+        }
+    }
+
+    fn quarantine_observation_failure_guarded(
+        &self,
+        record: &mut RuntimeJobRecord,
+        error: &str,
+    ) -> String {
+        if matches!(
+            record.phase,
+            RuntimeJobPhase::Running | RuntimeJobPhase::CancelRequested
+        ) {
+            let _ = record.transition(RuntimeJobPhase::Lost);
+        }
+        record.finished_at_ms = Some(now_millis());
+        record.heartbeat_at_ms = Some(now_millis());
+        record.warnings.push(redacted_error(&format!(
+            "runtime process observation is uncertain; ownership remains quarantined: {error}"
+        )));
+        match self.store.write_record(record) {
+            Ok(()) => redacted_error(error),
+            Err(persist) => redacted_error(&format!(
+                "{error}; persist retained runtime quarantine: {persist}"
             )),
         }
     }
@@ -2298,10 +2567,13 @@ impl RuntimeJobService {
     fn cleanup_activation_failure_guarded(
         &self,
         record: &mut RuntimeJobRecord,
-        process: &mut dyn RuntimeJobProcess,
+        mut process: Box<dyn RuntimeJobProcess>,
+        jobs_root: RetainedDirectoryCapability,
+        attempt_argv: Vec<String>,
+        previous_output: Option<RuntimeJobOutput>,
         activation_error: &str,
     ) {
-        match cancel_and_reap(process) {
+        match cancel_and_reap(&mut *process) {
             Ok(()) => {
                 if record.phase == RuntimeJobPhase::Running {
                     let _ = record.transition(RuntimeJobPhase::Failed);
@@ -2312,7 +2584,16 @@ impl RuntimeJobService {
                     "worker activation failed after child spawn: {activation_error}"
                 )));
                 if self.store.write_record(record).is_ok() {
-                    let _ = self.store.release_active_lock_guarded(&record.id, || {});
+                    let _ = self
+                        .store
+                        .acquire_active_lifecycle_lock_for_root_bounded(jobs_root.clone())
+                        .and_then(|lifecycle| {
+                            lifecycle
+                                .release_active_lock_for(&record.id, || {})
+                                .map_err(|error| {
+                                    io_error("release retained runtime activation lock", &error)
+                                })
+                        });
                 }
             }
             Err(cleanup_error) => {
@@ -2326,6 +2607,25 @@ impl RuntimeJobService {
                 )));
                 // The lock intentionally remains: the child tree may still be mutating.
                 let _ = self.store.write_record(record);
+                // Ownership moves to the same map consumed by canonical worker
+                // quarantine supervision. Drop is not allowed to become the
+                // last owner after an uncertain cleanup.
+                if let Ok(mut processes) = self.lock_processes() {
+                    processes.insert(
+                        record.id.clone(),
+                        ActiveRuntimeJobProcess {
+                            process,
+                            jobs_root,
+                            attempt_argv,
+                            fallback: None,
+                            previous_output,
+                        },
+                    );
+                } else {
+                    // `lock_processes` recovers poison below; this is only a
+                    // fail-safe for an impossible future implementation error.
+                    std::mem::forget(process);
+                }
             }
         }
     }
@@ -2342,9 +2642,10 @@ impl RuntimeJobService {
     fn lock_processes(
         &self,
     ) -> JobResult<std::sync::MutexGuard<'_, HashMap<String, ActiveRuntimeJobProcess>>> {
-        self.processes
+        Ok(self
+            .processes
             .lock()
-            .map_err(|error| redacted_error(&format!("lock runtime job processes: {error}")))
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     fn remove_process(&self, id: &str) -> JobResult<()> {
@@ -2352,6 +2653,100 @@ impl RuntimeJobService {
         processes.remove(id);
         Ok(())
     }
+
+    fn has_retained_process(&self, id: &str) -> bool {
+        self.processes
+            .lock()
+            .map(|processes| processes.contains_key(id))
+            .unwrap_or(true)
+    }
+
+    fn supervise_quarantine(&self, id: &str) -> JobResult<()> {
+        let active = self
+            .lock_processes()?
+            .remove(id)
+            .ok_or_else(|| redacted_error("quarantined runtime process is unavailable"))?;
+        supervise_owned_quarantine(self.store.clone(), id.to_string(), active);
+        Ok(())
+    }
+}
+
+fn supervise_owned_quarantine(
+    store: RuntimeJobStore,
+    job_id: String,
+    mut active: ActiveRuntimeJobProcess,
+) {
+    loop {
+        if try_release_owned_quarantine_once(&store, &job_id, &mut active).is_ok_and(|done| done) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Tries one terminal-proof/release transition for a retained process. The
+/// retained jobs-directory capability is the authority for both lifecycle
+/// admission and `active.lock` removal: an ambient path replacement must turn
+/// this into quarantine, never into a release against the replacement tree.
+fn try_release_owned_quarantine_once(
+    store: &RuntimeJobStore,
+    job_id: &str,
+    active: &mut ActiveRuntimeJobProcess,
+) -> JobResult<bool> {
+    try_release_owned_quarantine_once_after_terminal(store, job_id, active, || {})
+}
+
+/// The hook lets the physical-root replacement race be scheduled exactly
+/// after terminal/output proof and before lifecycle admission.
+fn try_release_owned_quarantine_once_after_terminal(
+    store: &RuntimeJobStore,
+    job_id: &str,
+    active: &mut ActiveRuntimeJobProcess,
+    after_terminal_proof: impl FnOnce(),
+) -> JobResult<bool> {
+    let terminal = matches!(
+        active.process.try_wait(),
+        Ok(RuntimeJobProcessState::Exited { .. } | RuntimeJobProcessState::TimedOut { .. })
+    );
+    if !terminal {
+        return Ok(false);
+    }
+    let output_complete = active
+        .process
+        .output_tails_until(OUTPUT_TAIL_BYTES, Instant::now())
+        .is_ok_and(|output| !output.output_incomplete);
+    if !output_complete {
+        return Ok(false);
+    }
+    after_terminal_proof();
+
+    let lifecycle =
+        store.acquire_active_lifecycle_lock_for_root_bounded(active.jobs_root.clone())?;
+    lifecycle
+        .validate()
+        .map_err(|error| io_error("revalidate retained runtime quarantine root", &error))?;
+    let mut record = store.read_record(job_id)?;
+    if matches!(
+        record.phase,
+        RuntimeJobPhase::Queued | RuntimeJobPhase::Running | RuntimeJobPhase::CancelRequested
+    ) {
+        record.transition(RuntimeJobPhase::Lost)?;
+    }
+    if record.phase != RuntimeJobPhase::Lost {
+        return Err(redacted_error(
+            "runtime quarantine record has an unexpected terminal phase",
+        ));
+    }
+    record.finished_at_ms.get_or_insert_with(now_millis);
+    record.heartbeat_at_ms = Some(now_millis());
+    lifecycle
+        .validate()
+        .map_err(|error| io_error("revalidate retained runtime quarantine root", &error))?;
+    store.write_record(&record)?;
+    lifecycle
+        .release_active_lock_for(job_id, || {})
+        .map_err(|error| io_error("release retained runtime quarantine lock", &error))?;
+    Ok(true)
 }
 
 pub(crate) fn run_worker_from_args(_args: &[String]) -> Result<(), String> {
@@ -2586,10 +2981,21 @@ fn run_worker_request(
     let worker_cwd = handoff.cwd.clone();
     let operation = request.operation.label();
     let service = RuntimeJobService::new(handoff.cache_root, runner);
-    service.activate_enqueued(&job_id, &request)?;
+    if let Err(error) = service.activate_enqueued(&job_id, &request) {
+        if service.has_retained_process(&job_id) {
+            return service.supervise_quarantine(&job_id);
+        }
+        return Err(error);
+    }
 
     loop {
-        let snapshot = service.poll(&job_id)?;
+        let snapshot = match service.poll(&job_id) {
+            Ok(snapshot) => snapshot,
+            Err(_error) if service.has_retained_process(&job_id) => {
+                return service.supervise_quarantine(&job_id)
+            }
+            Err(error) => return Err(error),
+        };
         if snapshot.phase.is_terminal() {
             if snapshot.phase == RuntimeJobPhase::Succeeded {
                 if let Err(error) = apply_runtime_success_effects(&worker_cwd, operation, &job_id) {
@@ -2716,21 +3122,41 @@ fn cancel_and_reap_with_budget(
 ) -> JobResult<()> {
     let started = Instant::now();
     let deadline = started.checked_add(budget).unwrap_or(started);
-    process.cancel()?;
-    loop {
-        match process.try_wait()? {
-            RuntimeJobProcessState::Exited { .. } | RuntimeJobProcessState::TimedOut { .. } => {
-                // The process has been reaped. Reader failures cannot revive it,
-                // so they do not make lock release unsafe.
-                let _ = process.output_tails_until(OUTPUT_TAIL_BYTES, deadline);
-                return Ok(());
+    process.bind_cleanup_deadline(deadline);
+    let process_result = (|| {
+        process.cancel()?;
+        loop {
+            match process.try_wait()? {
+                RuntimeJobProcessState::Exited { .. } | RuntimeJobProcessState::TimedOut { .. } => {
+                    return Ok(());
+                }
+                RuntimeJobProcessState::Running if Instant::now() >= deadline => {
+                    return Err(redacted_error(
+                        "runtime job process did not exit after cancellation request",
+                    ));
+                }
+                RuntimeJobProcessState::Running => thread::sleep(
+                    Duration::from_millis(10)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                ),
             }
-            RuntimeJobProcessState::Running if Instant::now() >= deadline => {
-                return Err(redacted_error(
-                    "runtime job process did not exit after cancellation request",
-                ));
+        }
+    })();
+    // Reader accounting is mandatory on both success and failure and consumes
+    // the same absolute deadline. System processes remember that deadline, so
+    // their Drop cannot open a second cleanup window.
+    let output_result = process.output_tails_until(OUTPUT_TAIL_BYTES, deadline);
+    match process_result {
+        Err(error) => Err(error),
+        Ok(()) => {
+            let output = output_result?;
+            if output.output_incomplete {
+                Err(redacted_error(
+                    "runtime output cleanup deadline elapsed before both readers reached EOF",
+                ))
+            } else {
+                Ok(())
             }
-            RuntimeJobProcessState::Running => thread::sleep(Duration::from_millis(10)),
         }
     }
 }
@@ -2921,7 +3347,7 @@ pub(crate) mod tests {
         collections::HashMap,
         io::Cursor,
         sync::{
-            atomic::{AtomicU32, AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
             mpsc,
         },
     };
@@ -3086,7 +3512,7 @@ pub(crate) mod tests {
         };
         let started = Instant::now();
         cancel_and_reap_with_budget(&mut process, Duration::from_millis(80))
-            .expect("tree and readers share one cleanup deadline");
+            .expect_err("unfinished readers keep cleanup ownership uncertain");
 
         assert!(process.output_incomplete);
         assert!(
@@ -3980,6 +4406,148 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn replaced_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer() {
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let started = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("start lease in physical jobs root A");
+        let owner = RuntimeResourceOwner::default();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let executions_for_work = Arc::clone(&executions);
+        let jobs = service.store.jobs_root();
+        let original = cache.path().join("jobs-original");
+        let replacement_lease = started.id.clone();
+
+        let result = service.join_shared_work_after_capability(
+            &started.id,
+            &owner,
+            move |_| {
+                executions_for_work.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                fs::rename(&jobs, &original).expect("move physical jobs root A");
+                fs::create_dir(&jobs).expect("install physical jobs root B");
+                fs::write(jobs.join("active.lock"), replacement_lease)
+                    .expect("install matching-looking lease in B");
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "a lifecycle lock for A admitted physical B"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer() {
+        if !crate::infrastructure::platform::unix_runtime_authority_tests_supported() {
+            return;
+        }
+
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let started = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("start lease in physical jobs root A");
+        let owner = RuntimeResourceOwner::default();
+        let executions = Arc::new(AtomicUsize::new(0));
+        let executions_for_work = Arc::clone(&executions);
+        let jobs = service.store.jobs_root();
+        let original = cache.path().join("jobs-original");
+        let replacement = cache.path().join("jobs-replacement");
+        fs::create_dir(&replacement).expect("create replacement B");
+        fs::write(replacement.join("active.lock"), &started.id)
+            .expect("install matching-looking lease in B");
+
+        let result = service.join_shared_work_after_capability(
+            &started.id,
+            &owner,
+            move |_| {
+                executions_for_work.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            || {
+                fs::rename(&jobs, &original).expect("move physical jobs root A");
+                crate::infrastructure::platform::create_runtime_directory_link_for_test(
+                    &replacement,
+                    &jobs,
+                )
+                .expect("redirect jobs name to B");
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "a lifecycle lock for A followed a link to B"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn quarantine_release_never_removes_active_lock_from_replacement_jobs_root() {
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(0)));
+        let started = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("start retained process in physical jobs root A");
+        let mut record = service
+            .store
+            .read_record(&started.id)
+            .expect("read running record");
+        record
+            .transition(RuntimeJobPhase::Lost)
+            .expect("enter quarantine");
+        service
+            .store
+            .write_record(&record)
+            .expect("persist quarantine");
+        let mut active = service
+            .lock_processes()
+            .expect("lock retained processes")
+            .remove(&started.id)
+            .expect("take retained process");
+        let jobs = service.store.jobs_root();
+        let original = cache.path().join("jobs-original");
+        let replacement_id = started.id.clone();
+
+        let result = try_release_owned_quarantine_once_after_terminal(
+            &service.store,
+            &started.id,
+            &mut active,
+            || {
+                fs::rename(&jobs, &original).expect("move retained jobs root A");
+                fs::create_dir(&jobs).expect("install replacement jobs root B");
+                let replacement_job = jobs.join(&replacement_id);
+                fs::create_dir(&replacement_job).expect("install matching-looking job in B");
+                fs::copy(
+                    original.join(&replacement_id).join("record.json"),
+                    replacement_job.join("record.json"),
+                )
+                .expect("copy matching-looking quarantine record into B");
+                fs::write(jobs.join("active.lock"), &replacement_id)
+                    .expect("install matching-looking active lock in B");
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "root replacement must keep the terminal process quarantined"
+        );
+        assert_eq!(
+            fs::read_to_string(jobs.join("active.lock")).expect("read B active lock"),
+            started.id,
+            "quarantine release followed the ambient path and removed B"
+        );
+        assert!(
+            original.join("active.lock").exists(),
+            "failed exact validation must retain A's durable quarantine"
+        );
+    }
+
+    #[test]
     fn uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt() {
         let cache = TestCache::new();
         let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(0, None));
@@ -3998,6 +4566,252 @@ pub(crate) mod tests {
             service.store.read_record(&active).unwrap().phase,
             RuntimeJobPhase::Lost
         );
+    }
+
+    #[test]
+    fn quarantine_thread_spawn_failure_retains_process_authority_and_active_lock() {
+        struct RetentionProbeRunner {
+            dropped: Arc<AtomicBool>,
+        }
+
+        struct RetentionProbeProcess {
+            dropped: Arc<AtomicBool>,
+        }
+
+        impl Drop for RetentionProbeProcess {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+
+        impl RuntimeJobProcess for RetentionProbeProcess {
+            fn id(&self) -> u32 {
+                77_331
+            }
+
+            fn try_wait(&mut self) -> JobResult<RuntimeJobProcessState> {
+                Ok(RuntimeJobProcessState::Running)
+            }
+
+            fn cancel(&mut self) -> JobResult<()> {
+                Err(redacted_error("injected retained ownership"))
+            }
+
+            fn output_tails(&mut self, _max_bytes: usize) -> JobResult<RuntimeJobOutput> {
+                Ok(RuntimeJobOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    output_incomplete: false,
+                    fallback_receipt: None,
+                    fallback_receipt_truncated: false,
+                })
+            }
+        }
+
+        impl RuntimeJobRunner for RetentionProbeRunner {
+            fn spawn(&self, _request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
+                Err(RuntimeJobSpawnFailure::OwnershipRetained {
+                    error: redacted_error("injected retained ownership"),
+                    process: Box::new(RetentionProbeProcess {
+                        dropped: Arc::clone(&self.dropped),
+                    }),
+                })
+            }
+
+            fn attach(&self, _process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {
+                Err(redacted_error("probe runner cannot attach"))
+            }
+        }
+
+        let cache = TestCache::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let service = RuntimeJobService::new(
+            cache.path(),
+            Arc::new(RetentionProbeRunner {
+                dropped: Arc::clone(&dropped),
+            }),
+        );
+        service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect_err("ownership uncertainty must return a closed failure");
+        INJECT_QUARANTINE_THREAD_SPAWN_FAILURE.store(true, Ordering::Release);
+        drop(service);
+
+        assert!(
+            !dropped.load(Ordering::Acquire),
+            "thread spawn failure dropped the last retained process authority"
+        );
+        assert!(cache.path().join("jobs/active.lock").exists());
+    }
+
+    #[test]
+    fn system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed() {
+        if !crate::infrastructure::platform::unix_runtime_authority_tests_supported() {
+            return;
+        }
+        let released = Arc::new(AtomicBool::new(false));
+        let (mut process, id) = system_process_for_authority_failure("exec sleep 30");
+        process.stdout = Some(StreamTail::spawn(NeverEndingStream {
+            released: Arc::clone(&released),
+        }));
+        process.stderr = Some(StreamTail::spawn(NeverEndingStream {
+            released: Arc::clone(&released),
+        }));
+        crate::infrastructure::platform::reset_runtime_tree_cleanup_calls_for_test();
+        crate::infrastructure::platform::inject_runtime_tree_cleanup_timeout_for_test();
+        STREAM_FINISH_ATTEMPTS.with(|slot| slot.set(0));
+
+        let retained = process.classify_failed_start(redacted_error("injected startup failure"));
+        assert!(matches!(
+            &retained,
+            RuntimeJobSpawnFailure::OwnershipRetained { .. }
+        ));
+        assert_eq!(
+            crate::infrastructure::platform::runtime_tree_cleanup_calls_for_test(),
+            1
+        );
+        assert_eq!(
+            STREAM_FINISH_ATTEMPTS.with(std::cell::Cell::get),
+            2,
+            "startup tree failure skipped one of the two output readers"
+        );
+        let drop_started = Instant::now();
+        drop(retained);
+        assert_eq!(
+            crate::infrastructure::platform::runtime_tree_cleanup_calls_for_test(),
+            1,
+            "Drop opened a second process-tree cleanup attempt"
+        );
+        assert_eq!(
+            STREAM_FINISH_ATTEMPTS.with(std::cell::Cell::get),
+            2,
+            "Drop opened a second output-reader cleanup attempt"
+        );
+        assert!(
+            drop_started.elapsed() < Duration::from_millis(100),
+            "Drop waited after the absolute cleanup deadline was consumed"
+        );
+        released.store(true, Ordering::Release);
+        reap_raw_test_child(id);
+    }
+
+    #[test]
+    fn external_cancel_error_binds_system_drop_to_the_same_cleanup_deadline() {
+        if !crate::infrastructure::platform::unix_runtime_authority_tests_supported() {
+            return;
+        }
+        let (mut process, id) = system_process_for_authority_failure("exec sleep 30");
+        STREAM_FINISH_ATTEMPTS.with(|slot| slot.set(0));
+        crate::infrastructure::platform::reset_runtime_tree_cleanup_calls_for_test();
+        crate::infrastructure::platform::inject_unix_waitid_error_for_test();
+
+        cancel_and_reap_with_budget(&mut process, Duration::from_millis(80))
+            .expect_err("injected waitid failure must retain uncertain ownership");
+        let reader_attempts = STREAM_FINISH_ATTEMPTS.with(std::cell::Cell::get);
+        let tree_attempts = crate::infrastructure::platform::runtime_tree_cleanup_calls_for_test();
+        assert_eq!(reader_attempts, 2);
+        drop(process);
+        assert_eq!(
+            STREAM_FINISH_ATTEMPTS.with(std::cell::Cell::get),
+            reader_attempts,
+            "Drop repeated reader cleanup after external cancellation failed"
+        );
+        assert_eq!(
+            crate::infrastructure::platform::runtime_tree_cleanup_calls_for_test(),
+            tree_attempts,
+            "Drop opened a second tree cleanup after external cancellation failed"
+        );
+        reap_raw_test_child(id);
+    }
+
+    fn system_process_for_authority_failure(script: &str) -> (SystemRuntimeJobProcess, u32) {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let process_tree = RuntimeProcessTreeHandle::prepare(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        let id = child.id();
+        let stdout = child.stdout.take().map(StreamTail::spawn);
+        let stderr = child.stderr.take().map(StreamTail::spawn);
+        let mut process = SystemRuntimeJobProcess {
+            id,
+            child,
+            process_tree,
+            stdout,
+            stderr,
+            exited: false,
+            cleanup_deadline: None,
+            cleanup_complete: false,
+        };
+        process.process_tree.attach(&mut process.child).unwrap();
+        (process, id)
+    }
+
+    fn reap_raw_test_child(process_id: u32) {
+        crate::infrastructure::platform::reap_runtime_authority_test_child(process_id);
+    }
+
+    #[test]
+    fn waitid_authority_loss_makes_cancel_and_drop_send_zero_group_signals() {
+        if !crate::infrastructure::platform::unix_runtime_authority_tests_supported() {
+            return;
+        }
+        let (mut process, id) = system_process_for_authority_failure("exec sleep 30");
+        crate::infrastructure::platform::reset_unix_signal_count_for_test();
+        crate::infrastructure::platform::inject_unix_waitid_error_for_test();
+        process
+            .try_wait()
+            .expect_err("injected waitid failure loses generation authority");
+        process
+            .cancel()
+            .expect_err("cancel must fail closed after authority loss");
+        drop(process);
+        assert_eq!(
+            crate::infrastructure::platform::unix_signal_count_for_test(),
+            0,
+            "cancel or Drop signalled after waitid authority loss"
+        );
+        reap_raw_test_child(id);
+    }
+
+    #[test]
+    fn reap_authority_loss_makes_cancel_and_drop_send_zero_group_signals() {
+        if !crate::infrastructure::platform::unix_runtime_authority_tests_supported() {
+            return;
+        }
+        let gate = std::env::temp_dir().join(format!("unica-reap-gate-{}", Uuid::new_v4()));
+        let script = format!("while [ ! -e '{}' ]; do :; done", gate.display());
+        let (mut process, id) = system_process_for_authority_failure(&script);
+        crate::infrastructure::platform::reset_unix_signal_count_for_test();
+        crate::infrastructure::platform::inject_unix_reap_error_for_test();
+        fs::write(&gate, b"go").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match process.try_wait() {
+                Err(error) => {
+                    assert!(error.contains("injected Unix reap failure"), "{error}");
+                    break;
+                }
+                Ok(RuntimeJobProcessState::Running) if Instant::now() < deadline => {
+                    thread::yield_now();
+                }
+                other => panic!("reap failure was not observed: {other:?}"),
+            }
+        }
+        process
+            .cancel()
+            .expect_err("cancel must fail closed after reap authority loss");
+        drop(process);
+        assert_eq!(
+            crate::infrastructure::platform::unix_signal_count_for_test(),
+            0,
+            "cancel or Drop signalled after reap authority loss"
+        );
+        reap_raw_test_child(id);
+        let _ = fs::remove_file(gate);
     }
 
     #[test]
@@ -4028,6 +4842,336 @@ pub(crate) mod tests {
             service.store.read_record(&started.id).unwrap().phase,
             RuntimeJobPhase::Lost
         );
+    }
+
+    fn complete_uncertain_process(runner: &UncertainSpawnRunner) {
+        let state = runner
+            .processes
+            .lock()
+            .expect("lock uncertain processes")
+            .iter()
+            .max_by_key(|(id, _)| *id)
+            .map(|(_, state)| Arc::clone(state))
+            .expect("retained uncertain process");
+        state
+            .lock()
+            .expect("lock retained process")
+            .polls_until_exit = 0;
+    }
+
+    fn wait_for_lost_record(store: &RuntimeJobStore, job_id: &str) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if store
+                .read_record(job_id)
+                .is_ok_and(|record| record.phase == RuntimeJobPhase::Lost)
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "worker never entered quarantine");
+            thread::yield_now();
+        }
+    }
+
+    fn assert_replacement_refused(cache: &TestCache, request: &RuntimeJobRequest) {
+        RuntimeJobService::enqueue(cache.path(), request)
+            .expect_err("retained process authority must refuse replacement admission");
+    }
+
+    fn assert_replacement_available(cache: &TestCache, request: &RuntimeJobRequest) {
+        let replacement = RuntimeJobService::enqueue(cache.path(), request)
+            .expect("terminal proof releases replacement admission");
+        RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER)
+            .release_active_lock_for(&replacement.id)
+            .expect("release replacement fixture lock");
+    }
+
+    #[test]
+    fn worker_supervises_initial_retained_ownership_until_proven_terminal() {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Test);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(0, None));
+        let worker_runner = Arc::clone(&runner);
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            finished_tx
+                .send(run_worker_request(handoff, worker_runner))
+                .expect("send worker result");
+        });
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        wait_for_lost_record(&store, &queued.id);
+        assert!(
+            finished_rx.try_recv().is_err(),
+            "worker abandoned retained authority"
+        );
+        assert!(store.active_lock_path().exists());
+        assert_replacement_refused(&cache, &request);
+
+        complete_uncertain_process(&runner);
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker did not finish supervision")
+            .expect("supervisor exits after proof");
+        worker.join().expect("join worker");
+        assert!(!store.active_lock_path().exists());
+        assert_replacement_available(&cache, &request);
+    }
+
+    #[test]
+    fn worker_supervises_fallback_retained_ownership_until_proven_terminal() {
+        let cache = TestCache::new();
+        let first = FakeProcessState {
+            polls_until_exit: 1,
+            result: FakeResult::Exit(4),
+            stdout: completed_partial_failure_json(),
+            stderr: String::new(),
+            cancel_calls: 0,
+        };
+        let request = fallback_build_request(&cache.path());
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(1, Some(first)));
+        let worker_runner = Arc::clone(&runner);
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            finished_tx
+                .send(run_worker_request(handoff, worker_runner))
+                .expect("send worker result");
+        });
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        wait_for_lost_record(&store, &queued.id);
+        assert!(
+            finished_rx.try_recv().is_err(),
+            "worker abandoned fallback authority"
+        );
+        assert!(store.active_lock_path().exists());
+        assert_replacement_refused(&cache, &request);
+
+        complete_uncertain_process(&runner);
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("fallback supervisor did not finish")
+            .expect("supervisor exits after proof");
+        worker.join().expect("join worker");
+        assert!(!store.active_lock_path().exists());
+        assert_replacement_available(&cache, &request);
+    }
+
+    struct ObservationFailureState {
+        fail_poll: AtomicBool,
+        fail_output: AtomicBool,
+        terminal: AtomicBool,
+    }
+
+    struct ObservationFailureRunner {
+        state: Arc<ObservationFailureState>,
+    }
+
+    struct ActivationWriteFailureRunner {
+        attempts: AtomicU32,
+        first: Mutex<Option<FakeProcessState>>,
+        retained: Arc<ObservationFailureState>,
+    }
+
+    struct ObservationFailureProcess {
+        state: Arc<ObservationFailureState>,
+    }
+
+    impl RuntimeJobRunner for ObservationFailureRunner {
+        fn spawn(&self, _request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
+            Ok(Box::new(ObservationFailureProcess {
+                state: Arc::clone(&self.state),
+            }))
+        }
+
+        fn attach(&self, _process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {
+            Err(redacted_error("observation-failure runner cannot attach"))
+        }
+    }
+
+    impl RuntimeJobRunner for ActivationWriteFailureRunner {
+        fn spawn(&self, _request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                if let Some(first) = self.first.lock().expect("lock first state").take() {
+                    return Ok(Box::new(FakeProcess {
+                        id: 88_880,
+                        state: Arc::new(Mutex::new(first)),
+                    }));
+                }
+            }
+            INJECT_RUNTIME_RECORD_WRITE_FAILURE.store(true, Ordering::Release);
+            Ok(Box::new(ObservationFailureProcess {
+                state: Arc::clone(&self.retained),
+            }))
+        }
+
+        fn attach(&self, _process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {
+            Err(redacted_error(
+                "activation-write-failure runner cannot attach",
+            ))
+        }
+    }
+
+    impl RuntimeJobProcess for ObservationFailureProcess {
+        fn id(&self) -> u32 {
+            88_881
+        }
+
+        fn try_wait(&mut self) -> JobResult<RuntimeJobProcessState> {
+            if self.state.fail_poll.load(Ordering::Acquire) {
+                return Err(redacted_error("injected retained poll failure"));
+            }
+            Ok(if self.state.terminal.load(Ordering::Acquire) {
+                RuntimeJobProcessState::Exited { exit_code: 1 }
+            } else {
+                RuntimeJobProcessState::Running
+            })
+        }
+
+        fn cancel(&mut self) -> JobResult<()> {
+            Err(redacted_error("injected retained cancellation failure"))
+        }
+
+        fn output_tails(&mut self, _max_bytes: usize) -> JobResult<RuntimeJobOutput> {
+            if self.state.fail_output.load(Ordering::Acquire) {
+                return Err(redacted_error("injected retained output failure"));
+            }
+            Ok(RuntimeJobOutput::default())
+        }
+    }
+
+    fn assert_worker_supervises_observation_failure(fail_poll: bool, fail_output: bool) {
+        let cache = TestCache::new();
+        let request = fake_request(RuntimeJobOperation::Test);
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let state = Arc::new(ObservationFailureState {
+            fail_poll: AtomicBool::new(fail_poll),
+            fail_output: AtomicBool::new(fail_output),
+            terminal: AtomicBool::new(fail_output),
+        });
+        let runner = Arc::new(ObservationFailureRunner {
+            state: Arc::clone(&state),
+        });
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            finished_tx
+                .send(run_worker_request(handoff, runner))
+                .expect("send worker result");
+        });
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        wait_for_lost_record(&store, &queued.id);
+        assert!(
+            finished_rx.try_recv().is_err(),
+            "worker exited with retained ownership"
+        );
+        assert!(store.active_lock_path().exists());
+        assert_replacement_refused(&cache, &request);
+
+        state.fail_poll.store(false, Ordering::Release);
+        state.fail_output.store(false, Ordering::Release);
+        state.terminal.store(true, Ordering::Release);
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker did not finish retained supervision")
+            .expect("worker finishes after exact terminal proof");
+        worker.join().expect("join worker");
+        assert!(!store.active_lock_path().exists());
+        assert_replacement_available(&cache, &request);
+    }
+
+    #[test]
+    fn worker_quarantines_poll_failure_until_later_terminal_proof() {
+        assert_worker_supervises_observation_failure(true, false);
+    }
+
+    #[test]
+    fn worker_quarantines_output_failure_until_later_eof_proof() {
+        assert_worker_supervises_observation_failure(false, true);
+    }
+
+    fn assert_worker_supervises_post_spawn_record_failure(
+        request: RuntimeJobRequest,
+        first: Option<FakeProcessState>,
+    ) {
+        let cache = TestCache::new();
+        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
+        let handoff = worker_request(&cache, &queued.id, &request);
+        let retained = Arc::new(ObservationFailureState {
+            fail_poll: AtomicBool::new(true),
+            fail_output: AtomicBool::new(false),
+            terminal: AtomicBool::new(false),
+        });
+        let runner = Arc::new(ActivationWriteFailureRunner {
+            attempts: AtomicU32::new(0),
+            first: Mutex::new(first),
+            retained: Arc::clone(&retained),
+        });
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            finished_tx
+                .send(run_worker_request(handoff, runner))
+                .expect("send worker result");
+        });
+        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
+        wait_for_lost_record(&store, &queued.id);
+        assert!(finished_rx.try_recv().is_err());
+        assert_replacement_refused(&cache, &request);
+
+        retained.fail_poll.store(false, Ordering::Release);
+        retained.terminal.store(true, Ordering::Release);
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker did not finish post-spawn quarantine")
+            .expect("terminal proof releases quarantine");
+        worker.join().expect("join worker");
+        assert_replacement_available(&cache, &request);
+    }
+
+    #[test]
+    fn worker_retains_initial_process_when_running_record_write_fails() {
+        assert_worker_supervises_post_spawn_record_failure(
+            fake_request(RuntimeJobOperation::Test),
+            None,
+        );
+    }
+
+    #[test]
+    fn worker_retains_fallback_process_when_running_record_write_fails() {
+        let cache = TestCache::new();
+        let request = fallback_build_request(&cache.path());
+        // Recreate the fixture inside the helper's cache-independent request
+        // while keeping its captured workspace alive for reauthorization.
+        let first = FakeProcessState {
+            polls_until_exit: 1,
+            result: FakeResult::Exit(4),
+            stdout: completed_partial_failure_json(),
+            stderr: String::new(),
+            cancel_calls: 0,
+        };
+        assert_worker_supervises_post_spawn_record_failure(request, Some(first));
+    }
+
+    #[test]
+    fn poisoned_process_registry_recovers_before_post_spawn_ownership_transfer() {
+        let cache = TestCache::new();
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(1)));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = service.processes.lock().expect("lock process registry");
+            panic!("inject process registry poison");
+        }));
+
+        let started = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .expect("poison recovery must retain the spawned process");
+        let terminal = service
+            .poll(&started.id)
+            .expect("observe recovered process");
+        assert_eq!(terminal.phase, RuntimeJobPhase::Succeeded);
+        assert!(!service.store.active_lock_path().exists());
     }
 
     #[test]
@@ -4115,11 +5259,26 @@ pub(crate) mod tests {
         runtime_shared_work_joins_only_the_exact_active_resource_and_lease();
         runtime_shared_work_separates_physical_resources_and_distinct_v4_leases();
         stale_runtime_shared_work_authority_starts_no_producer_after_lock_replacement();
+        replaced_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer();
+        symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer();
+        quarantine_release_never_removes_active_lock_from_replacement_jobs_root();
         uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt();
         uncertain_post_spawn_failure_retains_active_lock_for_full_build_fallback();
+        worker_supervises_initial_retained_ownership_until_proven_terminal();
+        worker_supervises_fallback_retained_ownership_until_proven_terminal();
+        worker_quarantines_poll_failure_until_later_terminal_proof();
+        worker_quarantines_output_failure_until_later_eof_proof();
+        worker_retains_initial_process_when_running_record_write_fails();
+        worker_retains_fallback_process_when_running_record_write_fails();
+        quarantine_thread_spawn_failure_retains_process_authority_and_active_lock();
+        poisoned_process_registry_recovers_before_post_spawn_ownership_transfer();
         proven_childless_spawn_failure_releases_initial_active_lock();
         proven_childless_fallback_spawn_failure_releases_active_lock();
         two_nonterminating_output_readers_share_one_absolute_cleanup_deadline();
+        system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed();
+        external_cancel_error_binds_system_drop_to_the_same_cleanup_deadline();
+        waitid_authority_loss_makes_cancel_and_drop_send_zero_group_signals();
+        reap_authority_loss_makes_cancel_and_drop_send_zero_group_signals();
         crate::infrastructure::platform::assert_runtime_generation_authority_for_test();
         system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies();
         dropping_system_runtime_process_reaps_the_owned_tree_within_one_budget();

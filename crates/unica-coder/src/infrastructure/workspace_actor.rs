@@ -1,4 +1,7 @@
-use crate::application::shared_work::{IndexWorkKey, IndexWorkOwner};
+use crate::application::shared_work::{
+    LongWorkFailure, SharedWork, SharedWorkKey, SharedWorkLease, SharedWorkLifetime,
+    SharedWorkProducer,
+};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::SafeIdentityHash;
@@ -15,8 +18,13 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::Duration;
 
 pub(crate) const MAX_ACTIVE_WORKSPACE_ACTORS: usize = 64;
+const INDEX_FENCE_BUDGET: Duration = Duration::from_secs(7);
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct IndexWorkIdentity([u8; 32]);
 
 macro_rules! assert_not_impl_production {
     ($type:ty: $trait:path) => {
@@ -282,7 +290,7 @@ pub(crate) struct WorkspaceActor<R = ()> {
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
     source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
-    index_work: IndexWorkOwner,
+    index_work: SharedWork<(), LongWorkFailure>,
     runtime: R,
 }
 
@@ -369,7 +377,7 @@ impl<R> WorkspaceActor<R> {
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             source_revisions: Mutex::new(HashMap::new()),
-            index_work: IndexWorkOwner::default(),
+            index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
             runtime,
         })
     }
@@ -493,13 +501,17 @@ impl<R> WorkspaceActor<R> {
     /// Exact actor-owned index readiness identity. The workspace component is
     /// derived from this actor's complete canonical identity; the source-set
     /// and revision come from capabilities issued by this same actor instance.
-    pub(crate) fn index_work_key(
+    pub(crate) fn join_index_work<W>(
         &self,
         binding: &ProviderRootBinding,
         fence: &WorkspaceRevisionFence,
         provider: &str,
         profile: &str,
-    ) -> Result<IndexWorkKey, String> {
+        work: W,
+    ) -> Result<(IndexWorkIdentity, SharedWorkLease<(), LongWorkFailure>), String>
+    where
+        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
+    {
         self.validate_binding(binding)?;
         if fence.actor_identity != self.identity
             || fence.actor_instance != self.instance_id
@@ -507,18 +519,62 @@ impl<R> WorkspaceActor<R> {
         {
             return Err("index revision fence belongs to another workspace actor".to_string());
         }
-        IndexWorkKey::new(
-            self.safe_identity_hash()?,
-            binding.source_set.name.clone(),
-            fence.revision.clone(),
-            provider,
-            profile,
-        )
-        .map_err(|_| "actor-owned index work identity is invalid".to_string())
-    }
+        if !closed_index_component(provider)
+            || !closed_index_component(profile)
+            || fence.revision.algorithm != crate::domain::source_revision::SOURCE_REVISION_ALGORITHM
+            || fence.revision.generation == 0
+            || !is_lowercase_sha256(&fence.revision.digest)
+        {
+            return Err("actor-owned index work identity is invalid".to_string());
+        }
+        let revision_service = self.source_revision_service(binding)?;
+        let current = revision_service.snapshot(
+            ProviderDeadline::from_budget(INDEX_FENCE_BUDGET),
+            &CancellationToken::new(),
+        );
+        self.validate_binding(binding)?;
+        if current? != fence.revision {
+            return Err("index revision fence changed before shared-work admission".to_string());
+        }
 
-    pub(crate) fn index_work(&self) -> &IndexWorkOwner {
-        &self.index_work
+        let mut digest = Sha256::new();
+        digest.update(b"unica-index-work-v2\0");
+        digest.update(self.identity.state_scope_digest()?);
+        digest_index_component(&mut digest, binding.source_set.name.as_bytes())?;
+        digest_index_component(&mut digest, fence.revision.algorithm.as_bytes())?;
+        digest.update(fence.revision.generation.to_le_bytes());
+        digest_index_component(&mut digest, fence.revision.digest.as_bytes())?;
+        digest_index_component(&mut digest, provider.as_bytes())?;
+        digest_index_component(&mut digest, profile.as_bytes())?;
+        let identity = IndexWorkIdentity(digest.finalize().into());
+
+        let retained_root = Arc::clone(&binding.source_root);
+        let expected_revision = fence.revision.clone();
+        let producer_revision_service = Arc::clone(&revision_service);
+        let lease = self.index_work.join_or_start(
+            SharedWorkKey::Index {
+                identity: identity.0,
+            },
+            move |producer| {
+                retained_root
+                    .validate_named_identity()
+                    .map_err(|_| LongWorkFailure::Invalidated)?;
+                let current = producer_revision_service
+                    .snapshot(
+                        ProviderDeadline::from_budget(INDEX_FENCE_BUDGET),
+                        &CancellationToken::new(),
+                    )
+                    .map_err(|_| LongWorkFailure::Invalidated)?;
+                retained_root
+                    .validate_named_identity()
+                    .map_err(|_| LongWorkFailure::Invalidated)?;
+                if current != expected_revision {
+                    return Err(LongWorkFailure::Invalidated);
+                }
+                work(producer)
+            },
+        );
+        Ok((identity, lease))
     }
 
     pub(crate) fn begin_publication(
@@ -642,6 +698,25 @@ fn validate_physical_root(root: &RetainedDirectoryCapability) -> Result<(), Stri
             root.path().display()
         )
     })
+}
+
+fn closed_index_component(value: &str) -> bool {
+    !value.is_empty() && value.trim() == value && !value.bytes().any(|byte| byte == 0)
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn digest_index_component(digest: &mut Sha256, bytes: &[u8]) -> Result<(), String> {
+    let length = u64::try_from(bytes.len())
+        .map_err(|_| "actor-owned index work component is too large".to_string())?;
+    digest.update(length.to_le_bytes());
+    digest.update(bytes);
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -796,6 +871,30 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn index_coordination_has_no_raw_crate_level_constructor_or_owner_escape() {
+        let shared_work = include_str!("../application/shared_work.rs");
+        let actor = include_str!("workspace_actor.rs");
+        assert!(
+            !shared_work.contains("pub(crate) struct IndexWorkKey"),
+            "raw IndexWorkKey remains constructible across the crate"
+        );
+        assert!(
+            !shared_work.contains("IndexWorkOwner"),
+            "raw IndexWorkOwner remains joinable outside the actor"
+        );
+        let raw_key_accessor = ["pub(crate) fn index_", "work_key"].concat();
+        let raw_owner_accessor = ["pub(crate) fn index_", "work(&self)"].concat();
+        assert!(
+            !actor.contains(&raw_key_accessor) && !actor.contains(&raw_owner_accessor),
+            "WorkspaceActor still exposes a movable key/owner pair"
+        );
+        assert!(
+            actor.contains("pub(crate) fn join_index_work"),
+            "the actor-owned exact revision join seam is absent"
+        );
+    }
 
     #[test]
     fn workspace_actor_serializes_mutation_publication() {

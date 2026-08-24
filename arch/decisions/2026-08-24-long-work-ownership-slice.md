@@ -12,41 +12,33 @@ design: docs/design/2026-08-23-v0-13-execution-surface-design.md
 # Daemon владеет точными readiness capability индекса, provider и runtime
 
 **Решение.** `WorkspaceActor` владеет Index coordinator с ключом из actor-safe
-identity, имени source set, полной trusted revision, provider и profile. Один
-actor и одна revision разделяют producer; другой worktree или новая revision
-намеренно не разделяются, а публикация остаётся под actor root/revision fence и
-существующим cross-process `BslIndexLock`.
+identity, source set, полной trusted revision, provider и profile. Producer
+разделяют только один actor/revision; публикацию защищают actor fence и `BslIndexLock`.
 
-Daemon владеет rootless ProviderHost coordinator с ключом
-`engine + target + capabilities`. Разделяется только запуск host: root request,
-результат, cache и существующая `PersistentMcpSession` остаются actor-bound и не
-переиспользуются между корнями. Runtime coordinator вызывается только через
-`RuntimeJobService`: сервис под тем же lifecycle-lock удерживает no-follow
-descriptor jobs-root и `active.lock`, повторно подтверждает их физическую
-identity и точный UUIDv4 lease и выполняет join до освобождения guard. Movable
-runtime key наружу не выдаётся; повтор аргументов не создаёт idempotency и не
-объединяет destructive invocation.
+Daemon владеет rootless ProviderHost coordinator `engine + target + capabilities`.
+Разделяется только host startup; request/result/cache/`PersistentMcpSession`
+остаются actor-bound. Runtime join доступен только через `RuntimeJobService` под
+lifecycle-lock точного no-follow jobs-root, `active.lock` и UUIDv4 lease; movable
+key и dedup по аргументам запрещены. Quarantine release использует тот же
+retained descriptor: подмена ambient A→B сохраняет A и не затрагивает B.
 
-На Windows authority дерева — успешно присоединённый Job Object. На Unix этот
-срез поддерживает только bundled-runner contract: unreaped leader удерживается
-через `waitid(WNOWAIT)` как generation anchor process group, а отдельный
-cooperative ownership FD наследуется всеми принадлежащими потомками независимо
-от stdout/stderr. Это не обещание containment для hostile arbitrary descendant
-или другого process group. Потерянная или не установленная ownership capability,
-ошибка post-spawn cleanup и невозможность доказать terminality дают закрытый
-ownership-uncertain outcome и durable `Lost`: сигнал после потери generation authority не
-посылается, `active.lock` остаётся quarantined, доказанная tree terminality и
-resource release не публикуются. Compatibility phase `Lost` классифицирует
-неопределённость для наблюдателя, но не является authority на освобождение ресурса.
-Cancel и доказуемый cleanup делят одно абсолютное bounded окно с reap и обоими
-output readers.
+На Windows authority — присоединённый Job Object. Unix bundled-runner contract —
+unreaped leader через `waitid(WNOWAIT)` и child-only inherited lifetime sentinel.
+Pinned `v8-runner` `7ce1b062843d86644fe55741dbe0ee79f7ca767d` не закрывает
+унаследованные descriptors перед обычным `Command` spawn. Это sentinel без
+runner handshake/acknowledgement и без hostile/cross-group containment.
 
-Canonical V13 capability испытывается injected service после durable Task
-handoff, но production subject handler остаётся dormant до Task 22. SharedWork
-phase не персистится и resume owner не регистрируется: orphan non-resumable
-остаётся terminal interrupted/resume_unsupported. V12 workspace helpers и шесть
-runtime-job tools остаются compatibility adapters; этот срез не утверждает
-subject routing или durable progress.
+Потеря capability, post-spawn cleanup error или недоказанная terminality дают
+ownership-uncertain и durable `Lost`: signal/release запрещены, `active.lock`
+quarantined. `Lost` не является authority. Canonical worker синхронно хранит
+process и оба reader до terminal+EOF; failure supervisor оставляет capability
+retained. Cancel/cleanup/reap/readers делят один monotonic deadline, Drop его не
+перезапускает.
+
+Injected V13 service проверяет capability после durable Task handoff; production
+subject handler dormant до Task 22. SharedWork phase/resume не персистятся,
+V12 helpers и runtime-job tools остаются compatibility adapters; subject routing
+и durable progress не заявлены.
 
 **Почему.** In-process single-flight уменьшает повторную тяжёлую работу, но не
 может ослаблять физическую root identity, source revision, provider cache или

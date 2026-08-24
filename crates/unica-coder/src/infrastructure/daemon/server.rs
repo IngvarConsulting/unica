@@ -11,8 +11,7 @@ use crate::application::invocation_store::{InvocationStore, InvocationStoreError
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::ports::{Clock, TokioClock};
 use crate::application::shared_work::{
-    IndexWorkKey, LongWorkFailure, ProviderHostKey, ProviderHostOwner, SharedWorkLease,
-    SharedWorkProducer,
+    LongWorkFailure, ProviderHostKey, ProviderHostOwner, SharedWorkLease, SharedWorkProducer,
 };
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::composition::open_daemon_invocation_store_from_directory;
@@ -24,8 +23,8 @@ use crate::domain::invocation::{
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
-    ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry, WorkspaceActorRegistryError,
-    WorkspaceRevisionFence,
+    IndexWorkIdentity, ProviderRootBinding, WorkspaceActor, WorkspaceActorRegistry,
+    WorkspaceActorRegistryError, WorkspaceRevisionFence,
 };
 use std::collections::HashSet;
 use std::io::{self, BufReader, Write};
@@ -123,22 +122,17 @@ impl ActorBoundExecution {
         provider: &str,
         profile: &str,
         work: W,
-    ) -> Result<(IndexWorkKey, SharedWorkLease<(), LongWorkFailure>), String>
+    ) -> Result<(IndexWorkIdentity, SharedWorkLease<(), LongWorkFailure>), String>
     where
         W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
     {
-        let key = self.invocation.actor.index_work_key(
+        self.invocation.actor.join_index_work(
             &self.invocation.provider_root,
             &self.revision,
             provider,
             profile,
-        )?;
-        let lease = self
-            .invocation
-            .actor
-            .index_work()
-            .join_or_start(key.clone(), work);
-        Ok((key, lease))
+            work,
+        )
     }
 
     #[allow(dead_code)]
@@ -1251,8 +1245,7 @@ pub(crate) mod actor_capacity_tests {
     };
     use crate::application::operation_descriptors::KnownLongReason;
     use crate::application::shared_work::{
-        ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, IndexWorkKey, ProviderHostKey,
-        SharedWorkKey,
+        ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, ProviderHostKey,
     };
     use crate::domain::invocation::InvocationStatus;
     use crate::infrastructure::runtime_jobs::{
@@ -1314,7 +1307,7 @@ pub(crate) mod actor_capacity_tests {
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum JoinedCapabilityIdentity {
-        Index(IndexWorkKey),
+        Index(IndexWorkIdentity),
         Provider(ProviderHostKey),
         Runtime(String),
     }
@@ -1330,7 +1323,7 @@ pub(crate) mod actor_capacity_tests {
     struct RevisionChangingIndexService {
         producers: Arc<AtomicUsize>,
         producer_entered: mpsc::Sender<()>,
-        joined: mpsc::Sender<SharedWorkKey>,
+        joined: mpsc::Sender<IndexWorkIdentity>,
         release: Arc<(Mutex<bool>, Condvar)>,
         first_execution: AtomicBool,
         mark_dirty: Mutex<mpsc::Receiver<()>>,
@@ -1596,9 +1589,7 @@ pub(crate) mod actor_capacity_tests {
                     Ok(())
                 })
                 .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?;
-            self.joined
-                .send(SharedWorkKey::from(&key))
-                .expect("index join observation");
+            self.joined.send(key).expect("index join observation");
             if !self.first_execution.swap(true, Ordering::SeqCst) {
                 self.mark_dirty
                     .lock()

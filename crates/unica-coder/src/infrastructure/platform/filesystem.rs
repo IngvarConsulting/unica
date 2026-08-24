@@ -218,6 +218,7 @@ pub(crate) struct RetainedDirectoryCapability {
 /// Retained no-follow authority for one regular child of an admitted directory.
 /// The open descriptor is the physical identity; validation proves the current
 /// name still resolves to that exact object before a caller publishes or joins.
+#[derive(Debug)]
 pub(crate) struct RetainedRegularFileCapability {
     parent: RetainedDirectoryCapability,
     name: std::ffi::OsString,
@@ -243,6 +244,18 @@ impl std::fmt::Debug for RetainedDirectoryCapability {
 impl RetainedDirectoryCapability {
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
         let directory = open_absolute_directory_path_nofollow(path)?;
+        let identity = file_identity(&directory)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            retained: Arc::new(RetainedDirectoryCapabilityInner {
+                directory,
+                identity,
+            }),
+        })
+    }
+
+    pub(crate) fn open_or_create(path: &Path) -> io::Result<Self> {
+        let directory = open_or_create_absolute_directory_path_nofollow(path)?;
         let identity = file_identity(&directory)?;
         Ok(Self {
             path: path.to_path_buf(),
@@ -331,6 +344,21 @@ impl RetainedDirectoryCapability {
             identity,
         })
     }
+
+    pub(crate) fn retain_or_create_regular_child(
+        &self,
+        name: &std::ffi::OsStr,
+    ) -> io::Result<RetainedRegularFileCapability> {
+        let file =
+            open_or_create_regular_child_read_write_nofollow(&self.retained.directory, name)?;
+        let identity = file_identity(&file)?;
+        Ok(RetainedRegularFileCapability {
+            parent: self.clone(),
+            name: name.to_os_string(),
+            file,
+            identity,
+        })
+    }
 }
 
 impl RetainedRegularFileCapability {
@@ -357,6 +385,10 @@ impl RetainedRegularFileCapability {
         Ok(bytes)
     }
 
+    pub(crate) fn try_clone_file(&self) -> io::Result<fs::File> {
+        self.file.try_clone()
+    }
+
     pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
         self.parent.validate_named_identity()?;
         let rebound = open_regular_child_nofollow(&self.parent.retained.directory, &self.name)?;
@@ -367,6 +399,16 @@ impl RetainedRegularFileCapability {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn remove_named_identity(&self) -> io::Result<()> {
+        self.parent.validate_named_identity()?;
+        remove_identity_bound_regular_child(
+            &self.parent.retained.directory,
+            &self.name,
+            self.identity,
+            &self.file,
+        )
     }
 }
 
@@ -701,6 +743,38 @@ pub(crate) fn open_regular_child_nofollow(
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "entry is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_or_create_regular_child_read_write_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let encoded_name = unix_child_name(name)?;
+    // SAFETY: parent is a retained directory descriptor and name is one
+    // NUL-terminated component. The returned descriptor is newly owned.
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            encoded_name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            0o666,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: descriptor is the owned successful openat result above.
+    let file = unsafe { fs::File::from_raw_fd(descriptor) };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "descriptor-relative lifecycle lock is not a regular file",
         ));
     }
     Ok(file)
@@ -2140,6 +2214,44 @@ pub(crate) fn open_regular_child_nofollow(
 }
 
 #[cfg(windows)]
+fn open_or_create_regular_child_read_write_nofollow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    const FILE_OPEN_IF: u32 = 0x0000_0003;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, SYNCHRONIZE,
+    };
+
+    let file = open_relative_child(
+        parent,
+        name,
+        GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_OPEN_IF,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        None,
+    )?;
+    let attributes = windows_file_information(&file)?.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "descriptor-relative lifecycle lock resolves to a reparse point",
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "descriptor-relative lifecycle lock is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
 pub(crate) fn open_any_child_nofollow(
     parent: &fs::File,
     name: &std::ffi::OsStr,
@@ -2979,6 +3091,17 @@ pub(crate) fn create_new_regular_child(
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "descriptor-relative regular-file creation is unavailable on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_or_create_regular_child_read_write_nofollow(
+    _parent: &fs::File,
+    _name: &std::ffi::OsStr,
+) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "descriptor-relative lifecycle locking is unavailable on this host",
     ))
 }
 

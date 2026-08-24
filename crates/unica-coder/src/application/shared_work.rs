@@ -6,58 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use crate::domain::invocation::SafeIdentityHash;
-use crate::domain::source_revision::{SourceRevision, SOURCE_REVISION_ALGORITHM};
-
 #[allow(dead_code)] // V13 constructors are exercised by injected services until Task 22 cutover.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SharedWorkIdentityError {
-    Index,
     Provider,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct IndexWorkKey {
-    workspace: SafeIdentityHash,
-    source_set: String,
-    source_revision: SourceRevision,
-    provider: String,
-    profile: String,
-}
-
-impl IndexWorkKey {
-    pub(crate) fn new(
-        workspace: SafeIdentityHash,
-        source_set: impl Into<String>,
-        source_revision: SourceRevision,
-        provider: impl Into<String>,
-        profile: impl Into<String>,
-    ) -> Result<Self, SharedWorkIdentityError> {
-        let source_set = source_set.into();
-        let provider = provider.into();
-        let profile = profile.into();
-        if !closed_nonempty(&source_set)
-            || !closed_nonempty(&provider)
-            || !closed_nonempty(&profile)
-            || source_revision.algorithm != SOURCE_REVISION_ALGORITHM
-            || source_revision.generation == 0
-            || !lowercase_sha256(&source_revision.digest)
-        {
-            return Err(SharedWorkIdentityError::Index);
-        }
-        Ok(Self {
-            workspace,
-            source_set,
-            source_revision,
-            provider,
-            profile,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn source_revision(&self) -> &SourceRevision {
-        &self.source_revision
-    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -91,13 +43,6 @@ impl ProviderHostKey {
     }
 }
 
-fn lowercase_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 fn closed_nonempty(value: &str) -> bool {
     !value.is_empty() && value.trim() == value && !value.bytes().any(|byte| byte == 0)
 }
@@ -124,18 +69,14 @@ pub(crate) enum SharedWorkKey {
         sha256: String,
         form: DeliveryFormIdentity,
     },
-    Index(IndexWorkKey),
+    Index {
+        identity: [u8; 32],
+    },
     Provider(ProviderHostKey),
     Runtime {
         resource_identity: [u8; 32],
         lease_identity: uuid::Uuid,
     },
-}
-
-impl From<&IndexWorkKey> for SharedWorkKey {
-    fn from(key: &IndexWorkKey) -> Self {
-        Self::Index(key.clone())
-    }
 }
 
 impl From<&ProviderHostKey> for SharedWorkKey {
@@ -628,11 +569,6 @@ macro_rules! exact_owner {
 // final exact owner disappears. Cross-process authorities remain outside these
 // in-process coordinators.
 exact_owner!(
-    IndexWorkOwner,
-    IndexWorkKey,
-    SharedWorkLifetime::ProducerBound
-);
-exact_owner!(
     ProviderHostOwner,
     ProviderHostKey,
     SharedWorkLifetime::ProducerBound
@@ -857,11 +793,9 @@ impl<R, E> Drop for SharedWorkLease<R, E> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeliveryFormIdentity, IndexWorkKey, ProviderHostKey, SharedWork, SharedWorkKey,
-        SharedWorkLifetime, SharedWorkSnapshot,
+        DeliveryFormIdentity, ProviderHostKey, SharedWork, SharedWorkKey, SharedWorkLifetime,
+        SharedWorkSnapshot,
     };
-    use crate::domain::invocation::SafeIdentityHash;
-    use crate::domain::source_revision::{SourceRevision, SOURCE_REVISION_ALGORITHM};
 
     use std::collections::BTreeSet;
     use std::io;
@@ -882,20 +816,7 @@ mod tests {
     #[test]
     fn exact_key_vocabulary_covers_delivery_index_provider_and_runtime() {
         let delivery = delivery(&"a".repeat(64));
-        let index = SharedWorkKey::from(
-            &IndexWorkKey::new(
-                SafeIdentityHash::from_sha256([1; 32]),
-                "main",
-                SourceRevision {
-                    algorithm: SOURCE_REVISION_ALGORITHM.to_string(),
-                    generation: 7,
-                    digest: "2".repeat(64),
-                },
-                "rlm",
-                "bsl-1",
-            )
-            .unwrap(),
-        );
+        let index = SharedWorkKey::Index { identity: [2; 32] };
         let provider = SharedWorkKey::from(
             &ProviderHostKey::new(
                 "bsl-analyzer",
@@ -915,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_long_work_keys_reject_weak_identity_and_include_the_complete_revision() {
+    fn typed_provider_and_runtime_keys_reject_weak_identity_and_remain_exact() {
         assert!(
             ProviderHostKey::new("bsl-analyzer", "aarch64-apple-darwin", BTreeSet::new(),).is_err()
         );
@@ -934,68 +855,6 @@ mod tests {
             .unwrap()
         );
 
-        let workspace = SafeIdentityHash::from_sha256([4; 32]);
-        let revision = SourceRevision {
-            algorithm: SOURCE_REVISION_ALGORITHM.to_string(),
-            generation: 11,
-            digest: "5".repeat(64),
-        };
-        let first =
-            IndexWorkKey::new(workspace.clone(), "main", revision.clone(), "rlm", "bsl-1").unwrap();
-        let changed_generation = IndexWorkKey::new(
-            workspace.clone(),
-            "main",
-            SourceRevision {
-                generation: 12,
-                ..revision.clone()
-            },
-            "rlm",
-            "bsl-1",
-        )
-        .unwrap();
-        let changed_digest = IndexWorkKey::new(
-            workspace.clone(),
-            "main",
-            SourceRevision {
-                digest: "6".repeat(64),
-                ..revision
-            },
-            "rlm",
-            "bsl-1",
-        )
-        .unwrap();
-        let changed_root_binding = IndexWorkKey::new(
-            workspace,
-            "extension",
-            changed_digest.source_revision().clone(),
-            "rlm",
-            "bsl-1",
-        )
-        .unwrap();
-
-        assert_ne!(first, changed_generation);
-        assert_ne!(first, changed_digest);
-        assert_ne!(changed_digest, changed_root_binding);
-        assert!(IndexWorkKey::new(
-            SafeIdentityHash::from_sha256([7; 32]),
-            "",
-            changed_generation.source_revision().clone(),
-            "rlm",
-            "bsl-1",
-        )
-        .is_err());
-        assert!(IndexWorkKey::new(
-            SafeIdentityHash::from_sha256([7; 32]),
-            "main",
-            SourceRevision {
-                generation: 0,
-                digest: "7".repeat(64),
-                algorithm: SOURCE_REVISION_ALGORITHM.to_string(),
-            },
-            "rlm",
-            "bsl-1",
-        )
-        .is_err());
         assert_ne!(
             SharedWorkKey::Runtime {
                 resource_identity: [8; 32],
@@ -1372,7 +1231,7 @@ mod tests {
     #[test]
     fn exact_shared_work_keys_fanout_cancellation_and_retirement_are_one_contract() {
         exact_key_vocabulary_covers_delivery_index_provider_and_runtime();
-        typed_long_work_keys_reject_weak_identity_and_include_the_complete_revision();
+        typed_provider_and_runtime_keys_reject_weak_identity_and_remain_exact();
         one_producer_serves_many_exact_key_followers_and_fans_out_the_result();
         different_exact_keys_do_not_share_and_failure_is_fanned_out();
         producer_spawn_failure_is_terminal_for_the_leader_and_attached_follower();

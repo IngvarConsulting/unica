@@ -52,13 +52,20 @@ impl RuntimeProcessTreeHandle {
         })
     }
 
-    pub(crate) fn attach(&mut self, child: &Child) -> io::Result<()> {
-        self.tree.attach(child)
+    pub(crate) fn attach(&mut self, child: &mut Child) -> io::Result<()> {
+        if let Some(status) = self.tree.attach(child)? {
+            self.leader_exit = Some(status);
+            self.leader_exit_observed = true;
+        }
+        Ok(())
     }
 
     pub(crate) fn poll(&mut self, child: &mut Child) -> io::Result<RuntimeProcessTreeState> {
         #[cfg(unix)]
         {
+            if let Some(status) = self.leader_exit {
+                return Ok(RuntimeProcessTreeState::Exited(status));
+            }
             if !self.leader_exit_observed {
                 self.leader_exit_observed = self.tree.observe_leader_exit(child)?.is_some();
             }
@@ -98,18 +105,46 @@ impl RuntimeProcessTreeHandle {
     /// One bounded cleanup window for every partial startup state. Killing the
     /// leader as a fallback is required when Windows attachment failed before
     /// the child entered the Job Object.
+    #[cfg(test)]
     pub(crate) fn terminate_and_reap_bounded(
         &mut self,
         child: &mut Child,
         budget: Duration,
     ) -> io::Result<()> {
         let started = Instant::now();
+        let deadline = started.checked_add(budget).unwrap_or(started);
+        self.terminate_and_reap_until(child, deadline)
+    }
+
+    /// Terminates and proves tree death inside one caller-owned absolute
+    /// monotonic window. Reusing the same deadline prevents startup cleanup,
+    /// output readers and Drop from each opening a fresh timeout.
+    pub(crate) fn terminate_and_reap_until(
+        &mut self,
+        child: &mut Child,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        #[cfg(test)]
+        RUNTIME_TREE_CLEANUP_CALLS.with(|slot| slot.set(slot.get().saturating_add(1)));
+        #[cfg(test)]
+        if INJECT_RUNTIME_TREE_CLEANUP_TIMEOUT.with(|slot| slot.replace(false)) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "injected runtime process tree cleanup timeout",
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "runtime process tree cleanup deadline elapsed",
+            ));
+        }
         let tree_result = self.tree.terminate(child);
         let _ = child.kill();
         loop {
             match self.poll(child)? {
                 RuntimeProcessTreeState::Exited(_) => return tree_result,
-                RuntimeProcessTreeState::Running if started.elapsed() >= budget => {
+                RuntimeProcessTreeState::Running if Instant::now() >= deadline => {
                     return Err(tree_result.err().unwrap_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::TimedOut,
@@ -118,7 +153,7 @@ impl RuntimeProcessTreeHandle {
                     }));
                 }
                 RuntimeProcessTreeState::Running => thread::sleep(
-                    PROCESS_POLL_INTERVAL.min(budget.saturating_sub(started.elapsed())),
+                    PROCESS_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
                 ),
             }
         }
@@ -134,6 +169,11 @@ impl RuntimeProcessTreeHandle {
 fn unix_leader_exit_unreaped(process_id: u32) -> io::Result<Option<ExitStatus>> {
     use std::mem::zeroed;
     use std::os::unix::process::ExitStatusExt;
+
+    #[cfg(test)]
+    if INJECT_UNIX_WAITID_ERROR.with(|slot| slot.replace(false)) {
+        return Err(io::Error::other("injected Unix waitid failure"));
+    }
 
     // WNOWAIT retains the exited leader as the generation authority for its
     // process group. The numeric PGID therefore cannot be recycled while a
@@ -342,7 +382,7 @@ pub(crate) fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Re
         .stderr(Stdio::null());
     let mut process_tree = RuntimeProcessTreeHandle::prepare(&mut command)?;
     let mut child = command.spawn()?;
-    if let Err(error) = process_tree.attach(&child) {
+    if let Err(error) = process_tree.attach(&mut child) {
         let _ = process_tree.terminate_and_reap_bounded(&mut child, TERMINATION_WAIT_LIMIT);
         return Err(error);
     }
@@ -375,6 +415,70 @@ pub(crate) fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Re
 #[cfg(test)]
 thread_local! {
     static INJECT_WAIT_ERROR: Cell<bool> = const { Cell::new(false) };
+    static INJECT_RUNTIME_TREE_CLEANUP_TIMEOUT: Cell<bool> = const { Cell::new(false) };
+    static RUNTIME_TREE_CLEANUP_CALLS: Cell<u32> = const { Cell::new(0) };
+    #[cfg(unix)]
+    static INJECT_UNIX_WAITID_ERROR: Cell<bool> = const { Cell::new(false) };
+    #[cfg(unix)]
+    static INJECT_UNIX_REAP_ERROR: Cell<bool> = const { Cell::new(false) };
+    #[cfg(unix)]
+    static UNIX_SIGNAL_COUNT: Cell<u32> = const { Cell::new(0) };
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn assert_runtime_ownership_sentinel_for_test() {
+    tests::permission_denied_empty_group_policy_requires_exact_platform_evidence();
+    tests::runtime_ownership_writer_is_cloexec_in_the_parent();
+    tests::runtime_ownership_pipe_accepts_an_exact_quick_terminal_child();
+    tests::concurrent_runtime_sentinels_do_not_cross_inherit_or_leak_to_unrelated_exec();
+    tests::runner_style_new_process_group_and_closed_stdio_still_hold_sentinel_lifetime();
+}
+
+#[cfg(test)]
+pub(crate) fn inject_runtime_tree_cleanup_timeout_for_test() {
+    INJECT_RUNTIME_TREE_CLEANUP_TIMEOUT.with(|slot| slot.set(true));
+}
+
+#[cfg(test)]
+pub(crate) fn reset_runtime_tree_cleanup_calls_for_test() {
+    RUNTIME_TREE_CLEANUP_CALLS.with(|slot| slot.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_tree_cleanup_calls_for_test() -> u32 {
+    RUNTIME_TREE_CLEANUP_CALLS.with(Cell::get)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn inject_unix_waitid_error_for_test() {
+    INJECT_UNIX_WAITID_ERROR.with(|slot| slot.set(true));
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn inject_unix_reap_error_for_test() {
+    INJECT_UNIX_REAP_ERROR.with(|slot| slot.set(true));
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn reset_unix_signal_count_for_test() {
+    UNIX_SIGNAL_COUNT.with(|slot| slot.set(0));
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn unix_signal_count_for_test() -> u32 {
+    UNIX_SIGNAL_COUNT.with(Cell::get)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn reap_runtime_authority_test_child(process_id: u32) {
+    // SAFETY: this is a test-only cleanup for the exact child just spawned by
+    // the caller. The platform facade owns both Unix calls and ignores ESRCH/
+    // ECHILD because the regression may already have reaped the child.
+    unsafe {
+        libc::kill(process_id as i32, libc::SIGKILL);
+        let mut status = 0;
+        libc::waitpid(process_id as i32, &mut status, 0);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -627,7 +731,7 @@ impl ManagedChild {
             .stderr(Stdio::piped());
         let mut process_tree = ProcessTree::prepare(&mut process).map_err(process_error)?;
         let mut child = process.spawn().map_err(process_error)?;
-        if let Err(error) = process_tree.attach(&child) {
+        if let Err(error) = process_tree.attach(&mut child) {
             let _ = process_tree.terminate(&mut child);
             let _ = child.kill();
             let _ = child.try_wait();
@@ -1005,7 +1109,7 @@ impl ManagedStartupChild {
         };
         if let Err(error) = managed
             .process_tree
-            .attach(managed.child.as_ref().expect("startup child exists"))
+            .attach(managed.child.as_mut().expect("startup child exists"))
         {
             let cleanup = managed.terminate_bounded(TERMINATION_WAIT_LIMIT);
             return match cleanup {
@@ -1173,6 +1277,23 @@ enum UnixLeaderOwnership {
     AuthorityLost,
 }
 
+/// Darwin's EPERM-on-zombie rule is evidence only for the generic managed
+/// child. Runtime jobs install a stronger descendant-lifetime sentinel and
+/// therefore require its EOF. `exact_retained_leader` prevents either branch
+/// from authorizing a released/recycled numeric group.
+#[cfg(any(unix, test))]
+fn permission_denied_proves_empty_group(
+    host_is_darwin: bool,
+    exact_retained_leader: bool,
+    runtime_sentinel_empty: Option<bool>,
+) -> bool {
+    exact_retained_leader
+        && match runtime_sentinel_empty {
+            Some(empty) => empty,
+            None => host_is_darwin,
+        }
+}
+
 #[cfg(unix)]
 struct UnixOwnershipPipe {
     reader: std::fs::File,
@@ -1180,55 +1301,115 @@ struct UnixOwnershipPipe {
 }
 
 #[cfg(unix)]
+const RUNTIME_OWNERSHIP_SENTINEL_FD: i32 = 198;
+
+#[cfg(all(unix, target_vendor = "apple"))]
+fn atomic_cloexec_ownership_pair() -> io::Result<[i32; 2]> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut template = std::env::temp_dir().as_os_str().as_bytes().to_vec();
+    template.extend_from_slice(b"/unica-runtime-sentinel.XXXXXX\0");
+    let directory_path = unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) };
+    if directory_path.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let directory = unsafe {
+        libc::open(
+            directory_path,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if directory == -1 {
+        let error = io::Error::last_os_error();
+        unsafe { libc::rmdir(directory_path) };
+        return Err(error);
+    }
+    let name = b"ownership\0";
+    if unsafe { libc::mkfifoat(directory, name.as_ptr().cast(), 0o600) } == -1 {
+        let error = io::Error::last_os_error();
+        unsafe {
+            libc::close(directory);
+            libc::rmdir(directory_path);
+        }
+        return Err(error);
+    }
+    let reader = unsafe {
+        libc::openat(
+            directory,
+            name.as_ptr().cast(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    let writer = if reader == -1 {
+        -1
+    } else {
+        unsafe {
+            libc::openat(
+                directory,
+                name.as_ptr().cast(),
+                libc::O_WRONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        }
+    };
+    let open_error = (reader == -1 || writer == -1).then(io::Error::last_os_error);
+    unsafe {
+        libc::unlinkat(directory, name.as_ptr().cast(), 0);
+        libc::close(directory);
+        libc::rmdir(directory_path);
+    }
+    if let Some(error) = open_error {
+        if reader != -1 {
+            unsafe { libc::close(reader) };
+        }
+        return Err(error);
+    }
+    Ok([reader, writer])
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn atomic_cloexec_ownership_pair() -> io::Result<[i32; 2]> {
+    let mut descriptors = [-1_i32; 2];
+    if unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(descriptors)
+    }
+}
+
+#[cfg(unix)]
 impl UnixOwnershipPipe {
     fn install(command: &mut Command) -> io::Result<Self> {
         use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::process::CommandExt;
 
-        let mut descriptors = [-1_i32; 2];
-        if unsafe { libc::pipe(descriptors.as_mut_ptr()) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        let descriptors = atomic_cloexec_ownership_pair()?;
         let reader = unsafe { std::fs::File::from_raw_fd(descriptors[0]) };
         let writer = unsafe { std::fs::File::from_raw_fd(descriptors[1]) };
-        let reader_flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) };
-        if reader_flags == -1
-            || unsafe {
-                libc::fcntl(
-                    reader.as_raw_fd(),
-                    libc::F_SETFL,
-                    reader_flags | libc::O_NONBLOCK,
-                )
-            } == -1
-        {
-            return Err(io::Error::last_os_error());
-        }
-        let reader_descriptor_flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFD) };
-        if reader_descriptor_flags == -1
-            || unsafe {
-                libc::fcntl(
-                    reader.as_raw_fd(),
-                    libc::F_SETFD,
-                    reader_descriptor_flags | libc::FD_CLOEXEC,
-                )
-            } == -1
-        {
-            return Err(io::Error::last_os_error());
-        }
-        let writer_descriptor_flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFD) };
-        if writer_descriptor_flags == -1
-            || unsafe {
-                libc::fcntl(
-                    writer.as_raw_fd(),
-                    libc::F_SETFD,
-                    writer_descriptor_flags & !libc::FD_CLOEXEC,
-                )
-            } == -1
-        {
-            return Err(io::Error::last_os_error());
+        let writer_fd = writer.as_raw_fd();
+        // SAFETY: dup2, close and fcntl are async-signal-safe. The parent keeps
+        // writer CLOEXEC at all times; only this child maps it onto the reserved
+        // sentinel descriptor and clears CLOEXEC there before exec.
+        unsafe {
+            command.pre_exec(move || {
+                if writer_fd != RUNTIME_OWNERSHIP_SENTINEL_FD {
+                    if libc::dup2(writer_fd, RUNTIME_OWNERSHIP_SENTINEL_FD) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    libc::close(writer_fd);
+                } else {
+                    let flags = libc::fcntl(writer_fd, libc::F_GETFD);
+                    if flags == -1
+                        || libc::fcntl(writer_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
         }
         command.env(
             "UNICA_RUNTIME_TREE_OWNERSHIP_FD",
-            writer.as_raw_fd().to_string(),
+            RUNTIME_OWNERSHIP_SENTINEL_FD.to_string(),
         );
         Ok(Self {
             reader,
@@ -1236,15 +1417,9 @@ impl UnixOwnershipPipe {
         })
     }
 
-    fn child_attached(&mut self) -> io::Result<()> {
+    fn close_parent_writer_and_is_empty(&mut self) -> io::Result<bool> {
         self.parent_writer.take();
-        if self.is_empty()? {
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "runtime child did not retain its ownership capability",
-            ));
-        }
-        Ok(())
+        self.is_empty()
     }
 
     fn is_empty(&self) -> io::Result<bool> {
@@ -1304,6 +1479,8 @@ impl UnixProcessGroupAuthority {
 
     fn signal(&self, signal: i32) -> io::Result<()> {
         self.signal_with(signal, |group, signal| {
+            #[cfg(test)]
+            UNIX_SIGNAL_COUNT.with(|slot| slot.set(slot.get().saturating_add(1)));
             if unsafe { libc::kill(group, signal) } == -1 {
                 Err(io::Error::last_os_error())
             } else {
@@ -1386,24 +1563,54 @@ impl ProcessTree {
         Self::prepare(command)
     }
 
-    fn attach(&mut self, child: &Child) -> io::Result<()> {
+    fn attach(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
         self.process_group = Some(UnixProcessGroupAuthority::retained(child.id()));
         self.leader = UnixLeaderOwnership::Running;
         self.kill_sent = false;
         if let Some(ownership_pipe) = self.ownership_pipe.as_mut() {
-            if let Err(error) = ownership_pipe.child_attached() {
-                // EOF here means the child did not retain the cooperative tree
-                // capability. Forget the unusable oracle so later cleanup
-                // cannot mistake its EOF for proof that no descendants exist.
-                self.ownership_pipe = None;
-                return Err(error);
+            if ownership_pipe.close_parent_writer_and_is_empty()? {
+                if self.observe_leader_exit(child)?.is_some() {
+                    return self.reap_observed_leader(child).map(Some);
+                }
+                self.lose_authority();
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "runtime child did not retain its ownership capability",
+                ));
             }
         }
-        Ok(())
+        Ok(None)
+    }
+
+    fn lose_authority(&mut self) {
+        if let Some(mut authority) = self.process_group.take() {
+            authority.release();
+        }
+        self.ownership_pipe = None;
+        self.kill_sent = true;
+        self.leader = UnixLeaderOwnership::AuthorityLost;
+    }
+
+    fn signalable_authority(&self) -> io::Result<Option<&UnixProcessGroupAuthority>> {
+        match self.leader {
+            UnixLeaderOwnership::Running | UnixLeaderOwnership::ExitedUnreaped(_) => {
+                self.process_group.as_ref().map(Some).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "Unix process-group authority is absent",
+                    )
+                })
+            }
+            UnixLeaderOwnership::Reaped(_) => Ok(None),
+            UnixLeaderOwnership::AuthorityLost => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Unix process-group generation authority was lost",
+            )),
+        }
     }
 
     fn terminate(&mut self, _child: &mut Child) -> io::Result<()> {
-        let Some(authority) = self.process_group.as_ref() else {
+        let Some(authority) = self.signalable_authority()? else {
             return Ok(());
         };
         if self.kill_sent {
@@ -1420,7 +1627,7 @@ impl ProcessTree {
     }
 
     fn request_graceful_termination(&mut self, _child: &mut Child) -> io::Result<()> {
-        let Some(authority) = self.process_group.as_ref() else {
+        let Some(authority) = self.signalable_authority()? else {
             return Ok(());
         };
         if self.kill_sent {
@@ -1450,9 +1657,24 @@ impl ProcessTree {
             // remaining group member: there is no signalable process left.
             // Descendants owned by this process remain signalable and take the
             // successful path (covered by the real detached-descendant test).
-            if error.kind() != io::ErrorKind::PermissionDenied
-                || !self.retains_exact_exited_leader(child.id())
-            {
+            let exact_retained_leader = self.retains_exact_exited_leader(child.id());
+            let runtime_sentinel_empty = self
+                .ownership_pipe
+                .as_ref()
+                .map(|pipe| pipe.is_empty().unwrap_or(false));
+            // Darwin reports EPERM for a group containing only its retained
+            // zombie leader. That host-specific rule is sufficient for the
+            // generic ManagedChild path, which has no descendant-lifetime
+            // sentinel. Runtime jobs are stronger: if they installed a
+            // sentinel, EOF is additionally required before EPERM can mean
+            // empty. Other hosts never turn EPERM into success here.
+            let exact_empty_group = error.kind() == io::ErrorKind::PermissionDenied
+                && permission_denied_proves_empty_group(
+                    cfg!(target_vendor = "apple"),
+                    exact_retained_leader,
+                    runtime_sentinel_empty,
+                );
+            if !exact_empty_group {
                 return Err(error);
             }
         }
@@ -1476,7 +1698,7 @@ impl ProcessTree {
                 }
                 Ok(None) => Ok(None),
                 Err(error) => {
-                    self.leader = UnixLeaderOwnership::AuthorityLost;
+                    self.lose_authority();
                     Err(error)
                 }
             },
@@ -1507,24 +1729,29 @@ impl ProcessTree {
                 ));
             }
         };
+        #[cfg(test)]
+        if INJECT_UNIX_REAP_ERROR.with(|slot| slot.replace(false)) {
+            self.lose_authority();
+            return Err(io::Error::other("injected Unix reap failure"));
+        }
         let status = match child.try_wait() {
             Ok(Some(status)) => status,
             Err(error) if error.raw_os_error() == Some(libc::ECHILD) => observed_status,
             Ok(None) => {
-                self.leader = UnixLeaderOwnership::AuthorityLost;
+                self.lose_authority();
                 return Err(io::Error::other(
                     "retained managed-process leader could not be reaped",
                 ));
             }
             Err(error) => {
-                self.leader = UnixLeaderOwnership::AuthorityLost;
+                self.lose_authority();
                 return Err(error);
             }
         };
-        if let Some(authority) = self.process_group.as_mut() {
+        if let Some(mut authority) = self.process_group.take() {
             authority.release();
         }
-        self.process_group = None;
+        self.ownership_pipe = None;
         self.leader = UnixLeaderOwnership::Reaped(status);
         Ok(status)
     }
@@ -1566,21 +1793,18 @@ impl ProcessTree {
         // that point, so fail closed instead of signalling a potentially reused
         // group. Runtime jobs use `RuntimeProcessTreeHandle`, which retains the
         // leader with WNOWAIT until all descendants are accounted for.
-        if let Some(authority) = self.process_group.as_mut() {
-            authority.release();
-        }
-        self.process_group = None;
         if !matches!(self.leader, UnixLeaderOwnership::Reaped(_)) {
-            self.leader = UnixLeaderOwnership::AuthorityLost;
+            self.lose_authority();
+        } else {
+            if let Some(mut authority) = self.process_group.take() {
+                authority.release();
+            }
+            self.ownership_pipe = None;
         }
     }
 
     fn detach(&mut self) -> io::Result<()> {
-        if let Some(authority) = self.process_group.as_mut() {
-            authority.release();
-        }
-        self.process_group = None;
-        self.leader = UnixLeaderOwnership::AuthorityLost;
+        self.lose_authority();
         Ok(())
     }
 }
@@ -1655,7 +1879,7 @@ impl ProcessTree {
         Ok(Self { job })
     }
 
-    fn attach(&mut self, child: &Child) -> io::Result<()> {
+    fn attach(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
         use windows_sys::Win32::System::Threading::ResumeThread;
@@ -1675,7 +1899,7 @@ impl ProcessTree {
                 "unexpected primary thread suspend count: {previous_suspend_count}"
             )));
         }
-        Ok(())
+        Ok(None)
     }
 
     fn terminate(&mut self, _child: &mut Child) -> io::Result<()> {
@@ -1840,8 +2064,8 @@ impl ProcessTree {
         Self::prepare(command)
     }
 
-    fn attach(&mut self, _child: &Child) -> io::Result<()> {
-        Ok(())
+    fn attach(&mut self, _child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        Ok(None)
     }
 
     fn terminate(&mut self, child: &mut Child) -> io::Result<()> {
@@ -2142,9 +2366,9 @@ mod tests {
     #[cfg(windows)]
     use super::{assert_windows_runtime_process_tree_semantics_for_test, ProcessTree};
     use super::{
-        runtime_process_tree_is_terminal, windows_job_object_is_empty, ChildState, ManagedChild,
-        ManagedCommand, ManagedOutput, ManagedStartupChild, ManualStartupTerminationProbe,
-        StreamControl,
+        permission_denied_proves_empty_group, runtime_process_tree_is_terminal,
+        windows_job_object_is_empty, ChildState, ManagedChild, ManagedCommand, ManagedOutput,
+        ManagedStartupChild, ManualStartupTerminationProbe, StreamControl,
     };
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
@@ -2160,6 +2384,10 @@ mod tests {
 
     const HELPER_ENV: &str = "UNICA_MANAGED_CHILD_HELPER";
     const HELPER_PID_FILE_ENV: &str = "UNICA_MANAGED_CHILD_PID_FILE";
+    #[cfg(unix)]
+    const RUNTIME_SENTINEL_HELPER_ENV: &str = "UNICA_RUNTIME_SENTINEL_HELPER";
+    #[cfg(unix)]
+    const RUNTIME_SENTINEL_PID_FILE_ENV: &str = "UNICA_RUNTIME_SENTINEL_PID_FILE";
 
     fn with_wait_error<T>(action: impl FnOnce() -> T) -> T {
         struct Reset(bool);
@@ -2613,6 +2841,270 @@ mod tests {
     #[test]
     fn released_unix_group_generation_never_signals_a_reused_numeric_pgid() {
         super::assert_released_unix_group_never_signals_reused_identity_for_test();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authority_lost_process_tree_never_signals_a_reused_numeric_group() {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("exit 0");
+        let mut tree = super::ProcessTree::prepare(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        tree.attach(&mut child).unwrap();
+        child.wait().unwrap();
+        tree.observe_leader_exit(&child)
+            .expect_err("externally reaped leader loses generation authority");
+        let signals = std::cell::Cell::new(0_u32);
+        if let Some(authority) = tree.process_group.as_ref() {
+            let _ = authority.signal_with_for_test(libc::SIGKILL, |_group, _signal| {
+                signals.set(signals.get().saturating_add(1));
+                Ok(())
+            });
+        }
+        assert_eq!(
+            signals.get(),
+            0,
+            "AuthorityLost retained a signalable numeric process group"
+        );
+    }
+
+    #[test]
+    pub(super) fn permission_denied_empty_group_policy_requires_exact_platform_evidence() {
+        assert!(permission_denied_proves_empty_group(true, true, None));
+        assert!(!permission_denied_proves_empty_group(
+            true,
+            true,
+            Some(false)
+        ));
+        assert!(permission_denied_proves_empty_group(true, true, Some(true)));
+        assert!(!permission_denied_proves_empty_group(false, true, None));
+        assert!(!permission_denied_proves_empty_group(true, false, None));
+        assert!(!permission_denied_proves_empty_group(
+            true,
+            false,
+            Some(true)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    pub(super) fn runtime_ownership_writer_is_cloexec_in_the_parent() {
+        use std::os::fd::AsRawFd;
+
+        let mut command = Command::new("/usr/bin/true");
+        let pipe = super::UnixOwnershipPipe::install(&mut command).unwrap();
+        let writer = pipe
+            .parent_writer
+            .as_ref()
+            .expect("parent retains writer until spawn");
+        let flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(flags, -1);
+        assert_ne!(
+            flags & libc::FD_CLOEXEC,
+            0,
+            "ownership writer is globally inheritable by unrelated concurrent spawns"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    pub(super) fn runtime_ownership_pipe_accepts_an_exact_quick_terminal_child() {
+        let mut command = Command::new("/usr/bin/true");
+        let mut handle = super::RuntimeProcessTreeHandle::prepare(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while super::unix_leader_exit_unreaped(child.id())
+            .unwrap()
+            .is_none()
+        {
+            assert!(Instant::now() < deadline, "quick child did not exit");
+            thread::yield_now();
+        }
+
+        handle
+            .attach(&mut child)
+            .expect("EOF plus an exact retained quick-terminal leader is valid");
+        assert!(matches!(
+            handle.poll(&mut child).unwrap(),
+            super::RuntimeProcessTreeState::Exited(_)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    pub(super) fn concurrent_runtime_sentinels_do_not_cross_inherit_or_leak_to_unrelated_exec() {
+        use std::os::fd::AsRawFd;
+
+        let mut command_a = Command::new("/bin/sh");
+        command_a.arg("-c").arg("exec sleep 30");
+        let mut handle_a = super::RuntimeProcessTreeHandle::prepare(&mut command_a).unwrap();
+        let writer_a = handle_a
+            .tree
+            .ownership_pipe
+            .as_ref()
+            .and_then(|pipe| pipe.parent_writer.as_ref())
+            .unwrap()
+            .as_raw_fd();
+
+        let mut command_b = Command::new("/bin/sh");
+        command_b.arg("-c").arg("exec sleep 30");
+        let mut handle_b = super::RuntimeProcessTreeHandle::prepare(&mut command_b).unwrap();
+        let writer_b = handle_b
+            .tree
+            .ownership_pipe
+            .as_ref()
+            .and_then(|pipe| pipe.parent_writer.as_ref())
+            .unwrap()
+            .as_raw_fd();
+
+        let unrelated = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "test ! -e /dev/fd/{writer_a} && test ! -e /dev/fd/{writer_b}"
+            ))
+            .status()
+            .unwrap();
+        assert!(
+            unrelated.success(),
+            "unrelated exec inherited a sentinel endpoint"
+        );
+
+        let mut child_a = command_a.spawn().unwrap();
+        let mut child_b = command_b.spawn().unwrap();
+        handle_a.attach(&mut child_a).unwrap();
+        handle_b.attach(&mut child_b).unwrap();
+        // B was spawned after A while B's parent endpoint was live.  The old
+        // globally-inheritable implementation let A retain B's writer, so B
+        // could never observe EOF while A stayed alive.  Terminate B first to
+        // exercise that exact A -> B inheritance direction.
+        handle_b.terminate(&mut child_b).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match handle_b.poll(&mut child_b).unwrap() {
+                super::RuntimeProcessTreeState::Exited(_) => break,
+                super::RuntimeProcessTreeState::Running if Instant::now() < deadline => {
+                    thread::yield_now();
+                }
+                _ => panic!("runtime B did not reach its independent EOF"),
+            }
+        }
+        assert!(matches!(
+            handle_a.poll(&mut child_a).unwrap(),
+            super::RuntimeProcessTreeState::Running
+        ));
+        handle_a
+            .terminate_and_reap_bounded(&mut child_a, Duration::from_secs(2))
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::zombie_processes)]
+    // This helper intentionally exits before its detached descendant: the
+    // parent test owns the descendant PID, terminates it, and observes sentinel
+    // EOF. Waiting here would erase the runner-style lifetime being tested.
+    pub(super) fn runtime_runner_style_sentinel_helper() {
+        use std::os::unix::process::CommandExt;
+
+        match std::env::var(RUNTIME_SENTINEL_HELPER_ENV).as_deref() {
+            Ok("runner") => {
+                let executable = std::env::current_exe().unwrap();
+                let mut descendant = Command::new(executable);
+                descendant
+                    .args([
+                        "--exact",
+                        "infrastructure::platform::process::tests::runtime_runner_style_sentinel_helper",
+                        "--nocapture",
+                    ])
+                    .env(RUNTIME_SENTINEL_HELPER_ENV, "descendant")
+                    .env(
+                        RUNTIME_SENTINEL_PID_FILE_ENV,
+                        std::env::var(RUNTIME_SENTINEL_PID_FILE_ENV).unwrap(),
+                    )
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                unsafe {
+                    descendant.pre_exec(|| {
+                        if libc::setpgid(0, 0) == -1 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        }
+                    });
+                }
+                descendant.spawn().unwrap();
+            }
+            Ok("descendant") => {
+                std::fs::write(
+                    std::env::var(RUNTIME_SENTINEL_PID_FILE_ENV).unwrap(),
+                    std::process::id().to_string(),
+                )
+                .unwrap();
+                thread::sleep(Duration::from_secs(30));
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    pub(super) fn runner_style_new_process_group_and_closed_stdio_still_hold_sentinel_lifetime() {
+        let pid_file = std::env::temp_dir().join(format!(
+            "unica-runtime-sentinel-{}-{:?}.pid",
+            std::process::id(),
+            thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&pid_file);
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::runtime_runner_style_sentinel_helper",
+                "--nocapture",
+            ])
+            .env(RUNTIME_SENTINEL_HELPER_ENV, "runner")
+            .env(RUNTIME_SENTINEL_PID_FILE_ENV, &pid_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut handle = super::RuntimeProcessTreeHandle::prepare(&mut command).unwrap();
+        let mut leader = command.spawn().unwrap();
+        handle.attach(&mut leader).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let descendant = loop {
+            if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+                if let Ok(pid) = pid.parse::<u32>() {
+                    break pid;
+                }
+            }
+            assert!(Instant::now() < deadline, "runner descendant did not start");
+            thread::sleep(Duration::from_millis(10));
+        };
+        loop {
+            match handle.poll(&mut leader).unwrap() {
+                super::RuntimeProcessTreeState::Running if handle.leader_exited() => break,
+                super::RuntimeProcessTreeState::Running if Instant::now() < deadline => {
+                    thread::yield_now();
+                }
+                other => panic!("runner sentinel did not retain lifetime: {other:?}"),
+            }
+        }
+
+        // The runner exited, its child changed process group and both stdio
+        // streams were closed. Only the inherited sentinel keeps this Running.
+        unsafe { libc::kill(descendant as i32, libc::SIGKILL) };
+        loop {
+            match handle.poll(&mut leader).unwrap() {
+                super::RuntimeProcessTreeState::Exited(_) => break,
+                super::RuntimeProcessTreeState::Running if Instant::now() < deadline => {
+                    thread::yield_now();
+                }
+                other => panic!("sentinel did not close after descendant death: {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_file(pid_file);
     }
 
     #[cfg(windows)]

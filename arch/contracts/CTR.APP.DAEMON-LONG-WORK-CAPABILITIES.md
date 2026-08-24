@@ -20,7 +20,11 @@ movable key. Каждый KnownLong вызов сначала возвращае
 durable Task, затем ждёт producer; polling не запускает producer повторно.
 Capability не являются MCP tools, не добавляют TaskStore phase и не обходят
 ProviderRootBinding, revision fence, `BslIndexLock` или runtime `active.lock`.
-Unix runtime tree в этом контракте означает только bundled-runner ownership-FD
-capability с retained unreaped leader; отсутствие или потеря capability
-quarantine-ит ресурс, а не объявляет его свободным.
+Unix runtime tree в этом контракте означает только retained unreaped leader и
+установленный Unica child-only inherited lifetime sentinel FD, сохраняемый
+текущим pinned runner без handshake/acknowledgement. Ошибка startup, fallback,
+poll, output или persistence оставляет canonical worker supervising retained
+authority; отсутствие или потеря capability quarantine-ит ресурс, а не
+объявляет его свободным. Поздний release также остаётся привязан к исходному
+physical jobs-root и не следует за подменённым ambient-путём.
 Production subject handler и durable progress остаются границей Task 22.
